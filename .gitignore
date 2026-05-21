@@ -1,0 +1,10 @@
+# Orchestrator runtime (not part of the buildable repo)
+skill/
+# Build artifacts
+target/
+node_modules/
+dist/
+.vite/
+# OS
+.DS_Store
+*.log
