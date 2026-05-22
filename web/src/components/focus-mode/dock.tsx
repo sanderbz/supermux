@@ -235,10 +235,13 @@ export default DesktopDock
 //     it (CEO M15 amplification).
 //   • Keyboard toggle — focuses/blurs the hidden input to show/hide the keyboard.
 //   • Specials (···)  — opens the SpecialsSheet (kbd-groups 2×2 pager).
-//   • Input field     — grows 32→80px (≤3 lines); Enter (no shift) sends. A
-//     leading "/" surfaces a slash hint (the full slash menu lands in M18).
-//   • Send button     — 32px circular; 40% opacity + disabled when empty
-//     (Linear/ChatGPT composer spec).
+//   • Input field     — grows 44→80px (≤3 lines, 44pt floor); Enter (no shift)
+//     sends. A leading "/" surfaces a slash hint (full slash menu lands in M18).
+//   • Send button     — 44pt circular (HIG floor); 40% opacity + disabled when
+//     empty (Linear/ChatGPT composer spec).
+//
+// HIG: every interactive control here (session pill, ⌨/··· dock icons, composer
+// input, send) is ≥44×44pt — the iOS Human Interface Guidelines tap-target floor.
 //
 // iOS haptics caveat (§4.4): chip presses use a 0.96 scale (CSS-only feedback);
 // navigator.vibrate(8) is gated by `'vibrate' in navigator` (Android only).
@@ -332,8 +335,8 @@ export function MobileDock({
         }}
         placeholder={value.startsWith('/') ? 'Slash command…' : 'Message…'}
         className={cn(
-          'mb-0.5 min-h-8 min-w-0 flex-1 resize-none rounded-2xl border border-border bg-background',
-          'px-3 py-1.5 text-[15px] leading-5 outline-none focus:ring-2 focus:ring-ring',
+          'mb-0.5 min-h-11 min-w-0 flex-1 resize-none rounded-2xl border border-border bg-background',
+          'px-3 py-2.5 text-[15px] leading-5 outline-none focus:ring-2 focus:ring-ring',
         )}
       />
 
@@ -345,7 +348,7 @@ export function MobileDock({
         transition={springs.buttonPress}
         onClick={submit}
         className={cn(
-          'mb-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground',
+          'mb-0.5 flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground',
           !canSend && 'opacity-40',
         )}
       >
@@ -402,7 +405,7 @@ function SessionPill({
   const swipeable = Boolean(prevSession || nextSession)
 
   return (
-    <div ref={ref} className="relative h-9 shrink-0" style={{ maxWidth: '46%' }}>
+    <div ref={ref} className="relative h-11 shrink-0" style={{ maxWidth: '46%' }}>
       {/* Peek-of-next, revealed beneath the dragging pill. */}
       <motion.div
         aria-hidden
@@ -430,7 +433,7 @@ function SessionPill({
         onDragEnd={onDragEnd}
         onClick={onTap}
         className={cn(
-          'relative flex h-9 w-full items-center gap-1.5 rounded-full border border-border bg-card px-3',
+          'relative flex h-11 w-full items-center gap-1.5 rounded-full border border-border bg-card px-3',
           'text-[13px] font-medium',
         )}
       >
@@ -461,8 +464,8 @@ function DockIcon({
         if ('vibrate' in navigator) navigator.vibrate(8)
         onClick()
       }}
-      // ≥44pt hit target via min-w/h-11 while the glyph stays compact.
-      className="mb-0.5 flex size-8 min-h-8 min-w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
+      // ≥44pt hit target (size-11 = 44px) per the iOS HIG floor; glyph stays 20px.
+      className="mb-0.5 flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
     >
       {children}
     </motion.button>
