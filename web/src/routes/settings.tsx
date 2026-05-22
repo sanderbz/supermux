@@ -1,15 +1,22 @@
 import * as React from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   MotionConfig,
   motion,
   useScroll,
   useTransform,
 } from 'framer-motion'
-import { Check, ChevronsUpDown, RefreshCw } from 'lucide-react'
+import { Check, ChevronsUpDown, PlayCircle, RefreshCw } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
 import { appVersion, authToken, baseUrl } from '@/env'
-import { MISC } from '@/brand/copy'
+import { MISC, ONBOARDING } from '@/brand/copy'
+import {
+  forgetDemoSession,
+  getDemoSession,
+  resetFirstLaunch,
+} from '@/lib/onboarding'
+import { onboardingApi } from '@/lib/api'
 import { useTheme, type Theme } from '@/components/theme-provider'
 import { useUI, type ViewMode } from '@/stores/ui-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
@@ -262,6 +269,57 @@ function ConnectionSection() {
   )
 }
 
+/** Settings → Onboarding (M27). "Run the 30-second demo" clears the
+ *  first-launch flag, removes the one demo session amux booted (if any), then
+ *  navigates to `/` so the unboxing replays from a clean slate. */
+function OnboardingSection() {
+  const navigate = useNavigate()
+  const [replaying, setReplaying] = React.useState(false)
+
+  async function replay() {
+    if (replaying) return
+    setReplaying(true)
+    // Remove only the session amux booted as the demo — never a real one.
+    const demo = getDemoSession()
+    if (demo) {
+      await onboardingApi.deleteSession(demo)
+      forgetDemoSession()
+    }
+    // Clear the flag so OnboardingHost re-arms the unboxing on the next `/`.
+    resetFirstLaunch()
+    navigate('/')
+    // OnboardingHost decides first-launch at mount; a full reload guarantees a
+    // fresh mount so the replay always takes effect.
+    window.location.reload()
+  }
+
+  return (
+    <Section title="Onboarding" footnote={ONBOARDING.replayHint}>
+      <Row
+        label={ONBOARDING.replayLabel}
+        hint="Replays the welcome tour and first-run experience."
+        control={
+          <Button
+            asChild
+            variant="outline"
+            onClick={replay}
+            disabled={replaying}
+            className="h-11 gap-1.5"
+          >
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              transition={springs.buttonPress}
+            >
+              <PlayCircle />
+              {replaying ? 'Resetting…' : ONBOARDING.replayAction}
+            </motion.button>
+          </Button>
+        }
+      />
+    </Section>
+  )
+}
+
 export function Settings() {
   const { theme, setTheme } = useTheme()
   const viewMode = useUI((s) => s.viewMode)
@@ -351,6 +409,8 @@ export function Settings() {
               control={<ModelPicker />}
             />
           </Section>
+
+          <OnboardingSection />
 
           <ApiKeysSection />
 

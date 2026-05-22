@@ -5,9 +5,10 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { LayoutGrid, List, Plus, Search, TerminalSquare, X } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
+import { ONBOARDING } from '@/brand/copy'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useUI, type ViewMode } from '@/stores/ui-store'
-import type { ApiSession } from '@/lib/api'
+import { onboardingApi, type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
@@ -78,6 +79,9 @@ export function Overview() {
   const [rawQuery, setRawQuery] = React.useState('')
   const [query, setQuery] = React.useState('')
   const [sheetOpen, setSheetOpen] = React.useState(false)
+  // M27: one-tap demo agent. `bootingDemo` disables the button + shows a busy
+  // label while the `/cso` agent is created so a double-tap can't double-boot.
+  const [bootingDemo, setBootingDemo] = React.useState(false)
 
   // DEV-only: seed the sessions cache from the M11 mocks when the route is
   // opened with `?mock=1`, so the full overview (grid/list morph, search, FAB)
@@ -106,6 +110,21 @@ export function Overview() {
   // just navigates into the new session's focus view (§5.1).
   const onCreated = (name: string) => {
     navigate(`/focus/${name}`)
+  }
+
+  // M27: secondary first-run CTA — boot a `/cso` demo agent in the server's
+  // working directory and drop the user straight into its focus view, so the
+  // first 60 seconds end on visible agent output. Failure is non-fatal: the
+  // button just re-enables (the empty state stays put).
+  const bootDemo = async () => {
+    if (bootingDemo) return
+    setBootingDemo(true)
+    try {
+      const created = await onboardingApi.bootDemoAgent('.')
+      navigate(`/focus/${created.name}`)
+    } catch {
+      setBootingDemo(false)
+    }
   }
 
   return (
@@ -166,6 +185,14 @@ export function Overview() {
               icon={<TerminalSquare />}
               message="No agents yet. Boot your first one."
               cta={{ label: 'Boot first agent', onClick: openSheet }}
+              secondary={{
+                label: bootingDemo
+                  ? ONBOARDING.demoBooting
+                  : ONBOARDING.demoCta,
+                onClick: bootDemo,
+                busy: bootingDemo,
+                hint: ONBOARDING.demoHint,
+              }}
             />
           </div>
         ) : visible.length === 0 ? (
@@ -178,9 +205,11 @@ export function Overview() {
           </div>
         ) : viewMode === 'tile' ? (
           <div className={TILE_GRID}>
-            {visible.map((s) => (
+            {visible.map((s, i) => (
               <motion.div
                 key={s.name}
+                // M27: the first tile is the tour's "peek + focus" anchor.
+                data-tour={i === 0 ? 'tile' : undefined}
                 layout={!reduce}
                 layoutId={`session-${s.name}`}
                 transition={springs.smooth}
@@ -191,9 +220,10 @@ export function Overview() {
           </div>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {visible.map((s) => (
+            {visible.map((s, i) => (
               <motion.div
                 key={s.name}
+                data-tour={i === 0 ? 'tile' : undefined}
                 layout={!reduce}
                 layoutId={`session-${s.name}`}
                 transition={springs.smooth}
