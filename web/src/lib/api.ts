@@ -1,3 +1,5 @@
+import { authToken, baseUrl } from '@/env'
+
 // Typed API client — M0 SKELETON.
 //
 // Every endpoint from TECH_PLAN §3.4 has a typed method stub here. Bodies throw
@@ -288,6 +290,34 @@ export class FsError extends Error {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// M22 — Settings client (ADDITIVE).
+//
+// Appended below the M0 `api` stub instead of filling its method bodies, so this
+// milestone never collides with the sibling frontend milestones (M19/M20/M21)
+// that fill in their own slices of the stub above. These are the real `fetch`
+// implementations the settings route needs.
+//
+// Envelope: HTTP responses are `{ ok, data?, error? }` (§3.4). We unwrap `data`
+// on success and throw `ApiError` (carrying the status code) otherwise — the
+// settings hooks turn a 404/501 into a graceful "backend not wired yet" state
+// rather than a crash, since the prefs/audit handlers land in a later backend
+// milestone.
+//
+// The dashboard bearer token is read from `window._AMUX_AUTH_TOKEN` at call time
+// (env.ts) and sent as `Authorization: Bearer …`. It is NEVER hard-coded here.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** HTTP error that preserves the status code so callers can branch on 401/404. */
+export class ApiError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 // Read runtime config off the `window._AMUX_*` globals (typed in env.ts). Kept
 // local to this block so the append introduces NO new top-of-file import that
 // could conflict with a sibling milestone's import edit.
@@ -400,4 +430,95 @@ export async function getSessionDir(name: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+interface Envelope<T> {
+  ok: boolean
+  data?: T
+  error?: string
+}
+
+async function settingsRequest<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const token = authToken()
+  const res = await fetch(`${baseUrl().replace(/\/$/, '')}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
+  })
+  // 204 / empty body — nothing to unwrap.
+  if (res.status === 204) {
+    if (!res.ok) throw new ApiError(res.status, res.statusText)
+    return undefined as T
+  }
+  let env: Envelope<T> | null = null
+  try {
+    env = (await res.json()) as Envelope<T>
+  } catch {
+    /* non-JSON (e.g. an HTML 404 page) — fall through to the status check */
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, env?.error ?? res.statusText)
+  }
+  if (env && env.ok === false) {
+    throw new ApiError(res.status, env.error ?? 'request failed')
+  }
+  return (env?.data ?? (env as unknown as T)) as T
+}
+
+/** API-key settings — values arrive MASKED from the server (§1.8); never raw. */
+export interface MaskedEnv {
+  /** e.g. `sk-ant-…last4`, or `''` when unset. */
+  ANTHROPIC_API_KEY?: string
+  OPENAI_API_KEY?: string
+}
+
+export interface DefaultModelInfo {
+  model: string
+}
+
+export interface RegenerateTokenResult {
+  token: string
+}
+
+export const settingsApi = {
+  /** GET `/api/settings/env` — returns MASKED key previews (§1.8). */
+  getEnv: (): Promise<MaskedEnv> => settingsRequest('/api/settings/env'),
+  /** PATCH `/api/settings/env` — write `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. */
+  patchEnv: (patch: MaskedEnv): Promise<MaskedEnv> =>
+    settingsRequest('/api/settings/env', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  /** GET `/api/settings/default-model`. */
+  getDefaultModel: (): Promise<DefaultModelInfo> =>
+    settingsRequest('/api/settings/default-model'),
+  /** PATCH `/api/settings/default-model` — `{ model }` → `CC_DEFAULT_FLAGS`. */
+  patchDefaultModel: (model: string): Promise<DefaultModelInfo> =>
+    settingsRequest('/api/settings/default-model', {
+      method: 'PATCH',
+      body: JSON.stringify({ model }),
+    }),
+  /** GET `/api/audit?limit=N` — last N audit rows (§6.4). */
+  getAudit: (limit = 200): Promise<AuditEntry[]> =>
+    settingsRequest(`/api/audit?limit=${limit}`),
+  /** GET `/api/snippets` — saved-command CRUD (§3.4). */
+  listSnippets: (): Promise<Snippet[]> => settingsRequest('/api/snippets'),
+  createSnippet: (input: Omit<Snippet, 'id'>): Promise<Snippet> =>
+    settingsRequest('/api/snippets', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  deleteSnippet: (id: string): Promise<void> =>
+    settingsRequest(`/api/snippets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  /** POST `/api/settings/regenerate-token` — rotate the dashboard bearer. */
+  regenerateToken: (): Promise<RegenerateTokenResult> =>
+    settingsRequest('/api/settings/regenerate-token', { method: 'POST' }),
 }
