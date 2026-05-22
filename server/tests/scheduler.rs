@@ -195,6 +195,95 @@ async fn http_crud_roundtrip() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// M21 preview: parse an expression WITHOUT persisting and get the next 5 runs.
+#[tokio::test]
+async fn preview_returns_next_runs_without_persisting() {
+    let (state, dir) = new_state().await;
+    let app = http::router(state.clone());
+
+    // Recurring expression → 5 future, strictly-ascending fire times.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/schedules/preview",
+        Some(json!({ "expression": "every 5m" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let runs = body["data"]["next_runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 5, "recurring expression previews 5 runs");
+    let parsed: Vec<chrono::DateTime<chrono::Utc>> = runs
+        .iter()
+        .map(|v| v.as_str().unwrap().parse().unwrap())
+        .collect();
+    for w in parsed.windows(2) {
+        assert!(w[1] > w[0], "preview runs must strictly ascend");
+    }
+
+    // One-shot expression → exactly one run.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/schedules/preview",
+        Some(json!({ "expression": "in 30m" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["next_runs"].as_array().unwrap().len(), 1);
+
+    // Bad expression → 400.
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/api/schedules/preview",
+        Some(json!({ "expression": "whenever" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Nothing was persisted by previewing.
+    assert!(db::schedules::list(&state.pool).await.unwrap().is_empty());
+
+    state.pool.close().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// M21 test-fire: `_test_fire:true` runs once immediately, returns the result,
+/// and leaves NO live schedule behind.
+#[tokio::test]
+async fn test_fire_runs_once_and_does_not_persist() {
+    let (state, dir) = new_state().await;
+    let app = http::router(state.clone());
+    let marker = dir.join("test-fire-marker.txt");
+    assert!(!marker.exists());
+
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/schedules",
+        Some(json!({
+            "title": "test fire",
+            "command": format!("touch {}", marker.display()),
+            "kind": "shell",
+            "schedule_expr": "every 5m",
+            "_test_fire": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["status"], "ok", "test-fire should run successfully");
+    assert!(marker.exists(), "the shell job ran during test-fire");
+
+    // No live schedule persisted.
+    assert!(
+        db::schedules::list(&state.pool).await.unwrap().is_empty(),
+        "test-fire must not leave a live schedule"
+    );
+
+    state.pool.close().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Unauthenticated requests are rejected by the shared bearer layer.
 #[tokio::test]
 async fn requires_auth() {
