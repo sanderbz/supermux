@@ -38,6 +38,15 @@ export interface LiveTerminalProps {
   /** Receive the imperative handle so a parent dock/joystick (M14/M15/M17) can
    *  drive `sendKey` / `copyAll` without re-subscribing. */
   onReady?: (term: UseLiveTermResult) => void
+  /** Fires ONCE when xterm has written its first real pty data frame (replay
+   *  buffer / live stream). The overview hover-zoom uses this to crossfade the
+   *  live terminal IN once it actually has content — keeping the static ANSI
+   *  preview visible until then so the tile never flashes blank-black. */
+  onFirstFrame?: () => void
+  /** Notified whenever the WS lifecycle state changes — used by the overview
+   *  hover-zoom embed to disarm the crossfade if the connection drops to a
+   *  retry/stopped state without ever delivering a frame. */
+  onStateChange?: (state: UseLiveTermResult['state']) => void
 }
 
 export function LiveTerminal({
@@ -46,13 +55,28 @@ export function LiveTerminal({
   className,
   fontSize,
   onReady,
+  onFirstFrame,
+  onStateChange,
 }: LiveTerminalProps) {
   const term = useLiveTerm(name, { readOnly, fontSize })
-  const { containerRef, state, retry } = term
+  const { containerRef, state, hasFirstFrame, retry } = term
 
   React.useEffect(() => {
     onReady?.(term)
     // Only re-emit when the imperative surface meaningfully changes (state).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state])
+
+  // Notify the parent the first time pty bytes arrive — gates the overview's
+  // peek-crossfade (no flicker). Fires exactly once per mount (the underlying
+  // ref-then-state in useLiveTerm is idempotent).
+  React.useEffect(() => {
+    if (hasFirstFrame) onFirstFrame?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasFirstFrame])
+
+  React.useEffect(() => {
+    onStateChange?.(state)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 

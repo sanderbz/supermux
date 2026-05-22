@@ -309,6 +309,15 @@ export const sessionsApi = {
   remove: (name: string): Promise<void> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
+  /** `POST /api/sessions/{name}/archive` — archive the session (§3.2.5). The
+   *  R1 fix has `archive()` correctly terminate per-session loops + forget the
+   *  session, so once this returns the next SSE `sessions` refetch drops the
+   *  row from the overview. Returns 202 + job_id; callers don't need either. */
+  archive: (name: string): Promise<void> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/archive`, {
+      method: 'POST',
+    }),
+
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
    *  (M7). Returns `[]` on any failure so the field degrades to a plain input. */
   autocompleteDir: async (q: string): Promise<string[]> => {

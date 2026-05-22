@@ -128,7 +128,14 @@ export function Overview() {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-3 py-4 sm:px-5 sm:py-6">
+    // Desktop container widens at `lg` (polish-pass #3) — mobile/tablet keep
+    // the existing max-w-6xl so nothing reflows below the breakpoint. With the
+    // grid still at lg:grid-cols-4 (and gap-2 = 8px), bumping the container
+    // from 72rem → 82rem gives each card ≈14% more horizontal room on desktop
+    // (282px → 322px), so cards feel less cramped without changing column
+    // count and the hover float-over-slot architecture still works (the slot
+    // reserves the idle height; the tile floats inside it on hover).
+    <div className="mx-auto flex h-full w-full max-w-6xl lg:max-w-[82rem] flex-col px-3 py-4 sm:px-5 sm:py-6">
       {/* ── Header: title + search + view toggle + (desktop) new button ─── */}
       <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="mr-1 text-2xl font-semibold tracking-tight">Overview</h1>

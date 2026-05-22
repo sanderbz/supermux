@@ -165,6 +165,12 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
   const showLiveTerm = expanded && hoverPreview === 'live' && liveCapable
   const tokens =
     typeof session.tokens === 'number' ? formatTokens(session.tokens) : null
+  // Stopped UX (polish-pass): a stopped tile is visually distinct AT A GLANCE
+  // — the whole card dims to the app's "muted" treatment (token-driven, no
+  // ad-hoc colour) and a sentence-case "Stopped" pill replaces the running
+  // chrome. The neutral grey status dot already comes from STATUS_COLOR
+  // (status-idle), not a destructive red — stopped is just "not running".
+  const isStopped = session.status === 'stopped'
 
   // Tail line count: 6 idle → 20 when expanded in "expanded text" mode (or as
   // the live mode's fallback for a session with no pty).
@@ -200,6 +206,9 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
                 scale: 1.06,
                 zIndex: 10,
                 boxShadow: '0 12px 36px -8px rgba(0,0,0,0.18)',
+                // Restore full opacity on hover so a stopped tile's preview is
+                // legible while peeked — the dim only signals at-rest state.
+                opacity: 1,
               }
             : undefined
         }
@@ -214,7 +223,15 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
             ? { viewTransitionName: vtSessionName(session.name) }
             : undefined
         }
-        className="absolute inset-x-0 top-0 flex cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-card pt-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={
+          // Stopped UX (polish-pass #1): a stopped tile dims to 60% via the
+          // token-driven muted treatment so it reads "off" AT A GLANCE next to
+          // live siblings — but stays fully interactive (tap → focus →
+          // Resume/Archive). Only the resting state dims; hover restores full
+          // opacity (whileHover.opacity:1) so the peek is readable.
+          'absolute inset-x-0 top-0 flex cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-card pt-3 outline-none focus-visible:ring-2 focus-visible:ring-ring' +
+          (isStopped ? ' opacity-60' : '')
+        }
       >
         <StatusBorder status={session.status} reduce={reduce} />
 
@@ -227,6 +244,14 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
             {session.status === 'waiting' && (
               <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
                 {MISC.needsInputPill}
+              </span>
+            )}
+            {isStopped && (
+              // Sentence-case "Stopped" pill — neutral muted treatment, NOT
+              // red. Mirrors the needs-input pill geometry so the row stays
+              // balanced. Reads at a glance: this tile is OFF.
+              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+                {STATUS_LABEL.stopped}
               </span>
             )}
             <StatusDot status={session.status} className="mt-1" />
@@ -246,7 +271,8 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
             live 230px / 20-line on hover) and clips its children, so neither
             the live terminal nor the long tail can bleed past the card. The
             coloured static tail fills it; the live zoomed terminal cross-fades
-            in OVER it (live mode) — no blank frame while the WS connects. */}
+            in OVER it (live mode) — gated on the WS's FIRST real pty frame so
+            the tile never flashes a blank-black void during the handshake. */}
         <motion.div
           className="relative mt-1 overflow-hidden"
           animate={{ height: previewH }}
@@ -259,16 +285,12 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
           />
           <AnimatePresence>
             {showLiveTerm && cardWidth > 0 && (
-              <motion.div
+              <LivePeekLayer
                 key="live"
-                initial={reduce ? false : { opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={reduce ? undefined : { opacity: 0 }}
-                transition={reduce ? { duration: 0 } : springs.cardExpand}
-                className="absolute inset-0"
-              >
-                <TileLiveTerminal name={session.name} width={cardWidth} />
-              </motion.div>
+                name={session.name}
+                width={cardWidth}
+                reduce={!!reduce}
+              />
             )}
           </AnimatePresence>
         </motion.div>
@@ -282,5 +304,41 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
         />
       )}
     </div>
+  )
+}
+
+// ── Peek crossfade layer (polish-pass #2) ─────────────────────────────────────
+//
+// Owns the local `liveReady` state so it auto-resets on each fresh mount via
+// React's standard component lifecycle (no setState-in-effect lint friction,
+// no synchronous setState during render). Mounts immediately so the underlying
+// WS starts — but stays opacity:0 UNTIL the first real pty frame arrives, so
+// the tile never flashes a blank-black void during the WS handshake. Crossfade
+// is short (~120-180ms via springs.snappy); under Reduce Motion the swap is
+// instant. The static tail underneath stays at full opacity throughout.
+function LivePeekLayer({
+  name,
+  width,
+  reduce,
+}: {
+  name: string
+  width: number
+  reduce: boolean
+}) {
+  const [liveReady, setLiveReady] = React.useState(false)
+  return (
+    <motion.div
+      initial={reduce ? false : { opacity: 0 }}
+      animate={{ opacity: liveReady ? 1 : 0 }}
+      exit={reduce ? undefined : { opacity: 0 }}
+      transition={reduce ? { duration: 0 } : springs.snappy}
+      className="absolute inset-0"
+    >
+      <TileLiveTerminal
+        name={name}
+        width={width}
+        onFirstFrame={() => setLiveReady(true)}
+      />
+    </motion.div>
   )
 }

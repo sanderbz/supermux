@@ -51,7 +51,10 @@ const TICK: Duration = Duration::from_secs(2);
 const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 
 /// How many trailing lines the tile preview surfaces (§3.6 hero flow, §3.4).
-const PREVIEW_LINES: usize = 6;
+/// Sized to feed BOTH preview modes from one capture: the static tile shows
+/// the bottom 6 (CSS-clipped via container height + fade mask), and the
+/// Settings → Expanded-text hover mode reveals the full ~20-line tail.
+const PREVIEW_LINES: usize = 20;
 
 /// Reconcile every persisted session's stored status against tmux reality on
 /// boot. The `session_runtime.last_status` column keeps its last-known value

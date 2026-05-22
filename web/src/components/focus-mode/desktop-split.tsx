@@ -23,6 +23,7 @@ import type { TileSession } from '@/components/session-tile/types'
 import { CompactTile } from './compact-tile'
 import { DesktopFocusHeader } from './focus-header'
 import { DesktopDock } from './dock'
+import { TerminalCaptureIndicator } from './terminal-capture-indicator'
 import { useKeyboardCapture } from './use-keyboard-capture'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 
@@ -59,10 +60,80 @@ export function DesktopSplit({
   // One imperative LiveTerminal handle, shared by the dock chips + the keyboard
   // shortcuts. Captured via the M13 `onReady` callback — no re-subscribe.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
+  // The pane that wraps xterm — used as the DOM-focus anchor for the capture
+  // indicator: when focus moves anywhere INSIDE this subtree (xterm's hidden
+  // textarea, the read-only screen) the indicator shows; click outside (the
+  // dock, the session strip, the header) releases.
+  const termPaneRef = React.useRef<HTMLDivElement | null>(null)
+  // Live capture indicator (polish-pass #4) — flips on when the terminal has
+  // DOM focus, off when focus moves elsewhere. `focusin`/`focusout` on the
+  // pane subtree is the cleanest signal; xterm's hidden textarea is the
+  // focusable element, so the document-level `activeElement` check inside the
+  // listener is what actually drives the badge.
+  const [capturingInput, setCapturingInput] = React.useState(false)
 
   // M18 snippet panel — the dock's "+" button opens it; desktop has no separate
   // text composer, so both tap-insert and long-press-run send straight to xterm.
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
+
+  // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes go
+  // to the terminal IMMEDIATELY — no second click. The flag is armed on mount
+  // / on session change, then consumed by either the rAF below (handle already
+  // installed) or by <LiveTerminal onReady> (the first onReady AFTER arming).
+  // Either path focuses xterm exactly once per session entry, so we never
+  // steal focus away from a user who has Tab'd into the dock input.
+  const wantFocusRef = React.useRef(false)
+  React.useEffect(() => {
+    if (current?.status === 'stopped' || current?.status === 'error') {
+      wantFocusRef.current = false
+      return
+    }
+    wantFocusRef.current = true
+    const raf = window.requestAnimationFrame(() => {
+      if (wantFocusRef.current && termRef.current) {
+        termRef.current.focus()
+        wantFocusRef.current = false
+      }
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [name, current?.status])
+
+  const handleTermReady = React.useCallback((t: UseLiveTermResult) => {
+    termRef.current = t
+    // Consume a pending auto-focus request on the first onReady after a
+    // mount/session-change — xterm's container is laid out by now, so
+    // focus() lands on the real hidden textarea.
+    if (wantFocusRef.current) {
+      wantFocusRef.current = false
+      t.focus()
+    }
+  }, [])
+
+  // Track DOM focus inside the terminal pane. `focusin` / `focusout` bubble,
+  // so one pair of listeners on the pane wrapper catches xterm's hidden
+  // textarea (the element that actually receives keys). `focusout` fires
+  // BEFORE focus lands, so we re-read `document.activeElement` after a
+  // microtask to know whether focus left the subtree entirely.
+  React.useEffect(() => {
+    const pane = termPaneRef.current
+    if (!pane) return
+    const refresh = () => {
+      const active = document.activeElement
+      setCapturingInput(!!active && pane.contains(active))
+    }
+    const onFocusIn = () => refresh()
+    const onFocusOut = () => {
+      // Defer to the next tick so the freshly-focused element (if any) is the
+      // one we read — `focusout` fires before the new `focusin` lands.
+      window.setTimeout(refresh, 0)
+    }
+    pane.addEventListener('focusin', onFocusIn)
+    pane.addEventListener('focusout', onFocusOut)
+    return () => {
+      pane.removeEventListener('focusin', onFocusIn)
+      pane.removeEventListener('focusout', onFocusOut)
+    }
+  }, [])
 
   // Jump to the N-th (0-indexed) strip row — Cmd+1..9.
   const jump = React.useCallback(
@@ -120,7 +191,12 @@ export function DesktopSplit({
           onStop={onStop}
         />
 
-        <div className="min-h-0 flex-1">
+        {/* `relative` so the capture indicator (polish-pass #4) can position
+            itself in the top-right corner of the terminal pane WITHOUT
+            overlaying the terminal viewport — a small chrome element, not an
+            overlay over content. The pane ref is the focus boundary used to
+            detect when xterm has DOM focus (focusin/focusout listener). */}
+        <div ref={termPaneRef} className="relative min-h-0 flex-1">
           {/* A `stopped` session's tmux pty is gone — opening the live WS would
               just 101-upgrade then get closed in a loop. Detect it up front from
               the session row and render the calm StoppedSession surface instead.
@@ -131,8 +207,14 @@ export function DesktopSplit({
             /* M13 LiveTerminal — reused verbatim. The keydown capture deliberately
                does NOT preventDefault on ordinary keys, so Ctrl-C / arrows / Tab /
                Shift+Tab / Esc / text all reach xterm's onData → the M4 pty WS. */
-            <LiveTerminal name={name} onReady={(t) => (termRef.current = t)} />
+            <LiveTerminal name={name} onReady={handleTermReady} />
           )}
+          {/* Subtle "Capturing input" pill — only visible while xterm holds DOM
+              focus. Click outside (header / dock / strip) releases. Esc is NOT
+              the release because Esc must reach the terminal (vim, REPLs). */}
+          <TerminalCaptureIndicator
+            capturing={capturingInput && status !== 'stopped'}
+          />
         </div>
 
         <DesktopDock

@@ -84,6 +84,32 @@ export function MobileFocus() {
 
   // Imperative terminal handle — the ONE surface every key path drives.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
+  // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes
+  // (hardware keyboard, or the iOS soft keyboard once the user taps in) route
+  // to xterm IMMEDIATELY — the focus pane is the terminal, not the dock
+  // input. Re-armed per session-name change so jumping sessions follows focus.
+  const wantFocusRef = React.useRef(false)
+  React.useEffect(() => {
+    if (current.status === 'stopped' || current.status === 'error') {
+      wantFocusRef.current = false
+      return
+    }
+    wantFocusRef.current = true
+    const raf = window.requestAnimationFrame(() => {
+      if (wantFocusRef.current && termRef.current) {
+        termRef.current.focus()
+        wantFocusRef.current = false
+      }
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [name, current.status])
+  const onTermReady = React.useCallback((t: UseLiveTermResult) => {
+    termRef.current = t
+    if (wantFocusRef.current) {
+      wantFocusRef.current = false
+      t.focus()
+    }
+  }, [])
   // M18: the composer registers its `insert` here so the snippet panel can
   // tap-to-insert a snippet body into the dock's input without prop-drilling.
   const composerInsert = React.useRef<((text: string) => void) | null>(null)
@@ -163,10 +189,7 @@ export function MobileFocus() {
               <StoppedSession name={name} />
             ) : (
               <>
-                <LiveTerminal
-                  name={name}
-                  onReady={(t) => (termRef.current = t)}
-                />
+                <LiveTerminal name={name} onReady={onTermReady} />
                 <Joystick
                   enabled={gestureOn}
                   sendKey={(key) => termRef.current?.sendKey(key)}
