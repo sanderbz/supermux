@@ -37,9 +37,12 @@ function fromSse(status: SseStatus): LinkState {
 }
 
 /** Map the live-terminal hook's state onto the store vocabulary (`live` is the
- *  terminal's word for connected; the rest line up 1:1). */
+ *  terminal's word for connected; the rest line up 1:1). `stopped` is a TERMINAL
+ *  non-error state — the session's pty is intentionally gone, not a connection
+ *  fault — so it must NOT drive the global reconnect banner: it reads as
+ *  `connected` (i.e. "nothing wrong with the link"). */
 function fromLiveTerm(state: LiveTermState): LinkState {
-  return state === 'live' ? 'connected' : state
+  return state === 'live' || state === 'stopped' ? 'connected' : state
 }
 
 /** Register the SSE stream as a connection link. Call once from the component

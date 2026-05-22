@@ -23,7 +23,16 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 
 import { authToken, wsUrl } from '@/env'
 
-export type LiveTermState = 'connecting' | 'live' | 'reconnecting' | 'offline'
+// `stopped` is TERMINAL and distinct from `offline`: the server told us the
+// session's pty is gone (not running) — there is nothing to reconnect to, so we
+// do NOT retry. `offline` means we exhausted retries / were rejected and a
+// manual "Tap to retry" still makes sense.
+export type LiveTermState =
+  | 'connecting'
+  | 'live'
+  | 'reconnecting'
+  | 'offline'
+  | 'stopped'
 
 export interface UseLiveTermResult {
   containerRef: React.RefObject<HTMLDivElement | null>
@@ -54,6 +63,7 @@ const CLOSE_AUTH = 1008 // auth/origin reject — permanent
 const CLOSE_SERVER = 1011 // server error — backoff, then permanent
 const CLOSE_TOO_SLOW = 1013 // subscriber overflow — silent reconnect on visible
 const CLOSE_REVOKED = 4001 // explicit token revocation — permanent
+const CLOSE_NOT_RUNNING = 4404 // session's pty is gone — TERMINAL, do NOT retry
 const CLOSE_UNMOUNT = 1000 // normal — our own teardown
 
 /** Read the live terminal theme from the CSS custom properties (§4.5). This runs
@@ -335,8 +345,13 @@ export function useLiveTerm(
             if (msg.type === 'auth_ok') {
               clearAuthTimer()
               authedRef.current = true
-              attemptRef.current = 0
               setLiveState('live')
+              // NOTE: we do NOT reset the reconnect backoff here. A WS that
+              // 101-upgrades and auth-acks but then immediately closes (e.g. a
+              // `stopped` session whose pty is gone) is NOT a genuinely useful
+              // connection — resetting here would let a connect→auth_ok→close
+              // cycle storm with zero backoff. The backoff is reset only once a
+              // real pty data frame arrives (see the binary branch below).
               // Push our geometry so the pty matches the viewport immediately.
               const t = termRef.current
               if (t) resize(t.cols, t.rows)
@@ -346,7 +361,10 @@ export function useLiveTerm(
           }
           return
         }
-        // Binary frame = pty bytes (replay buffer first, then live stream).
+        // Binary frame = pty bytes (replay buffer first, then live stream). The
+        // FIRST pty byte is the proof the connection is genuinely useful — only
+        // now is it safe to reset the reconnect backoff (Eng P1 #5).
+        attemptRef.current = 0
         const term = termRef.current
         if (!term) return
         if (data instanceof ArrayBuffer) {
@@ -366,6 +384,13 @@ export function useLiveTerm(
         if (disposedRef.current || ev.code === CLOSE_UNMOUNT) return
 
         switch (ev.code) {
+          case CLOSE_NOT_RUNNING:
+            // TERMINAL: the server says this session's pty is gone (a `stopped`
+            // session). There is nothing to reconnect to — STOP entirely and
+            // surface the distinct `stopped` state. A genuine network drop uses
+            // a different code (1006/1011) and still backs off + retries below.
+            setLiveState('stopped')
+            return
           case CLOSE_AUTH:
           case CLOSE_REVOKED:
             // Permanent: auth/origin reject or explicit revocation (§4.5).

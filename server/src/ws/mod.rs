@@ -39,6 +39,13 @@ const PONG_DEADLINE: Duration = Duration::from_secs(30);
 /// First-frame auth window.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Application close code for "the session's tmux pty is gone" (e.g. the DB row
+/// survived a reboot but the tmux session did not). This is a TERMINAL condition,
+/// distinct from `close_code::ERROR` (1011 — a transient server error worth a
+/// backoff retry): the client must STOP reconnecting and surface a stopped state
+/// rather than hammering the endpoint. 4000-4999 is the WebSocket private range.
+const CLOSE_NOT_RUNNING: u16 = 4404;
+
 /// The WS sub-router. Merged at the top level of `http::router` (no bearer layer).
 pub fn router_for(state: AppState) -> Router {
     Router::new()
@@ -83,7 +90,18 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         return;
     }
 
-    // 2. Ensure the per-session reader is running and enforce the subscriber cap.
+    // 2. Up-front liveness check: if the tmux session is gone (a `stopped`
+    //    session — DB row survived a reboot but the pty did not), close with the
+    //    explicit terminal code 4404 so the client STOPS reconnecting instead of
+    //    storming this endpoint. This is logged at debug, not warn: a stopped
+    //    session being opened is expected, not a server fault.
+    if !Tmux::new(&name).exists().await.unwrap_or(false) {
+        tracing::debug!(session = %name, "ws closed: session not running");
+        close(&mut socket, CLOSE_NOT_RUNNING, "session not running").await;
+        return;
+    }
+
+    // 3. Ensure the per-session reader is running and enforce the subscriber cap.
     let stream = match state.pty_for(&name).await {
         Ok(s) => s,
         Err(e) => {
@@ -99,7 +117,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         return;
     }
 
-    // 3. Replay snapshot first (so the client is current before any live byte).
+    // 4. Replay snapshot first (so the client is current before any live byte).
     let (replay, mut rx) = stream.subscribe();
     for chunk in replay {
         if socket.send(Message::Binary(chunk)).await.is_err() {
@@ -107,7 +125,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         }
     }
 
-    // 4. Unified fan-out + client-read + ping loop (single task, no split — uses
+    // 5. Unified fan-out + client-read + ping loop (single task, no split — uses
     //    WebSocket's inherent recv/send).
     let mut last_inbound = Instant::now();
     let mut ping = tokio::time::interval(PING_EVERY);

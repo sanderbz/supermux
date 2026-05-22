@@ -113,6 +113,14 @@ const PILL: Record<
     spin: false,
     retry: true,
   },
+  // Terminal: the session's pty is gone. No retry — restarting the session is
+  // the only way back, which the focus route surfaces as a primary action.
+  stopped: {
+    label: 'Session stopped',
+    tint: 'bg-muted text-muted-foreground',
+    spin: false,
+    retry: false,
+  },
 }
 
 function ConnectionPill({
