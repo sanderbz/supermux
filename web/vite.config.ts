@@ -16,7 +16,16 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Backend (Rust/axum) runs on 127.0.0.1:8823 in dev; later milestones
-    // proxy /api and /ws here. Left unset in M0 (no API calls yet).
+    // Backend (Rust/axum) runs on 127.0.0.1:8823 in dev. The M24a e2e smoke
+    // harness boots a fresh binary on an ephemeral port and points Vite at it
+    // via AMUX_E2E_BACKEND, so /api + /ws are proxied SAME-ORIGIN — the app runs
+    // exactly as it does behind the embedded static server (no CORS, no
+    // cross-origin WS), and `window._AMUX_BASE_URL` can stay relative.
+    proxy: process.env.AMUX_E2E_BACKEND
+      ? {
+          '/api': { target: process.env.AMUX_E2E_BACKEND, changeOrigin: true },
+          '/ws': { target: process.env.AMUX_E2E_BACKEND, ws: true, changeOrigin: true },
+        }
+      : undefined,
   },
 })
