@@ -146,9 +146,13 @@ function backoffDelay(attempt: number): number {
 
 export function useLiveTerm(
   name: string,
-  opts?: { readOnly?: boolean },
+  opts?: { readOnly?: boolean; fontSize?: number },
 ): UseLiveTermResult {
   const readOnly = opts?.readOnly ?? false
+  // The overview hover-zoom embed renders fewer, larger rows so the shrunk pane
+  // stays legible at a glance (it passes an explicit fontSize). The focus
+  // terminal and quick-peek omit it and keep the M13 default.
+  const fontSize = opts?.fontSize ?? 13
 
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<Terminal | null>(null)
@@ -235,7 +239,7 @@ export function useLiveTerm(
     //    snaps the geometry to the container; WebLinks makes URLs clickable.
     const term = new Terminal({
       fontFamily: 'SF Mono, Menlo, monospace',
-      fontSize: 13,
+      fontSize,
       lineHeight: 1.2,
       theme: themeFromCss(),
       allowTransparency: false,
@@ -470,10 +474,11 @@ export function useLiveTerm(
       termRef.current = null
       fitRef.current = null
     }
-    // Re-subscribe ONLY when the target session changes. The imperative
-    // callbacks are ref-stable so they don't belong in deps.
+    // Re-subscribe ONLY when the target session changes (or the embed's font
+    // geometry changes). The imperative callbacks are ref-stable so they don't
+    // belong in deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, readOnly])
+  }, [name, readOnly, fontSize])
 
   return { containerRef, state, send, sendKey, resize, copyAll, retry }
 }

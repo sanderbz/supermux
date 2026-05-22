@@ -31,6 +31,10 @@ export interface LiveTerminalProps {
   /** Read-only embed (e.g. the M11 quick-peek modal): no keystrokes sent. */
   readOnly?: boolean
   className?: string
+  /** xterm base font size in px. Omit for the M13 default (13). The overview
+   *  hover-zoom embed passes a larger value so its small pane shows fewer,
+   *  legible rows (FitAddon then sizes the geometry to the container). */
+  fontSize?: number
   /** Receive the imperative handle so a parent dock/joystick (M14/M15/M17) can
    *  drive `sendKey` / `copyAll` without re-subscribing. */
   onReady?: (term: UseLiveTermResult) => void
@@ -40,9 +44,10 @@ export function LiveTerminal({
   name,
   readOnly = false,
   className,
+  fontSize,
   onReady,
 }: LiveTerminalProps) {
-  const term = useLiveTerm(name, { readOnly })
+  const term = useLiveTerm(name, { readOnly, fontSize })
   const { containerRef, state, retry } = term
 
   React.useEffect(() => {

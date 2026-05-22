@@ -2,65 +2,68 @@ import { LiveTerminal } from '@/components/terminal/live-terminal'
 
 // The hover-zoom live terminal — overview tile preview feature, behaviour #2.
 //
-// On hover, a tile swaps its static tail for a scaled-down LIVE terminal: the
-// agent's REAL pty, real ANSI colours, updating live, "the full window but
-// smaller — readable at a glance" (the user's exact ask). It REUSES the M13
+// On hover, a tile swaps its static tail for a LIVE terminal: the agent's REAL
+// pty, real ANSI colours, updating live — "the full window but smaller —
+// readable at a glance" (the user's exact ask). It REUSES the M13
 // <LiveTerminal> verbatim (read-only embed: no keystrokes) — xterm is not
 // reimplemented.
 //
-// HOW THE ZOOM WORKS. xterm sizes to its container, so a tile-sized container
-// would give a tiny cropped pane, not "the full window smaller". Instead we
-// render the terminal at a FULL-WINDOW geometry (`NATIVE_W × NATIVE_H`, ~96
-// cols) inside an off-tile box, then CSS-`transform: scale()` that whole box
-// down to the tile width. The result: every row/col of the agent's window,
-// shrunk uniformly — crisp on a HiDPI screen, no reflow of xterm itself.
+// HOW THE ZOOM WORKS — and why the old approach failed.
+// The first cut rendered xterm at a fixed 760×300 "full window" geometry then
+// CSS-`transform: scale()`'d the whole box down to the ~330px tile width
+// (scale ~0.43). For a real agent idle at its prompt — a buffer that is mostly
+// empty rows — that produced a large near-black void with the actual text shr:
+// 13px glyphs scaled to ~5.6px, an illegible microscopic sliver at the bottom.
+// That is NOT "the full window but smaller, readable at a glance".
+//
+// THE FIX. We do NOT CSS-scale. Instead the terminal renders at its NATIVE
+// font size directly inside the tile-sized box: xterm's FitAddon snaps the
+// geometry (cols × rows) to whatever fits the small container. A 12px font in
+// a ~330×230 box yields roughly a 40×14 grid — a genuine, compact terminal
+// window. Glyphs are rendered at native 12px (crisp on every screen, sharp on
+// HiDPI — no transform blur), and xterm pins the viewport to the BOTTOM of the
+// buffer, so the ~14 rows on screen are always the agent's freshest output —
+// the active content region fills the pane. No empty void, no sliver.
 //
 // PERFORMANCE. This component only ever mounts for the ONE hovered tile (the
 // parent gates it on hover state), so exactly one WebSocket is open at a time;
 // unmounting on hover-leave tears the WS down via <LiveTerminal>'s effect
 // cleanup (`useLiveTerm` close path). No live terminals for un-hovered tiles.
 
-/** Native render geometry — a comfortable "full window" (~96×30 at fontSize 13
- *  / lineHeight 1.2). The terminal renders at this size, then scales to fit. */
-const NATIVE_W = 760
-const NATIVE_H = 300
+/** Native xterm font size (px) for the hover-zoom embed. Small enough that the
+ *  tile-sized box holds ~14 rows of context, large enough to stay crisply
+ *  legible at a glance — and rendered at native size (NOT CSS-scaled), so it
+ *  never blurs. The FitAddon derives cols × rows from the container. */
+const ZOOM_FONT_SIZE = 12
 
 export interface TileLiveTerminalProps {
   /** Session name → the M4 WS route `/ws/sessions/:name`. */
   name: string
-  /** Tile content width in px — the scale target. */
-  width: number
+  /** Tile content width in px — retained for API stability; the terminal now
+   *  fits itself to the container so this is informational only. */
+  width?: number
 }
 
-/** A live, read-only terminal rendered at full-window geometry and scaled down
- *  to `width`. Fills its parent (which owns the height + clipping). Mount = open
- *  WS; unmount = close WS (the parent gates it on hover). */
-export function TileLiveTerminal({ name, width }: TileLiveTerminalProps) {
-  // Uniform scale so the whole window shrinks to the tile width. Clamped so a
-  // very wide tile never up-scales past native (which would just blur).
-  const scale = width > 0 ? Math.min(width / NATIVE_W, 1) : 0.36
-
+/** A live, read-only terminal rendered at native font size and fitted to the
+ *  tile preview box — a small but genuinely legible window onto the agent's
+ *  pty, latest output pinned to view. Mount = open WS; unmount = close WS (the
+ *  parent gates it on hover). */
+export function TileLiveTerminal({ name }: TileLiveTerminalProps) {
   return (
     <div
       aria-hidden
       className="absolute inset-0 overflow-hidden bg-[var(--terminal-bg)]"
     >
-      {/* Bottom-anchored: the freshest pty rows (bottom of the window) stay in
-          view; older rows scroll off the top behind the tail-fade mask. */}
-      <div
-        className="absolute bottom-0 left-0"
-        style={{
-          width: NATIVE_W,
-          height: NATIVE_H,
-          transform: `scale(${scale})`,
-          transformOrigin: 'bottom left',
-        }}
-      >
-        {/* read-only: no keystrokes, and the WS is NOT registered with the
-            global connection store (its hover-blips shouldn't drive the
-            app-wide reconnect banner). */}
-        <LiveTerminal name={name} readOnly className="rounded-none" />
-      </div>
+      {/* read-only: no keystrokes, and the WS is NOT registered with the
+          global connection store (its hover-blips shouldn't drive the
+          app-wide reconnect banner). The terminal fills this box; xterm's
+          FitAddon snaps the geometry, viewport pinned to the freshest rows. */}
+      <LiveTerminal
+        name={name}
+        readOnly
+        fontSize={ZOOM_FONT_SIZE}
+        className="rounded-none"
+      />
     </div>
   )
 }
