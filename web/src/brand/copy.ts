@@ -152,6 +152,43 @@ export const TOAST = {
   needsInput: 'Needs input',
 } as const
 
+// ── Onboarding / first-60-seconds (M27) ───────────────────────────────────────
+
+export const ONBOARDING = {
+  /** Returning v2 user — `{n}` is replaced with the migrated session count. */
+  welcomeBack: (n: number) =>
+    n === 1
+      ? 'Welcome back. Your session is here.'
+      : `Welcome back. Your ${n} sessions are here.`,
+  welcomeBackHint: 'Take the 30-second tour of what moved.',
+  tourStart: 'Take the tour',
+  tourSkip: 'Skip',
+  tourDone: 'Got it',
+  /** 3-step tour copy — anchored to a tile, the focus button, the scheduler. */
+  tour: [
+    {
+      title: 'Peek without leaving',
+      body: 'Hover a tile to grow its live terminal preview. Read what an agent is doing at a glance.',
+    },
+    {
+      title: 'Focus on one agent',
+      body: 'Tap a tile to take over its terminal. Every keystroke goes straight to tmux.',
+    },
+    {
+      title: 'Schedule the routine',
+      body: 'Boot agents or send commands on a cron expression. Set it once, walk away.',
+    },
+  ],
+  /** Fresh install — the secondary demo CTA under the empty-state primary. */
+  demoCta: 'Boot a demo agent',
+  demoHint: 'See amux work — a code-reviewer agent runs in this directory.',
+  demoBooting: 'Booting demo…',
+  /** Settings → Onboarding. */
+  replayLabel: 'Run the 30-second demo',
+  replayHint: 'Clear the demo session and replay the first-run experience.',
+  replayAction: 'Replay',
+} as const
+
 // ── Misc chrome ───────────────────────────────────────────────────────────────
 
 export const MISC = {

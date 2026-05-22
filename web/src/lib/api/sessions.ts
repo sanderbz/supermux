@@ -296,6 +296,11 @@ export const sessionsApi = {
       body: JSON.stringify(prompt ? { prompt } : {}),
     }),
 
+  /** `DELETE /api/sessions/{name}` — drop the session row from amux (§3.4).
+   *  Used by the M27 demo-replay flow to remove the one demo agent it booted. */
+  remove: (name: string): Promise<void> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
    *  (M7). Returns `[]` on any failure so the field degrades to a plain input. */
   autocompleteDir: async (q: string): Promise<string[]> => {

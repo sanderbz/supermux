@@ -6,6 +6,7 @@ import { ThemeProvider } from '@/components/theme-provider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Layout } from '@/components/layout'
 import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
+import { OnboardingHost } from '@/components/onboarding/onboarding-host'
 import { Overview } from '@/routes/overview'
 import { Focus } from '@/routes/focus'
 import { Board } from '@/routes/board'
@@ -48,6 +49,9 @@ export default function App() {
             {/* M23b: "Add to Home Screen" coaching sheet — self-gates to the
                 first iOS-Safari (non-standalone) load, then remembers dismiss. */}
             <A2HSInstructionsSheet />
+            {/* M27: first-60-seconds unboxing — welcome banner + 3-step tour
+                for migrated v2 users; self-gates to the first launch only. */}
+            <OnboardingHost />
             <Routes>
               <Route element={<Layout />}>
                 <Route path="/" element={<Overview />} />

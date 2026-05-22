@@ -22,13 +22,15 @@ interface NavItem {
   icon: LucideIcon
   /** Only the Overview route matches exactly; others match by prefix. */
   end?: boolean
+  /** M27 onboarding-tour anchor id (sets `data-tour` on the nav link). */
+  tour?: string
 }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
   { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
-  { to: '/scheduler', label: 'Scheduler', icon: CalendarClock },
+  { to: '/scheduler', label: 'Scheduler', icon: CalendarClock, tour: 'scheduler' },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 
@@ -50,6 +52,7 @@ function SideNav() {
                 to={item.to}
                 end={item.end}
                 aria-label={item.label}
+                data-tour={item.tour}
                 className="group relative flex size-11 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:text-foreground aria-[current=page]:text-primary-foreground"
               >
                 {({ isActive }) => (
@@ -98,6 +101,7 @@ function BottomNav() {
           to={item.to}
           end={item.end}
           aria-label={item.label}
+          data-tour={item.tour}
           className="relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-2 text-muted-foreground transition-colors aria-[current=page]:text-primary"
         >
           {({ isActive }) => (
