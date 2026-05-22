@@ -8,6 +8,7 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod files;
 pub mod http;
 pub mod public;
 pub mod sessions;

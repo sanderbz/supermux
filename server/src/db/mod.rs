@@ -13,6 +13,7 @@ use sqlx::SqlitePool;
 
 use crate::config::Config;
 
+pub mod audit;
 pub mod board;
 pub mod prefs;
 pub mod runtime_state;

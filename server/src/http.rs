@@ -15,6 +15,7 @@ use axum::middleware::from_fn_with_state;
 use axum::Router;
 
 use crate::auth;
+use crate::files;
 use crate::public;
 use crate::sessions;
 use crate::state::AppState;
@@ -30,14 +31,18 @@ pub fn router(state: AppState) -> Router {
 ///
 /// Backend milestones merge their sub-routers here before the `.layer(...)`:
 /// ```ignore
-/// .merge(sessions::router_for(state.clone()))   // M2
-/// .merge(board::router_for(state.clone()))      // M6
-/// .merge(files::router_for(state.clone()))      // M7
-/// .merge(scheduler::router_for(state.clone()))  // M8
-/// .merge(agents::router_for(state.clone()))     // M9
+/// .merge(sessions::router_for(state.clone()))               // M2
+/// .merge(board::router_for(state.clone()))                  // M6
+/// .merge(files::router_for().with_state(state.clone()))     // M7
+/// .merge(scheduler::router_for(state.clone()))              // M8
+/// .merge(agents::router_for(state.clone()))                 // M9
 /// ```
 fn protected_router(state: AppState) -> Router {
     Router::new()
         .merge(sessions::router_for(state.clone()))
+        // M7's `files::router_for()` returns a `Router<AppState>` (state not yet
+        // provided); `.with_state` resolves it to `Router<()>` so it merges
+        // alongside M2's already-stateful sessions router.
+        .merge(files::router_for().with_state(state.clone()))
         .layer(from_fn_with_state(state, auth::auth_middleware))
 }
