@@ -3,9 +3,15 @@
 //! Loaded once at startup and passed everywhere via `Arc<Config>` in
 //! [`crate::state::AppState`]. Resolution order:
 //!   1. Built-in defaults.
-//!   2. `~/.amux-v3/config.toml` (partial override, all keys optional).
-//!   3. `AMUX3_AUTH_TOKEN` env var, else `~/.amux-v3/auth_token` file
-//!      (generated mode 0o600 on first start).
+//!   2. `AMUX3_DATA_DIR` env var (else `~/.amux-v3`) — where `config.toml`,
+//!      `data.db`, and `auth_token` live. The deploy systemd unit (§8.3) sets
+//!      this; the e2e smoke harness (M24a) sets it for isolation so a test run
+//!      never touches the real user's `~/.amux-v3`.
+//!   3. `<data_dir>/config.toml` (partial override, all keys optional).
+//!   4. `AMUX3_BIND` env var overrides the `bind` address (e.g. `127.0.0.1:0`
+//!      for an ephemeral test port).
+//!   5. `AMUX3_AUTH_TOKEN` env var, else `config.toml` value, else
+//!      `<data_dir>/auth_token` file (generated mode 0o600 on first start).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -112,8 +118,9 @@ fn default_bind() -> SocketAddr {
 /// Load and resolve configuration, creating `data_dir` and the auth-token file
 /// if needed.
 pub fn load() -> Result<Config> {
-    // Start from defaults so we know data_dir before reading the optional file.
-    let provisional_data_dir = default_data_dir();
+    // `AMUX3_DATA_DIR` (deploy unit §8.3 + e2e isolation) wins over the default,
+    // so `config.toml`/`auth_token` are read from there before anything else.
+    let provisional_data_dir = env_path("AMUX3_DATA_DIR").unwrap_or_else(default_data_dir);
     let cfg_path = provisional_data_dir.join("config.toml");
 
     let raw: RawConfig = if cfg_path.exists() {
@@ -124,20 +131,40 @@ pub fn load() -> Result<Config> {
         RawConfig::default()
     };
 
-    let data_dir = raw.data_dir.unwrap_or(provisional_data_dir);
+    // `AMUX3_DATA_DIR` (if set) takes precedence over a `config.toml` data_dir.
+    let data_dir = env_path("AMUX3_DATA_DIR")
+        .or(raw.data_dir)
+        .unwrap_or(provisional_data_dir);
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating data dir {}", data_dir.display()))?;
 
     let auth_token = resolve_auth_token(&data_dir, raw.auth_token)?;
 
+    // `AMUX3_BIND` overrides the configured bind (ephemeral `:0` in e2e tests).
+    let bind = match std::env::var("AMUX3_BIND") {
+        Ok(s) if !s.trim().is_empty() => s
+            .trim()
+            .parse()
+            .with_context(|| format!("parsing AMUX3_BIND={s}"))?,
+        _ => raw.bind.unwrap_or_else(default_bind),
+    };
+
     Ok(Config {
         data_dir,
-        bind: raw.bind.unwrap_or_else(default_bind),
+        bind,
         extra_binds: raw.extra_binds,
         tls: raw.tls,
         auth_token,
         provider_defaults: raw.provider_defaults,
         ws: raw.ws,
+    })
+}
+
+/// Read a non-empty filesystem path from an env var, trimming surrounding space.
+fn env_path(key: &str) -> Option<PathBuf> {
+    std::env::var(key).ok().and_then(|v| {
+        let t = v.trim();
+        (!t.is_empty()).then(|| PathBuf::from(t))
     })
 }
 
