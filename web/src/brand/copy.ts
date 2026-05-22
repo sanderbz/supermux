@@ -57,6 +57,11 @@ export const EMPTY = {
     title: 'No matches',
     body: 'Nothing matched that filter. Try a shorter query.',
   },
+  stoppedSession: {
+    title: 'This session is stopped',
+    body: 'Its tmux session is no longer running — likely after a restart. Start it again to reattach the live terminal.',
+    cta: 'Start session',
+  },
 } satisfies Record<string, EmptyCopy>
 
 // ── Error states ──────────────────────────────────────────────────────────────

@@ -159,9 +159,15 @@ async fn valid_token_reaches_auth_ok() {
         other => panic!("expected auth_ok text, got {other:?}"),
     }
 
-    // The ghost session has no live pane → the stream is unavailable → 1011
-    // (NOT 1008 — the token was accepted).
+    // The ghost session has no live tmux pane → the up-front liveness check
+    // closes with the explicit terminal code 4404 "session not running" (NOT
+    // 1008 — the token WAS accepted; and NOT 1011 — this is a terminal state the
+    // client must not reconnect to, distinct from a transient server error).
     let code = read_close_code(&mut ws, Duration::from_secs(4)).await;
-    assert_eq!(code, Some(1011), "no live session → stream unavailable (1011)");
+    assert_eq!(
+        code,
+        Some(4404),
+        "no live session → terminal 'not running' close (4404)"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }

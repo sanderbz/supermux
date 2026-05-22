@@ -25,6 +25,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
+import { StoppedSession } from '@/components/terminal/stopped-session'
 import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useSessions } from '@/hooks/use-sessions'
@@ -155,14 +156,23 @@ export function MobileFocus() {
               to the terminal viewport (excludes header/dock). The overlay
               drives the SAME `termRef` handle the dock uses — no second WS. */}
           <div className="relative min-h-0 flex-1">
-            <LiveTerminal
-              name={name}
-              onReady={(t) => (termRef.current = t)}
-            />
-            <Joystick
-              enabled={gestureOn}
-              sendKey={(key) => termRef.current?.sendKey(key)}
-            />
+            {current.status === 'stopped' ? (
+              /* The session's tmux pty is gone — render the calm stopped state
+                 instead of mounting a live WS that would 101-upgrade then get
+                 closed in a no-backoff loop. No joystick: nothing to drive. */
+              <StoppedSession name={name} />
+            ) : (
+              <>
+                <LiveTerminal
+                  name={name}
+                  onReady={(t) => (termRef.current = t)}
+                />
+                <Joystick
+                  enabled={gestureOn}
+                  sendKey={(key) => termRef.current?.sendKey(key)}
+                />
+              </>
+            )}
           </div>
 
           {/* M16 — swipeable kbd-accessory bar, pinned directly above the
