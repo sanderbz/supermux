@@ -19,6 +19,7 @@ pub mod prefs;
 pub mod runtime_state;
 pub mod schedules;
 pub mod sessions;
+pub mod skills;
 pub mod steering;
 pub mod tracked_files;
 

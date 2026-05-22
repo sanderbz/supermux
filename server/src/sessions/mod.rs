@@ -20,6 +20,7 @@ pub mod auto_actions;
 pub mod lifecycle;
 pub mod pty;
 pub mod status;
+pub mod steering;
 pub mod tmux;
 
 use std::collections::HashMap;
@@ -300,6 +301,10 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
     // when the session is deleted). Boot-time sessions are wired by
     // `auto_actions::spawn_all`; this covers sessions created in-process.
     auto_actions::spawn_status_loop(state.clone(), name.clone());
+    // M9: start this session's steering delivery loop (mirrors the detector
+    // lifecycle — self-terminates on delete; boot-time sessions are wired by
+    // `steering::deliver_loop::spawn_all`).
+    steering::deliver_loop::spawn(state.clone(), name.clone());
     get(state, &name).await
 }
 
@@ -333,6 +338,10 @@ pub async fn duplicate(
     let hook_token = gen_hook_token();
     db::sessions::ensure_runtime(&state.pool, new_name, &hook_token).await?;
     state.hook_tokens.insert(new_name.to_string(), hook_token);
+    // M5a/M9: a duplicated session is a real session — give it the same detector
+    // and steering delivery loops a created one gets.
+    auto_actions::spawn_status_loop(state.clone(), new_name.to_string());
+    steering::deliver_loop::spawn(state.clone(), new_name.to_string());
     get(state, new_name).await
 }
 

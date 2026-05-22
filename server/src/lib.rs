@@ -5,6 +5,7 @@
 //! definition. Modules map 1:1 to TECH_PLAN §3.2.
 
 pub mod agents;
+pub mod audit;
 pub mod auth;
 pub mod board;
 pub mod claude_config;
@@ -14,6 +15,7 @@ pub mod error;
 pub mod files;
 pub mod hooks;
 pub mod http;
+pub mod prefs;
 pub mod public;
 pub mod scheduler;
 pub mod sessions;
