@@ -11,6 +11,13 @@
 //!
 //! **HTTP envelope (§3.4).** Successful responses are `{ ok: true, data: T }`;
 //! errors are `{ ok: false, error: "..." }` via [`crate::error::AppError`].
+//!
+//! **M3 — tmux lifecycle.** [`lifecycle`] wires the live operations
+//! (start/stop/send/keys/paste/peek/archive/wake/clone) onto [`tmux`]; their
+//! handlers are merged into [`router_for`] alongside the M2 CRUD routes.
+
+pub mod lifecycle;
+pub mod tmux;
 
 use std::collections::HashMap;
 
@@ -44,6 +51,16 @@ pub fn router_for(state: AppState) -> Router {
         )
         .route("/api/sessions/{name}/duplicate", post(duplicate_handler))
         .route("/api/sessions/{name}/config", patch(config_handler))
+        // ── M3 tmux lifecycle ──
+        .route("/api/sessions/{name}/start", post(start_handler))
+        .route("/api/sessions/{name}/stop", post(stop_handler))
+        .route("/api/sessions/{name}/send", post(send_handler))
+        .route("/api/sessions/{name}/keys", post(keys_handler))
+        .route("/api/sessions/{name}/paste", post(paste_handler))
+        .route("/api/sessions/{name}/peek", get(peek_handler))
+        .route("/api/sessions/{name}/archive", post(archive_handler))
+        .route("/api/sessions/{name}/wake", post(wake_handler))
+        .route("/api/sessions/{name}/clone", post(clone_handler))
         .route(
             "/api/sessions/{name}/tracked-files",
             get(tracked_list_handler)
@@ -173,7 +190,7 @@ fn valid_provider(provider: &str) -> bool {
 }
 
 /// Fresh per-session hook token: 32 bytes from the OS CSPRNG, base64url.
-fn gen_hook_token() -> String {
+pub(crate) fn gen_hook_token() -> String {
     let mut buf = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut buf);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
@@ -273,17 +290,20 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         worktree_repo: String::new(),
     };
     db::sessions::create(&state.pool, &new).await?;
-    db::sessions::ensure_runtime(&state.pool, &name, &gen_hook_token()).await?;
+    let hook_token = gen_hook_token();
+    db::sessions::ensure_runtime(&state.pool, &name, &hook_token).await?;
+    state.hook_tokens.insert(name.clone(), hook_token);
     get(state, &name).await
 }
 
 pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     ensure_session(state, name).await?;
+    // Best-effort tmux teardown so a deleted session leaves no orphan pane/FIFO.
+    let _ = tmux::Tmux::new(name).kill_session().await;
     db::sessions::delete(&state.pool, name).await?;
-    // §3.2.5 lock-map lifecycle: drop the per-session lock so session churn
-    // does not leak DashMap entries. (status_watch/hook_tokens maps arrive with
-    // their producers in later milestones.)
-    state.session_locks.remove(name);
+    // §3.2.5 lock-map lifecycle: drop every per-session in-memory map entry so
+    // session churn does not leak DashMap entries.
+    state.forget_session(name);
     Ok(())
 }
 
@@ -303,7 +323,9 @@ pub async fn duplicate(
         )));
     }
     db::sessions::duplicate(&state.pool, src, new_name).await?;
-    db::sessions::ensure_runtime(&state.pool, new_name, &gen_hook_token()).await?;
+    let hook_token = gen_hook_token();
+    db::sessions::ensure_runtime(&state.pool, new_name, &hook_token).await?;
+    state.hook_tokens.insert(new_name.to_string(), hook_token);
     get(state, new_name).await
 }
 
@@ -343,10 +365,8 @@ pub async fn config_patch(
                 )));
             }
             db::sessions::rename(&state.pool, &current, target).await?;
-            // Carry the per-session lock over to the new key.
-            if let Some((_, lock)) = state.session_locks.remove(&current) {
-                state.session_locks.insert(target.to_string(), lock);
-            }
+            // Carry the per-session in-memory maps (lock/watch/hook token) over.
+            state.rename_session(&current, target);
             current = target.to_string();
         }
         changed = true;
@@ -438,6 +458,139 @@ async fn config_handler(
     Json(input): Json<ConfigInput>,
 ) -> Result<Json<Envelope<SessionView>>, AppError> {
     Ok(ok(config_patch(&state, &name, input).await?))
+}
+
+// ── M3 lifecycle handlers ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct StartInput {
+    #[serde(default)]
+    prompt: Option<String>,
+}
+
+async fn start_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Body optional: `{}` or `{prompt}`.
+    let input: StartInput = if body.is_empty() {
+        StartInput { prompt: None }
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|_| AppError::BadRequest("expected JSON body {prompt?}".into()))?
+    };
+    let result = lifecycle::start(&state, &name, input.prompt.as_deref()).await?;
+    Ok(Json(json!({ "ok": true, "data": result })))
+}
+
+async fn stop_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    lifecycle::stop(&state, &name).await?;
+    // §3.2.5: stop is async-shaped → 202 Accepted.
+    Ok((StatusCode::ACCEPTED, Json(json!({ "ok": true }))))
+}
+
+#[derive(Debug, Deserialize)]
+struct SendInput {
+    text: String,
+}
+
+async fn send_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<SendInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    lifecycle::send_text(&state, &name, &input.text).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct KeysInput {
+    /// Accept either `{keys}` (canonical, §1.1) or `{key}` for a single key.
+    #[serde(default)]
+    keys: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
+}
+
+async fn keys_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<KeysInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let key = input
+        .keys
+        .or(input.key)
+        .ok_or_else(|| AppError::BadRequest("expected {keys} or {key}".into()))?;
+    lifecycle::send_keys(&state, &name, &key).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PasteInput {
+    text: String,
+    #[serde(default)]
+    submit: bool,
+}
+
+async fn paste_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<PasteInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    lifecycle::paste(&state, &name, &input.text, input.submit).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PeekQuery {
+    #[serde(default = "default_peek_lines")]
+    lines: usize,
+}
+
+fn default_peek_lines() -> usize {
+    40
+}
+
+async fn peek_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<PeekQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let text = lifecycle::peek(&state, &name, q.lines).await?;
+    Ok(Json(json!({ "ok": true, "data": text })))
+}
+
+async fn archive_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let job_id = lifecycle::archive(&state, &name).await?;
+    // §3.2.5: archive returns 202 + job_id immediately.
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({ "ok": true, "job_id": job_id })),
+    ))
+}
+
+async fn wake_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = lifecycle::wake(&state, &name).await?;
+    Ok(Json(json!({ "ok": true, "data": result })))
+}
+
+async fn clone_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<DuplicateInput>,
+) -> Result<impl IntoResponse, AppError> {
+    let v = lifecycle::clone(&state, &name, &input.new_name).await?;
+    Ok((StatusCode::CREATED, ok(v)))
 }
 
 // ── tracked files ────────────────────────────────────────────────────────────

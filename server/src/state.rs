@@ -8,9 +8,16 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tokio::sync::{broadcast, Mutex, Notify};
+use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use crate::config::Config;
+
+/// A per-session status snapshot pushed through [`AppState::status_watch`]:
+/// `(status, version)`. M3 establishes the channel + version counter as the
+/// multi-signal-status groundwork; M5a/M5b refine the status payload (the
+/// golden-fixture-tested `Status` enum) and start sending updates from the 2s
+/// detector loop. The `String` status is one of the `last_status` CHECK values.
+pub type StatusUpdate = (String, u64);
 
 /// One server-sent event: `{ type, payload }` per §3.4.
 ///
@@ -35,6 +42,14 @@ pub struct AppState {
     /// Per-session serialization locks. Added on first use; removed in
     /// `sessions::delete`/`archive` (Eng concurrency #5/#6) — see §3.2.5.
     pub session_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Per-session status watch channels (the wait-primitive seam, §3.2.8/§3.7).
+    /// Empty until M5b drives the detector; M3 owns the map + the §3.2.5 cleanup
+    /// so churn never leaks entries.
+    pub status_watch: Arc<DashMap<String, watch::Sender<StatusUpdate>>>,
+    /// Per-session hook-token cache (§6.5). Seeded on create + rotated on start;
+    /// removed on delete. NEVER holds the dashboard bearer — only the narrow
+    /// per-session `AMUX_HOOK_TOKEN`. M5b's `/api/_internal/hook` reads it.
+    pub hook_tokens: Arc<DashMap<String, String>>,
     /// Wakes background consumers when session status may have changed.
     pub status_notify: Arc<Notify>,
     /// Broadcast channel feeding the SSE endpoint.
@@ -48,6 +63,8 @@ impl AppState {
             pool,
             config: Arc::new(config),
             session_locks: Arc::new(DashMap::new()),
+            status_watch: Arc::new(DashMap::new()),
+            hook_tokens: Arc::new(DashMap::new()),
             status_notify: Arc::new(Notify::new()),
             sse_tx,
         }
@@ -59,5 +76,28 @@ impl AppState {
             .entry(name.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    /// Drop every per-session in-memory map entry for `name` (§3.2.5 cleanup
+    /// rule). Called from `sessions::delete` so weeks of session churn don't leak
+    /// `DashMap` entries.
+    pub fn forget_session(&self, name: &str) {
+        self.session_locks.remove(name);
+        self.status_watch.remove(name);
+        self.hook_tokens.remove(name);
+    }
+
+    /// Move every per-session in-memory map entry from `old` to `new` (used by
+    /// `config_patch` rename so locks/tokens/watches survive a rename).
+    pub fn rename_session(&self, old: &str, new: &str) {
+        if let Some((_, v)) = self.session_locks.remove(old) {
+            self.session_locks.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.status_watch.remove(old) {
+            self.status_watch.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.hook_tokens.remove(old) {
+            self.hook_tokens.insert(new.to_string(), v);
+        }
     }
 }
