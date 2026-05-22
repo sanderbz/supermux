@@ -17,6 +17,7 @@
 import * as React from 'react'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
+import { StoppedSession } from '@/components/terminal/stopped-session'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import type { TileSession } from '@/components/session-tile/types'
 import { CompactTile } from './compact-tile'
@@ -120,10 +121,18 @@ export function DesktopSplit({
         />
 
         <div className="min-h-0 flex-1">
-          {/* M13 LiveTerminal — reused verbatim. The keydown capture deliberately
-              does NOT preventDefault on ordinary keys, so Ctrl-C / arrows / Tab /
-              Shift+Tab / Esc / text all reach xterm's onData → the M4 pty WS. */}
-          <LiveTerminal name={name} onReady={(t) => (termRef.current = t)} />
+          {/* A `stopped` session's tmux pty is gone — opening the live WS would
+              just 101-upgrade then get closed in a loop. Detect it up front from
+              the session row and render the calm StoppedSession surface instead.
+              When it transitions back to running, this swaps to LiveTerminal. */}
+          {status === 'stopped' ? (
+            <StoppedSession name={name} />
+          ) : (
+            /* M13 LiveTerminal — reused verbatim. The keydown capture deliberately
+               does NOT preventDefault on ordinary keys, so Ctrl-C / arrows / Tab /
+               Shift+Tab / Esc / text all reach xterm's onData → the M4 pty WS. */
+            <LiveTerminal name={name} onReady={(t) => (termRef.current = t)} />
+          )}
         </div>
 
         <DesktopDock
