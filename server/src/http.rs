@@ -15,6 +15,7 @@ use axum::middleware::from_fn_with_state;
 use axum::Router;
 
 use crate::auth;
+use crate::board;
 use crate::files;
 use crate::public;
 use crate::sessions;
@@ -24,6 +25,8 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(protected_router(state.clone()))
+        // PUBLIC (no auth): `/api/health` plus the board iCal feed (§2.7).
+        .merge(board::public_router_for(state.clone()))
         .merge(public::router_for(state))
 }
 
@@ -40,6 +43,7 @@ pub fn router(state: AppState) -> Router {
 fn protected_router(state: AppState) -> Router {
     Router::new()
         .merge(sessions::router_for(state.clone()))
+        .merge(board::router_for(state.clone()))
         // M7's `files::router_for()` returns a `Router<AppState>` (state not yet
         // provided); `.with_state` resolves it to `Router<()>` so it merges
         // alongside M2's already-stateful sessions router.
