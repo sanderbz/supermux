@@ -304,6 +304,23 @@ impl<'a> Tmux<'a> {
             .map(|_| ())
     }
 
+    /// M4 live-stream pipe: `pipe-pane -O -t <target> 'tee -a <log> > <fifo>'`.
+    /// Pane output is appended to the on-disk `log` (durable) AND mirrored into
+    /// the named `fifo` that [`crate::sessions::pty::PtyStream`] reads. `-O`
+    /// captures pane→outside only; `pipe-pane` replaces any existing pipe, so a
+    /// re-subscribe is idempotent. `tee`'s open of the FIFO blocks until the
+    /// reader opens its end — the caller opens the read fd right after.
+    pub async fn pipe_pane_to_fifo(&self, log: &Path, fifo: &Path) -> Result<()> {
+        let cmd = format!(
+            "tee -a {} > {}",
+            shell_escape::escape(log.to_string_lossy()),
+            shell_escape::escape(fifo.to_string_lossy()),
+        );
+        self.run(&["pipe-pane", "-O", "-t", &self.target(), &cmd])
+            .await
+            .map(|_| ())
+    }
+
     /// The pane's shell PID (`#{pane_pid}`). The agent (claude/codex) runs as a
     /// child of this. `None` if no pane is reported.
     pub async fn pane_pid(&self) -> Result<Option<u32>> {

@@ -11,6 +11,9 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use crate::config::Config;
+use crate::sessions::pty::PtyStream;
+use crate::sessions::tmux::Tmux;
+use crate::ws::streamer::PtyStreamer;
 
 /// A per-session status snapshot pushed through [`AppState::status_watch`]:
 /// `(status, version)`. M3 establishes the channel + version counter as the
@@ -54,11 +57,19 @@ pub struct AppState {
     pub status_notify: Arc<Notify>,
     /// Broadcast channel feeding the SSE endpoint.
     pub sse_tx: broadcast::Sender<SseEvent>,
+    /// Per-session live pty streams (M4). One FIFO reader + broadcast fan-out per
+    /// session, created on first WS subscribe via [`AppState::pty_for`].
+    pub pty: Arc<PtyStreamer>,
 }
 
 impl AppState {
     pub fn new(pool: SqlitePool, config: Config) -> Self {
         let (sse_tx, _rx) = broadcast::channel(SSE_CHANNEL_CAP);
+        // Build the pty streamer before `config` is moved into the Arc.
+        let pty = Arc::new(PtyStreamer::new(
+            config.data_dir.join("logs"),
+            config.ws.broadcast_capacity,
+        ));
         Self {
             pool,
             config: Arc::new(config),
@@ -67,7 +78,17 @@ impl AppState {
             hook_tokens: Arc::new(DashMap::new()),
             status_notify: Arc::new(Notify::new()),
             sse_tx,
+            pty,
         }
+    }
+
+    /// Get (creating on first use) the per-session [`PtyStream`] and ensure its
+    /// FIFO reader is running. Errors if the session's tmux pane is not live.
+    pub async fn pty_for(&self, name: &str) -> anyhow::Result<Arc<PtyStream>> {
+        let stream = self.pty.for_session(name);
+        let tmux = Tmux::new(name);
+        stream.ensure_started(&tmux).await?;
+        Ok(stream)
     }
 
     /// Get (creating on first use) the per-session lock.
@@ -85,6 +106,7 @@ impl AppState {
         self.session_locks.remove(name);
         self.status_watch.remove(name);
         self.hook_tokens.remove(name);
+        self.pty.forget(name);
     }
 
     /// Move every per-session in-memory map entry from `old` to `new` (used by
@@ -99,5 +121,6 @@ impl AppState {
         if let Some((_, v)) = self.hook_tokens.remove(old) {
             self.hook_tokens.insert(new.to_string(), v);
         }
+        self.pty.rename(old, new);
     }
 }

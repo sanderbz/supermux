@@ -30,6 +30,38 @@ pub struct Config {
     pub auth_token: String,
     /// Per-provider default flags.
     pub provider_defaults: ProviderDefaults,
+    /// Live-stream WebSocket tuning (§3.2.7/§3.2.9).
+    pub ws: WsConfig,
+}
+
+/// `[ws]` config block (TECH_PLAN §3.2.7). Both knobs raised from v1 per CEO #6:
+/// a single multi-device PWA user (phone + laptop + tabs + Capacitor + TV +
+/// collaborator) easily exceeds the old caps of 8/256.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WsConfig {
+    /// Per-session pty `broadcast::Sender` capacity (slow-subscriber buffer).
+    #[serde(default = "default_broadcast_capacity")]
+    pub broadcast_capacity: usize,
+    /// Max concurrent WS subscribers per session; the 33rd (default) → close 1013.
+    #[serde(default = "default_subscribers_per_session")]
+    pub subscribers_per_session: usize,
+}
+
+fn default_broadcast_capacity() -> usize {
+    1024
+}
+
+fn default_subscribers_per_session() -> usize {
+    32
+}
+
+impl Default for WsConfig {
+    fn default() -> Self {
+        Self {
+            broadcast_capacity: default_broadcast_capacity(),
+            subscribers_per_session: default_subscribers_per_session(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -63,6 +95,8 @@ struct RawConfig {
     auth_token: Option<String>,
     #[serde(default)]
     provider_defaults: ProviderDefaults,
+    #[serde(default)]
+    ws: WsConfig,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -103,6 +137,7 @@ pub fn load() -> Result<Config> {
         tls: raw.tls,
         auth_token,
         provider_defaults: raw.provider_defaults,
+        ws: raw.ws,
     })
 }
 

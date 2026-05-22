@@ -14,3 +14,4 @@ pub mod http;
 pub mod public;
 pub mod sessions;
 pub mod state;
+pub mod ws;

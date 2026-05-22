@@ -20,6 +20,7 @@ use crate::files;
 use crate::public;
 use crate::sessions;
 use crate::state::AppState;
+use crate::ws;
 
 /// Build the application router from `state`.
 pub fn router(state: AppState) -> Router {
@@ -27,6 +28,8 @@ pub fn router(state: AppState) -> Router {
         .merge(protected_router(state.clone()))
         // PUBLIC (no auth): `/api/health` plus the board iCal feed (§2.7).
         .merge(board::public_router_for(state.clone()))
+        // M4: WS pty stream — NO bearer layer; auth is in-band first-frame (§3.2.9).
+        .merge(ws::router_for(state.clone()))
         .merge(public::router_for(state))
 }
 

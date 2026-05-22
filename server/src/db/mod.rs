@@ -68,6 +68,7 @@ mod tests {
             tls: Default::default(),
             auth_token: "test-token".to_string(),
             provider_defaults: Default::default(),
+            ws: Default::default(),
         };
         let pool = init(&config).await.expect("init pool");
         (pool, dir)
