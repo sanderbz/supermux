@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""amux v2 -> v3 data migration (M26).
+"""amux -> supermux data migration.
 
-One-shot, idempotent, dry-runnable. Reads a v2 install (~/.amux/) and writes
-into the v3 SQLite database (~/.supermux/data.db).
+One-shot, idempotent, dry-runnable. Reads an amux install (~/.amux/) and writes
+into the supermux SQLite database (~/.supermux/data.db).
 
-Design constraints (TECH_PLAN.md §9):
-  * Column-explicit copies ONLY -- never `SELECT *`. v2/v3 schemas drift, so
+Design constraints:
+  * Column-explicit copies ONLY -- never `SELECT *`. The schemas drift, so
     every column is named on both sides and dry-run asserts compatibility.
   * `INSERT OR IGNORE` everywhere -- safe to re-run; counts never double.
   * Sessions come from filesystem (~/.amux/sessions/*.env + *.meta.json), not

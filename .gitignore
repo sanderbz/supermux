@@ -12,3 +12,5 @@ playwright-report/
 .DS_Store
 *.log
 .gstack/
+# Local deploy config (see .env.example)
+.env
