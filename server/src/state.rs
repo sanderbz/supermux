@@ -150,7 +150,7 @@ impl AppState {
     pub async fn pty_for(&self, name: &str) -> anyhow::Result<Arc<PtyStream>> {
         let stream = self.pty.for_session(name);
         let tmux = Tmux::new(name);
-        stream.ensure_started(&tmux).await?;
+        stream.ensure_started(&tmux, &self.pool).await?;
         Ok(stream)
     }
 
