@@ -6,6 +6,8 @@ import { springs, eases } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useLongPress } from '@/hooks/use-long-press'
+import { usePeekType, PEEK_STICKY_MS } from '@/hooks/use-peek-type'
+import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useUI } from '@/stores/ui-store'
 import {
   useNavigateMorph,
@@ -127,6 +129,46 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
     [navigateMorph, session.name],
   )
 
+  // ── Type-on-hover wiring (v2 pattern, ported per user spec) ────────────────
+  // Document-level keydown listener forwards quick interjections ("go on",
+  // "stop", Enter, Esc) into the peeked session's pty via the SAME M13 wire
+  // the focus terminal uses. Safety filters live in `usePeekType` — never
+  // hijack inputs, browser shortcuts, or pre-engagement Tab/arrows.
+  const termRef = React.useRef<UseLiveTermResult | null>(null)
+  const onLiveReady = React.useCallback((t: UseLiveTermResult) => {
+    termRef.current = t
+  }, [])
+  // Sliding stickiness timer. While alive, hover-leave does NOT dismiss the
+  // peek (mouse drift would otherwise kill mid-typing). Reset on every
+  // captured keystroke; clears itself after PEEK_STICKY_MS of silence — and
+  // when it clears, if the mouse is no longer over the card, we dismiss now
+  // (otherwise the peek would be orphaned with no event to release it).
+  const stickyTimerRef = React.useRef<number | null>(null)
+  const mouseInsideRef = React.useRef(false)
+  const [sticky, setSticky] = React.useState(false)
+  const armSticky = React.useCallback(() => {
+    if (stickyTimerRef.current !== null) {
+      window.clearTimeout(stickyTimerRef.current)
+    }
+    setSticky(true)
+    stickyTimerRef.current = window.setTimeout(() => {
+      stickyTimerRef.current = null
+      setSticky(false)
+      if (!mouseInsideRef.current) {
+        setHovered(false)
+      }
+    }, PEEK_STICKY_MS)
+  }, [])
+  React.useEffect(
+    () => () => {
+      if (stickyTimerRef.current !== null) {
+        window.clearTimeout(stickyTimerRef.current)
+        stickyTimerRef.current = null
+      }
+    },
+    [],
+  )
+
   // One-shot haptic on transition into "waiting" (§4.3), debounced via ref so a
   // re-render with the same status never re-fires.
   React.useEffect(() => {
@@ -139,6 +181,39 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
   const longPress = useLongPress({
     onLongPress: () => setPeekOpen(true),
     onClick: goFocus,
+  })
+
+  // Computed BEFORE the early-return for `session.missing` so the type-on-hover
+  // hook below stays in the same call order on every render (rules-of-hooks).
+  // A missing-tmux tile renders <TileError>, no preview area, no peek → the
+  // hook is naturally disabled and a no-op.
+  const expanded = hovered && fine && !reduce && !session.missing
+  // The live terminal is only viable for a session with a live tmux backing —
+  // a stopped agent has no pty to stream, so it falls back to the static tail.
+  const liveCapable =
+    session.status !== 'stopped' && session.status !== 'error'
+  const showLiveTerm = expanded && hoverPreview === 'live' && liveCapable
+
+  // Peek is "active" for typing while the live-zoom preview is showing for THIS
+  // tile. usePeekType only installs its document listener while enabled — so
+  // un-hovered tiles add zero global keyboard overhead.
+  const peekTypable = showLiveTerm
+  const { claimed } = usePeekType({
+    enabled: peekTypable,
+    onText: (text) => termRef.current?.send(text),
+    onKey: (k) => termRef.current?.sendKey(k),
+    onDismiss: () => {
+      // Esc closes the peek without sending Esc to the pty (policy a — the web
+      // norm). Clear sticky + drop hover so the live terminal unmounts and the
+      // WS closes via useLiveTerm teardown.
+      setSticky(false)
+      if (stickyTimerRef.current !== null) {
+        window.clearTimeout(stickyTimerRef.current)
+        stickyTimerRef.current = null
+      }
+      setHovered(false)
+    },
+    onActivity: () => armSticky(),
   })
 
   // A MISSING tmux backing is the only hard error; an "error" *status* agent is
@@ -157,12 +232,6 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
   }
 
   const title = session.task_summary || session.name
-  const expanded = hovered && fine && !reduce
-  // The live terminal is only viable for a session with a live tmux backing —
-  // a stopped agent has no pty to stream, so it falls back to the static tail.
-  const liveCapable =
-    session.status !== 'stopped' && session.status !== 'error'
-  const showLiveTerm = expanded && hoverPreview === 'live' && liveCapable
   const tokens =
     typeof session.tokens === 'number' ? formatTokens(session.tokens) : null
   // Stopped UX (polish-pass): a stopped tile is visually distinct AT A GLANCE
@@ -198,8 +267,20 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
           }
         }}
         {...(coarse ? longPress : null)}
-        onHoverStart={() => setHovered(true)}
-        onHoverEnd={() => setHovered(false)}
+        onHoverStart={() => {
+          mouseInsideRef.current = true
+          setHovered(true)
+        }}
+        onHoverEnd={() => {
+          mouseInsideRef.current = false
+          // Stickiness: while the user is mid-typing (or within the sliding
+          // window after the last keystroke), refuse to dismiss on mouse-leave
+          // — mouse drift would otherwise kill an in-progress interjection.
+          // When the sticky timer expires it checks `mouseInsideRef` and
+          // dismisses then if the mouse is still outside.
+          if (sticky) return
+          setHovered(false)
+        }}
         whileHover={
           fine && !reduce
             ? {
@@ -290,7 +371,31 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
                 name={session.name}
                 width={cardWidth}
                 reduce={!!reduce}
+                onReady={onLiveReady}
               />
+            )}
+          </AnimatePresence>
+          {/* Type-on-hover indicator. Sentence case, glass-on-dark pill,
+              positioned bottom-right so it never covers the freshest line of
+              terminal output. Only renders once the user has clearly engaged
+              (one printable keystroke captured) — mere hover stays silent. */}
+          <AnimatePresence>
+            {peekTypable && claimed && (
+              <motion.div
+                key="typing-pill"
+                initial={reduce ? false : { opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduce ? undefined : { opacity: 0, y: 4 }}
+                transition={reduce ? { duration: 0 } : springs.snappy}
+                className="pointer-events-none absolute bottom-1.5 right-1.5 z-20 flex h-6 items-center gap-1.5 rounded-full bg-black/55 px-2 text-[10px] font-medium leading-none text-white/90 shadow-sm backdrop-blur-sm"
+              >
+                <span
+                  aria-hidden
+                  className="size-1.5 rounded-full bg-status-active"
+                />
+                <span className="truncate">Typing → {session.name}</span>
+                <span className="opacity-70">· Esc to close</span>
+              </motion.div>
             )}
           </AnimatePresence>
         </motion.div>
@@ -320,10 +425,15 @@ function LivePeekLayer({
   name,
   width,
   reduce,
+  onReady,
 }: {
   name: string
   width: number
   reduce: boolean
+  /** Forwarded to the underlying <TileLiveTerminal> so the parent type-on-hover
+   *  layer can capture the imperative `send`/`sendKey` handle the moment the
+   *  WS is wired — keystrokes flow even before the crossfade completes. */
+  onReady?: (term: UseLiveTermResult) => void
 }) {
   const [liveReady, setLiveReady] = React.useState(false)
   return (
@@ -338,6 +448,7 @@ function LivePeekLayer({
         name={name}
         width={width}
         onFirstFrame={() => setLiveReady(true)}
+        onReady={onReady}
       />
     </motion.div>
   )

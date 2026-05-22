@@ -47,6 +47,12 @@ export interface LiveTerminalProps {
    *  hover-zoom embed to disarm the crossfade if the connection drops to a
    *  retry/stopped state without ever delivering a frame. */
   onStateChange?: (state: UseLiveTermResult['state']) => void
+  /** Allow imperative `send` / `sendKey` even while `readOnly` is true. The
+   *  overview type-on-hover peek sets this so a document-level keydown
+   *  listener can pipe quick interjections through the existing M13 wire
+   *  while xterm's own DOM stdin stays disabled (the peek user never focuses
+   *  the xterm element). Default false preserves the M11 readOnly contract. */
+  allowProgrammaticInput?: boolean
 }
 
 export function LiveTerminal({
@@ -57,8 +63,9 @@ export function LiveTerminal({
   onReady,
   onFirstFrame,
   onStateChange,
+  allowProgrammaticInput = false,
 }: LiveTerminalProps) {
-  const term = useLiveTerm(name, { readOnly, fontSize })
+  const term = useLiveTerm(name, { readOnly, fontSize, allowProgrammaticInput })
   const { containerRef, state, hasFirstFrame, retry } = term
 
   React.useEffect(() => {
