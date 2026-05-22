@@ -23,6 +23,7 @@ import { CompactTile } from './compact-tile'
 import { DesktopFocusHeader } from './focus-header'
 import { DesktopDock } from './dock'
 import { useKeyboardCapture } from './use-keyboard-capture'
+import { SnippetPanel } from '@/components/snippets/snippet-panel'
 
 export interface DesktopSplitProps {
   /** Focused session name (route param). */
@@ -57,6 +58,10 @@ export function DesktopSplit({
   // One imperative LiveTerminal handle, shared by the dock chips + the keyboard
   // shortcuts. Captured via the M13 `onReady` callback — no re-subscribe.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
+
+  // M18 snippet panel — the dock's "+" button opens it; desktop has no separate
+  // text composer, so both tap-insert and long-press-run send straight to xterm.
+  const [snippetsOpen, setSnippetsOpen] = React.useState(false)
 
   // Jump to the N-th (0-indexed) strip row — Cmd+1..9.
   const jump = React.useCallback(
@@ -125,11 +130,23 @@ export function DesktopSplit({
           onSendKey={(label) => termRef.current?.sendKey(label)}
           onPalette={onPalette}
           onSlash={onSlash}
-          onSnippets={onSnippets}
+          onSnippets={() => {
+            onSnippets?.()
+            setSnippetsOpen(true)
+          }}
           onDetach={onDetach}
           onStop={onStop}
         />
       </main>
+
+      {/* M18 snippet panel — slides up over the dock; tap-insert and long-press
+          both fire the snippet body into xterm (no separate composer here). */}
+      <SnippetPanel
+        open={snippetsOpen}
+        onOpenChange={setSnippetsOpen}
+        onInsert={(body) => termRef.current?.send(body)}
+        onRun={(body) => termRef.current?.send(body + '\r')}
+      />
     </div>
   )
 }

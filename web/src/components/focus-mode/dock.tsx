@@ -27,12 +27,15 @@ import {
   Keyboard,
   MoreHorizontal,
   ArrowUp,
+  Mic,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import type { ApiSession } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
+import { SlashMenu } from '@/components/focus-mode/slash-menu'
+import { useDictation } from '@/components/focus-mode/use-dictation'
 import {
   Tooltip,
   TooltipContent,
@@ -257,6 +260,12 @@ export interface MobileDockProps {
   onSwitchSession: (name: string) => void
   /** Send literal text (the composed input) to the pty. */
   onSend: (text: string) => void
+  /** Open the M18 snippet panel (in-place slide-up). */
+  onOpenSnippets?: () => void
+  /** Registration hook the parent calls with this composer's imperative
+   *  `insert(text)` once mounted, so the route-level M18 snippet panel can
+   *  drop a snippet body into THIS input (tap-to-insert). */
+  registerInsert?: (insert: ((text: string) => void) | null) => void
   className?: string
 }
 
@@ -268,11 +277,76 @@ export function MobileDock({
   onOpenSpecials,
   onSwitchSession,
   onSend,
+  onOpenSnippets,
+  registerInsert,
   className,
 }: MobileDockProps) {
   const [value, setValue] = React.useState('')
   const inputRef = React.useRef<HTMLTextAreaElement | null>(null)
   const canSend = value.trim().length > 0
+
+  // ── M18: slash menu + dictation ───────────────────────────────────────────
+  // The slash menu shows whenever the composer value starts with "/" and the
+  // field is focused; selecting a command replaces the value (cursor at end).
+  const [focused, setFocused] = React.useState(false)
+  const [slashDismissed, setSlashDismissed] = React.useState(false)
+  const slashOpen = focused && value.startsWith('/') && !slashDismissed
+
+  const setComposer = React.useCallback((next: string) => {
+    setValue(next)
+    const el = inputRef.current
+    if (el) {
+      el.style.height = 'auto'
+      el.style.height = `${Math.min(el.scrollHeight, 80)}px`
+    }
+  }, [])
+
+  const onSlashSelect = React.useCallback(
+    (cmd: string) => {
+      // Replace the input with the picked command + a trailing space; park the
+      // caret at the end and keep the keyboard up for the argument.
+      const next = `${cmd} `
+      setComposer(next)
+      setSlashDismissed(true)
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        requestAnimationFrame(() => el.setSelectionRange(next.length, next.length))
+      }
+    },
+    [setComposer],
+  )
+
+  // Dictation — the mic button toggles Web Speech; results land in the input.
+  const dictation = useDictation(setComposer)
+
+  // M18 snippet-panel tap-to-insert: expose an imperative `insert` to the parent
+  // so the route-level <SnippetPanel> can drop a snippet body into THIS input.
+  // `valueRef` mirrors the latest value (synced in an effect) so the stable
+  // `insert` reads it without re-registering on every keystroke.
+  const valueRef = React.useRef(value)
+  React.useEffect(() => {
+    valueRef.current = value
+  }, [value])
+  const insert = React.useCallback(
+    (text: string) => {
+      const next = valueRef.current ? `${valueRef.current}${text}` : text
+      setComposer(next)
+      if (text.startsWith('/')) setSlashDismissed(false)
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        requestAnimationFrame(() =>
+          el.setSelectionRange(next.length, next.length),
+        )
+      }
+    },
+    [setComposer],
+  )
+  React.useEffect(() => {
+    registerInsert?.(insert)
+    return () => registerInsert?.(null)
+  }, [registerInsert, insert])
 
   const submit = () => {
     const text = value.trim()
@@ -286,6 +360,8 @@ export function MobileDock({
   // Auto-grow the textarea 32→80px (≤3 lines), then scroll internally.
   const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setValue(e.target.value)
+    // A fresh "/" re-arms the slash menu after a previous dismissal.
+    if (e.target.value.startsWith('/')) setSlashDismissed(false)
     const el = e.target
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 80)}px`
@@ -294,10 +370,22 @@ export function MobileDock({
   return (
     <div
       className={cn(
-        'glass flex shrink-0 items-end gap-1.5 border-t border-border/60 px-2 pb-safe pt-2',
+        'glass relative flex shrink-0 items-end gap-1.5 border-t border-border/60 px-2 pb-safe pt-2',
         className,
       )}
     >
+      {/* M18 slash menu — floats ABOVE the dock, anchored to the composer. */}
+      <div className="pointer-events-none absolute inset-x-2 bottom-full mb-2">
+        <div className="pointer-events-auto">
+          <SlashMenu
+            value={value}
+            open={slashOpen}
+            onSelect={onSlashSelect}
+            onDismiss={() => setSlashDismissed(true)}
+          />
+        </div>
+      </div>
+
       <SessionPill
         current={current}
         prevSession={prevSession}
@@ -322,12 +410,35 @@ export function MobileDock({
         <MoreHorizontal className="size-5" />
       </DockIcon>
 
+      {onOpenSnippets && (
+        <DockIcon label="Snippets" onClick={onOpenSnippets}>
+          <Plus className="size-5" />
+        </DockIcon>
+      )}
+
+      {dictation.supported && (
+        <DockIcon
+          label={dictation.listening ? 'Stop dictation' : 'Dictate'}
+          onClick={dictation.toggle}
+        >
+          <Mic
+            className={cn('size-5', dictation.listening && 'text-primary')}
+          />
+        </DockIcon>
+      )}
+
       <textarea
         ref={inputRef}
         rows={1}
         value={value}
         onChange={onInput}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onKeyDown={(e) => {
+          // While the slash menu is open let it own Arrow/Enter/Escape.
+          if (slashOpen && ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) {
+            return
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault()
             submit()
