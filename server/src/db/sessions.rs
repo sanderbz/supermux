@@ -297,3 +297,75 @@ pub async fn toggle_auto_continue(pool: &SqlitePool, name: &str) -> sqlx::Result
         .await?;
     Ok(())
 }
+
+// ── lifecycle mutations (M3) ──────────────────────────────────────────────────
+
+/// Record a successful start: bump `start_count`, stamp `last_started = now`.
+pub async fn bump_start(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query("UPDATE sessions SET start_count = start_count + 1, last_started = ? WHERE name = ?")
+        .bind(now)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Record a send: stamp `last_send = now` and store the first 200 chars of text.
+pub async fn set_last_send(pool: &SqlitePool, name: &str, text: &str) -> sqlx::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    let preview: String = text.chars().take(200).collect();
+    sqlx::query("UPDATE sessions SET last_send = ?, last_send_text = ? WHERE name = ?")
+        .bind(now)
+        .bind(preview)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Set the archived flag.
+pub async fn set_archived(pool: &SqlitePool, name: &str, archived: bool) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET archived = ? WHERE name = ?")
+        .bind(archived as i64)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Clear the Claude resume identifiers (used by the resume-picker fallback when
+/// `--resume` gets stuck — §1.5 of feature-extract).
+pub async fn clear_cc(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET cc_session_name = '', cc_conversation_id = '' WHERE name = ?")
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Set the hibernated flag in `session_runtime` (cleared by `wake`).
+pub async fn set_hibernated(pool: &SqlitePool, name: &str, hibernated: bool) -> sqlx::Result<()> {
+    sqlx::query("UPDATE session_runtime SET hibernated = ? WHERE name = ?")
+        .bind(hibernated as i64)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Set the live status + timestamp in `session_runtime`. The detector (M5) is the
+/// usual writer; M3 sets `active`/`stopped` on start/stop so the API reflects the
+/// lifecycle before the detector lands. Status must be a `last_status` CHECK value.
+pub async fn set_last_status(pool: &SqlitePool, name: &str, status: &str) -> sqlx::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "UPDATE session_runtime SET last_status = ?, last_status_at = ? WHERE name = ?",
+    )
+    .bind(status)
+    .bind(now)
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
