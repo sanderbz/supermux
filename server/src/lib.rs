@@ -12,5 +12,6 @@ pub mod error;
 pub mod files;
 pub mod http;
 pub mod public;
+pub mod scheduler;
 pub mod sessions;
 pub mod state;

@@ -18,6 +18,7 @@ use crate::auth;
 use crate::board;
 use crate::files;
 use crate::public;
+use crate::scheduler;
 use crate::sessions;
 use crate::state::AppState;
 
@@ -48,5 +49,6 @@ fn protected_router(state: AppState) -> Router {
         // provided); `.with_state` resolves it to `Router<()>` so it merges
         // alongside M2's already-stateful sessions router.
         .merge(files::router_for().with_state(state.clone()))
+        .merge(scheduler::router_for(state.clone())) // M8
         .layer(from_fn_with_state(state, auth::auth_middleware))
 }
