@@ -13,7 +13,16 @@
 import * as React from 'react'
 
 import { useSessions } from '@/hooks/use-sessions'
+import type { ApiSession } from '@/lib/api'
 import type { TileSession } from '@/components/session-tile/types'
+
+/** Coerce the wire shape to the tile's `TileSession` (the tile requires a string
+ *  `updated_at`; the API leaves it optional for partial deltas). Mirrors the same
+ *  boundary coercion the overview route applies to the shared `useSessions()`
+ *  list — M12 returns `ApiSession`, the strip tiles consume `TileSession`. */
+function toTileSession(s: ApiSession): TileSession {
+  return { ...s, updated_at: s.updated_at ?? '' }
+}
 
 export interface FocusSessionsResult {
   /** Ordered strip rows — the canonical session list (single source). */
@@ -35,7 +44,10 @@ export function useFocusSessions(
 ): FocusSessionsResult {
   const { sessions: live, isLoading } = useSessions()
 
-  const sessions = override ?? live
+  const sessions = React.useMemo<TileSession[]>(
+    () => override ?? live.map(toTileSession),
+    [override, live],
+  )
 
   const current = React.useMemo(
     () => sessions.find((s) => s.name === name) ?? null,
