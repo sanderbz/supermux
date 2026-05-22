@@ -15,13 +15,21 @@ import { persist } from 'zustand/middleware'
 
 export type ViewMode = 'tile' | 'list'
 
+/** Overview tile hover behaviour.
+ *  - `live`     — hover opens a scaled-down LIVE terminal (default).
+ *  - `expanded` — hover expands the static preview to ~20 coloured lines. */
+export type HoverPreview = 'live' | 'expanded'
+
 interface UIStore {
   /** Overview default layout. */
   viewMode: ViewMode
   /** Default `--model` flag for new sessions ('' = server default). */
   defaultModel: string
+  /** What an overview tile shows on hover (§ overview tile preview). */
+  hoverPreview: HoverPreview
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
+  setHoverPreview: (h: HoverPreview) => void
 }
 
 export const useUI = create<UIStore>()(
@@ -29,8 +37,10 @@ export const useUI = create<UIStore>()(
     (set) => ({
       viewMode: 'tile',
       defaultModel: '',
+      hoverPreview: 'live',
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
+      setHoverPreview: (hoverPreview) => set({ hoverPreview }),
     }),
     { name: 'amux-v3-ui' },
   ),
