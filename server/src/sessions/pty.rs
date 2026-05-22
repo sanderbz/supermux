@@ -34,9 +34,11 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{broadcast, OnceCell};
 
+use super::status::Status;
 use super::tmux::Tmux;
 
 /// Replay buffer hard cap (§3.2.7: "last 64 KB").
@@ -125,9 +127,14 @@ impl PtyStream {
     /// Idempotently mkfifo + `pipe-pane` + spawn the reader (exactly once). Errors
     /// if the tmux session is not running; on error the `OnceCell` stays
     /// uninitialised so a later call retries.
-    pub async fn ensure_started(&self, tmux: &Tmux<'_>) -> Result<()> {
+    ///
+    /// `pool` is handed to the reader task so that when the reader exits because
+    /// tmux died (the "stream-dead" path), it can flip the session's persisted
+    /// status to `stopped` — a session that dies WHILE the server runs must not
+    /// stay stuck `active` in the overview.
+    pub async fn ensure_started(&self, tmux: &Tmux<'_>, pool: &SqlitePool) -> Result<()> {
         self.started
-            .get_or_try_init(|| self.spawn_reader(tmux))
+            .get_or_try_init(|| self.spawn_reader(tmux, pool))
             .await
             .map(|_| ())
     }
@@ -135,7 +142,7 @@ impl PtyStream {
     /// The one-time setup: requires a live session, makes the FIFO, attaches the
     /// `tee` pipe, opens the non-blocking read fd + keep-alive write fd, and
     /// launches the reader task.
-    async fn spawn_reader(&self, tmux: &Tmux<'_>) -> Result<()> {
+    async fn spawn_reader(&self, tmux: &Tmux<'_>, pool: &SqlitePool) -> Result<()> {
         if !tmux.exists().await.unwrap_or(false) {
             bail!("session '{}' is not running", self.name);
         }
@@ -187,12 +194,25 @@ impl PtyStream {
         let replay = self.replay.clone();
         let broadcast = self.broadcast.clone();
         let alive = self.alive.clone();
+        let pool = pool.clone();
         tokio::spawn(async move {
             // Hold the write fd open for the lifetime of the reader.
             let _keep_writer = keep_writer;
             reader_loop(async_fd, &name, &replay, &broadcast).await;
             alive.store(false, Ordering::Release);
             tracing::debug!(session = %name, "pty reader exited (stream-dead)");
+            // Stream-dead means the tmux pane is gone (or unreadable) — propagate
+            // that to the session's persisted status so the overview flips it to
+            // `stopped` instead of leaving it stuck `active`/`idle`. The 2s
+            // detector loop won't fight this: its tick leaves the status
+            // untouched when `tmux has-session` fails, so a dead session stays
+            // `stopped`. A re-`start` rotates a fresh pty stream and the detector
+            // re-classifies it live from there.
+            if let Err(e) =
+                crate::db::sessions::set_last_status(&pool, &name, Status::Stopped.as_str()).await
+            {
+                tracing::warn!(session = %name, error = %e, "pty stream-dead: set_last_status failed");
+            }
         });
         Ok(())
     }

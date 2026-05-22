@@ -153,3 +153,44 @@ async fn detector_tick_writes_last_capture() {
         .output();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Startup reconciliation: a DB session whose `supermux-<name>` tmux pane does
+/// not exist must have its persisted status forced to `stopped` on boot — a
+/// server restart / machine reboot wipes tmux, so a stale `active` row would
+/// otherwise render a dead session as healthy. No tmux pane is ever created
+/// here, so the reconcile must flip the row regardless of whether tmux is
+/// installed.
+#[tokio::test]
+async fn reconcile_on_boot_marks_tmux_less_sessions_stopped() {
+    let (state, dir) = test_state().await;
+
+    // A session that was `active` before the (simulated) restart, but whose
+    // tmux pane does not exist now — a unique name guarantees no stray pane.
+    let name = format!("rec{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    db::sessions::insert_minimal(&state.pool, &name, "/tmp", "shell")
+        .await
+        .unwrap();
+    db::sessions::ensure_runtime(&state.pool, &name, "tok").await.unwrap();
+    db::sessions::set_last_status(&state.pool, &name, "active").await.unwrap();
+
+    // Sanity: the stale row reads `active` before reconciliation.
+    let before = db::sessions::runtime(&state.pool, &name).await.unwrap().unwrap();
+    assert_eq!(before.last_status, "active", "precondition: stale active row");
+
+    // Boot reconciliation: tmux pane is absent → status must flip to `stopped`.
+    auto_actions::reconcile_on_boot(&state).await;
+
+    let after = db::sessions::runtime(&state.pool, &name).await.unwrap().unwrap();
+    assert_eq!(
+        after.last_status, "stopped",
+        "a session with no tmux pane must reconcile to stopped on boot"
+    );
+
+    // The session row itself is NOT deleted — a stopped session stays resumable.
+    assert!(
+        db::sessions::get(&state.pool, &name).await.unwrap().is_some(),
+        "reconcile must not delete the session row (stopped sessions stay resumable)"
+    );
+
+    std::fs::remove_dir_all(dir).ok();
+}

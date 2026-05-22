@@ -18,6 +18,13 @@ async fn main() -> anyhow::Result<()> {
 
     let state = state::AppState::new(pool, config);
 
+    // Reconcile every persisted session's status against tmux reality BEFORE
+    // serving: a server restart (or a machine reboot, which wipes all tmux
+    // sessions) leaves stale `active`/`idle` rows that would render dead
+    // sessions as healthy. Forcing tmux-less sessions to `stopped` here makes
+    // the overview correct from the first paint.
+    sessions::auto_actions::reconcile_on_boot(&state).await;
+
     // Background tasks (§3.9). M8 adds the scheduler tick.
     scheduler::spawn(state.clone());
     // M5a: resume per-session status detection on boot (cold-start init §3.2.8).
