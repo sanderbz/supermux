@@ -1,17 +1,18 @@
-# supermux — Technical Plan
+# supermux — Architecture
 
-> **Status**: canonical (**v2.1 — cruft removed, M5 split, runtime-parse-ready**). This document is the single source of truth for all v3 implementation. Subagents execute against the milestone specs in §10.
-> **Owner**: Sander. **Last revised**: 2026-05-22.
-> **Companion docs**: `research/user-vision.md` (UX truth), `research/amux-feature-extract.md` (functional spec), `research/cmux-amux-landscape.md` (competitive features), `research/termius-ios-native-spec.md` (finish spec).
-> **Review history**: see §14 at end of doc. This revision merges CEO (TIGHTEN-FIRST 6.5/10), Eng-Manager (NEEDS-REVISION 7/10), and Codex (REVISE-MAJOR) findings into a single executable plan.
+This document describes how supermux is built: the Rust backend, the React
+frontend, the data model, the live-status detector, and how the pieces fit
+together. It is a design reference for contributors.
+
+For setup and deploy instructions, see [`README.md`](README.md).
 
 ---
 
 ## 0. Executive summary
 
-**What we're building.** supermux is a ground-up rebuild of the v2 Python monolith (`amux-server.py`, 46k lines). It is a Rust HTTP+WS backend that drives `tmux` sessions running Claude Code / Codex, paired with a React-19 + Vite frontend that delivers a Termius-grade mobile experience and a "BE in tmux, via web" desktop experience. The dashboard is dense, hover-peek tiles on the overview; a real keyboard-captured focus mode on desktop; a Vaul-detent bottom sheet with a Termius-style accessory dock on mobile. The agent surface is small and opinionated: Sessions, Board, Files, Scheduler — nothing else.
+**What we're building.** supermux is a Rust HTTP+WS backend that drives `tmux` sessions running Claude Code / Codex, paired with a React-19 + Vite frontend that delivers a Termius-grade mobile experience and a "BE in tmux, via web" desktop experience. The dashboard is dense, hover-peek tiles on the overview; a real keyboard-captured focus mode on desktop; a Vaul-detent bottom sheet with a Termius-style accessory dock on mobile. The agent surface is small and opinionated: Sessions, Board, Files, Scheduler — nothing else.
 
-**Key architecture decisions.** Single Rust binary (`supermux-server`) that embeds the built frontend via `rust-embed` (stable Rust, no nightly), serves both HTTP and WebSocket on one TLS port (8823 in production, side-by-side with v2 on 8822), persists to a single SQLite (`~/.supermux/data.db`) via `sqlx`, and spawns child `tmux` processes for each agent session. Frontend uses xterm.js for the live terminal (WS pty bytes streamed character-by-character), TanStack Query for HTTP cache, Zustand for local UI state, Framer Motion 11 for every animation. No global mutable state outside Zustand stores. No 3s polling fallback — WebSocket is the only path for live terminal data, SSE for metadata, manual refetch on visibility for catch-up.
+**Key architecture decisions.** Single Rust binary (`supermux-server`) that embeds the built frontend via `rust-embed` (stable Rust, no nightly), serves both HTTP and WebSocket on one port, persists to a single SQLite (`~/.supermux/data.db`) via `sqlx`, and spawns child `tmux` processes for each agent session. Frontend uses xterm.js for the live terminal (WS pty bytes streamed character-by-character), TanStack Query for HTTP cache, Zustand for local UI state, Framer Motion 11 for every animation. No global mutable state outside Zustand stores. No 3s polling fallback — WebSocket is the only path for live terminal data, SSE for metadata, manual refetch on visibility for catch-up.
 
 **The hero data flow (tile-tail-preview).** The overview's wow moment — dense grid of tiles each showing the last 6 lines of its agent's terminal, live — is plumbed end-to-end. The status detector's `tmux capture-pane` (every 2s per session, §3.6) writes the captured text into `session_runtime.last_capture`. `SessionSummary` gains `preview_lines: Vec<String>` (last 6 lines, ANSI-stripped). The SSE `sessions` event payload includes `preview_lines` deltas (only when changed). The frontend tile renders directly from `SessionSummary` — no per-tile WS subscription, no polling, single source of truth. Full data flow documented §3.6 → §3.4 SSE → §4.3 SessionTile.
 
@@ -19,7 +20,7 @@
 
 **WS close 1013 = silent reconnect on visibility-visible.** Subscriber-too-slow is treated as temporarily permanent: no tight backoff retry, but a silent one-shot reconnect on next `visibilitychange → visible` event (≥2s debounce). The reconnect banner morphs amber → green without user action.
 
-**Milestone count.** **33 discrete buildable milestones** — one per `### M…` heading in §10, which is what the orchestrator dispatches against: M0, M1, M2, M3, M4, M5a, M5b, M6–M22, M23a, M23b, M24a, M24b, M25, M26, M27, M28, M29. (M5 was split into M5a/M5b in v2.1, see §3.6; M23/M24 were each split a/b in v2.) Grouped into 5 tracks (bootstrap, backend, frontend-core, frontend-routes, integration/deploy/polish). Total estimated LOC: ~16 000 (~7 600 Rust, ~8 400 TypeScript/TSX). This is an AI-subagent-driven build (unlimited parallel Opus workers, loop-til-perfect) — there are no human-dev-hour estimates; the only schedule signal is the dependency DAG (§10). Critical-path milestone chain (load-bearing for dispatch order): M0 → M1 → M3 → M4 → M5b → M13 → M14 → M15 → M23a → M24a → M24b → M25 → M26 → M27 (M5a sidecars off M3 in parallel with M4).
+**Scope.** The codebase is organized into five tracks: bootstrap, backend, frontend-core, frontend-routes, and integration/deploy/polish. Total size is roughly ~16 000 lines (~7 600 Rust, ~8 400 TypeScript/TSX).
 
 ---
 
@@ -100,17 +101,17 @@
 
 - **Bearer token** stored at `~/.supermux/auth_token` (mode 0o600). Generated via `rand::rngs::OsRng` (32 bytes, base64url) on first start. Overridable via env `SUPERMUX_AUTH_TOKEN=...`; setting `SUPERMUX_AUTH_TOKEN=none` disables auth (dev-only escape hatch, logs a warning).
 - **Required on ALL routes by default**. Middleware checks `Authorization: Bearer <tok>` OR `?_token=<tok>` query. Only routes annotated with `#[public]` (in practice: `/manifest.json`, `/sw.js`, `/icon.*`, `/`) skip the check.
-- **No localhost bypass**. v2's localhost bypass was a CVE waiting to happen on Tailscale-served deployments — v3 removes it entirely.
+- **No localhost bypass**. A localhost auth bypass is a CVE waiting to happen on Tailscale-served deployments — supermux has none.
 - **WebSocket auth**: same token via `?_token=` query (browsers don't allow custom headers on WS upgrade).
 - **Bind interfaces**: `127.0.0.1` + Tailscale interface (auto-detected via `tailscale ip --4`). Default config explicitly does NOT bind `0.0.0.0`.
 - **Origin allowlist for WS**: `localhost`, `127.0.0.1`, LAN IP (auto-detected), `*.ts.net` (Tailscale MagicDNS). Other origins → close 1008.
 
 ### 1.5 Deployment
 
-- **Single binary**. `cargo build --release` produces `target/release/supermux-server`. Frontend built with `bun run build` produces `web/dist/`. Build script copies `web/dist/` to `server/static/` and `#[derive(RustEmbed)] #[folder = "static/"]` (via `rust-embed`) embeds it at compile time. End-state: one binary (size measured in M25 — likely 30-60MB stripped given the dep set; v1 claim of ~12MB was optimistic per Codex #12) that serves the whole product.
-- **Target host**: `clawd-02` (existing remote dev box). Production port: **8823** (v2 stays on 8822 indefinitely until v3 is dogfooded). systemd service: `supermux.service`. Working dir: `~/.supermux/`.
-- **TLS**: reuse v2's pattern — `tailscale cert <host>` (Let's Encrypt via Tailscale), fall back to self-signed for raw-IP access. TLS is terminated in axum via `axum-server::tls_rustls`.
-- **No Docker, no Node at runtime, no Python**. Just the binary + a sqlite file + the tmux server already on the box.
+- **Single binary**. `cargo build --release` produces `target/release/supermux-server`. Frontend built with `bun run build` produces `web/dist/`. The build script copies `web/dist/` to `server/static/` and `#[derive(RustEmbed)] #[folder = "static/"]` (via `rust-embed`) embeds it at compile time. End-state: one binary (~30-60MB stripped given the dependency set) that serves the whole product.
+- **Service**: runs under systemd as an unprivileged account, binding a loopback port. The data directory defaults to `~/.supermux/`. See `etc/systemd/supermux.service` and `scripts/deploy.sh`.
+- **TLS**: terminated by a reverse proxy (nginx/Caddy) or by `tailscale serve`, in front of the loopback port.
+- **No Docker, no Node at runtime, no Python**. Just the binary + a SQLite file + the tmux server already on the box.
 
 ---
 
@@ -118,15 +119,14 @@
 
 ```
 supermux/                         (repo root, NOT a Cargo workspace at top)
-├── plan/TECH_PLAN.md            (this file)
-├── research/                    (reference docs — read-only)
-├── skill/                       (build orchestrator skill + state file)
-│   ├── SKILL.md                 (the /amux-build skill)
-│   └── state.json               (loop state)
+├── ARCHITECTURE.md              (this file)
+├── README.md
+├── LICENSE
+├── etc/systemd/supermux.service (systemd unit template)
 ├── scripts/
 │   ├── dev.sh                   (cargo watch + vite dev concurrently)
 │   ├── build.sh                 (build web → embed → cargo build --release)
-│   ├── deploy.sh                (scp + systemctl restart)
+│   ├── deploy.sh                (ship git archive → build on host → install)
 │   └── migrate-v2.py            (read ~/.amux → write ~/.supermux)
 ├── server/                      (Rust backend)
 │   ├── Cargo.toml
@@ -1926,52 +1926,45 @@ echo "binary: server/target/release/supermux-server ($(du -h server/target/relea
 
 ### 8.2 Deploy
 
-```bash
-# scripts/deploy.sh
-set -euo pipefail
-HOST=clawd-02
-scp server/target/release/supermux-server "$HOST":/tmp/supermux-server-new
-ssh "$HOST" 'sudo install -m 0755 -o root -g root /tmp/supermux-server-new /usr/local/bin/supermux-server
-              sudo systemctl restart supermux
-              sleep 2 && sudo systemctl is-active supermux'
-```
+`scripts/deploy.sh` ships a pinned `git archive` of a clean commit to a host,
+builds natively there, installs `/usr/local/bin/supermux-server` and the
+systemd unit, and starts the service. It is configured entirely via
+environment variables (or a gitignored `.env` — see `.env.example`):
+`SUPERMUX_DEPLOY_HOST`, `SUPERMUX_SERVICE_USER`, `SUPERMUX_DATA_DIR`,
+`SUPERMUX_INTERNAL_PORT`, and optionally `SUPERMUX_USE_TAILSCALE` /
+`SUPERMUX_PUBLIC_PORT`.
 
 ### 8.3 systemd unit
 
-```ini
-# /etc/systemd/system/supermux.service
-[Unit]
-Description=supermux (Rust)
-After=network.target
+The committed unit at `etc/systemd/supermux.service` is a template — `deploy.sh`
+substitutes `__SERVICE_USER__` and `__DATA_DIR__` at install time. The service
+runs as an unprivileged account, binds a loopback port, and applies a full set
+of systemd sandboxing directives (see the unit file for the rationale of each).
 
-[Service]
-Type=simple
-User=sander
-WorkingDirectory=/home/sander
-Environment="SUPERMUX_DATA_DIR=/home/sander/.supermux"
-ExecStart=/usr/local/bin/supermux-server
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
+### 8.4 TLS termination
 
-[Install]
-WantedBy=multi-user.target
-```
+The backend speaks plain HTTP on a loopback port. Terminate TLS in front of it
+one of two ways:
 
-### 8.4 Coexistence with v2
+- **Reverse proxy** — nginx or Caddy proxying to `http://localhost:<port>`.
+- **`tailscale serve`** — if the host is on a tailnet; `deploy.sh` does this for
+  you when `SUPERMUX_USE_TAILSCALE=1`.
 
-- v2 stays on port 8822 (Tailscale-served at `clawd-02.foo.ts.net`).
-- v3 listens on port 8823 (Tailscale-served at a separate hostname or path via `tailscale serve` config).
-- Both write to separate data dirs (`~/.amux/` vs `~/.supermux/`).
-- Run side-by-side until v3 is dogfooded for 2 weeks without regression, then disable v2 service.
+A separate data directory and a distinct port make it straightforward to run
+supermux alongside any other service on the same host.
 
 ---
 
-## 9. Migration from v2
+## 9. Migration from amux
 
-`scripts/migrate-v2.py` (Python script; reads v2 files, writes v3 DB). One-shot, idempotent, dry-runnable.
+`scripts/migrate-v2.py` reads an existing amux install and writes into the
+supermux SQLite DB. One-shot, idempotent, dry-runnable.
 
-**Column-explicit copies (NO `SELECT *`) — Eng [P2] #8 + Codex #18.** v2 and v3 schemas drift (v3 has `created_at`, `task_summary`, `cc_session_name`, `last_capture`, `hook_token`; v2 has `gcal_event_id` etc. that v3 drops). `SELECT *` would either fail or silently insert NULLs. ALWAYS name columns on both sides; assert table info compatibility in dry-run.
+**Column-explicit copies (NO `SELECT *`).** The amux and supermux schemas drift
+(supermux has `created_at`, `task_summary`, `cc_session_name`, `last_capture`,
+`hook_token`; amux has columns supermux drops). `SELECT *` would either fail or
+silently insert NULLs. Columns are named explicitly on both sides; the dry-run
+asserts table-info compatibility before any write.
 
 ```python
 # pseudo
@@ -2025,452 +2018,8 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 
 **Memory + log files**: stay in their v2 locations (don't move). v3 has its own logs in `~/.supermux/logs/`.
 
----
-
-## 10. Milestone breakdown
-
-> The orchestrator skill (§11) reads this section to dispatch subagents. Each milestone is self-contained — given the listed deps, a subagent can execute with no further input beyond this document.
-
-### M0 — Workspace bootstrap
-
-- **Depends on**: nothing.
-- **Scope** (~250 LOC): `cargo new server`, `bun create vite@latest web -- --template react-ts`, install Tailwind v4 + shadcn CLI + Framer Motion + Vaul + xterm.js + TanStack Query + Zustand. Generate `scripts/dev.sh` (runs `cargo watch` + `vite` concurrently), `scripts/build.sh`. Commit.
-- **Acceptance**:
-  - `cd server && cargo build` succeeds.
-  - `cd web && bun run build` succeeds.
-  - `scripts/dev.sh` starts both servers and Vite hot-reloads `web/src/App.tsx` edits in the browser.
-- **Verification**: `curl http://localhost:5173/` returns HTML; `cargo build` exits 0.
-- **Subagent prompt**:
-  > You are bootstrapping the supermux repo skeleton. Read `/Users/sandervm/supermux/plan/TECH_PLAN.md` §2 (repository layout) and §3.1 (Cargo deps) and §4 (frontend stack). Create the directory tree exactly as in §2. Initialise `server/` with `cargo init --name supermux-server` and populate `Cargo.toml` with the exact dep list from §3.1 (note: uses `rust-embed`, NOT `include_dir` — Codex finding). Initialise `web/` with `bun create vite@latest . -- --template react-ts`, then install: react@^19, tailwindcss@^4, @tailwindcss/vite, framer-motion@^11, vaul, @xterm/xterm, @xterm/addon-canvas, @xterm/addon-dom, @xterm/addon-fit, @xterm/addon-web-links, @tanstack/react-query, zustand, react-router-dom@^7. Wire Tailwind v4 via `@tailwindcss/vite` plugin in `vite.config.ts`. Add `scripts/dev.sh` that runs `cargo watch -x run` and `bun run dev` in parallel via `&` + `wait`. Add `scripts/build.sh` per §8.1. Write a stub `server/src/main.rs` that binds `127.0.0.1:8823` with an axum `Router::new().route("/", get(|| async { "supermux" }))`. Write a stub `web/src/App.tsx` returning `<div>supermux</div>`. **Also create `web/src/lib/api.ts`** with TYPED METHOD STUBS for every endpoint listed in §3.4 (signature only, body throws "not yet implemented"). The stub file is what M12/M14/M19/M20/M21/M22 will fill in — eliminates 4-way merge conflicts on api.ts (Eng dep-graph fix). The stubs should include: `listSessions`, `getSession`, `createSession`, `deleteSession`, `startSession`, `stopSession`, `sendText`, `sendKey`, `peek`, `archive`, `wake`, `clone`, `duplicate`, `listBoard`, `createIssue`, `patchIssue`, `deleteIssue`, `claimIssue`, `listSchedules`, `createSchedule`, `runSchedule`, `listFiles`, `getFile`, `putFile`, `uploadFile`, `listSnippets`, `listKbdGroups`, `waitAgent`, `delegate`, `listAuditLog`, `health`. Verify both build and `scripts/dev.sh` works. Commit "M0: workspace bootstrap + api stubs" and report.
-
-### M1 — Backend: DB layer + migrations + auth
-
-- **Depends on**: M0.
-- **Scope** (~500 LOC): `server/migrations/0001..0004.sql` per §3.3. `server/src/db/mod.rs` (pool init), `db/sessions.rs`, `db/board.rs`, `db/schedules.rs`, `db/prefs.rs`, `db/runtime_state.rs` (each with `sqlx::query_as!` typed queries). `auth.rs` middleware. `error.rs` (`AppError` enum + `IntoResponse`). `config.rs`. `state.rs` (`AppState`).
-- **Acceptance**:
-  - Server starts, creates `~/.supermux/data.db`, runs all migrations.
-  - Hitting `/api/sessions` without token → 401. With `Authorization: Bearer <tok>` → 200 + `[]`.
-  - `~/.supermux/auth_token` is created mode 0o600 on first start.
-- **Verification**: `cargo test --package supermux-server db::tests` green; manual curl works.
-- **Subagent prompt**:
-  > You are implementing the persistence and auth layers for supermux. Read TECH_PLAN.md §3.2.2-3.2.4 (modules: config, auth, db), §3.3 (full schema), §6.1 (auth model). Write `server/migrations/0001_init.sql`..`0004_runtime_state.sql` containing the EXACT SQL from §3.3 — every table, column, index, CHECK constraint included. Write `server/src/db/mod.rs` with `init()` per §3.2.4. For each table, write a Rust struct `#[derive(sqlx::FromRow, Serialize)]` and typed queries in the matching `db/<name>.rs` (start with sessions and board only; the rest can be stubs). Write `auth.rs` middleware that reads token from header OR `_token` query, compares via `constant_time_eq`, returns 401 otherwise. Write `error.rs` with `AppError` enum (`Unauthorized`, `NotFound(String)`, `Conflict(String)`, `BadRequest(String)`, `Internal(anyhow::Error)`) and `IntoResponse` impl that returns `{ok:false, error:"..."}` JSON. Write `config.rs` that loads from `~/.supermux/config.toml` if present, else defaults. Write `state.rs`: `AppState { pool, config, session_locks, status_notify, sse_tx }`. Wire it all in `main.rs`: load config, init pool, build router with auth middleware on `/api/*`. Add three integration tests in `server/tests/auth.rs` covering: missing token=401, wrong token=401, correct token=200. Verify `cargo test` passes. Commit "M1: db + auth" and report.
-
-### M2 — Backend: HTTP routes for sessions CRUD
-
-- **Depends on**: M1.
-- **Scope** (~600 LOC): `sessions/mod.rs` public API (create/list/get/delete/duplicate/config_patch — non-tmux parts only), HTTP handlers in `http.rs`. Tracked-files endpoints. Steering queue endpoints (DB-backed).
-- **Acceptance**: All `/api/sessions/*` endpoints from §1.1 of feature-extract that don't require tmux work (~80% of them). Integration tests cover happy path + 404 + 409.
-- **Verification**: `cargo test --package supermux-server http_session` green.
-- **Subagent prompt**:
-  > Implement the non-tmux-dependent session HTTP endpoints. Read TECH_PLAN.md §3.2.5 (sessions public API), §3.4 (HTTP endpoints + **router-registry pattern**), and `research/amux-feature-extract.md` §1.1 (canonical endpoint list) and §1.2 (data model). Write `server/src/sessions/mod.rs` with `list`, `create`, `get`, `delete`, `duplicate`, `config_patch` (the tmux-free subset). **CRITICAL** (Eng dep-graph fix): mount these via `sessions::router_for(state) -> axum::Router` that returns a sub-router; the root `http::router(state)` calls `Router::new().merge(sessions::router_for(state.clone())).merge(...)`. Later milestones (M6/M7/M8/M9) add ONLY their own module file + ONE line in `http::router()` — no shared edits to handler functions. This prevents 3-way merge conflicts on `http.rs`. Sessions data model per §1.2 of feature-extract; persist to the `sessions` table from M1. Tracked-files endpoints: `/api/sessions/{name}/tracked-files` GET/POST/DELETE — use the `tracked_files` table from M1. Steering: GET/POST/DELETE `/api/sessions/{name}/steer` — uses `steering_queue` table. Write integration tests in `server/tests/http_session.rs` covering: POST create returns 201, POST duplicate name returns 409, GET non-existent returns 404, PATCH config rename works end-to-end. Skip `start/stop/send/keys/paste/clone/archive/wake/peek` — those are M3. Verify tests pass. Commit "M2: sessions CRUD + router registry" and report.
-
-### M3 — Backend: tmux integration + session lifecycle
-
-- **Depends on**: M2.
-- **Scope** (~700 LOC): `sessions/tmux.rs` (full `Tmux` API per §3.2.6). `sessions/lifecycle.rs` (`start`, `stop`, `send_text`, `send_keys`, `paste`, `peek`, `archive`, `wake`, `clone`). Wait-for-ready logic. Resume strategy per §1.5 of feature-extract.
-- **Acceptance**:
-  - `POST /start` on a real machine spawns tmux + claude, returns 200.
-  - `POST /send {text:"echo hi"}` causes "hi" to appear in scrollback (verifiable via `/peek`).
-  - `POST /stop` cleanly exits.
-  - 80-char and 1200-char texts both work (the latter via `load-buffer`).
-- **Verification**: Manual smoke + a tmux-using integration test (CI must have tmux installed).
-- **Subagent prompt**:
-  > Implement the tmux integration and session lifecycle. Read TECH_PLAN.md §3.2.5 (sessions API + archive/stop semantics), §3.2.6 (`Tmux` API), §3.5 (tmux conventions — note `supermux-<name>` prefix + atomic settings.json + `SUPERMUX_HOOK_TOKEN`), and `research/amux-feature-extract.md` §1.4 (tmux integration), §1.5 (Claude/Codex invocation). Write `server/src/sessions/tmux.rs` with the full `Tmux<'_>` impl: every method spawns `tokio::process::Command::new("tmux").args([...])`. Use `which::which("tmux")` to locate. Capture stdout, error on non-zero exit. For `send_text`: if >400 chars, use `tmux load-buffer - + paste-buffer -p`; else `send-keys -l`. Write `server/src/sessions/lifecycle.rs` with `start`, `stop` (graceful /exit→15s grace→hard kill via `nix::sys::signal::kill`), `send_text` (acquires per-session lock, calls `Tmux::send_text` then `Enter`), `send_keys` (allowlist enforced per §1.4 of feature-extract), `paste`, `peek`, `archive` (returns 202 + spawn_blocking job per §3.2.5), `wake`, `clone`, and `delete` (also removes the session from `session_locks` / `status_watch` / `hook_tokens` maps per §3.2.5 cleanup rule). Resume strategy per §1.5 of feature-extract: try `cc_session_name`, else `cc_conversation_id`, else `--name`. Wait-for-ready: poll `capture-pane` every 1s for up to 10s expecting `❯` or `❱`. **`provider='shell'` is a first-class variant** (NOT a hack — schema CHECK in §3.3 v2 includes it). Use it for the integration test. Generate per-session `hook_token` (32 random bytes, base64url, OsRng) on session create; write to `session_runtime.hook_token`; inject `SUPERMUX_HOOK_TOKEN`, `SUPERMUX_SESSION`, `SUPERMUX_URL` into the tmux env. Mount routes via `sessions::router_for` (per M2 pattern). Write integration test `server/tests/lifecycle.rs` that spawns a session with `provider="shell"` running `bash`, sends "echo hi", waits, and asserts "hi" is in peek output. Verify. Commit "M3: tmux + lifecycle" and report.
-
-### M4 — Backend: WebSocket pty stream
-
-- **Depends on**: M3.
-- **Scope** (~500 LOC): `sessions/pty.rs` (FIFO reader + broadcast), `ws/mod.rs` (axum WS handler), `ws/streamer.rs` (per-session singleton via `DashMap<String, Arc<PtyStream>>`), `ws/protocol.rs` (serde types).
-- **Acceptance**:
-  - `wss://localhost:8823/ws/sessions/{name}` connects without query token.
-  - Client sends first frame `{"type":"auth","token":"X"}` within 2s → server responds `{"type":"auth_ok"}`.
-  - Missing/invalid auth frame → close 1008 within 2s.
-  - First binary message after auth_ok is replay (≤64 KB).
-  - Subsequent bytes flow within <50ms of tmux output.
-  - Client sends `{type:'input',data:'l'}` → 'l' appears at the prompt.
-  - **Subscribing 32 clients works; 33rd gets close 1013** (was 8 in v1; raised per CEO #6).
-  - 1013 close does NOT mark the connection permanent on the client (frontend M13 reconnects silently on next visibility-visible).
-  - Per-WS server PING every 20s, close after no PONG in 30s.
-- **Verification**: `cargo test --test ws_pty` AND `cargo test --test ws_first_frame_auth` green; manual browser test.
-- **Subagent prompt**:
-  > Implement the WebSocket pty streamer. Read TECH_PLAN.md §3.2.7 (pty — note `O_NONBLOCK + AsyncFd` pattern), §3.2.9 (ws handler — note first-frame auth + 1013 = silent reconnect), §3.4 (WS wire protocol), §5.2 (terminal keystroke diagram), and `research/amux-feature-extract.md` §1.6 (live updates). Write `server/src/sessions/pty.rs` per §3.2.7's full spec: `PtyStream` struct with `started: OnceCell<()>` for spawn-once, `tail(n)` helper for the SessionSummary builder. `ensure_started(tmux)` mkfifos `/tmp/supermux-pty-<name>.fifo`, calls `tmux pipe-pane -O -t supermux-<name> 'tee -a <log> > <fifo>'`, waits for pipe-pane exit 0, opens FIFO with `O_RDONLY | O_NONBLOCK` (via `nix::fcntl::open`), wraps in `tokio::io::unix::AsyncFd`, ALSO opens a keep-alive write fd to suppress spurious EOF (Linux pipe trick). Reader loop uses `AsyncFd::readable()` + `try_io` per the §3.2.7 code sample, breaks if `tmux.exists()` becomes false (stream-dead). Broadcasts via `tokio::sync::broadcast::Sender<Bytes>` (cap 1024 — config tunable). Replay buffer is `Arc<RwLock<VecDeque<Bytes>>>` capped at 64 KB; push from the reader, snapshot on subscribe. Write `server/src/ws/protocol.rs` with `ClientMsg` enum (`Auth{token}`, `Input{data}`, `Key{data}`, `Resize{cols,rows}`, `Ping`) using `#[serde(tag = "type", rename_all = "lowercase")]`. Write `server/src/ws/streamer.rs` with a `DashMap` of per-session `Arc<PtyStream>` and a `for_session(&self, name)` accessor that creates-on-demand. Write `server/src/ws/mod.rs` with `axum::extract::WebSocketUpgrade` handler: validate Origin against allowlist (close 1008 on mismatch). On upgrade, wait up to 2s for first text frame matching `{"type":"auth","token":...}`; close 1008 if missing/invalid. Reject if already 32 subscribers (close 1013). Send replay + spawn fan-out task per §3.2.9. Per-WS PING every 20s; track last PONG, close on >30s silence. Mount at `/ws/sessions/:name`. Write `server/tests/ws_pty.rs` using `tokio-tungstenite` against an ephemeral port: connect, send auth frame, expect auth_ok, expect replay, send `{"type":"input","data":"x"}`, capture next inbound binary, assert it contains "x" (use a test session running `cat`). Write `server/tests/ws_first_frame_auth.rs`: missing auth frame → 1008 within 2s; malformed auth → 1008. Verify. Commit "M4: ws pty + first-frame auth" and report.
-
-### M5a — Backend: status detector core (heartbeat + regex bank + idle timeout)
-
-- **Depends on**: M3.
-- **Scope** (~400 LOC): `sessions/status.rs` core — `Status` enum + `StatusDetector` struct + the `detect()` fusion function (regex bank + PTY heartbeat + idle-timeout branches; the hook branch is a no-op stub that M5b fills in), the per-session 2s detector loop in `sessions/auto_actions.rs::spawn_status_loop`, `last_capture` writeback to `session_runtime`, cold-start init, and the capture-pane skip optimization. Plus the golden-fixture infrastructure (`tests/fixtures/status/*.txt`, 30 fixtures + 5 corruption fixtures) and the snapshot tests.
-- **Acceptance**:
-  - 30 golden capture-pane fixtures classified correctly (insta snapshots).
-  - `session_runtime.last_capture` updated every detector tick (canonical source for `preview_lines`).
-  - After server restart, detectors initialize with `last_pty_byte_at = now - 5min` (cold-start test in `status_detector_cold_start.rs`).
-  - PTY heartbeat: bytes within last 1.5s → `Active`; silent ≥30s → `Idle`.
-  - Capture-pane skip: when pty bytes flowed in last 2s AND `last_status == Active`, the tick does NOT shell out to `tmux capture-pane`.
-- **Verification**: `cargo test status_detector status_detector_cold_start` green.
-- **Subagent prompt**:
-  > Implement the status detector CORE — the regex/heartbeat/idle classifier and its golden-fixture test bed. (The hook-event signal, the watch channel, and the SSE broadcast are M5b — leave clean seams for them.) Read TECH_PLAN.md §3.6 (full detector spec — note the M5a/M5b split paragraph, cold-start init, last_capture writeback, hero data flow), §3.2.8 (status module), `research/amux-feature-extract.md` §1.3 (v2 status state machine — pattern bank), §"What v2 got wrong" #5 (lesson). Write `server/src/sessions/status.rs`: `Status` enum (`Active|Waiting|Idle|Stopped|Unknown`), `StatusDetector` struct, `detect(capture, last_pty, last_hook)` implementing the fusion rule — for M5a the `last_hook` branch is a stub that returns `self.last_status` (M5b wires the real hook signal); implement the regex bank + pty heartbeat + idle-timeout branches fully. Regex bank: port the v2 patterns verbatim — ACTIVE matches `(?i)(esc to interrupt|running\.\.\.|reading \d+ file|esc t…|✻.*…)`; WAITING matches `(?i)(enter to select|do you want to proceed|❯\s*\d+\.|interrupted.*what should claude|approve)`; IDLE matches `(?i)(✻.* for \d|⏵⏵|bypass permissions|plan mode|❯\s*$|\$ $|gpt-\S+ · ~)`. Spawn per-session status loop in `sessions/auto_actions.rs::spawn_status_loop`: every 2s, capture-pane, run `detect`, write `last_capture` to `session_runtime` ALWAYS, on status change UPDATE `last_status`/`last_status_at`. (M5b adds the watch-channel send + SSE delta emit — leave a clearly-marked seam where they hook in.) Cold-start init: detectors begin with `last_pty_byte_at = Instant::now() - Duration::from_secs(300)`. Performance: skip capture-pane shell-out when pty bytes have flowed in last 2s AND last_status == Active. Add 30 fixtures in `server/tests/fixtures/status/` (copy from real capture-pane outputs — invent realistic ones if needed for now, document each as `<filename>.<expected>.txt`) plus 5 corruption fixtures. Write tests: `server/tests/status_detector.rs` (insta over fixtures), `server/tests/status_detector_cold_start.rs` (boot → first tick = Unknown). Verify. Commit "M5a: status detector core + golden fixtures" and report.
-
-### M5b — Backend: status detector hook integration + fusion + wait channel
-
-- **Depends on**: M4, M5a (M4 = live pty heartbeat the fusion rule reads; M5a = detector core it extends).
-- **Scope** (~350 LOC): the Claude Code SettingsHook events (`/api/_internal/hook` endpoint with per-session hook-token auth), `claude_config.rs::install_hooks()` (atomic rename, namespaced `supermux-hook` merge), wiring the hook-event signal into the fusion rule, per-session `tokio::sync::watch::Sender<(Status, u64)>` for the wait primitive, `agents/wait.rs`, status broadcast via the SSE channel, and the 50ms flap debounce. Golden-fixture hook tests.
-- **Acceptance**:
-  - SettingsHook callback bumps status to `waiting` within 1s of a real Claude notification.
-  - Hook token validation: a leaked hook token of session A cannot mark session B (test asserts 401).
-  - SSE clients receive `{type:'status', payload:{name, status, version}}` on every change.
-  - `GET /api/agents/{name}/wait?state=idle&timeout=5` returns within 5s with `{reached:false,status:'active'}` if session is active. No notify-before-subscribe race (regression test in `wait_race.rs`).
-  - Multi-signal fusion: a fresh hook event (<3s) outranks the regex bank and the pty heartbeat (test asserts hook wins over a conflicting capture).
-- **Verification**: `cargo test wait_race hook_auth_scope` green; live test with real Claude.
-- **Subagent prompt**:
-  > Implement the status detector HOOK INTEGRATION layer on top of the M5a core: Claude SettingsHook events, multi-signal fusion, the watch channel, SSE broadcast, and the wait primitive. Read TECH_PLAN.md §3.6 (full detector spec — note the M5a/M5b split paragraph, hook token model, hero data flow), §3.2.8 (status module — watch::Sender, NOT Notify), §3.7 (wait), §6.5 (hook auth). The detector core (`Status` enum, `StatusDetector`, `detect()`, the 2s loop, `last_capture` writeback) already exists from M5a — EXTEND it, do not rewrite it. Wire the real hook branch into `detect()`: a fresh `last_hook` event (<3s) outranks the regex bank and heartbeat per the §3.6 fusion rule. Write `claude_config.rs::install_hooks(session_name, hook_token)` per §3.5 atomic-rename + namespaced-merge spec (uses `supermux-hook` marker for idempotent re-installs). The hook command embeds `$SUPERMUX_HOOK_TOKEN` (NOT `$SUPERMUX_TOKEN`); also `--max-time 1`, `|| true`, `"blocking": false`. Add `/api/_internal/hook` HTTP handler with **per-session token auth**: read `X-Supermux-Hook-Token` header, validate against `SELECT hook_token FROM session_runtime WHERE name = body.session` via constant_time_eq. Update `last_hook_event_at` in the detector via a shared map. In the M5a detector loop seam: on status change, send via per-session `state.status_watch.get(&name).unwrap().send_replace((status, ver+1))`, ALSO emit SSE `sessions` delta containing `{name, status?, preview_lines?}` whenever EITHER status or tail6 changed; coalesce flaps via a 50ms debounce (persist/broadcast only the final status after 50ms of stability). Write `agents/wait.rs` per §3.7 v2 (watch-channel based, 300s max). Write tests: `server/tests/wait_race.rs` (100 wait handlers + 1 detector tick → none stuck), `server/tests/hook_auth_scope.rs` (cross-session hook token denied). Verify. Commit "M5b: status detector hooks + watch channel + wait" and report.
-
-### M6 — Backend: board CRUD + atomic claim
-
-- **Depends on**: M1.
-- **Scope** (~400 LOC): `board/mod.rs` (HTTP handlers), `board/claim.rs` (atomic UPDATE), `board/prefix.rs` (id generation), statuses CRUD, iCal export, tag-completion.
-- **Acceptance**: All `/api/board/*` endpoints per §2.1 of feature-extract pass integration tests. 100 concurrent claim requests on same id → exactly one 200.
-- **Verification**: `cargo test board` green.
-- **Subagent prompt**:
-  > Implement the Kanban board endpoints. Read TECH_PLAN.md §3.2.10 (atomic claim), `research/amux-feature-extract.md` §2 (full subsystem 2). Write `server/src/board/mod.rs` with handlers for: list (`GET /api/board`), create (`POST /api/board`), patch, delete (soft, sets `deleted=ts`), clear-done, claim (`POST /api/board/{id}/claim`), statuses CRUD, tag-completion, calendar.ics (PUBLIC, no auth). Mount via `board::router_for` (per M2 registry pattern). Write `board/prefix.rs` per §2.3 of feature-extract: prefix from session name = one-word→5 alphanumeric upcased, multi-word→first letters upcased, capped 5, no session→"SUPERMUX". Counter via `INSERT OR IGNORE INTO issue_counters (prefix, next_n) VALUES (?, 1); UPDATE ... SET next_n=next_n+1 WHERE prefix=? RETURNING next_n`. **Atomic claim hardening (Codex #1)**: set `PRAGMA busy_timeout = 5000` on the connection pool; wrap the claim UPDATE in a `BEGIN IMMEDIATE` transaction so any contention waits inside SQLite (and converts to "no row updated" / 409) instead of bubbling `SQLITE_BUSY` 500s. Write `board/claim.rs` per §3.2.10 with this hardening. iCal export per §2.7 of feature-extract — concat `BEGIN:VCALENDAR ... END:VCALENDAR` with VEVENT per issue with `due`. Auto-notify-on-assign per §2.6: when creating with session+owner_type=agent+status in (todo,backlog) and creator!=session, send `notified=1` and tmux send_text the title to that session. Audit hook: delete + claim write rows to `audit_log` via `db::audit_writer`. Write `server/tests/board_claim.rs`: spawn 100 tokio tasks all POSTing to the same `/claim` — assert exactly one 200 + 99 of 409 (NO 500s). Verify. Commit "M6: board + atomic claim" and report.
-
-### M7 — Backend: files browser + editor
-
-- **Depends on**: M1.
-- **Scope** (~500 LOC): `files/mod.rs` HTTP handlers, `files/path_safe.rs`, `files/range.rs` (HTTP Range + ETag).
-- **Acceptance**: All endpoints from §3.1 of feature-extract work; blocked paths return 403; HTTP Range serves partial content.
-- **Verification**: `cargo test files` green; manual curl with `Range: bytes=100-200`.
-- **Subagent prompt**:
-  > Implement the file browser, editor, and uploader. Read TECH_PLAN.md §3.2.11 (path safety — parent-canonicalize + join basename + `O_NOFOLLOW` TOCTOU mitigation + macOS case insensitivity), `research/amux-feature-extract.md` §3 (full subsystem 3). Write `server/src/files/path_safe.rs` per §3.2.11 v2 spec; `resolve_safe` is `async` (uses `tokio::fs::canonicalize`); for non-existent paths it canonicalizes the PARENT and joins the basename. Callers MUST use the returned PathBuf with a `safe_open` helper that sets `O_NOFOLLOW` via `tokio::fs::OpenOptions::custom_flags(libc::O_NOFOLLOW)` to refuse symlink swap between resolve and open. Write `server/src/files/range.rs`: parse `Range: bytes=A-B` header, return 206 with `Content-Range`; compute ETag as `"{mtime}-{size}"`; handle `If-None-Match` → 304. Write `server/src/files/mod.rs` with handlers for: `GET /api/ls`, `GET /api/file` (type-detect by extension per §3.2 of feature-extract: images→base64 data_url, pdf→data_url, video→metadata only, audio, binary, text), `PUT /api/file` (writable extensions per §3.3; creates new files via the parent-canonicalize path), `GET /api/file/raw` (range-aware), `POST /api/fs/upload` (multipart, 200MB cap), `DELETE /api/fs/delete`, `POST /api/upload` (base64 single file with image magic-byte check), `GET /api/uploads/{filename}`, `GET /api/autocomplete/dir`. Mount via `files::router_for` (M2 registry). Use `axum::extract::Multipart` for multipart. Use `tokio::fs` everywhere. Audit hook: PUT + DELETE write `audit_log` rows. Write `server/tests/files.rs` with assertions for: GET ls of a tempdir returns expected entries; PUT to a brand-new file (does not yet exist) succeeds (regression for Codex #3); PUT then GET round-trips text; GET raw with Range returns 206 + correct bytes; PUT to `/etc/shadow` returns 403; PUT to `/ETC/SHADOW` (macOS HFS+) returns 403; PUT through a symlink to `/etc/shadow` returns 403 (TOCTOU). Add proptest in `server/tests/path_safe_proptest.rs`: random Unicode normalization + `..`-stacks + `//`-collapses never escape the jail. Verify. Commit "M7: files + path safety" and report.
-
-### M8 — Backend: scheduler tick + cron + job types
-
-- **Depends on**: M1, M3.
-- **Scope** (~500 LOC): `scheduler/mod.rs` (tick loop), `scheduler/parser.rs` (expression grammar + cron), `scheduler/runner.rs` (tmux/shell/boot jobs), `scheduler/watch.rs` (done_pattern poller), HTTP handlers.
-- **Acceptance**: Schedule "in 5s" fires within 6s; recurring "every 1m" fires every minute; cron `*/1 * * * *` works; watch mode detects pattern and fires `done_action`.
-- **Verification**: `cargo test scheduler` green; live test.
-- **Subagent prompt**:
-  > Implement the scheduler. Read TECH_PLAN.md §3.8 (tick loop — note `MissedTickBehavior::Skip` + `schedule_run_keys` idempotency + missed-tick policy + next_run semantics), §3.2.12 (sketch), `research/amux-feature-extract.md` §4 (full subsystem 4). Write `server/src/scheduler/parser.rs`: supports `in <N><unit>` (one-shot), `every <N><unit>`, `every morning/evening/night`, `every weekday at HH:MM`, `every <dayname> at HH:MM`, `daily at HH:MM`, `weekly on <day> at HH:MM`, `monthly on <N> at HH:MM`, AND 5-field cron expressions (use the `cron` crate's `Schedule::from_str`). Returns `next_run: DateTime<Utc>`. **Semantics (Eng failure-paths)**: 5-field cron → `Schedule::upcoming(Utc).next()` (wall-clock aligned). "every Nm/Nh" → `last_run + N*unit` (interval-from-last-fire, drifts intentionally). Named-time variants ("daily at HH:MM" etc) → wall-clock aligned. Write `scheduler/runner.rs::run(state, sched)`: BEFORE executing, INSERT INTO `schedule_run_keys (schedule_id, scheduled_for_ts)`; if UNIQUE violation, treat as duplicate-fire and skip. Then match on `kind`: `tmux` → `sessions::send_text`; `shell` → `tokio::process::Command::new("/bin/bash").arg("-c").arg(&sched.command)` with 600s timeout; `boot` (NEW for v3) → if `boot_worktree=1`, FIRST check `git status --porcelain` in `boot_dir`; if dirty, INSERT schedule_runs status='error' note='parent worktree dirty' and return. Otherwise `sessions::create` + `sessions::start(prompt = sched.command)`. After run: INSERT into schedule_runs, UPDATE schedules SET last_run/run_count, recompute next_run via parser (or disable if sched_type='once'). If watch=1 and kind='tmux' and status=ok, spawn `watch.rs::poll(state, sched, pre_output)`. Watch poller: every 5s up to watch_timeout, capture-pane, extract new output via tail anchor (last 100 of pre_output's last 200 chars), match `done_pattern` regex; on match, fire `done_action` (`disable` | `notify` | `command:<text>`). Write `scheduler/mod.rs::spawn(state)` with 10s `tokio::interval` configured with `MissedTickBehavior::Skip`. Missed-tick policy: if `now - next_run > 60s`, log skipped + advance `next_run` (don't fire). HTTP handlers: list, create (computes next_run), runs, single, run-now, patch, delete. Mount via `scheduler::router_for`. Audit hook: schedule.run + schedule.delete + manual run-now write `audit_log` rows. Write `server/tests/scheduler.rs`: create a schedule "in 1s" with kind=shell command="touch /tmp/supermux-test-marker"; sleep 12s; assert marker exists. Write `server/tests/schedule_missed_tick.rs`: insert a schedule with `next_run` 5 minutes in the past, start scheduler, assert it logs skipped + advances `next_run` without firing. Verify. Commit "M8: scheduler + idempotency + missed-tick" and report.
-
-### M9 — Backend: agents/wait primitive + skills + slash commands + kbd-groups + steering loop
-
-- **Depends on**: M3, M5b — M3 for `send_text` (delegate), M5b for `status_watch` (wait); Eng dep-graph fix.
-- **Scope** (~500 LOC, was 400): `agents/wait.rs`, `agents/delegate.rs`, `agents/skills.rs`, `/api/slash-commands` endpoint (built-ins + skills merged), `/api/kbd-groups` + `/api/snippets` CRUD handlers (table from §3.3 — delete the "OR prefs blob" alternative from M16), `sessions/steering/deliver_loop.rs` (single-flight exactly-once delivery).
-- **Acceptance**: `GET /api/agents/{name}/wait` long-polls correctly with watch-channel semantics (regression test passes). `GET /api/slash-commands` returns built-ins (~50 commands) + skills. `/api/kbd-groups` GET returns defaults on first read. Steering: a queued message is delivered to the session exactly once when status becomes `waiting` or `idle`.
-- **Verification**: `cargo test agents wait_race` green.
-- **Subagent prompt**:
-  > Implement the agent-orchestration primitives + remaining HTTP CRUDs. Read TECH_PLAN.md §3.7 (wait), §3.3 (delegations table at `0005_delegations.sql` — schema ALREADY SPECIFIED, do not invent), §3.4 (new endpoints), §3.9 (steering deliver loop), `research/amux-feature-extract.md` §5 (subsystem 5). Write `server/src/agents/wait.rs` per §3.7 v2 (watch-channel from M5b). Write `agents/delegate.rs::delegate(from, to, prompt)` HTTP handler: calls `sessions::send_text(to, prompt)`, records an edge via `INSERT INTO delegations (from_session, to_session, prompt, ts) VALUES (?,?,?,?)`. Note column name: `from_session` (not `from` — SQL keyword). Write `GET /api/agents/delegations?session=X` returning edges in/out using the indices `idx_delegations_from` + `idx_delegations_to`. Write `agents/skills.rs`: CRUD over `skills` table; on POST, also write to `~/.supermux/skills/<name>.md` AND `~/.claude/commands/<name>.md` so Claude picks them up. `GET /api/skills` parses YAML frontmatter for `description` and `argument-hint`. Add `GET /api/slash-commands`: returns the BUILTIN_SLASH_COMMANDS list (port the verbatim list from `research/amux-feature-extract.md` §5.3) + the skills list. Add **`/api/snippets`** GET/POST/PATCH/DELETE handlers over the `snippets` table. Add **`/api/kbd-groups`** GET/POST/PATCH/DELETE over the `kbd_groups` table — on first GET, if empty, return defaults `[{name:"Agent",keys:[...]}, {name:"Shell",...}, {name:"Tmux",...}, {name:"Symbols",...}]` AND seed them. Add **`/api/audit?limit=N`** GET reading from `audit_log`. Add **`/api/health`** GET as a `#[public]` route returning `{version, uptime_s, db_ok, tmux_ok}`. Write `sessions/steering/deliver_loop.rs::spawn(state)`: per-session task; subscribes to status_watch; when status flips to `waiting`/`idle`, runs ONE transactional dequeue: `BEGIN IMMEDIATE; SELECT id,text FROM steering_queue WHERE session=? ORDER BY id LIMIT 1; DELETE WHERE id=?; COMMIT;` then calls `sessions::send_text`. Single-flight (await before next loop iteration) — exactly-once. Mount all via `agents::router_for` + `prefs::router_for` etc. (per M2 registry). Verify. Commit "M9: agents + kbd + snippets + steering loop" and report.
-
-### M10 — Frontend: routing shell + Tailwind + shadcn install
-
-- **Depends on**: M0.
-- **Scope** (~400 LOC): React Router setup, Tailwind v4 config with semantic tokens, install shadcn primitives we need (Button, Input, Sheet, Dialog, ScrollArea, Popover, Toggle, Tabs, Tooltip, DropdownMenu), basic `<Layout>` with side-nav (desktop) and bottom-nav (mobile), theme provider (dark default).
-- **Acceptance**: All routes render placeholder content; theme toggles; tailwind classes work.
-- **Verification**: Visual inspection in dev.
-- **Subagent prompt**:
-  > Build the routing shell and design-system foundations. Read TECH_PLAN.md §4.1 (routing), §4.8 (responsive rules), §2 (file layout), §4.11 (empty states), §4.12 (loading/error). Set up React Router v7 with the routes from §4.1. Configure Tailwind v4 with semantic tokens in `web/src/styles/globals.css`: `--background`, `--foreground`, `--card`, `--border`, `--muted`, `--muted-foreground`, `--accent`, `--accent-foreground`, `--destructive` — each with light + dark variants (dark default). Install shadcn primitives via `bunx --bun shadcn@latest add button input sheet dialog scroll-area popover toggle tabs tooltip dropdown-menu badge`. Configure shadcn to write into `web/src/components/ui/` (copy-source). Build `<Layout>` that wraps `<Outlet />`: at `md+` shows a 64px-wide left side-nav with icons (Overview, Board, Files, Scheduler, Settings); at `<md` shows a bottom tab bar (5 icons + label) using safe-area-inset. Build `<ThemeProvider>` (system|light|dark via `localStorage`). Build `<QueryClientProvider>` with default options (staleTime 30s, refetchOnWindowFocus true). **HARD-BLOCKER STUBS (Eng dep-graph fix)**: also write `web/src/hooks/use-sse.ts` and `web/src/hooks/use-sessions.ts` and `web/src/hooks/use-board.ts` as TYPED STUBS (signatures only, return empty data + no-op handlers). M12/M19/M20/M21/M22 each fill in implementations of the hook(s) they need. Without these stubs, those four "4-way parallel" milestones each re-invent the hook and conflict. ALSO write `web/src/lib/springs.ts` with the full preset bank from §4.7. Wire all routes to placeholders: each renders `<h1>Route Name</h1>` AND a `<EmptyStatePlaceholder />` per §4.11 (placeholder copy). Verify all 6 routes render at both desktop and mobile widths in dev mode. Commit "M10: routing + design system + hook stubs" and report.
-
-### M11 — Frontend: session-tile component (hero)
-
-- **Depends on**: M10. (The `<QuickPeekModal>` real-LiveTerminal embed soft-depends on M13 — for v1 of M11 ship a placeholder modal; when M13 lands, swap in `<LiveTerminal />`. Documented so M11 can ship in parallel with M13.)
-- **Scope** (~500 LOC, was 350): `<SessionTile>`, `<TailPreview>`, `<StatusDot>`, `<TileSkeleton>`, `<TileError>`, `<QuickPeekModal>` (real LiveTerminal embed once M13 ships; otherwise a static `<TailPreview lines={20} />` placeholder), with full hover-peek spring + active/waiting pulses + click navigation with View Transitions + Reduce Motion handling.
-- **Acceptance**: Per §4.3 pixel spec (every bullet). Mock data renders correctly; hover spring matches Termius §recommended values; click navigates with View Transition (Chromium only — fallback ok). Plus the v2 amplification bullets:
-  - Hover-peek expands tail from 6 → 14 lines within one spring frame (16ms).
-  - Long-press on mobile opens a real live-streaming embed (real LiveTerminal half-sheet, not screenshot).
-  - Skeleton loader shows during initial load until SSE delivers the first sessions list (≤200ms target).
-  - Error state renders for sessions where tmux is missing.
-  - Tile re-renders cleanly when `preview_lines` updates mid-hover (no flicker, no scroll jump).
-  - Reduce Motion disables hover-scale and pulse; replaces with crossfade.
-- **Verification**: Dev page at `/dev/tiles` renders 12 mocked sessions in tile grid + a Reduce Motion toggle in URL to validate the alt rendering path.
-- **Subagent prompt**:
-  > Build the SessionTile hero component. Read TECH_PLAN.md §4.3 (full pixel spec — every bullet, v2 amplified), §4.7 (animations spec), §4.11 (empty states), §4.12 (loading/error), `research/termius-ios-native-spec.md` §"v3 finish acceptance criteria" #1, #2, #19. Write `web/src/components/session-tile/tile.tsx`: ~280 LOC component taking `{session: Session}` props. Use `motion.div` from framer-motion. Default state: card 4:3, `rounded-xl border bg-card`, title row 32px (title + status dot + tokens/branch row), `<TailPreview lines={session.preview_lines} />` filling rest with `<motion.div layout transition={springs.smooth}>` so new lines slide up. WhileHover (desktop): `scale: 1.06, zIndex: 10`, spring per `lib/springs.ts::tileHover`. On hover, bump `--tail-lines` CSS variable from 6 to 14. Active state: pulse via `animate={{ boxShadow: [...]}} transition={{ repeat: Infinity, duration: 1.6 }}`. Waiting state: blue pulse + "Needs input" pill, 2.2s, plus `if('vibrate' in navigator) navigator.vibrate(8)` on transition into waiting (debounced via useRef). **Reduce Motion** (`useReducedMotion` from framer-motion): disable hover-scale, replace pulse with static colored border, no layout-morph. Click → `navigateMorph('/focus/' + session.name)` (uses `<MorphLink>` from §M23) with `style={{ viewTransitionName: 'session-' + session.name }}` (gated by `if ('startViewTransition' in document)`). Mobile (use `useMediaQuery('(pointer:coarse)')`): NO hover; tap = focus; long-press 350ms via a `useLongPress` hook → opens `<QuickPeekModal session={s} />` — a Vaul half-sheet that mounts a REAL `<LiveTerminal name={s.name} />` (read-only — disable `term.onData`), tears down on close. Write `web/src/components/session-tile/tail-preview.tsx`: pre-formatted block, `font-mono text-[10.5px] leading-[14px]`, last N lines anchored to bottom, top-fade via `mask-image`. Write `web/src/components/session-tile/status-dot.tsx`: 8×8 colored circle. Write `<TileSkeleton />`: same shape, three pulse stripes. Write `<TileError />`: red border, "(missing)" prefix, click → recovery sheet. Write a dev page `web/src/routes/dev-tiles.tsx` (gated behind `import.meta.env.DEV`) that renders 12 mocked tiles in `grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2`, plus toggles for skeleton/error/reduced-motion. Verify every spec bullet + acceptance bullet. Commit "M11: session-tile (hero, amplified)" and report.
-
-### M12 — Frontend: overview route (tile + list toggle + search)
-
-- **Depends on**: M11, M2, M5b — M2 for the backend sessions list, M5b for SSE status deltas; Eng dep-graph fix.
-- **Scope** (~450 LOC, was 300): `routes/overview.tsx`, `useSessions()` hook (TanStack Query + SSE invalidation), `useSse()` hook (full implementation; M10 was stub), view-mode toggle with layout-morph, search input, FAB for new session, empty/error/no-match states, NewSessionSheet with Quick-start + Advanced tabs.
-- **Acceptance**: Real data from backend renders; SSE updates flow through; search filters by name/desc/tags; view toggle persists in `useUI` store AND animates tile↔row via Framer Motion `layout` prop. Empty state, no-match state, error state all render per §4.11/§4.12. NewSessionSheet has Quick-start tab (3 preset boot configs: blank-claude, code-reviewer, doc-writer) + Advanced tab.
-- **Verification**: Boot backend with mocked sessions, render overview, verify live updates + view-toggle morph.
-- **Subagent prompt**:
-  > Build the overview route. Read TECH_PLAN.md §4.1, §4.2, §4.6, §4.11/§4.12 (empty + loading + error states), `research/user-vision.md` "Overview screen", §1.7 of feature-extract. Replace the M10 stub of `web/src/hooks/use-sse.ts` with the full implementation: connect to `/api/events` with `Authorization: Bearer` (not `?_token=` — security), dispatch events to callbacks; auto-reconnect (300ms × 2^n cap 30s, with ±20% decorrelated jitter from day 1 per Eng P1 #5); declare stale after 18s silence (force reconnect); on visibility/focus/online events, if last data >4s ago, refetch. Replace `web/src/hooks/use-sessions.ts` stub: `useQuery({ queryKey:['sessions'], queryFn: api.listSessions, staleTime: 30_000 })`. Subscribe to SSE 'sessions' event in a top-level effect that calls `queryClient.setQueryData(['sessions'], updater)` applying delta merge (each delta item updates only the keys present — `preview_lines`, `status` independently). Write `web/src/routes/overview.tsx`: header with title, search input (debounced 200ms), view-mode toggle (Tile/List, reads `useUI` store). Body: if tile mode, CSS grid `grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2` of `<SessionTile />`; if list mode, vertical list of `<SessionRow />` (write this — compact row with name, status dot, last activity, click → focus). **View toggle morphs** via Framer Motion `layout` prop (`<motion.div layout layoutId={...}>` per session). **Empty state** per §4.11 ("No agents yet. Boot your first one.") with CTA `<NewSessionSheet />` pre-filled with cwd + provider=claude. **No-match state** for non-empty search ("No matches for `query`." + Clear button). **Error state** when `useQuery.error` ("Can't reach supermux-server. Retrying…"). FAB bottom-right (mobile only — desktop has it in the header) opens `<NewSessionSheet />`. NewSessionSheet has **two tabs**: "Quick start" (3 preset boot configs: blank claude, code-reviewer agent, doc-writer agent — each a button that prefills the form), "Advanced" (full fields: name, dir with `/api/autocomplete/dir` typeahead, desc, provider radio, worktree checkbox). On submit, POST /api/sessions + navigate to focus. Sort sessions per `research/amux-feature-extract.md` §1.2: pinned-desc, running-desc, (active|waiting before idle), -last_activity. Search filters by name/desc/tags. Wire view-mode persistence via Zustand store from §4.6. Verify with real backend + mock sessions. Commit "M12: overview (amplified)" and report.
-
-### M13 — Frontend: LiveTerminal hook + xterm.js wrapper
-
-- **Depends on**: M10, M4.
-- **Scope** (~400 LOC): `hooks/use-live-term.ts`, `components/terminal/live-terminal.tsx`.
-- **Acceptance**: `<LiveTerminal name="..." />` renders, connects to WS, displays replay + live bytes; resizes correctly via FitAddon + ResizeObserver; sends user keystrokes back; reconnects on close.
-- **Verification**: Render a `<LiveTerminal>` against a real session; type and see output.
-- **Subagent prompt**:
-  > Build the LiveTerminal hook + component. Read TECH_PLAN.md §4.5 (full spec), §5.2 (data flow). Write `web/src/hooks/use-live-term.ts` per §4.5 signature: create `XTerm.Terminal` with options `{ fontFamily: 'SF Mono, Menlo, monospace', fontSize: 13, theme: themeFromCss(), allowTransparency: false, cursorBlink: true }`; load `CanvasAddon` + `FitAddon` + `WebLinksAddon`; `open(containerRef.current)`; `fit()`. Connect to `wss://<host>:<port>/ws/sessions/<name>?_token=<tok>` (URL via `lib/api.ts`). On `ws.onmessage(blob)`: `await blob.arrayBuffer()` → `new Uint8Array(buf)` → `term.write(arr)`. On `term.onData(s)`: `ws.send(JSON.stringify({ type:'input', data: s }))`. ResizeObserver on container: debounce 100ms, `fitAddon.fit()`, then `ws.send({type:'resize', cols: term.cols, rows: term.rows})`. State machine: `connecting → live → reconnecting → offline`. Exponential backoff per §4.5; permanent close codes (1011, 1008, 1013, 4001) → `offline` (no retry). Expose `send(text)`, `sendKey(name)`, `copyAll()` (uses `term.buffer.active` and pushes to clipboard). Write `web/src/components/terminal/live-terminal.tsx`: thin wrapper that uses the hook, renders `<div ref={containerRef} className="h-full w-full" />`, and pipes the `state` to a small overlay banner (handled separately in §M23 — for now, show "Reconnecting…" text). Add `/dev/term/:name` route for manual testing. Verify with real backend WS. Commit "M13: live terminal" and report.
-
-### M14 — Frontend: focus-mode desktop (keyboard capture + split + dock)
-
-- **Depends on**: M11, M13.
-- **Scope** (~550 LOC, was 400 — CEO M14 amplification): `routes/focus/desktop.tsx`, `components/focus-mode/desktop-split.tsx`, `components/focus-mode/dock.tsx` (FULL desktop dock per §4.4.3, not a placeholder), `<CompactTile />` with peek-popover.
-- **Acceptance**: Per §4.4 desktop spec + §4.4.3 dock spec. Cmd+D detaches, Cmd+W stops, Cmd+1..9 jumps. All other keys go to xterm/tmux. Plus amplification bullets:
-  - Session strip compact tiles show status dot + name + token count + branch (matches cmux sidebar density).
-  - Hovering a non-current compact tile (≥300ms dwell) expands a 14-line tail preview in a popover (left-anchored, 380×220).
-  - Desktop dock includes: ⌘K palette button, slash-menu trigger, snippet drawer toggle, 4-chip send-row (Esc/Tab/Ctrl-C/Ctrl-U editable), Detach + Stop.
-- **Verification**: Focus a session, type a multi-line bash command including Ctrl+C, verify echo + interrupt. Hover a non-current compact tile, verify popover.
-- **Subagent prompt**:
-  > Build the desktop focus mode. Read TECH_PLAN.md §4.4 desktop subsection (every detail) AND §4.4.3 (full desktop dock spec). Write `web/src/routes/focus/desktop.tsx`: two-column flex (320px session-strip left, flex-1 main right). Session strip: vertical scroll of `<CompactTile />` (320px wide × 56px tall, current session highlighted via spring scale 1.02 + accent border, NOT a class flip). Each compact tile shows status dot + name + token count + branch chip. On hover (300ms dwell over a NON-current tile) → popover left-anchored, 380×220, renders 14-line tail preview from that session's `last_capture` (via the existing SSE state, no new fetch). Spring `springs.cardExpand`. Main pane: `<FocusHeader />` (44px, session name, status dot, Detach button, Stop button), `<LiveTerminal />` (flex-1), `<DesktopDock />` (bottom, 56px) — FULL implementation per §4.4.3: left cluster (⌘K palette, / slash, + snippet drawer), center 4-chip send-row (editable via gear icon, defaults Esc/Tab/Ctrl-C/Ctrl-U), right cluster (Detach ⌘D, Stop ⌘W). The send-row chips call `liveTerm.sendKey(label)`. The slash button opens the slash menu component from M18. Implement keyboard capture: a document-level keydown listener (registered in a useEffect when the route mounts, removed on unmount) that intercepts global shortcuts (Cmd/Ctrl+K, +D, +W, +1..9) and lets all other keys flow to xterm via `e.target` not preventing default. Cmd+D = `navigate('/')`; Cmd+W = stop + navigate. Cmd+1..9 = jump to N-th session in the list. Verify with real session — type "vim foo.md", arrows work, Esc works, :wq works. Verify popover and dock interactions. Commit "M14: focus desktop (amplified)" and report.
-
-### M15 — Frontend: focus-mode mobile (Vaul sheet + dock + edge gestures)
-
-- **Depends on**: M13.
-- **Scope** (~700 LOC, was 500 — CEO M15 amplification): `routes/focus/mobile.tsx`, `components/focus-mode/mobile-sheet.tsx`, `components/focus-mode/dock.tsx` (mobile variant), session pill with swipe-preview, kbd toggle, specials sheet, edge-swipe navigation.
-- **Acceptance**: Per §4.4 mobile spec. Vaul sheet detents work; rubber-band per Apple spec; dock height correct; specials sheet opens with 4-group layout. Plus amplification bullets:
-  - Edge-swipe-right from any focus state = `navigate('/')` (back to overview), matching user-vision.md.
-  - Edge-swipe-left = next session in pinned-then-active order.
-  - Session-pill horizontal swipe shows a peek of the next session's title + status dot during the drag, springs back if released before 40% threshold, snaps with `springs.sheetDetent` if past threshold.
-  - Drag-down past peek detent dismisses to overview (current spec only goes to peek).
-- **Verification**: Test on iPhone Safari (real device): tap session → focus mode opens at full detent, drag-down rubber-bands then dismisses to overview (past peek). Edge-swipe gestures verified.
-- **Subagent prompt**:
-  > Build the mobile focus mode. Read TECH_PLAN.md §4.4 mobile subsection (every detail, v2 amplified — edge swipes, drag-down-to-overview), §4.4.1 (dock), `research/termius-ios-native-spec.md` §"Apple Maps — Detail card pull-up", §"Apple Mail iOS 18", §"v3 finish acceptance criteria" #8, #9, #10, #11. Write `web/src/routes/focus/mobile.tsx` wrapping Vaul's `<Drawer.Root open={true} dismissible={true}>`. Configure detents: snap points `["40%","100%"]` (Vaul uses fractions). Initial detent: `1` (full). `dampOnOverScroll: 0.55` (custom prop or implement via the modal-snap callback to apply Apple's bungee formula on translation above max). Snap with `transition={{ type:'spring', stiffness:280, damping:30 }}` (matches `.spring(response:0.45, dampingFraction:0.82)`). Velocity-dismiss: hook into Vaul's `onPointerUp` — if `velocity.y > 1200 px/s downward` and current detent is peek, dismiss entirely → `navigate('/')`. If at full detent and dismissing downward, snap to peek first; second drag-down past peek dismisses. Drag indicator (handled by Vaul default; verify it's 36×5px). **Edge gestures (NEW v2)**: register a pointerdown listener on `document.body`; if startX within 16px of left edge OR right edge, start tracking; on pointerup, if Δx ≥40px AND velocity ≥800 px/s, fire `navigate('/')` (right-edge gesture) or `navigateToSession(next)` (left-edge gesture). During left-edge drag, render a peek-preview of the NEXT session's title + status dot via a `<motion.div drag="x" style={{x: dragX}}>` that snaps back if released before 40% width; snaps fully (and triggers the navigate) if past threshold. Inside Drawer.Content: `<FocusHeader minimal />` (44px), `<LiveTerminal name={current} />` (flex-1), `<MobileDock />` (56px + safe-area-bottom). Write `<MobileDock />`: flex row, 56px tall, items: session-pill (left), kbd-toggle, specials button, input (grows), send button. Session pill: capsule with status dot + name + chevron; tap = open `<SessionPickerSheet />` (Vaul half-sheet); swipe horizontally on it = nav prev/next session (use Framer Motion `drag="x"`, with peek-of-next preview during drag, spring per `springs.sheetDetent`, snap at 40% threshold). Write `<SpecialsSheet />`: Vaul half-sheet; horizontal pager of kbd-groups, each group = 2×2 of 4 keys; uses snap with `.snappy`. Verify on real iPhone. Commit "M15: focus mobile (amplified)" and report.
-
-### M16 — Frontend: kbd-accessory swipeable groups + manage sheet
-
-- **Depends on**: M15.
-- **Scope** (~500 LOC): `components/kbd-accessory/accessory-bar.tsx`, `group.tsx`, `pager.tsx`, `manage-sheet.tsx`.
-- **Acceptance**: Per Termius §"Swipeable 4-key accessory groups". 5 gray fixed + 4 user-editable; horizontal swipe pages between groups; manage sheet allows reorder/add/remove of keys with haptics.
-- **Verification**: On iPhone, swipe through groups; open manage, reorder a key, verify persistence via `/api/kbd-groups`.
-- **Subagent prompt**:
-  > Build the Termius-style swipeable accessory bar. Read TECH_PLAN.md §4.4.2 (full spec), `research/termius-ios-native-spec.md` §"Swipeable 4-key accessory groups", §"Keyboard accessory bar — heights & spacing", §"v3 finish acceptance criteria" #5, #6, #18. Write `web/src/components/kbd-accessory/accessory-bar.tsx`: 44pt-tall flex row, exposing PROPS for downstream parallel milestones: `<AccessoryBar onGestureToggle={...} onSlashOpen={...} onSnippetOpen={...} />` — Eng dep-graph fix so M17 plugs into the Gesture chip and M18 plugs into the slash trigger WITHOUT editing this file. Left fixed cluster of 5 gray chips (Back, Gesture, Kbd, More, Settings). Right pager of user groups (4 chips each). Page indicator dots below right side, auto-hide after 1.5s. Write `<Pager />`: snap-swipe between groups, snap threshold 30% width OR velocity >400px/s, spring `.snappy(duration:0.25)`. Use Framer Motion `<motion.div drag="x" dragConstraints>`. Write `<Group />`: single row of 4 chips per spec. Each chip: ≥44×44 hit, 32px visible height, 8px continuous corner, SF Mono 13pt semibold. Press state: scale 0.96 (iOS CSS-only feedback per §4.4 haptics caveat); IF `'vibrate' in navigator`, also `navigator.vibrate(8)`. Write `<ManageSheet />` (Vaul full-sheet): tap Settings (gear) chip → opens. Shows all groups with drag handles (use `framer-motion`'s `Reorder.Group`). Within a group, tap a key to edit (label + tmux key name). Add `+` to add a new group; `−` to remove. **Persistence is TABLE-BACKED** via `/api/kbd-groups` (M9 shipped this; do NOT add a `0006_kbd.sql` migration — table already exists in `0004_runtime_state.sql`). The v1 "OR prefs blob-based" alternative is REMOVED — single canonical storage. Default groups (seeded by backend M9 on first GET): Agent (Esc, Tab, Ctrl-C, Ctrl-U), Shell (~, /, |, &), Tmux (Ctrl-B, p, n, d), Symbols ('$', '#', '`', '*'). Verify swipe + reorder + persistence. Commit "M16: kbd accessory" and report.
-
-### M17 — Frontend: joystick + 2-finger gesture
-
-- **Depends on**: M13, M15.
-- **Scope** (~400 LOC): `components/joystick/joystick.tsx`, two-finger pan handler in `LiveTerminal`.
-- **Acceptance**: Per Termius §"Hold-anywhere arrow joystick" + §"Two-finger PageUp/PageDown". Long-press 350ms anywhere on terminal arms joystick with haptic + visible rose; drag emits arrows at 3 speed tiers. Two-finger swipe emits PageUp/Down.
-- **Verification**: On iPhone, hold + drag = arrow keys flowing; two-finger swipe = scrollback paging.
-- **Subagent prompt**:
-  > Build the touch gestures over the terminal. Read TECH_PLAN.md §4.4 mobile (gestures bullet + iOS haptics caveat), `research/termius-ios-native-spec.md` §"Hold-anywhere arrow joystick", §"Two-finger PageUp / PageDown", §"v3 finish acceptance criteria" #2, #3, #4, #7. Write `web/src/components/joystick/joystick.tsx` as an absolutely-positioned overlay on the terminal viewport. PointerDown handler: start 350ms timer; if pointer moves >8px in that window, cancel. On arm: feedback = (a) `if('vibrate' in navigator) navigator.vibrate(8)` (Android Chrome path) PLUS (b) animate the rose origin element with `scale: 0.96 → 1.0` over 60ms (iOS Safari fallback; iOS has no `navigator.vibrate`). Render rose at touch point (88px circle, 1px tertiary stroke, 0 fill, 80ms ease-in). Movement after arm: compute radial distance from origin. Direction lock: dominant axis until re-orient cone of 30° held for 80ms. Speed tier by distance: 8-32→90ms, 32-72→50ms, ≥72→20ms repeat interval. Each interval, call `sendKey('Up'|'Down'|'Left'|'Right')` via the LiveTerminal context. Release: rose fade-out 120ms. Reduce Motion: skip rose, just emit keys. Two-finger gesture: a separate `PointerEvent` listener that tracks 2 simultaneous pointers; compute average translation; on 20px cumulative downward swipe → `sendKey('PageUp')`; every additional 24px → another PageUp; same logic for upward → PageDown. Velocity shortcut: >1500 px/s emits 2 keys. Two-finger gesture cancels the joystick. Toggle via the `onGestureToggle` PROP passed into `<AccessoryBar />` from M16 (does NOT edit accessory-bar.tsx). When joystick is off, long-press triggers Apple-style selection instead — that's a NEXT-milestone item; for now just enable/disable. **Document iOS haptic limitation** in `web/ACCEPTANCE.md`: "Haptics on iOS Safari = CSS-only scale press; true haptics deferred to Capacitor v3.1." Verify on real iPhone AND a real Android Chrome. Commit "M17: joystick + 2-finger" and report.
-
-### M18 — Frontend: slash menu + snippets + dictation
-
-- **Depends on**: M15.
-- **Scope** (~400 LOC): `components/slash-menu/slash-menu.tsx`, `components/snippets/snippet-panel.tsx`, `components/snippets/snippet-editor.tsx`, dictation button (uses WebSpeech API).
-- **Acceptance**: Typing `/` in input shows slash menu with all commands (built-ins + skills) fetched from `/api/slash-commands`. Snippet panel slides up from accessory bar with `.spring(response:0.35, damping:0.85)`. Long-press snippet fires it.
-- **Verification**: Type `/com` → menu shows `/compact`; Enter selects. Snippet panel open + tap inserts; long-press fires immediately.
-- **Subagent prompt**:
-  > Build the slash menu, snippet picker/editor, and dictation. Read TECH_PLAN.md §4.4.1 (dock), `research/termius-ios-native-spec.md` §"Snippet editor — in-place vs modal", §"ChatGPT iOS — message composer". Write `web/src/components/slash-menu/slash-menu.tsx`: when input value starts with `/`, fetch `/api/slash-commands` (cached via TanStack Query 60s), filter by typed prefix, render as a popover above the input. Spring `.smooth`. Each row: cmd + desc. Arrow keys nav, Enter selects (inserts into input, sets cursor at end). Write `web/src/components/snippets/snippet-panel.tsx`: in-place slide-up panel from above accessory bar. Height `min(320px, 50vh)`. Spring per spec. `.thinMaterial` look: `bg-background/70 backdrop-blur-xl`. Tap row = insert; long-press 500ms = run-immediately (call `sendText(snippet.body)` directly), medium haptic (`navigator.vibrate(15)`). Swipe-left on row reveals Edit / Delete; full-swipe past 50% auto-deletes with medium haptic. Write `web/src/components/snippets/snippet-editor.tsx` (modal full-sheet via Vaul): title input + body textarea + Save/Cancel. Persist via `/api/snippets`. Default snippets: `continue`, `/compact`, `/status`. Wire dictation: a mic button in the dock that uses `webkitSpeechRecognition` (`SpeechRecognition` polyfill); on result, set input value. Gracefully degrade if not supported. Verify each interaction. Commit "M18: slash + snippets" and report.
-
-### M19 — Frontend: board route
-
-- **Depends on**: M10, M6.
-- **Scope** (~600 LOC): `routes/board.tsx` with columns, cards, drag-reorder, create-issue dialog, tag chips, due-date picker.
-- **Acceptance**: Drag a card between columns updates server. Atomic claim hits 409 visibly. Calendar sync URL visible in settings.
-- **Verification**: Create 3 issues, drag, verify SSE board updates flow back.
-- **Subagent prompt**:
-  > Build the kanban Board route. Read TECH_PLAN.md §4 board reference, `research/amux-feature-extract.md` §2, `research/user-vision.md` "Board". Write `web/src/hooks/use-board.ts` (TanStack Query against `/api/board`, SSE-driven invalidation on 'board' event). Write `web/src/routes/board.tsx`: horizontal scrollable row of columns (one per status; columns config from `/api/board/statuses`). Each column: header (label + count + add-card button), vertical list of `<IssueCard />`. Use `framer-motion`'s `<Reorder.Group>` for within-column reorder; for cross-column drag, use HTML5 drag-drop OR `react-dnd` (prefer plain pointerdown/move/up to stay light). On drop: compute new `pos` as midpoint between neighbors, PATCH. `<IssueCard />`: shows title, session pill (if assigned), tags as small chips, due date if set, owner_type icon (human/agent). Tap = open `<IssueDetailSheet />` for edit. Create: `+` in column header → `<NewIssueDialog />` with fields title, desc, session (combo), due date, tags, owner_type radio. Statuses CRUD: gear icon in header opens `<ManageStatusesSheet />`. Spring values everywhere from `lib/springs.ts`. Verify drag, multi-tab consistency via SSE. Commit "M19: board" and report.
-
-### M20 — Frontend: files route
-
-- **Depends on**: M10, M7.
-- **Scope** (~500 LOC): `routes/files.tsx` with breadcrumb, list/grid view, file viewers (image/PDF/video/audio/text), markdown editor (CodeMirror 6).
-- **Acceptance**: Browse, open file, edit text, save. Image preview inline. Video plays via Range-aware `<video>`.
-- **Verification**: Click around in `~/`, open a markdown, edit, save.
-- **Subagent prompt**:
-  > Build the Files route. Read TECH_PLAN.md §4 files reference, `research/amux-feature-extract.md` §3, `research/user-vision.md` "Files". Write `web/src/routes/files.tsx`: breadcrumb at top, hidden-toggle, sort options, then either: sidebar+main (md+) or drill-down (<md). The optional `:name` route param scopes the root to that session's `CC_DIR`. Use `/api/ls` for listings. On click: if directory → navigate; if file → `<FileViewer file={meta} />` which fetches `/api/file` and renders by type: image (inline `<img src={data_url}>`), pdf (`<embed type="application/pdf">`), video (`<video src={`/api/file/raw?path=${path}`} controls>` — Range support is server-side), audio similarly, text (read-only or, if writable extension, CodeMirror 6 with markdown/syntax highlighting). For markdown, add `<MarkdownEditor>` using `@uiw/react-codemirror` (or stick with `@codemirror/lang-markdown` directly to avoid wrappers). Save = PUT /api/file. Upload via drag-drop on the file list: dropzone overlay, POSTs multipart to `/api/fs/upload`. Verify image, pdf, video, text all render; edit a .md and save round-trips. Commit "M20: files" and report.
-
-### M21 — Frontend: scheduler route
-
-- **Depends on**: M10, M8.
-- **Scope** (~650 LOC, was 500 — CEO M21 amplification): `routes/scheduler.tsx` with job list, create/edit dialog with expression builder, next-5-runs preview, test-fire-now button, preset boot recipes, recent-runs list.
-- **Acceptance**: Create boot/tmux/shell jobs with cron OR free-text expression. Verify next_run computed correctly. Inline edit, enable/disable toggle. Plus amplification bullets:
-  - Expression builder previews the NEXT 5 RUNS as the user types (e.g. "every weekday at 9am" → shows the next 5 weekday 9am datetimes).
-  - "Test fire" button runs the schedule once IMMEDIATELY (via run-now) so the user proves it works before going live.
-  - Preset boot recipes: 3 buttons in NewScheduleDialog ("Boot a /cso review every Monday 9am", "Boot a /design-shotgun every Friday 4pm", "Boot a /qa daily at 6pm") that prefill the entire form.
-- **Verification**: Create "every 5m" schedule sending `/status` to a session; observe runs. Test fire one before saving.
-- **Subagent prompt**:
-  > Build the Scheduler route. Read TECH_PLAN.md §4 scheduler reference, §3.8 (backend job kinds: tmux/shell/boot + idempotency), `research/amux-feature-extract.md` §4, `research/user-vision.md` "Scheduler specifically". Write `web/src/routes/scheduler.tsx`: list of schedules with columns title / kind / session / next_run / last_run / enabled-toggle. Empty state per §4.11. Click = open `<ScheduleDetailSheet />` for edit + history (last 20 runs). Create: `+` button opens `<NewScheduleDialog />` with: **3 preset cards at the top** ("/cso Monday 9am", "/design-shotgun Friday 4pm", "/qa daily 6pm") — each prefills kind/session/command/expression. Then: kind radio (boot / tmux / shell), and matching field set. boot: dir, provider, worktree?, prompt. tmux: session combo, text. shell: command. Expression field: free-text input with helper buttons that pre-fill common patterns ("every morning", "every weekday at 9am", "every 5m", "in 30m"). **Next-5-runs preview**: as the user types, debounced 200ms POST to a NEW endpoint `/api/schedules/preview` (server returns `{next_runs: [iso8601, ...]}` parsing the expression without persisting) and render the 5 datetimes in a small list below the input. **Test fire button**: enabled once expression+command validate; click → calls `POST /api/schedules` with `_test_fire: true` flag (server creates the schedule, runs it ONCE immediately, returns the run result, then deletes the schedule). Show result in a toast. Use `react-day-picker` for one-shot date+time picking. Run-now button calls `POST /api/schedules/{id}/run` and refetches. Watch mode: checkbox + done_pattern regex input + done_action select. Verify creating a "in 10s, shell, `touch /tmp/sched-test`" job actually runs. Commit "M21: scheduler (amplified)" and report.
-
-### M22 — Frontend: settings route
-
-- **Depends on**: M10.
-- **Scope** (~300 LOC): `routes/settings.tsx` with theme, view-mode default, auth-token copy button, audit log viewer, API key inputs (Anthropic, OpenAI), default model picker.
-- **Acceptance**: All settings persist via backend or localStorage as appropriate.
-- **Verification**: Toggle theme, change default model, restart browser, settings retained.
-- **Subagent prompt**:
-  > Build the Settings route. Read TECH_PLAN.md §4 settings reference, §6.4 (audit log), `research/amux-feature-extract.md` §1.8 (config endpoints). Write `web/src/routes/settings.tsx`: sections — Appearance (theme select: system/light/dark via `useUI` store), Default View (tile/list via `useUI`), API Keys (Anthropic / OpenAI — masked inputs, GET /api/settings/env on load, PATCH on save), Default Model (combo from a fixed list, PATCH `/api/settings/default-model`), Auth Token (display masked + copy button + regenerate button — confirm dialog), Audit Log (last 200 rows from `/api/audit?limit=200`, table view). Spring values for accordion-style section expand if used. Verify each setting writes/reads correctly. Commit "M22: settings" and report.
-
-### M23a — Cross-cutting: View Transitions + status banner (CEO split + Eng amplification)
-
-- **Depends on**: M10, M12, M14, M15.
-- **Scope** (~180 LOC): `components/view-transitions/morph.tsx` helper (`<MorphLink>` + `navigateMorph` function), `components/status-banner/reconnect-banner.tsx`, `useConnection()` Zustand store.
-- **Acceptance**: Tile-to-focus morphs (Chromium fallback to instant); reconnect banner shows on WS reconnects per Termius spec; banner states transition correctly across multiple terminals (no flicker — Codex finding #16).
-- **Verification**: Visual on Safari/Chrome; force a network drop with DevTools and verify the banner sequences amber → green → fade.
-- **Subagent prompt**:
-  > Implement View Transitions + the reconnect banner. Read TECH_PLAN.md §4.5 (close-code semantics), `research/termius-ios-native-spec.md` §"Reconnect banner / connection status surface", §"v3 finish acceptance criteria" #8. Write `web/src/components/view-transitions/morph.tsx`: `navigateMorph(to)` helper that wraps `navigate()` with `document.startViewTransition(() => flushSync(() => navigate(to)))` if supported; falls back to plain navigate. Also export `<MorphLink to={...}>` component. Update SessionTile click to use it (already references it in M11). Write `web/src/components/status-banner/reconnect-banner.tsx`: pinned 8px below safe-area-top, 36px tall pill, glass effect (`backdrop-blur-xl bg-background/70`), tinted by state. Subscribe to a global `useConnection()` Zustand store. The store tracks N connections (1 SSE + N live terminals) and AGGREGATES the worst current state: Connected if all are connected; Reconnecting if any reconnecting; Offline if any offline > 30s. This fixes the Codex #16 flicker concern (banner reflects worst-state, not last-update). States: Connecting (amber), Reconnecting (amber + spinner), Connected (green checkmark, auto-dismiss 1.2s), Offline (red, "Tap to retry"). Animations: slide-in `.smooth(0.35s)`, state morph `.snappy(0.25)` in-place (no slide-out), success slide-out after 1.2s linger `.smooth(0.4)`. Verify across forced WS drops. Commit "M23a: view transitions + banner" and report.
-
-### M23b — Cross-cutting: PWA on iOS (CEO split)
-
-- **Depends on**: M23a.
-- **Scope** (~200 LOC): PWA manifest + vite-plugin-pwa config, A2HS instructions sheet, iOS splash screen, apple-touch-icon, status-bar-style, viewport-fit cover, standalone-mode detection.
-- **Acceptance**: PWA installable on iPhone via A2HS; status bar correct on iPhone 14/15/16 notch + Dynamic Island; splash screen color matches first-frame paint (no flash of wrong color); standalone-mode detection works.
-- **Verification**: `lighthouse` PWA score ≥90; install to home screen on a real iPhone; relaunch from home screen and verify chrome is hidden + status bar style correct.
-- **Subagent prompt**:
-  > Implement PWA scaffolding tuned for iOS Safari (the fiddly platform). Read TECH_PLAN.md §4.9 (PWA). Install `vite-plugin-pwa`, configure `manifest` per §4.9 with: `display: 'standalone'`, `background_color: '#0a0a0a'` (matches dark default first-paint), `theme_color: '#0a0a0a'`, icons 192/512/maskable. Service worker (Workbox): `NetworkFirst` for HTML with 3s timeout (and DO NOT cache the HTML if it contains the auth token — bypass cache for "/" — Codex #13/#20), `CacheFirst` for fingerprinted JS/CSS, bypass for `/api/*` and `/ws/*`. **Auth token SW invalidation**: when the user regenerates their auth token in Settings (M22), call `caches.delete('supermux-html')` AND `navigator.serviceWorker.controller?.postMessage({type:'token-rotated'})`. Add `index.html`: `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />`, `<meta name="apple-mobile-web-app-capable" content="yes" />`, `<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />`, `<link rel="apple-touch-icon" href="/icon-180.png" />`, splash-screen link tags for each iPhone screen size (or one mask icon if simpler). Write `<A2HSInstructionsSheet />`: a Vaul half-sheet shown on first iOS-Safari load (`isIOSSafariNotStandalone()`) explaining "Tap the Share button, then 'Add to Home Screen'" with screenshots. Dismissable; remember dismissal in localStorage. Write `useStandaloneMode()` hook that detects `window.matchMedia('(display-mode: standalone)').matches`; the Layout uses this to hide the address-bar back button when in standalone. Verify on iPhone 14 + 15 + 16 (notch + Dynamic Island). Commit "M23b: PWA on iOS" and report.
-
-### M24a — Smoke e2e (early integration check)
-
-- **Depends on**: M14 (so we can drive the critical user journey: open → focus → type → see output, end-to-end against real backend).
-- **Scope** (~250 LOC): the FOUR most-critical e2e tests, run against the live binary. Early-warning that the system holds together; allows fixing rough edges BEFORE M19-M22 ship.
-- **Acceptance**: 4 Playwright specs pass on CI: overview-loads, focus-types-and-sees-output, ws-reconnect-restores-stream, board-claim-race-no-500s.
-- **Verification**: `bunx playwright test smoke/` green; manual sanity on dev machine.
-- **Subagent prompt**:
-  > Build the SMOKE e2e suite: the four tests we want as early-warning. Read TECH_PLAN.md §7 (testing strategy). Set up Playwright in `web/`: `bunx playwright install chromium`. Write `web/tests/e2e/smoke/`: `overview-loads.spec.ts` (boot binary on an ephemeral port, navigate to /, expect at least 1 tile when DB has sessions; expect empty state otherwise), `focus-types-and-sees-output.spec.ts` (boot, navigate to focus, type "echo hi", expect "hi" to appear within 3s; uses `provider='shell'` session), `ws-reconnect-restores-stream.spec.ts` (open WS, kill backend, restart, verify reconnect within 30s and replay buffer restored), `board-claim-race-no-500s.spec.ts` (100 parallel POSTs to /claim → exactly 1 success + 99 of 409, ZERO 500s — regression for Codex #1). Run, fix anything that fails. Commit "M24a: smoke e2e" and report.
-
-### M24b — Full integration tests + acceptance criteria pass
-
-- **Depends on**: M11..M23b, M24a.
-- **Scope** (~450 LOC): full Playwright e2e suite covering all critical user journeys; manual checklist for the 20 acceptance criteria from termius spec; "5 strangers, 60 seconds" qualitative test.
-- **Acceptance**: All e2e tests pass on CI; ≥18 of 20 acceptance criteria pass on real iPhone; "5 strangers, 60 seconds" test recorded + observations logged.
-- **Verification**: CI green; manual sign-off on iPhone + stranger-test recording.
-- **Subagent prompt**:
-  > Build the full e2e Playwright suite + run the acceptance checklist + run the stranger test. Read TECH_PLAN.md §7 (testing strategy), `research/termius-ios-native-spec.md` §"v3 finish acceptance criteria". Extend `web/tests/e2e/` (smoke from M24a already exists): `files-edit-save.spec.ts` (browse to a temp file, edit, save, verify content via direct fs read), `scheduler-fires.spec.ts` (create "in 5s shell" schedule, wait, verify marker file), `kbd-accessory-swipe.spec.ts` (mobile viewport, swipe pages between groups, verify snap), `joystick-arms.spec.ts` (mobile, long-press, verify arrow keys flow). Mobile suite: use `devices['iPhone 14 Pro']` context; assertions: tile is tappable, focus mode opens at full detent, dock is 56px tall, accessory bar is 44px tall, joystick arms in <400ms. Also write `web/ACCEPTANCE.md` with the 20 criteria from the Termius spec, each rendered as a checkbox + manual-test instructions. **"5 strangers, 60 seconds" test (CEO #10)**: find 5 people not on the team. Hand each the configured iPhone PWA; ask them to use it for 60 seconds with no instructions. Record their faces (with consent). If any face shows confusion in the first 10 seconds, OPEN A BUG in `web/ACCEPTANCE.md "Stranger test findings"` section, FIX before declaring done, re-run. Run the full suite, fix discovered bugs (or open follow-up issues if non-blocking), report passing count. Commit "M24b: full e2e + acceptance + stranger test" and report.
-
-### M25 — Deployment scripts + v2 coexistence
-
-- **Depends on**: M24b.
-- **Scope** (~200 LOC): `scripts/build.sh`, `scripts/deploy.sh`, `etc/systemd/supermux.service`, README updates.
-- **Acceptance**: Single `scripts/deploy.sh` run produces a running v3 on clawd-02 port 8823; v2 still works on 8822.
-- **Verification**: Both URLs respond; no port conflict; logs in `journalctl -u supermux`.
-- **Subagent prompt**:
-  > Wire up build and deploy. Read TECH_PLAN.md §8 (deployment). Write `scripts/build.sh` per §8.1; `scripts/deploy.sh` per §8.2; the systemd unit per §8.3. Ensure the binary opens its own data dir at `~/.supermux/` (no overlap with v2's `~/.amux/`). On clawd-02, install the systemd unit (`sudo install` the file, `systemctl daemon-reload`, `enable`, `start`). Configure `tailscale serve` to expose v3 on a distinct path or hostname (`tailscale serve --bg --https=8823 https+insecure://localhost:8823`). Verify with `curl https://clawd-02.foo.ts.net:8823/api/health` returns 200 with token, and that v2 at port 8822 still serves. Update top-level README with quickstart. Commit "M25: deploy" and report.
-
-### M26 — Data migration from v2
-
-- **Depends on**: M25.
-- **Scope** (~300 LOC): `scripts/migrate-v2.py`.
-- **Acceptance**: Running the script copies all v2 sessions, board issues, schedules, skills, prefs into v3 SQLite; idempotent on re-run.
-- **Verification**: Run dry-run, then real, then compare `sqlite3 .supermux/data.db 'select count(*) from sessions'` to `ls ~/.amux/sessions/*.env | wc -l`.
-- **Subagent prompt**:
-  > Write the v2→v3 data migration. Read TECH_PLAN.md §9 (column-explicit copies — DO NOT use SELECT *), `research/amux-feature-extract.md` Appendix A (filesystem layout), §1.2 (.env keys), §2.2 (issues schema), §4.2 (schedules schema). Write `scripts/migrate-v2.py`: open `~/.supermux/data.db` write-mode, ATTACH `~/.amux/data.db` as `old`. For each `.env` in `~/.amux/sessions/`, parse env-style (quote-aware) + corresponding `.meta.json`, INSERT OR IGNORE into v3's `sessions` with EXPLICIT column names (per §9 sample). For each session also INSERT into `session_runtime` with a freshly generated `hook_token` (`secrets.token_urlsafe(32)`). Copy `old.issues`, `old.issue_tags`, `old.issue_counters`, `old.statuses` into v3 with EXPLICIT column lists. Copy `old.schedules`, `old.schedule_runs` similarly (note v3 has `schedule_run_keys` table — leave empty, it's idempotency state). Copy `old.skills`. Copy `old.prefs`. Print summary line per table. Add `--dry-run` flag that COUNTs but doesn't insert AND asserts that v2's column set is a superset of v3's required columns; reports drift. Idempotent: use `INSERT OR IGNORE` everywhere. Verify on a real v2 install, then verify v3 reads them all via a hit-every-endpoint smoke run. Commit "M26: migration" and report.
-
-### M27 — Time to Wow (first-60-seconds experience)
-
-- **Depends on**: M11, M12, M13, M14, M15, M23a, M23b, M26.
-- **Scope** (~150 LOC + design): first-launch detection, unboxing sequence, one-tap demo agent, "Run the 30-second demo" link in Settings.
-- **Acceptance**: Cold install on iPhone, A2HS, open → within 5 seconds the user knows what supermux is and what to tap next. Verified via M24b stranger test.
-- **Verification**: Install fresh PWA on a clean Safari profile; observe first 30 seconds is coherent.
-- **Subagent prompt**:
-  > Build the first-60-seconds experience — the unboxing moment. Read TECH_PLAN.md §0 (hero data flow), §4.11 (empty states), `research/user-vision.md` (UX truth). Implement first-launch detection: `localStorage['supermux-first-launch']` absent → first-launch state. Two branches:
-  > 1. **If v2 data was migrated** (detected via `count(sessions) > 0` AND `localStorage` absent): show a non-blocking welcome banner "Welcome back. Your N sessions are here." Plus a 3-step one-tap tour overlay (FloatingTip components anchored to: a tile-peek hover, the focus-mode button, the scheduler tab). User can dismiss via X or "Got it." On dismiss → set `localStorage`.
-  > 2. **If no v2 data and no sessions yet**: show the empty-state CTA from M12 ("No agents yet. Boot your first one.") PLUS a secondary "Boot a code-reviewer demo agent in this directory" button that creates a session via `POST /api/sessions` with the `/cso` skill prefilled.
-  > Add a "Run the 30-second demo" link in Settings → Onboarding section that: clears `localStorage['supermux-first-launch']`, deletes any demo session, navigates to / so the user can replay the unboxing. Use Framer Motion's `<AnimatePresence>` and `springs.cardExpand` for all entry/exit. Verify on cold install. Commit "M27: time to wow" and report.
-
-### M28 — Brand + microcopy + sound
-
-- **Depends on**: nothing (parallel-anywhere).
-- **Scope** (~80 LOC + assets): brand color picked + tokenized, app icon SVG → multi-size PNGs, splash color match, "needs input" Web Audio cue, toast component, microcopy pass across all empty/error/confirm dialogs.
-- **Acceptance**: App icon visible on iPhone home screen + recognizable at 32px; splash matches first-frame paint; "needs input" cue plays on transition (user-toggleable); microcopy consistent (builder-to-builder voice, no "Oops!" / "Great!"); toast slides in from top with `.smooth(0.35)`.
-- **Verification**: Visual check on iPhone; toggle the sound; grep the codebase for banned vocabulary.
-- **Subagent prompt**:
-  > Pick the brand, set the voice, ship the icon, ship the sound. Read TECH_PLAN.md §0 (no specific brand pick yet) — **CHOICE: a single brand tint that reads as "confident-builder amber" — `hsl(38 92% 58%)`** (similar to Anthropic amber but slightly warmer; matches the "Active" pulse story). Register it as `--accent` in `web/src/styles/globals.css` (replacing the placeholder), used for status-active pulses, the FAB, focus accent stroke. App icon: write `web/public/icon.svg` (single source: a stylized terminal block with the amber chevron `❯`, monochrome on dark background — must read at 32px). Export to 192/512/180-apple-touch via a small `scripts/build-icons.sh` (uses `rsvg-convert` or `inkscape`). Splash: `background_color: '#0a0a0a'` in manifest already matches the dark default; verify no flash of white. Write `web/src/lib/sound.ts`: a one-shot 200ms tone via Web Audio API (`OscillatorNode` 440Hz → 880Hz pitch slide, 0.15 gain, exponential ramp out). Trigger on transitions into `Status::Waiting` via the existing SSE handler. Wrap in `if (useUI.sounds) ...`. Add Settings → Appearance section "Sounds" toggle (default OFF for politeness; user opts in). Write `<Toast />` component: glass capsule, 36pt tall, slides in from top with `.smooth(0.35)` per Termius spec, auto-dismiss 2.5s, stack max 3. Microcopy pass: grep for "Oops" / "Great" / "Awesome" / "Oh no" — replace with neutral builder voice (write a `lint-microcopy.sh` script that fails CI on any of these strings). Verify. Commit "M28: brand + microcopy + sound" and report.
-
-### M29 — Performance budget pass
-
-- **Depends on**: M11, M12, M13.
-- **Scope** (~50 LOC + measurement): bundle size budget enforced in vite config; Lighthouse perf ≥85 on overview; runtime perf benchmarks for the hero loop.
-- **Acceptance**:
-  - Overview with 20 tiles, each receiving `preview_lines` deltas every 2s: 60fps on iPhone 14, 30fps on iPhone SE (measured via Chrome DevTools Performance trace + iOS Safari Web Inspector).
-  - Focus mode terminal: keystroke-to-display latency <50ms on LAN, <100ms over Tailscale.
-  - Hover-peek expand animation: no dropped frames during 6→14 line transition.
-  - Lighthouse perf ≥85, FCP <500ms, TTI <1.5s on dev server.
-  - Bundle size: main JS ≤200KB gzipped, CSS ≤30KB gzipped (vite plugin enforces; build fails on overage).
-- **Verification**: Lighthouse + DevTools traces archived in `web/perf/baselines/`.
-- **Subagent prompt**:
-  > Set performance budgets and verify them. Read TECH_PLAN.md §0 (hero data flow performance expectations). Install `rollup-plugin-visualizer` to inspect bundle composition. Configure vite via `build.rollupOptions.output.manualChunks` to split: `vendor-react`, `vendor-xterm`, `vendor-framer`, `app`. Use `vite-plugin-size-limit` (or write a small post-build script that compares `dist/**/*.js` gzipped sizes against budgets and exits 1 on overage): main app JS ≤200KB gzipped, CSS ≤30KB gzipped. Run Lighthouse against the dev server at `/` and `/focus/<demo>`; archive HTML reports in `web/perf/baselines/`. Run a Chrome DevTools Performance trace for the 20-tile overview with simulated SSE deltas at 2s (use a small `web/dev/simulate-sse.ts` harness). Assert: no long tasks >50ms during steady-state. Run on iOS Safari (real iPhone 14 + iPhone SE if available) and screenshot the Web Inspector timeline. Add `web/PERF.md` documenting the budgets + how to run the suite. Commit "M29: perf budget pass" and report.
 
 ---
-
-### Milestone dependency graph (visual — v2)
-
-```
-M0 ─┬─► M1 ─► M2 ─► M3 ─┬─► M4 ──┬─► M5b ─► M9
-    │       │           │        │  (M5b needs M4 + M5a; M9 needs M3 + M5b)
-    │       │           ├─► M5a ─┘
-    │       │           │  (M5a needs only M3 — starts parallel with M4)
-    │       │           ├─► M6
-    │       │           ├─► M7
-    │       │           └─► M8 (needs M3 for tmux job dispatch)
-    │
-    ├─► M10 ─┬─► M11 ─► M12 (also needs M2 + M5b)
-    │        │       └─► M13 (also needs M4)
-    │        │               ├─► M14 (also needs M11) ─► M24a (smoke e2e)
-    │        │               └─► M15 ─┬─► M16
-    │        │                        ├─► M17
-    │        │                        └─► M18
-    │        ├─► M19 (needs M6)
-    │        ├─► M20 (needs M7)
-    │        ├─► M21 (needs M8)
-    │        └─► M22
-    │
-    └─► M28 (parallel-anywhere: brand/icon/sound — no deps)
-
-M23a (after M10+M12+M14+M15) → M23b → M27 (needs M11..M15, M23a/b, M26)
-M29 (after M11+M12+M13)
-M24a (after M14) → M24b (after M11..M23b + M24a) → M25 → M26 → M27
-```
-
-### Parallelism opportunities
-
-- **M0 → M1 → M10** can fork: after M1 ships, backend (M2..M9) and frontend shell (M10) can proceed in parallel.
-- **M28** can run literally anytime — no dependencies.
-- **M6, M7, M8** are largely independent (M6/M7 only need M1; M8 needs M3). 2-3-way parallel after M3.
-- **M5a starts the moment M3 lands**, in parallel with M4 (M5a needs only M3). M5b then joins M4 + M5a. This split shortens the backend backbone — the regex/heartbeat core and its 30 golden fixtures no longer wait on M4.
-- **M19, M20, M21, M22** are independent of each other (depend on M10 + their respective backend, and on M10's stub hooks). 4-way parallel — ENABLED by M10 shipping `use-sse`/`use-sessions`/`use-board` stubs (Eng dep-graph fix).
-- **M16, M17, M18** are independent of each other (all depend on M15). 3-way parallel — ENABLED by M16's `<AccessoryBar>` exposing `onGestureToggle`/`onSlashOpen`/`onSnippetOpen` props so M17 and M18 don't edit accessory-bar.tsx (Eng dep-graph fix).
-- **M24a** (smoke) ships early (after M14), catching e2e issues BEFORE M19-22 → M24b dispatches.
-- **M29** can run as soon as M13 ships (parallel with M14/M15).
-- **Critical-path milestone chain** (load-bearing for dispatch order): M0 → M1 → M3 → M4 → M5b → M13 → M14 → M15 → M23a → M24a → M24b → M25 → M26 → M27. (M5a sidecars off M3 in parallel with M4; it is not on the critical path.)
-
----
-
-## 11. Loop / orchestrator skill spec
-
-### `/amux-build` skill
-
-**Location**: `/Users/sandervm/supermux/skill/SKILL.md` (plus `state.json` for loop state).
-
-**Purpose**: walk milestones in dependency order, dispatch subagents in parallel where deps allow, run a critic after each, loop on failures.
-
-**State file** (`/Users/sandervm/supermux/skill/state.json`):
-
-```json
-{
-  "milestones": {
-    "M0":  { "status": "done",       "started_at": "...", "finished_at": "...", "subagent": "id-1" },
-    "M1":  { "status": "in_progress","started_at": "...", "subagent": "id-2" },
-    "M2":  { "status": "blocked",    "deps": ["M1"] },
-    "M3":  { "status": "blocked",    "deps": ["M2"] },
-    "...": "..."
-  },
-  "last_tick": "2026-05-21T22:00:00Z"
-}
-```
-
-**Skill body** (sketch, ~30 LOC of markdown):
-
-```markdown
----
-description: Execute the TECH_PLAN milestones in dep order, parallel where possible, critic after each.
----
-
-# amux-build
-
-1. Read `/Users/sandervm/supermux/plan/TECH_PLAN.md` §10 milestone list.
-2. Read `/Users/sandervm/supermux/skill/state.json`. If missing, initialize with every milestone status="todo".
-3. Compute ready set: milestones whose deps are all "done" AND status is "todo".
-4. For each ready milestone, dispatch a subagent with the EXACT prompt from §10. Track its task id in state.json.
-5. Wait for completed subagents. For each finished:
-   a. Run critic: dispatch a second subagent with prompt "Read TECH_PLAN.md §10 M<n>. Read the commit it produced. Verify each acceptance criterion. Return PASS or FAIL+reasons."
-   b. If PASS: mark "done", commit state.json.
-   c. If FAIL: mark "blocked-failing", record failure reasons, dispatch a fix subagent with the original prompt + critic's failure list.
-6. Repeat from step 3 until all milestones are "done" or stuck (no ready set + ≥1 blocked-failing for >3 retries).
-7. Final report: list status of each milestone + total wall time.
-```
-
-The skill is invoked as `/amux-build` from a top-level Claude Code session. It's tens of subagents executing in waves, with the critic gate after each.
 
 ---
 
@@ -2478,7 +2027,7 @@ The skill is invoked as `/amux-build` from a top-level Claude Code session. It's
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | tmux behaves differently on Linux (clawd-02) vs macOS (dev) — `pipe-pane` quirks, `send-keys -l` quoting | CI runs against tmux 3.4 on Linux; integration test in `tests/lifecycle.rs` running real tmux is mandatory before any tmux-touching merge |
+| 1 | tmux behaves differently on Linux vs macOS — `pipe-pane` quirks, `send-keys -l` quoting | CI runs against tmux 3.4 on Linux; integration test in `tests/lifecycle.rs` running real tmux is mandatory before any tmux-touching merge |
 | 2 | xterm.js perf with many concurrent terminals (focus-mode strip has ≤320px-wide tiles potentially showing live previews) | Keep tiles read-only/sampled (peek every 2s via SSE delta), NOT live xterm instances; only the focused session uses xterm |
 | 3 | Vaul iOS Safari quirks (sheet flicker on rubber-band, keyboard pushing content) | Use Vaul ≥1.0; explicit `interactsWithModal` config; test against iOS 17, 18, 26 in CI via Playwright webkit |
 | 4 | View Transitions API only in Chromium → degraded look in Safari | Fallback to instant navigate is acceptable; revisit when WebKit ships (in progress as of 2026) |
@@ -2518,13 +2067,14 @@ These will not ship in v3.0. v3.1+ may revisit.
 
 ---
 
-## Appendix A — Quick reference: files this plan creates
+## Appendix A — Quick reference: repository files
 
 ```
-~/supermux/
-├── plan/TECH_PLAN.md                                          ← this file
-├── skill/SKILL.md                                             ← /amux-build orchestrator
-├── skill/state.json                                           ← loop state
+supermux/
+├── ARCHITECTURE.md                                            ← this file
+├── README.md
+├── LICENSE
+├── etc/systemd/supermux.service                               ← systemd unit template
 ├── scripts/{dev,build,deploy,migrate-v2}.{sh,py}
 ├── server/{Cargo.toml, build.rs}
 ├── server/src/{main,config,auth,error,state,http,static_assets}.rs
@@ -2561,70 +2111,3 @@ These will not ship in v3.0. v3.1+ may revisit.
 └── web/tests/e2e/*.spec.ts
 ```
 
----
-
-## 14. Review history (v2 — post-review)
-
-This section records the three plan reviews that produced v2.0 and where each finding landed.
-
-### Reviewers + verdicts
-
-| Reviewer | Lens | Verdict | Score |
-|---|---|---|---|
-| **CEO** (`plan/review-ceo.md`) | "Steve Jobs would ship this" | TIGHTEN-FIRST | 6.5/10 |
-| **Eng-Mgr** (`plan/review-eng.md`) | architecture + executable-by-subagents | NEEDS-REVISION | 7/10 |
-| **Codex** (`plan/review-codex.md`) | 200-IQ adversarial | REVISE-MAJOR | (no score) |
-
-### Finding → section addressed (31 rows)
-
-| # | Source | Finding | Section addressed |
-|---|---|---|---|
-| 1 | Codex #11 | `include_dir` nightly mismatch with stable Rust | §3.1 — switched to `rust-embed` |
-| 2 | Codex contradiction B | `provider='shell'` violated CHECK constraint | §3.3 — CHECK extended to `(claude, codex, shell)` |
-| 3 | Codex #3 | `path_safe::canonicalize` 500s on new files | §3.2.11 — parent-canonicalize + join basename + async + macOS case-insensitive |
-| 4 | Codex #7 | WS auth token in query string leaks to logs/screenshots | §3.2.9 + §4.5 — first-frame `{type:"auth"}` message |
-| 5 | Codex #4 + Eng P1 #3 | `$SUPERMUX_TOKEN` in tmux env leaks dashboard bearer | §3.5 + §3.6 + §6.5 — per-session `hook_token` |
-| 6 | Eng P0 #1 | FIFO reader can wedge a worker thread on blocking open | §3.2.7 — `O_NONBLOCK + AsyncFd` + keep-alive write fd |
-| 7 | Eng P0 #2 | Notify-before-subscribe race loses status transitions | §3.2.13 / §3.2.8 — `tokio::sync::watch::Sender<(Status, u64)>` |
-| 8 | Eng P1 #4 + CEO #6 | 1013 "permanent" boots mobile users on backgrounded tabs | §3.2.9 + §4.5 — 1013 = silent reconnect on visibility-visible |
-| 9 | Eng P1 #5 + CEO #6/#9 | Reconnect storm — jitter promised "later" | §4.5 + §12 risk #9 — ±20% decorrelated jitter from day 1 |
-| 10 | Eng concurrency #1 | PtyStream double-spawn race on concurrent first WS | §3.2.7 — `tokio::sync::OnceCell` per-session spawn-once |
-| 11 | Eng concurrency #5/#6 | `session_locks` + `status_notify` map memory leak | §3.2.5 — explicit cleanup in `sessions::delete` |
-| 12 | Eng concurrency #4 | `~/.claude/settings.json` race + destructive overwrite | §3.5 — atomic rename + namespaced `supermux-hook` marker merge |
-| 13 | Eng + Codex #5 | Missing tables (delegations, audit_log, kbd_groups storage) | §3.3 — inline schemas for `0005_delegations.sql` + `0007_audit.sql`; `kbd_groups` is table-only (alt removed from M16) |
-| 14 | Eng schema gaps | Missing CHECK constraints | §3.3 — `schedules.sched_type`, `schedules.done_action`, `session_runtime.last_status` |
-| 15 | Eng schema gaps | Missing indices | §3.3 — `idx_steering_session`, `idx_share_tokens_session`, partial `idx_sessions_active WHERE archived=0` |
-| 16 | Eng API surface | Missing endpoints in §3.4 table | §3.4 — added `/api/_internal/hook`, `/api/audit`, `/api/health`; `/api/sessions/{name}/share` explicitly out of scope |
-| 17 | Eng | HTTP `data` vs SSE `payload` envelope ambiguity | §3.4 — documented contrast explicitly (HTTP request-reply vs SSE stream-of-events) |
-| 18 | CEO #1 | Tile-tail-preview hero data flow undefined | §0 + §3.3 (`last_capture` column) + §3.6 (writeback) + §3.4 (SSE delta) + §4.3 (binding) — full pipeline plumbed |
-| 19 | CEO | Missing "first 60 seconds" milestone | §10 — added M27 Time to Wow |
-| 20 | CEO | Missing brand/microcopy/sound milestone | §10 — added M28 Brand + microcopy + sound (parallel-anywhere) |
-| 21 | CEO | Missing perf budget milestone | §10 — added M29 Performance budget |
-| 22 | CEO #5 | M11 SessionTile under-specified | M11 — amplified scope: +skeleton/error/quick-peek/morph/Reduce Motion |
-| 23 | CEO #4 | Desktop dock under-specified | §4.4.3 — full dock spec; M14 amplified: dock + peek-popover |
-| 24 | CEO #7 | Scheduler frontend under-specified | M21 amplified: +next-5-runs preview, test-fire, preset boot recipes |
-| 25 | Eng M24 | Single M24 catches e2e bugs too late | §10 — split M24a smoke (after M14) + M24b full (after M23b) |
-| 26 | CEO #6 | WS subscriber cap 8 too tight for multi-device PWA | §3.2.7 + §3.2.9 — cap raised to 32, broadcast 256 → 1024, both config-tunable |
-| 27 | Codex #14, #17 | iOS Safari `navigator.vibrate` unavailable — haptic spec is fiction | §4.4 + M17 — CSS scale-press fallback documented; true iOS haptics → Capacitor v3.1 |
-| 28 | CEO + Codex #10 | Time estimates dishonest ("50 wall-clock hours") | §0 — time estimates removed entirely (v2.1): build is AI-subagent-driven, not human-hour-budgeted; only the dependency DAG + critical-path chain remain |
-| 29 | Eng dep-graph | `http.rs` + `api.ts` + accessory-bar merge conflicts | §3.4 router-registry pattern; M0 ships `api.ts` stubs; M10 ships `use-sse`/`use-sessions`/`use-board` stubs; M16 exposes `<AccessoryBar onGestureToggle/onSlashOpen/...>` props |
-| 30 | Eng dep-graph errors | M5/M9/M12 listed wrong deps | (v2.1: M5 split into M5a/M5b — see §3.6) M5a deps: M3; M5b deps: M4 + M5a; M9 deps: M3 + M5b; M12 deps: M11 + M2 + M5b |
-| 31 | CEO #10 | "Jobs proud" treated as checklist not feel | M24b — "5 strangers, 60 seconds" qualitative test added to acceptance |
-
-### What was NOT applied (and why)
-
-- **Codex #8 View Transitions + canvas xterm jank**: acknowledged in §4.3 (the morph is container-only, not canvas-to-canvas). Costly to fix; cosmetic on Chromium-only path; acceptable for v3.0.
-- **Codex #12 binary size estimate**: cosmetic note in v1 said ~12MB; v2 leaves the estimate alone — actual will be measured in M25 and the README will reflect reality (likely 30-60MB stripped).
-- **Codex #15 `try_lock_for` on per-session mutex**: deferred. The 30s grace on stop is the practical timeout; `try_lock_for` adds complexity for an edge case (1MB paste blocking a stop). Revisit if observed in production.
-- **Codex #21 "20 acceptance criteria severity weighting"**: M24b adds the stranger test which is a stronger qualitative gate; the 18/20 number is preserved as a quantitative complement.
-
-### Final numbers
-
-- **Milestone count**: 33 discrete buildable units = one per `### M…` heading in §10 (M0, M1, M2, M3, M4, M5a, M5b, M6–M22, M23a, M23b, M24a, M24b, M25–M29). v2 had 32 discrete units (M5 was single); v2.1 split M5 → M5a + M5b for a flatter backend critical path. The orchestrator enumerates these headings at runtime via `^### (M\d+[a-z]?) —` rather than trusting any prose count.
-- **Time estimates**: removed (v2.1). This is an AI-subagent-driven build with unlimited parallel Opus workers; the orchestrator dispatches off the dependency DAG, not human-hour budgets. The only schedule signal is the critical-path milestone chain in §0/§10.
-- **Critical-path length**: 14 milestones (M0 → M1 → M3 → M4 → M5b → M13 → M14 → M15 → M23a → M24a → M24b → M25 → M26 → M27).
-- **Verdict v2.1**: ready for `/amux-build start`. All TIER-0 compile/runtime blockers, TIER-1 architecture fixes, TIER-2 schema fixes, and TIER-3 API contracts are resolved; §10 headings are runtime-parse-clean (`^### (M\d+[a-z]?) —`). The remaining open questions are taste-level (final brand color, exact stranger-test wording) and explicitly recorded above.
-
----
-
-**End of TECH_PLAN.md v2.1.** Tens of subagents will now execute against §10. Good luck.

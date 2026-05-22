@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Production build (TECH_PLAN §8.1): bundle the web app, embed it into the
-# server static dir, then build the release binary.
+# Production build: bundle the web app, embed it into the server static dir,
+# then build the release binary.
 #
 # Runs natively wherever it is invoked — on a dev box for local testing, or on
-# the deploy host itself (clawd-02 is aarch64 Linux; deploy.sh builds there to
-# avoid cross-compilation). Requires `bun` and `cargo` on PATH; deploy.sh
-# bootstraps both on the host if missing.
+# the deploy host itself (deploy.sh builds there to avoid cross-compilation).
+# Requires `bun` and `cargo` on PATH (provision them once on the host).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

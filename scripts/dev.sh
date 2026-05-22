@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Dev loop: run the Rust backend and the Vite dev server concurrently.
 # Backend hot-reloads via cargo-watch when installed; Vite hot-reloads the
-# frontend on every src edit. Ctrl-C stops both. (TECH_PLAN §M0)
+# frontend on every src edit. Ctrl-C stops both.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
