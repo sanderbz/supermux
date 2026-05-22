@@ -14,9 +14,11 @@
 use axum::middleware::from_fn_with_state;
 use axum::Router;
 
+use crate::agents;
 use crate::auth;
 use crate::board;
 use crate::files;
+use crate::hooks;
 use crate::public;
 use crate::scheduler;
 use crate::sessions;
@@ -31,6 +33,9 @@ pub fn router(state: AppState) -> Router {
         .merge(board::public_router_for(state.clone()))
         // M4: WS pty stream — NO bearer layer; auth is in-band first-frame (§3.2.9).
         .merge(ws::router_for(state.clone()))
+        // M5b: Claude hook ingestion — NO bearer layer; auth is the per-session
+        // `X-Amux-Hook-Token` validated in the handler (§6.5).
+        .merge(hooks::router_for(state.clone()))
         .merge(public::router_for(state))
 }
 
@@ -53,5 +58,6 @@ fn protected_router(state: AppState) -> Router {
         // alongside M2's already-stateful sessions router.
         .merge(files::router_for().with_state(state.clone()))
         .merge(scheduler::router_for(state.clone())) // M8
+        .merge(agents::router_for(state.clone())) // M5b (wait); M9 extends
         .layer(from_fn_with_state(state, auth::auth_middleware))
 }
