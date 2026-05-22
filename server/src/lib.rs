@@ -5,6 +5,7 @@
 //! definition. Modules map 1:1 to TECH_PLAN §3.2.
 
 pub mod auth;
+pub mod board;
 pub mod config;
 pub mod db;
 pub mod error;
