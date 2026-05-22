@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>amux — brand preview</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <!--
+      Standalone brand showcase (M28). No build step, no app shell — open this
+      file directly or visit /brand-preview.html on the dev server. It mirrors
+      the tokens in web/src/brand/. Source of truth stays in tokens.ts / copy.ts
+      / toast.tsx / sound.ts; this page just makes them visible.
+    -->
+    <style>
+      :root {
+        --accent: 38 92% 58%;
+        --status-active: 38 92% 58%;
+        --status-waiting: 214 95% 60%;
+        --status-error: 24 90% 56%;
+        --status-idle: 0 0% 45%;
+        --background: 0 0% 4%;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: hsl(var(--background));
+        color: #fff;
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+          Roboto, Helvetica, Arial, sans-serif;
+        padding: 48px 24px 96px;
+      }
+      .wrap { max-width: 920px; margin: 0 auto; }
+      header { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+      header img { width: 56px; height: 56px; border-radius: 14px; }
+      h1 { font-size: 28px; margin: 0; font-weight: 600; letter-spacing: -0.02em; }
+      h1 .sub { color: hsl(0 0% 60%); font-weight: 400; font-size: 16px; }
+      h2 {
+        font-size: 13px; font-weight: 600; text-transform: none;
+        color: hsl(var(--accent)); margin: 48px 0 16px; letter-spacing: 0;
+      }
+      p.lead { color: hsl(0 0% 68%); margin-top: 0; }
+      .card {
+        background: hsl(0 0% 7%); border: 1px solid hsl(0 0% 14%);
+        border-radius: 14px; padding: 20px;
+      }
+      /* ── icon sizes ── */
+      .icons { display: flex; align-items: flex-end; gap: 28px; flex-wrap: wrap; }
+      .icons figure { margin: 0; text-align: center; }
+      .icons img {
+        display: block; image-rendering: auto; border-radius: 22%;
+        background: #0a0a0a;
+      }
+      .icons figcaption { margin-top: 8px; font-size: 12px; color: hsl(0 0% 55%); }
+      /* ── swatches ── */
+      .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+      .swatch { border: 1px solid hsl(0 0% 14%); border-radius: 12px; overflow: hidden; }
+      .swatch .chip { height: 64px; }
+      .swatch .meta { padding: 10px 12px; }
+      .swatch .name { font-weight: 600; font-size: 13px; }
+      .swatch .val { font-size: 12px; color: hsl(0 0% 55%); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      /* ── toast replicas ── */
+      .toasts { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+      .toast {
+        height: 36px; display: inline-flex; align-items: center; gap: 8px;
+        padding: 0 14px; border-radius: 18px; border: 1px solid rgba(255,255,255,0.10);
+        background: rgba(20,20,20,0.72);
+        backdrop-filter: blur(18px) saturate(140%);
+        -webkit-backdrop-filter: blur(18px) saturate(140%);
+        box-shadow: 0 8px 28px -10px rgba(0,0,0,0.55);
+        color: #fff; font: 600 13px/1 inherit;
+      }
+      .toast .dot { width: 8px; height: 8px; border-radius: 9999px; }
+      /* ── microcopy ── */
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid hsl(0 0% 14%); vertical-align: top; }
+      th { font-size: 12px; color: hsl(0 0% 55%); font-weight: 600; }
+      .do { color: #e6e6e6; }
+      .dont { color: hsl(0 0% 50%); text-decoration: line-through hsl(var(--status-error) / 0.7); }
+      .samples { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+      .sample .t { font-weight: 600; margin-bottom: 4px; }
+      .sample .b { color: hsl(0 0% 64%); font-size: 14px; }
+      .sample .actions { margin-top: 12px; display: flex; gap: 8px; }
+      .btn { border-radius: 9px; padding: 7px 12px; font-size: 13px; font-weight: 600; border: 1px solid hsl(0 0% 20%); background: hsl(0 0% 12%); color: #fff; cursor: pointer; }
+      .btn.primary { background: hsl(var(--accent)); border-color: hsl(var(--accent)); color: #1a1205; }
+      .btn.danger { background: hsl(var(--status-error) / 0.16); border-color: hsl(var(--status-error) / 0.5); color: #fff; }
+      .play {
+        display: inline-flex; align-items: center; gap: 10px; cursor: pointer;
+        border-radius: 12px; padding: 12px 18px; font-size: 15px; font-weight: 600;
+        background: hsl(var(--accent)); color: #1a1205; border: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <img src="./icon.svg" alt="amux icon" />
+        <h1>amux <span class="sub">brand preview · M28</span></h1>
+      </header>
+      <p class="lead">
+        Run your agents in tmux, from anywhere. Builder-to-builder voice, one
+        amber tint, calm status colors.
+      </p>
+
+      <h2>App icon — legible from 16 to 512px</h2>
+      <div class="card icons">
+        <figure><img src="./icon.svg" width="16" height="16" /><figcaption>16</figcaption></figure>
+        <figure><img src="./icon.svg" width="32" height="32" /><figcaption>32</figcaption></figure>
+        <figure><img src="./icon.svg" width="64" height="64" /><figcaption>64</figcaption></figure>
+        <figure><img src="./icon.svg" width="128" height="128" /><figcaption>128</figcaption></figure>
+        <figure><img src="./icon.svg" width="180" height="180" /><figcaption>180 (apple-touch)</figcaption></figure>
+        <figure><img src="./favicon.svg" width="48" height="48" /><figcaption>favicon</figcaption></figure>
+      </div>
+
+      <h2>Color — one tint, calm status story</h2>
+      <div class="card">
+        <div class="swatches">
+          <div class="swatch"><div class="chip" style="background: hsl(var(--accent))"></div><div class="meta"><div class="name">accent</div><div class="val">#f6ae31</div></div></div>
+          <div class="swatch"><div class="chip" style="background: hsl(var(--status-active))"></div><div class="meta"><div class="name">active</div><div class="val">#f6ae31</div></div></div>
+          <div class="swatch"><div class="chip" style="background: hsl(var(--status-waiting))"></div><div class="meta"><div class="name">waiting</div><div class="val">#388cfa</div></div></div>
+          <div class="swatch"><div class="chip" style="background: hsl(var(--status-error))"></div><div class="meta"><div class="name">error</div><div class="val">#f47b2a</div></div></div>
+          <div class="swatch"><div class="chip" style="background: hsl(var(--status-idle))"></div><div class="meta"><div class="name">idle</div><div class="val">#737373</div></div></div>
+          <div class="swatch"><div class="chip" style="background: hsl(var(--background)); border-bottom: 1px solid hsl(0 0% 16%)"></div><div class="meta"><div class="name">background</div><div class="val">#0a0a0a</div></div></div>
+        </div>
+      </div>
+
+      <h2>Toast — glass capsule, 36px, slides in from top</h2>
+      <div class="card toasts">
+        <div class="toast"><span class="dot" style="background: hsl(var(--accent)); box-shadow: 0 0 8px hsl(var(--accent))"></span>File saved</div>
+        <div class="toast"><span class="dot" style="background: hsl(var(--status-waiting)); box-shadow: 0 0 8px hsl(var(--status-waiting))"></span>Needs input</div>
+        <div class="toast"><span class="dot" style="background: hsl(var(--status-error)); box-shadow: 0 0 8px hsl(var(--status-error))"></span>That request failed</div>
+      </div>
+
+      <h2>Voice — builder-to-builder</h2>
+      <div class="card">
+        <table>
+          <thead><tr><th>amux says</th><th>amux never says</th></tr></thead>
+          <tbody>
+            <tr><td class="do">No sessions yet</td><td class="dont">Welcome! Let's get started!</td></tr>
+            <tr><td class="do">tmux session is gone. Reattach, or remove it.</td><td class="dont">Oops! Something went wrong</td></tr>
+            <tr><td class="do">Session started</td><td class="dont">Awesome — your session is live!</td></tr>
+            <tr><td class="do">Kill this session?</td><td class="dont">Are you really really sure??</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Microcopy in context</h2>
+      <div class="card samples">
+        <div class="sample">
+          <div class="t">No sessions yet</div>
+          <div class="b">Start one to put an agent to work. It runs in tmux and survives restarts.</div>
+          <div class="actions"><button class="btn primary">New session</button></div>
+        </div>
+        <div class="sample">
+          <div class="t">tmux session is gone</div>
+          <div class="b">amux can't find the underlying tmux session. Reattach, or remove it from amux.</div>
+          <div class="actions"><button class="btn">Reattach</button></div>
+        </div>
+        <div class="sample">
+          <div class="t">Kill this session?</div>
+          <div class="b">The agent stops and the tmux session ends. Unsaved work in the pane is lost.</div>
+          <div class="actions"><button class="btn danger">Kill session</button><button class="btn">Keep running</button></div>
+        </div>
+      </div>
+
+      <h2>Sound — the "needs input" cue</h2>
+      <div class="card">
+        <p class="lead" style="margin-top:0">
+          200ms sine tone, 440 → 880 Hz, 0.15 gain. Off by default in the app;
+          this preview plays it on demand.
+        </p>
+        <button class="play" id="play">▶ Play needs-input cue</button>
+      </div>
+    </div>
+
+    <script>
+      // Inline replica of web/src/lib/sound.ts:playTone() so the preview is
+      // self-contained. Keep params in sync with brand/tokens.ts SOUND.
+      const SOUND = { freqStart: 440, freqEnd: 880, gain: 0.15, durationS: 0.2 };
+      let ctx = null;
+      document.getElementById('play').addEventListener('click', () => {
+        const Ctor = window.AudioContext || window.webkitAudioContext;
+        if (!Ctor) return;
+        if (!ctx) ctx = new Ctor();
+        if (ctx.state === 'suspended') ctx.resume();
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(SOUND.freqStart, now);
+        osc.frequency.linearRampToValueAtTime(SOUND.freqEnd, now + SOUND.durationS);
+        const amp = ctx.createGain();
+        amp.gain.setValueAtTime(0.0001, now);
+        amp.gain.exponentialRampToValueAtTime(SOUND.gain, now + 0.01);
+        amp.gain.exponentialRampToValueAtTime(0.0001, now + SOUND.durationS);
+        osc.connect(amp).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + SOUND.durationS + 0.02);
+      });
+    </script>
+  </body>
+</html>
