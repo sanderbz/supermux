@@ -111,7 +111,7 @@ async function boardRequest<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(apiUrl(path), { ...init, headers })
   } catch {
-    throw new BoardError('Can’t reach amux-server.', 0)
+    throw new BoardError('Can’t reach supermux-server.', 0)
   }
   const text = await res.text()
   let body: unknown = null

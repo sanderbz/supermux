@@ -24,7 +24,7 @@ export interface TileErrorProps {
 
 /** Tile for a session whose tmux backing is gone (§4.3 error state). Calm
  *  destructive border + "(missing)" prefix — never an alarmist full-red fill.
- *  Click opens a recovery sheet (Reattach / Remove from amux); the destructive
+ *  Click opens a recovery sheet (Reattach / Remove from supermux); the destructive
  *  action is explicit, never auto-fired. */
 export function TileError({
   session,
@@ -82,7 +82,7 @@ export function TileError({
                 setOpen(false)
               }}
             >
-              <Trash2 /> Remove from amux
+              <Trash2 /> Remove from supermux
             </Button>
           </div>
         </SheetContent>

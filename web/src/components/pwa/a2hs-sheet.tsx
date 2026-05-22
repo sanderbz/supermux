@@ -20,7 +20,7 @@ import { springs } from '@/lib/springs'
 import { isIOS } from '@/lib/ios-splash'
 import { isStandalone } from '@/hooks/use-standalone-mode'
 
-const DISMISS_KEY = 'amux-v3-a2hs-dismissed'
+const DISMISS_KEY = 'supermux-a2hs-dismissed'
 
 /**
  * True on an iOS Safari tab that is not yet an installed PWA AND has not been
@@ -115,7 +115,7 @@ export function A2HSInstructionsSheet() {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <Drawer.Title className="text-[17px] font-semibold tracking-tight">
-                  Install amux on your home screen
+                  Install supermux on your home screen
                 </Drawer.Title>
                 <p
                   id="a2hs-desc"

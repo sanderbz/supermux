@@ -2,7 +2,7 @@ import * as React from 'react'
 
 export type Theme = 'system' | 'light' | 'dark'
 
-const STORAGE_KEY = 'amux-theme'
+const STORAGE_KEY = 'supermux-theme'
 
 interface ThemeContextValue {
   /** The user's preference (may be 'system'). */

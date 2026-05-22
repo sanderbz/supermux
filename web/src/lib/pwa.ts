@@ -9,9 +9,9 @@
 //     + icons + a 3s-timeout NetworkFirst copy of the HTML doc). It is NOT a
 //     data layer — `/api/*` and `/ws/*` are never intercepted, so the bearer
 //     gate + WS first-frame auth run exactly as without a SW.
-//   - The auth token lives on `window._AMUX_AUTH_TOKEN` (never localStorage,
+//   - The auth token lives on `window._SUPERMUX_AUTH_TOKEN` (never localStorage,
 //     never in the SW source). It only ever appears inside the freshly fetched
-//     HTML doc; on token rotation Settings drops the `amux-html` cache so no
+//     HTML doc; on token rotation Settings drops the `supermux-html` cache so no
 //     stale doc can serve an old token.
 
 import { registerSW } from 'virtual:pwa-register'
@@ -40,7 +40,7 @@ export function initPWA(): void {
       // we additionally nudge the SW to re-check for an updated shell.
       navigator.serviceWorker.addEventListener('message', (event) => {
         if (event.data?.type === 'token-rotated') {
-          void caches?.delete?.('amux-html')
+          void caches?.delete?.('supermux-html')
           void registration?.update?.()
         }
       })

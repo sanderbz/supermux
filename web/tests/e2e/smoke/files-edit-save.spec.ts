@@ -18,7 +18,7 @@ test.describe('files: browse, edit, save', () => {
 
   test.beforeEach(async () => {
     backend = await startBackend()
-    workDir = mkdtempSync(join(tmpdir(), 'amux-e2e-files-'))
+    workDir = mkdtempSync(join(tmpdir(), 'supermux-e2e-files-'))
   })
   test.afterEach(async () => {
     await backend?.dispose()

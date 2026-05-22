@@ -37,7 +37,7 @@ test.describe('mobile: keyboard accessory bar', () => {
     // page (incl. the accessory bar) out of the accessibility tree. Setting its
     // localStorage dismiss key reflects the normal returning-user state.
     await page.addInitScript(() => {
-      localStorage.setItem('amux-v3-a2hs-dismissed', String(Date.now()))
+      localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
     })
 
     // Seed a session so the focus route resolves to a real row.

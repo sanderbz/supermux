@@ -139,7 +139,7 @@ export function SlashMenu({ value, open, onSelect, onDismiss }: SlashMenuProps) 
             </p>
           ) : isError ? (
             <p className="px-4 py-3 text-[13px] text-muted-foreground">
-              Can’t reach amux-server.
+              Can’t reach supermux-server.
             </p>
           ) : filtered.length === 0 ? (
             <p className="px-4 py-3 text-[13px] text-muted-foreground">

@@ -235,7 +235,7 @@ export function Board() {
       <BoardPage onManage={() => setManageOpen(true)} hasColumns={false}>
         <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
           <p className="max-w-xs text-sm text-muted-foreground">
-            Can’t reach amux-server. Retrying…
+            Can’t reach supermux-server. Retrying…
           </p>
           <Button size="sm" variant="outline" onClick={board.refetch}>
             Retry now

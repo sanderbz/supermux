@@ -94,7 +94,7 @@ export interface NewSessionSheetProps {
   onOpenChange: (open: boolean) => void
   /** Pre-filled working directory (§4.11: "pre-filled with cwd + provider=
    *  claude"). When omitted it falls back to the server's home directory
-   *  (`window._AMUX_HOME_DIR`) so a session can be created in one click. */
+   *  (`window._SUPERMUX_HOME_DIR`) so a session can be created in one click. */
   defaultDir?: string
   /** Called after a successful create with the new session's name so the route
    *  can navigate to `/focus/{name}`. */
@@ -217,7 +217,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
       if (err instanceof SessionError && err.status === 409) {
         setError(`A session named “${form.name.trim()}” already exists.`)
       } else if (err instanceof SessionError && err.status === 0) {
-        setError('Can’t reach amux-server. Check it’s running, then try again.')
+        setError('Can’t reach supermux-server. Check it’s running, then try again.')
       } else {
         setError(
           err instanceof Error ? err.message : 'Could not create the session.',

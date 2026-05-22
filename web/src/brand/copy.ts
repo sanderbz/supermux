@@ -74,7 +74,7 @@ export const ERROR = {
   },
   network: {
     title: 'Can’t reach the server',
-    body: 'No response from amux-server. It may be restarting or off the network.',
+    body: 'No response from supermux-server. It may be restarting or off the network.',
     retry: 'Retry',
   },
   notFound: {
@@ -83,12 +83,12 @@ export const ERROR = {
   },
   sessionMissing: {
     title: 'tmux session is gone',
-    body: 'amux can’t find the underlying tmux session. Reattach, or remove it from amux.',
+    body: 'supermux can’t find the underlying tmux session. Reattach, or remove it from supermux.',
     retry: 'Reattach',
   },
   unauthorized: {
     title: 'Not authorized',
-    body: 'Your token was rejected. Reopen amux from a trusted link to refresh it.',
+    body: 'Your token was rejected. Reopen supermux from a trusted link to refresh it.',
   },
   fileTooLarge: {
     title: 'File is too large to open',
@@ -106,8 +106,8 @@ export const CONFIRM = {
     cancel: 'Keep running',
   },
   deleteSession: {
-    title: 'Remove from amux?',
-    body: 'This drops the session from amux. The tmux session itself is left alone.',
+    title: 'Remove from supermux?',
+    body: 'This drops the session from supermux. The tmux session itself is left alone.',
     confirm: 'Remove',
     cancel: 'Cancel',
   },
@@ -186,7 +186,7 @@ export const ONBOARDING = {
   ],
   /** Fresh install — the secondary demo CTA under the empty-state primary. */
   demoCta: 'Boot a demo agent',
-  demoHint: 'See amux work — a code-reviewer agent runs in this directory.',
+  demoHint: 'See supermux work — a code-reviewer agent runs in this directory.',
   demoBooting: 'Booting demo…',
   /** Settings → Onboarding. */
   replayLabel: 'Run the 30-second demo',

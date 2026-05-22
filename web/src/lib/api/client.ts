@@ -16,21 +16,21 @@ export { authToken, baseUrl }
 
 // ── Runtime config accessors (window-based) ───────────────────────────────────
 //
-// The dashboard bearer token + base URL live on the `window._AMUX_*` globals
+// The dashboard bearer token + base URL live on the `window._SUPERMUX_*` globals
 // (typed in env.ts) and are read at call time — NEVER embedded in source. The
 // files/board/sessions clients historically each defined an identical
 // `fsToken`/`fsApiUrl` (and scheduler an identical `schedToken`/`schedApiUrl`);
 // those duplicates are now consolidated into this single canonical pair.
 
-/** Bearer token read off `window._AMUX_AUTH_TOKEN` at call time. */
+/** Bearer token read off `window._SUPERMUX_AUTH_TOKEN` at call time. */
 export function apiToken(): string {
-  return window._AMUX_AUTH_TOKEN ?? ''
+  return window._SUPERMUX_AUTH_TOKEN ?? ''
 }
 
-/** Resolve `path` against the runtime base URL (`window._AMUX_BASE_URL` →
+/** Resolve `path` against the runtime base URL (`window._SUPERMUX_BASE_URL` →
  *  `import.meta.env.BASE_URL`), trimming a trailing slash. */
 export function apiUrl(path: string): string {
-  const base = (window._AMUX_BASE_URL ?? import.meta.env.BASE_URL).replace(
+  const base = (window._SUPERMUX_BASE_URL ?? import.meta.env.BASE_URL).replace(
     /\/$/,
     '',
   )

@@ -13,7 +13,7 @@
 // M0 `Snippet` stub in ./settings.ts predates this contract and is left alone.
 //
 // Auth: every request rides the dashboard bearer read from `window
-// ._AMUX_AUTH_TOKEN` at call time via the shared `apiToken()` (client.ts) —
+// ._SUPERMUX_AUTH_TOKEN` at call time via the shared `apiToken()` (client.ts) —
 // NEVER hard-coded. These are the M9 authed routes; no new unauthed surface.
 
 import { ApiError, apiToken, apiUrl } from './client'
@@ -74,7 +74,7 @@ async function cmdRequest(path: string, init?: RequestInit): Promise<RawEnvelope
   try {
     res = await fetch(apiUrl(path), { ...init, headers })
   } catch {
-    throw new ApiError(0, 'Can’t reach amux-server.')
+    throw new ApiError(0, 'Can’t reach supermux-server.')
   }
   if (res.status === 204) {
     if (!res.ok) throw new ApiError(res.status, res.statusText)

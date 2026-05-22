@@ -1,6 +1,6 @@
 {
-  "name": "amux",
-  "short_name": "amux",
+  "name": "supermux",
+  "short_name": "supermux",
   "description": "Run and watch your agents from anywhere.",
   "start_url": "/?source=pwa",
   "scope": "/",

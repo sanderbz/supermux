@@ -12,7 +12,7 @@
 // the M4 backend already fans out. The auth token is NEVER put in the URL
 // (Codex #7): we connect token-less and send {type:'auth',token} as the first
 // frame, then wait for {type:'auth_ok'} before declaring ourselves `live`. The
-// token is read from `window._AMUX_AUTH_TOKEN` at runtime (env.ts) — never
+// token is read from `window._SUPERMUX_AUTH_TOKEN` at runtime (env.ts) — never
 // embedded in source.
 
 import * as React from 'react'

@@ -13,7 +13,7 @@
 // typed `SessionError` (carrying the HTTP status) so the route can branch 409
 // (duplicate name) vs 404 (gone) vs 0 (server unreachable) without crashing.
 //
-// The dashboard bearer token is read from `window._AMUX_AUTH_TOKEN` at call time
+// The dashboard bearer token is read from `window._SUPERMUX_AUTH_TOKEN` at call time
 // via the shared `apiToken`/`apiUrl` accessors in ./client — so the token is
 // NEVER embedded here.
 
@@ -246,8 +246,8 @@ async function sessReq<T>(path: string, init?: RequestInit): Promise<T> {
     res = await fetch(apiUrl(path), { ...init, headers })
   } catch {
     // Network down / server restarting. Status 0 lets the route show the
-    // "Can't reach amux-server. Retrying…" state (§4.12) instead of crashing.
-    throw new SessionError('Can’t reach amux-server.', 0)
+    // "Can't reach supermux-server. Retrying…" state (§4.12) instead of crashing.
+    throw new SessionError('Can’t reach supermux-server.', 0)
   }
   const text = await res.text()
   let body: unknown = null
@@ -304,7 +304,7 @@ export const sessionsApi = {
       body: JSON.stringify(prompt ? { prompt } : {}),
     }),
 
-  /** `DELETE /api/sessions/{name}` — drop the session row from amux (§3.4).
+  /** `DELETE /api/sessions/{name}` — drop the session row from supermux (§3.4).
    *  Used by the M27 demo-replay flow to remove the one demo agent it booted. */
   remove: (name: string): Promise<void> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' }),

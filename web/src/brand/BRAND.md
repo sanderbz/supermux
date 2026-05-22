@@ -1,10 +1,10 @@
-# amux — Brand, Voice & Microcopy (M28)
+# supermux — Brand, Voice & Microcopy (M28)
 
-The single source of truth for what amux *is called*, how it *sounds*, what it
+The single source of truth for what supermux *is called*, how it *sounds*, what it
 *looks like*, and the words it puts on screen. Later milestones consume the
 constants in this folder; this doc explains the why.
 
-> amux v3 is "BE in tmux, via web" — not a dashboard that *shows you info about*
+> supermux is "BE in tmux, via web" — not a dashboard that *shows you info about*
 > tmux. Everything below serves that: the product is a tool for builders, so it
 > talks, looks, and sounds like a tool, not a SaaS landing page.
 
@@ -12,11 +12,11 @@ constants in this folder; this doc explains the why.
 
 ## 1. Name & wordmark
 
-- **App name**: `amux` — always lowercase, even at the start of a sentence.
-  Never "Amux", "AMUX", or "aMux". It's a tool name like `tmux` / `htmux`.
+- **App name**: `supermux` — always lowercase, even at the start of a sentence.
+  Never "Supermux", "SUPERMUX", or "suPermux". It's a tool name like `tmux` / `htmux`.
 - **No tagline in chrome.** The product is the pitch. If a one-liner is ever
   needed (store listing, README): *"Run your agents in tmux, from anywhere."*
-- **Never** frame amux as a "control plane", "command center", "mission
+- **Never** frame supermux as a "control plane", "command center", "mission
   control", "platform", or "orchestration suite". It's an interface to tmux
   sessions. (Anti-vision, user-vision.md §"Anti-vision".)
 
@@ -28,7 +28,7 @@ Respect that.
 | Do | Don't |
 |---|---|
 | "No sessions yet" | "Welcome! 👋 Let's get started!" |
-| "tmux session is gone. Reattach, or remove it from amux." | "Oops! Something went wrong 😬" |
+| "tmux session is gone. Reattach, or remove it from supermux." | "Oops! Something went wrong 😬" |
 | "Session started" | "Awesome — your session is live! 🎉" |
 | "Kill this session?" | "Are you sure you really want to do this??" |
 | Sentence case, calm, terse | UPPERCASE LABELS, exclamation marks, hype |
@@ -66,7 +66,7 @@ One brand tint. Everything else is a semantic/system token (full theme: M10).
   Exposed as `--brand` (shadcn's `--accent` is the distinct semantic hover fill).
 - Tokens are bare HSL triples so callers can add alpha:
   `hsl(var(--brand) / 0.5)` (matches §4.3 keyframes).
-- The `error` status uses **calm orange**, not red — amux stays composed.
+- The `error` status uses **calm orange**, not red — supermux stays composed.
   (The destructive "missing tile" affordance in §4.3 may still use system red
   for a hard delete; that's a different signal from "the agent errored".)
 - TS mirror: [`tokens.ts`](./tokens.ts) (`BRAND`, `*_HSL`, `statusColor()`).
@@ -90,7 +90,7 @@ One brand tint. Everything else is a semantic/system token (full theme: M10).
   Hz at 0.15 gain with an exponential ramp out. Reads as a polite "your turn",
   not an alarm.
 - **Opt-in.** OFF by default (politeness). Persisted in `localStorage`
-  (`amux.sounds.enabled`). Toggle copy: `MISC.soundsToggleLabel`.
+  (`supermux.sounds.enabled`). Toggle copy: `MISC.soundsToggleLabel`.
 - **Wiring** (M12/M14 SSE handler): call `playNeedsInput()` on a status delta
   into `waiting` — it self-gates on the preference. Call `primeAudio()` from the
   first user gesture so iOS Safari unlocks audio. Bind the Settings switch to

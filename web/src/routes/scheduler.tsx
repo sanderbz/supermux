@@ -202,7 +202,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
         <TriangleAlert className="size-6" />
       </div>
       <p className="max-w-xs text-sm text-muted-foreground">
-        Can’t reach amux-server. The scheduler list didn’t load.
+        Can’t reach supermux-server. The scheduler list didn’t load.
       </p>
       <Button variant="outline" size="sm" className="h-11" onClick={onRetry}>
         Try again

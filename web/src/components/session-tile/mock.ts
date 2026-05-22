@@ -46,21 +46,21 @@ const claudeBootAnsi = (task: string): string[] => [
 
 const shellTail = (cmd: string): string[] => [
   `$ ${cmd}`,
-  'Compiling amux-server v3.0.0',
+  'Compiling supermux-server v3.0.0',
   '   Compiling tokio v1.40.0',
   '   Compiling axum v0.7.5',
   '    Finished `release` profile [optimized]',
-  '     Running `target/release/amux-server`',
+  '     Running `target/release/supermux-server`',
   'listening on 127.0.0.1:8823',
 ]
 
 const shellTailAnsi = (cmd: string): string[] => [
   `${E}[1m$${E}[0m ${cmd}`,
-  `${E}[32m   Compiling${E}[0m amux-server v3.0.0`,
+  `${E}[32m   Compiling${E}[0m supermux-server v3.0.0`,
   `${E}[32m   Compiling${E}[0m tokio v1.40.0`,
   `${E}[32m   Compiling${E}[0m axum v0.7.5`,
   `${E}[32m    Finished${E}[0m \`release\` profile ${E}[90m[optimized]${E}[0m`,
-  `${E}[32m     Running${E}[0m \`target/release/amux-server\``,
+  `${E}[32m     Running${E}[0m \`target/release/supermux-server\``,
   `${E}[36mlistening${E}[0m on 127.0.0.1:8823`,
 ]
 
@@ -99,7 +99,7 @@ export const MOCK_TILES: TileSession[] = [
     name: 'docs-writer',
     task_summary: 'Draft the M11 acceptance notes',
     status: 'active',
-    dir: '/opt/projects/amux',
+    dir: '/opt/projects/supermux',
     provider: 'claude',
     tokens: 6400,
     branch: 'main',
@@ -111,7 +111,7 @@ export const MOCK_TILES: TileSession[] = [
     name: 'cso-review',
     task_summary: 'Security audit of the WS auth handshake',
     status: 'waiting',
-    dir: '/opt/projects/amux/server',
+    dir: '/opt/projects/supermux/server',
     provider: 'claude',
     tokens: 31900,
     branch: 'audit/ws-auth',
@@ -130,7 +130,7 @@ export const MOCK_TILES: TileSession[] = [
     name: 'build-runner',
     task_summary: 'Release build',
     status: 'active',
-    dir: '/opt/projects/amux/server',
+    dir: '/opt/projects/supermux/server',
     provider: 'shell',
     tokens: 0,
     branch: 'main',
@@ -146,7 +146,7 @@ export const MOCK_TILES: TileSession[] = [
     provider: 'claude',
     tokens: 800,
     branch: 'qa/overview',
-    preview_lines: ['Booting agent…', 'tmux new-session -d -s amux-qa-astro', '❯'],
+    preview_lines: ['Booting agent…', 'tmux new-session -d -s supermux-qa-astro', '❯'],
     updated_at: new Date().toISOString(),
   },
   {
@@ -165,7 +165,7 @@ export const MOCK_TILES: TileSession[] = [
     name: 'idle-2',
     task_summary: 'Investigate the reconnect storm',
     status: 'idle',
-    dir: '/opt/projects/amux',
+    dir: '/opt/projects/supermux',
     provider: 'claude',
     tokens: 15600,
     branch: 'fix/reconnect-jitter',
@@ -198,7 +198,7 @@ export const MOCK_TILES: TileSession[] = [
     tokens: 4200,
     branch: 'migrate/snippets',
     preview_lines: [
-      '● Bash(sqlite3 amux.db < 0006.sql)',
+      '● Bash(sqlite3 supermux.db < 0006.sql)',
       '  ⎿ Error: near "TABEL": syntax error',
       '',
       '  The migration failed. I stopped before touching data.',

@@ -1,7 +1,7 @@
 // First-launch / onboarding state (M27 — Time to Wow).
 //
 // The whole "first 60 seconds" experience keys off ONE localStorage flag:
-// `amux-v3-first-launch`. Absent → this is a brand-new install and the
+// `supermux-first-launch`. Absent → this is a brand-new install and the
 // unboxing surfaces (welcome banner + tour, or the demo-agent CTA) are eligible
 // to show. Present → the user has been here; everything stays quiet.
 //
@@ -15,13 +15,13 @@
 // a thrown flag-read must NOT crash the app — it just means the surface shows
 // again next session, which is acceptable for an onboarding hint.
 
-/** The single source-of-truth key. Namespaced like every other amux-v3 key. */
-export const FIRST_LAUNCH_KEY = 'amux-v3-first-launch'
+/** The single source-of-truth key. Namespaced like every other supermux key. */
+export const FIRST_LAUNCH_KEY = 'supermux-first-launch'
 
-/** localStorage key tracking the one demo session amux booted for the user, so
+/** localStorage key tracking the one demo session supermux booted for the user, so
  *  "Run the 30-second demo" can delete exactly that session on replay and never
  *  touch a real one. */
-export const DEMO_SESSION_KEY = 'amux-v3-demo-session'
+export const DEMO_SESSION_KEY = 'supermux-demo-session'
 
 /** True when this looks like a brand-new install — the first-launch flag has
  *  never been written. Safe to call at first render (reads only localStorage).
@@ -54,7 +54,7 @@ export function resetFirstLaunch(): void {
   }
 }
 
-/** Remember the name of the demo session amux booted, so the replay flow can
+/** Remember the name of the demo session supermux booted, so the replay flow can
  *  delete precisely that one. */
 export function rememberDemoSession(name: string): void {
   try {

@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="amux">
-  <title>amux</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="supermux">
+  <title>supermux</title>
   <!--
-    amux favicon (M28). Same mark as icon.svg but framed tighter and bolder so
+    supermux favicon (M28). Same mark as icon.svg but framed tighter and bolder so
     it reads in a ~16px browser tab. Not maskable, so it uses a rounded-square
     tile rather than full bleed. Amber #f6ae31 on near-black #0a0a0a.
   -->

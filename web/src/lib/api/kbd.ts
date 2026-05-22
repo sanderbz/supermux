@@ -7,7 +7,7 @@
 // the very first request returns a populated list, no client seed write needed.
 //
 // Envelope + bearer reuse the shared `settingsRequest` helper (token read off
-// `window._AMUX_AUTH_TOKEN` at call time — never embedded in source). A 404/501
+// `window._SUPERMUX_AUTH_TOKEN` at call time — never embedded in source). A 404/501
 // (backend not wired on this build) surfaces as `ApiError`; the `useKbdGroups`
 // hook degrades that to the local `DEFAULT_KBD_GROUPS` seed so the accessory bar
 // always renders.
