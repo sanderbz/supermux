@@ -17,6 +17,33 @@ const claudeBoot = (task: string): string[] => [
   '     ✓ built in 245ms',
 ]
 
+// ANSI-coloured twin of `claudeBoot` — exercises the `preview_ansi` colour path
+// (DEV mock only). `E` is the ESC byte; SGR codes: 32 green, 33 yellow, 36 cyan,
+// 90 grey, 1 bold, 0 reset. ~20 lines so the "Expanded text" hover (which
+// surfaces up to ~20 lines vs the 6-line idle tail) is verifiable end-to-end.
+const E = '\x1b'
+const claudeBootAnsi = (task: string): string[] => [
+  `${E}[32m●${E}[0m Read ${E}[36mpackage.json${E}[0m ${E}[90m(1 file)${E}[0m`,
+  `${E}[32m●${E}[0m Read ${E}[36mtsconfig.json${E}[0m ${E}[90m(1 file)${E}[0m`,
+  `${E}[32m●${E}[0m ${E}[1m${task}${E}[0m`,
+  '',
+  '  Let me start by exploring the codebase structure to',
+  '  understand how the existing modules fit together.',
+  '',
+  `${E}[32m●${E}[0m ${E}[36mGrep${E}[0m(pattern: "useLiveTerm")`,
+  `  ${E}[90m⎿${E}[0m Found ${E}[33m3${E}[0m files`,
+  `     ${E}[90msrc/hooks/use-live-term.ts${E}[0m`,
+  `     ${E}[90msrc/components/terminal/live-terminal.tsx${E}[0m`,
+  '',
+  `${E}[32m●${E}[0m ${E}[36mBash${E}[0m(bun run build)`,
+  `  ${E}[90m⎿${E}[0m tsc -b && vite build`,
+  `     ${E}[32m✓${E}[0m 2243 modules transformed.`,
+  `     ${E}[32m✓${E}[0m built in ${E}[33m245ms${E}[0m`,
+  '',
+  `${E}[32m●${E}[0m All checks pass. ${E}[33mWarning:${E}[0m 1 chunk over 500 kB.`,
+  `  ${E}[90m⎿${E}[0m Done — the build is green.`,
+]
+
 const shellTail = (cmd: string): string[] => [
   `$ ${cmd}`,
   'Compiling amux-server v3.0.0',
@@ -25,6 +52,16 @@ const shellTail = (cmd: string): string[] => [
   '    Finished `release` profile [optimized]',
   '     Running `target/release/amux-server`',
   'listening on 127.0.0.1:8823',
+]
+
+const shellTailAnsi = (cmd: string): string[] => [
+  `${E}[1m$${E}[0m ${cmd}`,
+  `${E}[32m   Compiling${E}[0m amux-server v3.0.0`,
+  `${E}[32m   Compiling${E}[0m tokio v1.40.0`,
+  `${E}[32m   Compiling${E}[0m axum v0.7.5`,
+  `${E}[32m    Finished${E}[0m \`release\` profile ${E}[90m[optimized]${E}[0m`,
+  `${E}[32m     Running${E}[0m \`target/release/amux-server\``,
+  `${E}[36mlistening${E}[0m on 127.0.0.1:8823`,
 ]
 
 export const MOCK_TILES: TileSession[] = [
@@ -37,6 +74,7 @@ export const MOCK_TILES: TileSession[] = [
     tokens: 48200,
     branch: 'feat/sse-merge',
     preview_lines: claudeBoot('Implementing the delta-merge updater'),
+    preview_ansi: claudeBootAnsi('Implementing the delta-merge updater'),
     updated_at: new Date().toISOString(),
   },
   {
@@ -66,6 +104,7 @@ export const MOCK_TILES: TileSession[] = [
     tokens: 6400,
     branch: 'main',
     preview_lines: claudeBoot('Writing ACCEPTANCE.md for the tile component'),
+    preview_ansi: claudeBootAnsi('Writing ACCEPTANCE.md for the tile component'),
     updated_at: new Date().toISOString(),
   },
   {
@@ -96,6 +135,7 @@ export const MOCK_TILES: TileSession[] = [
     tokens: 0,
     branch: 'main',
     preview_lines: shellTail('cargo build --release'),
+    preview_ansi: shellTailAnsi('cargo build --release'),
     updated_at: new Date().toISOString(),
   },
   {
@@ -118,6 +158,7 @@ export const MOCK_TILES: TileSession[] = [
     tokens: 22100,
     branch: 'refactor/board',
     preview_lines: claudeBoot('Done. The reducer is now pure and tested.'),
+    preview_ansi: claudeBootAnsi('Done. The reducer is now pure and tested.'),
     updated_at: new Date(Date.now() - 9 * 60_000).toISOString(),
   },
   {

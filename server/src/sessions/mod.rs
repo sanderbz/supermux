@@ -117,6 +117,10 @@ pub struct SessionView {
     pub creator: String,
     /// Last 6 lines of `last_capture`, ANSI-stripped (§3.4).
     pub preview_lines: Vec<String>,
+    /// Same last 6 lines, with SGR escape sequences preserved — the colour-true
+    /// tile preview source (overview tile preview feature). Empty until the
+    /// first capture; the client falls back to `preview_lines` when so.
+    pub preview_ansi: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -124,6 +128,7 @@ pub struct SessionView {
 fn view(s: &Session, rt: Option<&SessionRuntime>) -> SessionView {
     let last_status = rt.map(|r| r.last_status.as_str()).unwrap_or("unknown");
     let last_capture = rt.map(|r| r.last_capture.as_str()).unwrap_or("");
+    let last_capture_ansi = rt.map(|r| r.last_capture_ansi.as_str()).unwrap_or("");
     let updated_ts = s.last_send.max(s.last_started).max(s.created_at);
     SessionView {
         name: s.name.clone(),
@@ -141,6 +146,7 @@ fn view(s: &Session, rt: Option<&SessionRuntime>) -> SessionView {
         worktree: s.worktree != 0,
         creator: s.creator.clone(),
         preview_lines: preview_lines(last_capture),
+        preview_ansi: last_n_lines(last_capture_ansi, 6),
         created_at: to_rfc3339(s.created_at),
         updated_at: to_rfc3339(updated_ts),
     }
@@ -176,6 +182,18 @@ fn preview_lines(capture: &str) -> Vec<String> {
     let stripped = ANSI_RE.replace_all(capture, "");
     let lines: Vec<String> = stripped.lines().map(str::to_string).collect();
     let start = lines.len().saturating_sub(6);
+    lines[start..].to_vec()
+}
+
+/// Last `n` lines of `capture` VERBATIM (escapes kept) — drives `preview_ansi`,
+/// the colour-true tile preview. `capture` is already trimmed of trailing blanks
+/// upstream (`prepare_capture_ansi`).
+fn last_n_lines(capture: &str, n: usize) -> Vec<String> {
+    if capture.is_empty() {
+        return Vec::new();
+    }
+    let lines: Vec<String> = capture.lines().map(str::to_string).collect();
+    let start = lines.len().saturating_sub(n);
     lines[start..].to_vec()
 }
 

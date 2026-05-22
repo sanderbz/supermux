@@ -258,6 +258,23 @@ pub fn prepare_capture(raw: &str) -> String {
     lines[start..].join("\n")
 }
 
+/// Like [`prepare_capture`], but KEEPS the SGR escape sequences — the parallel
+/// colour-true capture written to `session_runtime.last_capture_ansi` and
+/// surfaced as `SessionView.preview_ansi`. `raw` here is `capture-pane -pe`
+/// output. Trailing-blank trimming compares the ANSI-stripped form of each line
+/// so a line that is only escape codes still counts as blank.
+pub fn prepare_capture_ansi(raw: &str) -> String {
+    let mut lines: Vec<&str> = raw.lines().collect();
+    while lines
+        .last()
+        .is_some_and(|l| ANSI_RE.replace_all(l, "").trim().is_empty())
+    {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(CAPTURE_LINES);
+    lines[start..].join("\n")
+}
+
 // ── the regex bank (v2 §1.3, ported verbatim per the M5a spec) ───────────────
 //
 // Patterns are the literal strings from the milestone spec. The IDLE bank adds

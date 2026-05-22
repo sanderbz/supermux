@@ -18,7 +18,7 @@ import {
 } from '@/lib/onboarding'
 import { onboardingApi } from '@/lib/api'
 import { useTheme, type Theme } from '@/components/theme-provider'
-import { useUI, type ViewMode } from '@/stores/ui-store'
+import { useUI, type ViewMode, type HoverPreview } from '@/stores/ui-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
 import {
   useEnvKeys,
@@ -66,6 +66,11 @@ const THEME_OPTIONS: { value: Theme; label: string }[] = [
 const VIEW_OPTIONS: { value: ViewMode; label: string }[] = [
   { value: 'tile', label: 'Tiles' },
   { value: 'list', label: 'List' },
+]
+
+const HOVER_OPTIONS: { value: HoverPreview; label: string }[] = [
+  { value: 'live', label: 'Live terminal' },
+  { value: 'expanded', label: 'Expanded text' },
 ]
 
 /** Fixed default-model list (§M22). '' = whatever the server is configured to. */
@@ -324,6 +329,8 @@ export function Settings() {
   const { theme, setTheme } = useTheme()
   const viewMode = useUI((s) => s.viewMode)
   const setViewMode = useUI((s) => s.setViewMode)
+  const hoverPreview = useUI((s) => s.hoverPreview)
+  const setHoverPreview = useUI((s) => s.setHoverPreview)
   const [sound, setSound] = React.useState(() => getSoundsEnabled())
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
@@ -387,6 +394,18 @@ export function Settings() {
                   value={viewMode}
                   onChange={setViewMode}
                   options={VIEW_OPTIONS}
+                />
+              }
+            />
+            <Row
+              label="Overview hover preview"
+              hint="Hovering a tile shows a live terminal, or more lines of recent output."
+              stacked={
+                <SegmentedControl
+                  ariaLabel="Overview hover preview"
+                  value={hoverPreview}
+                  onChange={setHoverPreview}
+                  options={HOVER_OPTIONS}
                 />
               }
             />

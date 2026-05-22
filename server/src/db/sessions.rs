@@ -52,6 +52,10 @@ pub struct SessionRuntime {
     pub last_status: String,
     pub last_status_at: i64,
     pub last_capture: String,
+    /// Same tail as `last_capture`, with SGR escapes preserved (colour-true
+    /// preview source — see migration 0008). Empty until the first capture.
+    #[serde(default)]
+    pub last_capture_ansi: String,
     /// Per-session hook auth token (§6.5). Never the dashboard bearer.
     pub hook_token: String,
 }
@@ -372,16 +376,25 @@ pub async fn set_hibernated(pool: &SqlitePool, name: &str, hibernated: bool) -> 
     Ok(())
 }
 
-/// Write `session_runtime.last_capture` — the canonical tile-tail-preview source
-/// (CEO #1). The M5a detector loop calls this EVERY 2s tick (classification or
-/// not) with the last 30 lines of `capture-pane`, ANSI-stripped, so
-/// `SessionView.preview_lines` always reflects the freshest pane content.
-pub async fn set_last_capture(pool: &SqlitePool, name: &str, capture: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE session_runtime SET last_capture = ? WHERE name = ?")
-        .bind(capture)
-        .bind(name)
-        .execute(pool)
-        .await?;
+/// Write `session_runtime.last_capture` (+ the parallel ANSI-preserved capture) —
+/// the canonical tile-tail-preview source (CEO #1). The M5a detector loop calls
+/// this EVERY 2s tick (classification or not). `capture` is ANSI-stripped (the
+/// status detector regex bank reads it); `capture_ansi` keeps the SAME tail with
+/// its SGR escapes intact so `SessionView.preview_ansi` can render colour-true.
+pub async fn set_last_capture(
+    pool: &SqlitePool,
+    name: &str,
+    capture: &str,
+    capture_ansi: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE session_runtime SET last_capture = ?, last_capture_ansi = ? WHERE name = ?",
+    )
+    .bind(capture)
+    .bind(capture_ansi)
+    .bind(name)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

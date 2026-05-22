@@ -216,6 +216,23 @@ impl<'a> Tmux<'a> {
         .await
     }
 
+    /// `tmux capture-pane -pe -S -<lines>` — the last `lines` rows WITH SGR escape
+    /// sequences preserved (`-e`). Drives the colour-true tile preview; the plain
+    /// `capture_pane` above still feeds the status detector. Read-only, no lock.
+    pub async fn capture_pane_ansi(&self, lines: usize) -> Result<String> {
+        let start = format!("-{lines}");
+        self.run(&[
+            "capture-pane",
+            "-p",
+            "-e",
+            "-t",
+            &self.target(),
+            "-S",
+            &start,
+        ])
+        .await
+    }
+
     /// Capture the entire scrollback (`-S -`), used by `archive`.
     pub async fn capture_full(&self) -> Result<String> {
         self.run(&["capture-pane", "-p", "-t", &self.target(), "-S", "-"])
