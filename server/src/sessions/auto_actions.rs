@@ -155,16 +155,21 @@ pub async fn tick(
         return Ok(());
     }
 
-    let raw = tmux.capture_pane(status::CAPTURE_LINES).await?;
-    let capture = status::prepare_capture(&raw);
+    // ONE capture with `-e` (escapes preserved): the detector + plain preview
+    // read the ANSI-stripped form, the colour-true tile preview reads the raw
+    // form. A single shell-out feeds both — no extra `capture-pane` per tick.
+    let raw_ansi = tmux.capture_pane_ansi(status::CAPTURE_LINES).await?;
+    let capture = status::prepare_capture(&raw_ansi);
+    let capture_ansi = status::prepare_capture_ansi(&raw_ansi);
 
     let prev = detector.last_status();
     let new_status = detector.detect(&capture, last_pty, last_hook);
 
     // last_capture writeback — ALWAYS (canonical preview source, CEO #1).
-    db::sessions::set_last_capture(&state.pool, name, &capture).await?;
+    db::sessions::set_last_capture(&state.pool, name, &capture, &capture_ansi).await?;
 
     let tail = tail_lines(&capture);
+    let tail_ansi = tail_lines(&capture_ansi);
     let tail_changed = last_tail.as_ref() != Some(&tail);
 
     // ── status transition: flap-debounce, then commit + broadcast ─────────────
@@ -209,6 +214,11 @@ pub async fn tick(
             item.insert(
                 "preview_lines".into(),
                 Value::Array(tail.iter().cloned().map(Value::String).collect()),
+            );
+            // Colour-true tail — escapes intact — for the ANSI tile preview.
+            item.insert(
+                "preview_ansi".into(),
+                Value::Array(tail_ansi.iter().cloned().map(Value::String).collect()),
             );
             *last_tail = Some(tail);
         }

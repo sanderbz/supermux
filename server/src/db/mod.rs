@@ -90,7 +90,10 @@ mod tests {
             .await
             .unwrap()
             .get("n");
-        assert_eq!(applied, 6, "expected six applied migrations (0001-0005, 0007)");
+        assert_eq!(
+            applied, 7,
+            "expected seven applied migrations (0001-0005, 0007, 0008)"
+        );
 
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

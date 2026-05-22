@@ -52,6 +52,10 @@ export interface SessionSummary {
   provider: string
   /** Last 6 lines of `last_capture`, ANSI-stripped. §3.4 */
   preview_lines: string[]
+  /** Same 6 lines with SGR escape sequences preserved — the colour-true tile
+   *  preview source. Empty until the first capture; the UI falls back to
+   *  `preview_lines` (plain text) when absent. */
+  preview_ansi?: string[]
   updated_at: string
 }
 
@@ -183,6 +187,10 @@ export interface ApiSession {
   provider: string
   /** Last 6 lines of `last_capture`, ANSI-stripped (§3.6). */
   preview_lines: string[]
+  /** Same 6 lines with SGR escape sequences preserved — the colour-true tile
+   *  preview source. Empty until the first capture; the UI falls back to
+   *  `preview_lines` (plain) when absent. */
+  preview_ansi?: string[]
   updated_at?: string
   /** Claude Code chat title / auto-summary (falls back to `name` in the UI). */
   task_summary?: string
