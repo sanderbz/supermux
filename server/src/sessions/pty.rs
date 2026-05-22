@@ -26,10 +26,11 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
+use dashmap::DashMap;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use once_cell::sync::Lazy;
@@ -132,9 +133,23 @@ impl PtyStream {
     /// tmux died (the "stream-dead" path), it can flip the session's persisted
     /// status to `stopped` — a session that dies WHILE the server runs must not
     /// stay stuck `active` in the overview.
-    pub async fn ensure_started(&self, tmux: &Tmux<'_>, pool: &SqlitePool) -> Result<()> {
+    ///
+    /// `pty_heartbeat` is the same `DashMap` the M5a status detector reads via
+    /// [`AppState::last_pty`](crate::state::AppState::last_pty). The reader writes
+    /// `Instant::now()` here on every byte batch so the detector's heartbeat
+    /// branch (§3.6 fusion rule #3: "bytes <1.5s → `Active`") actually fires.
+    /// Without this wire-up the heartbeat sits at the cold-start sentinel
+    /// forever and the regex bank is the detector's only decisive signal — a
+    /// session whose prompt the bank doesn't recognise stays stuck at its
+    /// boot-time status, producing the "always grey" overview bug.
+    pub async fn ensure_started(
+        &self,
+        tmux: &Tmux<'_>,
+        pool: &SqlitePool,
+        pty_heartbeat: Arc<DashMap<String, Instant>>,
+    ) -> Result<()> {
         self.started
-            .get_or_try_init(|| self.spawn_reader(tmux, pool))
+            .get_or_try_init(|| self.spawn_reader(tmux, pool, pty_heartbeat))
             .await
             .map(|_| ())
     }
@@ -142,7 +157,12 @@ impl PtyStream {
     /// The one-time setup: requires a live session, makes the FIFO, attaches the
     /// `tee` pipe, opens the non-blocking read fd + keep-alive write fd, and
     /// launches the reader task.
-    async fn spawn_reader(&self, tmux: &Tmux<'_>, pool: &SqlitePool) -> Result<()> {
+    async fn spawn_reader(
+        &self,
+        tmux: &Tmux<'_>,
+        pool: &SqlitePool,
+        pty_heartbeat: Arc<DashMap<String, Instant>>,
+    ) -> Result<()> {
         if !tmux.exists().await.unwrap_or(false) {
             bail!("session '{}' is not running", self.name);
         }
@@ -198,7 +218,7 @@ impl PtyStream {
         tokio::spawn(async move {
             // Hold the write fd open for the lifetime of the reader.
             let _keep_writer = keep_writer;
-            reader_loop(async_fd, &name, &replay, &broadcast).await;
+            reader_loop(async_fd, &name, &replay, &broadcast, &pty_heartbeat).await;
             alive.store(false, Ordering::Release);
             tracing::debug!(session = %name, "pty reader exited (stream-dead)");
             // Stream-dead means the tmux pane is gone (or unreadable) — propagate
@@ -219,12 +239,18 @@ impl PtyStream {
 }
 
 /// The epoll-driven read loop. Drains the FIFO into the replay buffer + broadcast
-/// and tears down when the tmux session is gone.
+/// and tears down when the tmux session is gone. Also stamps
+/// `pty_heartbeat[name] = Instant::now()` on every byte batch so the M5a status
+/// detector's heartbeat branch (§3.6 fusion rule #3) actually fires — without
+/// this stamp, `AppState::last_pty` stays at the cold-start sentinel forever
+/// and the detector falls through to the regex bank alone, leaving any session
+/// whose prompt the bank doesn't recognise stuck at its boot-time status.
 async fn reader_loop(
     async_fd: AsyncFd<std::fs::File>,
     name: &str,
     replay: &Replay,
     broadcast: &broadcast::Sender<Bytes>,
+    pty_heartbeat: &DashMap<String, Instant>,
 ) {
     let tmux = Tmux::new(name);
     let mut buf = [0u8; READ_CHUNK];
@@ -260,6 +286,10 @@ async fn reader_loop(
                         let chunk = Bytes::copy_from_slice(&buf[..n]);
                         // Push to replay + broadcast atomically (see `subscribe`).
                         push_and_broadcast(replay, broadcast, chunk);
+                        // M5a heartbeat (§3.6 fusion rule #3): stamp on every
+                        // batch so the detector sees "bytes flowing right now"
+                        // and reads Active without needing a regex match.
+                        pty_heartbeat.insert(name.to_string(), Instant::now());
                         // Keep readiness set to drain any remaining buffered bytes.
                     }
                     Ok(Err(e)) => {
