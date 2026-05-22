@@ -36,12 +36,16 @@ fn is_boundary(status: &str) -> bool {
 }
 
 /// Spawn the per-session delivery loop. Idempotent at the system level: the loop
-/// self-terminates the moment the session row is gone (delete/archive), and when
-/// the watch sender is dropped (`forget_session`), so churn never leaks tasks.
-/// Safe to call once per session (boot via [`spawn_all`], create via
-/// `sessions::create`).
+/// self-terminates the moment the session row is gone OR archived (R1-1 —
+/// `exists_active` filters `archived = 0`), and when the watch sender is dropped
+/// (`forget_session`), so churn never leaks tasks. Safe to call once per session
+/// (boot via [`spawn_all`], create via `sessions::create`).
 pub fn spawn(state: AppState, name: String) {
     tokio::spawn(async move {
+        // R1-1/R1-2: register as a live per-session task; the guard decrements
+        // on loop exit so `archive`/`delete` can sequence `forget_session`
+        // after every loop has actually stopped.
+        let _task = state.session_task_guard(&name);
         let mut rx = state.status_watch_for(&name).subscribe();
 
         let mut ticker = interval(SAFETY_TICK);
@@ -53,12 +57,15 @@ pub fn spawn(state: AppState, name: String) {
         }
 
         loop {
-            // Stop when the session is gone (the row is the lifetime anchor).
-            match db::sessions::exists(&state.pool, &name).await {
+            // Stop when the session is deleted OR archived (R1-1: the *live*
+            // row is the lifetime anchor — `exists_active` filters
+            // `archived = 0`, so an archived session terminates this loop and
+            // the steering task is not leaked forever).
+            match db::sessions::exists_active(&state.pool, &name).await {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
-                    tracing::debug!(name = %name, error = %e, "steering: exists() failed");
+                    tracing::debug!(name = %name, error = %e, "steering: exists_active() failed");
                     continue;
                 }
             }

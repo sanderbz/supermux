@@ -26,6 +26,7 @@ use crate::scheduler;
 use crate::sessions;
 use crate::sse;
 use crate::state::AppState;
+use crate::static_assets;
 use crate::ws;
 
 /// Build the application router from `state`.
@@ -39,7 +40,14 @@ pub fn router(state: AppState) -> Router {
         // M5b: Claude hook ingestion — NO bearer layer; auth is the per-session
         // `X-Amux-Hook-Token` validated in the handler (§6.5).
         .merge(hooks::router_for(state.clone()))
-        .merge(public::router_for(state))
+        .merge(public::router_for(state.clone()))
+        // Embedded SPA (R4-01 / §3.2 line 153) — PUBLIC, no bearer layer. Merged
+        // LAST: it owns `GET /` and a catch-all `.fallback` that serves hashed
+        // assets or the SPA shell (with `window._AMUX_AUTH_TOKEN` injected). The
+        // fallback only fires for paths no other router claimed; `/api/*` and
+        // `/ws/*` are explicitly denylisted inside it so a missing API route
+        // still 404s as itself rather than silently returning HTML.
+        .merge(static_assets::router_for(state))
 }
 
 /// All bearer-token-protected routes.

@@ -135,8 +135,26 @@ pub async fn list_runtimes(pool: &SqlitePool) -> sqlx::Result<Vec<SessionRuntime
 }
 
 /// Does a session row exist? Used for clean 404/409 mapping before mutating.
+///
+/// NOTE: an *archived* row still satisfies this (it is not DELETEd by
+/// `archive`). Per-session background loops MUST use [`exists_active`] for their
+/// lifetime check so an archived session terminates them (R1-1).
 pub async fn exists(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> {
     let row = sqlx::query("SELECT 1 FROM sessions WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
+}
+
+/// Does a *live* (non-archived) session row exist? This is the lifetime anchor
+/// for per-session background tasks (the 2s status detector and the steering
+/// deliver loop): `archive` sets `archived = 1` without DELETEing the row, so a
+/// guard on bare [`exists`] would never see an archived session as gone and the
+/// loops would tick forever (R1-1). Filtering on `archived = 0` makes an
+/// archived session terminate its loops just like a deleted one.
+pub async fn exists_active(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> {
+    let row = sqlx::query("SELECT 1 FROM sessions WHERE name = ? AND archived = 0")
         .bind(name)
         .fetch_optional(pool)
         .await?;

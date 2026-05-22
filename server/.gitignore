@@ -1,0 +1,5 @@
+# Embedded frontend bundle (TECH_PLAN §8.1). `scripts/build.sh` / `build.rs`
+# copy `web/dist` here so `#[derive(RustEmbed)]` in `src/static_assets.rs` can
+# embed it at compile time. It is a build artifact reproduced from `web/dist` —
+# never committed, just like `web/dist` itself (which is `dist/`-ignored).
+/static/
