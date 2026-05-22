@@ -14,8 +14,8 @@
 // drag renders a live peek-of-next that springs back below 40% width.
 //
 // Single source of truth: the terminal handle from <LiveTerminal onReady> drives
-// EVERY key path (dock send, specials, future joystick) — the same `useLiveTerm`
-// the desktop tile/focus use. No duplicate WS, no second xterm. The auth token is
+// EVERY key path (dock send, specials, joystick) — the same `useLiveTerm` the
+// desktop tile/focus use. No duplicate WS, no second xterm. The auth token is
 // never referenced here; it lives in `window._AMUX_AUTH_TOKEN` (env.ts).
 
 import * as React from 'react'
@@ -35,6 +35,7 @@ import { FocusHeader } from '@/components/focus-mode/focus-header'
 import { MobileDock } from '@/components/focus-mode/dock'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { SpecialsSheet } from '@/components/focus-mode/specials-sheet'
+import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
 
@@ -73,9 +74,19 @@ export function MobileFocus() {
 
   // Imperative terminal handle — the ONE surface every key path drives.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
+  // M18: the composer registers its `insert` here so the snippet panel can
+  // tap-to-insert a snippet body into the dock's input without prop-drilling.
+  const composerInsert = React.useRef<((text: string) => void) | null>(null)
+  const registerInsert = React.useCallback(
+    (fn: ((text: string) => void) | null) => {
+      composerInsert.current = fn
+    },
+    [],
+  )
 
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
+  const [snippetsOpen, setSnippetsOpen] = React.useState(false)
   // M17 — joystick on/off. The M16 accessory bar's "Gesture" toggle flips this
   // via `onGestureToggle`; default ON (joystick wins, per the Termius spec).
   const [gestureOn, setGestureOn] = React.useState(true)
@@ -142,8 +153,10 @@ export function MobileFocus() {
             nextSession={next}
             onOpenPicker={() => setPickerOpen(true)}
             onOpenSpecials={() => setSpecialsOpen(true)}
+            onOpenSnippets={() => setSnippetsOpen(true)}
             onSwitchSession={goSession}
             onSend={(text) => termRef.current?.send(text)}
+            registerInsert={registerInsert}
           />
         </MobileSheet>
       </motion.div>
@@ -160,6 +173,13 @@ export function MobileFocus() {
         open={specialsOpen}
         onOpenChange={setSpecialsOpen}
         onKey={(key) => termRef.current?.sendKey(key)}
+      />
+
+      <SnippetPanel
+        open={snippetsOpen}
+        onOpenChange={setSnippetsOpen}
+        onInsert={(body) => composerInsert.current?.(body)}
+        onRun={(body) => termRef.current?.send(body + '\r')}
       />
     </>
   )
