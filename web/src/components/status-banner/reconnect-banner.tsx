@@ -2,10 +2,17 @@
 // research/termius-ios-native-spec.md §"Reconnect banner / connection status
 // surface", §"v3 finish acceptance criteria" #8 / #20).
 //
-// One pinned glass pill, 8px below the safe-area top, 36px tall, full-pill
-// radius. It renders the AGGREGATED `useConnection` verdict — the worst current
-// state across the SSE stream + every live terminal — so it never flickers
-// between two out-of-phase terminals (Codex #16).
+// One glass pill, 8px below the safe-area top, 36px tall, full-pill radius. It
+// renders the AGGREGATED `useConnection` verdict — the worst current state
+// across the SSE stream + every live terminal — so it never flickers between
+// two out-of-phase terminals (Codex #16).
+//
+// LAYOUT (M27): the banner is an IN-FLOW row at the top of the content column,
+// NOT an absolutely-positioned overlay. When visible it reserves its own
+// vertical space and pushes the route below it down, so it can never render on
+// top of a route's own header chrome (the Overview view-toggle / search /
+// "New session" button) at any breakpoint. When there is no banner it occupies
+// zero height — `<AnimatePresence>` collapses the row on exit.
 //
 // Motion (per the Termius motion table):
 //   • slide-in        — y:-44 → 0, springs.smooth (~0.35s)
@@ -29,7 +36,7 @@ import { Check, Loader2, RotateCw, WifiOff } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import { useConnection, type ConnectionState } from '@/stores/connection-store'
+import { useConnection } from '@/stores/connection-store'
 import { useConnectionReaggregator } from '@/hooks/use-connection-link'
 
 /** How long the green "Connected" all-clear lingers before sliding away. */
@@ -43,16 +50,17 @@ interface BannerVisual {
   retryable: boolean
 }
 
+/** The states that paint a banner. The initial `connecting` handshake is NOT
+ *  one of them — a fresh cold load must open calm, never greeting a new user
+ *  with an amber worried pill before any genuine disconnect (M27). The banner
+ *  only appears once a REAL disconnect (`reconnecting` / `offline`) occurs, or
+ *  for the transient green recovery flash. */
+type VisibleState = 'reconnecting' | 'offline' | 'connected'
+
 /** Copy + tint per visible state. Title-Case throughout (never UPPERCASE) —
  *  Termius criterion. Tints are ~0.18 alpha over the glass surface, matching the
  *  spec's `Color.orange/green/red.opacity(0.18)`. */
-const VISUALS: Record<Exclude<ConnectionState, 'idle'>, BannerVisual> = {
-  connecting: {
-    label: 'Connecting…',
-    tint: 'bg-[hsl(var(--status-active)/0.16)] text-foreground',
-    icon: 'spinner',
-    retryable: false,
-  },
+const VISUALS: Record<VisibleState, BannerVisual> = {
   reconnecting: {
     label: 'Reconnecting…',
     tint: 'bg-[hsl(var(--status-active)/0.16)] text-foreground',
@@ -130,17 +138,27 @@ export function ReconnectBanner() {
     // Seed `wasUnhealthy` from the mount-time state WITHOUT a setState — only
     // future transitions drive the flash. (`showSuccess` starts false, which is
     // correct: a fresh mount never owes a success flash.)
+    //
+    // M27: the initial `connecting` handshake does NOT count as "unhealthy" —
+    // a cold load reaching `connected` for the first time is not a recovery, so
+    // it must not flash green. Only a REAL disconnect (`reconnecting` /
+    // `offline`) arms the success flash, so the unboxing opens calm.
     const seed = useConnection.getState().state
-    let wasUnhealthy =
-      seed === 'connecting' || seed === 'reconnecting' || seed === 'offline'
+    let wasUnhealthy = seed === 'reconnecting' || seed === 'offline'
     let timer: number | null = null
     const unsub = useConnection.subscribe((store) => {
       const s = store.state
-      if (s === 'connecting' || s === 'reconnecting' || s === 'offline') {
+      if (s === 'reconnecting' || s === 'offline') {
         wasUnhealthy = true
         if (timer !== null) window.clearTimeout(timer)
         timer = null
         setShowSuccess(false)
+        return
+      }
+      if (s === 'connecting') {
+        // The initial / re-handshake connecting state: keep whatever
+        // `wasUnhealthy` already holds (a reconnect keeps it armed; a cold
+        // load keeps it disarmed) and paint nothing.
         return
       }
       // s === 'connected' (or 'idle'). Flash green ONLY if we were degraded.
@@ -157,10 +175,12 @@ export function ReconnectBanner() {
     }
   }, [])
 
-  // What the banner should render right now: the live degraded state, or the
-  // transient success flash, or nothing.
-  const visibleState: Exclude<ConnectionState, 'idle'> | null =
-    state === 'connecting' || state === 'reconnecting' || state === 'offline'
+  // What the banner should render right now: a REAL degraded state
+  // (`reconnecting` / `offline`), or the transient success flash, or nothing.
+  // The initial `connecting` handshake deliberately paints NOTHING so the
+  // first cold-load paint is calm (M27).
+  const visibleState: VisibleState | null =
+    state === 'reconnecting' || state === 'offline'
       ? state
       : showSuccess
         ? 'connected'
@@ -172,57 +192,72 @@ export function ReconnectBanner() {
   return (
     <div
       aria-live="polite"
-      className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center pt-safe"
+      // In-flow row at the top of the content column (M27): it reserves its own
+      // vertical space when a banner is visible — pushing the route's own header
+      // down — and collapses to zero height when there is none. It is NEVER an
+      // overlay, so it can never render on top of route header chrome.
+      className="pointer-events-none z-30 flex shrink-0 justify-center pt-safe"
     >
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {v && (
           <motion.div
             key="reconnect-banner"
-            // Slide-in from above the safe-area; slide-out on dismiss. Under
-            // reduced motion the y-offset collapses to a pure crossfade.
-            initial={reduce ? { opacity: 0 } : { y: -44, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={reduce ? { opacity: 0 } : { y: -44, opacity: 0 }}
-            transition={reduce ? { duration: 0.15 } : springs.smooth}
-            className="pointer-events-auto mt-2 px-4"
-            style={{ maxWidth: 'min(100vw - 32px, 28rem)' }}
+            // Collapse / expand the reserved row height (pill + 8px top + 8px
+            // bottom = 52px). Under reduced motion this is an instant cut; the
+            // pill itself still crossfades.
+            initial={{ height: 0 }}
+            animate={{ height: 52 }}
+            exit={{ height: 0 }}
+            transition={reduce ? { duration: 0 } : springs.smooth}
+            className="overflow-hidden"
           >
-            {/* The single morphing surface: tint + icon swap in place via the
-                `layout` + statusMorph spring; never a remount, never a
-                slide-out+slide-in for the same surface (Termius #20). */}
-            <motion.button
-              type="button"
-              layout
-              transition={reduce ? { duration: 0 } : springs.statusMorph}
-              onClick={v.retryable && retry ? retry : undefined}
-              disabled={!v.retryable || !retry}
-              aria-label={
-                v.retryable ? `${v.label}. Tap to retry.` : v.label
-              }
-              className={cn(
-                'glass flex h-9 items-center gap-2 rounded-full px-4',
-                'border border-border/60 shadow-sm',
-                'text-[13px] font-semibold leading-none',
-                v.retryable && retry ? 'cursor-pointer' : 'cursor-default',
-                isConnected ? CONNECTED_TINT : v.tint,
-              )}
+            <motion.div
+              // Slide-in from above; slide-out on dismiss. Under reduced motion
+              // the y-offset collapses to a pure crossfade.
+              initial={reduce ? { opacity: 0 } : { y: -44, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={reduce ? { opacity: 0 } : { y: -44, opacity: 0 }}
+              transition={reduce ? { duration: 0.15 } : springs.smooth}
+              className="pointer-events-auto mx-auto mt-2 px-4"
+              style={{ maxWidth: 'min(100vw - 32px, 28rem)' }}
             >
-              <BannerIcon kind={v.icon} reduce={reduce} />
-              <motion.span layout="position">{v.label}</motion.span>
-              {v.retryable && retry && (
-                <span
-                  className={cn(
-                    // ≥44pt hit target inside the 36px pill via negative-margin
-                    // padding (Termius criterion #5) — the pill stays 36px tall.
-                    '-my-2 -mr-2 ml-1 flex h-11 items-center gap-1 rounded-full',
-                    'px-3 text-[13px] font-semibold text-primary',
-                  )}
-                >
-                  <RotateCw className="size-3.5" aria-hidden />
-                  Tap to retry
-                </span>
-              )}
-            </motion.button>
+              {/* The single morphing surface: tint + icon swap in place via
+                  the `layout` + statusMorph spring; never a remount, never a
+                  slide-out+slide-in for the same surface (Termius #20). */}
+              <motion.button
+                type="button"
+                layout
+                transition={reduce ? { duration: 0 } : springs.statusMorph}
+                onClick={v.retryable && retry ? retry : undefined}
+                disabled={!v.retryable || !retry}
+                aria-label={
+                  v.retryable ? `${v.label}. Tap to retry.` : v.label
+                }
+                className={cn(
+                  'glass flex h-9 items-center gap-2 rounded-full px-4',
+                  'border border-border/60 shadow-sm',
+                  'text-[13px] font-semibold leading-none',
+                  v.retryable && retry ? 'cursor-pointer' : 'cursor-default',
+                  isConnected ? CONNECTED_TINT : v.tint,
+                )}
+              >
+                <BannerIcon kind={v.icon} reduce={reduce} />
+                <motion.span layout="position">{v.label}</motion.span>
+                {v.retryable && retry && (
+                  <span
+                    className={cn(
+                      // ≥44pt hit target inside the 36px pill via negative-
+                      // margin padding (Termius #5) — pill stays 36px tall.
+                      '-my-2 -mr-2 ml-1 flex h-11 items-center gap-1',
+                      'rounded-full px-3 text-[13px] font-semibold text-primary',
+                    )}
+                  >
+                    <RotateCw className="size-3.5" aria-hidden />
+                    Tap to retry
+                  </span>
+                )}
+              </motion.button>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

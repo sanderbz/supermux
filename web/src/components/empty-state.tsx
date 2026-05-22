@@ -63,7 +63,9 @@ export function EmptyStatePlaceholder({
             size="sm"
             variant="ghost"
             disabled={secondary.busy}
-            className="h-9"
+            // M27: a real first-run CTA — kept at the 44pt HIG floor (`h-11`),
+            // not the compact `h-9` secondary-button size.
+            className="h-11"
           >
             {secondary.label}
           </Button>
