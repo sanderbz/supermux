@@ -1,0 +1,29 @@
+# amux v3 systemd unit — install to /etc/systemd/system/amux-v3.service
+# (TECH_PLAN §8.3). v3 runs side-by-side with v2 (§8.4):
+#   - v2 (amux.service)  : port 8822, data dir ~/.amux
+#   - v3 (amux-v3.service): port 8823, data dir ~/.amux-v3
+# Distinct data dir + distinct port => zero overlap, zero conflict.
+[Unit]
+Description=amux v3 (Rust)
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=simple
+# Matches the v2 deployment account on clawd-02 (amux.service runs as root,
+# HOME=/root). Keeping the same account means v3 sees the same tmux server
+# and ~/.claude config without privilege drift.
+User=root
+WorkingDirectory=/root
+Environment=HOME=/root
+Environment=AMUX3_DATA_DIR=/root/.amux-v3
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/amux-v3-server
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
