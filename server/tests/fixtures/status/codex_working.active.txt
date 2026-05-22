@@ -1,0 +1,4 @@
+codex
+  thinking
+
+  Editing src/main.rs (esc to interrupt)

@@ -1,0 +1,4 @@
+  Bash command
+    rm -rf build/
+  Do you want to proceed?
+  ❯ 1. Yes

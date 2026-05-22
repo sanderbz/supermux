@@ -1,0 +1,4 @@
+● Bash(npm run build)
+  ⎿  Building production bundle…
+
+✻ Crunching… (1m 23s · ↓ 4.1k tokens · esc to interrupt)

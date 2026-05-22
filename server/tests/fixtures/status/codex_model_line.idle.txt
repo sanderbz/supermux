@@ -1,0 +1,3 @@
+codex  ready
+
+gpt-5-codex · ~/code/amux-v3

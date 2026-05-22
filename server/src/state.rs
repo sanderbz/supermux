@@ -4,6 +4,7 @@
 //! clone (an `Arc`, a connection pool handle, or a broadcast sender).
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::Serialize;
@@ -11,6 +12,11 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use crate::config::Config;
+
+/// Cold-start PTY sentinel (§3.2.8): until M4's reader records a real byte for a
+/// session, [`AppState::last_pty`] reports the last byte as 5 minutes ago, so a
+/// freshly-booted server never reads `Active` off a stale heartbeat.
+const COLD_START_PTY_IDLE: Duration = Duration::from_secs(300);
 
 /// A per-session status snapshot pushed through [`AppState::status_watch`]:
 /// `(status, version)`. M3 establishes the channel + version counter as the
@@ -50,6 +56,12 @@ pub struct AppState {
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
     /// per-session `AMUX_HOOK_TOKEN`. M5b's `/api/_internal/hook` reads it.
     pub hook_tokens: Arc<DashMap<String, String>>,
+    /// Per-session PTY heartbeat: the [`Instant`] the live reader last saw bytes
+    /// from this session's pane. The M5a status detector reads it for its
+    /// heartbeat branch (bytes <1.5s → `Active`, silent ≥30s → `Idle`). **M4's
+    /// reader writes `Instant::now()` here on each byte batch**; until then a
+    /// missing entry reads as the cold-start sentinel (see [`Self::last_pty`]).
+    pub pty_heartbeat: Arc<DashMap<String, Instant>>,
     /// Wakes background consumers when session status may have changed.
     pub status_notify: Arc<Notify>,
     /// Broadcast channel feeding the SSE endpoint.
@@ -65,9 +77,20 @@ impl AppState {
             session_locks: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),
+            pty_heartbeat: Arc::new(DashMap::new()),
             status_notify: Arc::new(Notify::new()),
             sse_tx,
         }
+    }
+
+    /// The instant this session's PTY last produced a byte, or the cold-start
+    /// sentinel (`now − 5min`) when the reader (M4) has recorded nothing yet
+    /// (§3.2.8). The status detector feeds this into `StatusDetector::detect`.
+    pub fn last_pty(&self, name: &str) -> Instant {
+        self.pty_heartbeat
+            .get(name)
+            .map(|e| *e.value())
+            .unwrap_or_else(|| Instant::now() - COLD_START_PTY_IDLE)
     }
 
     /// Get (creating on first use) the per-session lock.
@@ -85,6 +108,7 @@ impl AppState {
         self.session_locks.remove(name);
         self.status_watch.remove(name);
         self.hook_tokens.remove(name);
+        self.pty_heartbeat.remove(name);
     }
 
     /// Move every per-session in-memory map entry from `old` to `new` (used by
@@ -98,6 +122,9 @@ impl AppState {
         }
         if let Some((_, v)) = self.hook_tokens.remove(old) {
             self.hook_tokens.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.pty_heartbeat.remove(old) {
+            self.pty_heartbeat.insert(new.to_string(), v);
         }
     }
 }

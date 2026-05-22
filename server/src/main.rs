@@ -6,7 +6,7 @@
 //! session reattach join in later milestones. Module definitions live in
 //! `lib.rs` so the binary and integration tests share them.
 
-use amux_server::{config, db, http, state};
+use amux_server::{config, db, http, sessions, state};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,6 +17,10 @@ async fn main() -> anyhow::Result<()> {
     let bind = config.bind;
 
     let state = state::AppState::new(pool, config);
+
+    // M5a: resume per-session status detection on boot (cold-start init §3.2.8).
+    sessions::auto_actions::spawn_all(&state).await;
+
     let app = http::router(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
