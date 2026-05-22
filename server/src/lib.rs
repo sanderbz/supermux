@@ -19,5 +19,6 @@ pub mod prefs;
 pub mod public;
 pub mod scheduler;
 pub mod sessions;
+pub mod sse;
 pub mod state;
 pub mod ws;
