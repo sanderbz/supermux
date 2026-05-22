@@ -47,7 +47,16 @@ export interface TileLiveTerminalProps {
 /** A live, read-only terminal rendered at native font size and fitted to the
  *  tile preview box — a small but genuinely legible window onto the agent's
  *  pty, latest output pinned to view. Mount = open WS; unmount = close WS (the
- *  parent gates it on hover). */
+ *  parent gates it on hover).
+ *
+ *  PRE-WARM (polish-pass). The parent already maintains a headless pre-warm
+ *  WS + ring buffer for visible tiles (see `usePeekPrewarm`). We opt in via
+ *  `prewarmSeed`: on mount the live-terminal hook tries to adopt that buffered
+ *  WS — bytes are written into xterm in a single rAF, the SAME WS continues
+ *  streaming, perceived latency ≈ <16ms (xterm allocate + buffer write). When
+ *  no pre-warm exists (cap was full, tile only just became visible) the hook
+ *  falls back to the original connect path — the polish-pass crossfade covers
+ *  that case. */
 export function TileLiveTerminal({ name }: TileLiveTerminalProps) {
   return (
     <div
@@ -62,6 +71,7 @@ export function TileLiveTerminal({ name }: TileLiveTerminalProps) {
         name={name}
         readOnly
         fontSize={ZOOM_FONT_SIZE}
+        prewarmSeed
         className="rounded-none"
       />
     </div>

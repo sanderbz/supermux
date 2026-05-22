@@ -35,6 +35,13 @@ export interface LiveTerminalProps {
    *  hover-zoom embed passes a larger value so its small pane shows fewer,
    *  legible rows (FitAddon then sizes the geometry to the container). */
   fontSize?: number
+  /** Opt in to the peek-prewarm fast-path: on mount, try to adopt an already-
+   *  open, already-authed WS + buffered bytes from the prewarm registry so
+   *  hover-zoom hydrates instantly. Falls back to the normal connect when no
+   *  pre-warm exists (cap full, just-became-visible, etc.). Used by the
+   *  overview hover-zoom embed only — the focus terminal + quick-peek modal
+   *  keep their existing single-WS lifecycle. */
+  prewarmSeed?: boolean
   /** Receive the imperative handle so a parent dock/joystick (M14/M15/M17) can
    *  drive `sendKey` / `copyAll` without re-subscribing. */
   onReady?: (term: UseLiveTermResult) => void
@@ -45,9 +52,10 @@ export function LiveTerminal({
   readOnly = false,
   className,
   fontSize,
+  prewarmSeed,
   onReady,
 }: LiveTerminalProps) {
-  const term = useLiveTerm(name, { readOnly, fontSize })
+  const term = useLiveTerm(name, { readOnly, fontSize, prewarmSeed })
   const { containerRef, state, retry } = term
 
   React.useEffect(() => {
