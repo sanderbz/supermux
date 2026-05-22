@@ -72,17 +72,10 @@ export const settingsApi = {
   /** GET `/api/audit?limit=N` — last N audit rows (§6.4). */
   getAudit: (limit = 200): Promise<AuditEntry[]> =>
     settingsRequest(`/api/audit?limit=${limit}`),
-  /** GET `/api/snippets` — saved-command CRUD (§3.4). */
-  listSnippets: (): Promise<Snippet[]> => settingsRequest('/api/snippets'),
-  createSnippet: (input: Omit<Snippet, 'id'>): Promise<Snippet> =>
-    settingsRequest('/api/snippets', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  deleteSnippet: (id: string): Promise<void> =>
-    settingsRequest(`/api/snippets/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    }),
+  // NOTE: snippet CRUD lives in `./commands.ts` (`commandsApi`), the M9 wire
+  // contract (`{title, body, position}`, integer ids). The legacy `label/command`
+  // snippet methods that used to live here were removed (review R3-003) so the
+  // Settings manager and the focus snippet panel share ONE client + cache key.
   /** POST `/api/settings/regenerate-token` — rotate the dashboard bearer. */
   regenerateToken: (): Promise<RegenerateTokenResult> =>
     settingsRequest('/api/settings/regenerate-token', { method: 'POST' }),

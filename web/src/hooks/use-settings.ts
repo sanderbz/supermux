@@ -19,12 +19,10 @@ import {
   type AuditEntry,
   type MaskedEnv,
   type RegenerateTokenResult,
-  type Snippet,
 } from '@/lib/api'
 
 const ENV_KEY = ['settings', 'env'] as const
 const AUDIT_KEY = ['settings', 'audit'] as const
-const SNIPPETS_KEY = ['settings', 'snippets'] as const
 
 /** Masked API-key previews. */
 export function useEnvKeys(): UseQueryResult<MaskedEnv> {
@@ -62,30 +60,11 @@ export function useAuditLog(limit = 200): UseQueryResult<AuditEntry[]> {
   })
 }
 
-export function useSnippets(): UseQueryResult<Snippet[]> {
-  return useQuery({
-    queryKey: SNIPPETS_KEY,
-    queryFn: settingsApi.listSnippets,
-    retry: false,
-    staleTime: 60_000,
-  })
-}
-
-export function useCreateSnippet() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (input: Omit<Snippet, 'id'>) => settingsApi.createSnippet(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: SNIPPETS_KEY }),
-  })
-}
-
-export function useDeleteSnippet() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: string) => settingsApi.deleteSnippet(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: SNIPPETS_KEY }),
-  })
-}
+// NOTE: snippet hooks (`useSnippets` / `useCreateSnippet` / `useDeleteSnippet`)
+// were removed here (review R3-003). Snippets are owned by `use-commands.ts`,
+// which speaks the M9 wire contract (`{title, body, position}`, integer ids) and
+// uses the `['snippets']` query key. The Settings snippets manager imports those
+// hooks directly so it shares ONE client + cache with the focus snippet panel.
 
 export function useRegenerateToken() {
   return useMutation<RegenerateTokenResult>({
