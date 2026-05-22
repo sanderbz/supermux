@@ -1,4 +1,4 @@
-# amux v3 — Technical Plan
+# supermux — Technical Plan
 
 > **Status**: canonical (**v2.1 — cruft removed, M5 split, runtime-parse-ready**). This document is the single source of truth for all v3 implementation. Subagents execute against the milestone specs in §10.
 > **Owner**: Sander. **Last revised**: 2026-05-22.
@@ -9,9 +9,9 @@
 
 ## 0. Executive summary
 
-**What we're building.** amux v3 is a ground-up rebuild of the v2 Python monolith (`amux-server.py`, 46k lines). It is a Rust HTTP+WS backend that drives `tmux` sessions running Claude Code / Codex, paired with a React-19 + Vite frontend that delivers a Termius-grade mobile experience and a "BE in tmux, via web" desktop experience. The dashboard is dense, hover-peek tiles on the overview; a real keyboard-captured focus mode on desktop; a Vaul-detent bottom sheet with a Termius-style accessory dock on mobile. The agent surface is small and opinionated: Sessions, Board, Files, Scheduler — nothing else.
+**What we're building.** supermux is a ground-up rebuild of the v2 Python monolith (`amux-server.py`, 46k lines). It is a Rust HTTP+WS backend that drives `tmux` sessions running Claude Code / Codex, paired with a React-19 + Vite frontend that delivers a Termius-grade mobile experience and a "BE in tmux, via web" desktop experience. The dashboard is dense, hover-peek tiles on the overview; a real keyboard-captured focus mode on desktop; a Vaul-detent bottom sheet with a Termius-style accessory dock on mobile. The agent surface is small and opinionated: Sessions, Board, Files, Scheduler — nothing else.
 
-**Key architecture decisions.** Single Rust binary (`amux-server`) that embeds the built frontend via `rust-embed` (stable Rust, no nightly), serves both HTTP and WebSocket on one TLS port (8823 in production, side-by-side with v2 on 8822), persists to a single SQLite (`~/.amux-v3/data.db`) via `sqlx`, and spawns child `tmux` processes for each agent session. Frontend uses xterm.js for the live terminal (WS pty bytes streamed character-by-character), TanStack Query for HTTP cache, Zustand for local UI state, Framer Motion 11 for every animation. No global mutable state outside Zustand stores. No 3s polling fallback — WebSocket is the only path for live terminal data, SSE for metadata, manual refetch on visibility for catch-up.
+**Key architecture decisions.** Single Rust binary (`supermux-server`) that embeds the built frontend via `rust-embed` (stable Rust, no nightly), serves both HTTP and WebSocket on one TLS port (8823 in production, side-by-side with v2 on 8822), persists to a single SQLite (`~/.supermux/data.db`) via `sqlx`, and spawns child `tmux` processes for each agent session. Frontend uses xterm.js for the live terminal (WS pty bytes streamed character-by-character), TanStack Query for HTTP cache, Zustand for local UI state, Framer Motion 11 for every animation. No global mutable state outside Zustand stores. No 3s polling fallback — WebSocket is the only path for live terminal data, SSE for metadata, manual refetch on visibility for catch-up.
 
 **The hero data flow (tile-tail-preview).** The overview's wow moment — dense grid of tiles each showing the last 6 lines of its agent's terminal, live — is plumbed end-to-end. The status detector's `tmux capture-pane` (every 2s per session, §3.6) writes the captured text into `session_runtime.last_capture`. `SessionSummary` gains `preview_lines: Vec<String>` (last 6 lines, ANSI-stripped). The SSE `sessions` event payload includes `preview_lines` deltas (only when changed). The frontend tile renders directly from `SessionSummary` — no per-tile WS subscription, no polling, single source of truth. Full data flow documented §3.6 → §3.4 SSE → §4.3 SessionTile.
 
@@ -40,7 +40,7 @@
              │ Bearer/?_token=     │ ?_token=               │
              ▼                     ▼                        ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│             amux-server (single Rust binary, port 8823)                      │
+│             supermux-server (single Rust binary, port 8823)                      │
 │  ┌─────────────────────────────────────────────────────────────────────────┐ │
 │  │ axum 0.8 router + tower middleware                                       │ │
 │  │   - bearer auth (always-on, explicit #[public] for exceptions)           │ │
@@ -66,14 +66,14 @@
 │                                       │                                       │
 │  ┌────────────────────┐  ┌────────────┴───────────┐  ┌────────────────────┐ │
 │  │ sqlx::SqlitePool   │  │ tokio::process::Command│  │ rust-embed (web)   │ │
-│  │ ~/.amux-v3/data.db │  │ tmux/git/claude/codex  │  │ static frontend    │ │
+│  │ ~/.supermux/data.db │  │ tmux/git/claude/codex  │  │ static frontend    │ │
 │  └────────────────────┘  └────────────────────────┘  └────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────────┘
                                        │
                                        ▼
                           ┌────────────────────────────┐
                           │ tmux server (system-wide)  │
-                          │  amux-<name>               │
+                          │  supermux-<name>               │
                           │   └─ claude / codex        │
                           │       └─ pty (fifo+log)    │
                           └────────────────────────────┘
@@ -81,15 +81,15 @@
 
 ### 1.2 Process model
 
-- **amux-server** (single binary, long-running). Spawned from systemd. Owns the SQLite handle, tokio runtime, all HTTP/WS listeners, and one pty reader task per active session.
-- **tmux server** (one per OS user, system-wide). Created on demand by `tmux new-session`. tmux sessions named `amux-<name>` survive amux-server restarts (they're not children of the Rust process). amux re-attaches via `tmux capture-pane` + `tmux pipe-pane` on startup.
+- **supermux-server** (single binary, long-running). Spawned from systemd. Owns the SQLite handle, tokio runtime, all HTTP/WS listeners, and one pty reader task per active session.
+- **tmux server** (one per OS user, system-wide). Created on demand by `tmux new-session`. tmux sessions named `supermux-<name>` survive supermux-server restarts (they're not children of the Rust process). supermux re-attaches via `tmux capture-pane` + `tmux pipe-pane` on startup.
 - **claude / codex** (one per session). Child of tmux pane. PID tracked via `tmux list-panes -F '#{pane_pid}'` + `pgrep -P`.
 - **No daemon-per-session**. The pty fan-out is in-process (one tokio task per session reading from a unix FIFO that `tmux pipe-pane` writes to).
 
 ### 1.3 Threading / concurrency model
 
 - **tokio multi-thread runtime** (default worker count = CPU cores).
-- **Per-session pty reader task**: drains a unix FIFO at `/tmp/amux-pty-<name>.fifo`, appends to in-memory ring buffer (`Arc<Mutex<VecDeque<Bytes>>>`, cap 64 KB), broadcasts to `tokio::sync::broadcast::Sender<Bytes>` (capacity 256).
+- **Per-session pty reader task**: drains a unix FIFO at `/tmp/supermux-pty-<name>.fifo`, appends to in-memory ring buffer (`Arc<Mutex<VecDeque<Bytes>>>`, cap 64 KB), broadcasts to `tokio::sync::broadcast::Sender<Bytes>` (capacity 256).
 - **Per-WS-subscriber task**: `broadcast::Receiver<Bytes>` reads from the per-session sender; on `RecvError::Lagged(n)` it closes with code 1013 (subscriber too slow, never blocks fan-out).
 - **Per-session status detector task**: runs every 2s; captures last 30 lines via `tmux capture-pane`, runs `detect_status()`, emits status changes via SSE channel.
 - **Scheduler tick task**: `tokio::time::interval(Duration::from_secs(10))`; queries `SELECT ... WHERE next_run <= ?`, dispatches each due schedule.
@@ -98,7 +98,7 @@
 
 ### 1.4 Auth model
 
-- **Bearer token** stored at `~/.amux-v3/auth_token` (mode 0o600). Generated via `rand::rngs::OsRng` (32 bytes, base64url) on first start. Overridable via env `AMUX3_AUTH_TOKEN=...`; setting `AMUX3_AUTH_TOKEN=none` disables auth (dev-only escape hatch, logs a warning).
+- **Bearer token** stored at `~/.supermux/auth_token` (mode 0o600). Generated via `rand::rngs::OsRng` (32 bytes, base64url) on first start. Overridable via env `SUPERMUX_AUTH_TOKEN=...`; setting `SUPERMUX_AUTH_TOKEN=none` disables auth (dev-only escape hatch, logs a warning).
 - **Required on ALL routes by default**. Middleware checks `Authorization: Bearer <tok>` OR `?_token=<tok>` query. Only routes annotated with `#[public]` (in practice: `/manifest.json`, `/sw.js`, `/icon.*`, `/`) skip the check.
 - **No localhost bypass**. v2's localhost bypass was a CVE waiting to happen on Tailscale-served deployments — v3 removes it entirely.
 - **WebSocket auth**: same token via `?_token=` query (browsers don't allow custom headers on WS upgrade).
@@ -107,8 +107,8 @@
 
 ### 1.5 Deployment
 
-- **Single binary**. `cargo build --release` produces `target/release/amux-server`. Frontend built with `bun run build` produces `web/dist/`. Build script copies `web/dist/` to `server/static/` and `#[derive(RustEmbed)] #[folder = "static/"]` (via `rust-embed`) embeds it at compile time. End-state: one binary (size measured in M25 — likely 30-60MB stripped given the dep set; v1 claim of ~12MB was optimistic per Codex #12) that serves the whole product.
-- **Target host**: `clawd-02` (existing remote dev box). Production port: **8823** (v2 stays on 8822 indefinitely until v3 is dogfooded). systemd service: `amux-v3.service`. Working dir: `~/.amux-v3/`.
+- **Single binary**. `cargo build --release` produces `target/release/supermux-server`. Frontend built with `bun run build` produces `web/dist/`. Build script copies `web/dist/` to `server/static/` and `#[derive(RustEmbed)] #[folder = "static/"]` (via `rust-embed`) embeds it at compile time. End-state: one binary (size measured in M25 — likely 30-60MB stripped given the dep set; v1 claim of ~12MB was optimistic per Codex #12) that serves the whole product.
+- **Target host**: `clawd-02` (existing remote dev box). Production port: **8823** (v2 stays on 8822 indefinitely until v3 is dogfooded). systemd service: `supermux.service`. Working dir: `~/.supermux/`.
 - **TLS**: reuse v2's pattern — `tailscale cert <host>` (Let's Encrypt via Tailscale), fall back to self-signed for raw-IP access. TLS is terminated in axum via `axum-server::tls_rustls`.
 - **No Docker, no Node at runtime, no Python**. Just the binary + a sqlite file + the tmux server already on the box.
 
@@ -117,7 +117,7 @@
 ## 2. Repository layout
 
 ```
-amux-v3/                         (repo root, NOT a Cargo workspace at top)
+supermux/                         (repo root, NOT a Cargo workspace at top)
 ├── plan/TECH_PLAN.md            (this file)
 ├── research/                    (reference docs — read-only)
 ├── skill/                       (build orchestrator skill + state file)
@@ -127,7 +127,7 @@ amux-v3/                         (repo root, NOT a Cargo workspace at top)
 │   ├── dev.sh                   (cargo watch + vite dev concurrently)
 │   ├── build.sh                 (build web → embed → cargo build --release)
 │   ├── deploy.sh                (scp + systemctl restart)
-│   └── migrate-v2.py            (read ~/.amux → write ~/.amux-v3)
+│   └── migrate-v2.py            (read ~/.amux → write ~/.supermux)
 ├── server/                      (Rust backend)
 │   ├── Cargo.toml
 │   ├── Cargo.lock
@@ -145,7 +145,7 @@ amux-v3/                         (repo root, NOT a Cargo workspace at top)
 │   │   └── status_detector.rs   (golden fixtures: 30 capture-pane samples)
 │   └── src/
 │       ├── main.rs              (entry: load config, init db, build router, serve)
-│       ├── config.rs            (~/.amux-v3/config.toml + env override)
+│       ├── config.rs            (~/.supermux/config.toml + env override)
 │       ├── auth.rs              (middleware + #[public] route attribute)
 │       ├── error.rs             (AppError enum + IntoResponse impl)
 │       ├── state.rs             (AppState struct: Pool, broadcast txs, etc.)
@@ -207,7 +207,7 @@ amux-v3/                         (repo root, NOT a Cargo workspace at top)
     └── src/
         ├── main.tsx             (entry; providers; SW register)
         ├── App.tsx              (router shell; theme provider)
-        ├── env.ts               (window._AMUX_* → typed accessors)
+        ├── env.ts               (window._SUPERMUX_* → typed accessors)
         ├── routes/
         │   ├── overview.tsx     (tile + list)
         │   ├── focus/
@@ -261,7 +261,7 @@ amux-v3/                         (repo root, NOT a Cargo workspace at top)
         │   ├── focus-store.ts   (currentSessionId)
         │   └── prefs-store.ts   (snippets, kbdGroups; persisted via /api/prefs)
         ├── lib/
-        │   ├── api.ts           (typed fetcher; reads window._AMUX_AUTH_TOKEN)
+        │   ├── api.ts           (typed fetcher; reads window._SUPERMUX_AUTH_TOKEN)
         │   ├── springs.ts       (Framer Motion preset bank — Termius spec)
         │   ├── ansi.ts          (tail preview formatter; strips SGR)
         │   ├── keys.ts          (xterm KeyMap → tmux key name map)
@@ -278,7 +278,7 @@ amux-v3/                         (repo root, NOT a Cargo workspace at top)
 
 ```toml
 [package]
-name = "amux-server"
+name = "supermux-server"
 version = "3.0.0"
 edition = "2021"
 rust-version = "1.83"
@@ -365,7 +365,7 @@ insta = "1.42"                                           # snapshot tests for st
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
-    let config = config::load()?;          // ~/.amux-v3/config.toml or defaults
+    let config = config::load()?;          // ~/.supermux/config.toml or defaults
     let pool = db::init(&config).await?;   // sqlx pool + run migrations
     let state = state::AppState::new(pool, config.clone());
 
@@ -376,7 +376,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = http::router(state.clone());
     let listener = bind_tls(&config).await?;
-    tracing::info!("amux-v3 listening on {}", config.bind);
+    tracing::info!("supermux listening on {}", config.bind);
 
     axum_server::from_tcp_rustls(listener, tls_config(&config).await?)
         .serve(app.into_make_service())
@@ -394,14 +394,14 @@ Error handling: top-level `anyhow::Result`; any error short-circuits startup wit
 ```rust
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    pub data_dir: PathBuf,           // ~/.amux-v3
+    pub data_dir: PathBuf,           // ~/.supermux
     pub bind: SocketAddr,            // 127.0.0.1:8823
     pub extra_binds: Vec<SocketAddr>,// tailscale IP:8823 etc.
     pub tls: TlsConfig,              // cert + key paths OR self-signed
-    pub auth_token: String,          // from file or AMUX3_AUTH_TOKEN env
+    pub auth_token: String,          // from file or SUPERMUX_AUTH_TOKEN env
     pub provider_defaults: ProviderDefaults,
 }
-pub fn load() -> Result<Config> { /* defaults + ~/.amux-v3/config.toml + env */ }
+pub fn load() -> Result<Config> { /* defaults + ~/.supermux/config.toml + env */ }
 ```
 
 Loaded once at startup; passed everywhere via `Arc<Config>` in `AppState`.
@@ -478,7 +478,7 @@ Each method acquires the per-session `tokio::sync::Mutex<SessionLock>` (stored i
 #### 3.2.6 `sessions/tmux.rs`
 
 ```rust
-pub struct Tmux<'a> { pub name: &'a str }            // amux-<name>
+pub struct Tmux<'a> { pub name: &'a str }            // supermux-<name>
 impl Tmux<'_> {
     pub async fn new_session(&self, dir: &Path, env: &HashMap<String, String>) -> Result<()>;
     pub async fn kill_session(&self) -> Result<()>;
@@ -499,8 +499,8 @@ All methods are thin `tokio::process::Command` wrappers. Each shells out to `tmu
 ```rust
 pub struct PtyStream {
     pub name: String,
-    pub fifo: PathBuf,                                    // /tmp/amux-pty-<name>.fifo
-    pub log: PathBuf,                                     // ~/.amux-v3/logs/<name>.log
+    pub fifo: PathBuf,                                    // /tmp/supermux-pty-<name>.fifo
+    pub log: PathBuf,                                     // ~/.supermux/logs/<name>.log
     pub replay: Arc<RwLock<VecDeque<Bytes>>>,             // last 64 KB
     pub broadcast: broadcast::Sender<Bytes>,              // capacity 1024 (config-tunable, see below)
     started: tokio::sync::OnceCell<()>,                   // spawn-once gate (Eng concurrency #1)
@@ -631,7 +631,7 @@ Wait handler observes `version` advance (or matching status). No race window. Se
 2. The server starts a 2-second timeout. If the first inbound frame is not `{"type":"auth","token":"<tok>"}` with a valid token, server closes with code 1008.
 3. On valid auth, server replies `{"type":"auth_ok"}` and switches to the normal pty stream (replay first).
 
-Alternative (acceptable): `Sec-WebSocket-Protocol: amux.bearer.<token>` subprotocol header — browsers accept this via `new WebSocket(url, ['amux.bearer.' + token])`. Implementer's choice; first-frame is simpler to debug and works through any proxy.
+Alternative (acceptable): `Sec-WebSocket-Protocol: supermux.bearer.<token>` subprotocol header — browsers accept this via `new WebSocket(url, ['supermux.bearer.' + token])`. Implementer's choice; first-frame is simpler to debug and works through any proxy.
 
 Frontend impact: `useLiveTerm` connects WITHOUT `?_token=`, sends `{type:"auth",token:...}` immediately on `onopen`, waits for `auth_ok` before considering itself `live`. Documented in §4.5.
 
@@ -1135,7 +1135,7 @@ Comprehensive endpoint list — see `research/amux-feature-extract.md` §1.1, §
 | GET | `/api/agents/delegations?session=X` | **NEW.** Returns delegation edges in/out of session for graph view. |
 | GET | `/api/snippets` / POST / DELETE / PATCH | **NEW.** Saved-command CRUD (used by snippet picker). |
 | GET | `/api/kbd-groups` / POST / DELETE / PATCH | **NEW.** Accessory-bar group CRUD. |
-| POST | `/api/_internal/hook` | **NEW v2 (Eng P1 #3 + table).** Per-session `hook_token` auth (header `X-Amux-Hook-Token`), NOT the dashboard bearer. Called by Claude SettingsHook to surface `pre_tool` / `post_tool` / `notification` / `stop` / `subagent_stop` events. Body: `{session, event}`. |
+| POST | `/api/_internal/hook` | **NEW v2 (Eng P1 #3 + table).** Per-session `hook_token` auth (header `X-Supermux-Hook-Token`), NOT the dashboard bearer. Called by Claude SettingsHook to surface `pre_tool` / `post_tool` / `notification` / `stop` / `subagent_stop` events. Body: `{session, event}`. |
 | GET | `/api/audit?limit=200` | **NEW v2 (Eng + table).** Returns last N audit_log rows. Auth required. |
 | GET | `/api/health` | **NEW v2 (Eng).** `#[public]` (no auth). Returns `{version, uptime_s, db_ok, tmux_ok}`. Used by M25 deploy verification. |
 
@@ -1172,24 +1172,24 @@ Each milestone M6/M7/M8/M9 adds ONE file and ONE line in `http.rs::router()`. No
 
 Same conventions as v2 (§1.4 of feature-extract), with v2-vs-v3 coexistence prefix:
 
-- **tmux session prefix: `amux3-<name>`** (v2 keeps `amux-<name>`). This prevents v2 and v3 from BOTH calling `pipe-pane` on the same tmux session and trampling each other's FIFOs during the 2-week side-by-side dogfooding window (Eng failure-paths table). v3 also REFUSES to attach to any session not prefixed `amux3-`.
-- `new-session -d -s amux3-<name> -n <name> -c <dir> -e AMUX_SESSION=<name> -e AMUX_URL=<bind_url> <SHELL>`.
-  - `AMUX_URL` is read from the `config.bind` (NOT hardcoded `localhost:8823`) — Eng failure-paths table. Hook command must use `$AMUX_URL` so config changes don't break Claude calls.
-  - `AMUX_HOOK_TOKEN` is ALSO injected per-session (see §6.5 below) — distinct from the dashboard bearer.
+- **tmux session prefix: `supermux-<name>`** (v2 keeps `supermux-<name>`). This prevents v2 and v3 from BOTH calling `pipe-pane` on the same tmux session and trampling each other's FIFOs during the 2-week side-by-side dogfooding window (Eng failure-paths table). v3 also REFUSES to attach to any session not prefixed `supermux-`.
+- `new-session -d -s supermux-<name> -n <name> -c <dir> -e SUPERMUX_SESSION=<name> -e SUPERMUX_URL=<bind_url> <SHELL>`.
+  - `SUPERMUX_URL` is read from the `config.bind` (NOT hardcoded `localhost:8823`) — Eng failure-paths table. Hook command must use `$SUPERMUX_URL` so config changes don't break Claude calls.
+  - `SUPERMUX_HOOK_TOKEN` is ALSO injected per-session (see §6.5 below) — distinct from the dashboard bearer.
 - `set-option remain-on-exit on`, `allow-rename off`, `automatic-rename off`.
 - After spawn: source `~/.zprofile`/`~/.bash_profile`/`~/.profile` (whichever exists), `cd <dir>`, then send the `claude` (or `codex`) command.
-- `pipe-pane -O -t <target> 'tee -a <log> > <fifo>'` for live stream. Replaces any existing pipe (idempotent). FIFO path: `/tmp/amux3-pty-<name>.fifo` (v3-prefixed).
-- For session adoption (`/api/sessions/connect`): read `pane_current_path`, rename tmux to `amux3-<name>` (refusing if already `amux-...`), write DB row.
+- `pipe-pane -O -t <target> 'tee -a <log> > <fifo>'` for live stream. Replaces any existing pipe (idempotent). FIFO path: `/tmp/supermux-pty-<name>.fifo` (v3-prefixed).
+- For session adoption (`/api/sessions/connect`): read `pane_current_path`, rename tmux to `supermux-<name>` (refusing if already `supermux-...`), write DB row.
 
 **`~/.claude/settings.json` write strategy (Eng concurrency #4 + Codex #19).** `claude_config.rs::install_hooks()` MUST be atomic and non-destructive:
 
 1. Read existing `~/.claude/settings.json` (handle ENOENT as empty `{}`).
 2. Parse as JSON.
-3. Set/replace ONLY the `hooks.PreToolUse|PostToolUse|Notification|Stop|SubagentStop` entries whose `matcher` is `"*"` and whose first `hooks[].command` includes the string `amux3-hook` (a marker we always inject in the command line for identifiability). This makes the operation idempotent and coexistence-safe: any user-added hooks AND any v2-amux hooks pass through unmodified.
-4. Write to `~/.claude/settings.json.amux3-tmp`, fsync, `rename(2)` over the original (atomic on POSIX).
+3. Set/replace ONLY the `hooks.PreToolUse|PostToolUse|Notification|Stop|SubagentStop` entries whose `matcher` is `"*"` and whose first `hooks[].command` includes the string `supermux-hook` (a marker we always inject in the command line for identifiability). This makes the operation idempotent and coexistence-safe: any user-added hooks AND any v2-supermux hooks pass through unmodified.
+4. Write to `~/.claude/settings.json.supermux-tmp`, fsync, `rename(2)` over the original (atomic on POSIX).
 
 This way:
-- cmux's hooks coexist with amux3's.
+- cmux's hooks coexist with supermux's.
 - Re-running `install_hooks()` is idempotent.
 - A user-edited `settings.json` is not blown away on every restart.
 - A v2 amux running on the same machine writes nothing to settings.json (v2 didn't use hooks per feature-extract), so no conflict.
@@ -1204,11 +1204,11 @@ Wait-for-ready poll: `tmux capture-pane` every 1s, looking for `❯` or `❱` or
 
 1. **PTY heartbeat** (`last_pty_byte_at`). If bytes flowed in the last 1.5s → likely `Active`. If silent ≥30s → likely `Idle`.
 2. **Capture-pane regex bank** (the v2 detector, ported verbatim with golden-fixture tests).
-3. **Claude Code SettingsHook events** (NEW). amux-v3 writes `~/.claude/settings.json` with hooks. **Auth is per-session `AMUX_HOOK_TOKEN`, NOT the dashboard bearer** (Eng P1 #3 + Codex #4):
+3. **Claude Code SettingsHook events** (NEW). supermux writes `~/.claude/settings.json` with hooks. **Auth is per-session `SUPERMUX_HOOK_TOKEN`, NOT the dashboard bearer** (Eng P1 #3 + Codex #4):
    ```json
    {
      "hooks": {
-       "PreToolUse":  [{"matcher": "*", "hooks": [{"type":"command","blocking": false, "command": "amux3-hook curl -fsS --max-time 1 -X POST -H \"X-Amux-Hook-Token: $AMUX_HOOK_TOKEN\" $AMUX_URL/api/_internal/hook -d \"{\\\"session\\\":\\\"$AMUX_SESSION\\\",\\\"event\\\":\\\"pre_tool\\\"}\" || true"}]}],
+       "PreToolUse":  [{"matcher": "*", "hooks": [{"type":"command","blocking": false, "command": "supermux-hook curl -fsS --max-time 1 -X POST -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" $SUPERMUX_URL/api/_internal/hook -d \"{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"pre_tool\\\"}\" || true"}]}],
        "PostToolUse": [...],
        "Notification": [...],
        "Stop":         [...],
@@ -1219,13 +1219,13 @@ Wait-for-ready poll: `tmux capture-pane` every 1s, looking for `❯` or `❱` or
    Each hook fires a POST to `/api/_internal/hook` which the StatusDetector consumes. Event types: `pre_tool` (Active), `post_tool` (Idle-candidate; treated by the fusion rule as "no override; fall through to other signals"), `notification` (Waiting), `stop` (Idle), `subagent_stop` (Idle).
 
    **Hook auth contract** (Eng P1 #3 fix):
-   - The token in `$AMUX_HOOK_TOKEN` is per-session, generated at session create (32 bytes from `OsRng`, base64url), stored in `session_runtime.hook_token`.
-   - `/api/_internal/hook` validates `X-Amux-Hook-Token` against `session_runtime.hook_token` WHERE `name = body.session`. Token does NOT grant access to other sessions.
+   - The token in `$SUPERMUX_HOOK_TOKEN` is per-session, generated at session create (32 bytes from `OsRng`, base64url), stored in `session_runtime.hook_token`.
+   - `/api/_internal/hook` validates `X-Supermux-Hook-Token` against `session_runtime.hook_token` WHERE `name = body.session`. Token does NOT grant access to other sessions.
    - The dashboard bearer token is NEVER exposed to the session's environment, tmux env, or Claude's settings.json.
-   - Hook command includes `|| true` AND `--max-time 1` AND `"blocking": false` so an unreachable amux-server never blocks Claude tool execution.
-   - The literal string `amux3-hook` in the command line is a marker (see §3.5 install_hooks) for idempotent re-installs.
+   - Hook command includes `|| true` AND `--max-time 1` AND `"blocking": false` so an unreachable supermux-server never blocks Claude tool execution.
+   - The literal string `supermux-hook` in the command line is a marker (see §3.5 install_hooks) for idempotent re-installs.
 
-   **Why not the dashboard bearer in env (Codex #4)?** Because `AMUX_TOKEN` in tmux session env is then visible to: `env | grep AMUX`, accidental `set -x`, any child telemetry uploader, any user with `ps aux` access on the same box (since the curl arg list shows `-H 'Authorization: Bearer ...'`). The per-session hook token has a tiny blast radius: leak of one session's token only grants that session's hook event surface, nothing else.
+   **Why not the dashboard bearer in env (Codex #4)?** Because `SUPERMUX_TOKEN` in tmux session env is then visible to: `env | grep SUPERMUX`, accidental `set -x`, any child telemetry uploader, any user with `ps aux` access on the same box (since the curl arg list shows `-H 'Authorization: Bearer ...'`). The per-session hook token has a tiny blast radius: leak of one session's token only grants that session's hook event surface, nothing else.
 4. **Prompt pattern** (capture-pane string matches). Same regex bank as v2 §1.3.
 5. **Idle timeout**. No PTY bytes + no active markers for ≥30s → `Idle`.
 
@@ -1296,12 +1296,12 @@ All downstream consumers that previously depended on "M5" now depend on **M5b** 
 HTTP long-poll, 600s max timeout. Each session has a `tokio::sync::Notify` in `state.status_notify: DashMap<String, Arc<Notify>>`. The status-detector task calls `notify.notify_waiters()` on every state change. The `wait` handler `tokio::select!`s on (timeout, notify) and re-queries on each notify.
 
 ```bash
-# CLI usage (via auto-installed amux stub):
-amux wait worker-2 --state done --timeout 600
+# CLI usage (via auto-installed supermux stub):
+supermux wait worker-2 --state done --timeout 600
 # Returns: {"reached": true, "status": "idle"} or {"reached": false, "status": "active"}
 ```
 
-Frontend uses this for the delegation graph view: when an agent runs `amux wait`, the UI shows a "waiting on worker-2" pill on the source session.
+Frontend uses this for the delegation graph view: when an agent runs `supermux wait`, the UI shows a "waiting on worker-2" pill on the source session.
 
 ### 3.8 Scheduler tick loop
 
@@ -1467,7 +1467,7 @@ State deps:
 - Tile shape with shimmer overlay; renders for ≤200ms in practice. Suppresses layout shift.
 
 **Error state** (tmux session missing for this row):
-- Border-red-300, title prefix `(missing)`, click goes to a quick-recovery sheet offering "Reattach" or "Delete from amux."
+- Border-red-300, title prefix `(missing)`, click goes to a quick-recovery sheet offering "Reattach" or "Delete from supermux."
 
 **Reduce Motion** (`prefers-reduced-motion: reduce`):
 - Disables hover-scale, pulse animations, and the layout-morph on preview updates.
@@ -1608,7 +1608,7 @@ export function useLiveTerm(name: string): {
 Implementation notes:
 - `xterm.js` v5.5+ with `@xterm/addon-canvas` (desktop) or `@xterm/addon-dom` (Capacitor/iOS mobile) + `@xterm/addon-fit` + `@xterm/addon-web-links`.
 - Theme uses CSS variables read at mount: `getComputedStyle(document.documentElement).getPropertyValue('--terminal-fg')`.
-- **First-frame auth (v2 per TIER 0 #4 / Codex #7)**: connect WITHOUT `?_token=` in URL. On `onopen`, immediately send `JSON.stringify({type:"auth", token: window._AMUX_AUTH_TOKEN})`. Wait for `{type:"auth_ok"}` text frame before considering the connection `live`. If we get a 1008 close instead, treat as permanent auth failure.
+- **First-frame auth (v2 per TIER 0 #4 / Codex #7)**: connect WITHOUT `?_token=` in URL. On `onopen`, immediately send `JSON.stringify({type:"auth", token: window._SUPERMUX_AUTH_TOKEN})`. Wait for `{type:"auth_ok"}` text frame before considering the connection `live`. If we get a 1008 close instead, treat as permanent auth failure.
 - Replay buffer arrives as the first binary message AFTER `auth_ok`; `term.write` handles it transparently.
 - **Reconnect close-code semantics (v2 per Eng P1 #4 / CEO #6)**:
   - **1008** (auth/origin) and **4001** (explicit revocation): permanent — UI shows "Tap to retry" button.
@@ -1628,7 +1628,7 @@ export const useUI = create<UIStore>()(persist((set) => ({
   dockOpen: true,
   setTheme: (t) => set({ theme: t }),
   setViewMode: (v) => set({ viewMode: v }),
-}), { name: 'amux-v3-ui' }))
+}), { name: 'supermux-ui' }))
 
 // stores/focus-store.ts
 export const useFocus = create<FocusStore>((set) => ({
@@ -1679,8 +1679,8 @@ EVERY motion in the app uses one of these. No `transition: all`. No ad-hoc cubic
 ```json
 // public/manifest.json
 {
-  "name": "amux",
-  "short_name": "amux",
+  "name": "supermux",
+  "short_name": "supermux",
   "start_url": "/?source=pwa",
   "display": "standalone",
   "background_color": "#000000",
@@ -1703,7 +1703,7 @@ Background sync (later v3.1): queue `POST /api/sessions/{name}/send` calls when 
 ### 4.10 Capacitor-ready
 
 To preserve a clean Capacitor wrap path later:
-- **NO localStorage for auth-critical data** — keep using `window._AMUX_AUTH_TOKEN` which Capacitor will inject via WebView script.
+- **NO localStorage for auth-critical data** — keep using `window._SUPERMUX_AUTH_TOKEN` which Capacitor will inject via WebView script.
 - **NO native browser features that Capacitor doesn't bridge** by default. Avoid `webkitDirectory`, `<a download>` without filename.
 - **Always use `import.meta.env.BASE_URL`** for routing so Capacitor's `capacitor://localhost` origin works.
 - **Vaul + Framer Motion both work fine in WKWebView** (verified by community).
@@ -1720,7 +1720,7 @@ Every route must implement an empty state with: message (one short sentence, bui
 | **Overview** (search no-match) | "No matches for `{query}`." | magnifier SVG | "Clear search" |
 | **Board** (no issues) | "Your board is clear." | clipboard SVG | "Add an issue" → opens NewIssueDialog |
 | **Files** (empty dir) | "Nothing here." | folder-empty SVG | "Go up" / drop-zone hint |
-| **Scheduler** (no schedules) | "Nothing scheduled. amux can boot agents, send commands, or run shell jobs on a timer." | clock-with-spark SVG | "New schedule" → opens NewScheduleDialog with three preset chips (boot, send, shell) |
+| **Scheduler** (no schedules) | "Nothing scheduled. supermux can boot agents, send commands, or run shell jobs on a timer." | clock-with-spark SVG | "New schedule" → opens NewScheduleDialog with three preset chips (boot, send, shell) |
 | **Settings → Audit log** (no rows yet) | "No audit events yet." | document-clean SVG | (none) |
 
 ### 4.12 Loading + error states (CEO #3)
@@ -1731,7 +1731,7 @@ Every route must implement an empty state with: message (one short sentence, bui
 - Board skeleton: 5 columns of 3 cards each.
 
 **Error states:**
-- **Backend unreachable** (TanStack Query throws after retry): full-page sheet with "Can't reach amux-server. Last connected {relativeTime}. Retrying in {countdown}s." + manual "Retry now" button.
+- **Backend unreachable** (TanStack Query throws after retry): full-page sheet with "Can't reach supermux-server. Last connected {relativeTime}. Retrying in {countdown}s." + manual "Retry now" button.
 - **Session missing** (404 on `/api/sessions/{name}` in focus): redirect to `/?missing={name}` with toast "Session `{name}` no longer exists."
 - **WS auth failed** (1008 after first-frame): "Authentication failed — refresh and re-enter." + "Refresh" button.
 
@@ -1752,7 +1752,7 @@ User clicks "+" in overview
 User clicks "Start" or sends an initial prompt
   ─POST /api/sessions/{name}/start {prompt}─►            backend
                                                           ├─ acquire session lock
-                                                          ├─ tmux new-session -d -s amux-{name} ...
+                                                          ├─ tmux new-session -d -s supermux-{name} ...
                                                           ├─ pipe-pane to fifo
                                                           ├─ spawn pty reader task
                                                           ├─ send "claude --resume X" or "--name X"
@@ -1771,7 +1771,7 @@ User types 'l' in xterm focus
   ─ws frame─►  backend ws handler
                 ├─ parse ClientMsg::Input { data: "l" }
                 ├─ acquire session lock
-                └─ tmux send-keys -t amux-name -l 'l'
+                └─ tmux send-keys -t supermux-name -l 'l'
   ◄─pty byte (fifo)─  tmux writes 'l' to pty
                 ┌─ reader task fires broadcast::send(Bytes("l"))
                 ├─ for each subscriber Receiver: forward
@@ -1839,7 +1839,7 @@ runner::run:
 - **Bearer token required on EVERY route by default**. Middleware applied at the router root, EXCEPT the explicit public-routes router (manifest, sw, icons, base HTML — and base HTML embeds the token inline for in-browser use, so it's only secret to non-authorised network observers).
 - **No localhost bypass**. v2's `/api`+`/ws` carve-out is brittle and was a CVE class; v3 simply requires the token everywhere.
 - **Constant-time compare** (`constant_time_eq::constant_time_eq`).
-- **AUTH_TOKEN in HTML body trade-off**: the token is rendered into the served HTML via `window._AMUX_AUTH_TOKEN`. Acceptable risk because we bind only to `127.0.0.1` + Tailscale interface, and Tailscale provides device-level auth. Documented in CLAUDE.md.
+- **AUTH_TOKEN in HTML body trade-off**: the token is rendered into the served HTML via `window._SUPERMUX_AUTH_TOKEN`. Acceptable risk because we bind only to `127.0.0.1` + Tailscale interface, and Tailscale provides device-level auth. Documented in CLAUDE.md.
 
 ### 6.2 Origin allowlist (WS)
 
@@ -1864,11 +1864,11 @@ runner::run:
 Separate from the dashboard bearer token. Per-session, narrow-scope.
 
 - **Generation**: at `sessions::create` time, generate 32 random bytes (`OsRng`), base64url-encode, write to `session_runtime.hook_token`.
-- **Injection**: the tmux session env gets `AMUX_HOOK_TOKEN=<token>` AND `AMUX_SESSION=<name>` AND `AMUX_URL=<bind_url>`. Crucially, it does **NOT** get `AMUX_TOKEN` (the dashboard bearer).
-- **Validation**: `/api/_internal/hook` checks `X-Amux-Hook-Token` header against `SELECT hook_token FROM session_runtime WHERE name = body.session`. Mismatch → 401. Token compares via `constant_time_eq`.
+- **Injection**: the tmux session env gets `SUPERMUX_HOOK_TOKEN=<token>` AND `SUPERMUX_SESSION=<name>` AND `SUPERMUX_URL=<bind_url>`. Crucially, it does **NOT** get `SUPERMUX_TOKEN` (the dashboard bearer).
+- **Validation**: `/api/_internal/hook` checks `X-Supermux-Hook-Token` header against `SELECT hook_token FROM session_runtime WHERE name = body.session`. Mismatch → 401. Token compares via `constant_time_eq`.
 - **Scope**: a leaked hook token only grants the ability to surface hook events for ONE session. It cannot list sessions, read state, modify config, or anything else. Compare to v1's design where leaking a hook would leak the master dashboard token.
 - **Rotation**: on session restart, generate a fresh hook token (avoid long-lived secrets in env). The `install_hooks()` writer re-writes settings.json with the new token.
-- **Failure mode**: hook commands are `--max-time 1`, `|| true`, and `"blocking": false` so an unreachable or down amux-server never blocks Claude tool execution (Eng + Codex).
+- **Failure mode**: hook commands are `--max-time 1`, `|| true`, and `"blocking": false` so an unreachable or down supermux-server never blocks Claude tool execution (Eng + Codex).
 
 ---
 
@@ -1921,7 +1921,7 @@ set -euo pipefail
 cd web && bun install && bun run build && cd ..
 rm -rf server/static && cp -r web/dist server/static
 cd server && cargo build --release
-echo "binary: server/target/release/amux-server ($(du -h server/target/release/amux-server | cut -f1))"
+echo "binary: server/target/release/supermux-server ($(du -h server/target/release/supermux-server | cut -f1))"
 ```
 
 ### 8.2 Deploy
@@ -1930,26 +1930,26 @@ echo "binary: server/target/release/amux-server ($(du -h server/target/release/a
 # scripts/deploy.sh
 set -euo pipefail
 HOST=clawd-02
-scp server/target/release/amux-server "$HOST":/tmp/amux-server-new
-ssh "$HOST" 'sudo install -m 0755 -o root -g root /tmp/amux-server-new /usr/local/bin/amux-v3-server
-              sudo systemctl restart amux-v3
-              sleep 2 && sudo systemctl is-active amux-v3'
+scp server/target/release/supermux-server "$HOST":/tmp/supermux-server-new
+ssh "$HOST" 'sudo install -m 0755 -o root -g root /tmp/supermux-server-new /usr/local/bin/supermux-server
+              sudo systemctl restart supermux
+              sleep 2 && sudo systemctl is-active supermux'
 ```
 
 ### 8.3 systemd unit
 
 ```ini
-# /etc/systemd/system/amux-v3.service
+# /etc/systemd/system/supermux.service
 [Unit]
-Description=amux v3 (Rust)
+Description=supermux (Rust)
 After=network.target
 
 [Service]
 Type=simple
 User=sander
 WorkingDirectory=/home/sander
-Environment="AMUX3_DATA_DIR=/home/sander/.amux-v3"
-ExecStart=/usr/local/bin/amux-v3-server
+Environment="SUPERMUX_DATA_DIR=/home/sander/.supermux"
+ExecStart=/usr/local/bin/supermux-server
 Restart=always
 RestartSec=2
 LimitNOFILE=65536
@@ -1962,7 +1962,7 @@ WantedBy=multi-user.target
 
 - v2 stays on port 8822 (Tailscale-served at `clawd-02.foo.ts.net`).
 - v3 listens on port 8823 (Tailscale-served at a separate hostname or path via `tailscale serve` config).
-- Both write to separate data dirs (`~/.amux/` vs `~/.amux-v3/`).
+- Both write to separate data dirs (`~/.amux/` vs `~/.supermux/`).
 - Run side-by-side until v3 is dogfooded for 2 weeks without regression, then disable v2 service.
 
 ---
@@ -1977,7 +1977,7 @@ WantedBy=multi-user.target
 # pseudo
 import sqlite3, json, glob, os, pathlib, secrets, time
 src = pathlib.Path.home() / '.amux'
-dst_db = pathlib.Path.home() / '.amux-v3' / 'data.db'
+dst_db = pathlib.Path.home() / '.supermux' / 'data.db'
 
 con = sqlite3.connect(dst_db)
 cur = con.cursor()
@@ -2023,7 +2023,7 @@ con.commit()
 print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 ```
 
-**Memory + log files**: stay in their v2 locations (don't move). v3 has its own logs in `~/.amux-v3/logs/`.
+**Memory + log files**: stay in their v2 locations (don't move). v3 has its own logs in `~/.supermux/logs/`.
 
 ---
 
@@ -2041,26 +2041,26 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
   - `scripts/dev.sh` starts both servers and Vite hot-reloads `web/src/App.tsx` edits in the browser.
 - **Verification**: `curl http://localhost:5173/` returns HTML; `cargo build` exits 0.
 - **Subagent prompt**:
-  > You are bootstrapping the amux-v3 repo skeleton. Read `/Users/sandervm/amux-v3/plan/TECH_PLAN.md` §2 (repository layout) and §3.1 (Cargo deps) and §4 (frontend stack). Create the directory tree exactly as in §2. Initialise `server/` with `cargo init --name amux-server` and populate `Cargo.toml` with the exact dep list from §3.1 (note: uses `rust-embed`, NOT `include_dir` — Codex finding). Initialise `web/` with `bun create vite@latest . -- --template react-ts`, then install: react@^19, tailwindcss@^4, @tailwindcss/vite, framer-motion@^11, vaul, @xterm/xterm, @xterm/addon-canvas, @xterm/addon-dom, @xterm/addon-fit, @xterm/addon-web-links, @tanstack/react-query, zustand, react-router-dom@^7. Wire Tailwind v4 via `@tailwindcss/vite` plugin in `vite.config.ts`. Add `scripts/dev.sh` that runs `cargo watch -x run` and `bun run dev` in parallel via `&` + `wait`. Add `scripts/build.sh` per §8.1. Write a stub `server/src/main.rs` that binds `127.0.0.1:8823` with an axum `Router::new().route("/", get(|| async { "amux v3" }))`. Write a stub `web/src/App.tsx` returning `<div>amux v3</div>`. **Also create `web/src/lib/api.ts`** with TYPED METHOD STUBS for every endpoint listed in §3.4 (signature only, body throws "not yet implemented"). The stub file is what M12/M14/M19/M20/M21/M22 will fill in — eliminates 4-way merge conflicts on api.ts (Eng dep-graph fix). The stubs should include: `listSessions`, `getSession`, `createSession`, `deleteSession`, `startSession`, `stopSession`, `sendText`, `sendKey`, `peek`, `archive`, `wake`, `clone`, `duplicate`, `listBoard`, `createIssue`, `patchIssue`, `deleteIssue`, `claimIssue`, `listSchedules`, `createSchedule`, `runSchedule`, `listFiles`, `getFile`, `putFile`, `uploadFile`, `listSnippets`, `listKbdGroups`, `waitAgent`, `delegate`, `listAuditLog`, `health`. Verify both build and `scripts/dev.sh` works. Commit "M0: workspace bootstrap + api stubs" and report.
+  > You are bootstrapping the supermux repo skeleton. Read `/Users/sandervm/supermux/plan/TECH_PLAN.md` §2 (repository layout) and §3.1 (Cargo deps) and §4 (frontend stack). Create the directory tree exactly as in §2. Initialise `server/` with `cargo init --name supermux-server` and populate `Cargo.toml` with the exact dep list from §3.1 (note: uses `rust-embed`, NOT `include_dir` — Codex finding). Initialise `web/` with `bun create vite@latest . -- --template react-ts`, then install: react@^19, tailwindcss@^4, @tailwindcss/vite, framer-motion@^11, vaul, @xterm/xterm, @xterm/addon-canvas, @xterm/addon-dom, @xterm/addon-fit, @xterm/addon-web-links, @tanstack/react-query, zustand, react-router-dom@^7. Wire Tailwind v4 via `@tailwindcss/vite` plugin in `vite.config.ts`. Add `scripts/dev.sh` that runs `cargo watch -x run` and `bun run dev` in parallel via `&` + `wait`. Add `scripts/build.sh` per §8.1. Write a stub `server/src/main.rs` that binds `127.0.0.1:8823` with an axum `Router::new().route("/", get(|| async { "supermux" }))`. Write a stub `web/src/App.tsx` returning `<div>supermux</div>`. **Also create `web/src/lib/api.ts`** with TYPED METHOD STUBS for every endpoint listed in §3.4 (signature only, body throws "not yet implemented"). The stub file is what M12/M14/M19/M20/M21/M22 will fill in — eliminates 4-way merge conflicts on api.ts (Eng dep-graph fix). The stubs should include: `listSessions`, `getSession`, `createSession`, `deleteSession`, `startSession`, `stopSession`, `sendText`, `sendKey`, `peek`, `archive`, `wake`, `clone`, `duplicate`, `listBoard`, `createIssue`, `patchIssue`, `deleteIssue`, `claimIssue`, `listSchedules`, `createSchedule`, `runSchedule`, `listFiles`, `getFile`, `putFile`, `uploadFile`, `listSnippets`, `listKbdGroups`, `waitAgent`, `delegate`, `listAuditLog`, `health`. Verify both build and `scripts/dev.sh` works. Commit "M0: workspace bootstrap + api stubs" and report.
 
 ### M1 — Backend: DB layer + migrations + auth
 
 - **Depends on**: M0.
 - **Scope** (~500 LOC): `server/migrations/0001..0004.sql` per §3.3. `server/src/db/mod.rs` (pool init), `db/sessions.rs`, `db/board.rs`, `db/schedules.rs`, `db/prefs.rs`, `db/runtime_state.rs` (each with `sqlx::query_as!` typed queries). `auth.rs` middleware. `error.rs` (`AppError` enum + `IntoResponse`). `config.rs`. `state.rs` (`AppState`).
 - **Acceptance**:
-  - Server starts, creates `~/.amux-v3/data.db`, runs all migrations.
+  - Server starts, creates `~/.supermux/data.db`, runs all migrations.
   - Hitting `/api/sessions` without token → 401. With `Authorization: Bearer <tok>` → 200 + `[]`.
-  - `~/.amux-v3/auth_token` is created mode 0o600 on first start.
-- **Verification**: `cargo test --package amux-server db::tests` green; manual curl works.
+  - `~/.supermux/auth_token` is created mode 0o600 on first start.
+- **Verification**: `cargo test --package supermux-server db::tests` green; manual curl works.
 - **Subagent prompt**:
-  > You are implementing the persistence and auth layers for amux-v3. Read TECH_PLAN.md §3.2.2-3.2.4 (modules: config, auth, db), §3.3 (full schema), §6.1 (auth model). Write `server/migrations/0001_init.sql`..`0004_runtime_state.sql` containing the EXACT SQL from §3.3 — every table, column, index, CHECK constraint included. Write `server/src/db/mod.rs` with `init()` per §3.2.4. For each table, write a Rust struct `#[derive(sqlx::FromRow, Serialize)]` and typed queries in the matching `db/<name>.rs` (start with sessions and board only; the rest can be stubs). Write `auth.rs` middleware that reads token from header OR `_token` query, compares via `constant_time_eq`, returns 401 otherwise. Write `error.rs` with `AppError` enum (`Unauthorized`, `NotFound(String)`, `Conflict(String)`, `BadRequest(String)`, `Internal(anyhow::Error)`) and `IntoResponse` impl that returns `{ok:false, error:"..."}` JSON. Write `config.rs` that loads from `~/.amux-v3/config.toml` if present, else defaults. Write `state.rs`: `AppState { pool, config, session_locks, status_notify, sse_tx }`. Wire it all in `main.rs`: load config, init pool, build router with auth middleware on `/api/*`. Add three integration tests in `server/tests/auth.rs` covering: missing token=401, wrong token=401, correct token=200. Verify `cargo test` passes. Commit "M1: db + auth" and report.
+  > You are implementing the persistence and auth layers for supermux. Read TECH_PLAN.md §3.2.2-3.2.4 (modules: config, auth, db), §3.3 (full schema), §6.1 (auth model). Write `server/migrations/0001_init.sql`..`0004_runtime_state.sql` containing the EXACT SQL from §3.3 — every table, column, index, CHECK constraint included. Write `server/src/db/mod.rs` with `init()` per §3.2.4. For each table, write a Rust struct `#[derive(sqlx::FromRow, Serialize)]` and typed queries in the matching `db/<name>.rs` (start with sessions and board only; the rest can be stubs). Write `auth.rs` middleware that reads token from header OR `_token` query, compares via `constant_time_eq`, returns 401 otherwise. Write `error.rs` with `AppError` enum (`Unauthorized`, `NotFound(String)`, `Conflict(String)`, `BadRequest(String)`, `Internal(anyhow::Error)`) and `IntoResponse` impl that returns `{ok:false, error:"..."}` JSON. Write `config.rs` that loads from `~/.supermux/config.toml` if present, else defaults. Write `state.rs`: `AppState { pool, config, session_locks, status_notify, sse_tx }`. Wire it all in `main.rs`: load config, init pool, build router with auth middleware on `/api/*`. Add three integration tests in `server/tests/auth.rs` covering: missing token=401, wrong token=401, correct token=200. Verify `cargo test` passes. Commit "M1: db + auth" and report.
 
 ### M2 — Backend: HTTP routes for sessions CRUD
 
 - **Depends on**: M1.
 - **Scope** (~600 LOC): `sessions/mod.rs` public API (create/list/get/delete/duplicate/config_patch — non-tmux parts only), HTTP handlers in `http.rs`. Tracked-files endpoints. Steering queue endpoints (DB-backed).
 - **Acceptance**: All `/api/sessions/*` endpoints from §1.1 of feature-extract that don't require tmux work (~80% of them). Integration tests cover happy path + 404 + 409.
-- **Verification**: `cargo test --package amux-server http_session` green.
+- **Verification**: `cargo test --package supermux-server http_session` green.
 - **Subagent prompt**:
   > Implement the non-tmux-dependent session HTTP endpoints. Read TECH_PLAN.md §3.2.5 (sessions public API), §3.4 (HTTP endpoints + **router-registry pattern**), and `research/amux-feature-extract.md` §1.1 (canonical endpoint list) and §1.2 (data model). Write `server/src/sessions/mod.rs` with `list`, `create`, `get`, `delete`, `duplicate`, `config_patch` (the tmux-free subset). **CRITICAL** (Eng dep-graph fix): mount these via `sessions::router_for(state) -> axum::Router` that returns a sub-router; the root `http::router(state)` calls `Router::new().merge(sessions::router_for(state.clone())).merge(...)`. Later milestones (M6/M7/M8/M9) add ONLY their own module file + ONE line in `http::router()` — no shared edits to handler functions. This prevents 3-way merge conflicts on `http.rs`. Sessions data model per §1.2 of feature-extract; persist to the `sessions` table from M1. Tracked-files endpoints: `/api/sessions/{name}/tracked-files` GET/POST/DELETE — use the `tracked_files` table from M1. Steering: GET/POST/DELETE `/api/sessions/{name}/steer` — uses `steering_queue` table. Write integration tests in `server/tests/http_session.rs` covering: POST create returns 201, POST duplicate name returns 409, GET non-existent returns 404, PATCH config rename works end-to-end. Skip `start/stop/send/keys/paste/clone/archive/wake/peek` — those are M3. Verify tests pass. Commit "M2: sessions CRUD + router registry" and report.
 
@@ -2075,7 +2075,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
   - 80-char and 1200-char texts both work (the latter via `load-buffer`).
 - **Verification**: Manual smoke + a tmux-using integration test (CI must have tmux installed).
 - **Subagent prompt**:
-  > Implement the tmux integration and session lifecycle. Read TECH_PLAN.md §3.2.5 (sessions API + archive/stop semantics), §3.2.6 (`Tmux` API), §3.5 (tmux conventions — note `amux3-<name>` prefix + atomic settings.json + `AMUX_HOOK_TOKEN`), and `research/amux-feature-extract.md` §1.4 (tmux integration), §1.5 (Claude/Codex invocation). Write `server/src/sessions/tmux.rs` with the full `Tmux<'_>` impl: every method spawns `tokio::process::Command::new("tmux").args([...])`. Use `which::which("tmux")` to locate. Capture stdout, error on non-zero exit. For `send_text`: if >400 chars, use `tmux load-buffer - + paste-buffer -p`; else `send-keys -l`. Write `server/src/sessions/lifecycle.rs` with `start`, `stop` (graceful /exit→15s grace→hard kill via `nix::sys::signal::kill`), `send_text` (acquires per-session lock, calls `Tmux::send_text` then `Enter`), `send_keys` (allowlist enforced per §1.4 of feature-extract), `paste`, `peek`, `archive` (returns 202 + spawn_blocking job per §3.2.5), `wake`, `clone`, and `delete` (also removes the session from `session_locks` / `status_watch` / `hook_tokens` maps per §3.2.5 cleanup rule). Resume strategy per §1.5 of feature-extract: try `cc_session_name`, else `cc_conversation_id`, else `--name`. Wait-for-ready: poll `capture-pane` every 1s for up to 10s expecting `❯` or `❱`. **`provider='shell'` is a first-class variant** (NOT a hack — schema CHECK in §3.3 v2 includes it). Use it for the integration test. Generate per-session `hook_token` (32 random bytes, base64url, OsRng) on session create; write to `session_runtime.hook_token`; inject `AMUX_HOOK_TOKEN`, `AMUX_SESSION`, `AMUX_URL` into the tmux env. Mount routes via `sessions::router_for` (per M2 pattern). Write integration test `server/tests/lifecycle.rs` that spawns a session with `provider="shell"` running `bash`, sends "echo hi", waits, and asserts "hi" is in peek output. Verify. Commit "M3: tmux + lifecycle" and report.
+  > Implement the tmux integration and session lifecycle. Read TECH_PLAN.md §3.2.5 (sessions API + archive/stop semantics), §3.2.6 (`Tmux` API), §3.5 (tmux conventions — note `supermux-<name>` prefix + atomic settings.json + `SUPERMUX_HOOK_TOKEN`), and `research/amux-feature-extract.md` §1.4 (tmux integration), §1.5 (Claude/Codex invocation). Write `server/src/sessions/tmux.rs` with the full `Tmux<'_>` impl: every method spawns `tokio::process::Command::new("tmux").args([...])`. Use `which::which("tmux")` to locate. Capture stdout, error on non-zero exit. For `send_text`: if >400 chars, use `tmux load-buffer - + paste-buffer -p`; else `send-keys -l`. Write `server/src/sessions/lifecycle.rs` with `start`, `stop` (graceful /exit→15s grace→hard kill via `nix::sys::signal::kill`), `send_text` (acquires per-session lock, calls `Tmux::send_text` then `Enter`), `send_keys` (allowlist enforced per §1.4 of feature-extract), `paste`, `peek`, `archive` (returns 202 + spawn_blocking job per §3.2.5), `wake`, `clone`, and `delete` (also removes the session from `session_locks` / `status_watch` / `hook_tokens` maps per §3.2.5 cleanup rule). Resume strategy per §1.5 of feature-extract: try `cc_session_name`, else `cc_conversation_id`, else `--name`. Wait-for-ready: poll `capture-pane` every 1s for up to 10s expecting `❯` or `❱`. **`provider='shell'` is a first-class variant** (NOT a hack — schema CHECK in §3.3 v2 includes it). Use it for the integration test. Generate per-session `hook_token` (32 random bytes, base64url, OsRng) on session create; write to `session_runtime.hook_token`; inject `SUPERMUX_HOOK_TOKEN`, `SUPERMUX_SESSION`, `SUPERMUX_URL` into the tmux env. Mount routes via `sessions::router_for` (per M2 pattern). Write integration test `server/tests/lifecycle.rs` that spawns a session with `provider="shell"` running `bash`, sends "echo hi", waits, and asserts "hi" is in peek output. Verify. Commit "M3: tmux + lifecycle" and report.
 
 ### M4 — Backend: WebSocket pty stream
 
@@ -2093,7 +2093,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
   - Per-WS server PING every 20s, close after no PONG in 30s.
 - **Verification**: `cargo test --test ws_pty` AND `cargo test --test ws_first_frame_auth` green; manual browser test.
 - **Subagent prompt**:
-  > Implement the WebSocket pty streamer. Read TECH_PLAN.md §3.2.7 (pty — note `O_NONBLOCK + AsyncFd` pattern), §3.2.9 (ws handler — note first-frame auth + 1013 = silent reconnect), §3.4 (WS wire protocol), §5.2 (terminal keystroke diagram), and `research/amux-feature-extract.md` §1.6 (live updates). Write `server/src/sessions/pty.rs` per §3.2.7's full spec: `PtyStream` struct with `started: OnceCell<()>` for spawn-once, `tail(n)` helper for the SessionSummary builder. `ensure_started(tmux)` mkfifos `/tmp/amux3-pty-<name>.fifo`, calls `tmux pipe-pane -O -t amux3-<name> 'tee -a <log> > <fifo>'`, waits for pipe-pane exit 0, opens FIFO with `O_RDONLY | O_NONBLOCK` (via `nix::fcntl::open`), wraps in `tokio::io::unix::AsyncFd`, ALSO opens a keep-alive write fd to suppress spurious EOF (Linux pipe trick). Reader loop uses `AsyncFd::readable()` + `try_io` per the §3.2.7 code sample, breaks if `tmux.exists()` becomes false (stream-dead). Broadcasts via `tokio::sync::broadcast::Sender<Bytes>` (cap 1024 — config tunable). Replay buffer is `Arc<RwLock<VecDeque<Bytes>>>` capped at 64 KB; push from the reader, snapshot on subscribe. Write `server/src/ws/protocol.rs` with `ClientMsg` enum (`Auth{token}`, `Input{data}`, `Key{data}`, `Resize{cols,rows}`, `Ping`) using `#[serde(tag = "type", rename_all = "lowercase")]`. Write `server/src/ws/streamer.rs` with a `DashMap` of per-session `Arc<PtyStream>` and a `for_session(&self, name)` accessor that creates-on-demand. Write `server/src/ws/mod.rs` with `axum::extract::WebSocketUpgrade` handler: validate Origin against allowlist (close 1008 on mismatch). On upgrade, wait up to 2s for first text frame matching `{"type":"auth","token":...}`; close 1008 if missing/invalid. Reject if already 32 subscribers (close 1013). Send replay + spawn fan-out task per §3.2.9. Per-WS PING every 20s; track last PONG, close on >30s silence. Mount at `/ws/sessions/:name`. Write `server/tests/ws_pty.rs` using `tokio-tungstenite` against an ephemeral port: connect, send auth frame, expect auth_ok, expect replay, send `{"type":"input","data":"x"}`, capture next inbound binary, assert it contains "x" (use a test session running `cat`). Write `server/tests/ws_first_frame_auth.rs`: missing auth frame → 1008 within 2s; malformed auth → 1008. Verify. Commit "M4: ws pty + first-frame auth" and report.
+  > Implement the WebSocket pty streamer. Read TECH_PLAN.md §3.2.7 (pty — note `O_NONBLOCK + AsyncFd` pattern), §3.2.9 (ws handler — note first-frame auth + 1013 = silent reconnect), §3.4 (WS wire protocol), §5.2 (terminal keystroke diagram), and `research/amux-feature-extract.md` §1.6 (live updates). Write `server/src/sessions/pty.rs` per §3.2.7's full spec: `PtyStream` struct with `started: OnceCell<()>` for spawn-once, `tail(n)` helper for the SessionSummary builder. `ensure_started(tmux)` mkfifos `/tmp/supermux-pty-<name>.fifo`, calls `tmux pipe-pane -O -t supermux-<name> 'tee -a <log> > <fifo>'`, waits for pipe-pane exit 0, opens FIFO with `O_RDONLY | O_NONBLOCK` (via `nix::fcntl::open`), wraps in `tokio::io::unix::AsyncFd`, ALSO opens a keep-alive write fd to suppress spurious EOF (Linux pipe trick). Reader loop uses `AsyncFd::readable()` + `try_io` per the §3.2.7 code sample, breaks if `tmux.exists()` becomes false (stream-dead). Broadcasts via `tokio::sync::broadcast::Sender<Bytes>` (cap 1024 — config tunable). Replay buffer is `Arc<RwLock<VecDeque<Bytes>>>` capped at 64 KB; push from the reader, snapshot on subscribe. Write `server/src/ws/protocol.rs` with `ClientMsg` enum (`Auth{token}`, `Input{data}`, `Key{data}`, `Resize{cols,rows}`, `Ping`) using `#[serde(tag = "type", rename_all = "lowercase")]`. Write `server/src/ws/streamer.rs` with a `DashMap` of per-session `Arc<PtyStream>` and a `for_session(&self, name)` accessor that creates-on-demand. Write `server/src/ws/mod.rs` with `axum::extract::WebSocketUpgrade` handler: validate Origin against allowlist (close 1008 on mismatch). On upgrade, wait up to 2s for first text frame matching `{"type":"auth","token":...}`; close 1008 if missing/invalid. Reject if already 32 subscribers (close 1013). Send replay + spawn fan-out task per §3.2.9. Per-WS PING every 20s; track last PONG, close on >30s silence. Mount at `/ws/sessions/:name`. Write `server/tests/ws_pty.rs` using `tokio-tungstenite` against an ephemeral port: connect, send auth frame, expect auth_ok, expect replay, send `{"type":"input","data":"x"}`, capture next inbound binary, assert it contains "x" (use a test session running `cat`). Write `server/tests/ws_first_frame_auth.rs`: missing auth frame → 1008 within 2s; malformed auth → 1008. Verify. Commit "M4: ws pty + first-frame auth" and report.
 
 ### M5a — Backend: status detector core (heartbeat + regex bank + idle timeout)
 
@@ -2112,7 +2112,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 ### M5b — Backend: status detector hook integration + fusion + wait channel
 
 - **Depends on**: M4, M5a (M4 = live pty heartbeat the fusion rule reads; M5a = detector core it extends).
-- **Scope** (~350 LOC): the Claude Code SettingsHook events (`/api/_internal/hook` endpoint with per-session hook-token auth), `claude_config.rs::install_hooks()` (atomic rename, namespaced `amux3-hook` merge), wiring the hook-event signal into the fusion rule, per-session `tokio::sync::watch::Sender<(Status, u64)>` for the wait primitive, `agents/wait.rs`, status broadcast via the SSE channel, and the 50ms flap debounce. Golden-fixture hook tests.
+- **Scope** (~350 LOC): the Claude Code SettingsHook events (`/api/_internal/hook` endpoint with per-session hook-token auth), `claude_config.rs::install_hooks()` (atomic rename, namespaced `supermux-hook` merge), wiring the hook-event signal into the fusion rule, per-session `tokio::sync::watch::Sender<(Status, u64)>` for the wait primitive, `agents/wait.rs`, status broadcast via the SSE channel, and the 50ms flap debounce. Golden-fixture hook tests.
 - **Acceptance**:
   - SettingsHook callback bumps status to `waiting` within 1s of a real Claude notification.
   - Hook token validation: a leaked hook token of session A cannot mark session B (test asserts 401).
@@ -2121,7 +2121,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
   - Multi-signal fusion: a fresh hook event (<3s) outranks the regex bank and the pty heartbeat (test asserts hook wins over a conflicting capture).
 - **Verification**: `cargo test wait_race hook_auth_scope` green; live test with real Claude.
 - **Subagent prompt**:
-  > Implement the status detector HOOK INTEGRATION layer on top of the M5a core: Claude SettingsHook events, multi-signal fusion, the watch channel, SSE broadcast, and the wait primitive. Read TECH_PLAN.md §3.6 (full detector spec — note the M5a/M5b split paragraph, hook token model, hero data flow), §3.2.8 (status module — watch::Sender, NOT Notify), §3.7 (wait), §6.5 (hook auth). The detector core (`Status` enum, `StatusDetector`, `detect()`, the 2s loop, `last_capture` writeback) already exists from M5a — EXTEND it, do not rewrite it. Wire the real hook branch into `detect()`: a fresh `last_hook` event (<3s) outranks the regex bank and heartbeat per the §3.6 fusion rule. Write `claude_config.rs::install_hooks(session_name, hook_token)` per §3.5 atomic-rename + namespaced-merge spec (uses `amux3-hook` marker for idempotent re-installs). The hook command embeds `$AMUX_HOOK_TOKEN` (NOT `$AMUX_TOKEN`); also `--max-time 1`, `|| true`, `"blocking": false`. Add `/api/_internal/hook` HTTP handler with **per-session token auth**: read `X-Amux-Hook-Token` header, validate against `SELECT hook_token FROM session_runtime WHERE name = body.session` via constant_time_eq. Update `last_hook_event_at` in the detector via a shared map. In the M5a detector loop seam: on status change, send via per-session `state.status_watch.get(&name).unwrap().send_replace((status, ver+1))`, ALSO emit SSE `sessions` delta containing `{name, status?, preview_lines?}` whenever EITHER status or tail6 changed; coalesce flaps via a 50ms debounce (persist/broadcast only the final status after 50ms of stability). Write `agents/wait.rs` per §3.7 v2 (watch-channel based, 300s max). Write tests: `server/tests/wait_race.rs` (100 wait handlers + 1 detector tick → none stuck), `server/tests/hook_auth_scope.rs` (cross-session hook token denied). Verify. Commit "M5b: status detector hooks + watch channel + wait" and report.
+  > Implement the status detector HOOK INTEGRATION layer on top of the M5a core: Claude SettingsHook events, multi-signal fusion, the watch channel, SSE broadcast, and the wait primitive. Read TECH_PLAN.md §3.6 (full detector spec — note the M5a/M5b split paragraph, hook token model, hero data flow), §3.2.8 (status module — watch::Sender, NOT Notify), §3.7 (wait), §6.5 (hook auth). The detector core (`Status` enum, `StatusDetector`, `detect()`, the 2s loop, `last_capture` writeback) already exists from M5a — EXTEND it, do not rewrite it. Wire the real hook branch into `detect()`: a fresh `last_hook` event (<3s) outranks the regex bank and heartbeat per the §3.6 fusion rule. Write `claude_config.rs::install_hooks(session_name, hook_token)` per §3.5 atomic-rename + namespaced-merge spec (uses `supermux-hook` marker for idempotent re-installs). The hook command embeds `$SUPERMUX_HOOK_TOKEN` (NOT `$SUPERMUX_TOKEN`); also `--max-time 1`, `|| true`, `"blocking": false`. Add `/api/_internal/hook` HTTP handler with **per-session token auth**: read `X-Supermux-Hook-Token` header, validate against `SELECT hook_token FROM session_runtime WHERE name = body.session` via constant_time_eq. Update `last_hook_event_at` in the detector via a shared map. In the M5a detector loop seam: on status change, send via per-session `state.status_watch.get(&name).unwrap().send_replace((status, ver+1))`, ALSO emit SSE `sessions` delta containing `{name, status?, preview_lines?}` whenever EITHER status or tail6 changed; coalesce flaps via a 50ms debounce (persist/broadcast only the final status after 50ms of stability). Write `agents/wait.rs` per §3.7 v2 (watch-channel based, 300s max). Write tests: `server/tests/wait_race.rs` (100 wait handlers + 1 detector tick → none stuck), `server/tests/hook_auth_scope.rs` (cross-session hook token denied). Verify. Commit "M5b: status detector hooks + watch channel + wait" and report.
 
 ### M6 — Backend: board CRUD + atomic claim
 
@@ -2130,7 +2130,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 - **Acceptance**: All `/api/board/*` endpoints per §2.1 of feature-extract pass integration tests. 100 concurrent claim requests on same id → exactly one 200.
 - **Verification**: `cargo test board` green.
 - **Subagent prompt**:
-  > Implement the Kanban board endpoints. Read TECH_PLAN.md §3.2.10 (atomic claim), `research/amux-feature-extract.md` §2 (full subsystem 2). Write `server/src/board/mod.rs` with handlers for: list (`GET /api/board`), create (`POST /api/board`), patch, delete (soft, sets `deleted=ts`), clear-done, claim (`POST /api/board/{id}/claim`), statuses CRUD, tag-completion, calendar.ics (PUBLIC, no auth). Mount via `board::router_for` (per M2 registry pattern). Write `board/prefix.rs` per §2.3 of feature-extract: prefix from session name = one-word→5 alphanumeric upcased, multi-word→first letters upcased, capped 5, no session→"AMUX". Counter via `INSERT OR IGNORE INTO issue_counters (prefix, next_n) VALUES (?, 1); UPDATE ... SET next_n=next_n+1 WHERE prefix=? RETURNING next_n`. **Atomic claim hardening (Codex #1)**: set `PRAGMA busy_timeout = 5000` on the connection pool; wrap the claim UPDATE in a `BEGIN IMMEDIATE` transaction so any contention waits inside SQLite (and converts to "no row updated" / 409) instead of bubbling `SQLITE_BUSY` 500s. Write `board/claim.rs` per §3.2.10 with this hardening. iCal export per §2.7 of feature-extract — concat `BEGIN:VCALENDAR ... END:VCALENDAR` with VEVENT per issue with `due`. Auto-notify-on-assign per §2.6: when creating with session+owner_type=agent+status in (todo,backlog) and creator!=session, send `notified=1` and tmux send_text the title to that session. Audit hook: delete + claim write rows to `audit_log` via `db::audit_writer`. Write `server/tests/board_claim.rs`: spawn 100 tokio tasks all POSTing to the same `/claim` — assert exactly one 200 + 99 of 409 (NO 500s). Verify. Commit "M6: board + atomic claim" and report.
+  > Implement the Kanban board endpoints. Read TECH_PLAN.md §3.2.10 (atomic claim), `research/amux-feature-extract.md` §2 (full subsystem 2). Write `server/src/board/mod.rs` with handlers for: list (`GET /api/board`), create (`POST /api/board`), patch, delete (soft, sets `deleted=ts`), clear-done, claim (`POST /api/board/{id}/claim`), statuses CRUD, tag-completion, calendar.ics (PUBLIC, no auth). Mount via `board::router_for` (per M2 registry pattern). Write `board/prefix.rs` per §2.3 of feature-extract: prefix from session name = one-word→5 alphanumeric upcased, multi-word→first letters upcased, capped 5, no session→"SUPERMUX". Counter via `INSERT OR IGNORE INTO issue_counters (prefix, next_n) VALUES (?, 1); UPDATE ... SET next_n=next_n+1 WHERE prefix=? RETURNING next_n`. **Atomic claim hardening (Codex #1)**: set `PRAGMA busy_timeout = 5000` on the connection pool; wrap the claim UPDATE in a `BEGIN IMMEDIATE` transaction so any contention waits inside SQLite (and converts to "no row updated" / 409) instead of bubbling `SQLITE_BUSY` 500s. Write `board/claim.rs` per §3.2.10 with this hardening. iCal export per §2.7 of feature-extract — concat `BEGIN:VCALENDAR ... END:VCALENDAR` with VEVENT per issue with `due`. Auto-notify-on-assign per §2.6: when creating with session+owner_type=agent+status in (todo,backlog) and creator!=session, send `notified=1` and tmux send_text the title to that session. Audit hook: delete + claim write rows to `audit_log` via `db::audit_writer`. Write `server/tests/board_claim.rs`: spawn 100 tokio tasks all POSTing to the same `/claim` — assert exactly one 200 + 99 of 409 (NO 500s). Verify. Commit "M6: board + atomic claim" and report.
 
 ### M7 — Backend: files browser + editor
 
@@ -2148,7 +2148,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 - **Acceptance**: Schedule "in 5s" fires within 6s; recurring "every 1m" fires every minute; cron `*/1 * * * *` works; watch mode detects pattern and fires `done_action`.
 - **Verification**: `cargo test scheduler` green; live test.
 - **Subagent prompt**:
-  > Implement the scheduler. Read TECH_PLAN.md §3.8 (tick loop — note `MissedTickBehavior::Skip` + `schedule_run_keys` idempotency + missed-tick policy + next_run semantics), §3.2.12 (sketch), `research/amux-feature-extract.md` §4 (full subsystem 4). Write `server/src/scheduler/parser.rs`: supports `in <N><unit>` (one-shot), `every <N><unit>`, `every morning/evening/night`, `every weekday at HH:MM`, `every <dayname> at HH:MM`, `daily at HH:MM`, `weekly on <day> at HH:MM`, `monthly on <N> at HH:MM`, AND 5-field cron expressions (use the `cron` crate's `Schedule::from_str`). Returns `next_run: DateTime<Utc>`. **Semantics (Eng failure-paths)**: 5-field cron → `Schedule::upcoming(Utc).next()` (wall-clock aligned). "every Nm/Nh" → `last_run + N*unit` (interval-from-last-fire, drifts intentionally). Named-time variants ("daily at HH:MM" etc) → wall-clock aligned. Write `scheduler/runner.rs::run(state, sched)`: BEFORE executing, INSERT INTO `schedule_run_keys (schedule_id, scheduled_for_ts)`; if UNIQUE violation, treat as duplicate-fire and skip. Then match on `kind`: `tmux` → `sessions::send_text`; `shell` → `tokio::process::Command::new("/bin/bash").arg("-c").arg(&sched.command)` with 600s timeout; `boot` (NEW for v3) → if `boot_worktree=1`, FIRST check `git status --porcelain` in `boot_dir`; if dirty, INSERT schedule_runs status='error' note='parent worktree dirty' and return. Otherwise `sessions::create` + `sessions::start(prompt = sched.command)`. After run: INSERT into schedule_runs, UPDATE schedules SET last_run/run_count, recompute next_run via parser (or disable if sched_type='once'). If watch=1 and kind='tmux' and status=ok, spawn `watch.rs::poll(state, sched, pre_output)`. Watch poller: every 5s up to watch_timeout, capture-pane, extract new output via tail anchor (last 100 of pre_output's last 200 chars), match `done_pattern` regex; on match, fire `done_action` (`disable` | `notify` | `command:<text>`). Write `scheduler/mod.rs::spawn(state)` with 10s `tokio::interval` configured with `MissedTickBehavior::Skip`. Missed-tick policy: if `now - next_run > 60s`, log skipped + advance `next_run` (don't fire). HTTP handlers: list, create (computes next_run), runs, single, run-now, patch, delete. Mount via `scheduler::router_for`. Audit hook: schedule.run + schedule.delete + manual run-now write `audit_log` rows. Write `server/tests/scheduler.rs`: create a schedule "in 1s" with kind=shell command="touch /tmp/amux-test-marker"; sleep 12s; assert marker exists. Write `server/tests/schedule_missed_tick.rs`: insert a schedule with `next_run` 5 minutes in the past, start scheduler, assert it logs skipped + advances `next_run` without firing. Verify. Commit "M8: scheduler + idempotency + missed-tick" and report.
+  > Implement the scheduler. Read TECH_PLAN.md §3.8 (tick loop — note `MissedTickBehavior::Skip` + `schedule_run_keys` idempotency + missed-tick policy + next_run semantics), §3.2.12 (sketch), `research/amux-feature-extract.md` §4 (full subsystem 4). Write `server/src/scheduler/parser.rs`: supports `in <N><unit>` (one-shot), `every <N><unit>`, `every morning/evening/night`, `every weekday at HH:MM`, `every <dayname> at HH:MM`, `daily at HH:MM`, `weekly on <day> at HH:MM`, `monthly on <N> at HH:MM`, AND 5-field cron expressions (use the `cron` crate's `Schedule::from_str`). Returns `next_run: DateTime<Utc>`. **Semantics (Eng failure-paths)**: 5-field cron → `Schedule::upcoming(Utc).next()` (wall-clock aligned). "every Nm/Nh" → `last_run + N*unit` (interval-from-last-fire, drifts intentionally). Named-time variants ("daily at HH:MM" etc) → wall-clock aligned. Write `scheduler/runner.rs::run(state, sched)`: BEFORE executing, INSERT INTO `schedule_run_keys (schedule_id, scheduled_for_ts)`; if UNIQUE violation, treat as duplicate-fire and skip. Then match on `kind`: `tmux` → `sessions::send_text`; `shell` → `tokio::process::Command::new("/bin/bash").arg("-c").arg(&sched.command)` with 600s timeout; `boot` (NEW for v3) → if `boot_worktree=1`, FIRST check `git status --porcelain` in `boot_dir`; if dirty, INSERT schedule_runs status='error' note='parent worktree dirty' and return. Otherwise `sessions::create` + `sessions::start(prompt = sched.command)`. After run: INSERT into schedule_runs, UPDATE schedules SET last_run/run_count, recompute next_run via parser (or disable if sched_type='once'). If watch=1 and kind='tmux' and status=ok, spawn `watch.rs::poll(state, sched, pre_output)`. Watch poller: every 5s up to watch_timeout, capture-pane, extract new output via tail anchor (last 100 of pre_output's last 200 chars), match `done_pattern` regex; on match, fire `done_action` (`disable` | `notify` | `command:<text>`). Write `scheduler/mod.rs::spawn(state)` with 10s `tokio::interval` configured with `MissedTickBehavior::Skip`. Missed-tick policy: if `now - next_run > 60s`, log skipped + advance `next_run` (don't fire). HTTP handlers: list, create (computes next_run), runs, single, run-now, patch, delete. Mount via `scheduler::router_for`. Audit hook: schedule.run + schedule.delete + manual run-now write `audit_log` rows. Write `server/tests/scheduler.rs`: create a schedule "in 1s" with kind=shell command="touch /tmp/supermux-test-marker"; sleep 12s; assert marker exists. Write `server/tests/schedule_missed_tick.rs`: insert a schedule with `next_run` 5 minutes in the past, start scheduler, assert it logs skipped + advances `next_run` without firing. Verify. Commit "M8: scheduler + idempotency + missed-tick" and report.
 
 ### M9 — Backend: agents/wait primitive + skills + slash commands + kbd-groups + steering loop
 
@@ -2157,7 +2157,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 - **Acceptance**: `GET /api/agents/{name}/wait` long-polls correctly with watch-channel semantics (regression test passes). `GET /api/slash-commands` returns built-ins (~50 commands) + skills. `/api/kbd-groups` GET returns defaults on first read. Steering: a queued message is delivered to the session exactly once when status becomes `waiting` or `idle`.
 - **Verification**: `cargo test agents wait_race` green.
 - **Subagent prompt**:
-  > Implement the agent-orchestration primitives + remaining HTTP CRUDs. Read TECH_PLAN.md §3.7 (wait), §3.3 (delegations table at `0005_delegations.sql` — schema ALREADY SPECIFIED, do not invent), §3.4 (new endpoints), §3.9 (steering deliver loop), `research/amux-feature-extract.md` §5 (subsystem 5). Write `server/src/agents/wait.rs` per §3.7 v2 (watch-channel from M5b). Write `agents/delegate.rs::delegate(from, to, prompt)` HTTP handler: calls `sessions::send_text(to, prompt)`, records an edge via `INSERT INTO delegations (from_session, to_session, prompt, ts) VALUES (?,?,?,?)`. Note column name: `from_session` (not `from` — SQL keyword). Write `GET /api/agents/delegations?session=X` returning edges in/out using the indices `idx_delegations_from` + `idx_delegations_to`. Write `agents/skills.rs`: CRUD over `skills` table; on POST, also write to `~/.amux-v3/skills/<name>.md` AND `~/.claude/commands/<name>.md` so Claude picks them up. `GET /api/skills` parses YAML frontmatter for `description` and `argument-hint`. Add `GET /api/slash-commands`: returns the BUILTIN_SLASH_COMMANDS list (port the verbatim list from `research/amux-feature-extract.md` §5.3) + the skills list. Add **`/api/snippets`** GET/POST/PATCH/DELETE handlers over the `snippets` table. Add **`/api/kbd-groups`** GET/POST/PATCH/DELETE over the `kbd_groups` table — on first GET, if empty, return defaults `[{name:"Agent",keys:[...]}, {name:"Shell",...}, {name:"Tmux",...}, {name:"Symbols",...}]` AND seed them. Add **`/api/audit?limit=N`** GET reading from `audit_log`. Add **`/api/health`** GET as a `#[public]` route returning `{version, uptime_s, db_ok, tmux_ok}`. Write `sessions/steering/deliver_loop.rs::spawn(state)`: per-session task; subscribes to status_watch; when status flips to `waiting`/`idle`, runs ONE transactional dequeue: `BEGIN IMMEDIATE; SELECT id,text FROM steering_queue WHERE session=? ORDER BY id LIMIT 1; DELETE WHERE id=?; COMMIT;` then calls `sessions::send_text`. Single-flight (await before next loop iteration) — exactly-once. Mount all via `agents::router_for` + `prefs::router_for` etc. (per M2 registry). Verify. Commit "M9: agents + kbd + snippets + steering loop" and report.
+  > Implement the agent-orchestration primitives + remaining HTTP CRUDs. Read TECH_PLAN.md §3.7 (wait), §3.3 (delegations table at `0005_delegations.sql` — schema ALREADY SPECIFIED, do not invent), §3.4 (new endpoints), §3.9 (steering deliver loop), `research/amux-feature-extract.md` §5 (subsystem 5). Write `server/src/agents/wait.rs` per §3.7 v2 (watch-channel from M5b). Write `agents/delegate.rs::delegate(from, to, prompt)` HTTP handler: calls `sessions::send_text(to, prompt)`, records an edge via `INSERT INTO delegations (from_session, to_session, prompt, ts) VALUES (?,?,?,?)`. Note column name: `from_session` (not `from` — SQL keyword). Write `GET /api/agents/delegations?session=X` returning edges in/out using the indices `idx_delegations_from` + `idx_delegations_to`. Write `agents/skills.rs`: CRUD over `skills` table; on POST, also write to `~/.supermux/skills/<name>.md` AND `~/.claude/commands/<name>.md` so Claude picks them up. `GET /api/skills` parses YAML frontmatter for `description` and `argument-hint`. Add `GET /api/slash-commands`: returns the BUILTIN_SLASH_COMMANDS list (port the verbatim list from `research/amux-feature-extract.md` §5.3) + the skills list. Add **`/api/snippets`** GET/POST/PATCH/DELETE handlers over the `snippets` table. Add **`/api/kbd-groups`** GET/POST/PATCH/DELETE over the `kbd_groups` table — on first GET, if empty, return defaults `[{name:"Agent",keys:[...]}, {name:"Shell",...}, {name:"Tmux",...}, {name:"Symbols",...}]` AND seed them. Add **`/api/audit?limit=N`** GET reading from `audit_log`. Add **`/api/health`** GET as a `#[public]` route returning `{version, uptime_s, db_ok, tmux_ok}`. Write `sessions/steering/deliver_loop.rs::spawn(state)`: per-session task; subscribes to status_watch; when status flips to `waiting`/`idle`, runs ONE transactional dequeue: `BEGIN IMMEDIATE; SELECT id,text FROM steering_queue WHERE session=? ORDER BY id LIMIT 1; DELETE WHERE id=?; COMMIT;` then calls `sessions::send_text`. Single-flight (await before next loop iteration) — exactly-once. Mount all via `agents::router_for` + `prefs::router_for` etc. (per M2 registry). Verify. Commit "M9: agents + kbd + snippets + steering loop" and report.
 
 ### M10 — Frontend: routing shell + Tailwind + shadcn install
 
@@ -2190,7 +2190,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 - **Acceptance**: Real data from backend renders; SSE updates flow through; search filters by name/desc/tags; view toggle persists in `useUI` store AND animates tile↔row via Framer Motion `layout` prop. Empty state, no-match state, error state all render per §4.11/§4.12. NewSessionSheet has Quick-start tab (3 preset boot configs: blank-claude, code-reviewer, doc-writer) + Advanced tab.
 - **Verification**: Boot backend with mocked sessions, render overview, verify live updates + view-toggle morph.
 - **Subagent prompt**:
-  > Build the overview route. Read TECH_PLAN.md §4.1, §4.2, §4.6, §4.11/§4.12 (empty + loading + error states), `research/user-vision.md` "Overview screen", §1.7 of feature-extract. Replace the M10 stub of `web/src/hooks/use-sse.ts` with the full implementation: connect to `/api/events` with `Authorization: Bearer` (not `?_token=` — security), dispatch events to callbacks; auto-reconnect (300ms × 2^n cap 30s, with ±20% decorrelated jitter from day 1 per Eng P1 #5); declare stale after 18s silence (force reconnect); on visibility/focus/online events, if last data >4s ago, refetch. Replace `web/src/hooks/use-sessions.ts` stub: `useQuery({ queryKey:['sessions'], queryFn: api.listSessions, staleTime: 30_000 })`. Subscribe to SSE 'sessions' event in a top-level effect that calls `queryClient.setQueryData(['sessions'], updater)` applying delta merge (each delta item updates only the keys present — `preview_lines`, `status` independently). Write `web/src/routes/overview.tsx`: header with title, search input (debounced 200ms), view-mode toggle (Tile/List, reads `useUI` store). Body: if tile mode, CSS grid `grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2` of `<SessionTile />`; if list mode, vertical list of `<SessionRow />` (write this — compact row with name, status dot, last activity, click → focus). **View toggle morphs** via Framer Motion `layout` prop (`<motion.div layout layoutId={...}>` per session). **Empty state** per §4.11 ("No agents yet. Boot your first one.") with CTA `<NewSessionSheet />` pre-filled with cwd + provider=claude. **No-match state** for non-empty search ("No matches for `query`." + Clear button). **Error state** when `useQuery.error` ("Can't reach amux-server. Retrying…"). FAB bottom-right (mobile only — desktop has it in the header) opens `<NewSessionSheet />`. NewSessionSheet has **two tabs**: "Quick start" (3 preset boot configs: blank claude, code-reviewer agent, doc-writer agent — each a button that prefills the form), "Advanced" (full fields: name, dir with `/api/autocomplete/dir` typeahead, desc, provider radio, worktree checkbox). On submit, POST /api/sessions + navigate to focus. Sort sessions per `research/amux-feature-extract.md` §1.2: pinned-desc, running-desc, (active|waiting before idle), -last_activity. Search filters by name/desc/tags. Wire view-mode persistence via Zustand store from §4.6. Verify with real backend + mock sessions. Commit "M12: overview (amplified)" and report.
+  > Build the overview route. Read TECH_PLAN.md §4.1, §4.2, §4.6, §4.11/§4.12 (empty + loading + error states), `research/user-vision.md` "Overview screen", §1.7 of feature-extract. Replace the M10 stub of `web/src/hooks/use-sse.ts` with the full implementation: connect to `/api/events` with `Authorization: Bearer` (not `?_token=` — security), dispatch events to callbacks; auto-reconnect (300ms × 2^n cap 30s, with ±20% decorrelated jitter from day 1 per Eng P1 #5); declare stale after 18s silence (force reconnect); on visibility/focus/online events, if last data >4s ago, refetch. Replace `web/src/hooks/use-sessions.ts` stub: `useQuery({ queryKey:['sessions'], queryFn: api.listSessions, staleTime: 30_000 })`. Subscribe to SSE 'sessions' event in a top-level effect that calls `queryClient.setQueryData(['sessions'], updater)` applying delta merge (each delta item updates only the keys present — `preview_lines`, `status` independently). Write `web/src/routes/overview.tsx`: header with title, search input (debounced 200ms), view-mode toggle (Tile/List, reads `useUI` store). Body: if tile mode, CSS grid `grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2` of `<SessionTile />`; if list mode, vertical list of `<SessionRow />` (write this — compact row with name, status dot, last activity, click → focus). **View toggle morphs** via Framer Motion `layout` prop (`<motion.div layout layoutId={...}>` per session). **Empty state** per §4.11 ("No agents yet. Boot your first one.") with CTA `<NewSessionSheet />` pre-filled with cwd + provider=claude. **No-match state** for non-empty search ("No matches for `query`." + Clear button). **Error state** when `useQuery.error` ("Can't reach supermux-server. Retrying…"). FAB bottom-right (mobile only — desktop has it in the header) opens `<NewSessionSheet />`. NewSessionSheet has **two tabs**: "Quick start" (3 preset boot configs: blank claude, code-reviewer agent, doc-writer agent — each a button that prefills the form), "Advanced" (full fields: name, dir with `/api/autocomplete/dir` typeahead, desc, provider radio, worktree checkbox). On submit, POST /api/sessions + navigate to focus. Sort sessions per `research/amux-feature-extract.md` §1.2: pinned-desc, running-desc, (active|waiting before idle), -last_activity. Search filters by name/desc/tags. Wire view-mode persistence via Zustand store from §4.6. Verify with real backend + mock sessions. Commit "M12: overview (amplified)" and report.
 
 ### M13 — Frontend: LiveTerminal hook + xterm.js wrapper
 
@@ -2308,7 +2308,7 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 - **Acceptance**: PWA installable on iPhone via A2HS; status bar correct on iPhone 14/15/16 notch + Dynamic Island; splash screen color matches first-frame paint (no flash of wrong color); standalone-mode detection works.
 - **Verification**: `lighthouse` PWA score ≥90; install to home screen on a real iPhone; relaunch from home screen and verify chrome is hidden + status bar style correct.
 - **Subagent prompt**:
-  > Implement PWA scaffolding tuned for iOS Safari (the fiddly platform). Read TECH_PLAN.md §4.9 (PWA). Install `vite-plugin-pwa`, configure `manifest` per §4.9 with: `display: 'standalone'`, `background_color: '#0a0a0a'` (matches dark default first-paint), `theme_color: '#0a0a0a'`, icons 192/512/maskable. Service worker (Workbox): `NetworkFirst` for HTML with 3s timeout (and DO NOT cache the HTML if it contains the auth token — bypass cache for "/" — Codex #13/#20), `CacheFirst` for fingerprinted JS/CSS, bypass for `/api/*` and `/ws/*`. **Auth token SW invalidation**: when the user regenerates their auth token in Settings (M22), call `caches.delete('amux-html')` AND `navigator.serviceWorker.controller?.postMessage({type:'token-rotated'})`. Add `index.html`: `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />`, `<meta name="apple-mobile-web-app-capable" content="yes" />`, `<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />`, `<link rel="apple-touch-icon" href="/icon-180.png" />`, splash-screen link tags for each iPhone screen size (or one mask icon if simpler). Write `<A2HSInstructionsSheet />`: a Vaul half-sheet shown on first iOS-Safari load (`isIOSSafariNotStandalone()`) explaining "Tap the Share button, then 'Add to Home Screen'" with screenshots. Dismissable; remember dismissal in localStorage. Write `useStandaloneMode()` hook that detects `window.matchMedia('(display-mode: standalone)').matches`; the Layout uses this to hide the address-bar back button when in standalone. Verify on iPhone 14 + 15 + 16 (notch + Dynamic Island). Commit "M23b: PWA on iOS" and report.
+  > Implement PWA scaffolding tuned for iOS Safari (the fiddly platform). Read TECH_PLAN.md §4.9 (PWA). Install `vite-plugin-pwa`, configure `manifest` per §4.9 with: `display: 'standalone'`, `background_color: '#0a0a0a'` (matches dark default first-paint), `theme_color: '#0a0a0a'`, icons 192/512/maskable. Service worker (Workbox): `NetworkFirst` for HTML with 3s timeout (and DO NOT cache the HTML if it contains the auth token — bypass cache for "/" — Codex #13/#20), `CacheFirst` for fingerprinted JS/CSS, bypass for `/api/*` and `/ws/*`. **Auth token SW invalidation**: when the user regenerates their auth token in Settings (M22), call `caches.delete('supermux-html')` AND `navigator.serviceWorker.controller?.postMessage({type:'token-rotated'})`. Add `index.html`: `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />`, `<meta name="apple-mobile-web-app-capable" content="yes" />`, `<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />`, `<link rel="apple-touch-icon" href="/icon-180.png" />`, splash-screen link tags for each iPhone screen size (or one mask icon if simpler). Write `<A2HSInstructionsSheet />`: a Vaul half-sheet shown on first iOS-Safari load (`isIOSSafariNotStandalone()`) explaining "Tap the Share button, then 'Add to Home Screen'" with screenshots. Dismissable; remember dismissal in localStorage. Write `useStandaloneMode()` hook that detects `window.matchMedia('(display-mode: standalone)').matches`; the Layout uses this to hide the address-bar back button when in standalone. Verify on iPhone 14 + 15 + 16 (notch + Dynamic Island). Commit "M23b: PWA on iOS" and report.
 
 ### M24a — Smoke e2e (early integration check)
 
@@ -2331,32 +2331,32 @@ print(f"migrated {sessions} sessions, {issues} issues, {schedules} schedules")
 ### M25 — Deployment scripts + v2 coexistence
 
 - **Depends on**: M24b.
-- **Scope** (~200 LOC): `scripts/build.sh`, `scripts/deploy.sh`, `etc/systemd/amux-v3.service`, README updates.
+- **Scope** (~200 LOC): `scripts/build.sh`, `scripts/deploy.sh`, `etc/systemd/supermux.service`, README updates.
 - **Acceptance**: Single `scripts/deploy.sh` run produces a running v3 on clawd-02 port 8823; v2 still works on 8822.
-- **Verification**: Both URLs respond; no port conflict; logs in `journalctl -u amux-v3`.
+- **Verification**: Both URLs respond; no port conflict; logs in `journalctl -u supermux`.
 - **Subagent prompt**:
-  > Wire up build and deploy. Read TECH_PLAN.md §8 (deployment). Write `scripts/build.sh` per §8.1; `scripts/deploy.sh` per §8.2; the systemd unit per §8.3. Ensure the binary opens its own data dir at `~/.amux-v3/` (no overlap with v2's `~/.amux/`). On clawd-02, install the systemd unit (`sudo install` the file, `systemctl daemon-reload`, `enable`, `start`). Configure `tailscale serve` to expose v3 on a distinct path or hostname (`tailscale serve --bg --https=8823 https+insecure://localhost:8823`). Verify with `curl https://clawd-02.foo.ts.net:8823/api/health` returns 200 with token, and that v2 at port 8822 still serves. Update top-level README with quickstart. Commit "M25: deploy" and report.
+  > Wire up build and deploy. Read TECH_PLAN.md §8 (deployment). Write `scripts/build.sh` per §8.1; `scripts/deploy.sh` per §8.2; the systemd unit per §8.3. Ensure the binary opens its own data dir at `~/.supermux/` (no overlap with v2's `~/.amux/`). On clawd-02, install the systemd unit (`sudo install` the file, `systemctl daemon-reload`, `enable`, `start`). Configure `tailscale serve` to expose v3 on a distinct path or hostname (`tailscale serve --bg --https=8823 https+insecure://localhost:8823`). Verify with `curl https://clawd-02.foo.ts.net:8823/api/health` returns 200 with token, and that v2 at port 8822 still serves. Update top-level README with quickstart. Commit "M25: deploy" and report.
 
 ### M26 — Data migration from v2
 
 - **Depends on**: M25.
 - **Scope** (~300 LOC): `scripts/migrate-v2.py`.
 - **Acceptance**: Running the script copies all v2 sessions, board issues, schedules, skills, prefs into v3 SQLite; idempotent on re-run.
-- **Verification**: Run dry-run, then real, then compare `sqlite3 .amux-v3/data.db 'select count(*) from sessions'` to `ls ~/.amux/sessions/*.env | wc -l`.
+- **Verification**: Run dry-run, then real, then compare `sqlite3 .supermux/data.db 'select count(*) from sessions'` to `ls ~/.amux/sessions/*.env | wc -l`.
 - **Subagent prompt**:
-  > Write the v2→v3 data migration. Read TECH_PLAN.md §9 (column-explicit copies — DO NOT use SELECT *), `research/amux-feature-extract.md` Appendix A (filesystem layout), §1.2 (.env keys), §2.2 (issues schema), §4.2 (schedules schema). Write `scripts/migrate-v2.py`: open `~/.amux-v3/data.db` write-mode, ATTACH `~/.amux/data.db` as `old`. For each `.env` in `~/.amux/sessions/`, parse env-style (quote-aware) + corresponding `.meta.json`, INSERT OR IGNORE into v3's `sessions` with EXPLICIT column names (per §9 sample). For each session also INSERT into `session_runtime` with a freshly generated `hook_token` (`secrets.token_urlsafe(32)`). Copy `old.issues`, `old.issue_tags`, `old.issue_counters`, `old.statuses` into v3 with EXPLICIT column lists. Copy `old.schedules`, `old.schedule_runs` similarly (note v3 has `schedule_run_keys` table — leave empty, it's idempotency state). Copy `old.skills`. Copy `old.prefs`. Print summary line per table. Add `--dry-run` flag that COUNTs but doesn't insert AND asserts that v2's column set is a superset of v3's required columns; reports drift. Idempotent: use `INSERT OR IGNORE` everywhere. Verify on a real v2 install, then verify v3 reads them all via a hit-every-endpoint smoke run. Commit "M26: migration" and report.
+  > Write the v2→v3 data migration. Read TECH_PLAN.md §9 (column-explicit copies — DO NOT use SELECT *), `research/amux-feature-extract.md` Appendix A (filesystem layout), §1.2 (.env keys), §2.2 (issues schema), §4.2 (schedules schema). Write `scripts/migrate-v2.py`: open `~/.supermux/data.db` write-mode, ATTACH `~/.amux/data.db` as `old`. For each `.env` in `~/.amux/sessions/`, parse env-style (quote-aware) + corresponding `.meta.json`, INSERT OR IGNORE into v3's `sessions` with EXPLICIT column names (per §9 sample). For each session also INSERT into `session_runtime` with a freshly generated `hook_token` (`secrets.token_urlsafe(32)`). Copy `old.issues`, `old.issue_tags`, `old.issue_counters`, `old.statuses` into v3 with EXPLICIT column lists. Copy `old.schedules`, `old.schedule_runs` similarly (note v3 has `schedule_run_keys` table — leave empty, it's idempotency state). Copy `old.skills`. Copy `old.prefs`. Print summary line per table. Add `--dry-run` flag that COUNTs but doesn't insert AND asserts that v2's column set is a superset of v3's required columns; reports drift. Idempotent: use `INSERT OR IGNORE` everywhere. Verify on a real v2 install, then verify v3 reads them all via a hit-every-endpoint smoke run. Commit "M26: migration" and report.
 
 ### M27 — Time to Wow (first-60-seconds experience)
 
 - **Depends on**: M11, M12, M13, M14, M15, M23a, M23b, M26.
 - **Scope** (~150 LOC + design): first-launch detection, unboxing sequence, one-tap demo agent, "Run the 30-second demo" link in Settings.
-- **Acceptance**: Cold install on iPhone, A2HS, open → within 5 seconds the user knows what amux is and what to tap next. Verified via M24b stranger test.
+- **Acceptance**: Cold install on iPhone, A2HS, open → within 5 seconds the user knows what supermux is and what to tap next. Verified via M24b stranger test.
 - **Verification**: Install fresh PWA on a clean Safari profile; observe first 30 seconds is coherent.
 - **Subagent prompt**:
-  > Build the first-60-seconds experience — the unboxing moment. Read TECH_PLAN.md §0 (hero data flow), §4.11 (empty states), `research/user-vision.md` (UX truth). Implement first-launch detection: `localStorage['amux-v3-first-launch']` absent → first-launch state. Two branches:
+  > Build the first-60-seconds experience — the unboxing moment. Read TECH_PLAN.md §0 (hero data flow), §4.11 (empty states), `research/user-vision.md` (UX truth). Implement first-launch detection: `localStorage['supermux-first-launch']` absent → first-launch state. Two branches:
   > 1. **If v2 data was migrated** (detected via `count(sessions) > 0` AND `localStorage` absent): show a non-blocking welcome banner "Welcome back. Your N sessions are here." Plus a 3-step one-tap tour overlay (FloatingTip components anchored to: a tile-peek hover, the focus-mode button, the scheduler tab). User can dismiss via X or "Got it." On dismiss → set `localStorage`.
   > 2. **If no v2 data and no sessions yet**: show the empty-state CTA from M12 ("No agents yet. Boot your first one.") PLUS a secondary "Boot a code-reviewer demo agent in this directory" button that creates a session via `POST /api/sessions` with the `/cso` skill prefilled.
-  > Add a "Run the 30-second demo" link in Settings → Onboarding section that: clears `localStorage['amux-v3-first-launch']`, deletes any demo session, navigates to / so the user can replay the unboxing. Use Framer Motion's `<AnimatePresence>` and `springs.cardExpand` for all entry/exit. Verify on cold install. Commit "M27: time to wow" and report.
+  > Add a "Run the 30-second demo" link in Settings → Onboarding section that: clears `localStorage['supermux-first-launch']`, deletes any demo session, navigates to / so the user can replay the unboxing. Use Framer Motion's `<AnimatePresence>` and `springs.cardExpand` for all entry/exit. Verify on cold install. Commit "M27: time to wow" and report.
 
 ### M28 — Brand + microcopy + sound
 
@@ -2430,11 +2430,11 @@ M24a (after M14) → M24b (after M11..M23b + M24a) → M25 → M26 → M27
 
 ### `/amux-build` skill
 
-**Location**: `/Users/sandervm/amux-v3/skill/SKILL.md` (plus `state.json` for loop state).
+**Location**: `/Users/sandervm/supermux/skill/SKILL.md` (plus `state.json` for loop state).
 
 **Purpose**: walk milestones in dependency order, dispatch subagents in parallel where deps allow, run a critic after each, loop on failures.
 
-**State file** (`/Users/sandervm/amux-v3/skill/state.json`):
+**State file** (`/Users/sandervm/supermux/skill/state.json`):
 
 ```json
 {
@@ -2458,8 +2458,8 @@ description: Execute the TECH_PLAN milestones in dep order, parallel where possi
 
 # amux-build
 
-1. Read `/Users/sandervm/amux-v3/plan/TECH_PLAN.md` §10 milestone list.
-2. Read `/Users/sandervm/amux-v3/skill/state.json`. If missing, initialize with every milestone status="todo".
+1. Read `/Users/sandervm/supermux/plan/TECH_PLAN.md` §10 milestone list.
+2. Read `/Users/sandervm/supermux/skill/state.json`. If missing, initialize with every milestone status="todo".
 3. Compute ready set: milestones whose deps are all "done" AND status is "todo".
 4. For each ready milestone, dispatch a subagent with the EXACT prompt from §10. Track its task id in state.json.
 5. Wait for completed subagents. For each finished:
@@ -2483,7 +2483,7 @@ The skill is invoked as `/amux-build` from a top-level Claude Code session. It's
 | 3 | Vaul iOS Safari quirks (sheet flicker on rubber-band, keyboard pushing content) | Use Vaul ≥1.0; explicit `interactsWithModal` config; test against iOS 17, 18, 26 in CI via Playwright webkit |
 | 4 | View Transitions API only in Chromium → degraded look in Safari | Fallback to instant navigate is acceptable; revisit when WebKit ships (in progress as of 2026) |
 | 5 | Status detector regex bank breaks on next Claude UI revision | Settings hooks + heartbeat are the primary signals; regex bank is fallback. Golden fixtures + snapshot tests catch regressions in CI |
-| 6 | WebSocket-over-HTTP/2 forbidden — Tailscale serve may force h2 → WS upgrade fails | Backend listens on raw TCP for WS (separate port if needed); frontend reads `window._AMUX_SERVER_PORT` injected into HTML |
+| 6 | WebSocket-over-HTTP/2 forbidden — Tailscale serve may force h2 → WS upgrade fails | Backend listens on raw TCP for WS (separate port if needed); frontend reads `window._SUPERMUX_SERVER_PORT` injected into HTML |
 | 7 | sqlx compile-time-checked queries require live DB at build time → CI flakiness | Use `cargo sqlx prepare` to write `.sqlx/query-*.json` files into the repo; CI runs offline mode |
 | 8 | Vite + Tailwind v4 still has rough edges (e.g. dynamic class names) | Use the official `@tailwindcss/vite` plugin; avoid dynamic class concatenation, prefer `cva` (class-variance-authority) |
 | 9 | Reconnect storm if many tabs open and network blips | Exponential backoff with **decorrelated jitter ±20% from day 1** (NOT "later" as v1 said) per Eng P1 #5 / CEO #9; per-tab BroadcastChannel coalescing deferred to v3.1 |
@@ -2521,7 +2521,7 @@ These will not ship in v3.0. v3.1+ may revisit.
 ## Appendix A — Quick reference: files this plan creates
 
 ```
-~/amux-v3/
+~/supermux/
 ├── plan/TECH_PLAN.md                                          ← this file
 ├── skill/SKILL.md                                             ← /amux-build orchestrator
 ├── skill/state.json                                           ← loop state
@@ -2583,14 +2583,14 @@ This section records the three plan reviews that produced v2.0 and where each fi
 | 2 | Codex contradiction B | `provider='shell'` violated CHECK constraint | §3.3 — CHECK extended to `(claude, codex, shell)` |
 | 3 | Codex #3 | `path_safe::canonicalize` 500s on new files | §3.2.11 — parent-canonicalize + join basename + async + macOS case-insensitive |
 | 4 | Codex #7 | WS auth token in query string leaks to logs/screenshots | §3.2.9 + §4.5 — first-frame `{type:"auth"}` message |
-| 5 | Codex #4 + Eng P1 #3 | `$AMUX_TOKEN` in tmux env leaks dashboard bearer | §3.5 + §3.6 + §6.5 — per-session `hook_token` |
+| 5 | Codex #4 + Eng P1 #3 | `$SUPERMUX_TOKEN` in tmux env leaks dashboard bearer | §3.5 + §3.6 + §6.5 — per-session `hook_token` |
 | 6 | Eng P0 #1 | FIFO reader can wedge a worker thread on blocking open | §3.2.7 — `O_NONBLOCK + AsyncFd` + keep-alive write fd |
 | 7 | Eng P0 #2 | Notify-before-subscribe race loses status transitions | §3.2.13 / §3.2.8 — `tokio::sync::watch::Sender<(Status, u64)>` |
 | 8 | Eng P1 #4 + CEO #6 | 1013 "permanent" boots mobile users on backgrounded tabs | §3.2.9 + §4.5 — 1013 = silent reconnect on visibility-visible |
 | 9 | Eng P1 #5 + CEO #6/#9 | Reconnect storm — jitter promised "later" | §4.5 + §12 risk #9 — ±20% decorrelated jitter from day 1 |
 | 10 | Eng concurrency #1 | PtyStream double-spawn race on concurrent first WS | §3.2.7 — `tokio::sync::OnceCell` per-session spawn-once |
 | 11 | Eng concurrency #5/#6 | `session_locks` + `status_notify` map memory leak | §3.2.5 — explicit cleanup in `sessions::delete` |
-| 12 | Eng concurrency #4 | `~/.claude/settings.json` race + destructive overwrite | §3.5 — atomic rename + namespaced `amux3-hook` marker merge |
+| 12 | Eng concurrency #4 | `~/.claude/settings.json` race + destructive overwrite | §3.5 — atomic rename + namespaced `supermux-hook` marker merge |
 | 13 | Eng + Codex #5 | Missing tables (delegations, audit_log, kbd_groups storage) | §3.3 — inline schemas for `0005_delegations.sql` + `0007_audit.sql`; `kbd_groups` is table-only (alt removed from M16) |
 | 14 | Eng schema gaps | Missing CHECK constraints | §3.3 — `schedules.sched_type`, `schedules.done_action`, `session_runtime.last_status` |
 | 15 | Eng schema gaps | Missing indices | §3.3 — `idx_steering_session`, `idx_share_tokens_session`, partial `idx_sessions_active WHERE archived=0` |
