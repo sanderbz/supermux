@@ -64,7 +64,13 @@ async fn root_serves_spa_with_injected_token() {
         html.contains(&format!("window._SUPERMUX_AUTH_TOKEN=\"{TOKEN}\"")),
         "GET / must inject the auth token; got:\n{html}"
     );
-    assert!(html.contains("window._SUPERMUX_BASE_URL="), "must inject base URL");
+    // The server deliberately does NOT inject `window._SUPERMUX_BASE_URL`: the
+    // server-served SPA is same-origin with its own API, so it must use relative
+    // URLs (see the rationale in `src/static_assets.rs`).
+    assert!(
+        !html.contains("window._SUPERMUX_BASE_URL="),
+        "base URL must NOT be injected (same-origin SPA)"
+    );
     assert!(html.contains("window._SUPERMUX_VERSION="), "must inject version");
 
     let _ = std::fs::remove_dir_all(dir);
