@@ -14,6 +14,7 @@ import { springs } from '@/lib/springs'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
+import { CommandPalette } from '@/components/command-palette/command-palette'
 import { useStandaloneMode } from '@/hooks/use-standalone-mode'
 
 interface NavItem {
@@ -156,6 +157,12 @@ export function Layout() {
         </main>
         <BottomNav />
       </div>
+      {/* M9/M50: the global ⌘K command palette. Mounted ONCE at shell level so
+       *  the shortcut works on EVERY route (overview, board, files, scheduler,
+       *  settings, focus). Previously this was a per-route stub that only logged
+       *  to the console — opening Cmd+K did nothing visible. The palette owns
+       *  its own document-level keydown capture + preventDefault. */}
+      <CommandPalette />
     </div>
   )
 }
