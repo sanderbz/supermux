@@ -982,3 +982,167 @@ export const focusApi = {
       method: 'POST',
     }),
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Sessions (M12) — the real client for the M2 sessions CRUD + the §3.6 hero
+// data flow (preview_lines off `last_capture`).
+//
+// APPENDED, self-contained block (TECH_PLAN §29 dep-graph fix): the M0 `api`
+// stub above leaves `listSessions`/`createSession`/… throwing. The overview
+// route, `useSessions`, and `useSse` are the M12 surface, so rather than filling
+// the stub bodies (which risks colliding with the sibling frontend milestones
+// that touch the top of this file) M12 adds its real `fetch` impls down here.
+//
+// Envelope: M2 wraps success bodies in `{ ok:true, data }` and errors in
+// `{ ok:false, error }` (§3.4). Some handlers return a bare array. `sessReq`
+// unwraps `data` when present, tolerates a bare body, and lifts `error` into a
+// typed `SessionError` (carrying the HTTP status) so the route can branch 409
+// (duplicate name) vs 404 (gone) vs 0 (server unreachable) without crashing.
+//
+// The dashboard bearer token is read from `window._AMUX_AUTH_TOKEN` at call time
+// via the `fsToken`/`fsApiUrl` accessors the M20 block already defined — so this
+// append adds NO new top-of-file import and the token is NEVER embedded here.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** The fields the SSE `sessions` delta / the `GET /api/sessions` list carry for
+ *  a tile. A superset of `SessionSummary` with the optional hero display fields
+ *  (§3.6) the detector populates when it has them. Mirrors `TileSession` but
+ *  lives here so the API layer owns the wire shape. */
+export interface ApiSession {
+  name: string
+  status: SessionStatus
+  dir: string
+  provider: string
+  /** Last 6 lines of `last_capture`, ANSI-stripped (§3.6). */
+  preview_lines: string[]
+  updated_at?: string
+  /** Claude Code chat title / auto-summary (falls back to `name` in the UI). */
+  task_summary?: string
+  /** Cumulative token count for the meta row. */
+  tokens?: number
+  /** Git branch / worktree for the meta row. */
+  branch?: string
+  /** Free-text description (searchable). */
+  desc?: string
+  /** Tags (searchable). */
+  tags?: string[]
+  /** Pin + activity drive the sort (feature-extract §1.2). */
+  pinned?: boolean
+  /** tmux session alive AND a child process exists. */
+  running?: boolean
+  /** Epoch seconds — last send / last started (feature-extract §1.2). */
+  last_activity?: number
+  /** True when the underlying tmux session is gone → tile renders `<TileError>`. */
+  missing?: boolean
+}
+
+/** Body for `POST /api/sessions` (§5.1). `command` carries the initial prompt
+ *  the Quick-start presets prefill; `worktree` requests an isolated git worktree. */
+export interface NewSession {
+  name: string
+  dir: string
+  provider?: 'claude' | 'codex' | 'shell'
+  desc?: string
+  worktree?: boolean
+  command?: string
+}
+
+/** A failed sessions request; carries the HTTP status so callers can branch on
+ *  409 (duplicate name) vs 404 vs 400 vs 0 (server unreachable). */
+export class SessionError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'SessionError'
+    this.status = status
+  }
+}
+
+async function sessReq<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  const token = fsToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  if (init?.body && !(init.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json')
+  }
+  let res: Response
+  try {
+    res = await fetch(fsApiUrl(path), { ...init, headers })
+  } catch {
+    // Network down / server restarting. Status 0 lets the route show the
+    // "Can't reach amux-server. Retrying…" state (§4.12) instead of crashing.
+    throw new SessionError('Can’t reach amux-server.', 0)
+  }
+  const text = await res.text()
+  let body: unknown = null
+  if (text) {
+    try {
+      body = JSON.parse(text)
+    } catch {
+      body = text
+    }
+  }
+  if (!res.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : `Request failed (${res.status}).`
+    throw new SessionError(message, res.status)
+  }
+  if (body && typeof body === 'object' && 'data' in body) {
+    return (body as { data: T }).data
+  }
+  return body as T
+}
+
+/** Normalise whatever the list endpoint returns into `ApiSession[]`. M2 returns
+ *  `SessionSummary[]`; this defends against the envelope being `{ data:[…] }`. */
+function asSessions(body: unknown): ApiSession[] {
+  const arr = Array.isArray(body)
+    ? body
+    : ((body as { data?: unknown })?.data ?? [])
+  if (!Array.isArray(arr)) return []
+  return arr.filter(
+    (s): s is ApiSession =>
+      !!s && typeof (s as { name?: unknown }).name === 'string',
+  )
+}
+
+export const sessionsApi = {
+  /** `GET /api/sessions` — the tile list incl. `preview_lines` (§3.6). */
+  list: async (): Promise<ApiSession[]> =>
+    asSessions(await sessReq<unknown>('/api/sessions')),
+
+  /** `POST /api/sessions` — create the row (§5.1). The route then sends the
+   *  initial prompt via `start` if a `command` is set. */
+  create: (input: NewSession): Promise<ApiSession> =>
+    sessReq('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  /** `POST /api/sessions/{name}/start` — boot tmux + send the initial prompt. */
+  start: (name: string, prompt?: string): Promise<unknown> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/start`, {
+      method: 'POST',
+      body: JSON.stringify(prompt ? { prompt } : {}),
+    }),
+
+  /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
+   *  (M7). Returns `[]` on any failure so the field degrades to a plain input. */
+  autocompleteDir: async (q: string): Promise<string[]> => {
+    try {
+      const body = await sessReq<unknown>(
+        `/api/autocomplete/dir?q=${encodeURIComponent(q)}`,
+      )
+      const arr = Array.isArray(body)
+        ? body
+        : ((body as { entries?: unknown; data?: unknown })?.entries ??
+          (body as { data?: unknown })?.data ??
+          [])
+      return Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : []
+    } catch {
+      return []
+    }
+  },
+}
