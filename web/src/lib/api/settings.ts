@@ -1,0 +1,89 @@
+// M22 — Settings client.
+//
+// Envelope: HTTP responses are `{ ok, data?, error? }` (§3.4). We unwrap `data`
+// on success and throw `ApiError` (carrying the status code) otherwise — the
+// settings hooks turn a 404/501 into a graceful "backend not wired yet" state
+// rather than a crash, since the prefs/audit handlers land in a later backend
+// milestone.
+//
+// The dashboard bearer token is read from `window._AMUX_AUTH_TOKEN` at call time
+// (env.ts, via the shared `settingsRequest` in ./client) and sent as
+// `Authorization: Bearer …`. It is NEVER hard-coded here.
+
+import { settingsRequest } from './client'
+
+// ── M0 stub domain types (legacy skeleton) ────────────────────────────────────
+
+export interface Snippet {
+  id: string
+  label: string
+  command: string
+}
+
+export interface KbdGroup {
+  id: string
+  name: string
+  keys: string[]
+}
+
+/** Audit-log row (§6.4). */
+export interface AuditEntry {
+  id: number
+  at: string
+  action: string
+  detail?: string
+}
+
+// ── M22 settings wire types ───────────────────────────────────────────────────
+
+/** API-key settings — values arrive MASKED from the server (§1.8); never raw. */
+export interface MaskedEnv {
+  /** e.g. `sk-ant-…last4`, or `''` when unset. */
+  ANTHROPIC_API_KEY?: string
+  OPENAI_API_KEY?: string
+}
+
+export interface DefaultModelInfo {
+  model: string
+}
+
+export interface RegenerateTokenResult {
+  token: string
+}
+
+export const settingsApi = {
+  /** GET `/api/settings/env` — returns MASKED key previews (§1.8). */
+  getEnv: (): Promise<MaskedEnv> => settingsRequest('/api/settings/env'),
+  /** PATCH `/api/settings/env` — write `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. */
+  patchEnv: (patch: MaskedEnv): Promise<MaskedEnv> =>
+    settingsRequest('/api/settings/env', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  /** GET `/api/settings/default-model`. */
+  getDefaultModel: (): Promise<DefaultModelInfo> =>
+    settingsRequest('/api/settings/default-model'),
+  /** PATCH `/api/settings/default-model` — `{ model }` → `CC_DEFAULT_FLAGS`. */
+  patchDefaultModel: (model: string): Promise<DefaultModelInfo> =>
+    settingsRequest('/api/settings/default-model', {
+      method: 'PATCH',
+      body: JSON.stringify({ model }),
+    }),
+  /** GET `/api/audit?limit=N` — last N audit rows (§6.4). */
+  getAudit: (limit = 200): Promise<AuditEntry[]> =>
+    settingsRequest(`/api/audit?limit=${limit}`),
+  /** GET `/api/snippets` — saved-command CRUD (§3.4). */
+  listSnippets: (): Promise<Snippet[]> => settingsRequest('/api/snippets'),
+  createSnippet: (input: Omit<Snippet, 'id'>): Promise<Snippet> =>
+    settingsRequest('/api/snippets', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  deleteSnippet: (id: string): Promise<void> =>
+    settingsRequest(`/api/snippets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  /** POST `/api/settings/regenerate-token` — rotate the dashboard bearer. */
+  regenerateToken: (): Promise<RegenerateTokenResult> =>
+    settingsRequest('/api/settings/regenerate-token', { method: 'POST' }),
+}
