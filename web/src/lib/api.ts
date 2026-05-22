@@ -739,3 +739,222 @@ export async function listBoardSessions(): Promise<BoardSession[]> {
     return []
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scheduler (M21) — real client for the M8 backend (cron / boot / send / shell
+// jobs, idempotent fires, run history, preview, test-fire).
+//
+// APPENDED, self-contained block (TECH_PLAN §29 dep-graph fix): this milestone
+// touches ONLY the bottom of api.ts so it never collides with the sibling
+// frontend milestones that fill in the matching `api.*` stubs above. The
+// `Schedule`/`CreateScheduleInput` stub types above pre-date the M8 contract and
+// are intentionally left untouched; the types below mirror what M8 returns
+// (server/src/db/schedules.rs::Schedule, schedule_runs).
+//
+// Envelope: M8 success bodies are wrapped (`{ ok:true, data }`); errors use
+// `{ ok:false, error }` (§3.4). `schedRequest` unwraps `data` on success and
+// lifts `error` on a non-2xx so the UI surfaces parse failures (400
+// "invalid time …") gracefully — never a crash.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Job kinds (server/src/scheduler/mod.rs::create validates these three). */
+export type ScheduleKind = 'boot' | 'tmux' | 'shell'
+
+/** A row of the `schedules` table (mirrors db::schedules::Schedule). */
+export interface ScheduleRow {
+  id: string
+  title: string
+  session: string
+  command: string
+  kind: ScheduleKind
+  boot_dir: string
+  boot_provider: string
+  boot_worktree: number
+  sched_type: string
+  recurrence: string | null
+  run_at: string | null
+  next_run: string | null
+  last_run: string | null
+  enabled: number
+  run_count: number
+  schedule_expr: string | null
+  watch: number
+  watch_timeout: number
+  done_pattern: string | null
+  done_action: string
+  created: number
+  updated: number
+  deleted: number | null
+}
+
+/** A row of `schedule_runs` — the per-fire ledger (idempotency-gated). */
+export interface ScheduleRunRow {
+  id: number
+  schedule_id: string
+  ran_at: number
+  status: string
+  note: string
+}
+
+/** Create / test-fire payload. Field set matches CreateScheduleInput on M8. */
+export interface ScheduleCreateInput {
+  title: string
+  command: string
+  kind: ScheduleKind
+  schedule_expr: string
+  session?: string
+  boot_dir?: string
+  boot_provider?: string
+  boot_worktree?: boolean
+  watch?: boolean
+  watch_timeout?: number
+  done_pattern?: string
+  done_action?: string
+}
+
+/** PATCH payload — every field optional; unset fields stay untouched server-side. */
+export interface SchedulePatchInput {
+  title?: string
+  session?: string
+  command?: string
+  kind?: ScheduleKind
+  enabled?: boolean
+  watch?: boolean
+  watch_timeout?: number
+  done_pattern?: string
+  done_action?: string
+  schedule_expr?: string
+}
+
+/** Test-fire result: the single run's terminal status + note. */
+export interface TestFireResult {
+  status: string
+  note: string
+}
+
+/** A scheduler request that failed; carries the HTTP status so callers can
+ *  branch on 400 (bad expression) vs 0 (unreachable) vs 404. */
+export class SchedError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'SchedError'
+    this.status = status
+  }
+}
+
+// Token + base read off `window._AMUX_*` at runtime (typed in env.ts) — never
+// embedded in source (PRINCIPLE critic). Kept local to this block so the append
+// introduces no top-of-file import a sibling milestone could conflict with.
+function schedToken(): string {
+  return window._AMUX_AUTH_TOKEN ?? ''
+}
+function schedApiUrl(path: string): string {
+  const base = (window._AMUX_BASE_URL ?? import.meta.env.BASE_URL).replace(
+    /\/$/,
+    '',
+  )
+  return `${base}${path}`
+}
+
+async function schedRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  const token = schedToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  if (init?.body) headers.set('Content-Type', 'application/json')
+  let res: Response
+  try {
+    res = await fetch(schedApiUrl(path), { ...init, headers })
+  } catch {
+    throw new SchedError('Can’t reach amux-server.', 0)
+  }
+  const text = await res.text()
+  let body: unknown = null
+  if (text) {
+    try {
+      body = JSON.parse(text)
+    } catch {
+      body = text
+    }
+  }
+  if (!res.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : `Request failed (${res.status}).`
+    throw new SchedError(message, res.status)
+  }
+  // M8 wraps success bodies in `{ ok, data }`; unwrap to `data`.
+  if (body && typeof body === 'object' && 'data' in body) {
+    return (body as { data: T }).data
+  }
+  return body as T
+}
+
+export const schedulerApi = {
+  /** `GET /api/schedules` — all non-deleted schedules, newest first. */
+  list: (): Promise<ScheduleRow[]> => schedRequest('/api/schedules'),
+
+  /** `GET /api/schedules/{id}/runs` — last 20 runs for one schedule. */
+  runs: (id: string): Promise<ScheduleRunRow[]> =>
+    schedRequest(`/api/schedules/${encodeURIComponent(id)}/runs`),
+
+  /** `POST /api/schedules` — create a live schedule (computes first next_run). */
+  create: (input: ScheduleCreateInput): Promise<ScheduleRow> =>
+    schedRequest('/api/schedules', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  /** `POST /api/schedules` with `_test_fire` — run once now, return result, no
+   *  live schedule left behind. */
+  testFire: (input: ScheduleCreateInput): Promise<TestFireResult> =>
+    schedRequest('/api/schedules', {
+      method: 'POST',
+      body: JSON.stringify({ ...input, _test_fire: true }),
+    }),
+
+  /** `POST /api/schedules/preview` — parse `expression`, get next ≤5 fire times
+   *  (no persistence). Powers the next-5-runs live preview. */
+  preview: (expression: string): Promise<{ next_runs: string[] }> =>
+    schedRequest('/api/schedules/preview', {
+      method: 'POST',
+      body: JSON.stringify({ expression }),
+    }),
+
+  /** `PATCH /api/schedules/{id}` — inline edit + enable/disable toggle. */
+  patch: (id: string, patch: SchedulePatchInput): Promise<ScheduleRow> =>
+    schedRequest(`/api/schedules/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  /** `POST /api/schedules/{id}/run` — fire now (202; cadence untouched). */
+  runNow: (id: string): Promise<{ ran: boolean }> =>
+    schedRequest(`/api/schedules/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+    }),
+
+  /** `DELETE /api/schedules/{id}` — soft-delete. */
+  remove: (id: string): Promise<{ deleted: boolean }> =>
+    schedRequest(`/api/schedules/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+}
+
+/** Resolve session names for the tmux-job target combo. Hits `/api/sessions`
+ *  directly (the typed `api.listSessions` is filled in by M12); returns [] if
+ *  unreachable so the dialog degrades to a free-text session field. */
+export async function listSessionNames(): Promise<string[]> {
+  try {
+    const body = await schedRequest<unknown>('/api/sessions')
+    const arr = Array.isArray(body)
+      ? body
+      : ((body as { sessions?: unknown[] })?.sessions ?? [])
+    return (arr as Array<Record<string, unknown>>)
+      .map((s) => (s.name ?? s.id) as string | undefined)
+      .filter((n): n is string => typeof n === 'string')
+  } catch {
+    return []
+  }
+}

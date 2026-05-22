@@ -116,8 +116,9 @@ pub fn router_for(state: AppState) -> Router {
     use axum::routing::{get, post};
     Router::new()
         .route("/api/schedules", get(list_handler).post(create_handler))
-        // Static `/runs` is registered alongside the `{id}` capture; axum's
-        // router prioritizes the static segment, so order is unambiguous.
+        // Static segments are registered alongside the `{id}` capture; axum's
+        // router prioritizes static segments, so order is unambiguous.
+        .route("/api/schedules/preview", post(preview_handler)) // M21
         .route("/api/schedules/runs", get(all_runs_handler))
         .route(
             "/api/schedules/{id}",
@@ -171,6 +172,11 @@ pub struct CreateScheduleInput {
     pub done_pattern: Option<String>,
     #[serde(default)]
     pub done_action: Option<String>,
+    /// M21 "test fire": create the schedule, run it ONCE immediately, return the
+    /// run result, then delete it — so the user can prove a job works before
+    /// committing it. Never persists a live schedule.
+    #[serde(default, rename = "_test_fire")]
+    pub test_fire: bool,
 }
 
 /// Create a schedule: validate, parse the expression to compute the first
@@ -306,8 +312,83 @@ async fn create_handler(
     State(state): State<AppState>,
     Json(input): Json<CreateScheduleInput>,
 ) -> Result<impl IntoResponse, AppError> {
+    // M21 test-fire: create, run once, capture the result, then delete. The
+    // schedule never goes live; the user gets immediate proof the job works.
+    if input.test_fire {
+        let result = test_fire(&state, input).await?;
+        return Ok((StatusCode::OK, ok(json!(result))));
+    }
     let sched = create(&state, input).await?;
-    Ok((StatusCode::CREATED, ok(sched)))
+    Ok((StatusCode::CREATED, ok(json!(sched))))
+}
+
+/// Result of a test-fire: the run's terminal `status` + `note`.
+#[derive(Debug, Serialize)]
+pub struct TestFireResult {
+    pub status: String,
+    pub note: String,
+}
+
+/// Run a schedule ONCE synchronously without leaving it live (M21). The schedule
+/// is created (so id/audit semantics are identical to a real fire), executed via
+/// the manual-run path (no idempotency key, no cadence advance), the resulting
+/// `schedule_runs` row is read back, then the schedule is soft-deleted.
+pub async fn test_fire(
+    state: &AppState,
+    input: CreateScheduleInput,
+) -> Result<TestFireResult, AppError> {
+    let sched = create(state, input).await?;
+    // Run synchronously so the result is ready when we respond. The manual
+    // trigger never touches next_run, so deletion afterward is clean.
+    runner::run(state.clone(), sched.clone(), Trigger::Manual).await;
+    let runs = db::schedules::runs_for(&state.pool, &sched.id, 1).await?;
+    let result = runs
+        .into_iter()
+        .next()
+        .map(|r| TestFireResult { status: r.status, note: r.note })
+        .unwrap_or_else(|| TestFireResult {
+            status: "error".into(),
+            note: "no run recorded".into(),
+        });
+    let _ = db::schedules::soft_delete(&state.pool, &sched.id).await;
+    Ok(result)
+}
+
+/// `POST /api/schedules/preview` (M21). Parse `expression` WITHOUT persisting and
+/// return the next up-to-5 fire times as RFC3339 strings, so the create dialog
+/// can preview a cadence as the user types.
+async fn preview_handler(
+    State(_state): State<AppState>,
+    Json(input): Json<PreviewInput>,
+) -> Result<Json<Envelope<serde_json::Value>>, AppError> {
+    let runs = preview_runs(&input.expression, 5).map_err(AppError::BadRequest)?;
+    let iso: Vec<String> = runs.iter().map(|d| d.to_rfc3339()).collect();
+    Ok(ok(json!({ "next_runs": iso })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PreviewInput {
+    expression: String,
+}
+
+/// Compute the next `count` fire times for `expr` relative to now (no DB I/O).
+/// A one-shot yields a single time; recurring expressions are walked forward via
+/// the parser's [`parser::Recurrence`].
+pub fn preview_runs(expr: &str, count: usize) -> Result<Vec<DateTime<Utc>>, String> {
+    let now = Utc::now();
+    let parsed = parser::parse(expr, now).map_err(|e| e.to_string())?;
+    let mut out = vec![parsed.next_run];
+    let mut cursor = parsed.next_run;
+    while out.len() < count {
+        match parsed.recurrence.next_after(cursor, cursor) {
+            Some(next) if next > cursor => {
+                out.push(next);
+                cursor = next;
+            }
+            _ => break, // one-shot, or no further occurrences
+        }
+    }
+    Ok(out)
 }
 
 async fn get_handler(
