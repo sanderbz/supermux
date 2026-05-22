@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
+use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
 use amux_server::sessions::auto_actions;
 use amux_server::sessions::status::StatusDetector;
 use amux_server::state::AppState;
@@ -33,6 +33,9 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
         tls: TlsConfig::default(),
         auth_token: "secret-test-token-status".to_string(),
         provider_defaults: ProviderDefaults::default(),
+        // M4 added the required `ws` block after M5a branched; default it so the
+        // M5a cold-start test compiles against the merged `Config`.
+        ws: WsConfig::default(),
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)
