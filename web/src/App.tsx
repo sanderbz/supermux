@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/components/theme-provider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Layout } from '@/components/layout'
+import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
 import { Overview } from '@/routes/overview'
 import { Focus } from '@/routes/focus'
 import { Board } from '@/routes/board'
@@ -44,6 +45,9 @@ export default function App() {
       <ThemeProvider>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider delayDuration={200}>
+            {/* M23b: "Add to Home Screen" coaching sheet — self-gates to the
+                first iOS-Safari (non-standalone) load, then remembers dismiss. */}
+            <A2HSInstructionsSheet />
             <Routes>
               <Route element={<Layout />}>
                 <Route path="/" element={<Overview />} />

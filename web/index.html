@@ -3,8 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- apple-touch-icon: 180×180, the iOS home-screen tile (M23b / §4.9). -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="manifest" href="/manifest.json" />
+    <!-- The web app manifest is injected by vite-plugin-pwa (M23b) as
+         <link rel="manifest" href="/manifest.webmanifest">. The static
+         public/manifest.json mirrors it for any non-PWA / dev consumer. -->
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover"
