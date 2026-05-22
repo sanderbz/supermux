@@ -128,7 +128,14 @@ pub fn spawn_status_loop(state: AppState, name: String) {
         // wait for every loop to stop before running `forget_session`.
         let _task = state.session_task_guard(&name);
         // Cold-start init (§3.2.8): detector begins Unknown; its first heartbeat
-        // is the cold-start sentinel from `AppState::last_pty`.
+        // is the cold-start sentinel from `AppState::last_pty`. The tick body
+        // reconciles the detector's internal `last_status` against the DB on
+        // every iteration while we are still `Unknown`, so the
+        // "Unknown stays Unknown" cold-start guard in `classify` does NOT pin a
+        // session whose persisted status the start-handler later set to
+        // `active` (a one-shot seed-on-spawn would miss it — `spawn_status_loop`
+        // is called from `sessions::create` BEFORE `start` sets `active`, so a
+        // seed at spawn time would always see `unknown`).
         let mut detector = StatusDetector::new();
         // Per-session broadcast memo: the last preview tail we pushed over SSE, so
         // a tick re-emits a `sessions` delta only when the visible tail changed.
@@ -180,6 +187,21 @@ pub async fn tick(
     detector: &mut StatusDetector,
     last_tail: &mut Option<Vec<String>>,
 ) -> anyhow::Result<()> {
+    // While the detector's internal status is still `Unknown` (cold-start), pull
+    // the persisted `last_status` from the DB and force it in. This satisfies
+    // the "Unknown stays Unknown" cold-start guard in `classify` so a session
+    // that the start-handler set to `active` can legitimately downgrade to
+    // `idle` on the first tick the heartbeat reports silence — without this
+    // sync the DB would stay frozen at the boot-time `active` value forever
+    // (the canonical "always grey / always wrong" overview bug).
+    if detector.last_status() == Status::Unknown {
+        if let Ok(Some(rt)) = db::sessions::runtime(&state.pool, name).await {
+            if let Some(seed) = parse_status(&rt.last_status) {
+                detector.force(seed);
+            }
+        }
+    }
+
     let last_pty = state.last_pty(name);
     // M5b: the apex fusion signal — a fresh Claude hook event outranks the regex
     // bank + heartbeat inside `detect` (§3.6).
@@ -199,6 +221,19 @@ pub async fn tick(
         // explicit 'Any → Stopped' transition + side-effects on tmux death are a
         // separate auto-actions concern deferred past the M5a core (§3.6).
         return Ok(());
+    }
+
+    // M5a heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
+    // the detector's heartbeat branch fires) and is normally spawned on the
+    // first WS subscribe via `AppState::pty_for`. Kicking it from here means a
+    // session that NOBODY has opened the focus tab for still has a live
+    // byte-flow signal — without this, an unviewed running session reads dead
+    // on the overview ("always grey") until somebody opens its focus terminal.
+    // `ensure_started` is idempotent + race-safe (OnceCell), so re-calling it
+    // every tick is free after the first success. Errors are best-effort: a
+    // failure here is logged at debug, not fatal — the regex bank still classifies.
+    if let Err(e) = state.pty_for(name).await {
+        tracing::debug!(name = %name, error = %e, "status detector: pty_for failed (heartbeat may be stale)");
     }
 
     // ONE capture with `-e` (escapes preserved): the detector + plain preview
@@ -283,6 +318,20 @@ fn tail_lines(capture: &str) -> Vec<String> {
     let lines: Vec<&str> = capture.lines().collect();
     let start = lines.len().saturating_sub(PREVIEW_LINES);
     lines[start..].iter().map(|s| s.to_string()).collect()
+}
+
+/// Inverse of [`Status::as_str`] — parse the persisted token back into a
+/// [`Status`] so the detector loop can seed its internal `last_status` from the
+/// DB on spawn. Unknown tokens (including the literal `"unknown"`) return
+/// `None`, so the cold-start path keeps `Unknown` as its detector state.
+fn parse_status(s: &str) -> Option<Status> {
+    match s {
+        "active" => Some(Status::Active),
+        "waiting" => Some(Status::Waiting),
+        "idle" => Some(Status::Idle),
+        "stopped" => Some(Status::Stopped),
+        _ => None,
+    }
 }
 
 /// Publish an SSE event (best-effort; dropped if there are no subscribers).

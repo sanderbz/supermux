@@ -57,8 +57,9 @@ One brand tint. Everything else is a semantic/system token (full theme: M10).
 | `--brand` | `38 92% 58%` | `#f6ae31` | FAB, focus accent stroke, focus rings, "active" pulse |
 | `--status-active` | `38 92% 58%` | `#f6ae31` | running (amber pulse) |
 | `--status-waiting` | `214 95% 60%` | `#388cfa` | waiting / "needs input" (calm blue, §4.3) |
+| `--status-ready` | `152 60% 45%` | `#2eaa6e` | idle-but-alive — calm green "your turn" |
 | `--status-error` | `24 90% 56%` | `#f47b2a` | error — **calm orange, never alarmist red** (user-vision.md) |
-| `--status-idle` | `0 0% 45%` | `#737373` | idle / dim |
+| `--status-idle` | `0 0% 45%` | `#737373` | stopped / dim (agent is off) |
 | `--background` | `0 0% 4%` | `#0a0a0a` | app background + PWA splash |
 
 - **"Confident-builder amber"** (`#f6ae31`) is the one brand hex — similar to

@@ -60,12 +60,17 @@
      "active" pulse, focus rings. (Distinct from shadcn's --accent hover fill.) */
   --brand: 38 92% 58%; /* #f6ae31 */
 
-  /* Status story (user-vision.md: running / waiting / error / idle). M28 owns
-     these values — consumed as hsl(var(--status-*)) by <Toast/> and tiles. */
+  /* Status story (user-vision.md: running / waiting / ready / error / stopped).
+     M28 owns these values — consumed as hsl(var(--status-*)) by <Toast/> and
+     tiles. Five tokens, one per Status enum variant (server/src/sessions/status.rs):
+     active/waiting/ready map to running/needs-input/idle-but-alive, and the
+     muted grey is reserved for STOPPED — so the dot actually differentiates the
+     "agent is alive but quiet" state from "agent is off". */
   --status-active: 38 92% 58%;   /* amber pulse — same family as --brand */
   --status-waiting: 214 95% 60%; /* calm blue — "needs input" (§4.3) */
+  --status-ready: 152 60% 45%;   /* calm green — idle-but-ready (turn ended) */
   --status-error: 24 90% 56%;    /* calm orange, never alarmist red */
-  --status-idle: 0 0% 45%;       /* dim neutral */
+  --status-idle: 0 0% 45%;       /* dim neutral — stopped / unknown */
 }
 
 /* ── Dark theme (iOS dark system colors; the default) ─────────────────────── */
@@ -134,6 +139,7 @@
   --color-brand: hsl(var(--brand));
   --color-status-active: hsl(var(--status-active));
   --color-status-idle: hsl(var(--status-idle));
+  --color-status-ready: hsl(var(--status-ready));
   --color-status-waiting: hsl(var(--status-waiting));
   --color-status-error: hsl(var(--status-error));
 

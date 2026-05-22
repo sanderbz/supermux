@@ -12,8 +12,9 @@
 export const ACCENT_HSL = '38 92% 58%'
 export const STATUS_ACTIVE_HSL = '38 92% 58%' // amber pulse (matches accent)
 export const STATUS_WAITING_HSL = '214 95% 60%' // calm blue "needs input"
+export const STATUS_READY_HSL = '152 60% 45%' // calm green "idle but alive"
 export const STATUS_ERROR_HSL = '24 90% 56%' // calm orange, never alarmist
-export const STATUS_IDLE_HSL = '0 0% 45%' // dim neutral
+export const STATUS_IDLE_HSL = '0 0% 45%' // dim neutral — stopped / unknown
 export const BACKGROUND_HSL = '0 0% 4%' // #0a0a0a splash / first-frame
 
 /** Resolved hex equivalents (for canvas / non-CSS contexts). */
@@ -25,6 +26,7 @@ export const BRAND = {
   status: {
     active: '#f6ae31',
     waiting: '#388cfa',
+    ready: '#2eaa6e',
     error: '#f47b2a',
     idle: '#737373',
   },
@@ -38,6 +40,8 @@ export function statusColor(status: string): string {
       return BRAND.status.active
     case 'waiting':
       return BRAND.status.waiting
+    case 'idle':
+      return BRAND.status.ready
     case 'error':
       return BRAND.status.error
     default:
