@@ -78,8 +78,11 @@ async fn correct_token_is_200_and_empty_array() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    // M2 finalises the §3.4 HTTP envelope: `{ ok, data }` on success. An empty
+    // session list is therefore `{"ok":true,"data":[]}` (was a bare `[]` in M1).
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(&bytes[..], b"[]", "empty session list serializes to []");
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v, serde_json::json!({ "ok": true, "data": [] }));
     let _ = std::fs::remove_dir_all(dir);
 }
 
