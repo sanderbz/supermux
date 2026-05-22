@@ -133,7 +133,13 @@ function BottomNav() {
  *  M23b: when launched as an installed PWA (`useStandaloneMode()`), the OS owns
  *  the window chrome, so `data-standalone` is set on the shell root — routes can
  *  key off it (e.g. to drop browser-only back affordances). The `pt-safe` /
- *  `pb-safe` insets already handle the notch + Dynamic Island in both modes. */
+ *  `pb-safe` insets already handle the notch + Dynamic Island in both modes.
+ *
+ *  M27: the <ReconnectBanner> is an IN-FLOW row at the top of the content
+ *  column — above <main>, below the mobile top bar — so when it is visible it
+ *  reserves vertical space and pushes the route (and its own header chrome)
+ *  down. It is never an overlay, so it can never collide with a route header's
+ *  view-toggle / search / "New session" controls at any breakpoint. */
 export function Layout() {
   const standalone = useStandaloneMode()
   return (
@@ -141,10 +147,10 @@ export function Layout() {
       className="flex h-full w-full"
       data-standalone={standalone ? '' : undefined}
     >
-      <ReconnectBanner />
       <SideNav />
       <div className="flex h-full min-w-0 flex-1 flex-col">
         <MobileTopBar />
+        <ReconnectBanner />
         <main className={cn('min-h-0 flex-1 overflow-auto')}>
           <Outlet />
         </main>
