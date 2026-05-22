@@ -7,6 +7,12 @@
     "types": ["vite/client"],
     "skipLibCheck": true,
 
+    /* Path alias — shadcn copy-source convention (@/* → src/*).
+       No baseUrl: TS5+ resolves paths relative to this config (TS6 deprecates baseUrl). */
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,

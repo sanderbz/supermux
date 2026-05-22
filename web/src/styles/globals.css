@@ -1,26 +1,169 @@
-/* Tailwind v4 — single import pulls in base, components, utilities.
-   Semantic design tokens (--background, --foreground, --card, ...) and the
-   dark-default theme land in M10 (§4.8). M0 ships the minimal baseline so the
-   build is clean and `bun run dev` hot-reloads. */
+/* Tailwind v4 — CSS-first config (wired via @tailwindcss/vite, see vite.config.ts).
+   Semantic design tokens land here per TECH_PLAN §M10 / §4.8. The palette is
+   grounded in iOS system colors (HIG): true-black OLED background in dark,
+   systemBlue brand tint, systemGreen/Blue/Red status colors, opaqueSeparator
+   borders. Dark is the default theme; `.dark` is applied to <html> by
+   <ThemeProvider> before first paint. */
 @import "tailwindcss";
+@import "tw-animate-css";
 
+/* `dark:` variant keys off a `.dark` class on an ancestor (set on <html>). */
+@custom-variant dark (&:is(.dark *));
+
+/* ── Light theme (iOS light system colors) ───────────────────────────────── */
 :root {
-  color-scheme: dark;
+  --radius: 0.75rem; /* 12px — matches the session-tile rounded-xl spec (§4.3) */
+
+  --background: #ffffff;            /* systemBackground */
+  --foreground: #000000;           /* label */
+  --card: #ffffff;                 /* elevated surface */
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+
+  --primary: #007aff;              /* systemBlue (light) — brand tint */
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f7;            /* secondarySystemBackground */
+  --secondary-foreground: #000000;
+
+  --muted: #f2f2f7;
+  --muted-foreground: #6c6c70;     /* secondaryLabel */
+  --accent: #f2f2f7;               /* subtle hover fill (shadcn convention) */
+  --accent-foreground: #000000;
+
+  --destructive: #ff3b30;          /* systemRed (light) */
+  --destructive-foreground: #ffffff;
+
+  --border: #e5e5ea;               /* opaqueSeparator (light) */
+  --input: #e5e5ea;
+  --ring: #007aff;
+
+  /* iOS status + chrome tokens (multi-signal session status, §3.6 / §4.3) */
+  --status-active: #34c759;        /* systemGreen — agent running */
+  --status-idle: #8e8e93;          /* systemGray — idle */
+  --status-waiting: #007aff;       /* systemBlue — needs input */
+  --status-error: #ff3b30;         /* systemRed — tmux missing / error */
+  --warning: #ff9500;              /* systemOrange — reconnecting banner tint */
+
+  /* Terminal surface (read by useLiveTerm at mount, §4.5) */
+  --terminal-bg: #ffffff;
+  --terminal-fg: #1d1d1f;
 }
 
-html,
-body,
-#root {
-  height: 100%;
+/* ── Dark theme (iOS dark system colors; the default) ─────────────────────── */
+.dark {
+  --background: #000000;           /* systemBackground dark — true black (OLED) */
+  --foreground: #ffffff;           /* label */
+  --card: #1c1c1e;                 /* secondarySystemBackground dark */
+  --card-foreground: #ffffff;
+  --popover: #1c1c1e;
+  --popover-foreground: #ffffff;
+
+  --primary: #0a84ff;              /* systemBlue (dark) */
+  --primary-foreground: #ffffff;
+  --secondary: #2c2c2e;            /* tertiarySystemBackground dark */
+  --secondary-foreground: #ffffff;
+
+  --muted: #2c2c2e;
+  --muted-foreground: #98989f;     /* secondaryLabel dark */
+  --accent: #2c2c2e;
+  --accent-foreground: #ffffff;
+
+  --destructive: #ff453a;          /* systemRed (dark) */
+  --destructive-foreground: #ffffff;
+
+  --border: #38383a;               /* opaqueSeparator (dark) */
+  --input: #38383a;
+  --ring: #0a84ff;
+
+  --status-active: #30d158;        /* systemGreen (dark) */
+  --status-idle: #98989f;
+  --status-waiting: #0a84ff;
+  --status-error: #ff453a;
+  --warning: #ff9f0a;              /* systemOrange (dark) */
+
+  --terminal-bg: #000000;
+  --terminal-fg: #e5e5e7;
 }
 
-body {
-  margin: 0;
-  background: #000;
-  color: #fff;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
-  /* Safe-area support for PWA / Capacitor (§4.8). */
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-    env(safe-area-inset-bottom) env(safe-area-inset-left);
+/* ── Map CSS variables → Tailwind color/utility namespace (v4 @theme) ──────── */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-status-active: var(--status-active);
+  --color-status-idle: var(--status-idle);
+  --color-status-waiting: var(--status-waiting);
+  --color-status-error: var(--status-error);
+  --color-warning: var(--warning);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* SF Pro / SF Mono with system fallbacks (iOS-native typography, §spec) */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro",
+    "Segoe UI", Roboto, Helvetica, Arial, system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, "JetBrains Mono",
+    Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+/* ── Safe-area utilities (PWA / Capacitor, §4.8 — no extra plugin needed) ──── */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    height: 100%;
+    color-scheme: dark;
+    background: var(--color-background);
+  }
+
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Prevent overscroll bounce revealing white behind the app shell. */
+    overscroll-behavior: none;
+  }
 }
