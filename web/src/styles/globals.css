@@ -1,11 +1,32 @@
 /* Tailwind v4 — single import pulls in base, components, utilities.
-   Semantic design tokens (--background, --foreground, --card, ...) and the
-   dark-default theme land in M10 (§4.8). M0 ships the minimal baseline so the
-   build is clean and `bun run dev` hot-reloads. */
+   The full semantic theme (--foreground, --card, --muted, ...) lands in
+   M10 (§4.8). M28 ships the *brand* layer it depends on: the accent tint,
+   the status-color story, and the splash/background color — defined here as
+   HSL-triple custom properties so they compose as `hsl(var(--accent) / 0.5)`
+   exactly as §4.3 expects. M10 extends this block; it does not replace it. */
 @import "tailwindcss";
 
 :root {
   color-scheme: dark;
+
+  /* ── Brand (M28) ──────────────────────────────────────────────────────────
+     Single source of truth: web/src/brand/tokens.ts mirrors these values for
+     TS consumers. Stored as bare HSL triples (no hsl() wrapper) so callers can
+     add an alpha channel: hsl(var(--accent) / 0.5). */
+
+  /* Confident-builder amber — the one brand tint. FAB, focus accent stroke,
+     "active" pulse, focus rings. */
+  --accent: 38 92% 58%; /* #f6ae31 */
+
+  /* Status story (user-vision.md: running / waiting / error / idle). */
+  --status-active: 38 92% 58%; /* amber pulse — same family as --accent */
+  --status-waiting: 214 95% 60%; /* calm blue — "needs input" (§4.3) */
+  --status-error: 24 90% 56%; /* calm orange, never alarmist red */
+  --status-idle: 0 0% 45%; /* dim neutral */
+
+  /* Splash / first-frame paint. Kept identical to the manifest background_color
+     and the index.html theme-color so the PWA splash has no flash of white. */
+  --background: 0 0% 4%; /* #0a0a0a */
 }
 
 html,
@@ -16,7 +37,7 @@ body,
 
 body {
   margin: 0;
-  background: #000;
+  background: hsl(var(--background)); /* #0a0a0a — matches splash + theme-color */
   color: #fff;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;

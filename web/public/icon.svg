@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="amux">
+  <title>amux</title>
+  <!--
+    amux app icon — single source of truth (M28).
+    A terminal block with the amber prompt chevron. Monochrome amber on
+    near-black; the chevron + cursor carry the mark and stay legible at 32px.
+    Full-bleed dark background so it renders correctly as a "maskable" PWA tile;
+    all content sits inside the inner safe circle (radius ~205 from center).
+    Export raster sizes with scripts/build-icons.sh.
+    Amber = hsl(38 92% 58%) = #f6ae31. Background = #0a0a0a.
+  -->
+  <rect width="512" height="512" fill="#0a0a0a"/>
+  <!-- Terminal-block framing: subtle, fades at small sizes (decorative only). -->
+  <rect x="112" y="112" width="288" height="288" rx="56" fill="none"
+        stroke="#f6ae31" stroke-opacity="0.12" stroke-width="8"/>
+  <!-- Prompt chevron ❯ -->
+  <path d="M148 176 L260 256 L148 336" fill="none" stroke="#f6ae31"
+        stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Cursor block on the prompt baseline. -->
+  <rect x="278" y="300" width="86" height="40" rx="8" fill="#f6ae31"/>
+</svg>
