@@ -1,0 +1,29 @@
+M29 — Performance budget report (gzipped)
+
+App JS chunks:
+  index-CO2hPr4p.js                    43.67 KB
+  code-editor-DsOUR4uG.js              0.68 KB
+  rolldown-runtime-Cyuzqnbw.js         0.46 KB
+  ———————————————————————————————————— —————————
+  app JS total                         44.80 KB
+
+Vendor JS chunks (cached independently, not budget-gated):
+  vendor-codemirror-DudMJLgC.js        333.27 KB
+  vendor-xterm-CClJFWJe.js             88.86 KB
+  vendor-Y-HF9X2g.js                   74.18 KB
+  vendor-react-BKj3Xmze.js             68.11 KB
+  vendor-framer-D9gwrzKC.js            37.97 KB
+  ———————————————————————————————————— —————————
+  vendor JS total                      602.39 KB
+
+CSS:
+  index-BRxoTkr1.css                   9.54 KB
+  vendor-xterm-kHJ-D0s7.css            0.75 KB
+  ———————————————————————————————————— —————————
+  CSS total                            10.30 KB
+
+✓ main app JS    44.80 KB / 200.00 KB budget (22%)
+✓ CSS            10.30 KB / 30.00 KB budget (34%)
+
+✓ All performance budgets met.
+

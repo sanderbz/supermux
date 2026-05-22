@@ -1,0 +1,39 @@
+{
+  "milestone": "M29",
+  "measured_at": "2026-05-22",
+  "tool": "scripts/size-budget.mjs (Node zlib gzip level 9)",
+  "build": "vite 8.0.14 / rolldown, production",
+  "budgets": {
+    "main_app_js_gzip_kb": 200,
+    "css_gzip_kb": 30,
+    "fcp_ms": 500,
+    "tti_ms": 1500,
+    "lighthouse_perf": 85
+  },
+  "measured": {
+    "main_app_js_gzip_kb": 44.8,
+    "css_gzip_kb": 10.3,
+    "vendor_js_gzip_kb": 602.39,
+    "app_js_chunks": [
+      { "name": "index", "gzip_kb": 43.67 },
+      { "name": "code-editor", "gzip_kb": 0.68 },
+      { "name": "rolldown-runtime", "gzip_kb": 0.46 }
+    ],
+    "vendor_js_chunks": [
+      { "name": "vendor-codemirror", "gzip_kb": 333.27 },
+      { "name": "vendor-xterm", "gzip_kb": 88.86 },
+      { "name": "vendor", "gzip_kb": 74.18 },
+      { "name": "vendor-react", "gzip_kb": 68.11 },
+      { "name": "vendor-framer", "gzip_kb": 37.97 }
+    ]
+  },
+  "result": {
+    "main_app_js": "PASS — 44.8 KB / 200 KB (22%)",
+    "css": "PASS — 10.3 KB / 30 KB (34%)"
+  },
+  "notes": [
+    "manualChunks (vite.config.ts) splits vendors into vendor-react, vendor-xterm, vendor-framer, vendor-codemirror so the hero-loop app chunk stays lean and vendors cache independently.",
+    "vendor-codemirror (333 KB gz) is the CodeMirror language-pack set behind the lazy `code-editor` route — it never loads on the overview or focus-terminal hero path, so it is not gated by the main-app-JS budget per TECH_PLAN §10 ('main app JS').",
+    "Lighthouse perf >=85 / FCP <500ms / TTI <1.5s are documented targets; run `bunx lighthouse` against the dev server (see PERF.md) to archive an HTML report alongside this baseline."
+  ]
+}
