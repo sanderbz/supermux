@@ -24,6 +24,7 @@ async fn new_state() -> (AppState, PathBuf) {
         tls: TlsConfig::default(),
         auth_token: "missed-test-token".to_string(),
         provider_defaults: ProviderDefaults::default(),
+        ws: Default::default(),
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)

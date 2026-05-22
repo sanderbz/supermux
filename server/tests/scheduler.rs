@@ -27,6 +27,7 @@ fn temp_config() -> (Config, PathBuf) {
         tls: TlsConfig::default(),
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),
+        ws: Default::default(),
     };
     (config, dir)
 }
