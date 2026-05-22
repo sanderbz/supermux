@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
 
 interface NavItem {
   to: string
@@ -120,10 +121,13 @@ function BottomNav() {
 }
 
 /** App shell: side-nav (desktop) / top + bottom nav (mobile) wrapping the route
- *  outlet. §M10 / §4.8. */
+ *  outlet. §M10 / §4.8. The <ReconnectBanner> (§M23a) is mounted ONCE here, at
+ *  shell level, so the global connection-status surface floats above every
+ *  route — pinned to the safe-area top, independent of the route's own scroll. */
 export function Layout() {
   return (
     <div className="flex h-full w-full">
+      <ReconnectBanner />
       <SideNav />
       <div className="flex h-full min-w-0 flex-1 flex-col">
         <MobileTopBar />

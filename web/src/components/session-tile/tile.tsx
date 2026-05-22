@@ -1,6 +1,4 @@
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
-import { flushSync } from 'react-dom'
 import { motion, useReducedMotion } from 'framer-motion'
 import { GitBranch } from 'lucide-react'
 
@@ -8,6 +6,11 @@ import { springs, eases } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useLongPress } from '@/hooks/use-long-press'
+import {
+  useNavigateMorph,
+  vtSessionName,
+  supportsViewTransitions,
+} from '@/components/view-transitions/morph'
 import { StatusDot, STATUS_LABEL } from './status-dot'
 import { TailPreview } from './tail-preview'
 import { TileError } from './tile-error'
@@ -29,33 +32,6 @@ function formatTokens(n: number): string {
   if (n < 1000) return `${n}`
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`
   return `${(n / 1_000_000).toFixed(1)}m`
-}
-
-/** `viewTransitionName` must be a valid CSS custom-ident; session names may not
- *  be, so sanitize. Prefixed with `session-` (leading digit is fine). */
-function vtName(name: string): string {
-  return `session-${name.replace(/[^a-zA-Z0-9_-]/g, '_')}`
-}
-
-/** View Transition navigate (§4.3 / §M23). Wraps the route change in
- *  `startViewTransition` so the tile morphs into the focus header on Chromium;
- *  plain navigate elsewhere. M23a ships the canonical `<MorphLink>`; the tile is
- *  self-contained until then so M11 can land in parallel. */
-function useNavigateMorph() {
-  const navigate = useNavigate()
-  return React.useCallback(
-    (to: string) => {
-      const doc = document as Document & {
-        startViewTransition?: (cb: () => void) => void
-      }
-      if (doc.startViewTransition) {
-        doc.startViewTransition(() => flushSync(() => navigate(to)))
-      } else {
-        navigate(to)
-      }
-    },
-    [navigate],
-  )
 }
 
 /** Animated status border overlay (§4.3). Active = amber pulse 1.6s, Waiting =
@@ -159,8 +135,6 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
   }
 
   const title = session.task_summary || session.name
-  const vtSupported =
-    typeof document !== 'undefined' && 'startViewTransition' in document
   const expanded = hovered && fine && !reduce
   const tokens =
     typeof session.tokens === 'number' ? formatTokens(session.tokens) : null
@@ -198,7 +172,11 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
             : { scale: 0.96, transition: { duration: 0.1, ease: eases.out } }
         }
         transition={springs.tileHover}
-        style={vtSupported ? { viewTransitionName: vtName(session.name) } : undefined}
+        style={
+          supportsViewTransitions
+            ? { viewTransitionName: vtSessionName(session.name) }
+            : undefined
+        }
         className="absolute inset-x-0 top-0 flex cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-card pt-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <StatusBorder status={session.status} reduce={reduce} />

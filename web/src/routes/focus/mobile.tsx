@@ -22,6 +22,8 @@ import * as React from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
+import { useNavigateMorph } from '@/components/view-transitions/morph'
+
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
@@ -57,6 +59,11 @@ function placeholderSession(name: string): ApiSession {
 export function MobileFocus() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
+  // View-Transition navigate (§M23a): used by the discrete back-button tap so
+  // it plays the reverse tile↔header morph. The left-edge SWIPE keeps the plain
+  // `navigate` — its own peek-of-next drag IS the iOS-native back transition,
+  // and a View Transition would fight the live drag transform.
+  const navigateMorph = useNavigateMorph()
   const reduceMotion = useReducedMotion()
   const { sessions } = useSessions()
 
@@ -97,6 +104,11 @@ export function MobileFocus() {
     [navigate],
   )
   const goOverview = React.useCallback(() => navigate('/'), [navigate])
+  // Back-button tap → reverse morph; the edge-swipe path still uses `goOverview`.
+  const goOverviewMorph = React.useCallback(
+    () => navigateMorph('/'),
+    [navigateMorph],
+  )
 
   // Edge gestures — disable while a half-sheet is open so they don't double-fire.
   const edge = useEdgeGestures({
@@ -128,7 +140,7 @@ export function MobileFocus() {
           <FocusHeader
             name={current.name}
             status={current.status}
-            onBack={goOverview}
+            onBack={goOverviewMorph}
             onOverflow={() => setPickerOpen(true)}
           />
 
