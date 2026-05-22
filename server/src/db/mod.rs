@@ -18,6 +18,8 @@ pub mod prefs;
 pub mod runtime_state;
 pub mod schedules;
 pub mod sessions;
+pub mod steering;
+pub mod tracked_files;
 
 /// Open the pool and run migrations.
 ///

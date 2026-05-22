@@ -125,3 +125,175 @@ pub async fn delete(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
         .await?;
     Ok(())
 }
+
+/// All runtime rows, fetched once so [`list`] can join in-memory instead of an
+/// N+1 per-session lookup.
+pub async fn list_runtimes(pool: &SqlitePool) -> sqlx::Result<Vec<SessionRuntime>> {
+    sqlx::query_as::<_, SessionRuntime>("SELECT * FROM session_runtime")
+        .fetch_all(pool)
+        .await
+}
+
+/// Does a session row exist? Used for clean 404/409 mapping before mutating.
+pub async fn exists(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> {
+    let row = sqlx::query("SELECT 1 FROM sessions WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
+}
+
+/// Config fields for a brand-new session (the tmux-free create path, M2). Runtime
+/// counters and timestamps default to 0; `created_at` is set by [`create`].
+#[derive(Debug, Clone)]
+pub struct NewSession {
+    pub name: String,
+    pub dir: String,
+    pub desc: String,
+    pub provider: String,
+    pub creator: String,
+    pub flags: String,
+    /// JSON-array string (the `tags` column is a JSON array, §3.3).
+    pub tags: String,
+    pub branch: String,
+    pub mcp: String,
+    pub worktree: bool,
+    pub worktree_repo: String,
+}
+
+/// Insert a full session config row. `created_at` is set to now.
+pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO sessions
+            (name, dir, desc, provider, creator, flags, tags, branch, mcp,
+             worktree, worktree_repo, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&s.name)
+    .bind(&s.dir)
+    .bind(&s.desc)
+    .bind(&s.provider)
+    .bind(&s.creator)
+    .bind(&s.flags)
+    .bind(&s.tags)
+    .bind(&s.branch)
+    .bind(&s.mcp)
+    .bind(s.worktree as i64)
+    .bind(&s.worktree_repo)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Copy a session's CONFIG (not its runtime/counters) under `new_name`. Pinned
+/// is reset and `created_at` refreshed; the caller seeds a fresh runtime row.
+pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO sessions
+            (name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
+             rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
+             created_at)
+         SELECT ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
+                rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
+                ?
+         FROM sessions WHERE name = ?",
+    )
+    .bind(new_name)
+    .bind(now)
+    .bind(src)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Rename a session (its name is the PK and is referenced by several child
+/// tables). Done in one transaction with `defer_foreign_keys` so the parent PK
+/// and every child FK are updated atomically and only re-checked at COMMIT —
+/// otherwise the immediate FK check would reject the parent update.
+pub async fn rename(pool: &SqlitePool, old: &str, new: &str) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("PRAGMA defer_foreign_keys = ON")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE sessions SET name = ? WHERE name = ?")
+        .bind(new)
+        .bind(old)
+        .execute(&mut *tx)
+        .await?;
+    for stmt in [
+        "UPDATE session_runtime SET name = ? WHERE name = ?",
+        "UPDATE tracked_files SET session = ? WHERE session = ?",
+        "UPDATE steering_queue SET session = ? WHERE session = ?",
+        "UPDATE issues SET session = ? WHERE session = ?",
+        "UPDATE delegations SET from_session = ? WHERE from_session = ?",
+        "UPDATE delegations SET to_session = ? WHERE to_session = ?",
+        "UPDATE share_tokens SET session = ? WHERE session = ?",
+    ] {
+        sqlx::query(stmt)
+            .bind(new)
+            .bind(old)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Set the human description.
+pub async fn set_desc(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "desc", value).await
+}
+/// Set the work directory.
+pub async fn set_dir(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "dir", value).await
+}
+/// Set the git branch label.
+pub async fn set_branch(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "branch", value).await
+}
+/// Set the MCP selection (`''` or `'chrome'`).
+pub async fn set_mcp(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "mcp", value).await
+}
+/// Set the tags column (JSON-array string).
+pub async fn set_tags(pool: &SqlitePool, name: &str, json: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "tags", json).await
+}
+
+/// Internal: set one whitelisted TEXT column. The column name comes ONLY from the
+/// fixed setters above (never user input), so the inlined identifier is safe.
+async fn set_text_field(
+    pool: &SqlitePool,
+    name: &str,
+    column: &str,
+    value: &str,
+) -> sqlx::Result<()> {
+    let sql = format!("UPDATE sessions SET {column} = ? WHERE name = ?");
+    sqlx::query(&sql)
+        .bind(value)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Flip the pinned flag.
+pub async fn toggle_pin(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET pinned = 1 - pinned WHERE name = ?")
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Flip the auto-continue flag.
+pub async fn toggle_auto_continue(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET auto_continue = 1 - auto_continue WHERE name = ?")
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

@@ -9,18 +9,15 @@
 //!
 //! Auth split (§6.1): the protected router carries the bearer-token middleware;
 //! the public router (manifest, sw, icons, `/api/health`) is merged AFTER and is
-//! NOT wrapped by it.
+//! NOT wrapped by it (layers apply only to routes present when `.layer` runs).
 
-use axum::extract::State;
 use axum::middleware::from_fn_with_state;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 
-use crate::db;
-use crate::error::AppError;
+use crate::auth;
 use crate::public;
+use crate::sessions;
 use crate::state::AppState;
-use crate::{auth, db::sessions::Session};
 
 /// Build the application router from `state`.
 pub fn router(state: AppState) -> Router {
@@ -41,15 +38,6 @@ pub fn router(state: AppState) -> Router {
 /// ```
 fn protected_router(state: AppState) -> Router {
     Router::new()
-        // M1 ships a minimal `/api/sessions` so the auth layer is exercisable
-        // end-to-end. M2 replaces this with `sessions::router_for(state)`.
-        .route("/api/sessions", get(list_sessions))
-        .layer(from_fn_with_state(state.clone(), auth::auth_middleware))
-        .with_state(state)
-}
-
-/// `GET /api/sessions` — active sessions. Returns `[]` when none exist.
-async fn list_sessions(State(state): State<AppState>) -> Result<Json<Vec<Session>>, AppError> {
-    let sessions = db::sessions::list(&state.pool).await?;
-    Ok(Json(sessions))
+        .merge(sessions::router_for(state.clone()))
+        .layer(from_fn_with_state(state, auth::auth_middleware))
 }
