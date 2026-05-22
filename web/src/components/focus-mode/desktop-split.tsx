@@ -39,9 +39,8 @@ export interface DesktopSplitProps {
   onDetach: () => void
   /** Stop (⌘W): stop the session, then leave. */
   onStop: () => void
-  /** ⌘K palette / "/" slash / "+" snippet hooks — wired by M18 downstream. */
-  onPalette?: () => void
-  onSlash?: () => void
+  /** Optional hook to open the snippet drawer from the parent (the dock owns its
+   *  own state too; this is just for route-level openers). */
   onSnippets?: () => void
 }
 
@@ -52,8 +51,6 @@ export function DesktopSplit({
   onSelect,
   onDetach,
   onStop,
-  onPalette,
-  onSlash,
   onSnippets,
 }: DesktopSplitProps) {
   // One imperative LiveTerminal handle, shared by the dock chips + the keyboard
@@ -74,9 +71,10 @@ export function DesktopSplit({
   )
 
   // The single document-level keydown capture (PRINCIPLE). All non-shortcut keys
-  // pass straight through to xterm.
+  // pass straight through to xterm. ⌘K is intentionally NOT routed through here
+  // anymore — the global <CommandPalette> in <Layout> owns the shortcut so it
+  // works on every route, not just /focus. We keep the slot for ⌘D / ⌘W / ⌘1-9.
   useKeyboardCapture({
-    onPalette: () => onPalette?.(),
     onDetach,
     onStop,
     onJump: jump,
@@ -137,8 +135,7 @@ export function DesktopSplit({
 
         <DesktopDock
           onSendKey={(label) => termRef.current?.sendKey(label)}
-          onPalette={onPalette}
-          onSlash={onSlash}
+          onRunSlash={(cmd) => termRef.current?.send(cmd + '\r')}
           onSnippets={() => {
             onSnippets?.()
             setSnippetsOpen(true)
