@@ -1,10 +1,13 @@
 // LiveTerminal — M13. Thin React wrapper over `useLiveTerm` (TECH_PLAN §4.5).
 //
-// Renders the xterm container full-bleed and pipes the connection `state` to a
-// small overlay status pill. The FULL store-backed reconnect banner (worst-state
-// aggregation, slide-in/morph timing) lands in M23a — for now this is a
-// self-contained, iOS-native placeholder per the M13 spec ("show 'Reconnecting…'
-// text"). It is deliberately minimal so M23a can replace it without conflict.
+// Renders the xterm container full-bleed. Connection health surfaces TWO ways:
+//   • A normal (read-write) terminal registers its WS with the global
+//     `useConnection` store via `useTerminalConnectionLink` (§M23a); the
+//     app-wide <ReconnectBanner> is then THE connection surface — worst-state
+//     aggregated across the SSE stream + every open terminal.
+//   • A read-only embed (the M11 quick-peek modal) does NOT register — its WS
+//     blips shouldn't drive the global banner — so it keeps the small in-place
+//     <ConnectionPill> below as its own scoped indicator.
 //
 // VISUAL: iOS-native xterm theming (background tracks --terminal-bg), glass
 // material status pill, Title-Case labels (never UPPERCASE), ≥44pt retry hit
@@ -20,6 +23,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useLiveTerm } from '@/hooks/use-live-term'
 import type { LiveTermState, UseLiveTermResult } from '@/hooks/use-live-term'
+import { useTerminalConnectionLink } from '@/hooks/use-connection-link'
 
 export interface LiveTerminalProps {
   /** Session name — maps to the M4 WS route `/ws/sessions/:name`. */
@@ -47,6 +51,14 @@ export function LiveTerminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
+  // Register this terminal's WebSocket as a connection link in the global store
+  // (§M23a). The <ReconnectBanner> aggregates it with the SSE stream + any other
+  // open terminals — worst-state wins, so the banner never flickers between two
+  // terminals reconnecting out of phase (Codex #16). A read-only embed (e.g. the
+  // quick-peek modal) does NOT register: its blips shouldn't drive the global
+  // banner. The local <ConnectionPill> below stays as the in-terminal surface.
+  useTerminalConnectionLink(readOnly ? '' : name, state, retry)
+
   return (
     <div
       className={cn(
@@ -66,7 +78,13 @@ export function LiveTerminal({
         role="application"
       />
 
-      <ConnectionPill state={state} onRetry={retry} />
+      {/* In-terminal connection pill — kept ONLY for read-only embeds (e.g. the
+          quick-peek modal), which do NOT register with the global connection
+          store and so have no other surface. A normal focus terminal registers
+          its WS as a link via `useTerminalConnectionLink`, and the global
+          <ReconnectBanner> (§M23a) is then THE connection surface — showing a
+          second pill here would be redundant (Steve-Jobs bar: one surface). */}
+      {readOnly && <ConnectionPill state={state} onRetry={retry} />}
     </div>
   )
 }

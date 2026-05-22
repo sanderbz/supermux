@@ -15,9 +15,10 @@
 // is a documented stub and slash/snippets defer to M18.
 
 import * as React from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 
 import { focusApi } from '@/lib/api'
+import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { CONFIRM } from '@/brand/copy'
 import { DesktopSplit } from '@/components/focus-mode/desktop-split'
 import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
@@ -31,7 +32,10 @@ export interface DesktopFocusProps {
 
 export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
   const { name = '' } = useParams()
-  const navigate = useNavigate()
+  // View-Transition navigate (§M23a): focus→overview plays the reverse morph,
+  // focus→focus cross-fades the main pane. Falls back to a plain navigate where
+  // the API is unsupported / reduced-motion is set.
+  const navigate = useNavigateMorph()
   const { sessions, current } = useFocusSessions(name, mockSessions)
 
   const onSelect = React.useCallback(

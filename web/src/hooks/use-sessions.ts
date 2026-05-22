@@ -19,6 +19,7 @@ import {
   type NewSession,
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
+import { useSseConnectionLink } from '@/hooks/use-connection-link'
 
 export const SESSIONS_KEY = ['sessions'] as const
 
@@ -152,7 +153,11 @@ export function useSessions(): UseSessionsResult {
     [qc],
   )
 
-  useSse(handlers)
+  // ONE SSE subscription for the whole app (§3.6). Its live `status` is the
+  // SSE link in the global connection store — the <ReconnectBanner> (§M23a)
+  // aggregates it with the live-terminal WebSockets. Single source, no polling.
+  const { status: sseStatus } = useSse(handlers)
+  useSseConnectionLink(sseStatus)
 
   const create = useMutation({
     mutationFn: async (input: NewSession): Promise<string> => {

@@ -17,6 +17,10 @@ import { springs } from '@/lib/springs'
 import type { SessionStatus } from '@/lib/api'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import {
+  supportsViewTransitions,
+  vtSessionName,
+} from '@/components/view-transitions/morph'
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -51,7 +55,17 @@ export function DesktopFocusHeader({
   onStop,
 }: DesktopFocusHeaderProps) {
   return (
-    <header className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3">
+    <header
+      className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3"
+      // Shared-element View Transition target (§M23a): carries the SAME
+      // `view-transition-name` as the session's overview tile, so the tile
+      // morphs into this header bar on navigate (Chromium). No-op elsewhere.
+      style={
+        supportsViewTransitions
+          ? { viewTransitionName: vtSessionName(name) }
+          : undefined
+      }
+    >
       <StatusDot status={status} className="shrink-0" />
       <span className="flex min-w-0 flex-1 items-baseline gap-2">
         <span className="truncate text-sm font-semibold tracking-tight">
@@ -125,6 +139,13 @@ export function FocusHeader({
         'flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-1',
         className,
       )}
+      // Shared-element View Transition target (§M23a): same name as the tile, so
+      // the tapped tile morphs into this top bar on navigate (Chromium).
+      style={
+        supportsViewTransitions
+          ? { viewTransitionName: vtSessionName(name) }
+          : undefined
+      }
     >
       <motion.button
         type="button"

@@ -237,3 +237,37 @@
     transition: transform 0.01s linear !important;
   }
 }
+
+/* ── M23a: View Transitions — route-morph physics (APPENDED) ───────────────────
+   `navigateMorph()` (components/view-transitions/morph.tsx) wraps route changes
+   in `document.startViewTransition`. The browser generates a `::view-transition`
+   pseudo-tree; these rules tune its motion to the iOS-native feel.
+
+   The full-page cross-fade (the default `::view-transition-group(root)`) is kept
+   SHORT — ≤ 300 ms per Termius criterion #19 — with the established generic
+   ease-in-out curve. Shared-element groups (a session tile carrying the same
+   `view-transition-name` as the focus header — see `vtSessionName()`) are
+   tweened position+size by the UA; we just give them a matching duration +
+   curve so the tile→header morph reads as one continuous motion, never longer
+   than 400 ms (criterion #19). Appended at the file tail so the parallel
+   M9/M12/M14 agents editing the shared token blocks never conflict. */
+::view-transition-group(*) {
+  animation-duration: 0.28s;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.26s;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* Reduce Motion (Termius #13): no morph, no cross-fade — a hard cut. The route
+   still changes; `navigateMorph` also skips `startViewTransition` entirely when
+   reduced motion is set, so this rule is the belt-and-braces fallback for any
+   transition the UA still attempts (e.g. a browser-initiated back/forward). */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
