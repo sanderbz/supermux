@@ -1,0 +1,76 @@
+[package]
+name = "amux-server"
+version = "3.0.0"
+edition = "2021"
+rust-version = "1.83"
+
+# server/ is its own workspace root (the repo top is intentionally NOT a Cargo
+# workspace — TECH_PLAN §2). resolver "3" is MSRV-aware: it honours the
+# `rust-version = "1.83"` floor above when selecting transitive dep versions,
+# so the resulting Cargo.lock builds on the pinned toolchain.
+[workspace]
+resolver = "3"
+
+[dependencies]
+# ── async runtime ──
+tokio = { version = "1.43", features = ["full"] }       # rt, macros, fs, process, sync, time
+tokio-util = { version = "0.7", features = ["io"] }
+
+# ── http ──
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }   # TLS
+tower = { version = "0.5", features = ["util", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "limit"] }
+http = "1.2"
+http-body-util = "0.1"
+bytes = "1.9"
+mime_guess = "2.0"
+rust-embed = { version = "8.5", features = ["mime-guess"] }  # embed web/dist on stable Rust
+
+# ── ws ──
+tokio-tungstenite = "0.24"
+
+# ── database ──
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls", "sqlite", "macros", "migrate", "chrono", "json"
+] }
+
+# ── serialization ──
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# ── time ──
+chrono = { version = "0.4", features = ["serde"] }
+cron = "0.13"                                            # cron parser
+
+# ── tracing ──
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# ── auth/crypto ──
+rand = "0.8"
+base64 = "0.22"
+constant_time_eq = "0.3"                                 # auth token compare
+
+# ── misc ──
+anyhow = "1.0"
+thiserror = "2.0"
+once_cell = "1.20"
+regex = "1.11"
+nix = { version = "0.29", features = ["signal", "process"] }  # SIGTERM Claude
+notify = "7.0"                                           # FS watch for hot-reload (optional)
+shell-escape = "0.1"
+shellexpand = "3.1"
+url = "2.5"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+dirs = "5.0"                                             # home dir
+which = "7.0"                                            # locate claude/tmux
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+tungstenite = "0.24"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+pretty_assertions = "1.4"
+insta = "1.42"                                           # snapshot tests for status detector

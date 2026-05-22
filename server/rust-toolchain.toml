@@ -1,0 +1,7 @@
+# Pin the build toolchain. `rust-version = "1.83"` in Cargo.toml is the MSRV
+# floor (honoured by the MSRV-aware `resolver = "3"`); the actual build runs on
+# stable, which is required to parse resolver 3 and to compile any edition-2024
+# transitive deps. Keeps `cargo build` reproducible regardless of the machine's
+# default rustup toolchain.
+[toolchain]
+channel = "stable"

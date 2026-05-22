@@ -1,0 +1,26 @@
+/* Tailwind v4 — single import pulls in base, components, utilities.
+   Semantic design tokens (--background, --foreground, --card, ...) and the
+   dark-default theme land in M10 (§4.8). M0 ships the minimal baseline so the
+   build is clean and `bun run dev` hot-reloads. */
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #000;
+  color: #fff;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  /* Safe-area support for PWA / Capacitor (§4.8). */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
