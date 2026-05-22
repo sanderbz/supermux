@@ -29,5 +29,5 @@ rm -rf server/static && cp -r web/dist server/static
 echo "[build] backend: cargo build --release"
 ( cd server && cargo build --release )
 
-BIN="server/target/release/amux-server"
+BIN="server/target/release/supermux-server"
 echo "binary: $BIN ($(du -h "$BIN" | cut -f1))"

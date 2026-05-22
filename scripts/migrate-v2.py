@@ -2,7 +2,7 @@
 """amux v2 -> v3 data migration (M26).
 
 One-shot, idempotent, dry-runnable. Reads a v2 install (~/.amux/) and writes
-into the v3 SQLite database (~/.amux-v3/data.db).
+into the v3 SQLite database (~/.supermux/data.db).
 
 Design constraints (TECH_PLAN.md §9):
   * Column-explicit copies ONLY -- never `SELECT *`. v2/v3 schemas drift, so
@@ -22,7 +22,7 @@ Usage:
               v2 column set is a superset of the v3 required columns for every
               copied table and reports any drift.
   --src       v2 data dir (default: ~/.amux).
-  --dst-db    v3 SQLite database (default: ~/.amux-v3/data.db).
+  --dst-db    v3 SQLite database (default: ~/.supermux/data.db).
 
 The v2 DB filename is auto-detected: `data.db` or `amux.db` inside --src.
 """
@@ -326,8 +326,8 @@ def main() -> int:
     ap.add_argument("--src", default=str(pathlib.Path.home() / ".amux"),
                     help="v2 data dir (default: ~/.amux)")
     ap.add_argument("--dst-db",
-                    default=str(pathlib.Path.home() / ".amux-v3" / "data.db"),
-                    help="v3 SQLite db (default: ~/.amux-v3/data.db)")
+                    default=str(pathlib.Path.home() / ".supermux" / "data.db"),
+                    help="v3 SQLite db (default: ~/.supermux/data.db)")
     args = ap.parse_args()
 
     src = pathlib.Path(args.src).expanduser()

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lint-microcopy.sh — fail CI on off-voice microcopy (M28).
 #
-# The amux voice is builder-to-builder: calm, direct, no cheerleading. This gate
+# The supermux voice is builder-to-builder: calm, direct, no cheerleading. This gate
 # greps the frontend source for banned interjections and exits non-zero if any
 # slip in. Wire it into CI (and pre-commit) alongside eslint.
 #

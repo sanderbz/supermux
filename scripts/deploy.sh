@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy amux v3 to clawd-02 (TECH_PLAN §8.2, §8.4 coexistence).
+# Deploy supermux to clawd-02 (TECH_PLAN §8.2, §8.4 coexistence).
 #
 # clawd-02 is aarch64 Linux with no Rust toolchain on a dev machine, and no
 # Docker for cross-compilation — so we build NATIVELY on the host: ship a
@@ -10,7 +10,7 @@
 # `git archive` of a single committed ref (HEAD by default). The working tree
 # must be clean — uncommitted changes are refused — so the deployed artifact
 # always corresponds exactly to a known commit SHA, which is recorded into
-# /opt/amux-v3/DEPLOYED_SHA on the host and echoed here.
+# /opt/supermux/DEPLOYED_SHA on the host and echoed here.
 #
 # SUPPLY CHAIN (review R4-05): this script does NOT fetch-and-execute toolchain
 # installers (no `curl|bash` rustup/bun bootstrap). `bun` and `cargo` are
@@ -20,28 +20,28 @@
 #
 # Coexistence guarantees (§8.4):
 #   - v2 (amux.service)   : public port 8822, data dir ~/.amux        — UNTOUCHED
-#   - v3 (amux-v3.service): public port 8823, data dir ~/.amux-v3
+#   - v3 (supermux.service): public port 8823, data dir ~/.supermux
 #   v2's cert helper already binds loopback :8823, so v3 binds an internal
-#   loopback port (AMUX3_INTERNAL_PORT, default 8824) and `tailscale serve`
+#   loopback port (SUPERMUX_INTERNAL_PORT, default 8824) and `tailscale serve`
 #   terminates TLS on the documented public port 8823 -> internal port.
 #   Distinct data dir + distinct internal port => zero conflict.
 #
 # Usage:  scripts/deploy.sh
-# Env:    AMUX_DEPLOY_HOST     ssh target            (default: clawd-02)
-#         AMUX3_PUBLIC_PORT    tailscale https port  (default: 8823)
-#         AMUX3_INTERNAL_PORT  loopback bind port    (default: 8824)
-#         AMUX_REMOTE_DIR      build dir on host     (default: /opt/amux-v3)
-#         AMUX_DEPLOY_REF      git ref to deploy     (default: HEAD)
+# Env:    SUPERMUX_DEPLOY_HOST     ssh target            (default: clawd-02)
+#         SUPERMUX_PUBLIC_PORT    tailscale https port  (default: 8823)
+#         SUPERMUX_INTERNAL_PORT  loopback bind port    (default: 8824)
+#         SUPERMUX_REMOTE_DIR      build dir on host     (default: /opt/supermux)
+#         SUPERMUX_DEPLOY_REF      git ref to deploy     (default: HEAD)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-HOST="${AMUX_DEPLOY_HOST:-clawd-02}"
-PUBLIC_PORT="${AMUX3_PUBLIC_PORT:-8823}"
-INTERNAL_PORT="${AMUX3_INTERNAL_PORT:-8824}"
-REMOTE_DIR="${AMUX_REMOTE_DIR:-/opt/amux-v3}"
-DEPLOY_REF="${AMUX_DEPLOY_REF:-HEAD}"
+HOST="${SUPERMUX_DEPLOY_HOST:-clawd-02}"
+PUBLIC_PORT="${SUPERMUX_PUBLIC_PORT:-8823}"
+INTERNAL_PORT="${SUPERMUX_INTERNAL_PORT:-8824}"
+REMOTE_DIR="${SUPERMUX_REMOTE_DIR:-/opt/supermux}"
+DEPLOY_REF="${SUPERMUX_DEPLOY_REF:-HEAD}"
 
 # ── 0. pin the source: require a clean tree, resolve the exact commit ───────
 # A non-reproducible deploy (shipping a dirty working tree) is refused here:
@@ -93,7 +93,7 @@ REMOTE_BUILD
 # ── 3. install binary + systemd unit + config (atomic) ──────────────────────
 # Runs under sudo: the build runs as the unprivileged deploy account, but
 # installing into /usr/local/bin + /etc/systemd needs root. The service itself
-# runs unprivileged (review R4-02 — see etc/systemd/amux-v3.service).
+# runs unprivileged (review R4-02 — see etc/systemd/supermux.service).
 echo "[deploy] installing binary, systemd unit and config on $HOST"
 ssh "$HOST" "sudo bash -s" <<REMOTE_INSTALL
 set -euo pipefail
@@ -102,17 +102,17 @@ set -euo pipefail
 # loopback bind to the internal port so it does NOT collide with v2's cert
 # helper on :8823. config.toml is generated only if absent so a redeploy never
 # rotates the auth token.
-install -d -o sander -g sander -m 0700 /home/sander/.amux-v3
-if [ ! -f /home/sander/.amux-v3/config.toml ]; then
-  printf 'bind = "127.0.0.1:%s"\n' '$INTERNAL_PORT' > /home/sander/.amux-v3/config.toml
-  chown sander:sander /home/sander/.amux-v3/config.toml
-  chmod 0600 /home/sander/.amux-v3/config.toml
-  echo '[host] wrote /home/sander/.amux-v3/config.toml (bind 127.0.0.1:$INTERNAL_PORT)'
+install -d -o sander -g sander -m 0700 /home/sander/.supermux
+if [ ! -f /home/sander/.supermux/config.toml ]; then
+  printf 'bind = "127.0.0.1:%s"\n' '$INTERNAL_PORT' > /home/sander/.supermux/config.toml
+  chown sander:sander /home/sander/.supermux/config.toml
+  chmod 0600 /home/sander/.supermux/config.toml
+  echo '[host] wrote /home/sander/.supermux/config.toml (bind 127.0.0.1:$INTERNAL_PORT)'
 fi
 
 # binary
 install -m 0755 -o root -g root \
-  '$REMOTE_DIR/server/target/release/amux-server' /usr/local/bin/amux-v3-server
+  '$REMOTE_DIR/server/target/release/supermux-server' /usr/local/bin/supermux-server
 
 # record the deployed commit so 'what is running on clawd-02' is answerable
 printf '%s\n' '$GIT_SHA' > '$REMOTE_DIR/DEPLOYED_SHA'
@@ -120,12 +120,12 @@ echo '[host] deployed commit: $GIT_SHA_SHORT ($GIT_SHA)'
 
 # systemd unit
 install -m 0644 -o root -g root \
-  '$REMOTE_DIR/etc/systemd/amux-v3.service' /etc/systemd/system/amux-v3.service
+  '$REMOTE_DIR/etc/systemd/supermux.service' /etc/systemd/system/supermux.service
 systemctl daemon-reload
-systemctl enable amux-v3
-systemctl restart amux-v3
+systemctl enable supermux
+systemctl restart supermux
 sleep 2
-systemctl is-active amux-v3
+systemctl is-active supermux
 REMOTE_INSTALL
 
 # ── 4. expose v3 on the documented public port via Tailscale ────────────────
