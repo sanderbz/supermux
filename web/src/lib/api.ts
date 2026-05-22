@@ -958,3 +958,27 @@ export async function listSessionNames(): Promise<string[]> {
     return []
   }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// M14 — Focus-mode session control (ADDITIVE).
+//
+// Appended below the M0 `api` stub (and the M20/M22 blocks) instead of filling
+// the stub's method bodies, so this milestone never collides with the sibling
+// frontend milestones that own their own slices of the stub above (§29 dep-graph
+// fix). The desktop focus dock's Stop (⌘W) button needs a real `stopSession`
+// before M12 wires the full sessions client; this is that real fetch.
+//
+// LIVE keystrokes are NOT sent through here — they flow over the M4 WebSocket pty
+// (the M13 LiveTerminal). This block is HTTP control-plane only (stop). Envelope
+// + bearer reuse the same `settingsRequest` helper above (token from window at
+// call time — never embedded in source).
+// ════════════════════════════════════════════════════════════════════════════
+
+export const focusApi = {
+  /** POST `/api/sessions/:name/stop` — stop the session (⌘W). Keeps the tmux
+   *  pane per §3.4; the overview reflects it via the next SSE `sessions` delta. */
+  stopSession: (name: string): Promise<void> =>
+    settingsRequest(`/api/sessions/${encodeURIComponent(name)}/stop`, {
+      method: 'POST',
+    }),
+}
