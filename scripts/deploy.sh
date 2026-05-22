@@ -90,8 +90,11 @@ systemctl is-active amux-v3
 REMOTE_INSTALL
 
 # ── 4. expose v3 on the documented public port via Tailscale ────────────────
+# Tailscale terminates TLS on :$PUBLIC_PORT and proxies to the v3 backend.
+# The backend speaks plain HTTP on the internal loopback port, so the proxy
+# target is `http://` (NOT `https+insecure://` — that would 502).
 echo "[deploy] configuring 'tailscale serve' :$PUBLIC_PORT -> localhost:$INTERNAL_PORT"
-ssh "$HOST" "tailscale serve --bg --https=$PUBLIC_PORT https+insecure://localhost:$INTERNAL_PORT"
+ssh "$HOST" "tailscale serve --bg --https=$PUBLIC_PORT http://localhost:$INTERNAL_PORT"
 
 # ── 5. verify (health is #[public], no token needed) ────────────────────────
 echo "[deploy] verifying v3 health on :$INTERNAL_PORT"
