@@ -1,22 +1,33 @@
-//! amux-v3 server entry point.
+//! amux-v3 server entry point (TECH_PLAN §3.2.1).
 //!
-//! M0 bootstrap stub: binds `127.0.0.1:8823` and serves a single root route.
-//! Later milestones replace this with the full startup sequence from
-//! TECH_PLAN §3.2.1 (config load, db pool init, TLS bind, background tasks).
+//! M1 startup sequence: init tracing, load config (creating `~/.amux-v3` and the
+//! mode-0o600 `auth_token`), open the SQLite pool + run migrations, build the
+//! router with auth on `/api/*`, and serve. TLS bind, background tasks, and
+//! session reattach join in later milestones. Module definitions live in
+//! `lib.rs` so the binary and integration tests share them.
 
-use std::net::SocketAddr;
-
-mod http;
+use amux_server::{config, db, http, state};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let addr: SocketAddr = "127.0.0.1:8823".parse()?;
+    init_tracing();
 
-    let app = http::router();
+    let config = config::load()?;
+    let pool = db::init(&config).await?;
+    let bind = config.bind;
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("amux-v3 listening on http://{addr}");
+    let state = state::AppState::new(pool, config);
+    let app = http::router(state);
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!("amux-v3 listening on http://{bind}");
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    fmt().with_env_filter(filter).init();
 }
