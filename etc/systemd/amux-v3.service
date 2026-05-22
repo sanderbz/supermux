@@ -3,6 +3,19 @@
 #   - v2 (amux.service)  : port 8822, data dir ~/.amux
 #   - v3 (amux-v3.service): port 8823, data dir ~/.amux-v3
 # Distinct data dir + distinct port => zero overlap, zero conflict.
+#
+# SECURITY (review R4-02): the service is NOT run as root. amux-server exposes
+# a full filesystem read/write API (GET /api/ls, GET/PUT /api/file,
+# POST /api/fs/upload, DELETE /api/fs/delete) and spawns child processes
+# (tmux, git, claude, codex). Running as uid 0 would make any auth-token leak,
+# path-jail escape or command-injection root-equivalent on the host. Per
+# TECH_PLAN §8.3 the service runs as the unprivileged `sander` account, with
+# systemd sandboxing locked down to exactly what the service needs:
+#   - read+write only its data dir (~/.amux-v3) — ProtectSystem=strict makes
+#     the rest of the filesystem read-only, ReadWritePaths scopes the writes;
+#   - no privilege escalation (NoNewPrivileges), private /tmp, kernel + cgroup
+#     tunables protected, address families restricted to what an HTTP service
+#     plus the tmux AF_UNIX socket need.
 [Unit]
 Description=amux v3 (Rust)
 After=network.target tailscaled.service
@@ -10,13 +23,12 @@ Wants=tailscaled.service
 
 [Service]
 Type=simple
-# Matches the v2 deployment account on clawd-02 (amux.service runs as root,
-# HOME=/root). Keeping the same account means v3 sees the same tmux server
-# and ~/.claude config without privilege drift.
-User=root
-WorkingDirectory=/root
-Environment=HOME=/root
-Environment=AMUX3_DATA_DIR=/root/.amux-v3
+# Run as the unprivileged deployment account (TECH_PLAN §8.3). This account
+# owns ~/.amux-v3 and the tmux server it drives — no root privilege required.
+User=sander
+WorkingDirectory=/home/sander
+Environment=HOME=/home/sander
+Environment=AMUX3_DATA_DIR=/home/sander/.amux-v3
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/amux-v3-server
 Restart=always
@@ -24,6 +36,53 @@ RestartSec=2
 LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
+
+# ── hardening (review R4-02) ────────────────────────────────────────────────
+# No process spawned by the service may gain privileges via setuid/setgid/caps.
+NoNewPrivileges=true
+# Whole filesystem read-only (incl. /usr, /boot, /etc); only the paths in
+# ReadWritePaths below are writable. ProtectSystem=strict deliberately breaks
+# the files API writing outside the data dir — that is the intended jail.
+ProtectSystem=strict
+# /home, /root, /run/user are inaccessible EXCEPT the service data dir, which
+# is re-granted read+write via ReadWritePaths.
+ProtectHome=true
+ReadWritePaths=/home/sander/.amux-v3
+# tmux keeps its server socket under $XDG_RUNTIME_DIR (/run/user/<uid>); the
+# service must be able to create/connect to it to drive sessions.
+RuntimeDirectory=amux-v3
+# Private /tmp and /var/tmp namespace — no cross-service tmp snooping.
+PrivateTmp=true
+# Block writes to kernel tunables, kernel module load, and cgroup hierarchy.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+# Localhost HTTP service + tmux AF_UNIX socket: AF_INET/AF_INET6 for the
+# listener, AF_UNIX for tmux. Nothing else (no AF_NETLINK, AF_PACKET, …).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# No new namespaces, no realtime scheduling, no personality (ABI) changes,
+# no setuid/setgid binaries, no executable+writable memory.
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Drop all Linux capabilities — the service binds an unprivileged port (8824)
+# and needs none.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Only the device nodes a normal userspace process needs (/dev/null, zero,
+# random, …); no raw device access.
+PrivateDevices=true
+# Confine syscalls to the standard non-privileged set plus exec (needed to
+# spawn tmux/git/claude/codex children).
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
