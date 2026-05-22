@@ -1,0 +1,3 @@
+[31mError: connection reset[0m
+half an escape [38;5;2
+more [1m text without reset

@@ -1,0 +1,2 @@
+  Claude wants to run a command.
+  Approve this action?

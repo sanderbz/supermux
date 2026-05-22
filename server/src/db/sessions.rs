@@ -354,6 +354,19 @@ pub async fn set_hibernated(pool: &SqlitePool, name: &str, hibernated: bool) -> 
     Ok(())
 }
 
+/// Write `session_runtime.last_capture` — the canonical tile-tail-preview source
+/// (CEO #1). The M5a detector loop calls this EVERY 2s tick (classification or
+/// not) with the last 30 lines of `capture-pane`, ANSI-stripped, so
+/// `SessionView.preview_lines` always reflects the freshest pane content.
+pub async fn set_last_capture(pool: &SqlitePool, name: &str, capture: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE session_runtime SET last_capture = ? WHERE name = ?")
+        .bind(capture)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Set the live status + timestamp in `session_runtime`. The detector (M5) is the
 /// usual writer; M3 sets `active`/`stopped` on start/stop so the API reflects the
 /// lifecycle before the detector lands. Status must be a `last_status` CHECK value.

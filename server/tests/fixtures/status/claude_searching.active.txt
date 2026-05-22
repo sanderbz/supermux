@@ -1,0 +1,3 @@
+● Searching the codebase for the handler.
+
+✻ Searching… (3s · esc to interrupt)

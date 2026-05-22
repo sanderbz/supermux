@@ -1,0 +1,3 @@
+● Here is the plan.
+
+⏸ plan mode on (shift+tab to cycle)

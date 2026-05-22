@@ -1,0 +1,3 @@
+● Bash(cargo build)
+  ⎿  Compiling amux-server v3.0.0
+     Running...

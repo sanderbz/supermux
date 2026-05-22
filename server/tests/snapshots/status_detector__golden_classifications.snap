@@ -1,0 +1,39 @@
+---
+source: tests/status_detector.rs
+expression: table
+---
+binary_garbage.corrupt.txt                   => unknown
+claude_accept_edits.idle.txt                 => idle
+claude_approve_action.waiting.txt            => waiting
+claude_bash_permission.waiting.txt           => waiting
+claude_bypass_permissions.idle.txt           => idle
+claude_cogitating.active.txt                 => active
+claude_completed_spinner.idle.txt            => idle
+claude_composing.active.txt                  => active
+claude_edit_permission.waiting.txt           => waiting
+claude_enter_to_select.waiting.txt           => waiting
+claude_esc_truncated.active.txt              => active
+claude_idle_prompt.idle.txt                  => idle
+claude_interrupted.waiting.txt               => waiting
+claude_long_running.active.txt               => active
+claude_numbered_choice.waiting.txt           => waiting
+claude_plan_mode.idle.txt                    => idle
+claude_pondered.idle.txt                     => idle
+claude_proceed_edit.waiting.txt              => waiting
+claude_proceed_yesno.waiting.txt             => waiting
+claude_reading_files.active.txt              => active
+claude_ready_prompt.idle.txt                 => idle
+claude_running_bash.active.txt               => active
+claude_searching.active.txt                  => active
+claude_selector_menu.waiting.txt             => waiting
+claude_spinner_beaming.active.txt            => active
+claude_status_bar.idle.txt                   => idle
+claude_tool_call.active.txt                  => active
+claude_trust_prompt.waiting.txt              => waiting
+codex_model_line.idle.txt                    => idle
+codex_working.active.txt                     => active
+control_chars.corrupt.txt                    => unknown
+huge_single_line.corrupt.txt                 => unknown
+mixed_unicode.corrupt.txt                    => unknown
+shell_prompt_dollar.idle.txt                 => idle
+truncated_ansi.corrupt.txt                   => unknown

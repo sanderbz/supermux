@@ -1,0 +1,3 @@
+  How should I handle the conflict?
+  ❯ 2. No, and tell Claude what to do differently
+    3. Cancel

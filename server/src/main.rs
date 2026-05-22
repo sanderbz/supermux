@@ -6,7 +6,7 @@
 //! session reattach join in later milestones. Module definitions live in
 //! `lib.rs` so the binary and integration tests share them.
 
-use amux_server::{config, db, http, scheduler, state};
+use amux_server::{config, db, http, scheduler, sessions, state};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,6 +20,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Background tasks (§3.9). M8 adds the scheduler tick.
     scheduler::spawn(state.clone());
+    // M5a: resume per-session status detection on boot (cold-start init §3.2.8).
+    sessions::auto_actions::spawn_all(&state).await;
 
     let app = http::router(state);
 

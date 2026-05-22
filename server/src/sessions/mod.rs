@@ -16,8 +16,10 @@
 //! (start/stop/send/keys/paste/peek/archive/wake/clone) onto [`tmux`]; their
 //! handlers are merged into [`router_for`] alongside the M2 CRUD routes.
 
+pub mod auto_actions;
 pub mod lifecycle;
 pub mod pty;
+pub mod status;
 pub mod tmux;
 
 use std::collections::HashMap;
@@ -294,6 +296,10 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
     let hook_token = gen_hook_token();
     db::sessions::ensure_runtime(&state.pool, &name, &hook_token).await?;
     state.hook_tokens.insert(name.clone(), hook_token);
+    // M5a: start this session's 2s status detector loop (the loop self-terminates
+    // when the session is deleted). Boot-time sessions are wired by
+    // `auto_actions::spawn_all`; this covers sessions created in-process.
+    auto_actions::spawn_status_loop(state.clone(), name.clone());
     get(state, &name).await
 }
 
