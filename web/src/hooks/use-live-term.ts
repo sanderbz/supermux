@@ -22,6 +22,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 
 import { authToken, wsUrl } from '@/env'
+import { claim as claimPrewarm } from '@/hooks/peek-prewarm-store'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
 // session's pty is gone (not running) — there is nothing to reconnect to, so we
@@ -165,6 +166,15 @@ export function useLiveTerm(
      *  reconnect-banner subscription). Without this flag `send`/`sendKey` are
      *  silenced for readOnly embeds — the original M11 contract. */
     allowProgrammaticInput?: boolean
+    /** Pre-warm fast-path: when true, the mount effect first attempts to adopt
+     *  an already-open, already-authed WS + buffered bytes from the peek-
+     *  prewarm registry (`peek-prewarm-store`) — so the overview hover-zoom
+     *  hydrates INSTANTLY instead of waiting for a fresh M4 handshake +
+     *  first-frame round-trip. Falls back to normal connect if no pre-warm
+     *  exists (cap was full, tile only just became visible, etc.). Off by
+     *  default so the focus terminal + quick-peek modal keep their existing
+     *  single-WS lifecycle. */
+    prewarmSeed?: boolean
   },
 ): UseLiveTermResult {
   const readOnly = opts?.readOnly ?? false
@@ -173,6 +183,14 @@ export function useLiveTerm(
   // stays legible at a glance (it passes an explicit fontSize). The focus
   // terminal and quick-peek omit it and keep the M13 default.
   const fontSize = opts?.fontSize ?? 13
+  // When true, the mount effect first attempts to adopt an already-open,
+  // already-authed WS + buffered bytes from the peek-prewarm registry — so the
+  // overview hover-zoom hydrates INSTANTLY instead of waiting for a fresh M4
+  // handshake + first-frame round-trip. Falls back to normal connect if no
+  // pre-warm exists (cap was full, tile only just became visible, etc.). Off
+  // by default so the focus terminal + quick-peek modal keep their existing
+  // single-WS lifecycle.
+  const prewarmSeed = opts?.prewarmSeed ?? false
 
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<Terminal | null>(null)
@@ -341,37 +359,25 @@ export function useLiveTerm(
       )
     }
 
-    const connect = () => {
-      if (disposedRef.current) return
-      clearReconnectTimer()
-      authedRef.current = false
-
-      const base = wsUrl().replace(/\/$/, '')
-      const url = `${base}/ws/sessions/${encodeURIComponent(name)}`
-      let ws: WebSocket
-      try {
-        ws = new WebSocket(url)
-      } catch {
-        scheduleReconnect()
-        return
-      }
-      ws.binaryType = 'arraybuffer'
-      wsRef.current = ws
-
-      // Guard: if `auth_ok` never arrives, treat as a failed connection.
-      let authTimer: number | null = window.setTimeout(() => {
-        if (!authedRef.current) ws.close()
-      }, AUTH_GRACE_MS)
+    /** Install the message/error/close handlers on a WebSocket — used for both
+     *  freshly-opened connections and adopted pre-warm seeds. Returns a small
+     *  control object so the caller can clear the auth grace timer. */
+    const installHandlers = (
+      ws: WebSocket,
+      opts: { skipAuth?: boolean } = {},
+    ) => {
+      // Guard: if `auth_ok` never arrives, treat as a failed connection. When
+      // adopting a pre-warm seed the WS is already authed — no grace needed.
+      let authTimer: number | null = opts.skipAuth
+        ? null
+        : window.setTimeout(() => {
+            if (!authedRef.current) ws.close()
+          }, AUTH_GRACE_MS)
       const clearAuthTimer = () => {
         if (authTimer !== null) {
           window.clearTimeout(authTimer)
           authTimer = null
         }
-      }
-
-      ws.onopen = () => {
-        // First frame = in-band auth. Token from window (never the URL).
-        ws.send(JSON.stringify({ type: 'auth', token: authToken() }))
       }
 
       ws.onmessage = async (ev: MessageEvent) => {
@@ -456,8 +462,113 @@ export function useLiveTerm(
       }
     }
 
+    const connect = () => {
+      if (disposedRef.current) return
+      clearReconnectTimer()
+      authedRef.current = false
+
+      const base = wsUrl().replace(/\/$/, '')
+      const url = `${base}/ws/sessions/${encodeURIComponent(name)}`
+      let ws: WebSocket
+      try {
+        ws = new WebSocket(url)
+      } catch {
+        scheduleReconnect()
+        return
+      }
+      ws.binaryType = 'arraybuffer'
+      wsRef.current = ws
+
+      // Set onopen FIRST so installHandlers' message/close wiring sees a
+      // consistent WebSocket. The first frame is the in-band auth (token from
+      // window, never the URL).
+      ws.onopen = () => {
+        try {
+          ws.send(JSON.stringify({ type: 'auth', token: authToken() }))
+        } catch {
+          /* will surface via onclose */
+        }
+      }
+      installHandlers(ws)
+    }
+
+    /** Adopt an already-open, already-authed WebSocket + buffered bytes from
+     *  the peek-prewarm registry. Skips the M4 handshake entirely: state goes
+     *  straight to `live`, the buffer is written into xterm on the next
+     *  microtask (after the first FitAddon `fit()` runs — see the rAF above —
+     *  so the cols/rows reflow the buffered ANSI correctly), and the SAME WS
+     *  continues streaming. Returns true on success. */
+    const adopt = (seed: { ws: WebSocket; bytes: Uint8Array }): boolean => {
+      if (disposedRef.current) {
+        try {
+          seed.ws.close(CLOSE_UNMOUNT, 'unmount-before-adopt')
+        } catch {
+          /* nothing */
+        }
+        return false
+      }
+      const ws = seed.ws
+      // Re-set binaryType defensively in case a future contributor flips it on
+      // the prewarm side.
+      ws.binaryType = 'arraybuffer'
+      wsRef.current = ws
+      authedRef.current = true
+      // Skip the auth grace timer — we've already received auth_ok upstream.
+      installHandlers(ws, { skipAuth: true })
+      setLiveState('live')
+
+      // Hydrate the terminal with the buffered bytes. Two timing constraints:
+      //  • xterm must have a real layout box (cols/rows > 0) or `write` is
+      //    a no-op on the renderer. The rAF above performs the first `fit()`;
+      //    we schedule the hydrate AFTER that rAF so the box exists.
+      //  • The buffer must land BEFORE any further live bytes arrive, so the
+      //    on-screen output preserves chronological order. We're inside the
+      //    same synchronous tick as installHandlers — no async gap yet — so
+      //    the next message can only fire after this microtask completes; we
+      //    queue the hydrate via rAF so it runs strictly after the first fit.
+      if (seed.bytes.byteLength > 0) {
+        const bytes = seed.bytes
+        window.requestAnimationFrame(() => {
+          if (disposedRef.current) return
+          const t = termRef.current
+          if (!t) return
+          try {
+            t.write(bytes)
+          } catch {
+            /* xterm rejected the write — non-fatal; live stream still flows */
+          }
+        })
+      }
+      // Push our current geometry to the server so the pty matches what xterm
+      // just laid out (the pre-warm never sent a resize — it didn't know the
+      // viewport size yet).
+      window.requestAnimationFrame(() => {
+        if (disposedRef.current) return
+        const t = termRef.current
+        if (!t) return
+        try {
+          resize(t.cols, t.rows)
+        } catch {
+          /* not yet authed in our view — onmessage path will catch up */
+        }
+      })
+      return true
+    }
+
     connectRef.current = connect
-    connect()
+    // Pre-warm fast-path: try to adopt a buffered WS for `name` if the caller
+    // opted in. If no seed is available (cap was full, prewarm not authed
+    // yet, the WS closed in the meantime), fall through to the normal connect.
+    if (prewarmSeed) {
+      const seed = claimPrewarm(name)
+      if (seed && adopt(seed)) {
+        // Adopted — skip the fresh connect.
+      } else {
+        connect()
+      }
+    } else {
+      connect()
+    }
 
     // 4. ResizeObserver → debounced fit + resize round-trip (§4.5).
     let resizeTimer: number | null = null
@@ -517,7 +628,9 @@ export function useLiveTerm(
     }
     // Re-subscribe ONLY when the target session changes (or the embed's font
     // geometry changes). The imperative callbacks are ref-stable so they don't
-    // belong in deps.
+    // belong in deps. `prewarmSeed` is read once at mount (it's a boolean
+    // capability, not a per-render input) so it's omitted from the deps to
+    // avoid re-subscribing if a parent toggles it on/off.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, readOnly, fontSize])
 

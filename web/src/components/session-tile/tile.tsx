@@ -7,6 +7,7 @@ import { MISC } from '@/brand/copy'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useLongPress } from '@/hooks/use-long-press'
 import { usePeekType, PEEK_STICKY_MS } from '@/hooks/use-peek-type'
+import { usePeekPrewarm } from '@/hooks/use-peek-prewarm'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useUI } from '@/stores/ui-store'
 import {
@@ -123,6 +124,24 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // Viewport-aware connection pre-warm (polish-pass — "instant hover-zoom").
+  // While this tile is visible AND the user has Live preview enabled AND the
+  // session is live-capable, the prewarm registry opens a headless WS in the
+  // background and buffers recent pty bytes. On hover-enter the live-terminal
+  // hook adopts that WS+buffer and hydrates xterm in a single rAF — perceived
+  // latency drops from the ~50-300ms handshake cost to ≈ <16ms. The cap of
+  // 12 concurrent pre-warms keeps memory + server fan-out bounded; tiles
+  // beyond the cap fall through to the existing on-hover-connect path (the
+  // polish-pass crossfade is the visual cover for that fallback).
+  //
+  // Enabled gating mirrors the same conditions that gate `showLiveTerm`
+  // below — pointless to pre-warm a connection the hover will never use.
+  const liveCapableEarly =
+    session.status !== 'stopped' && session.status !== 'error'
+  usePeekPrewarm(session.name, cardRef, {
+    enabled: fine && hoverPreview === 'live' && liveCapableEarly,
+  })
 
   const goFocus = React.useCallback(
     () => navigateMorph(`/focus/${session.name}`),

@@ -67,7 +67,16 @@ export interface TileLiveTerminalProps {
  *  for the type-on-hover keydown listener WITHOUT changing any of the other
  *  readOnly side-effects (Steve-Jobs bar: change one thing at a time). The
  *  parent ALSO uses the polish-pass `onFirstFrame` callback to crossfade this
- *  surface in over the static ANSI preview — both signals coexist. */
+ *  surface in over the static ANSI preview — both signals coexist.
+ *
+ *  PRE-WARM (polish-pass). The parent already maintains a headless pre-warm
+ *  WS + ring buffer for visible tiles (see `usePeekPrewarm`). We opt in via
+ *  `prewarmSeed`: on mount the live-terminal hook tries to adopt that buffered
+ *  WS — bytes are written into xterm in a single rAF, the SAME WS continues
+ *  streaming, perceived latency ≈ <16ms (xterm allocate + buffer write). When
+ *  no pre-warm exists (cap was full, tile only just became visible) the hook
+ *  falls back to the original connect path — the polish-pass crossfade covers
+ *  that case. */
 export function TileLiveTerminal({ name, onFirstFrame, onReady }: TileLiveTerminalProps) {
   return (
     <div
@@ -79,6 +88,7 @@ export function TileLiveTerminal({ name, onFirstFrame, onReady }: TileLiveTermin
         readOnly
         allowProgrammaticInput
         fontSize={ZOOM_FONT_SIZE}
+        prewarmSeed
         className="rounded-none"
         onFirstFrame={onFirstFrame}
         onReady={onReady}
