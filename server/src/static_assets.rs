@@ -18,9 +18,11 @@
 //!     missing API route still 404s as JSON instead of silently serving HTML.
 //!
 //! **Token injection.** `index.html` carries no placeholder; the served HTML has
-//! an inline `<script>window._AMUX_AUTH_TOKEN=…;window._AMUX_VERSION=…</script>`
+//! an inline
+//! `<script>window._AMUX_AUTH_TOKEN=…;window._AMUX_VERSION=…;window._AMUX_HOME_DIR=…</script>`
 //! spliced in immediately before `<div id="root">`, which is where the SPA
-//! (`web/src/env.ts`) reads them.
+//! (`web/src/env.ts`) reads them. `_AMUX_HOME_DIR` lets the New-session form
+//! pre-fill its working-directory field so a session boots in one click.
 //!
 //! **No `_AMUX_BASE_URL` injection.** The server-served SPA is *always*
 //! same-origin with its own API — whatever host/scheme the user reached the
@@ -141,10 +143,18 @@ fn serve_index(state: &AppState) -> Response {
 /// origin and break the app whenever the page is reached via any other host
 /// (localhost, the Tailscale hostname) — a cross-origin CORS failure.
 fn inject_runtime_config(html: &str, state: &AppState) -> String {
+    // `_AMUX_HOME_DIR`: the server's home directory. The New-session form
+    // pre-fills its working-directory field with this so a session can be
+    // created in one click without typing a path. Empty string if unresolved
+    // (the create handler then falls back to the home dir server-side anyway).
+    let home_dir = dirs::home_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     let script = format!(
-        "<script>window._AMUX_AUTH_TOKEN={token};window._AMUX_VERSION={version};</script>",
+        "<script>window._AMUX_AUTH_TOKEN={token};window._AMUX_VERSION={version};window._AMUX_HOME_DIR={home};</script>",
         token = json_string(&state.config.auth_token),
         version = json_string(env!("CARGO_PKG_VERSION")),
+        home = json_string(&home_dir),
     );
 
     // `<div id="root">` is the documented injection anchor (§3.2 line 153).

@@ -9,6 +9,7 @@ declare global {
     _AMUX_BASE_URL?: string
     _AMUX_WS_URL?: string
     _AMUX_VERSION?: string
+    _AMUX_HOME_DIR?: string
   }
 }
 
@@ -32,4 +33,13 @@ export function wsUrl(): string {
 /** Server build version (for the about/settings screen + cache busting). */
 export function appVersion(): string {
   return window._AMUX_VERSION ?? 'dev'
+}
+
+/** The server's home directory — the sensible default working directory for a
+ *  new session. The New-session form pre-fills its directory field with this so
+ *  a session can be created in one click without typing a path. Empty string if
+ *  the server couldn't resolve it (the create endpoint then falls back to the
+ *  home dir server-side anyway). */
+export function homeDir(): string {
+  return window._AMUX_HOME_DIR ?? ''
 }
