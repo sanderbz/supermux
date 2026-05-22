@@ -23,6 +23,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
+import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useSessions } from '@/hooks/use-sessions'
 import type { ApiSession, SessionStatus } from '@/lib/api'
@@ -75,6 +76,10 @@ export function MobileFocus() {
 
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
+  // M17 — joystick on/off. The M16 accessory bar's "Gesture" toggle flips this
+  // via `onGestureToggle`; default ON (joystick wins, per the Termius spec).
+  const [gestureOn, setGestureOn] = React.useState(true)
+  void setGestureOn // wired by M16's accessory bar; kept for the toggle handoff
 
   const goSession = React.useCallback(
     (target: string) => navigate(`/focus/${encodeURIComponent(target)}`),
@@ -116,10 +121,18 @@ export function MobileFocus() {
             onOverflow={() => setPickerOpen(true)}
           />
 
-          <div className="min-h-0 flex-1">
+          {/* M17 — the LiveTerminal with the joystick + 2-finger gesture
+              overlay layered on top. `relative` so the absolute overlay scopes
+              to the terminal viewport (excludes header/dock). The overlay
+              drives the SAME `termRef` handle the dock uses — no second WS. */}
+          <div className="relative min-h-0 flex-1">
             <LiveTerminal
               name={name}
               onReady={(t) => (termRef.current = t)}
+            />
+            <Joystick
+              enabled={gestureOn}
+              sendKey={(key) => termRef.current?.sendKey(key)}
             />
           </div>
 
