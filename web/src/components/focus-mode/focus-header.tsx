@@ -1,4 +1,28 @@
-// FocusHeader — M14 (TECH_PLAN §4.4 desktop, "Header (44px)").
+// focus-mode/focus-header.tsx — the focus-mode top bars for BOTH viewports.
+//
+//   • DesktopFocusHeader — M14 (TECH_PLAN §4.4 desktop, "Header (44px)"): session
+//     name + status on the left, Detach + Stop on the right. Imported by
+//     DesktopSplit.
+//   • FocusHeader        — M15 (TECH_PLAN §4.4 mobile "Top bar"): chevron-back,
+//     centred truncating title + status, ··· overflow. Imported by focus/mobile.
+//
+// M14 and M15 each authored a component named FocusHeader with INCOMPATIBLE
+// props; the merge keeps both by giving the desktop one a distinct name.
+
+import { motion } from 'framer-motion'
+import { ChevronLeft, MoreHorizontal, Minimize2, Square } from 'lucide-react'
+
+import { cn } from '@/lib/utils'
+import { springs } from '@/lib/springs'
+import type { SessionStatus } from '@/lib/api'
+import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+
+// ── DesktopFocusHeader (M14, TECH_PLAN §4.4 desktop) ──────────────────────────
 //
 // The top chrome of the desktop focus main pane: 44px tall, session name +
 // status dot on the left, Detach + Stop buttons on the right. The status banner
@@ -9,19 +33,7 @@
 // VISUAL: glass material bar, Title-Case labels (Detach / Stop — never
 // UPPERCASE), ≥44pt hit targets, spring button-press, no `transition: all`.
 
-import { motion } from 'framer-motion'
-import { Minimize2, Square } from 'lucide-react'
-
-import { springs } from '@/lib/springs'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
-import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
-import type { SessionStatus } from '@/lib/api'
-
-export interface FocusHeaderProps {
+export interface DesktopFocusHeaderProps {
   name: string
   title?: string
   status: SessionStatus
@@ -31,13 +43,13 @@ export interface FocusHeaderProps {
   onStop: () => void
 }
 
-export function FocusHeader({
+export function DesktopFocusHeader({
   name,
   title,
   status,
   onDetach,
   onStop,
-}: FocusHeaderProps) {
+}: DesktopFocusHeaderProps) {
   return (
     <header className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3">
       <StatusDot status={status} className="shrink-0" />
@@ -83,6 +95,65 @@ export function FocusHeader({
           <TooltipContent>Stop session (⌘W)</TooltipContent>
         </Tooltip>
       </div>
+    </header>
+  )
+}
+
+// ── FocusHeader (M15, TECH_PLAN §4.4 mobile "Top bar") ─────────────────────────
+//
+// 44px + safe-area-top, chevron-back left, session title (truncating) + status
+// dot, ··· overflow right. Sentence-case labels, ≥44pt hit targets.
+
+export interface FocusHeaderProps {
+  name: string
+  status: SessionStatus
+  onBack: () => void
+  onOverflow?: () => void
+  className?: string
+}
+
+export function FocusHeader({
+  name,
+  status,
+  onBack,
+  onOverflow,
+  className,
+}: FocusHeaderProps) {
+  return (
+    <header
+      className={cn(
+        'flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-1',
+        className,
+      )}
+    >
+      <motion.button
+        type="button"
+        aria-label="Back to overview"
+        whileTap={{ scale: 0.92 }}
+        transition={springs.buttonPress}
+        onClick={onBack}
+        className="flex size-11 items-center justify-center rounded-lg text-primary active:bg-secondary"
+      >
+        <ChevronLeft className="size-5" />
+      </motion.button>
+
+      <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-1">
+        <StatusDot status={status} />
+        <h1 className="min-w-0 truncate text-[15px] font-semibold tracking-tight">
+          {name}
+        </h1>
+      </div>
+
+      <motion.button
+        type="button"
+        aria-label="More"
+        whileTap={{ scale: 0.92 }}
+        transition={springs.buttonPress}
+        onClick={onOverflow}
+        className="flex size-11 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
+      >
+        <MoreHorizontal className="size-5" />
+      </motion.button>
     </header>
   )
 }

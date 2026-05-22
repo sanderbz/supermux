@@ -20,7 +20,7 @@ import { LiveTerminal } from '@/components/terminal/live-terminal'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import type { TileSession } from '@/components/session-tile/types'
 import { CompactTile } from './compact-tile'
-import { FocusHeader } from './focus-header'
+import { DesktopFocusHeader } from './focus-header'
 import { DesktopDock } from './dock'
 import { useKeyboardCapture } from './use-keyboard-capture'
 
@@ -106,7 +106,7 @@ export function DesktopSplit({
 
       {/* Right: main pane — header / terminal / dock. */}
       <main className="flex min-w-0 flex-1 flex-col">
-        <FocusHeader
+        <DesktopFocusHeader
           name={name}
           title={title}
           status={status}
