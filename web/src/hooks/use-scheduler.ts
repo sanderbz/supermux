@@ -2,14 +2,13 @@
 //
 // Real-time, not polled (anti-vision: "WebSocket-only — no 3s polling"). The
 // scheduler tick pushes `alerts` SSE events (server/src/scheduler/runner.rs)
-// when a job fires; `useSchedulerStream` opens ONE authenticated EventSource to
-// `/api/events` and invalidates the schedules + runs caches on each scheduler
-// event, so the list's next_run / last_run / run history refresh live the moment
-// a fire lands — no interval, ever. (The shared `use-sse.ts` is still a M12 stub
-// in this milestone's tree, so this hook owns its own scheduler-scoped stream;
-// it converges with the shared store once M12 merges.)
+// when a job fires; `useSchedulerStream` subscribes to the SHARED `use-sse.ts`
+// stream (M12) — the one app-wide EventSource — and invalidates the schedules +
+// runs caches on each scheduler event, so the list's next_run / last_run / run
+// history refresh live the moment a fire lands — no interval, ever, and no
+// second connection.
 
-import * as React from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   useMutation,
   useQuery,
@@ -24,7 +23,7 @@ import {
   type ScheduleRow,
   type ScheduleRunRow,
 } from '@/lib/api'
-import { authToken, baseUrl } from '@/env'
+import { useSse, type SseEventType } from '@/hooks/use-sse'
 
 const SCHEDULES_KEY = ['schedules'] as const
 const runsKey = (id: string) => ['schedules', 'runs', id] as const
@@ -107,17 +106,6 @@ export function useTestFire() {
 
 // ── live stream (SSE — never polling) ─────────────────────────────────────────
 
-/** SSE endpoint base (same-origin fallback). The token rides as a query param
- *  because EventSource cannot set an Authorization header; the auth layer
- *  accepts `?_token=` (server/src/auth.rs). Token is read from `window` at
- *  runtime — never embedded in source. */
-function eventsUrl(): string {
-  const base = baseUrl().replace(/\/$/, '')
-  const token = authToken()
-  const q = token ? `?_token=${encodeURIComponent(token)}` : ''
-  return `${base}/api/events${q}`
-}
-
 function invalidateScheduler(qc: QueryClient) {
   qc.invalidateQueries({ queryKey: SCHEDULES_KEY })
   // Invalidate all run histories (any open detail sheet refreshes too).
@@ -125,65 +113,34 @@ function invalidateScheduler(qc: QueryClient) {
 }
 
 /**
- * Subscribe the schedules cache to the live event stream. Mount once on the
- * Scheduler route. On any scheduler-sourced event (the tick fires a job → an
- * `alerts` event with `source:"scheduler"`, plus future `schedules` deltas),
- * invalidate the caches so the UI reflects the new run/next_run live. Pure
- * push — there is NO interval here.
- *
- * Reconnect: EventSource auto-reconnects on transient drops. On a hard error we
- * close + re-open with capped backoff so a server restart heals without a
- * reload.
+ * Subscribe the schedules cache to the SHARED live event stream (`use-sse.ts`,
+ * M12 — the one app-wide EventSource). Mount once on the Scheduler route. On any
+ * scheduler-sourced event (the tick fires a job → an `alerts` event with
+ * `source:"scheduler"`, plus `schedules` deltas), invalidate the caches so the
+ * UI reflects the new run/next_run live. Pure push — there is NO interval here,
+ * and NO second EventSource: reconnect/backoff/staleness are all owned by
+ * `useSse`.
  */
 export function useSchedulerStream() {
   const qc = useQueryClient()
 
-  React.useEffect(() => {
-    let es: EventSource | null = null
-    let closed = false
-    let retry = 0
-    let timer: ReturnType<typeof setTimeout> | undefined
-
-    const onMessage = (raw: MessageEvent) => {
-      retry = 0
-      let evt: { type?: string; payload?: { source?: string } } | null
-      try {
-        evt = JSON.parse(raw.data)
-      } catch {
-        return
-      }
-      if (!evt) return
+  const onEvent = useCallback(
+    (type: SseEventType, payload: unknown) => {
       // Scheduler fires arrive as `alerts` with source "scheduler"; a dedicated
-      // `schedules` delta channel (added by later milestones) also refreshes.
+      // `schedules` delta channel also refreshes.
+      const source = (payload as { source?: string; payload?: { source?: string } })
       const isScheduler =
-        evt.type === 'schedules' ||
-        (evt.type === 'alerts' && evt.payload?.source === 'scheduler')
+        type === 'schedules' ||
+        (type === 'alerts' &&
+          (source?.source === 'scheduler' ||
+            source?.payload?.source === 'scheduler'))
       if (isScheduler) invalidateScheduler(qc)
-    }
-
-    const connect = () => {
-      if (closed) return
-      es = new EventSource(eventsUrl())
-      es.onmessage = onMessage
-      // Named events (the server may tag the SSE `event:` field).
-      es.addEventListener('alerts', onMessage as EventListener)
-      es.addEventListener('schedules', onMessage as EventListener)
-      es.onerror = () => {
-        if (closed) return
-        es?.close()
-        es = null
-        // Decorrelated-ish capped backoff (300ms × 2^n, max 30s).
-        const delay = Math.min(300 * 2 ** retry, 30_000)
-        retry += 1
-        timer = setTimeout(connect, delay)
-      }
-    }
-
-    connect()
-    return () => {
-      closed = true
-      if (timer) clearTimeout(timer)
-      es?.close()
-    }
-  }, [qc])
+    },
+    [qc],
+  )
+  // On a focus/visibility/online resync after a quiet stretch, re-pull schedules
+  // so a missed fire is reconciled. Still no polling.
+  const onResync = useCallback(() => invalidateScheduler(qc), [qc])
+  const handlers = useMemo(() => ({ onEvent, onResync }), [onEvent, onResync])
+  useSse(handlers)
 }

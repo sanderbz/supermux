@@ -9,28 +9,30 @@ import {
   useCreateSnippet,
   useDeleteSnippet,
   useSnippets,
-} from '@/hooks/use-settings'
+} from '@/hooks/use-commands'
 
 /** Saved-command manager. Rows live inside a [`Section`] (the divide-y comes
  *  from the card), so this renders rows + an inline add form. Wired to the real
- *  `/api/snippets` CRUD with graceful loading / error / empty states. */
+ *  `/api/snippets` CRUD via `use-commands` — the SAME M9 client + `['snippets']`
+ *  cache the focus snippet panel uses, so a snippet created here shows in the
+ *  slash-menu panel and vice-versa (review R3-003: one client, one cache). */
 export function SnippetsSection() {
   const { data, isLoading, isError } = useSnippets()
   const create = useCreateSnippet()
   const del = useDeleteSnippet()
-  const [label, setLabel] = React.useState('')
-  const [command, setCommand] = React.useState('')
+  const [title, setTitle] = React.useState('')
+  const [body, setBody] = React.useState('')
 
-  const canAdd = label.trim() !== '' && command.trim() !== '' && !create.isPending
+  const canAdd = title.trim() !== '' && body.trim() !== '' && !create.isPending
 
   function add() {
     if (!canAdd) return
     create.mutate(
-      { label: label.trim(), command: command.trim() },
+      { title: title.trim(), body: body.trim() },
       {
         onSuccess: () => {
-          setLabel('')
-          setCommand('')
+          setTitle('')
+          setBody('')
         },
       },
     )
@@ -74,16 +76,16 @@ export function SnippetsSection() {
           >
             <div className="min-w-0 flex-1">
               <div className="text-[15px] leading-tight text-foreground">
-                {s.label}
+                {s.title}
               </div>
               <div className="truncate font-mono text-[12px] text-muted-foreground">
-                {s.command}
+                {s.body}
               </div>
             </div>
             <Button
               variant="ghost"
               size="icon"
-              aria-label={`Delete ${s.label}`}
+              aria-label={`Delete ${s.title}`}
               onClick={() => del.mutate(s.id)}
               className="size-11 shrink-0 text-muted-foreground hover:text-destructive"
             >
@@ -95,15 +97,15 @@ export function SnippetsSection() {
 
       <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center">
         <Input
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
           placeholder="Label"
           aria-label="Snippet label"
           className="h-11 sm:max-w-[11rem]"
         />
         <Input
-          value={command}
-          onChange={(e) => setCommand(e.target.value)}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') add()
           }}
