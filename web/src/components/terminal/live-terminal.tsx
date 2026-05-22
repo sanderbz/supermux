@@ -38,6 +38,12 @@ export interface LiveTerminalProps {
   /** Receive the imperative handle so a parent dock/joystick (M14/M15/M17) can
    *  drive `sendKey` / `copyAll` without re-subscribing. */
   onReady?: (term: UseLiveTermResult) => void
+  /** Allow imperative `send` / `sendKey` even while `readOnly` is true. The
+   *  overview type-on-hover peek sets this so a document-level keydown
+   *  listener can pipe quick interjections through the existing M13 wire
+   *  while xterm's own DOM stdin stays disabled (the peek user never focuses
+   *  the xterm element). Default false preserves the M11 readOnly contract. */
+  allowProgrammaticInput?: boolean
 }
 
 export function LiveTerminal({
@@ -46,8 +52,9 @@ export function LiveTerminal({
   className,
   fontSize,
   onReady,
+  allowProgrammaticInput = false,
 }: LiveTerminalProps) {
-  const term = useLiveTerm(name, { readOnly, fontSize })
+  const term = useLiveTerm(name, { readOnly, fontSize, allowProgrammaticInput })
   const { containerRef, state, retry } = term
 
   React.useEffect(() => {

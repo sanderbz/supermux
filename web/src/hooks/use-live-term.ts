@@ -146,9 +146,20 @@ function backoffDelay(attempt: number): number {
 
 export function useLiveTerm(
   name: string,
-  opts?: { readOnly?: boolean; fontSize?: number },
+  opts?: {
+    readOnly?: boolean
+    fontSize?: number
+    /** Allow imperative `send` / `sendKey` even when `readOnly` is true. The
+     *  type-on-hover peek (overview live-zoom) sets this so its document-level
+     *  keydown handler can pipe keystrokes through the existing M13 wire while
+     *  keeping the xterm DOM stdin disabled (no focus surprises, no global
+     *  reconnect-banner subscription). Without this flag `send`/`sendKey` are
+     *  silenced for readOnly embeds — the original M11 contract. */
+    allowProgrammaticInput?: boolean
+  },
 ): UseLiveTermResult {
   const readOnly = opts?.readOnly ?? false
+  const allowProgrammaticInput = opts?.allowProgrammaticInput ?? false
   // The overview hover-zoom embed renders fewer, larger rows so the shrunk pane
   // stays legible at a glance (it passes an explicit fontSize). The focus
   // terminal and quick-peek omit it and keep the M13 default.
@@ -188,18 +199,18 @@ export function useLiveTerm(
 
   const send = React.useCallback(
     (text: string) => {
-      if (readOnly) return
+      if (readOnly && !allowProgrammaticInput) return
       sendRaw(text)
     },
-    [readOnly, sendRaw],
+    [readOnly, allowProgrammaticInput, sendRaw],
   )
 
   const sendKey = React.useCallback(
     (key: string) => {
-      if (readOnly) return
+      if (readOnly && !allowProgrammaticInput) return
       sendRaw(keyToBytes(key))
     },
-    [readOnly, sendRaw],
+    [readOnly, allowProgrammaticInput, sendRaw],
   )
 
   const resize = React.useCallback((cols: number, rows: number) => {

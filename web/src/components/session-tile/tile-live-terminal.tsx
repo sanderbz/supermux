@@ -1,4 +1,5 @@
 import { LiveTerminal } from '@/components/terminal/live-terminal'
+import type { UseLiveTermResult } from '@/hooks/use-live-term'
 
 // The hover-zoom live terminal — overview tile preview feature, behaviour #2.
 //
@@ -42,27 +43,37 @@ export interface TileLiveTerminalProps {
   /** Tile content width in px — retained for API stability; the terminal now
    *  fits itself to the container so this is informational only. */
   width?: number
+  /** Type-on-hover: capture the imperative handle (`send`/`sendKey`) so the
+   *  parent's document-level keydown listener can pipe keystrokes through the
+   *  existing M13 wire. The terminal stays `readOnly` (no DOM-level stdin, no
+   *  global-banner registration, no xterm focus surprises) — the new
+   *  `allowProgrammaticInput` flag lets the parent send anyway. */
+  onReady?: (term: UseLiveTermResult) => void
 }
 
-/** A live, read-only terminal rendered at native font size and fitted to the
- *  tile preview box — a small but genuinely legible window onto the agent's
- *  pty, latest output pinned to view. Mount = open WS; unmount = close WS (the
- *  parent gates it on hover). */
-export function TileLiveTerminal({ name }: TileLiveTerminalProps) {
+/** A live terminal rendered at native font size and fitted to the tile preview
+ *  box — a small but genuinely legible window onto the agent's pty, latest
+ *  output pinned to view. Mount = open WS; unmount = close WS (the parent
+ *  gates it on hover).
+ *
+ *  Stays `readOnly` so xterm's own stdin/tabindex/banner-registration paths
+ *  stay disabled. When the parent wires `onReady`, the M13
+ *  `allowProgrammaticInput` flag opens the `send`/`sendKey` imperative surface
+ *  for the type-on-hover keydown listener WITHOUT changing any of the other
+ *  readOnly side-effects (Steve-Jobs bar: change one thing at a time). */
+export function TileLiveTerminal({ name, onReady }: TileLiveTerminalProps) {
   return (
     <div
       aria-hidden
       className="absolute inset-0 overflow-hidden bg-[var(--terminal-bg)]"
     >
-      {/* read-only: no keystrokes, and the WS is NOT registered with the
-          global connection store (its hover-blips shouldn't drive the
-          app-wide reconnect banner). The terminal fills this box; xterm's
-          FitAddon snaps the geometry, viewport pinned to the freshest rows. */}
       <LiveTerminal
         name={name}
         readOnly
+        allowProgrammaticInput
         fontSize={ZOOM_FONT_SIZE}
         className="rounded-none"
+        onReady={onReady}
       />
     </div>
   )
