@@ -6,7 +6,7 @@
 //! session reattach join in later milestones. Module definitions live in
 //! `lib.rs` so the binary and integration tests share them.
 
-use amux_server::{config, db, http, scheduler, sessions, state};
+use amux_server::{config, db, http, log_redact, scheduler, sessions, state};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,7 +35,17 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn init_tracing() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{fmt, EnvFilter};
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    fmt().with_env_filter(filter).init();
+    // §3.4 (Codex #24): the redaction layer is installed BEFORE the formatter so
+    // an Authorization/Cookie header or a `?_token=` query never reaches the
+    // log output in clear — defense-in-depth ahead of any future TraceLayer.
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(log_redact::RedactionLayer)
+        .with(fmt::layer())
+        .init();
 }

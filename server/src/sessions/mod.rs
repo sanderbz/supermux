@@ -313,6 +313,26 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     // Best-effort tmux teardown so a deleted session leaves no orphan pane/FIFO.
     let _ = tmux::Tmux::new(name).kill_session().await;
     db::sessions::delete(&state.pool, name).await?;
+
+    // Nudge the per-session background loops to re-check their `exists_active`
+    // guard immediately (detector via the wake handle; steering via a no-op
+    // status-watch re-send), so they observe the deleted row and exit.
+    state.wake_detector(name);
+    {
+        let tx = state.status_watch_for(name);
+        let cur = tx.borrow().clone();
+        tx.send_replace(cur);
+    }
+
+    // R1-2: `forget_session` must be the LAST thing — wait for every per-session
+    // loop to stop (task-guard count → 0) before dropping the DashMap entries,
+    // otherwise a still-running loop's `or_insert_with` re-creates them.
+    for _ in 0..100 {
+        if state.live_session_tasks(name) == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     // §3.2.5 lock-map lifecycle: drop every per-session in-memory map entry so
     // session churn does not leak DashMap entries.
     state.forget_session(name);

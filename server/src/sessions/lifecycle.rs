@@ -412,8 +412,37 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
         })
         .await;
 
+        // R1-1: flip `archived = 1` BEFORE waking the loops so that when they
+        // re-evaluate their `exists_active` guard they observe the archived row
+        // and terminate (an archived row no longer satisfies `exists_active`).
         let _ = db::sessions::set_archived(&state.pool, &name, true).await;
         let _ = tmux.kill_session().await;
+
+        // Nudge both per-session background loops to re-check their guard NOW
+        // rather than at their next interval (detector: 2s; steering: 60s):
+        //   * the detector loop `select!`s on `detector_wake`;
+        //   * the steering loop `select!`s on the status watch `changed()`.
+        state.wake_detector(&name);
+        {
+            let tx = state.status_watch_for(&name);
+            let cur = tx.borrow().clone();
+            // Re-send the current value: `watch::changed()` fires on any send,
+            // waking the steering loop so it re-checks `exists_active` and exits.
+            tx.send_replace(cur);
+        }
+
+        // R1-2: `forget_session` must be the LAST thing — a still-running loop's
+        // `or_insert_with` (`status_watch_for`, `detector_wake_for`, …) would
+        // otherwise re-create the very DashMap entries we just dropped. Wait for
+        // every per-session loop to actually stop (the task-guard count → 0),
+        // THEN forget. Bounded poll so a wedged loop can't block the job
+        // forever; the guarantee holds in the normal case.
+        for _ in 0..100 {
+            if state.live_session_tasks(&name) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         state.forget_session(&name);
 
         let detail = match write_res {

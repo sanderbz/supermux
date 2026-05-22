@@ -30,7 +30,7 @@ use tokio::time::MissedTickBehavior;
 use crate::db;
 use crate::db::schedules::{Schedule, SchedulePatch};
 use crate::error::AppError;
-use crate::state::AppState;
+use crate::state::{AppState, SseEvent};
 
 use runner::Trigger;
 
@@ -38,6 +38,12 @@ use runner::Trigger;
 const TICK_INTERVAL: Duration = Duration::from_secs(10);
 /// Past-due tolerance: beyond this, the window is treated as missed (§3.8).
 const MISSED_WINDOW: chrono::Duration = chrono::Duration::seconds(60);
+/// Grace window for a *one-shot* (`sched_type == 'once'`): a single-fire job that
+/// is past due by less than this is still FIRED rather than silently discarded
+/// (R2-002). A one-shot created while the server was down — or one whose first
+/// post-creation tick is slightly past due — should still run a few hours late;
+/// only an egregiously stale one-shot is skip+disabled.
+const ONESHOT_GRACE: chrono::Duration = chrono::Duration::hours(6);
 
 // ── tick loop (§3.2.12) ───────────────────────────────────────────────────────
 
@@ -77,28 +83,59 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
         let scheduled_for_ts = next_run.timestamp();
 
         if now - next_run > MISSED_WINDOW {
-            // Missed-window: log + advance, do NOT fire (§3.8). Claim the
-            // fire-key first so this only catches GENUINELY missed windows
-            // (server downtime); an in-flight long-running job already holds the
-            // key, so we leave its next_run for `record_fire` and skip silently.
-            match db::schedules::claim_run_key(&state.pool, &sched.id, scheduled_for_ts).await {
-                Ok(true) => {
-                    let _ = db::schedules::insert_run(
-                        &state.pool,
-                        &sched.id,
-                        now.timestamp(),
-                        "skipped",
-                        "missed window",
-                    )
-                    .await;
-                    let next = runner::recompute_next(&sched, now);
-                    let _ = db::schedules::advance_next(&state.pool, &sched.id, next).await;
-                    tracing::info!(schedule = %sched.id, "advanced past missed schedule window (not fired)");
+            // R2-002: a still-recent ONE-SHOT is honoured late rather than
+            // discarded. `recompute_next` returns `None` for `sched_type='once'`,
+            // so the generic skip path below would NULL `next_run` + set
+            // `enabled = 0` — silently dropping a one-shot that fired before the
+            // server's first tick (server was down at creation, a brief busy
+            // spell, or a restored DB). Inside the grace window we fall through
+            // to the normal dispatch instead, which fires it via `runner::run`
+            // (that path emits the SSE `alerts` event and advances cadence).
+            let recent_oneshot =
+                sched.sched_type == "once" && now - next_run <= ONESHOT_GRACE;
+            if !recent_oneshot {
+                // Missed-window: log + advance, do NOT fire (§3.8). Claim the
+                // fire-key first so this only catches GENUINELY missed windows
+                // (server downtime); an in-flight long-running job already holds
+                // the key, so we leave its next_run for `record_fire` and skip.
+                match db::schedules::claim_run_key(&state.pool, &sched.id, scheduled_for_ts).await {
+                    Ok(true) => {
+                        let _ = db::schedules::insert_run(
+                            &state.pool,
+                            &sched.id,
+                            now.timestamp(),
+                            "skipped",
+                            "missed window",
+                        )
+                        .await;
+                        let next = runner::recompute_next(&sched, now);
+                        let _ = db::schedules::advance_next(&state.pool, &sched.id, next).await;
+                        tracing::info!(schedule = %sched.id, "advanced past missed schedule window (not fired)");
+                        // R2-002: surface a stranded/skipped schedule to clients
+                        // — previously this path was log-only and invisible.
+                        let _ = state.sse_tx.send(SseEvent {
+                            event: "alerts".to_string(),
+                            payload: json!({
+                                "level": "info",
+                                "source": "scheduler",
+                                "schedule": sched.id,
+                                "detail": format!(
+                                    "Skipped schedule '{}' — fire window missed by >6h",
+                                    sched.title
+                                ),
+                            }),
+                        });
+                    }
+                    Ok(false) => {} // already handled/in-flight — leave to record_fire
+                    Err(e) => tracing::warn!(schedule = %sched.id, error = %e, "missed-window claim failed"),
                 }
-                Ok(false) => {} // already handled/in-flight — leave to record_fire
-                Err(e) => tracing::warn!(schedule = %sched.id, error = %e, "missed-window claim failed"),
+                continue;
             }
-            continue;
+            tracing::info!(
+                schedule = %sched.id,
+                "one-shot past due within grace window — firing late rather than skipping",
+            );
+            // fall through to the normal dispatch below
         }
 
         let st = state.clone();
@@ -337,6 +374,19 @@ pub async fn test_fire(
     state: &AppState,
     input: CreateScheduleInput,
 ) -> Result<TestFireResult, AppError> {
+    // R2-001: a `boot`-kind run spawns a REAL, persistent session (a `sessions`
+    // row + a tmux/pty process, and optionally a git worktree). `test_fire` only
+    // soft-deletes the *schedule* row, so test-firing a boot schedule would
+    // leave a permanent orphan session/worktree behind on every call — breaking
+    // the "never persists a live schedule" promise. Reject it up front; the
+    // user can prove a boot schedule by creating it and using "run now".
+    if input.kind.as_deref() == Some("boot") {
+        return Err(AppError::BadRequest(
+            "test-fire is not supported for boot schedules (it would spawn an orphan session); \
+             create the schedule and use 'run now' instead"
+                .into(),
+        ));
+    }
     let sched = create(state, input).await?;
     // Run synchronously so the result is ready when we respond. The manual
     // trigger never touches next_run, so deletion afterward is clean.

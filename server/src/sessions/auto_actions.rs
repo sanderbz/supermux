@@ -72,10 +72,15 @@ pub async fn spawn_all(state: &AppState) {
 
 /// Spawn the 2s status detector loop for one session. Idempotent at the
 /// system level: the loop self-terminates the moment the session row is gone
-/// (delete/archive), so churn never leaks tasks. Safe to call once per session
-/// (boot via [`spawn_all`], create via `sessions::create`).
+/// OR archived (R1-1 — `exists_active` filters `archived = 0`), so churn never
+/// leaks tasks. Safe to call once per session (boot via [`spawn_all`], create
+/// via `sessions::create`).
 pub fn spawn_status_loop(state: AppState, name: String) {
     tokio::spawn(async move {
+        // R1-1/R1-2: register this loop as a live per-session task. The guard
+        // decrements the count on drop (loop exit), so `archive`/`delete` can
+        // wait for every loop to stop before running `forget_session`.
+        let _task = state.session_task_guard(&name);
         // Cold-start init (§3.2.8): detector begins Unknown; its first heartbeat
         // is the cold-start sentinel from `AppState::last_pty`.
         let mut detector = StatusDetector::new();
@@ -97,13 +102,15 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 _ = wake.notified() => {}
             }
 
-            // Stop the loop when the session is deleted/archived (the row is the
-            // lifetime anchor — §3.2.5 cleanup).
-            match db::sessions::exists(&state.pool, &name).await {
+            // Stop the loop when the session is deleted OR archived (R1-1: the
+            // *live* row is the lifetime anchor — `exists_active` filters
+            // `archived = 0`, so an archived session terminates this loop just
+            // like a deleted one and the detector task is not leaked forever).
+            match db::sessions::exists_active(&state.pool, &name).await {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
-                    tracing::debug!(name = %name, error = %e, "status detector: exists() failed");
+                    tracing::debug!(name = %name, error = %e, "status detector: exists_active() failed");
                     continue;
                 }
             }

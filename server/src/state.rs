@@ -3,6 +3,7 @@
 //! Cloned into every axum handler via `State<AppState>`. All fields are cheap to
 //! clone (an `Arc`, a connection pool handle, or a broadcast sender).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -85,6 +86,13 @@ pub struct AppState {
     /// Per-session live pty streams (M4). One FIFO reader + broadcast fan-out per
     /// session, created on first WS subscribe via [`AppState::pty_for`].
     pub pty: Arc<PtyStreamer>,
+    /// Per-session live background-task counter (R1-1/R1-2). Each per-session
+    /// loop (the 2s status detector + the steering deliver loop) increments this
+    /// when it spawns and decrements when it exits. `archive`/`delete` use it to
+    /// run [`forget_session`](Self::forget_session) only AFTER every loop has
+    /// stopped — otherwise a still-running loop's `or_insert_with` re-creates the
+    /// very `DashMap` entries `forget_session` removed (R1-2).
+    pub session_tasks: Arc<DashMap<String, Arc<AtomicUsize>>>,
 }
 
 impl AppState {
@@ -107,7 +115,34 @@ impl AppState {
             status_notify: Arc::new(Notify::new()),
             sse_tx,
             pty,
+            session_tasks: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Register the start of a per-session background loop, returning a guard
+    /// that decrements the live-task count when dropped. While ANY guard for
+    /// `name` is alive, [`forget_session`](Self::forget_session) must not run
+    /// (the loop may still re-create map entries — R1-2).
+    pub fn session_task_guard(&self, name: &str) -> SessionTaskGuard {
+        let counter = self
+            .session_tasks
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+            .clone();
+        counter.fetch_add(1, Ordering::SeqCst);
+        SessionTaskGuard {
+            name: name.to_string(),
+            counter,
+        }
+    }
+
+    /// How many per-session background loops are currently running for `name`.
+    /// `archive`/`delete` poll this to 0 before calling `forget_session`.
+    pub fn live_session_tasks(&self, name: &str) -> usize {
+        self.session_tasks
+            .get(name)
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(0)
     }
 
     /// Get (creating on first use) the per-session [`PtyStream`] and ensure its
@@ -192,6 +227,7 @@ impl AppState {
         self.last_hook.remove(name);
         self.detector_wake.remove(name);
         self.pty_heartbeat.remove(name);
+        self.session_tasks.remove(name);
         self.pty.forget(name);
     }
 
@@ -216,6 +252,31 @@ impl AppState {
         if let Some((_, v)) = self.pty_heartbeat.remove(old) {
             self.pty_heartbeat.insert(new.to_string(), v);
         }
+        if let Some((_, v)) = self.session_tasks.remove(old) {
+            self.session_tasks.insert(new.to_string(), v);
+        }
         self.pty.rename(old, new);
+    }
+}
+
+/// RAII guard for a per-session background loop (R1-1/R1-2). Increment happens
+/// in [`AppState::session_task_guard`]; the decrement happens on drop, so the
+/// live count is correct even if the loop panics. `archive`/`delete` wait for
+/// the count to reach 0 before running `forget_session`.
+pub struct SessionTaskGuard {
+    name: String,
+    counter: Arc<AtomicUsize>,
+}
+
+impl SessionTaskGuard {
+    /// The session this guard belongs to.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl Drop for SessionTaskGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
