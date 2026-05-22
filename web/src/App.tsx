@@ -12,10 +12,13 @@ import { Files } from '@/routes/files'
 import { Scheduler } from '@/routes/scheduler'
 import { Settings } from '@/routes/settings'
 
-// DEV-only verification pages (M11 /dev/tiles, …). Lazy so neither the route
-// component nor its mock data lands in the production bundle.
+// DEV-only verification pages (M11 /dev/tiles, M13 /dev/term/:name, …). Lazy so
+// neither the route component nor its mock data lands in the production bundle.
 const DevTiles = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-tiles'))
+  : null
+const DevTerm = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-term'))
   : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
@@ -52,6 +55,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevTiles />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevTerm && (
+                <Route
+                  path="/dev/term/:name"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevTerm />
                     </Suspense>
                   }
                 />
