@@ -1,11 +1,11 @@
-// M24a smoke-e2e harness (TECH_PLAN §7.2). Boots a REAL amux-server binary on an
+// M24a smoke-e2e harness (TECH_PLAN §7.2). Boots a REAL supermux-server binary on an
 // ephemeral port with an isolated temp data dir, plus a Vite dev server that
 // proxies /api + /ws to it SAME-ORIGIN. Each test gets a clean backend, so a
 // kill/restart test can drive the process lifecycle directly.
 //
-// Isolation: AMUX3_DATA_DIR points at a fresh temp dir (server/src/config.rs
-// honours it) so a run never touches the real ~/.amux-v3. AMUX3_AUTH_TOKEN is a
-// fixed per-run token we hand to the page via window._AMUX_AUTH_TOKEN. AMUX3_BIND
+// Isolation: SUPERMUX_DATA_DIR points at a fresh temp dir (server/src/config.rs
+// honours it) so a run never touches the real ~/.supermux. SUPERMUX_AUTH_TOKEN is a
+// fixed per-run token we hand to the page via window._SUPERMUX_AUTH_TOKEN. SUPERMUX_BIND
 // pins the chosen free port.
 
 import { type ChildProcess, spawn } from 'node:child_process'
@@ -16,20 +16,20 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-// web/tests/e2e/smoke → repo root → server/target/{release,debug}/amux-server
+// web/tests/e2e/smoke → repo root → server/target/{release,debug}/supermux-server
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
 const WEB_DIR = resolve(__dirname, '..', '..', '..')
 
 export interface Backend {
   /** Base origin of the Vite dev server the browser navigates to. */
   baseUrl: string
-  /** Dashboard bearer token to inject as window._AMUX_AUTH_TOKEN. */
+  /** Dashboard bearer token to inject as window._SUPERMUX_AUTH_TOKEN. */
   token: string
   /** Direct backend origin (http://127.0.0.1:<port>) — for `request` probes. */
   backendUrl: string
   backendPort: number
   vitePort: number
-  /** Temp data dir (AMUX3_DATA_DIR) for this backend. */
+  /** Temp data dir (SUPERMUX_DATA_DIR) for this backend. */
   dataDir: string
   /** Stop the binary (SIGTERM); resolves once it exits. */
   killBackend(): Promise<void>
@@ -42,13 +42,13 @@ export interface Backend {
 /** Locate the built binary, preferring release. Throws a helpful error if absent. */
 export function binaryPath(): string {
   const candidates = [
-    join(REPO_ROOT, 'server', 'target', 'release', 'amux-server'),
-    join(REPO_ROOT, 'server', 'target', 'debug', 'amux-server'),
+    join(REPO_ROOT, 'server', 'target', 'release', 'supermux-server'),
+    join(REPO_ROOT, 'server', 'target', 'debug', 'supermux-server'),
   ]
   const found = candidates.find((p) => existsSync(p))
   if (!found) {
     throw new Error(
-      `amux-server binary not found. Build it first:\n  (cd server && cargo build)\nlooked in:\n  ${candidates.join('\n  ')}`,
+      `supermux-server binary not found. Build it first:\n  (cd server && cargo build)\nlooked in:\n  ${candidates.join('\n  ')}`,
     )
   }
   return found
@@ -115,9 +115,9 @@ function spawnBackend(opts: {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
-      AMUX3_DATA_DIR: opts.dataDir,
-      AMUX3_BIND: `127.0.0.1:${opts.port}`,
-      AMUX3_AUTH_TOKEN: opts.token,
+      SUPERMUX_DATA_DIR: opts.dataDir,
+      SUPERMUX_BIND: `127.0.0.1:${opts.port}`,
+      SUPERMUX_AUTH_TOKEN: opts.token,
       RUST_LOG: process.env.RUST_LOG ?? 'warn',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -162,7 +162,7 @@ export async function startBackend(): Promise<Backend> {
   const backendPort = await freePort()
   const vitePort = await freePort()
   const token = `e2e-${Math.random().toString(36).slice(2)}-${Date.now()}`
-  const dataDir = mkdtempSync(join(tmpdir(), 'amux-e2e-'))
+  const dataDir = mkdtempSync(join(tmpdir(), 'supermux-e2e-'))
   const backendUrl = `http://127.0.0.1:${backendPort}`
   const baseUrl = `http://127.0.0.1:${vitePort}`
 
@@ -174,14 +174,14 @@ export async function startBackend(): Promise<Backend> {
   })
   await waitForHealth(backendUrl)
 
-  // Vite dev server: AMUX_E2E_BACKEND makes vite.config.ts proxy /api + /ws to
+  // Vite dev server: SUPERMUX_E2E_BACKEND makes vite.config.ts proxy /api + /ws to
   // the backend, so the app talks SAME-ORIGIN (no CORS / cross-origin WS).
   const vite: ChildProcess = spawn(
     'bunx',
     ['vite', '--port', String(vitePort), '--strictPort', '--host', '127.0.0.1'],
     {
       cwd: WEB_DIR,
-      env: { ...process.env, AMUX_E2E_BACKEND: backendUrl },
+      env: { ...process.env, SUPERMUX_E2E_BACKEND: backendUrl },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -220,16 +220,16 @@ export async function startBackend(): Promise<Backend> {
 
 /**
  * Inject the runtime config the server normally writes into index.html as
- * `window._AMUX_*` globals (env.ts). Base + WS stay relative (same-origin Vite,
+ * `window._SUPERMUX_*` globals (env.ts). Base + WS stay relative (same-origin Vite,
  * proxied to the backend); only the token must be supplied. MUST be called via
  * `page.addInitScript` BEFORE the first navigation so it's set before main.tsx.
  */
 export function injectGlobals(token: string): string {
   return `
-    window._AMUX_AUTH_TOKEN = ${JSON.stringify(token)};
+    window._SUPERMUX_AUTH_TOKEN = ${JSON.stringify(token)};
     // Base + WS default to same-origin in env.ts; leave them unset so requests
     // hit the Vite dev server, which proxies to the backend.
-    window._AMUX_VERSION = 'e2e';
+    window._SUPERMUX_VERSION = 'e2e';
   `
 }
 

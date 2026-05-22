@@ -64,8 +64,8 @@ function jitter(ms: number): number {
 }
 
 function sseUrl(): string {
-  const token = window._AMUX_AUTH_TOKEN ?? ''
-  const base = (window._AMUX_BASE_URL ?? import.meta.env.BASE_URL).replace(
+  const token = window._SUPERMUX_AUTH_TOKEN ?? ''
+  const base = (window._SUPERMUX_BASE_URL ?? import.meta.env.BASE_URL).replace(
     /\/$/,
     '',
   )

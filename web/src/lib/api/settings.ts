@@ -6,7 +6,7 @@
 // rather than a crash, since the prefs/audit handlers land in a later backend
 // milestone.
 //
-// The dashboard bearer token is read from `window._AMUX_AUTH_TOKEN` at call time
+// The dashboard bearer token is read from `window._SUPERMUX_AUTH_TOKEN` at call time
 // (env.ts, via the shared `settingsRequest` in ./client) and sent as
 // `Authorization: Bearer …`. It is NEVER hard-coded here.
 

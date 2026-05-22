@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use amux_server::sessions::status::{prepare_capture, StatusDetector};
+use supermux_server::sessions::status::{prepare_capture, StatusDetector};
 
 /// A heartbeat in the neutral band (1.5s–30s): neither the `Active` window nor
 /// the idle timeout fires, so a regex-matching fixture is decided solely by the

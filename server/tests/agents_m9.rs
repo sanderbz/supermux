@@ -11,9 +11,9 @@
 //!
 //! The `wait` long-poll criterion has its own regression in `wait_race.rs`.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -24,7 +24,7 @@ use tower::ServiceExt;
 const TOKEN: &str = "agents-m9-test-token";
 
 async fn test_app() -> (axum::Router, AppState, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-m9-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-m9-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -158,15 +158,15 @@ async fn skills_crud_roundtrip_and_frontmatter() {
 
     // Filesystem sync wrote both copies.
     let home = dirs::home_dir().unwrap();
-    let amux_path = home.join(".amux-v3/skills").join(format!("{name}.md"));
+    let supermux_path = home.join(".supermux/skills").join(format!("{name}.md"));
     let claude_path = home.join(".claude/commands").join(format!("{name}.md"));
-    assert!(amux_path.exists(), "amux skill copy written");
+    assert!(supermux_path.exists(), "supermux skill copy written");
     assert!(claude_path.exists(), "claude command copy written");
 
     // Delete removes DB row + fs copies.
     let (s, _) = send(&app, Method::DELETE, &format!("/api/skills/{name}"), None).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(!amux_path.exists());
+    assert!(!supermux_path.exists());
     assert!(!claude_path.exists());
 
     // Second delete is 404.

@@ -37,7 +37,7 @@ test.describe('mobile: joystick hold-to-arm', () => {
     // viewport (and the joystick overlay). Setting its localStorage dismiss key
     // reflects the normal returning-user state.
     await page.addInitScript(() => {
-      localStorage.setItem('amux-v3-a2hs-dismissed', String(Date.now()))
+      localStorage.setItem('supermux-a2hs-dismissed', String(Date.now()))
     })
 
     const created = await api(backend).createSession({

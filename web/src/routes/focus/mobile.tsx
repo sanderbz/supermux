@@ -16,7 +16,7 @@
 // Single source of truth: the terminal handle from <LiveTerminal onReady> drives
 // EVERY key path (dock send, specials, joystick) — the same `useLiveTerm` the
 // desktop tile/focus use. No duplicate WS, no second xterm. The auth token is
-// never referenced here; it lives in `window._AMUX_AUTH_TOKEN` (env.ts).
+// never referenced here; it lives in `window._SUPERMUX_AUTH_TOKEN` (env.ts).
 
 import * as React from 'react'
 import { useNavigate, useParams } from 'react-router-dom'

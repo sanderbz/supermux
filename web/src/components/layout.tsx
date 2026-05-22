@@ -82,7 +82,7 @@ function SideNav() {
 function MobileTopBar() {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-4 pt-safe md:hidden">
-      <span className="text-base font-semibold tracking-tight">amux</span>
+      <span className="text-base font-semibold tracking-tight">supermux</span>
       <ThemeToggle />
     </header>
   )

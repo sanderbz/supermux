@@ -3,7 +3,7 @@
 //! Skills are markdown files persisted in the `skills` table and, on write, ALSO
 //! synced to two filesystem locations so Claude Code picks them up as native
 //! `/<name>` slash commands (feature-extract §5.2):
-//!   * `~/.amux-v3/skills/<name>.md`  — amux's own copy
+//!   * `~/.supermux/skills/<name>.md`  — supermux's own copy
 //!   * `~/.claude/commands/<name>.md` — what Claude reads
 //!
 //! `GET /api/skills` parses each skill's YAML frontmatter for `description` and
@@ -141,9 +141,9 @@ fn parse_frontmatter(content: &str) -> Frontmatter {
 
 // ── filesystem sync ───────────────────────────────────────────────────────────
 
-/// `~/.amux-v3/skills/<name>.md`.
-fn amux_skill_path(name: &str) -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".amux-v3").join("skills").join(format!("{name}.md")))
+/// `~/.supermux/skills/<name>.md`.
+fn supermux_skill_path(name: &str) -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".supermux").join("skills").join(format!("{name}.md")))
 }
 
 /// `~/.claude/commands/<name>.md` (what Claude reads as a `/<name>` command).
@@ -154,7 +154,7 @@ fn claude_command_path(name: &str) -> Option<PathBuf> {
 /// Write the skill markdown to both filesystem locations (best-effort, but a
 /// failure is surfaced so the user knows Claude may not see the command).
 async fn sync_skill_files(name: &str, content: &str) -> Result<(), AppError> {
-    for path in [amux_skill_path(name), claude_command_path(name)].into_iter().flatten() {
+    for path in [supermux_skill_path(name), claude_command_path(name)].into_iter().flatten() {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -169,7 +169,7 @@ async fn sync_skill_files(name: &str, content: &str) -> Result<(), AppError> {
 
 /// Remove a skill's filesystem copies (best-effort; absence is not an error).
 async fn remove_skill_files(name: &str) {
-    for path in [amux_skill_path(name), claude_command_path(name)].into_iter().flatten() {
+    for path in [supermux_skill_path(name), claude_command_path(name)].into_iter().flatten() {
         let _ = tokio::fs::remove_file(&path).await;
     }
 }

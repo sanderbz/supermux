@@ -5,7 +5,7 @@
 // render. The connection state is mirrored top-right for the visual critic.
 //
 // Usage: boot a session named `demo` (or pass ?name=foo), then open
-// /dev/term/demo against a running amux-server.
+// /dev/term/demo against a running supermux-server.
 
 import * as React from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
@@ -39,7 +39,7 @@ export default function DevTerm() {
           Live terminal · <span className="font-mono">{name}</span>
         </h1>
         <span className="ml-auto text-xs text-muted-foreground">
-          Needs a running amux-server + a session named &ldquo;{name}&rdquo;
+          Needs a running supermux-server + a session named &ldquo;{name}&rdquo;
         </span>
       </header>
 

@@ -19,7 +19,7 @@
 
 import { SOUND } from '../brand/tokens'
 
-const STORAGE_KEY = 'amux.sounds.enabled'
+const STORAGE_KEY = 'supermux.sounds.enabled'
 
 type AudioCtor = typeof AudioContext
 function audioCtor(): AudioCtor | undefined {

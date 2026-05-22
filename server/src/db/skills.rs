@@ -1,7 +1,7 @@
 //! Skills row access (TECH_PLAN §3.3 `skills`, feature-extract §5.4; M9).
 //!
 //! Skills are markdown files persisted in the `skills` table and ALSO synced to
-//! `~/.amux-v3/skills/<name>.md` and `~/.claude/commands/<name>.md` so Claude
+//! `~/.supermux/skills/<name>.md` and `~/.claude/commands/<name>.md` so Claude
 //! sees them as native `/<name>` slash commands. This module owns only the DB
 //! half; the filesystem sync lives in [`crate::agents::skills`].
 //!

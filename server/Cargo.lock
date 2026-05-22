@@ -18,56 +18,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "amux-server"
-version = "3.0.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-server",
- "base64",
- "bytes",
- "chrono",
- "constant_time_eq",
- "cron",
- "dashmap",
- "dirs 5.0.1",
- "futures-util",
- "http",
- "http-body-util",
- "insta",
- "mime_guess",
- "nix",
- "notify",
- "once_cell",
- "pretty_assertions",
- "proptest",
- "rand 0.8.6",
- "regex",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_json",
- "shell-escape",
- "shellexpand",
- "sqlx",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "tokio-tungstenite 0.24.0",
- "tokio-util",
- "toml",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "tungstenite 0.24.0",
- "url",
- "uuid",
- "which",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2508,6 +2458,56 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "supermux-server"
+version = "3.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "base64",
+ "bytes",
+ "chrono",
+ "constant_time_eq",
+ "cron",
+ "dashmap",
+ "dirs 5.0.1",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "insta",
+ "mime_guess",
+ "nix",
+ "notify",
+ "once_cell",
+ "pretty_assertions",
+ "proptest",
+ "rand 0.8.6",
+ "regex",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "shell-escape",
+ "shellexpand",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-tungstenite 0.24.0",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "tungstenite 0.24.0",
+ "url",
+ "uuid",
+ "which",
+]
 
 [[package]]
 name = "syn"

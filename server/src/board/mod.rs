@@ -585,7 +585,7 @@ mod ical {
         let mut lines = vec![
             "BEGIN:VCALENDAR".to_string(),
             "VERSION:2.0".to_string(),
-            "PRODID:-//amux//v3//EN".to_string(),
+            "PRODID:-//supermux//v3//EN".to_string(),
             "CALSCALE:GREGORIAN".to_string(),
         ];
         for issue in issues {
@@ -596,7 +596,7 @@ mod ical {
                 continue;
             };
             lines.push("BEGIN:VEVENT".to_string());
-            lines.push(format!("UID:{}@amux", issue.id));
+            lines.push(format!("UID:{}@supermux", issue.id));
             lines.push(format!("SUMMARY:{}", escape(&issue.title)));
             if !issue.desc.is_empty() {
                 lines.push(format!("DESCRIPTION:{}", escape(&issue.desc)));

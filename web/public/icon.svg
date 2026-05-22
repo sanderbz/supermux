@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="amux">
-  <title>amux</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="supermux">
+  <title>supermux</title>
   <!--
-    amux app icon — single source of truth (M28).
+    supermux app icon — single source of truth (M28).
     A terminal block with the amber prompt chevron. Monochrome amber on
     near-black; the chevron + cursor carry the mark and stay legible at 32px.
     Full-bleed dark background so it renders correctly as a "maskable" PWA tile;

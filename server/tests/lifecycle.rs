@@ -1,7 +1,7 @@
 //! tmux-backed session lifecycle integration tests (TECH_PLAN §3.4, M3
 //! acceptance). These drive the full HTTP stack via `axum::Router::oneshot` and
 //! spawn REAL tmux sessions (provider `shell` running the user shell), so they
-//! require `tmux` on PATH. Each test uses a unique `amux3-`-prefixed session and
+//! require `tmux` on PATH. Each test uses a unique `supermux-`-prefixed session and
 //! tears it down (delete → kill-session) in every exit path.
 //!
 //! Coverage (M3 §10 acceptance):
@@ -10,9 +10,9 @@
 //!   * `POST /stop` cleanly exits (session gone afterwards).
 //!   * 80-char and 1200-char sends both land (the latter via `load-buffer`).
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -29,7 +29,7 @@ fn tmux_available() -> bool {
 }
 
 async fn test_app() -> (axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-life-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-life-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -93,7 +93,7 @@ async fn peek_until(app: &axum::Router, name: &str, needle: &str, tries: u32) ->
 async fn teardown(app: &axum::Router, name: &str, dir: std::path::PathBuf) {
     let _ = send(app, Method::DELETE, &format!("/api/sessions/{name}"), None).await;
     let _ = std::process::Command::new("tmux")
-        .args(["kill-session", "-t", &format!("amux3-{name}")])
+        .args(["kill-session", "-t", &format!("supermux-{name}")])
         .output();
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -121,7 +121,7 @@ async fn start_send_peek_stop_shell_session() {
     let (status, body) = send(&app, Method::POST, &format!("/api/sessions/{name}/start"), None).await;
     assert_eq!(status, StatusCode::OK, "start body: {body}");
     assert_eq!(body["ok"], json!(true));
-    assert_eq!(body["data"]["target"], json!(format!("amux3-{name}")));
+    assert_eq!(body["data"]["target"], json!(format!("supermux-{name}")));
 
     // Send a short command; "hi" must appear in the scrollback.
     let (status, _) = send(
@@ -213,7 +213,7 @@ async fn large_paste_via_load_buffer_round_trips() {
     let long_marker = "ENDOFLONGPASTE";
     let filler = "a".repeat(1200);
     let payload = format!("{filler}{long_marker}");
-    let out_file = std::env::temp_dir().join(format!("amux-paste-{name}.txt"));
+    let out_file = std::env::temp_dir().join(format!("supermux-paste-{name}.txt"));
     let _ = std::fs::remove_file(&out_file);
     let long_cmd = format!("printf '%s' '{payload}' > {}", out_file.display());
     assert!(long_cmd.len() > 400, "expected >400 chars to exercise load-buffer");

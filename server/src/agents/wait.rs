@@ -31,7 +31,7 @@ const MAX_TIMEOUT_SECS: u64 = 300;
 #[derive(Debug, Deserialize)]
 pub struct WaitQuery {
     /// Target status: `active` | `waiting` | `idle` | `stopped`, or `done` (an
-    /// alias for `idle` — matches the `amux wait … --state done` CLI form).
+    /// alias for `idle` — matches the `supermux wait … --state done` CLI form).
     pub state: String,
     /// Long-poll seconds (default + cap 300).
     pub timeout: Option<u64>,

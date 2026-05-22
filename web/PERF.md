@@ -1,6 +1,6 @@
 # Performance budgets (M29)
 
-amux v3 has a measured, enforced performance budget. This document defines the
+supermux has a measured, enforced performance budget. This document defines the
 budgets, how they are enforced, and how to re-run the suite.
 
 ## Budgets (TECH_PLAN §10 — M29)

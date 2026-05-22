@@ -175,7 +175,7 @@ export function Overview() {
           <div className="flex h-full items-center justify-center">
             <EmptyStatePlaceholder
               icon={<TerminalSquare />}
-              message="Can’t reach amux-server. Retrying…"
+              message="Can’t reach supermux-server. Retrying…"
               cta={{ label: 'Retry now', onClick: () => refetch() }}
             />
           </div>

@@ -4,7 +4,7 @@
 // start) — it never re-implements the request layer. The barrel re-exports it
 // so consumers `import { onboardingApi } from '@/lib/api'` like any other slice.
 //
-// `bootDemoAgent` is the one-tap "see amux work in 30 seconds" affordance: it
+// `bootDemoAgent` is the one-tap "see supermux work in 30 seconds" affordance: it
 // creates a session in the current working directory and boots it with the
 // `/cso` skill prefilled (a fast, self-contained security review that produces
 // visible output within seconds — the unboxing payoff). The session name is
@@ -30,7 +30,7 @@ export const onboardingApi = {
       name,
       dir,
       provider: 'claude',
-      desc: 'amux demo — security review',
+      desc: 'supermux demo — security review',
       command: '/cso',
     })
     const resolved = created?.name ?? name

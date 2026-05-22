@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http, scheduler};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http, scheduler};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -18,7 +18,7 @@ use tower::ServiceExt;
 const TOKEN: &str = "scheduler-test-token";
 
 fn temp_config() -> (Config, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-sched-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-sched-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),

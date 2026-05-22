@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use amux_server::files::path_safe::resolve_safe;
+use supermux_server::files::path_safe::resolve_safe;
 use proptest::prelude::*;
 
 /// Random path components: traversal tokens, separators, unicode, and dotfiles.
@@ -42,7 +42,7 @@ proptest! {
     #[test]
     fn resolve_safe_never_escapes_jail(parts in proptest::collection::vec(component(), 0..14)) {
         run(async move {
-            let jail_raw = std::env::temp_dir().join(format!("amux-jail-{}", uuid::Uuid::new_v4()));
+            let jail_raw = std::env::temp_dir().join(format!("supermux-jail-{}", uuid::Uuid::new_v4()));
             tokio::fs::create_dir_all(&jail_raw).await.unwrap();
             let jail = tokio::fs::canonicalize(&jail_raw).await.unwrap();
 
@@ -71,7 +71,7 @@ proptest! {
 #[test]
 fn explicit_traversals_are_rejected() {
     run(async {
-        let jail_raw = std::env::temp_dir().join(format!("amux-jail-x-{}", uuid::Uuid::new_v4()));
+        let jail_raw = std::env::temp_dir().join(format!("supermux-jail-x-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&jail_raw).await.unwrap();
         let jail = tokio::fs::canonicalize(&jail_raw).await.unwrap();
 
@@ -92,7 +92,7 @@ fn explicit_traversals_are_rejected() {
 #[test]
 fn in_jail_target_resolves() {
     run(async {
-        let jail_raw = std::env::temp_dir().join(format!("amux-jail-ok-{}", uuid::Uuid::new_v4()));
+        let jail_raw = std::env::temp_dir().join(format!("supermux-jail-ok-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&jail_raw).await.unwrap();
         let jail = tokio::fs::canonicalize(&jail_raw).await.unwrap();
 

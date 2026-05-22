@@ -1,5 +1,5 @@
 [package]
-name = "amux-server"
+name = "supermux-server"
 version = "3.0.0"
 edition = "2021"
 rust-version = "1.83"

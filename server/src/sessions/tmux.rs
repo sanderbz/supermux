@@ -1,9 +1,9 @@
 //! Thin `tokio::process` wrappers around the `tmux` CLI (TECH_PLAN §3.2.6, §3.5).
 //!
-//! **Naming (§3.5).** Every amux-v3 session lives in a tmux session named
-//! `amux3-<name>` (the `amux3-` prefix keeps v2's `amux-<name>` sessions from
+//! **Naming (§3.5).** Every supermux session lives in a tmux session named
+//! `supermux-<name>` (the `supermux-` prefix keeps v2's `amux-<name>` sessions from
 //! colliding during the side-by-side dogfooding window — v3 also refuses to
-//! adopt any session that is not `amux3-` prefixed).
+//! adopt any session that is not `supermux-` prefixed).
 //!
 //! **Large pastes (the cmux lesson).** [`Tmux::send_text`] sends literal text via
 //! `send-keys -l` for short input but switches to `load-buffer`/`paste-buffer`
@@ -39,25 +39,25 @@ fn tmux_bin() -> Result<&'static Path> {
 }
 
 /// A handle to one session's tmux conventions. Cheap to construct (borrows the
-/// bare session name; the `amux3-` prefix is applied internally).
+/// bare session name; the `supermux-` prefix is applied internally).
 pub struct Tmux<'a> {
     name: &'a str,
 }
 
 impl<'a> Tmux<'a> {
-    /// Wrap the bare session `name` (NOT the `amux3-` prefixed form).
+    /// Wrap the bare session `name` (NOT the `supermux-` prefixed form).
     pub fn new(name: &'a str) -> Self {
         Self { name }
     }
 
-    /// The tmux session/target name: `amux3-<name>`.
+    /// The tmux session/target name: `supermux-<name>`.
     pub fn target(&self) -> String {
-        format!("amux3-{}", self.name)
+        format!("supermux-{}", self.name)
     }
 
-    /// `/tmp/amux3-pty-<name>.fifo` — the live-stream FIFO path (filled by M4).
+    /// `/tmp/supermux-pty-<name>.fifo` — the live-stream FIFO path (filled by M4).
     pub fn fifo_path(&self) -> PathBuf {
-        PathBuf::from(format!("/tmp/amux3-pty-{}.fifo", self.name))
+        PathBuf::from(format!("/tmp/supermux-pty-{}.fifo", self.name))
     }
 
     // ── command helpers ──────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ impl<'a> Tmux<'a> {
     /// pane stays capturable for status/archive) and disables auto-rename.
     ///
     /// `env` MUST NOT contain the dashboard bearer token (§6.5) — only the
-    /// narrow `AMUX_HOOK_TOKEN`/`AMUX_SESSION`/`AMUX_URL`.
+    /// narrow `SUPERMUX_HOOK_TOKEN`/`SUPERMUX_SESSION`/`SUPERMUX_URL`.
     pub async fn new_session(
         &self,
         dir: &Path,
@@ -128,7 +128,7 @@ impl<'a> Tmux<'a> {
         let target = self.target();
         let dir_str = dir.to_string_lossy().to_string();
 
-        // Build argv: new-session -d -s amux3-<name> -n <name> -c <dir> [-e K=V…] <shell>
+        // Build argv: new-session -d -s supermux-<name> -n <name> -c <dir> [-e K=V…] <shell>
         let mut args: Vec<String> = vec![
             "new-session".into(),
             "-d".into(),
@@ -162,7 +162,7 @@ impl<'a> Tmux<'a> {
         Ok(())
     }
 
-    /// `tmux kill-session -t amux3-<name>`. Ok if the session is already gone.
+    /// `tmux kill-session -t supermux-<name>`. Ok if the session is already gone.
     pub async fn kill_session(&self) -> Result<()> {
         if !self.exists().await.unwrap_or(false) {
             return Ok(());
@@ -171,7 +171,7 @@ impl<'a> Tmux<'a> {
         Ok(())
     }
 
-    /// `tmux has-session -t amux3-<name>` → true on exit 0.
+    /// `tmux has-session -t supermux-<name>` → true on exit 0.
     pub async fn exists(&self) -> Result<bool> {
         let ok = Command::new(tmux_bin()?)
             .args(["has-session", "-t", &self.target()])
@@ -271,7 +271,7 @@ impl<'a> Tmux<'a> {
     /// as a single paste (`paste-buffer -p`).
     pub async fn paste_via_buffer(&self, text: &str, bracketed: bool) -> Result<()> {
         let target = self.target();
-        let buf = format!("amux3-paste-{}", self.name);
+        let buf = format!("supermux-paste-{}", self.name);
         // load-buffer reads the payload from stdin (`-`): no arg-length limit.
         self.run_stdin(
             &["load-buffer", "-b", &buf, "-t", &target, "-"],

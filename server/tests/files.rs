@@ -6,9 +6,9 @@
 //! the path-safety blocklist incl. macOS case-insensitivity and a TOCTOU
 //! symlink swap.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -26,8 +26,8 @@ struct TestEnv {
 
 async fn setup() -> TestEnv {
     let uniq = uuid::Uuid::new_v4();
-    let data_dir = std::env::temp_dir().join(format!("amux-files-data-{uniq}"));
-    let work_dir = std::env::temp_dir().join(format!("amux-files-work-{uniq}"));
+    let data_dir = std::env::temp_dir().join(format!("supermux-files-data-{uniq}"));
+    let work_dir = std::env::temp_dir().join(format!("supermux-files-work-{uniq}"));
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::create_dir_all(&work_dir).unwrap();
     let config = Config {

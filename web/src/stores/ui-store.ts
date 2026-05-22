@@ -42,6 +42,6 @@ export const useUI = create<UIStore>()(
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),
     }),
-    { name: 'amux-v3-ui' },
+    { name: 'supermux-ui' },
   ),
 )

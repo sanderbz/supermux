@@ -8,14 +8,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, scheduler};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, scheduler};
 
 use chrono::Utc;
 
 async fn new_state() -> (AppState, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-missed-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-missed-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),

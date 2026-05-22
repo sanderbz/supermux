@@ -7,16 +7,16 @@ use sqlx::SqlitePool;
 
 /// Derive the id prefix from a session name (feature-extract §2.3):
 ///
-/// * no session → `AMUX`
+/// * no session → `SUPERMUX`
 /// * single word (no separators) → first 5 uppercase alphanumeric chars
 /// * multi-word → first letter of each word, uppercased, capped at 5
 ///
 /// Separators are any non-alphanumeric run (`-`, `_`, `.`, space, …). A name
-/// with no usable alphanumerics also falls back to `AMUX`.
+/// with no usable alphanumerics also falls back to `SUPERMUX`.
 pub fn prefix_from_session(session: Option<&str>) -> String {
     let name = match session {
         Some(s) if !s.trim().is_empty() => s.trim(),
-        _ => return "AMUX".to_string(),
+        _ => return "SUPERMUX".to_string(),
     };
 
     let words: Vec<&str> = name
@@ -41,7 +41,7 @@ pub fn prefix_from_session(session: Option<&str>) -> String {
     };
 
     if prefix.is_empty() {
-        "AMUX".to_string()
+        "SUPERMUX".to_string()
     } else {
         prefix
     }
@@ -76,9 +76,9 @@ mod tests {
     use super::prefix_from_session;
 
     #[test]
-    fn no_session_is_amux() {
-        assert_eq!(prefix_from_session(None), "AMUX");
-        assert_eq!(prefix_from_session(Some("   ")), "AMUX");
+    fn no_session_is_supermux() {
+        assert_eq!(prefix_from_session(None), "SUPERMUX");
+        assert_eq!(prefix_from_session(Some("   ")), "SUPERMUX");
     }
 
     #[test]

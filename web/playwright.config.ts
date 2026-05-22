@@ -1,13 +1,13 @@
 import { defineConfig } from '@playwright/test'
 
 // M24a — smoke e2e (TECH_PLAN §7.2, §10 "M24a"). The FOUR most-critical
-// early-warning tests, run against a REAL amux-server binary booted per-test on
+// early-warning tests, run against a REAL supermux-server binary booted per-test on
 // an ephemeral port with an isolated temp data dir (see tests/e2e/smoke/harness.ts).
 //
 // No global webServer: each spec boots its own backend + Vite dev server through
 // the harness so a backend-kill/restart test (ws-reconnect) can drive the
 // process lifecycle directly. Vite proxies /api + /ws to the backend SAME-ORIGIN
-// (vite.config.ts reads AMUX_E2E_BACKEND), so the app runs exactly as it does
+// (vite.config.ts reads SUPERMUX_E2E_BACKEND), so the app runs exactly as it does
 // behind the embedded static server — no CORS, no cross-origin WebSocket.
 export default defineConfig({
   testDir: './tests/e2e/smoke',

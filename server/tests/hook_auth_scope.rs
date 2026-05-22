@@ -1,15 +1,15 @@
 //! Hook-token auth scoping (TECH_PLAN §3.6, §6.5, §7.1; M5b, Eng P1 #3 / Codex
 //! #4). The `/api/_internal/hook` endpoint authenticates with the PER-SESSION
-//! `X-Amux-Hook-Token`, never the dashboard bearer. Asserts:
+//! `X-Supermux-Hook-Token`, never the dashboard bearer. Asserts:
 //!   * session A's token cannot mark session B (cross-session → 401),
 //!   * the correct per-session token is accepted and the event is recorded,
 //!   * the dashboard bearer grants no access to this endpoint,
 //!   * an unknown session / missing token → 401.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::sessions::status::HookEvent;
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::sessions::status::HookEvent;
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -20,7 +20,7 @@ const TOK_A: &str = "hook-token-of-session-a";
 const TOK_B: &str = "hook-token-of-session-b";
 
 async fn setup() -> (AppState, axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-hookauth-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-hookauth-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -57,7 +57,7 @@ async fn post_hook(
         .uri("/api/_internal/hook")
         .header(header::CONTENT_TYPE, "application/json");
     if let Some(t) = hook_token {
-        b = b.header("X-Amux-Hook-Token", t);
+        b = b.header("X-Supermux-Hook-Token", t);
     }
     if let Some(t) = bearer {
         b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));

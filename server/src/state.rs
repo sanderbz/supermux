@@ -59,7 +59,7 @@ pub struct AppState {
     pub status_watch: Arc<DashMap<String, watch::Sender<StatusUpdate>>>,
     /// Per-session hook-token cache (§6.5). Seeded on create + rotated on start;
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
-    /// per-session `AMUX_HOOK_TOKEN`. M5b's `/api/_internal/hook` reads it.
+    /// per-session `SUPERMUX_HOOK_TOKEN`. M5b's `/api/_internal/hook` reads it.
     pub hook_tokens: Arc<DashMap<String, String>>,
     /// Per-session most-recent Claude `SettingsHook` event (§3.6, M5b). Written by
     /// `/api/_internal/hook`; read by the status detector's fusion rule, where a

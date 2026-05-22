@@ -5,15 +5,15 @@
 
 use std::time::Duration;
 
-use amux_server::agents::wait::{wait, WaitQuery};
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::db;
-use amux_server::state::AppState;
+use supermux_server::agents::wait::{wait, WaitQuery};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::db;
+use supermux_server::state::AppState;
 
 use axum::extract::{Path, Query, State};
 
 async fn test_state() -> (AppState, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-waitrace-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-waitrace-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),

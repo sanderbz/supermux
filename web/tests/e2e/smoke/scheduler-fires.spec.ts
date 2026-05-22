@@ -20,7 +20,7 @@ test.describe('scheduler fires a one-shot job', () => {
 
   test.beforeEach(async () => {
     backend = await startBackend()
-    workDir = mkdtempSync(join(tmpdir(), 'amux-e2e-sched-'))
+    workDir = mkdtempSync(join(tmpdir(), 'supermux-e2e-sched-'))
   })
   test.afterEach(async () => {
     await backend?.dispose()

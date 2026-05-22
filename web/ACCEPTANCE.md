@@ -1,4 +1,4 @@
-# amux v3 — frontend acceptance notes
+# supermux — frontend acceptance notes
 
 Per-milestone notes on platform limitations, deferred work, and how each
 Termius acceptance criterion is satisfied. Critics reference this file.
@@ -143,7 +143,7 @@ paths; these 20 are the *feel/timing* criteria that need a human + a device.
 ### Automated coverage map
 
 The `web/tests/e2e/smoke/` Playwright suite (run against a real booted
-`amux-server` per spec) covers the critical user journeys + the
+`supermux-server` per spec) covers the critical user journeys + the
 machine-checkable slices of the criteria above:
 
 | Spec | Journey | Criteria touched |

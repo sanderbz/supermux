@@ -7,7 +7,7 @@
 // peek-popover (hover a non-current row ≥300ms), the 44px FocusHeader, and the
 // §4.4.3 DesktopDock — all at the 375/390/1024/1440 breakpoints — WITHOUT a live
 // backend. The LiveTerminal shows its "Connecting…" pill (expected without a
-// server); against a running amux-server with a session named in the route it
+// server); against a running supermux-server with a session named in the route it
 // streams live, and the keyboard-capture echo can be filmed.
 //
 // Usage: /dev/focus/gel-astro

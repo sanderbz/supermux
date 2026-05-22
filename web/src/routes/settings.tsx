@@ -168,12 +168,12 @@ function RegenerateTokenButton({ onRotated }: { onRotated: (token: string) => vo
     regen.mutate(undefined, {
       onSuccess: (res) => {
         // Keep the live token on `window` (NOT localStorage) per §4.10.
-        window._AMUX_AUTH_TOKEN = res.token
+        window._SUPERMUX_AUTH_TOKEN = res.token
         onRotated(res.token)
         // M23b contract: drop the cached HTML shell + tell the SW the token
         // rotated, so the next load doesn't serve a doc holding the old token.
         try {
-          void caches?.delete?.('amux-html')
+          void caches?.delete?.('supermux-html')
           navigator.serviceWorker?.controller?.postMessage({ type: 'token-rotated' })
         } catch {
           /* no SW / caches in this context — fine */
@@ -201,7 +201,7 @@ function RegenerateTokenButton({ onRotated }: { onRotated: (token: string) => vo
           <DialogTitle>Regenerate access token?</DialogTitle>
           <DialogDescription>
             The current token stops working everywhere. Other devices and saved
-            links will need to reopen amux from a fresh link.
+            links will need to reopen supermux from a fresh link.
           </DialogDescription>
         </DialogHeader>
         {regen.isError ? (
@@ -275,7 +275,7 @@ function ConnectionSection() {
 }
 
 /** Settings → Onboarding (M27). "Run the 30-second demo" clears the
- *  first-launch flag, removes the one demo session amux booted (if any), then
+ *  first-launch flag, removes the one demo session supermux booted (if any), then
  *  navigates to `/` so the unboxing replays from a clean slate. */
 function OnboardingSection() {
   const navigate = useNavigate()
@@ -284,7 +284,7 @@ function OnboardingSection() {
   async function replay() {
     if (replaying) return
     setReplaying(true)
-    // Remove only the session amux booted as the demo — never a real one.
+    // Remove only the session supermux booted as the demo — never a real one.
     const demo = getDemoSession()
     if (demo) {
       await onboardingApi.deleteSession(demo)
