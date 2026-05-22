@@ -24,6 +24,7 @@ use crate::prefs;
 use crate::public;
 use crate::scheduler;
 use crate::sessions;
+use crate::sse;
 use crate::state::AppState;
 use crate::ws;
 
@@ -60,6 +61,7 @@ fn protected_router(state: AppState) -> Router {
         // alongside M2's already-stateful sessions router.
         .merge(files::router_for().with_state(state.clone()))
         .merge(scheduler::router_for(state.clone())) // M8
+        .merge(sse::router_for(state.clone())) // M27: GET /api/events SSE stream
         .merge(agents::router_for(state.clone())) // M5b (wait); M9 extends
         .merge(prefs::router_for(state.clone())) // M9 (snippets + kbd-groups)
         .merge(audit::router_for(state.clone())) // M9 (audit log read)

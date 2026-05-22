@@ -15,6 +15,7 @@ resolver = "3"
 # ── async runtime ──
 tokio = { version = "1.43", features = ["full"] }       # rt, macros, fs, process, sync, time
 tokio-util = { version = "0.7", features = ["io"] }
+tokio-stream = { version = "0.1", features = ["sync"] }  # BroadcastStream adapter for the /api/events SSE handler
 
 # ── http ──
 axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
