@@ -16,29 +16,44 @@
 // the 44pt HIG hit-target floor on the action. Matches <EmptyStatePlaceholder>.
 
 import * as React from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
-import { PlayCircle, PowerOff } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { Archive, PlayCircle, PowerOff } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { EMPTY } from '@/brand/copy'
-import { sessionsApi } from '@/lib/api'
+import { sessionsApi, type ApiSession } from '@/lib/api'
+import { SESSIONS_KEY } from '@/hooks/use-sessions'
 
 export interface StoppedSessionProps {
-  /** Session name — the target of the start request. */
+  /** Session name — the target of the start / archive request. */
   name: string
   className?: string
 }
 
-/** Calm "this session is stopped" surface with a start action. Rendered in the
- *  focus pane in place of the live terminal while `session.status === 'stopped'`
- *  (§4.5 terminal state). Once the start succeeds, the SSE status delta flips the
- *  session to running and the focus route swaps back to <LiveTerminal>. */
+/** Calm "this session is stopped" surface with Resume + Archive actions
+ *  (polish-pass #1). Rendered in the focus pane in place of the live terminal
+ *  while `session.status === 'stopped'` (§4.5 terminal state).
+ *
+ *  Resume calls the existing `/start` endpoint; the SSE `status` delta flips
+ *  the session to running, the focus route swaps back to <LiveTerminal>, no
+ *  manual refresh. Archive calls `/archive` — the R1 fix makes that correctly
+ *  terminate per-session loops + forget the session — then we remove the row
+ *  from the cached overview and navigate back so the user lands somewhere sane
+ *  (the row is gone from the next refetch anyway). A small inline confirm
+ *  guards the destructive action — matches how the desktop dock's stop uses a
+ *  CONFIRM-style guard. */
 export function StoppedSession({ name, className }: StoppedSessionProps) {
   const reduce = useReducedMotion()
+  const navigate = useNavigate()
+  const qc = useQueryClient()
   const [busy, setBusy] = React.useState(false)
   const [failed, setFailed] = React.useState(false)
+  const [archiveConfirm, setArchiveConfirm] = React.useState(false)
+  const [archiving, setArchiving] = React.useState(false)
 
   const onStart = React.useCallback(() => {
     if (busy || !name) return
@@ -51,6 +66,28 @@ export function StoppedSession({ name, className }: StoppedSessionProps) {
       .catch(() => setFailed(true))
       .finally(() => setBusy(false))
   }, [busy, name])
+
+  const onArchive = React.useCallback(() => {
+    if (archiving || !name) return
+    setArchiving(true)
+    sessionsApi
+      .archive(name)
+      .then(() => {
+        // Optimistically drop the archived row from the cached list so the
+        // overview reflects the change immediately (the next SSE/refetch
+        // backfills authoritatively — archived rows are filtered out
+        // server-side via `WHERE archived = 0`).
+        qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
+          (prev ?? []).filter((s) => s.name !== name),
+        )
+        navigate('/')
+      })
+      .catch(() => {
+        setArchiving(false)
+        setArchiveConfirm(false)
+        setFailed(true)
+      })
+  }, [archiving, name, qc, navigate])
 
   return (
     <div
@@ -74,18 +111,75 @@ export function StoppedSession({ name, className }: StoppedSessionProps) {
         </h2>
         <p className="max-w-xs text-sm text-muted-foreground">
           {failed
-            ? 'Couldn’t start the session. Check the server logs, then try again.'
+            ? 'Couldn’t complete that action. Check the server logs, then try again.'
             : EMPTY.stoppedSession.body}
         </p>
-        <Button
-          onClick={onStart}
-          disabled={busy}
-          // 44pt HIG hit-target floor — not the compact button size.
-          className="h-11"
-        >
-          <PlayCircle aria-hidden />
-          {busy ? 'Starting…' : EMPTY.stoppedSession.cta}
-        </Button>
+
+        {/* Action row — Resume primary, Archive secondary. Both ≥44pt; spring
+            button-press inherited from <Button>'s shadcn baseline. */}
+        <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+          <Button
+            onClick={onStart}
+            disabled={busy || archiving}
+            // 44pt HIG hit-target floor — not the compact button size.
+            className="h-11"
+          >
+            <PlayCircle aria-hidden />
+            {busy ? 'Starting…' : EMPTY.stoppedSession.cta}
+          </Button>
+
+          {/* Inline confirm — sentence-case, neutral copy (Archive is reversible
+              data loss, not destructive deletion; the confirm guards an
+              accidental tap rather than an irrecoverable one). */}
+          <AnimatePresence mode="wait" initial={false}>
+            {archiveConfirm ? (
+              <motion.div
+                key="confirm"
+                initial={reduce ? false : { opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={reduce ? undefined : { opacity: 0, scale: 0.96 }}
+                transition={springs.cardExpand}
+                className="flex items-center gap-1.5"
+              >
+                <Button
+                  variant="secondary"
+                  onClick={() => setArchiveConfirm(false)}
+                  disabled={archiving}
+                  className="h-11"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={onArchive}
+                  disabled={archiving}
+                  className="h-11"
+                >
+                  <Archive aria-hidden />
+                  {archiving ? 'Archiving…' : 'Archive session'}
+                </Button>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="cta"
+                initial={reduce ? false : { opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={reduce ? undefined : { opacity: 0, scale: 0.96 }}
+                transition={springs.cardExpand}
+              >
+                <Button
+                  variant="ghost"
+                  onClick={() => setArchiveConfirm(true)}
+                  disabled={busy || archiving}
+                  className="h-11"
+                >
+                  <Archive aria-hidden />
+                  Archive
+                </Button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </motion.div>
     </div>
   )

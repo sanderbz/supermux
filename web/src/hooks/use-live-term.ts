@@ -37,6 +37,12 @@ export type LiveTermState =
 export interface UseLiveTermResult {
   containerRef: React.RefObject<HTMLDivElement | null>
   state: LiveTermState
+  /** True once the FIRST real pty data frame has been written to xterm (auth_ok
+   *  alone doesn't count — a `stopped` session can connect + auth + immediately
+   *  close with zero bytes). The overview hover-zoom uses this to keep the
+   *  static ANSI preview visible UNTIL the live terminal has actual content,
+   *  then crossfade — no blank-black-void flicker (peek crossfade polish). */
+  hasFirstFrame: boolean
   /** Send literal text to the pty (e.g. a pasted snippet, a slash command). */
   send(text: string): void
   /** Send a named key (Up/Down/Left/Right/PageUp/Enter/…) — see §4.4 gestures. */
@@ -48,6 +54,9 @@ export interface UseLiveTermResult {
   copyAll(): void
   /** Manual retry for the permanent (`offline`) state — "Tap to retry" (§4.12). */
   retry(): void
+  /** Programmatically focus xterm's input. The focus route calls this on mount
+   *  so keystrokes go to the terminal IMMEDIATELY — no second click required. */
+  focus(): void
 }
 
 // ── Tunables (TECH_PLAN §4.5) ─────────────────────────────────────────────────
@@ -166,6 +175,13 @@ export function useLiveTerm(
     setState(s)
   }, [])
 
+  // Flips true the first time the WS delivers REAL pty bytes — distinct from
+  // `state==='live'` (which only proves auth_ok arrived). A `stopped` session
+  // can auth-ok then immediately close with zero bytes, so the overview
+  // hover-zoom uses THIS signal to gate its crossfade (no blank-black flicker).
+  const [hasFirstFrame, setHasFirstFrame] = React.useState(false)
+  const hasFirstFrameRef = React.useRef(false)
+
   // Mutable connection bookkeeping kept in refs so the single mount effect owns
   // the whole lifecycle (no re-subscribe churn on re-render).
   const attemptRef = React.useRef(0)
@@ -228,6 +244,13 @@ export function useLiveTerm(
     setLiveState('connecting')
     connectRef.current()
   }, [setLiveState])
+
+  /** Programmatically focus xterm's input. Called from the focus route on mount
+   *  so keystrokes flow to the terminal IMMEDIATELY — no second click. Safe to
+   *  call before the terminal is mounted (no-op until then). */
+  const focus = React.useCallback(() => {
+    termRef.current?.focus()
+  }, [])
 
   // ── Single mount effect: owns the terminal + WS lifecycle ───────────────────
   React.useEffect(() => {
@@ -376,6 +399,13 @@ export function useLiveTerm(
         } else if (data instanceof Blob) {
           term.write(new Uint8Array(await data.arrayBuffer()))
         }
+        // Mark the first real pty frame so the overview hover-zoom can swap the
+        // static ANSI preview out (peek crossfade polish). Cheap idempotent
+        // ref-then-state flip — re-renders happen ONCE per mount.
+        if (!hasFirstFrameRef.current) {
+          hasFirstFrameRef.current = true
+          setHasFirstFrame(true)
+        }
       }
 
       ws.onerror = () => {
@@ -480,5 +510,15 @@ export function useLiveTerm(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, readOnly, fontSize])
 
-  return { containerRef, state, send, sendKey, resize, copyAll, retry }
+  return {
+    containerRef,
+    state,
+    hasFirstFrame,
+    send,
+    sendKey,
+    resize,
+    copyAll,
+    retry,
+    focus,
+  }
 }

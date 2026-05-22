@@ -42,13 +42,18 @@ export interface TileLiveTerminalProps {
   /** Tile content width in px — retained for API stability; the terminal now
    *  fits itself to the container so this is informational only. */
   width?: number
+  /** Fires the first time the underlying WS delivers real pty bytes. The tile
+   *  uses this to crossfade this surface in OVER the static ANSI preview — the
+   *  static preview stays visible until then, so the tile never flashes a
+   *  blank-black void during the WS handshake (peek crossfade polish). */
+  onFirstFrame?: () => void
 }
 
 /** A live, read-only terminal rendered at native font size and fitted to the
  *  tile preview box — a small but genuinely legible window onto the agent's
  *  pty, latest output pinned to view. Mount = open WS; unmount = close WS (the
  *  parent gates it on hover). */
-export function TileLiveTerminal({ name }: TileLiveTerminalProps) {
+export function TileLiveTerminal({ name, onFirstFrame }: TileLiveTerminalProps) {
   return (
     <div
       aria-hidden
@@ -63,6 +68,7 @@ export function TileLiveTerminal({ name }: TileLiveTerminalProps) {
         readOnly
         fontSize={ZOOM_FONT_SIZE}
         className="rounded-none"
+        onFirstFrame={onFirstFrame}
       />
     </div>
   )

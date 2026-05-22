@@ -146,7 +146,7 @@ fn view(s: &Session, rt: Option<&SessionRuntime>) -> SessionView {
         worktree: s.worktree != 0,
         creator: s.creator.clone(),
         preview_lines: preview_lines(last_capture),
-        preview_ansi: last_n_lines(last_capture_ansi, 6),
+        preview_ansi: last_n_lines(last_capture_ansi, 20),
         created_at: to_rfc3339(s.created_at),
         updated_at: to_rfc3339(updated_ts),
     }
@@ -174,14 +174,17 @@ fn to_rfc3339(ts: i64) -> String {
 /// Strip CSI escape sequences (covers SGR colour codes and cursor moves).
 static ANSI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").unwrap());
 
-/// Last 6 lines of `capture`, ANSI-stripped (§3.4 SessionSummary.preview_lines).
+/// Last N lines of `capture`, ANSI-stripped (§3.4 SessionSummary.preview_lines).
+/// Sized to 20 so the Settings → Expanded-text hover mode has the full tail to
+/// reveal; the static tile still only renders the bottom ~6 (CSS-clipped by the
+/// idle container height + the top fade mask), so no compactness regression.
 fn preview_lines(capture: &str) -> Vec<String> {
     if capture.is_empty() {
         return Vec::new();
     }
     let stripped = ANSI_RE.replace_all(capture, "");
     let lines: Vec<String> = stripped.lines().map(str::to_string).collect();
-    let start = lines.len().saturating_sub(6);
+    let start = lines.len().saturating_sub(20);
     lines[start..].to_vec()
 }
 
