@@ -2,12 +2,14 @@
 //
 // PRINCIPLE critic — REAL keyboard capture: a single document-level `keydown`
 // listener, registered in a useEffect on mount and removed on unmount. It
-// intercepts ONLY the global shortcut bank:
+// intercepts the focus-route-only global shortcut bank:
 //
-//   ⌘/Ctrl+K  → command palette (v3.0 stub)
 //   ⌘/Ctrl+D  → Detach (navigate to overview, session kept alive)
 //   ⌘/Ctrl+W  → Stop session, then leave
 //   ⌘/Ctrl+1..9 → jump to the N-th session in the strip
+//
+// ⌘/Ctrl+K is intentionally NOT handled here — the global <CommandPalette> in
+// <Layout> owns that shortcut so it works on every route, not just /focus.
 //
 // EVERY other key flows through to xterm: we do NOT preventDefault, so xterm's
 // own `onData` (the M13 hook) carries Ctrl-C, arrows, Tab, Shift+Tab/BTab, Esc,
@@ -17,8 +19,6 @@
 import * as React from 'react'
 
 export interface KeyboardCaptureHandlers {
-  /** ⌘/Ctrl+K. */
-  onPalette: () => void
   /** ⌘/Ctrl+D — detach. */
   onDetach: () => void
   /** ⌘/Ctrl+W — stop + leave. */
@@ -50,11 +50,9 @@ export function useKeyboardCapture(handlers: KeyboardCaptureHandlers): void {
 
       const key = e.key.toLowerCase()
 
-      if (key === 'k') {
-        e.preventDefault()
-        ref.current.onPalette()
-        return
-      }
+      // ⌘/Ctrl+K is owned by the global <CommandPalette> (Layout). We do NOT
+      // touch it here — let the shell handler fire so it works identically on
+      // every route, not only inside the focus split.
       if (key === 'd') {
         e.preventDefault()
         ref.current.onDetach()

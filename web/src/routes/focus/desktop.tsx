@@ -10,9 +10,9 @@
 //   • Stop  (⌘W / button)  → confirm, POST /stop, then navigate('/').
 //   • Cmd+1..9 / compact-tile click → jump to the N-th session's focus route.
 //
-// Slash / snippets / palette are passed as callbacks so the M18 surfaces plug in
-// downstream WITHOUT editing this route (§29 dep-graph fix). For v3.0 the palette
-// is a documented stub and slash/snippets defer to M18.
+// The command palette (⌘K) is mounted globally in <Layout>; the slash menu is
+// owned by <DesktopDock> itself (anchored popover above the "/" button) — this
+// route no longer needs to pass stub callbacks for either.
 
 import * as React from 'react'
 import { useParams } from 'react-router-dom'
@@ -62,18 +62,6 @@ export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
       .finally(() => navigate('/'))
   }, [name, navigate])
 
-  // M18 surfaces — stubbed callbacks so the dock buttons are live now and M18
-  // plugs the real menus in WITHOUT editing this route.
-  const onPalette = React.useCallback(
-    () => console.info('Command palette (⌘K) — v3.0 stub: press ⌘K to focus search.'),
-    [],
-  )
-  const onSlash = React.useCallback(() => console.info('Slash menu — arrives in M18.'), [])
-  const onSnippets = React.useCallback(
-    () => console.info('Snippet drawer — arrives in M18.'),
-    [],
-  )
-
   return (
     <DesktopSplit
       name={name}
@@ -82,9 +70,6 @@ export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
       onSelect={onSelect}
       onDetach={onDetach}
       onStop={onStop}
-      onPalette={onPalette}
-      onSlash={onSlash}
-      onSnippets={onSnippets}
     />
   )
 }

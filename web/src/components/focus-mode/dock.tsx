@@ -64,12 +64,14 @@ const DEFAULT_SEND_CHIPS = ['Esc', 'Tab', 'Ctrl-C', 'Ctrl-U'] as const
 export interface DesktopDockProps {
   /** Tap a send-row chip → emit that key into the pty (§4.4.3). */
   onSendKey: (label: string) => void
-  /** ⌘K palette trigger (v3.0 stub surface). */
-  onPalette?: () => void
-  /** "/" slash-menu launcher — wired to the M18 slash menu component. */
-  onSlash?: () => void
   /** "+" snippet-drawer toggle — opens the M18 snippet side-sheet. */
   onSnippets?: () => void
+  /** Run a slash command in the focused session — sends `cmd\r` to the pty so
+   *  the agent actually executes it. Wired by DesktopSplit to the M13 live
+   *  terminal's `send`. The desktop dock has NO text composer (deliberate —
+   *  the terminal is the composer), so the "/" button opens an inline popover
+   *  hosting the M18 SlashMenu instead of typing into a hidden input. */
+  onRunSlash: (cmd: string) => void
   /** Detach (⌘D): leave to overview, keep the session alive. */
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session. */
@@ -144,8 +146,7 @@ function SendChip({
 
 export function DesktopDock({
   onSendKey,
-  onPalette,
-  onSlash,
+  onRunSlash,
   onSnippets,
   onDetach,
   onStop,
@@ -157,12 +158,97 @@ export function DesktopDock({
   const [chips, setChips] = React.useState<string[]>([...DEFAULT_SEND_CHIPS])
   const [editing, setEditing] = React.useState(false)
 
+  // The "/" button opens the M18 SlashMenu in an anchored popover above the
+  // dock. The menu drives a tiny in-dock filter string (the popover header)
+  // since the desktop dock has no text composer to feed `value` from. Picking
+  // a command sends `cmd\r` to the pty (via the `onRunSlash` parent callback)
+  // and closes the popover.
+  const [slashOpen, setSlashOpen] = React.useState(false)
+  const [slashQuery, setSlashQuery] = React.useState('/')
+  const openSlash = React.useCallback(() => {
+    setSlashQuery('/')
+    setSlashOpen(true)
+  }, [])
+  const closeSlash = React.useCallback(() => setSlashOpen(false), [])
+  const onPickSlash = React.useCallback(
+    (cmd: string) => {
+      setSlashOpen(false)
+      onRunSlash(cmd)
+    },
+    [onRunSlash],
+  )
+
+  // The global ⌘K palette is mounted at shell level (see <Layout>). The visible
+  // "command" button is a convenience — it synthesizes the same keystroke so the
+  // global listener opens the palette. No separate trigger callback needed.
+  const triggerPalette = React.useCallback(() => {
+    const isMac =
+      typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'k',
+        code: 'KeyK',
+        metaKey: isMac,
+        ctrlKey: !isMac,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+  }, [])
+
   return (
-    <div className="flex h-14 shrink-0 items-center gap-2 border-t border-border bg-card px-6">
+    <div className="relative flex h-14 shrink-0 items-center gap-2 border-t border-border bg-card px-6">
+      {/* Slash-menu popover: anchored ABOVE the "/" button. A bare input sits
+       *  on top — desktop has no text composer, so this serves the same role
+       *  the mobile composer plays for the SlashMenu's `value` prop. */}
+      {slashOpen && (
+        <>
+          {/* Backdrop — a click outside closes the popover. */}
+          <button
+            type="button"
+            aria-hidden
+            tabIndex={-1}
+            onClick={closeSlash}
+            className="fixed inset-0 z-20 cursor-default bg-transparent"
+          />
+          <div className="pointer-events-none absolute bottom-full left-6 z-30 mb-2 w-[min(420px,90vw)] space-y-2">
+            <div className="pointer-events-auto rounded-xl border border-border bg-card p-1.5 shadow-lg">
+              <input
+                autoFocus
+                value={slashQuery}
+                onChange={(e) => {
+                  const v = e.target.value
+                  // Always keep a leading "/" so the menu filter stays aligned
+                  // with the M18 mobile composer's prefix contract.
+                  setSlashQuery(v.startsWith('/') ? v : `/${v}`)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    closeSlash()
+                  }
+                }}
+                placeholder="/command"
+                aria-label="Filter slash commands"
+                className="h-8 w-full rounded-lg bg-transparent px-2 font-mono text-[13px] outline-none"
+              />
+            </div>
+            <div className="pointer-events-auto">
+              <SlashMenu
+                value={slashQuery}
+                open={slashOpen}
+                onSelect={onPickSlash}
+                onDismiss={closeSlash}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Left cluster (24px ≈ px-6 from edge): ⌘K palette, / slash, + snippets. */}
       <div className="flex shrink-0 items-center gap-1">
-        <IconButton icon={Command} label="Command palette (⌘K)" onClick={onPalette} />
-        <IconButton icon={Slash} label="Slash menu" onClick={onSlash} />
+        <IconButton icon={Command} label="Command palette (⌘K)" onClick={triggerPalette} />
+        <IconButton icon={Slash} label="Slash menu" onClick={openSlash} />
         <IconButton icon={Plus} label="Snippets" onClick={onSnippets} />
       </div>
 
