@@ -163,6 +163,31 @@
   padding-right: env(safe-area-inset-right);
 }
 
+/* ── Glass material (M20 — iOS-native bars; termius-ios-native-spec §Material) ─
+   Regular Liquid-Glass analogue for toolbars/headers above content: a
+   translucent surface (mixed from the semantic --card token so it tracks the
+   theme) plus a backdrop blur + saturation lift. The blur is what reads as
+   "glass"; the separator hairline is applied at the call site (border-b). */
+@utility glass {
+  background-color: color-mix(in srgb, var(--card) 72%, transparent);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+/* Accessibility: respect Reduce Transparency / no backdrop-filter support by
+   falling back to the opaque card surface (HIG accessibility gate). */
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background-color: var(--card);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass {
+    background-color: var(--card);
+  }
+}
+
 @layer base {
   * {
     border-color: var(--color-border);
