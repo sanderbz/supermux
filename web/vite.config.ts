@@ -14,6 +14,26 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  build: {
+    // M29 (TECH_PLAN §10): explicit vendor splitting so the hero loop
+    // (overview + focus terminal) ships a lean main `app` chunk and heavy
+    // vendors are cached / loaded independently. Budgets are enforced
+    // post-build by `scripts/size-budget.mjs` (`bun run perf:size`).
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/.test(id))
+            return 'vendor-react'
+          if (/[\\/]node_modules[\\/]@xterm[\\/]/.test(id)) return 'vendor-xterm'
+          if (/[\\/]node_modules[\\/]framer-motion[\\/]/.test(id)) return 'vendor-framer'
+          if (/[\\/]node_modules[\\/](@codemirror|@uiw|@lezer|codemirror)[\\/]/.test(id))
+            return 'vendor-codemirror'
+          return 'vendor'
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     // Backend (Rust/axum) runs on 127.0.0.1:8823 in dev. The M24a e2e smoke
