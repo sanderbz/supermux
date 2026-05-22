@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { fileURLToPath, URL } from 'node:url'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -7,6 +8,12 @@ import tailwindcss from '@tailwindcss/vite'
 // no postcss.config.js / tailwind.config.ts pipeline required.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    // @/* → src/* (shadcn copy-source convention; mirrors tsconfig paths).
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   server: {
     port: 5173,
     // Backend (Rust/axum) runs on 127.0.0.1:8823 in dev; later milestones

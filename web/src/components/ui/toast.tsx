@@ -36,7 +36,7 @@ const MAX_STACK = 3
 const DEFAULT_DURATION = 2500
 
 const TONE_DOT: Record<ToastTone, string> = {
-  default: 'hsl(var(--accent))',
+  default: 'hsl(var(--brand))',
   active: 'hsl(var(--status-active))',
   waiting: 'hsl(var(--status-waiting))',
   error: 'hsl(var(--status-error))',

@@ -1,5 +1,48 @@
-// M0 bootstrap stub. The router shell (react-router-dom v7), ThemeProvider and
-// QueryClientProvider land in M10 (TECH_PLAN §4.1).
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+import { ThemeProvider } from '@/components/theme-provider'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { Layout } from '@/components/layout'
+import { Overview } from '@/routes/overview'
+import { Focus } from '@/routes/focus'
+import { Board } from '@/routes/board'
+import { Files } from '@/routes/files'
+import { Scheduler } from '@/routes/scheduler'
+import { Settings } from '@/routes/settings'
+
+// TanStack Query is the source of truth for server data; SSE invalidates it
+// (no polling — see use-sse.ts). Defaults per §M10 / §4.1.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      refetchOnWindowFocus: true,
+    },
+  },
+})
+
 export default function App() {
-  return <div>amux v3</div>
+  return (
+    // basename uses BASE_URL so the Capacitor `capacitor://localhost` origin
+    // works unchanged (§4.10).
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
+      <ThemeProvider>
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider delayDuration={200}>
+            <Routes>
+              <Route element={<Layout />}>
+                <Route path="/" element={<Overview />} />
+                <Route path="/focus/:name" element={<Focus />} />
+                <Route path="/board" element={<Board />} />
+                <Route path="/files/:name?" element={<Files />} />
+                <Route path="/scheduler" element={<Scheduler />} />
+                <Route path="/settings" element={<Settings />} />
+              </Route>
+            </Routes>
+          </TooltipProvider>
+        </QueryClientProvider>
+      </ThemeProvider>
+    </BrowserRouter>
+  )
 }

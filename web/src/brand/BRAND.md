@@ -54,7 +54,7 @@ One brand tint. Everything else is a semantic/system token (full theme: M10).
 
 | Token | HSL | Hex | Use |
 |---|---|---|---|
-| `--accent` | `38 92% 58%` | `#f6ae31` | FAB, focus accent stroke, focus rings, "active" pulse |
+| `--brand` | `38 92% 58%` | `#f6ae31` | FAB, focus accent stroke, focus rings, "active" pulse |
 | `--status-active` | `38 92% 58%` | `#f6ae31` | running (amber pulse) |
 | `--status-waiting` | `214 95% 60%` | `#388cfa` | waiting / "needs input" (calm blue, §4.3) |
 | `--status-error` | `24 90% 56%` | `#f47b2a` | error — **calm orange, never alarmist red** (user-vision.md) |
@@ -63,8 +63,9 @@ One brand tint. Everything else is a semantic/system token (full theme: M10).
 
 - **"Confident-builder amber"** (`#f6ae31`) is the one brand hex — similar to
   Anthropic amber, slightly warmer. It carries the "Active" pulse story.
+  Exposed as `--brand` (shadcn's `--accent` is the distinct semantic hover fill).
 - Tokens are bare HSL triples so callers can add alpha:
-  `hsl(var(--accent) / 0.5)` (matches §4.3 keyframes).
+  `hsl(var(--brand) / 0.5)` (matches §4.3 keyframes).
 - The `error` status uses **calm orange**, not red — amux stays composed.
   (The destructive "missing tile" affordance in §4.3 may still use system red
   for a hard delete; that's a different signal from "the agent errored".)
@@ -105,9 +106,10 @@ One brand tint. Everything else is a semantic/system token (full theme: M10).
 
 ## 7. How later milestones consume this
 
-- **M10** (theme): extend the `:root` brand block in `globals.css`; don't
-  replace `--accent` / `--status-*` / `--background`.
-- **M11/§4.3** (tile): pulse colors use `hsl(var(--accent) / …)` and
+- **M10** (theme): extend the `:root` brand block in `globals.css`; keep
+  `--brand` / `--status-*` / `--background` (the brand amber is `--brand` so it
+  doesn't collide with shadcn's semantic `--accent` hover fill).
+- **M11/§4.3** (tile): pulse colors use `hsl(var(--brand) / …)` and
   `hsl(var(--status-waiting) / …)`; "Needs input" pill text = `MISC.needsInputPill`.
 - **M12/M14** (SSE): call `playNeedsInput()` on transitions into `waiting`.
 - **M19–M22** (routes): import `EMPTY` / `ERROR` / `CONFIRM` for every empty,
