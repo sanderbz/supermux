@@ -35,6 +35,8 @@ import { StatusDot } from '@/components/session-tile/status-dot'
 import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
 import { FocusHeader } from '@/components/focus-mode/focus-header'
 import { MobileDock } from '@/components/focus-mode/dock'
+import { AccessoryBar } from '@/components/kbd-accessory/accessory-bar'
+import { useKbdGroups } from '@/hooks/use-kbd-groups'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { SpecialsSheet } from '@/components/focus-mode/specials-sheet'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
@@ -99,6 +101,10 @@ export function MobileFocus() {
   const [gestureOn, setGestureOn] = React.useState(true)
   void setGestureOn // wired by M16's accessory bar; kept for the toggle handoff
 
+  // M16 — the table-backed kbd-groups, shared so the accessory bar and the
+  // SpecialsSheet ("More" all-groups list) render the SAME live groups.
+  const { groups: kbdGroups } = useKbdGroups()
+
   const goSession = React.useCallback(
     (target: string) => navigate(`/focus/${encodeURIComponent(target)}`),
     [navigate],
@@ -159,6 +165,21 @@ export function MobileFocus() {
             />
           </div>
 
+          {/* M16 — swipeable kbd-accessory bar, pinned directly above the
+              dock so it sits over the keyboard. `onMore` reuses the M15
+              SpecialsSheet (all-groups vertical list). The Gesture / slash /
+              snippet plug-in props are intentionally left for M17 / M18 to
+              wire WITHOUT editing accessory-bar.tsx (§29 dep-graph fix). */}
+          <AccessoryBar
+            onKey={(key) => termRef.current?.sendKey(key)}
+            onBack={goOverview}
+            onHideKeyboard={() => {
+              const el = document.activeElement
+              if (el instanceof HTMLElement) el.blur()
+            }}
+            onMore={() => setSpecialsOpen(true)}
+          />
+
           <MobileDock
             current={current}
             prevSession={prev}
@@ -184,6 +205,7 @@ export function MobileFocus() {
       <SpecialsSheet
         open={specialsOpen}
         onOpenChange={setSpecialsOpen}
+        groups={kbdGroups}
         onKey={(key) => termRef.current?.sendKey(key)}
       />
 
