@@ -276,6 +276,67 @@ async fn kbd_groups_crud() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// `PUT /api/kbd-groups` — whole-list replace (M24b integration fix). The M16
+/// manage-sheet funnels every reorder / add / remove through this single
+/// canonical write. Replaces the seeded defaults wholesale, then verifies the
+/// list is exactly the new content (old rows gone, new order preserved).
+#[tokio::test]
+async fn kbd_groups_replace_whole_list() {
+    let (app, _state, dir) = test_app().await;
+    // Seed the four defaults.
+    let _ = send(&app, Method::GET, "/api/kbd-groups", None).await;
+
+    // Replace the WHOLE list with two new groups.
+    let four = |p: &str| {
+        json!([
+            {"label": format!("{p}1"), "key": format!("{p}1")},
+            {"label": format!("{p}2"), "key": format!("{p}2")},
+            {"label": format!("{p}3"), "key": format!("{p}3")},
+            {"label": format!("{p}4"), "key": format!("{p}4")},
+        ])
+    };
+    let (s, body) = send(
+        &app,
+        Method::PUT,
+        "/api/kbd-groups",
+        Some(json!({
+            "groups": [
+                { "name": "First",  "keys": four("a") },
+                { "name": "Second", "keys": four("b") },
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let groups = body["data"].as_array().expect("replace returns the list");
+    assert_eq!(groups.len(), 2, "the old four defaults are fully replaced");
+    let names: Vec<&str> = groups.iter().filter_map(|g| g["name"].as_str()).collect();
+    assert_eq!(names, vec!["First", "Second"], "order preserved by position");
+
+    // A fresh GET reflects the replacement (no stale rows).
+    let (_s, list) = send(&app, Method::GET, "/api/kbd-groups", None).await;
+    assert_eq!(list["data"].as_array().unwrap().len(), 2);
+
+    // A group with the wrong key count is rejected — the whole PUT is atomic, so
+    // a rejected request leaves the prior list untouched.
+    let (s, _) = send(
+        &app,
+        Method::PUT,
+        "/api/kbd-groups",
+        Some(json!({ "groups": [{ "name": "Bad", "keys": [{"label":"x","key":"x"}] }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_s, still) = send(&app, Method::GET, "/api/kbd-groups", None).await;
+    assert_eq!(
+        still["data"].as_array().unwrap().len(),
+        2,
+        "a rejected replace must not mutate the table"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // ── snippets CRUD ──────────────────────────────────────────────────────────────
 
 #[tokio::test]

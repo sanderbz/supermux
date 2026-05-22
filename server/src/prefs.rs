@@ -31,7 +31,12 @@ pub fn router_for(state: AppState) -> Router {
             "/api/snippets/{id}",
             patch(snippets_patch).delete(snippets_delete),
         )
-        .route("/api/kbd-groups", get(kbd_list).post(kbd_create))
+        // GET (list/seed), POST (add one), PUT (replace the whole ordered list —
+        // the M16 manage-sheet's single canonical write; M24b integration fix).
+        .route(
+            "/api/kbd-groups",
+            get(kbd_list).post(kbd_create).put(kbd_replace),
+        )
         .route("/api/kbd-groups/{id}", patch(kbd_patch).delete(kbd_delete))
         // Bare DELETE on the collection path is not exposed; deletions are by id.
         .with_state(state)
@@ -189,6 +194,42 @@ async fn kbd_create(
         db::prefs::create_kbd_group(&state.pool, input.name.trim(), &keys_json, input.position.unwrap_or(0))
             .await?;
     Ok(Json(json!({ "ok": true, "id": id })))
+}
+
+#[derive(Debug, Deserialize)]
+struct KbdReplaceGroup {
+    name: String,
+    /// Length-4 array of `{label, key}` objects.
+    keys: Vec<KbdKey>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KbdReplace {
+    groups: Vec<KbdReplaceGroup>,
+}
+
+/// `PUT /api/kbd-groups` — replace the WHOLE ordered list in one transaction.
+/// The M16 manage-sheet funnels reorder / add / remove through this single
+/// canonical write so the table is never observed half-edited. Returns the new
+/// list (same envelope as `kbd_list`) so the client can reconcile its cache.
+async fn kbd_replace(
+    State(state): State<AppState>,
+    Json(input): Json<KbdReplace>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut rows: Vec<(String, String)> = Vec::with_capacity(input.groups.len());
+    for g in &input.groups {
+        if g.name.trim().is_empty() {
+            return Err(AppError::BadRequest("'name' is required".into()));
+        }
+        if g.keys.len() != 4 {
+            return Err(AppError::BadRequest("a group must have exactly 4 keys".into()));
+        }
+        let keys_json = serde_json::to_string(&g.keys).unwrap_or_else(|_| "[]".into());
+        rows.push((g.name.trim().to_string(), keys_json));
+    }
+    db::prefs::replace_kbd_groups(&state.pool, &rows).await?;
+    let listing = db::prefs::list_kbd_groups(&state.pool).await?;
+    Ok(Json(json!({ "ok": true, "data": listing })))
 }
 
 #[derive(Debug, Deserialize)]

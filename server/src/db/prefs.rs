@@ -174,6 +174,28 @@ pub async fn update_kbd_group(
     Ok(affected)
 }
 
+/// Replace the WHOLE ordered `kbd_groups` list in one transaction (M24b
+/// integration fix — the M16 manage-sheet's reorder / add / remove collapse to
+/// a single canonical PUT so the table is never left half-written). Each input
+/// is `(name, keys_json)`; `position` is the slice index. The table is cleared
+/// and re-inserted atomically — a failure rolls back to the prior state.
+pub async fn replace_kbd_groups(
+    pool: &SqlitePool,
+    groups: &[(String, String)],
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM kbd_groups").execute(&mut *tx).await?;
+    for (pos, (name, keys_json)) in groups.iter().enumerate() {
+        sqlx::query("INSERT INTO kbd_groups (name, keys, position) VALUES (?, ?, ?)")
+            .bind(name)
+            .bind(keys_json)
+            .bind(pos as i64)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
 /// Delete a group; returns rows removed (0 if not found).
 pub async fn delete_kbd_group(pool: &SqlitePool, id: i64) -> sqlx::Result<u64> {
     let res = sqlx::query("DELETE FROM kbd_groups WHERE id = ?")
