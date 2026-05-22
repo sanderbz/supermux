@@ -4,20 +4,34 @@ import { motion } from 'framer-motion'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { springs } from '@/lib/springs'
+import { useMediaQuery } from '@/hooks/use-media-query'
+import { DesktopFocus } from '@/routes/focus/desktop'
 
-// M13: the focus route now mounts the REAL live terminal against the M4 WS pty
-// stream. The full focus mode — desktop split + dock (M14), mobile Vaul sheet +
-// edge gestures (M15), joystick (M17) — wraps this in later milestones. This is
-// the load-bearing terminal surface they build around.
+// M14: the focus route now forks by breakpoint. At ≥768px it mounts the full
+// DESKTOP focus mode — the two-column split (320px session-strip + main pane
+// with the M13 LiveTerminal, FocusHeader, the §4.4.3 DesktopDock) plus the
+// document-level keyboard capture (⌘K/⌘D/⌘W/⌘1..9; all other keys flow to
+// xterm). Below 768px it keeps the minimal M13 mobile surface — the full mobile
+// Vaul sheet + edge gestures land in M15.
 
 export function Focus() {
+  const isDesktop = useMediaQuery('(min-width: 768px)')
+
+  if (isDesktop) {
+    return <DesktopFocus />
+  }
+
+  return <MobileFocusFallback />
+}
+
+/** Minimal mobile surface (M13 baseline). M15 replaces this with the Vaul sheet,
+ *  mobile dock, accessory bar, and edge gestures. */
+function MobileFocusFallback() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
 
   return (
     <div className="flex h-full w-full flex-col bg-background">
-      {/* Minimal focus header (44px) — iOS-native, Title-Case. The full header
-          with status dot + Detach/Stop arrives in M14/M15. */}
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2 pt-safe">
         <motion.button
           type="button"

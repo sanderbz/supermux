@@ -1,0 +1,88 @@
+// routes/focus/desktop.tsx — M14.
+//
+// The desktop focus-mode route: resolves the session list (single source via
+// useFocusSessions) + the current session from the route `:name`, then renders
+// the two-column <DesktopSplit> (320px session-strip + main pane with the M13
+// LiveTerminal, FocusHeader, and the full §4.4.3 DesktopDock).
+//
+// Navigation semantics (§4.4):
+//   • Detach (⌘D / button) → navigate('/') — session kept alive.
+//   • Stop  (⌘W / button)  → confirm, POST /stop, then navigate('/').
+//   • Cmd+1..9 / compact-tile click → jump to the N-th session's focus route.
+//
+// Slash / snippets / palette are passed as callbacks so the M18 surfaces plug in
+// downstream WITHOUT editing this route (§29 dep-graph fix). For v3.0 the palette
+// is a documented stub and slash/snippets defer to M18.
+
+import * as React from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+
+import { focusApi } from '@/lib/api'
+import { CONFIRM } from '@/brand/copy'
+import { DesktopSplit } from '@/components/focus-mode/desktop-split'
+import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
+import type { TileSession } from '@/components/session-tile/types'
+
+export interface DesktopFocusProps {
+  /** DEV-only mock injection (the /dev/focus verification page). Production omits
+   *  it → the real `useSessions` store. */
+  mockSessions?: TileSession[]
+}
+
+export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
+  const { name = '' } = useParams()
+  const navigate = useNavigate()
+  const { sessions, current } = useFocusSessions(name, mockSessions)
+
+  const onSelect = React.useCallback(
+    (next: string) => navigate(`/focus/${encodeURIComponent(next)}`),
+    [navigate],
+  )
+
+  // Detach (⌘D): leave to overview, session kept alive (§4.4).
+  const onDetach = React.useCallback(() => navigate('/'), [navigate])
+
+  // Stop (⌘W): confirm + POST /stop + leave (§4.4.3). The stop fetch is
+  // best-effort before M12 wires the full sessions client — failures are
+  // surfaced via the browser, never crash the route.
+  const onStop = React.useCallback(() => {
+    if (!name) return
+    if (
+      !window.confirm(`${CONFIRM.killSession.title}\n\n${CONFIRM.killSession.body}`)
+    ) {
+      return
+    }
+    void focusApi
+      .stopSession(name)
+      .catch((e) => console.warn('stopSession failed', e))
+      .finally(() => navigate('/'))
+  }, [name, navigate])
+
+  // M18 surfaces — stubbed callbacks so the dock buttons are live now and M18
+  // plugs the real menus in WITHOUT editing this route.
+  const onPalette = React.useCallback(
+    () => console.info('Command palette (⌘K) — v3.0 stub: press ⌘K to focus search.'),
+    [],
+  )
+  const onSlash = React.useCallback(() => console.info('Slash menu — arrives in M18.'), [])
+  const onSnippets = React.useCallback(
+    () => console.info('Snippet drawer — arrives in M18.'),
+    [],
+  )
+
+  return (
+    <DesktopSplit
+      name={name}
+      sessions={sessions}
+      current={current}
+      onSelect={onSelect}
+      onDetach={onDetach}
+      onStop={onStop}
+      onPalette={onPalette}
+      onSlash={onSlash}
+      onSnippets={onSnippets}
+    />
+  )
+}
+
+export default DesktopFocus

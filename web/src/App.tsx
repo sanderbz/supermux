@@ -20,6 +20,10 @@ const DevTiles = import.meta.env.DEV
 const DevTerm = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-term'))
   : null
+// M14 desktop focus-mode review page (split + strip + dock + peek-popover).
+const DevFocus = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-focus'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts). Defaults per §M10 / §4.1.
@@ -65,6 +69,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevTerm />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevFocus && (
+                <Route
+                  path="/dev/focus/:name?"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevFocus />
                     </Suspense>
                   }
                 />
