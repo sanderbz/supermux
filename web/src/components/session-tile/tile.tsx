@@ -1,11 +1,12 @@
 import * as React from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { GitBranch } from 'lucide-react'
 
 import { springs, eases } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useLongPress } from '@/hooks/use-long-press'
+import { useUI } from '@/stores/ui-store'
 import {
   useNavigateMorph,
   vtSessionName,
@@ -13,19 +14,23 @@ import {
 } from '@/components/view-transitions/morph'
 import { StatusDot, STATUS_LABEL } from './status-dot'
 import { TailPreview } from './tail-preview'
+import { TileLiveTerminal } from './tile-live-terminal'
 import { TileError } from './tile-error'
 import { QuickPeekModal } from './quick-peek-modal'
 import type { TileSession } from './types'
 
 // Idle geometry (px) — must match the header + 6-line tail so the grid slot
 // reserves exactly the idle height. The card is absolutely positioned inside
-// that slot, so its hover-growth (tail 6→14) overflows downward over the next
-// row WITHOUT reflowing the grid (Codex #8: container-only morph, not canvas).
+// that slot, so its hover-growth overflows downward over the next row WITHOUT
+// reflowing the grid (Codex #8: container-only morph, not canvas).
 const HEADER_H = 12 + 32 + 16 + 4 // pt-3 + title row + meta row + mt-1
 const TAIL_LINE_H = 14
 const TAIL_PAD = 8
 const IDLE_LINES = 6
-const HOVER_LINES = 14
+// Hover ceilings. `live` mode shows a fixed-height zoomed terminal; `expanded`
+// mode grows the static tail to ~20 lines (vs the 6 idle lines).
+const EXPANDED_LINES = 20
+const LIVE_PREVIEW_H = 230 // px — the scaled live-terminal viewport
 const IDLE_H = HEADER_H + IDLE_LINES * TAIL_LINE_H + TAIL_PAD // 156
 
 function formatTokens(n: number): string {
@@ -59,7 +64,7 @@ function StatusBorder({
   return (
     <motion.span
       aria-hidden
-      className="pointer-events-none absolute inset-0 rounded-xl"
+      className="pointer-events-none absolute inset-0 z-10 rounded-xl"
       animate={
         isStatic
           ? { boxShadow: `inset 0 0 0 1.5px hsl(var(${token}) / 0.9)` }
@@ -86,18 +91,36 @@ export interface SessionTileProps {
 }
 
 /** The hero surface (§4.3). One tile = one agent: title (Claude chat summary),
- *  status, live tail-preview, hover-peek (desktop) / long-press quick-peek
- *  (mobile), click → focus with a View Transition. Shared verbatim by the
- *  overview grid (M12) and the focus session-strip (M14) — single source, no
- *  per-tile polling (the tail comes from the SSE `sessions` payload). */
+ *  status, tail-preview, hover-peek (desktop) / long-press quick-peek (mobile),
+ *  click → focus with a View Transition.
+ *
+ *  The tail-preview always renders the agent's REAL ANSI terminal colours
+ *  (`preview_ansi`). On desktop hover the tile shows — per the Settings
+ *  "Overview hover preview" choice — either a scaled-down LIVE terminal
+ *  (default) or ~20 lines of the coloured static tail. The live terminal opens
+ *  exactly ONE WebSocket, only while hovered, torn down on hover-leave. */
 export function SessionTile({ session, onReattach, onRemove }: SessionTileProps) {
   const reduce = useReducedMotion()
   const fine = useMediaQuery('(pointer: fine)')
   const coarse = useMediaQuery('(pointer: coarse)')
   const navigateMorph = useNavigateMorph()
+  const hoverPreview = useUI((s) => s.hoverPreview)
   const [hovered, setHovered] = React.useState(false)
   const [peekOpen, setPeekOpen] = React.useState(false)
   const prevStatus = React.useRef(session.status)
+
+  // Tile content width — the scale target for the zoomed live terminal. Tracked
+  // with a ResizeObserver so the grid's responsive column count is respected.
+  const cardRef = React.useRef<HTMLDivElement | null>(null)
+  const [cardWidth, setCardWidth] = React.useState(0)
+  React.useEffect(() => {
+    const el = cardRef.current
+    if (!el) return
+    setCardWidth(el.clientWidth)
+    const ro = new ResizeObserver(() => setCardWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   const goFocus = React.useCallback(
     () => navigateMorph(`/focus/${session.name}`),
@@ -105,8 +128,7 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
   )
 
   // One-shot haptic on transition into "waiting" (§4.3), debounced via ref so a
-  // re-render with the same status never re-fires. iOS Safari has no
-  // `navigator.vibrate` → the blue pulse + pill are the visible fallback.
+  // re-render with the same status never re-fires.
   React.useEffect(() => {
     if (session.status === 'waiting' && prevStatus.current !== 'waiting') {
       if ('vibrate' in navigator) navigator.vibrate?.(8)
@@ -136,14 +158,29 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
 
   const title = session.task_summary || session.name
   const expanded = hovered && fine && !reduce
+  // The live terminal is only viable for a session with a live tmux backing —
+  // a stopped agent has no pty to stream, so it falls back to the static tail.
+  const liveCapable =
+    session.status !== 'stopped' && session.status !== 'error'
+  const showLiveTerm = expanded && hoverPreview === 'live' && liveCapable
   const tokens =
     typeof session.tokens === 'number' ? formatTokens(session.tokens) : null
+
+  // Tail line count: 6 idle → 20 when expanded in "expanded text" mode (or as
+  // the live mode's fallback for a session with no pty).
+  const tailLines = expanded && !showLiveTerm ? EXPANDED_LINES : IDLE_LINES
+  // Height the preview area springs to. The card grows with it (the tail-pad is
+  // already inside `TailPreview`'s own sizing, so the live height is exact).
+  const previewH = showLiveTerm
+    ? LIVE_PREVIEW_H
+    : tailLines * TAIL_LINE_H + TAIL_PAD
 
   return (
     // The slot reserves the idle height; the card floats inside it so hover
     // growth never reflows neighbours.
     <div className="relative" style={{ height: IDLE_H }}>
       <motion.div
+        ref={cardRef}
         role="button"
         tabIndex={0}
         aria-label={`${title} — ${STATUS_LABEL[session.status]}`}
@@ -205,11 +242,36 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
           </div>
         </div>
 
-        <TailPreview
-          lines={session.preview_lines}
-          visibleLines={expanded ? HOVER_LINES : IDLE_LINES}
-          className="mt-1"
-        />
+        {/* Preview area. The container owns the height (springs 6-line idle →
+            live 230px / 20-line on hover) and clips its children, so neither
+            the live terminal nor the long tail can bleed past the card. The
+            coloured static tail fills it; the live zoomed terminal cross-fades
+            in OVER it (live mode) — no blank frame while the WS connects. */}
+        <motion.div
+          className="relative mt-1 overflow-hidden"
+          animate={{ height: previewH }}
+          transition={reduce ? { duration: 0 } : springs.cardExpand}
+        >
+          <TailPreview
+            lines={session.preview_lines}
+            ansiLines={session.preview_ansi}
+            fill
+          />
+          <AnimatePresence>
+            {showLiveTerm && cardWidth > 0 && (
+              <motion.div
+                key="live"
+                initial={reduce ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={reduce ? undefined : { opacity: 0 }}
+                transition={reduce ? { duration: 0 } : springs.cardExpand}
+                className="absolute inset-0"
+              >
+                <TileLiveTerminal name={session.name} width={cardWidth} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
       </motion.div>
 
       {coarse && (
