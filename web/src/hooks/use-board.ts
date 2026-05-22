@@ -3,20 +3,18 @@
 // TanStack Query against the M6 board endpoints, invalidated by the SSE `board`
 // event — NEVER polled (anti-vision: "WebSocket-only — no 3s polling fallback").
 //
-// SSE wiring note: the shared `use-sse.ts` hook (M12) opens ONE authenticated
-// EventSource to `/api/events` and fans events out to callbacks. M12 is a sibling
-// milestone not yet merged here, so to stay self-contained AND avoid rewriting the
-// shared stub (which would merge-conflict with M12), this hook opens its own
-// board-scoped EventSource and tears it down on unmount. When M12 lands, both can
-// coexist; the board simply gets invalidated by whichever fires first. There is no
-// polling fallback in either path.
+// SSE wiring: the shared `use-sse.ts` hook (M12) opens ONE authenticated
+// EventSource to `/api/events` and fans events out to per-event-type callbacks —
+// it is the single live channel for the whole app. The board no longer opens its
+// own EventSource; instead `useBoardSse` subscribes to the shared stream's
+// `board` event through `useSse`'s `onEvent` callback. One connection, app-wide.
 //
 // Mutations (create / patch / claim / delete) apply OPTIMISTIC updates against the
 // `['board']` cache and ROLL BACK on error (§4 board reference: "optimistic update
 // + rollback"). The atomic claim surfaces a 409 visibly via the thrown
 // `BoardError` (§3.2.10).
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   useMutation,
   useQuery,
@@ -32,6 +30,7 @@ import {
   type BoardStatus,
   type NewBoardIssue,
 } from '@/lib/api'
+import { useSse, type SseEventType } from '@/hooks/use-sse'
 
 const ISSUES_KEY = ['board', 'issues'] as const
 const STATUSES_KEY = ['board', 'statuses'] as const
@@ -78,72 +77,37 @@ function patchCache(qc: QueryClient, updater: (prev: BoardIssue[]) => BoardIssue
   qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], (prev) => updater(prev ?? []))
 }
 
-/** Subscribe to the SSE `board` event and invalidate the cache. No polling. */
+/** Subscribe the board cache to the SHARED SSE stream's `board` event. No
+ *  standalone EventSource — `useSse` owns the one app-wide connection (M12).
+ *  No polling. */
 function useBoardSse(qc: QueryClient) {
-  const tokenRef = useRef<string>('')
-  useEffect(() => {
-    // EventSource cannot send an Authorization header, so the auth layer's
-    // `?_token=` fallback is the only option for SSE (server/src/auth.rs accepts
-    // it). The token is read from `window` at runtime — never embedded in source.
-    const token = window._AMUX_AUTH_TOKEN ?? ''
-    tokenRef.current = token
-    const base = (
-      window._AMUX_BASE_URL ?? import.meta.env.BASE_URL
-    ).replace(/\/$/, '')
-    const url = `${base}/api/events${token ? `?_token=${encodeURIComponent(token)}` : ''}`
-
-    let es: EventSource | null = null
-    let closed = false
-    try {
-      es = new EventSource(url)
-    } catch {
-      // No SSE available (e.g. M12 endpoint not yet mounted in this build) — the
-      // board still works via the initial query + mutation cache writes. We do
-      // NOT fall back to polling.
-      return
-    }
-
-    const onBoard = (ev: MessageEvent) => {
+  const onEvent = useCallback(
+    (type: SseEventType, payload: unknown) => {
+      if (type !== 'board') return
       // The `board` event payload IS the full board (M6 `emit_board`). Prefer the
       // pushed payload over a refetch round-trip; fall back to invalidation.
-      try {
-        const data = JSON.parse(ev.data) as BoardIssue[] | { payload?: BoardIssue[] }
-        const board = Array.isArray(data) ? data : data.payload
-        if (Array.isArray(board)) {
-          qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], board)
-          return
-        }
-      } catch {
-        /* malformed — fall through to invalidation */
+      const board = Array.isArray(payload)
+        ? (payload as BoardIssue[])
+        : Array.isArray((payload as { payload?: unknown })?.payload)
+          ? ((payload as { payload: BoardIssue[] }).payload)
+          : null
+      if (board) {
+        qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], board)
+        return
       }
       void qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
       void qc.invalidateQueries({ queryKey: [...STATUSES_KEY] })
-    }
-
-    // Named SSE event (axum SSE adapter emits `event: board`).
-    es.addEventListener('board', onBoard as EventListener)
-    // Some emitters use the default (unnamed) message channel — also handle it,
-    // but only act on board-shaped payloads.
-    es.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data) as { type?: string }
-        if (data?.type === 'board') onBoard(ev)
-      } catch {
-        /* ignore non-JSON keep-alive frames */
-      }
-    }
-    es.onerror = () => {
-      // EventSource auto-reconnects; nothing to do. If the connection is dead,
-      // the next focus/refetch covers it. Still no polling.
-      if (closed) es?.close()
-    }
-
-    return () => {
-      closed = true
-      es?.removeEventListener('board', onBoard as EventListener)
-      es?.close()
-    }
+    },
+    [qc],
+  )
+  // On a focus/visibility/online resync after a quiet stretch, re-pull the board
+  // so a missed delta is reconciled. Still no polling.
+  const onResync = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    void qc.invalidateQueries({ queryKey: [...STATUSES_KEY] })
   }, [qc])
+  const handlers = useMemo(() => ({ onEvent, onResync }), [onEvent, onResync])
+  useSse(handlers)
 }
 
 export function useBoard(): UseBoardResult {
