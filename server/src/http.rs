@@ -15,10 +15,12 @@ use axum::middleware::from_fn_with_state;
 use axum::Router;
 
 use crate::agents;
+use crate::audit;
 use crate::auth;
 use crate::board;
 use crate::files;
 use crate::hooks;
+use crate::prefs;
 use crate::public;
 use crate::scheduler;
 use crate::sessions;
@@ -59,5 +61,7 @@ fn protected_router(state: AppState) -> Router {
         .merge(files::router_for().with_state(state.clone()))
         .merge(scheduler::router_for(state.clone())) // M8
         .merge(agents::router_for(state.clone())) // M5b (wait); M9 extends
+        .merge(prefs::router_for(state.clone())) // M9 (snippets + kbd-groups)
+        .merge(audit::router_for(state.clone())) // M9 (audit log read)
         .layer(from_fn_with_state(state, auth::auth_middleware))
 }

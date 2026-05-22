@@ -22,6 +22,8 @@ async fn main() -> anyhow::Result<()> {
     scheduler::spawn(state.clone());
     // M5a: resume per-session status detection on boot (cold-start init §3.2.8).
     sessions::auto_actions::spawn_all(&state).await;
+    // M9: resume per-session steering delivery on boot (§3.9 deliver loop).
+    sessions::steering::deliver_loop::spawn_all(&state).await;
 
     let app = http::router(state);
 
