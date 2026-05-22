@@ -218,3 +218,22 @@
       env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 }
+
+/* ── M15: focus-mode mobile sheet — detent snap timing (APPENDED) ─────────────
+   The Vaul drag-detent sheet (components/focus-mode/mobile-sheet.tsx) is the
+   marquee mobile interaction. Vaul applies its snap as an inline
+   `transition: transform .5s cubic-bezier(.32,.72,0,1)`; we retune it to Apple's
+   sheet feel `.spring(response:0.45, dampingFraction:0.82)` — response 0.45s with
+   the established iOS-detent curve (near-critical, no overshoot, matching damping
+   ~0.82). `!important` is required because Vaul writes the transition inline.
+   Appended at the file tail (never the shared token blocks) so the parallel
+   M9/M12/M14 agents editing globals.css never conflict. */
+[data-vaul-drawer][data-vaul-snap-points='true'] {
+  transition: transform 0.45s cubic-bezier(0.32, 0.72, 0, 1) !important;
+}
+/* Reduce Motion: snap instantly (Termius criterion #13). */
+@media (prefers-reduced-motion: reduce) {
+  [data-vaul-drawer][data-vaul-snap-points='true'] {
+    transition: transform 0.01s linear !important;
+  }
+}
