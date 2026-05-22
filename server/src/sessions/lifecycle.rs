@@ -201,6 +201,16 @@ pub async fn start(
     db::sessions::ensure_runtime(&state.pool, name, &hook_token).await?;
     state.hook_tokens.insert(name.to_string(), hook_token.clone());
 
+    // M5b: install the Claude SettingsHook events so the agent reports real status
+    // signals (§3.5). Idempotent + non-destructive; failure is non-fatal — the
+    // detector still classifies off the regex bank + pty heartbeat. Only Claude
+    // reads `~/.claude/settings.json`, so skip it for codex/shell sessions.
+    if s.provider == "claude" {
+        if let Err(e) = crate::claude_config::install_hooks(name, &hook_token) {
+            tracing::warn!(name = %name, error = %e, "install_hooks failed; status falls back to regex/heartbeat");
+        }
+    }
+
     let env = build_env(&state.config, name, &hook_token);
     let dir = PathBuf::from(&s.dir);
     let shell = user_shell();

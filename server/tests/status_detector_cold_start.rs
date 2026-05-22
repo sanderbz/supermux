@@ -85,7 +85,10 @@ async fn tick_on_unstarted_session_leaves_status_unknown() {
     db::sessions::ensure_runtime(&state.pool, "ghost", "tok").await.unwrap();
 
     let mut detector = StatusDetector::new();
-    auto_actions::tick(&state, "ghost", &mut detector).await.unwrap();
+    // M5b: `tick` now carries the cross-tick preview-tail memo (last broadcast
+    // tail) for the SSE "status OR tail6 changed" rule.
+    let mut tail = None;
+    auto_actions::tick(&state, "ghost", &mut detector, &mut tail).await.unwrap();
 
     let rt = db::sessions::runtime(&state.pool, "ghost").await.unwrap().unwrap();
     assert_eq!(rt.last_status, "unknown", "unstarted session stays Unknown");
@@ -119,9 +122,10 @@ async fn detector_tick_writes_last_capture() {
     // Run ticks until the marker shows up in last_capture (acceptance: written
     // every tick, canonical preview source).
     let mut detector = StatusDetector::new();
+    let mut tail = None;
     let mut captured = String::new();
     for _ in 0..24 {
-        auto_actions::tick(&state, &name, &mut detector).await.unwrap();
+        auto_actions::tick(&state, &name, &mut detector, &mut tail).await.unwrap();
         let rt = db::sessions::runtime(&state.pool, &name).await.unwrap().unwrap();
         captured = rt.last_capture;
         if captured.contains(marker) {

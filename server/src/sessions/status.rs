@@ -6,16 +6,19 @@
 //! fixtures (`tests/fixtures/status/*.txt`) and never silently regresses when the
 //! regex bank evolves.
 //!
-//! **M5a / M5b split (§3.6).** M5a ships the fusion order *regex bank → PTY
+//! **M5a / M5b split (§3.6).** M5a shipped the fusion order *regex bank → PTY
 //! heartbeat → idle timeout*, the cold-start init, and the `last_capture`
-//! writeback. The hook-event branch — a fresh Claude `SettingsHook` event
-//! outranking the regex bank — is a clearly-marked stub here; **M5b** wires the
-//! real signal in (see the `M5b SEAM` comment in [`StatusDetector::classify`]).
-//! The signature already carries `last_hook` so M5b extends, never rewrites.
+//! writeback. **M5b** wires the real hook-event branch in (the top of
+//! [`StatusDetector::classify`]): a fresh Claude `SettingsHook` event now
+//! outranks the regex bank + heartbeat, fed by `/api/_internal/hook` →
+//! [`AppState::record_hook`](crate::state::AppState::record_hook) →
+//! [`AppState::last_hook_event`](crate::state::AppState::last_hook_event).
 //!
-//! **Fusion rule** (per-session, evaluated every 2s by the detector loop in
-//! [`super::auto_actions`]):
-//! 1. Fresh hook event (<3s) outranks everything — *M5b*; M5a stub holds status.
+//! **Fusion rule** (per-session, evaluated every 2s — or sooner, on a hook wake —
+//! by the detector loop in [`super::auto_actions`]):
+//! 1. Fresh hook event (<3s) outranks everything (M5b): `Notification`→`Waiting`,
+//!    `PreToolUse`→`Active`, `Stop`/`SubagentStop`→`Idle`; `PostToolUse` is
+//!    non-decisive and falls through.
 //! 2. capture-pane regex bank (ported verbatim from v2 §1.3 — golden-tested).
 //! 3. PTY heartbeat: bytes <1.5s → `Active`.
 //! 4. Idle timeout: silent ≥30s → `Idle` (only downgrades an already-known
@@ -68,10 +71,9 @@ impl Status {
     }
 }
 
-/// Claude Code `SettingsHook` event kinds (§3.6). Consumed by M5b's fusion; the
-/// M5a stub branch ignores the kind, so the variants are not yet constructed in
-/// this milestone.
-#[allow(dead_code)]
+/// Claude Code `SettingsHook` event kinds (§3.6). Consumed by the fusion rule in
+/// [`StatusDetector::classify`]; fed in by M5b's `/api/_internal/hook` endpoint
+/// via [`AppState::record_hook`](crate::state::AppState::record_hook).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     /// `PreToolUse` — the agent began a tool call ⇒ `Active`.
@@ -84,6 +86,24 @@ pub enum HookEvent {
     Stop,
     /// `SubagentStop` — a sub-agent turn ended ⇒ `Idle`.
     SubagentStop,
+}
+
+impl HookEvent {
+    /// Parse the `event` field of an `/api/_internal/hook` POST body (§3.6 event
+    /// types). Accepts the snake_case wire form amux's hook command emits
+    /// (`pre_tool`, `post_tool`, `notification`, `stop`, `subagent_stop`) plus the
+    /// PascalCase Claude SettingsHook names, so either spelling is robust. Unknown
+    /// kinds return `None` (the endpoint treats them as a no-op).
+    pub fn from_event_str(s: &str) -> Option<HookEvent> {
+        match s {
+            "pre_tool" | "pre_tool_use" | "PreToolUse" => Some(HookEvent::PreToolUse),
+            "post_tool" | "post_tool_use" | "PostToolUse" => Some(HookEvent::PostToolUse),
+            "notification" | "Notification" => Some(HookEvent::Notification),
+            "stop" | "Stop" => Some(HookEvent::Stop),
+            "subagent_stop" | "SubagentStop" => Some(HookEvent::SubagentStop),
+            _ => None,
+        }
+    }
 }
 
 /// Per-session classifier. Holds only the last classification so the fusion
@@ -151,18 +171,23 @@ impl StatusDetector {
         last_pty: Instant,
         last_hook: Option<(Instant, HookEvent)>,
     ) -> Status {
-        // ── 1. hook-event branch — M5b SEAM ──────────────────────────────────
-        // A fresh hook event outranks the regex bank + heartbeat. In M5a this is
-        // a no-op stub: it preserves the fusion *order* (a fresh event short-
-        // circuits the parse) while deferring to the current status, so wiring
-        // the real signal in M5b is a one-arm `match evt { … }` replacement and
-        // never reshuffles the branches below.
-        if let Some((t, _evt)) = last_hook {
+        // ── 1. hook-event branch (M5b — the multi-signal apex) ────────────────
+        // A fresh Claude `SettingsHook` event (<3s) is the most authoritative
+        // signal we have — it comes straight from the agent runtime, not a
+        // best-effort scrape of the pane — so it OUTRANKS the regex bank and the
+        // PTY heartbeat (§3.6 fusion rule). `PostToolUse` is deliberately
+        // non-decisive: "a tool finished" doesn't say whether that left the agent
+        // idle, waiting, or mid-turn, so it falls THROUGH to the capture/heartbeat
+        // branches below rather than pinning a status (§3.6: "no override; fall
+        // through to other signals").
+        if let Some((t, evt)) = last_hook {
             if t.elapsed() < HOOK_FRESH {
-                // M5b: replace with the §3.6 match —
-                //   Notification => Waiting, PreToolUse => Active,
-                //   Stop | SubagentStop => Idle, _ => self.last_status.
-                return self.last_status;
+                match evt {
+                    HookEvent::Notification => return Status::Waiting,
+                    HookEvent::PreToolUse => return Status::Active,
+                    HookEvent::Stop | HookEvent::SubagentStop => return Status::Idle,
+                    HookEvent::PostToolUse => { /* fall through to §2–5 */ }
+                }
             }
         }
 
@@ -356,17 +381,60 @@ mod tests {
     }
 
     #[test]
-    fn hook_branch_is_a_holding_stub_in_m5a() {
-        // M5a: a fresh hook event must NOT override the (held) status — it short-
-        // circuits to last_status. (M5b makes Notification ⇒ Waiting, etc.)
+    fn fresh_hook_outranks_regex_and_heartbeat() {
+        // M5b multi-signal apex (§3.6 acceptance: "a fresh hook event outranks the
+        // regex bank and the pty heartbeat"). Each capture below carries an ACTIVE
+        // marker AND a just-now heartbeat, yet the fresh hook decides the status.
         let mut d = StatusDetector::new();
         d.force(Status::Idle);
-        let fresh = Some((Instant::now(), HookEvent::Notification));
-        // Capture says Active, but the fresh-hook short-circuit holds Idle in M5a.
-        assert_eq!(d.detect("esc to interrupt", neutral_pty(), fresh), Status::Idle);
-        // A stale hook (>3s) falls through to the regex bank as normal.
+        let notif = Some((Instant::now(), HookEvent::Notification));
+        assert_eq!(d.detect("esc to interrupt", Instant::now(), notif), Status::Waiting);
+
+        let pre = Some((Instant::now(), HookEvent::PreToolUse));
+        assert_eq!(StatusDetector::new().detect("", neutral_pty(), pre), Status::Active);
+
+        let mut d2 = StatusDetector::new();
+        d2.force(Status::Active);
+        let stop = Some((Instant::now(), HookEvent::Stop));
+        assert_eq!(d2.detect("esc to interrupt", Instant::now(), stop), Status::Idle);
+    }
+
+    #[test]
+    fn post_tool_hook_is_non_decisive_and_falls_through() {
+        // PostToolUse must NOT pin a status — the capture (a waiting prompt here)
+        // decides instead (§3.6: "no override; fall through to other signals").
+        let mut d = StatusDetector::new();
+        let post = Some((Instant::now(), HookEvent::PostToolUse));
+        assert_eq!(
+            d.detect("Do you want to proceed?\n❯ 1. Yes", neutral_pty(), post),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn stale_hook_is_ignored_and_falls_through() {
+        // A hook older than the 3s freshness window no longer outranks; the regex
+        // bank takes over (here an ACTIVE marker).
+        let mut d = StatusDetector::new();
         let stale = Some((Instant::now() - Duration::from_secs(5), HookEvent::Notification));
         assert_eq!(d.detect("esc to interrupt", neutral_pty(), stale), Status::Active);
+    }
+
+    #[test]
+    fn hook_event_parsing_covers_all_kinds() {
+        use HookEvent::*;
+        for (s, want) in [
+            ("pre_tool", PreToolUse),
+            ("post_tool", PostToolUse),
+            ("notification", Notification),
+            ("stop", Stop),
+            ("subagent_stop", SubagentStop),
+            ("PreToolUse", PreToolUse),
+            ("SubagentStop", SubagentStop),
+        ] {
+            assert_eq!(HookEvent::from_event_str(s), Some(want), "{s:?}");
+        }
+        assert_eq!(HookEvent::from_event_str("garbage"), None);
     }
 
     #[test]

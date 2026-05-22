@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
+use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
 use amux_server::state::AppState;
 use amux_server::{db, scheduler};
 
@@ -24,7 +24,9 @@ async fn new_state() -> (AppState, PathBuf) {
         tls: TlsConfig::default(),
         auth_token: "missed-test-token".to_string(),
         provider_defaults: ProviderDefaults::default(),
-        ws: Default::default(),
+        // `ws` was added to `Config` after this test's milestone branched; default
+        // it so the full suite compiles against the merged `Config`.
+        ws: WsConfig::default(),
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)

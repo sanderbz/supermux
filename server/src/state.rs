@@ -13,6 +13,7 @@ use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use crate::config::Config;
 use crate::sessions::pty::PtyStream;
+use crate::sessions::status::HookEvent;
 use crate::sessions::tmux::Tmux;
 use crate::ws::streamer::PtyStreamer;
 
@@ -59,6 +60,18 @@ pub struct AppState {
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
     /// per-session `AMUX_HOOK_TOKEN`. M5b's `/api/_internal/hook` reads it.
     pub hook_tokens: Arc<DashMap<String, String>>,
+    /// Per-session most-recent Claude `SettingsHook` event (§3.6, M5b). Written by
+    /// `/api/_internal/hook`; read by the status detector's fusion rule, where a
+    /// fresh (<3s) event outranks the regex bank + heartbeat. The `Instant` is the
+    /// receive time, so freshness is judged server-side (clock-skew safe).
+    pub last_hook: Arc<DashMap<String, (Instant, HookEvent)>>,
+    /// Per-session detector wake (§3.6 — "within 1s of a real Claude
+    /// notification"). The hook endpoint `notify_one`s this so the affected
+    /// session's 2s detector loop re-ticks immediately instead of waiting out the
+    /// interval; `notify_one` stores a permit so a wake is never lost to a
+    /// not-yet-parked loop. One `Notify` per session keeps a `PreToolUse` storm on
+    /// one agent from waking every other session's loop.
+    pub detector_wake: Arc<DashMap<String, Arc<Notify>>>,
     /// Per-session PTY heartbeat: the [`Instant`] the live reader last saw bytes
     /// from this session's pane. The M5a status detector reads it for its
     /// heartbeat branch (bytes <1.5s → `Active`, silent ≥30s → `Idle`). **M4's
@@ -88,6 +101,8 @@ impl AppState {
             session_locks: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),
+            last_hook: Arc::new(DashMap::new()),
+            detector_wake: Arc::new(DashMap::new()),
             pty_heartbeat: Arc::new(DashMap::new()),
             status_notify: Arc::new(Notify::new()),
             sse_tx,
@@ -114,6 +129,51 @@ impl AppState {
             .unwrap_or_else(|| Instant::now() - COLD_START_PTY_IDLE)
     }
 
+    /// Record a Claude `SettingsHook` event for `name` at the current instant
+    /// (§3.6, M5b). Called by `/api/_internal/hook` after the per-session hook
+    /// token validates. Overwrites any prior event — the detector only cares about
+    /// the most recent one within the 3s freshness window.
+    pub fn record_hook(&self, name: &str, event: HookEvent) {
+        self.last_hook
+            .insert(name.to_string(), (Instant::now(), event));
+    }
+
+    /// The most-recent hook event for `name`, if any (§3.6). Fed into
+    /// `StatusDetector::detect` as the apex signal.
+    pub fn last_hook_event(&self, name: &str) -> Option<(Instant, HookEvent)> {
+        self.last_hook.get(name).map(|e| *e.value())
+    }
+
+    /// The per-session detector wake handle (get-or-create). The detector loop
+    /// holds one end; the hook endpoint `notify_one`s it for sub-second status
+    /// updates (§3.6 "within 1s").
+    pub fn detector_wake_for(&self, name: &str) -> Arc<Notify> {
+        self.detector_wake
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
+    }
+
+    /// Wake `name`'s detector loop so it re-ticks now rather than at its next 2s
+    /// interval. `notify_one` parks a permit if the loop isn't currently waiting,
+    /// so the wake survives the brief window between ticks (no lost notification).
+    pub fn wake_detector(&self, name: &str) {
+        self.detector_wake_for(name).notify_one();
+    }
+
+    /// The per-session status watch sender (get-or-create), seeded `("unknown", 0)`
+    /// (§3.2.8/§3.7). The detector `send_replace`s `(status, ver+1)` on a status
+    /// change; `agents::wait` subscribes for the long-poll. A single shared sender
+    /// per session means every waiter and the detector rendezvous on one channel —
+    /// the watch receiver always holds the latest value, so there is no
+    /// notify-before-subscribe race (Eng P0 #2).
+    pub fn status_watch_for(&self, name: &str) -> watch::Sender<StatusUpdate> {
+        self.status_watch
+            .entry(name.to_string())
+            .or_insert_with(|| watch::channel(("unknown".to_string(), 0)).0)
+            .clone()
+    }
+
     /// Get (creating on first use) the per-session lock.
     pub fn lock_for(&self, name: &str) -> Arc<Mutex<()>> {
         self.session_locks
@@ -129,6 +189,8 @@ impl AppState {
         self.session_locks.remove(name);
         self.status_watch.remove(name);
         self.hook_tokens.remove(name);
+        self.last_hook.remove(name);
+        self.detector_wake.remove(name);
         self.pty_heartbeat.remove(name);
         self.pty.forget(name);
     }
@@ -144,6 +206,12 @@ impl AppState {
         }
         if let Some((_, v)) = self.hook_tokens.remove(old) {
             self.hook_tokens.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.last_hook.remove(old) {
+            self.last_hook.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.detector_wake.remove(old) {
+            self.detector_wake.insert(new.to_string(), v);
         }
         if let Some((_, v)) = self.pty_heartbeat.remove(old) {
             self.pty_heartbeat.insert(new.to_string(), v);

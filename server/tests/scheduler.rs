@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
+use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
 use amux_server::state::AppState;
 use amux_server::{db, http, scheduler};
 
@@ -27,7 +27,9 @@ fn temp_config() -> (Config, PathBuf) {
         tls: TlsConfig::default(),
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),
-        ws: Default::default(),
+        // `ws` was added to `Config` after this test's milestone branched; default
+        // it so the full suite compiles against the merged `Config`.
+        ws: WsConfig::default(),
     };
     (config, dir)
 }

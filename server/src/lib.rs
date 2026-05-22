@@ -4,12 +4,15 @@
 //! binary (`main.rs`) and the integration tests (`tests/`) share one
 //! definition. Modules map 1:1 to TECH_PLAN §3.2.
 
+pub mod agents;
 pub mod auth;
 pub mod board;
+pub mod claude_config;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod files;
+pub mod hooks;
 pub mod http;
 pub mod public;
 pub mod scheduler;
