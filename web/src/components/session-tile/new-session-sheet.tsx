@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { sessionsApi, SessionError, type NewSession } from '@/lib/api'
+import { homeDir } from '@/env'
 
 // ── Quick-start preset boot configs (M12 acceptance) ────────────────────────
 // Each preset prefills the whole form: a name stem, a provider, and the initial
@@ -91,7 +92,9 @@ const EMPTY_FORM = (defaultDir: string): FormState => ({
 export interface NewSessionSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Pre-filled cwd (§4.11: "pre-filled with cwd + provider=claude"). */
+  /** Pre-filled working directory (§4.11: "pre-filled with cwd + provider=
+   *  claude"). When omitted it falls back to the server's home directory
+   *  (`window._AMUX_HOME_DIR`) so a session can be created in one click. */
   defaultDir?: string
   /** Called after a successful create with the new session's name so the route
    *  can navigate to `/focus/{name}`. */
@@ -108,9 +111,12 @@ export interface NewSessionSheetProps {
 export function NewSessionSheet({
   open,
   onOpenChange,
-  defaultDir = '',
+  defaultDir,
   onCreated,
 }: NewSessionSheetProps) {
+  // Fall back to the server's home directory so the working-directory field is
+  // always pre-filled — the user can create a session in one click, no typing.
+  const initialDir = defaultDir ?? homeDir()
   // The inner form only mounts while the sheet is open, so it starts fresh from
   // `defaultDir` each time — no reset effect needed.
   return (
@@ -129,7 +135,7 @@ export function NewSessionSheet({
         </SheetHeader>
         {open && (
           <NewSessionForm
-            defaultDir={defaultDir}
+            defaultDir={initialDir}
             onCancel={() => onOpenChange(false)}
             onCreated={(name) => {
               onOpenChange(false)
@@ -180,7 +186,9 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
     setTab('advanced')
   }
 
-  const canSubmit = form.name.trim().length > 0 && form.dir.trim().length > 0
+  // A blank directory must NOT block creation: the server defaults an empty/
+  // omitted `dir` to the home directory. Only the name is truly required.
+  const canSubmit = form.name.trim().length > 0
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -276,7 +284,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
               <Field
                 label="Directory"
                 htmlFor="ns-dir"
-                hint="Where the agent runs. Pre-filled with the current path."
+                hint="Where the agent runs. Defaults to your home directory."
               >
                 <Input
                   id="ns-dir"
