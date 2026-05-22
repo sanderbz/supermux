@@ -37,6 +37,7 @@ async fn setup() -> TestEnv {
         tls: TlsConfig::default(),
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),
+        ws: Default::default(),
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

@@ -59,7 +59,7 @@ thiserror = "2.0"
 once_cell = "1.20"
 dashmap = "6.1"                                          # per-session lock/stream maps (AppState)
 regex = "1.11"
-nix = { version = "0.29", features = ["signal", "process"] }  # SIGTERM Claude
+nix = { version = "0.29", features = ["signal", "process", "fs"] }  # SIGTERM Claude; fs = mkfifo/open/Mode (M4 pty FIFO)
 notify = "7.0"                                           # FS watch for hot-reload (optional)
 shell-escape = "0.1"
 shellexpand = "3.1"
@@ -72,6 +72,7 @@ which = "7.0"                                            # locate claude/tmux
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 tungstenite = "0.24"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }  # WS client Stream/Sink ext (M4 ws tests)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 pretty_assertions = "1.4"
 insta = "1.42"                                           # snapshot tests for status detector

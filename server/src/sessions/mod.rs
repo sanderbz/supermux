@@ -17,6 +17,7 @@
 //! handlers are merged into [`router_for`] alongside the M2 CRUD routes.
 
 pub mod lifecycle;
+pub mod pty;
 pub mod tmux;
 
 use std::collections::HashMap;
