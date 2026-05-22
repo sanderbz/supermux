@@ -75,3 +75,4 @@ tungstenite = "0.24"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 pretty_assertions = "1.4"
 insta = "1.42"                                           # snapshot tests for status detector
+proptest = "1.6"                                         # required path_safe jail-escape property test (§7.1)

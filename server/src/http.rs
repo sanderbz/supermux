@@ -18,6 +18,7 @@ use axum::{Json, Router};
 
 use crate::db;
 use crate::error::AppError;
+use crate::files;
 use crate::public;
 use crate::state::AppState;
 use crate::{auth, db::sessions::Session};
@@ -35,7 +36,7 @@ pub fn router(state: AppState) -> Router {
 /// ```ignore
 /// .merge(sessions::router_for(state.clone()))   // M2
 /// .merge(board::router_for(state.clone()))      // M6
-/// .merge(files::router_for(state.clone()))      // M7
+/// .merge(files::router_for())                   // M7 (no build-time state)
 /// .merge(scheduler::router_for(state.clone()))  // M8
 /// .merge(agents::router_for(state.clone()))     // M9
 /// ```
@@ -44,6 +45,7 @@ fn protected_router(state: AppState) -> Router {
         // M1 ships a minimal `/api/sessions` so the auth layer is exercisable
         // end-to-end. M2 replaces this with `sessions::router_for(state)`.
         .route("/api/sessions", get(list_sessions))
+        .merge(files::router_for()) // M7
         .layer(from_fn_with_state(state.clone(), auth::auth_middleware))
         .with_state(state)
 }
