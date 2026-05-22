@@ -19,7 +19,7 @@
 // never referenced here; it lives in `window._AMUX_AUTH_TOKEN` (env.ts).
 
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
@@ -37,10 +37,6 @@ import { SpecialsSheet } from '@/components/focus-mode/specials-sheet'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
 
-export interface MobileFocusProps {
-  name: string
-}
-
 /** Synthesize a minimal session from the route param so the terminal mounts even
  *  before the (M12) sessions query has delivered this row. */
 function placeholderSession(name: string): SessionSummary {
@@ -54,7 +50,10 @@ function placeholderSession(name: string): SessionSummary {
   }
 }
 
-export function MobileFocus({ name }: MobileFocusProps) {
+// Self-contained route component (reads the `:name` param like M14's
+// <DesktopFocus />) so the focus.tsx fork can call it with no props.
+export function MobileFocus() {
+  const { name = '' } = useParams()
   const navigate = useNavigate()
   const reduceMotion = useReducedMotion()
   const { sessions } = useSessions()

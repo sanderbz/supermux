@@ -9,27 +9,28 @@ import { MobileFocus } from '@/routes/focus/mobile'
 
 // The focus route forks by viewport (TECH_PLAN §4.1 / §4.3): desktop (≥768px) vs
 // mobile (<768px). M15 owns the MOBILE branch — the Vaul drag-detent sheet over
-// the M13 LiveTerminal. M14 owns the DESKTOP branch (split + dock); until it
-// lands, desktop keeps the minimal M13 header below. The two branches are
-// disjoint so the parallel M14/M15 agents never edit each other's code.
+// the M13 LiveTerminal (focus/mobile.tsx). M14 owns the DESKTOP branch
+// (focus/desktop.tsx — split + dock); on merge, swap the desktop fallback below
+// for `<DesktopFocus />`. The two branches are disjoint files so the parallel
+// M14/M15 agents never edit each other's code (only this fork point overlaps).
 
 export function Focus() {
-  const { name = '' } = useParams()
   const isDesktop = useMediaQuery('(min-width: 768px)')
 
   // Mobile (<768px): the M15 hero — Vaul detent sheet, dock, edge gestures.
-  if (!isDesktop) return <MobileFocus name={name} />
+  if (!isDesktop) return <MobileFocus />
 
-  // Desktop (≥768px): M14 split + dock replaces this minimal header.
-  return <DesktopFocusFallback name={name} />
+  // Desktop (≥768px): M14's <DesktopFocus /> replaces this minimal fallback.
+  return <DesktopFocusFallback />
 }
 
-function DesktopFocusFallback({ name }: { name: string }) {
+function DesktopFocusFallback() {
+  const { name = '' } = useParams()
   const navigate = useNavigate()
   return (
     <div className="flex h-full w-full flex-col bg-background">
-      {/* Minimal focus header (44px) — iOS-native, Title-Case. The full desktop
-          split + dock arrives in M14. */}
+      {/* Minimal focus header (44px). The full desktop split + dock arrives in
+          M14 (focus/desktop.tsx). */}
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2 pt-safe">
         <motion.button
           type="button"
