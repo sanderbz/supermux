@@ -53,6 +53,49 @@ const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 /// How many trailing lines the tile preview surfaces (§3.6 hero flow, §3.4).
 const PREVIEW_LINES: usize = 6;
 
+/// Reconcile every persisted session's stored status against tmux reality on
+/// boot. The `session_runtime.last_status` column keeps its last-known value
+/// across a server restart (and a machine reboot), so a session that read
+/// `active`/`idle`/`waiting` before the restart still reads that way afterwards
+/// — even though a reboot wipes every tmux session, leaving the pty genuinely
+/// dead. The overview would then show a dead session as healthy, and peeking it
+/// opens a WebSocket that reconnects forever (the tmux pane is gone).
+///
+/// This runs once, before the server starts serving, so the overview is correct
+/// from the first paint: for every session row whose `supermux-<name>` tmux
+/// session does NOT exist, the status is forced to `stopped` (the existing
+/// "not running" state the stopped-session UI already handles — the `Status`
+/// enum's [`Status::Stopped`]). A session whose tmux pane genuinely exists is
+/// left untouched: the 2s detector loop classifies it live.
+///
+/// Session rows are NEVER deleted here — a stopped session stays in the DB so
+/// the user can resume it.
+pub async fn reconcile_on_boot(state: &AppState) {
+    let sessions = match db::sessions::list(&state.pool).await {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            tracing::warn!(error = %e, "status reconcile: failed to list sessions on boot");
+            return;
+        }
+    };
+    for s in sessions {
+        let tmux = Tmux::new(&s.name);
+        // A failed `has-session` probe is treated as "not running" — the pane
+        // cannot be served either way, so `stopped` is the safe, correct status.
+        let alive = tmux.exists().await.unwrap_or(false);
+        if alive {
+            continue;
+        }
+        if let Err(e) =
+            db::sessions::set_last_status(&state.pool, &s.name, Status::Stopped.as_str()).await
+        {
+            tracing::warn!(name = %s.name, error = %e, "status reconcile: set_last_status failed");
+            continue;
+        }
+        tracing::info!(name = %s.name, "status reconcile: tmux pane gone → stopped");
+    }
+}
+
 /// Spawn detector loops for every existing (non-archived) session. Called once
 /// from `main.rs` on boot so a restarted server resumes detection — the
 /// cold-start path (§3.2.8): each fresh [`StatusDetector`] reads the cold-start
