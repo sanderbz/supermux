@@ -18,9 +18,21 @@
 //!     missing API route still 404s as JSON instead of silently serving HTML.
 //!
 //! **Token injection.** `index.html` carries no placeholder; the served HTML has
-//! an inline `<script>window._AMUX_AUTH_TOKEN=…;window._AMUX_BASE_URL=…;
-//! window._AMUX_VERSION=…</script>` spliced in immediately before
-//! `<div id="root">`, which is where the SPA (`web/src/env.ts`) reads them.
+//! an inline `<script>window._AMUX_AUTH_TOKEN=…;window._AMUX_VERSION=…</script>`
+//! spliced in immediately before `<div id="root">`, which is where the SPA
+//! (`web/src/env.ts`) reads them.
+//!
+//! **No `_AMUX_BASE_URL` injection.** The server-served SPA is *always*
+//! same-origin with its own API — whatever host/scheme the user reached the
+//! page on (localhost, or the https Tailscale hostname via `tailscale serve`)
+//! IS the API origin. The server's `bind` address (e.g. `127.0.0.1:8823`) is an
+//! internal detail and is NEVER a correct client base URL: injecting it makes
+//! the SPA fire all HTTP + SSE requests cross-origin, which the browser
+//! CORS-blocks (the connection banner then sticks on "Reconnecting…"). So we do
+//! NOT set `window._AMUX_BASE_URL`; the SPA (`env.ts` `baseUrl()`) falls back to
+//! `import.meta.env.BASE_URL` → relative, same-origin requests. `_AMUX_BASE_URL`
+//! is reserved for the future Capacitor native-wrap case (a WebView with no
+//! same-origin server), where the native bootstrap script sets it explicitly.
 
 use axum::body::Body;
 use axum::extract::State;
@@ -119,18 +131,19 @@ fn serve_index(state: &AppState) -> Response {
 }
 
 /// Splice the runtime-config `<script>` in before `<div id="root">`. The SPA
-/// (`web/src/env.ts`) reads `window._AMUX_AUTH_TOKEN` / `_BASE_URL` / `_VERSION`.
+/// (`web/src/env.ts`) reads `window._AMUX_AUTH_TOKEN` / `_VERSION`.
+///
+/// Deliberately does NOT set `window._AMUX_BASE_URL`: the server-served SPA is
+/// same-origin with its own API, so the SPA must use relative URLs. With the
+/// global left `undefined`, `env.ts` `baseUrl()` falls back to
+/// `import.meta.env.BASE_URL` → same-origin relative requests. Injecting the
+/// server's `bind` address here would pin every HTTP + SSE request to a fixed
+/// origin and break the app whenever the page is reached via any other host
+/// (localhost, the Tailscale hostname) — a cross-origin CORS failure.
 fn inject_runtime_config(html: &str, state: &AppState) -> String {
-    let scheme = if state.config.tls.cert_path.is_some() || state.config.tls.self_signed {
-        "https"
-    } else {
-        "http"
-    };
-    let base_url = format!("{scheme}://{}", state.config.bind);
     let script = format!(
-        "<script>window._AMUX_AUTH_TOKEN={token};window._AMUX_BASE_URL={base};window._AMUX_VERSION={version};</script>",
+        "<script>window._AMUX_AUTH_TOKEN={token};window._AMUX_VERSION={version};</script>",
         token = json_string(&state.config.auth_token),
-        base = json_string(&base_url),
         version = json_string(env!("CARGO_PKG_VERSION")),
     );
 
