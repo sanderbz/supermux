@@ -13,18 +13,18 @@
 
 use std::time::{Duration, Instant};
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
-use amux_server::sessions::auto_actions;
-use amux_server::sessions::status::StatusDetector;
-use amux_server::state::AppState;
-use amux_server::{db, sessions};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
+use supermux_server::sessions::auto_actions;
+use supermux_server::sessions::status::StatusDetector;
+use supermux_server::state::AppState;
+use supermux_server::{db, sessions};
 
 fn tmux_available() -> bool {
     which::which("tmux").is_ok()
 }
 
 async fn test_state() -> (AppState, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-status-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-status-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -149,7 +149,7 @@ async fn detector_tick_writes_last_capture() {
     // Teardown.
     let _ = sessions::delete(&state, &name).await;
     let _ = std::process::Command::new("tmux")
-        .args(["kill-session", "-t", &format!("amux3-{name}")])
+        .args(["kill-session", "-t", &format!("supermux-{name}")])
         .output();
     std::fs::remove_dir_all(dir).ok();
 }

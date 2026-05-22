@@ -11,11 +11,11 @@
 //!   * a second client receives the replay buffer,
 //!   * the (cap+1)-th subscriber is closed 1013.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
-use amux_server::sessions::lifecycle;
-use amux_server::sessions::{self, CreateInput};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
+use supermux_server::sessions::lifecycle;
+use supermux_server::sessions::{self, CreateInput};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
@@ -39,7 +39,7 @@ fn text(s: &str) -> Msg {
 }
 
 async fn spawn_server(ws: WsConfig) -> (AppState, SocketAddr, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-wspty-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-wspty-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -161,9 +161,9 @@ async fn teardown(state: &AppState, name: &str, dir: PathBuf) {
     let _ = lifecycle::stop(state, name).await;
     let _ = sessions::delete(state, name).await;
     let _ = std::process::Command::new("tmux")
-        .args(["kill-session", "-t", &format!("amux3-{name}")])
+        .args(["kill-session", "-t", &format!("supermux-{name}")])
         .output();
-    let _ = std::fs::remove_file(format!("/tmp/amux3-pty-{name}.fifo"));
+    let _ = std::fs::remove_file(format!("/tmp/supermux-pty-{name}.fifo"));
     let _ = std::fs::remove_dir_all(dir);
 }
 

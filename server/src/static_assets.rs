@@ -2,13 +2,13 @@
 //!
 //! The built web app (`web/dist`, copied to `server/static` by `scripts/build.sh`
 //! and `build.rs`) is embedded into the binary at compile time via `rust-embed`,
-//! so the single `amux-server` binary serves the *whole* product — not just
+//! so the single `supermux-server` binary serves the *whole* product — not just
 //! `/api` + `/ws`. Without this layer the deployed binary 404s on `GET /` and
 //! the SPA never receives its auth token (§3.2 line 153, R4-01).
 //!
 //! **Routes (PUBLIC — no bearer layer).** Mounted on the public router in
 //! `http::router` AFTER the protected `.layer(...)` so no auth middleware wraps
-//! them. The HTML body itself is public; the inline `window._AMUX_AUTH_TOKEN` is
+//! them. The HTML body itself is public; the inline `window._SUPERMUX_AUTH_TOKEN` is
 //! the §1.4/§6.1 documented trade-off (token-in-HTML, acceptable because the
 //! server binds 127.0.0.1 + Tailscale and Tailscale provides device auth).
 //!
@@ -19,20 +19,20 @@
 //!
 //! **Token injection.** `index.html` carries no placeholder; the served HTML has
 //! an inline
-//! `<script>window._AMUX_AUTH_TOKEN=…;window._AMUX_VERSION=…;window._AMUX_HOME_DIR=…</script>`
+//! `<script>window._SUPERMUX_AUTH_TOKEN=…;window._SUPERMUX_VERSION=…;window._SUPERMUX_HOME_DIR=…</script>`
 //! spliced in immediately before `<div id="root">`, which is where the SPA
-//! (`web/src/env.ts`) reads them. `_AMUX_HOME_DIR` lets the New-session form
+//! (`web/src/env.ts`) reads them. `_SUPERMUX_HOME_DIR` lets the New-session form
 //! pre-fill its working-directory field so a session boots in one click.
 //!
-//! **No `_AMUX_BASE_URL` injection.** The server-served SPA is *always*
+//! **No `_SUPERMUX_BASE_URL` injection.** The server-served SPA is *always*
 //! same-origin with its own API — whatever host/scheme the user reached the
 //! page on (localhost, or the https Tailscale hostname via `tailscale serve`)
 //! IS the API origin. The server's `bind` address (e.g. `127.0.0.1:8823`) is an
 //! internal detail and is NEVER a correct client base URL: injecting it makes
 //! the SPA fire all HTTP + SSE requests cross-origin, which the browser
 //! CORS-blocks (the connection banner then sticks on "Reconnecting…"). So we do
-//! NOT set `window._AMUX_BASE_URL`; the SPA (`env.ts` `baseUrl()`) falls back to
-//! `import.meta.env.BASE_URL` → relative, same-origin requests. `_AMUX_BASE_URL`
+//! NOT set `window._SUPERMUX_BASE_URL`; the SPA (`env.ts` `baseUrl()`) falls back to
+//! `import.meta.env.BASE_URL` → relative, same-origin requests. `_SUPERMUX_BASE_URL`
 //! is reserved for the future Capacitor native-wrap case (a WebView with no
 //! same-origin server), where the native bootstrap script sets it explicitly.
 
@@ -110,7 +110,7 @@ async fn asset_or_index(State(state): State<AppState>, uri: Uri) -> Response {
     }
 }
 
-/// Render `index.html` with `window._AMUX_*` runtime config spliced in before
+/// Render `index.html` with `window._SUPERMUX_*` runtime config spliced in before
 /// `<div id="root">`.
 fn serve_index(state: &AppState) -> Response {
     let Some(raw) = Assets::get("index.html") else {
@@ -133,9 +133,9 @@ fn serve_index(state: &AppState) -> Response {
 }
 
 /// Splice the runtime-config `<script>` in before `<div id="root">`. The SPA
-/// (`web/src/env.ts`) reads `window._AMUX_AUTH_TOKEN` / `_VERSION`.
+/// (`web/src/env.ts`) reads `window._SUPERMUX_AUTH_TOKEN` / `_VERSION`.
 ///
-/// Deliberately does NOT set `window._AMUX_BASE_URL`: the server-served SPA is
+/// Deliberately does NOT set `window._SUPERMUX_BASE_URL`: the server-served SPA is
 /// same-origin with its own API, so the SPA must use relative URLs. With the
 /// global left `undefined`, `env.ts` `baseUrl()` falls back to
 /// `import.meta.env.BASE_URL` → same-origin relative requests. Injecting the
@@ -143,7 +143,7 @@ fn serve_index(state: &AppState) -> Response {
 /// origin and break the app whenever the page is reached via any other host
 /// (localhost, the Tailscale hostname) — a cross-origin CORS failure.
 fn inject_runtime_config(html: &str, state: &AppState) -> String {
-    // `_AMUX_HOME_DIR`: the server's home directory. The New-session form
+    // `_SUPERMUX_HOME_DIR`: the server's home directory. The New-session form
     // pre-fills its working-directory field with this so a session can be
     // created in one click without typing a path. Empty string if unresolved
     // (the create handler then falls back to the home dir server-side anyway).
@@ -151,7 +151,7 @@ fn inject_runtime_config(html: &str, state: &AppState) -> String {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let script = format!(
-        "<script>window._AMUX_AUTH_TOKEN={token};window._AMUX_VERSION={version};window._AMUX_HOME_DIR={home};</script>",
+        "<script>window._SUPERMUX_AUTH_TOKEN={token};window._SUPERMUX_VERSION={version};window._SUPERMUX_HOME_DIR={home};</script>",
         token = json_string(&state.config.auth_token),
         version = json_string(env!("CARGO_PKG_VERSION")),
         home = json_string(&home_dir),

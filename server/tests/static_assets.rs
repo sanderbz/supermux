@@ -3,13 +3,13 @@
 //!
 //! These guard the path the M24a/M24b Playwright e2e missed (it ran against the
 //! Vite dev server, never the embedded binary): the release binary MUST serve
-//! the SPA at `GET /` with `window._AMUX_AUTH_TOKEN` injected, fall back to the
+//! the SPA at `GET /` with `window._SUPERMUX_AUTH_TOKEN` injected, fall back to the
 //! SPA shell for client-side routes, and still 404 unknown `/api/*` routes
 //! rather than silently returning HTML.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -19,7 +19,7 @@ use tower::ServiceExt; // for `oneshot`
 const TOKEN: &str = "embed-test-token-abc";
 
 async fn test_app() -> (axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-embed-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-embed-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -58,14 +58,14 @@ async fn root_serves_spa_with_injected_token() {
 
     let html = body_string(resp).await;
     assert!(html.contains("<div id=\"root\">"), "served HTML must be the SPA shell");
-    // R4-01: the SPA reads `window._AMUX_AUTH_TOKEN`; if it is not injected,
+    // R4-01: the SPA reads `window._SUPERMUX_AUTH_TOKEN`; if it is not injected,
     // every HTTP call 401s and every WS first-frame auth fails.
     assert!(
-        html.contains(&format!("window._AMUX_AUTH_TOKEN=\"{TOKEN}\"")),
+        html.contains(&format!("window._SUPERMUX_AUTH_TOKEN=\"{TOKEN}\"")),
         "GET / must inject the auth token; got:\n{html}"
     );
-    assert!(html.contains("window._AMUX_BASE_URL="), "must inject base URL");
-    assert!(html.contains("window._AMUX_VERSION="), "must inject version");
+    assert!(html.contains("window._SUPERMUX_BASE_URL="), "must inject base URL");
+    assert!(html.contains("window._SUPERMUX_VERSION="), "must inject version");
 
     let _ = std::fs::remove_dir_all(dir);
 }

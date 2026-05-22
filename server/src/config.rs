@@ -3,14 +3,14 @@
 //! Loaded once at startup and passed everywhere via `Arc<Config>` in
 //! [`crate::state::AppState`]. Resolution order:
 //!   1. Built-in defaults.
-//!   2. `AMUX3_DATA_DIR` env var (else `~/.amux-v3`) — where `config.toml`,
+//!   2. `SUPERMUX_DATA_DIR` env var (else `~/.supermux`) — where `config.toml`,
 //!      `data.db`, and `auth_token` live. The deploy systemd unit (§8.3) sets
 //!      this; the e2e smoke harness (M24a) sets it for isolation so a test run
-//!      never touches the real user's `~/.amux-v3`.
+//!      never touches the real user's `~/.supermux`.
 //!   3. `<data_dir>/config.toml` (partial override, all keys optional).
-//!   4. `AMUX3_BIND` env var overrides the `bind` address (e.g. `127.0.0.1:0`
+//!   4. `SUPERMUX_BIND` env var overrides the `bind` address (e.g. `127.0.0.1:0`
 //!      for an ephemeral test port).
-//!   5. `AMUX3_AUTH_TOKEN` env var, else `config.toml` value, else
+//!   5. `SUPERMUX_AUTH_TOKEN` env var, else `config.toml` value, else
 //!      `<data_dir>/auth_token` file (generated mode 0o600 on first start).
 
 use std::net::SocketAddr;
@@ -24,7 +24,7 @@ use serde::Deserialize;
 /// Fully-resolved configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Data directory, default `~/.amux-v3`. Holds `data.db`, `auth_token`, logs.
+    /// Data directory, default `~/.supermux`. Holds `data.db`, `auth_token`, logs.
     pub data_dir: PathBuf,
     /// Primary bind address, default `127.0.0.1:8823`.
     pub bind: SocketAddr,
@@ -108,7 +108,7 @@ struct RawConfig {
 fn default_data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".amux-v3")
+        .join(".supermux")
 }
 
 fn default_bind() -> SocketAddr {
@@ -118,9 +118,9 @@ fn default_bind() -> SocketAddr {
 /// Load and resolve configuration, creating `data_dir` and the auth-token file
 /// if needed.
 pub fn load() -> Result<Config> {
-    // `AMUX3_DATA_DIR` (deploy unit §8.3 + e2e isolation) wins over the default,
+    // `SUPERMUX_DATA_DIR` (deploy unit §8.3 + e2e isolation) wins over the default,
     // so `config.toml`/`auth_token` are read from there before anything else.
-    let provisional_data_dir = env_path("AMUX3_DATA_DIR").unwrap_or_else(default_data_dir);
+    let provisional_data_dir = env_path("SUPERMUX_DATA_DIR").unwrap_or_else(default_data_dir);
     let cfg_path = provisional_data_dir.join("config.toml");
 
     let raw: RawConfig = if cfg_path.exists() {
@@ -131,8 +131,8 @@ pub fn load() -> Result<Config> {
         RawConfig::default()
     };
 
-    // `AMUX3_DATA_DIR` (if set) takes precedence over a `config.toml` data_dir.
-    let data_dir = env_path("AMUX3_DATA_DIR")
+    // `SUPERMUX_DATA_DIR` (if set) takes precedence over a `config.toml` data_dir.
+    let data_dir = env_path("SUPERMUX_DATA_DIR")
         .or(raw.data_dir)
         .unwrap_or(provisional_data_dir);
     std::fs::create_dir_all(&data_dir)
@@ -140,12 +140,12 @@ pub fn load() -> Result<Config> {
 
     let auth_token = resolve_auth_token(&data_dir, raw.auth_token)?;
 
-    // `AMUX3_BIND` overrides the configured bind (ephemeral `:0` in e2e tests).
-    let bind = match std::env::var("AMUX3_BIND") {
+    // `SUPERMUX_BIND` overrides the configured bind (ephemeral `:0` in e2e tests).
+    let bind = match std::env::var("SUPERMUX_BIND") {
         Ok(s) if !s.trim().is_empty() => s
             .trim()
             .parse()
-            .with_context(|| format!("parsing AMUX3_BIND={s}"))?,
+            .with_context(|| format!("parsing SUPERMUX_BIND={s}"))?,
         _ => raw.bind.unwrap_or_else(default_bind),
     };
 
@@ -170,10 +170,10 @@ fn env_path(key: &str) -> Option<PathBuf> {
 
 /// Resolve the dashboard bearer token.
 ///
-/// Priority: `AMUX3_AUTH_TOKEN` env → `config.toml` value → `auth_token` file →
+/// Priority: `SUPERMUX_AUTH_TOKEN` env → `config.toml` value → `auth_token` file →
 /// freshly generated token persisted to `<data_dir>/auth_token` (mode 0o600).
 fn resolve_auth_token(data_dir: &Path, from_file_cfg: Option<String>) -> Result<String> {
-    if let Ok(env_tok) = std::env::var("AMUX3_AUTH_TOKEN") {
+    if let Ok(env_tok) = std::env::var("SUPERMUX_AUTH_TOKEN") {
         let env_tok = env_tok.trim().to_string();
         if !env_tok.is_empty() {
             return Ok(env_tok);

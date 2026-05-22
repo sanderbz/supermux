@@ -4,9 +4,9 @@
 //! claim error surfaces (404/409), statuses CRUD + builtin protection, tag
 //! completion, the PUBLIC iCal feed, and auth enforcement.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -17,7 +17,7 @@ use tower::ServiceExt;
 const TOKEN: &str = "board-test-token";
 
 async fn test_app() -> (axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-board-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-board-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -81,7 +81,7 @@ async fn create_lists_and_id_prefix() {
     let (app, dir) = test_app().await;
     mk_session(&app, "gel-astro").await;
 
-    // No session → AMUX prefix.
+    // No session → SUPERMUX prefix.
     let (status, body) = send(
         &app,
         Method::POST,
@@ -91,7 +91,7 @@ async fn create_lists_and_id_prefix() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(body["ok"], json!(true));
-    assert_eq!(body["data"]["id"], json!("AMUX-1"));
+    assert_eq!(body["data"]["id"], json!("SUPERMUX-1"));
     assert_eq!(body["data"]["status"], json!("todo"));
     assert_eq!(body["data"]["owner_type"], json!("human"));
 
@@ -108,7 +108,7 @@ async fn create_lists_and_id_prefix() {
     assert_eq!(body["data"]["session"], json!("gel-astro"));
     assert_eq!(body["data"]["tags"], json!(["be", "urgent"]));
 
-    // Second AMUX issue increments the counter.
+    // Second SUPERMUX issue increments the counter.
     let (_, body) = send(
         &app,
         Method::POST,
@@ -116,7 +116,7 @@ async fn create_lists_and_id_prefix() {
         Some(json!({ "title": "another" })),
     )
     .await;
-    assert_eq!(body["data"]["id"], json!("AMUX-2"));
+    assert_eq!(body["data"]["id"], json!("SUPERMUX-2"));
 
     // List returns all three.
     let (status, body) = send(&app, Method::GET, "/api/board", None).await;

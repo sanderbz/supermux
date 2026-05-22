@@ -1,7 +1,7 @@
 //! Claude `SettingsHook` ingestion endpoint (TECH_PLAN §3.6, §6.5; M5b).
 //!
 //! `POST /api/_internal/hook` is the inbound side of the status detector's apex
-//! signal: Claude Code runs amux's `curl` hook (installed by
+//! signal: Claude Code runs supermux's `curl` hook (installed by
 //! [`crate::claude_config`]) on every tool call / notification / turn end, and it
 //! lands here. A valid event is recorded into [`AppState::record_hook`] and the
 //! session's detector loop is woken so the status update surfaces well within the
@@ -10,7 +10,7 @@
 //! **Auth model (§6.5) — per-session, NOT the dashboard bearer.** This route is
 //! mounted OUTSIDE the bearer-token layer because the hook command never carries
 //! the dashboard bearer (it must not be in the session env). Instead each request
-//! presents `X-Amux-Hook-Token`, validated by a **constant-time** compare against
+//! presents `X-Supermux-Hook-Token`, validated by a **constant-time** compare against
 //! `session_runtime.hook_token WHERE name = body.session`. Consequences:
 //!   * A leaked dashboard bearer cannot drive this endpoint (it isn't checked).
 //!   * A leaked hook token of session A cannot mark session B — B's row holds a
@@ -28,8 +28,8 @@ use crate::error::AppError;
 use crate::sessions::status::HookEvent;
 use crate::state::AppState;
 
-/// Header the hook command sets to its per-session `$AMUX_HOOK_TOKEN`.
-const HOOK_TOKEN_HEADER: &str = "X-Amux-Hook-Token";
+/// Header the hook command sets to its per-session `$SUPERMUX_HOOK_TOKEN`.
+const HOOK_TOKEN_HEADER: &str = "X-Supermux-Hook-Token";
 
 /// The hook sub-router. Merged at the top level of `http::router` (NO bearer
 /// layer — auth is the per-session hook token, validated in [`hook_handler`]).
@@ -41,7 +41,7 @@ pub fn router_for(state: AppState) -> Router {
 
 #[derive(Debug, Deserialize)]
 struct HookBody {
-    /// The amux session name (`$AMUX_SESSION`); scopes the token check.
+    /// The supermux session name (`$SUPERMUX_SESSION`); scopes the token check.
     session: String,
     /// The Claude event kind (`pre_tool` | `post_tool` | `notification` | `stop`
     /// | `subagent_stop`).

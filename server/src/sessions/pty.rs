@@ -49,9 +49,9 @@ type Replay = RwLock<VecDeque<Bytes>>;
 
 /// One session's live stream: FIFO reader + broadcast fan-out + replay buffer.
 pub struct PtyStream {
-    /// Bare session name (NOT `amux3-` prefixed).
+    /// Bare session name (NOT `supermux-` prefixed).
     pub name: String,
-    /// `/tmp/amux3-pty-<name>.fifo` — the pane→reader FIFO.
+    /// `/tmp/supermux-pty-<name>.fifo` — the pane→reader FIFO.
     pub fifo: PathBuf,
     /// `<data_dir>/logs/<name>.log` — durable on-disk capture (tee target).
     pub log: PathBuf,

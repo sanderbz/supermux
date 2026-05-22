@@ -1,4 +1,4 @@
-//! amux-v3 server library crate.
+//! supermux server library crate.
 //!
 //! Exposes the persistence, auth, config, and HTTP layers as a library so the
 //! binary (`main.rs`) and the integration tests (`tests/`) share one

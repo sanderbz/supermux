@@ -38,12 +38,12 @@ pub fn router(state: AppState) -> Router {
         // M4: WS pty stream — NO bearer layer; auth is in-band first-frame (§3.2.9).
         .merge(ws::router_for(state.clone()))
         // M5b: Claude hook ingestion — NO bearer layer; auth is the per-session
-        // `X-Amux-Hook-Token` validated in the handler (§6.5).
+        // `X-Supermux-Hook-Token` validated in the handler (§6.5).
         .merge(hooks::router_for(state.clone()))
         .merge(public::router_for(state.clone()))
         // Embedded SPA (R4-01 / §3.2 line 153) — PUBLIC, no bearer layer. Merged
         // LAST: it owns `GET /` and a catch-all `.fallback` that serves hashed
-        // assets or the SPA shell (with `window._AMUX_AUTH_TOKEN` injected). The
+        // assets or the SPA shell (with `window._SUPERMUX_AUTH_TOKEN` injected). The
         // fallback only fires for paths no other router claimed; `/api/*` and
         // `/ws/*` are explicitly denylisted inside it so a missing API route
         // still 404s as itself rather than silently returning HTML.

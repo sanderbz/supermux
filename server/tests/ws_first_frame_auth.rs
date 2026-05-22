@@ -9,9 +9,9 @@
 //!   * a valid token still reaches `auth_ok` (then 1011 because the session has
 //!     no live pane) — proving the happy auth path is distinct from 1008.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
@@ -32,7 +32,7 @@ fn text(s: &str) -> Msg {
 }
 
 async fn spawn_server() -> (SocketAddr, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-wsauth-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-wsauth-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),

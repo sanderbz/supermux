@@ -3,9 +3,9 @@
 //! database. Covers: create=201, duplicate-name=409, missing=404, PATCH rename
 //! end-to-end, plus tracked-files / steering round-trips and auth enforcement.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -16,7 +16,7 @@ use tower::ServiceExt; // for `oneshot`
 const TOKEN: &str = "secret-test-token-123";
 
 async fn test_app() -> (axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-http-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-http-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),

@@ -2,9 +2,9 @@
 //! acceptance). Covers: missing token = 401, wrong token = 401, correct token =
 //! 200 + `[]`.
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -15,7 +15,7 @@ const TOKEN: &str = "secret-test-token-123";
 
 /// Build a router backed by an isolated temp-dir database with a known token.
 async fn test_app() -> (axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-auth-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-auth-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),

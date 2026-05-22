@@ -60,7 +60,7 @@ mod tests {
 
     /// Build an isolated on-disk pool in a fresh temp dir and run migrations.
     async fn test_pool() -> (SqlitePool, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("amux-db-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("supermux-db-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let config = Config {
             data_dir: dir.clone(),

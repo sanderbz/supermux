@@ -8,9 +8,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -21,7 +21,7 @@ use tower::ServiceExt; // for `oneshot`
 const TOKEN: &str = "claim-race-token";
 
 async fn test_app() -> (axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-claim-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-claim-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),

@@ -6,9 +6,9 @@
 
 use std::time::Duration;
 
-use amux_server::config::{Config, ProviderDefaults, TlsConfig};
-use amux_server::state::AppState;
-use amux_server::{db, http};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -21,7 +21,7 @@ fn tmux_available() -> bool {
 }
 
 async fn setup() -> (AppState, axum::Router, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("amux-statusflow-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("supermux-statusflow-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = Config {
         data_dir: dir.clone(),
@@ -105,7 +105,7 @@ async fn detector_publishes_sessions_delta_for_live_pane() {
     // Teardown before asserting so a failure still cleans up the tmux session.
     let _ = api(&app, Method::DELETE, &format!("/api/sessions/{name}"), None).await;
     let _ = std::process::Command::new("tmux")
-        .args(["kill-session", "-t", &format!("amux3-{name}")])
+        .args(["kill-session", "-t", &format!("supermux-{name}")])
         .output();
     let _ = std::fs::remove_dir_all(dir);
 

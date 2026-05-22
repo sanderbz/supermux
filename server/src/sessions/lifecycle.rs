@@ -5,8 +5,8 @@
 //! [`AppState::lock_for`] so concurrent sends/starts/stops never race tmux
 //! commands. Read-only ops (`peek`) skip the lock per the §3.2.5 detector rule.
 //!
-//! **Hook-token rotation (§6.5).** Every `start` mints a fresh `AMUX_HOOK_TOKEN`
-//! (32 bytes, OsRng) and injects it — with `AMUX_SESSION`/`AMUX_URL`/
+//! **Hook-token rotation (§6.5).** Every `start` mints a fresh `SUPERMUX_HOOK_TOKEN`
+//! (32 bytes, OsRng) and injects it — with `SUPERMUX_SESSION`/`SUPERMUX_URL`/
 //! `TMUX_SESSION_NAME` — into the tmux pane env. The dashboard bearer is NEVER
 //! placed in the session environment.
 
@@ -34,7 +34,7 @@ pub struct StartResult {
     pub started: bool,
     /// The agent UI / shell prompt was observed within the wait-for-ready window.
     pub ready: bool,
-    /// `amux3-<name>` — the tmux target.
+    /// `supermux-<name>` — the tmux target.
     pub target: String,
 }
 
@@ -56,10 +56,10 @@ fn build_env(config: &crate::config::Config, name: &str, hook_token: &str) -> Ha
         "http"
     };
     let mut env = HashMap::new();
-    env.insert("AMUX_SESSION".to_string(), name.to_string());
+    env.insert("SUPERMUX_SESSION".to_string(), name.to_string());
     env.insert("TMUX_SESSION_NAME".to_string(), name.to_string());
-    env.insert("AMUX_URL".to_string(), format!("{scheme}://{}", config.bind));
-    env.insert("AMUX_HOOK_TOKEN".to_string(), hook_token.to_string());
+    env.insert("SUPERMUX_URL".to_string(), format!("{scheme}://{}", config.bind));
+    env.insert("SUPERMUX_HOOK_TOKEN".to_string(), hook_token.to_string());
     env
 }
 

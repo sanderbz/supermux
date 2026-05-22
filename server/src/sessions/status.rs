@@ -90,7 +90,7 @@ pub enum HookEvent {
 
 impl HookEvent {
     /// Parse the `event` field of an `/api/_internal/hook` POST body (§3.6 event
-    /// types). Accepts the snake_case wire form amux's hook command emits
+    /// types). Accepts the snake_case wire form supermux's hook command emits
     /// (`pre_tool`, `post_tool`, `notification`, `stop`, `subagent_stop`) plus the
     /// PascalCase Claude SettingsHook names, so either spelling is robust. Unknown
     /// kinds return `None` (the endpoint treats them as a no-op).
@@ -357,7 +357,7 @@ mod tests {
             "bypass permissions",
             "plan mode",
             "user@host project %\n❯ ",
-            "sander@mac amux-v3 $ ",
+            "sander@mac supermux $ ",
             "gpt-5-codex · ~/code",
         ] {
             assert_eq!(fresh(cap), Status::Idle, "{cap:?}");
