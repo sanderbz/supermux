@@ -14,6 +14,7 @@ import { springs } from '@/lib/springs'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
+import { useStandaloneMode } from '@/hooks/use-standalone-mode'
 
 interface NavItem {
   to: string
@@ -123,10 +124,19 @@ function BottomNav() {
 /** App shell: side-nav (desktop) / top + bottom nav (mobile) wrapping the route
  *  outlet. §M10 / §4.8. The <ReconnectBanner> (§M23a) is mounted ONCE here, at
  *  shell level, so the global connection-status surface floats above every
- *  route — pinned to the safe-area top, independent of the route's own scroll. */
+ *  route — pinned to the safe-area top, independent of the route's own scroll.
+ *
+ *  M23b: when launched as an installed PWA (`useStandaloneMode()`), the OS owns
+ *  the window chrome, so `data-standalone` is set on the shell root — routes can
+ *  key off it (e.g. to drop browser-only back affordances). The `pt-safe` /
+ *  `pb-safe` insets already handle the notch + Dynamic Island in both modes. */
 export function Layout() {
+  const standalone = useStandaloneMode()
   return (
-    <div className="flex h-full w-full">
+    <div
+      className="flex h-full w-full"
+      data-standalone={standalone ? '' : undefined}
+    >
       <ReconnectBanner />
       <SideNav />
       <div className="flex h-full min-w-0 flex-1 flex-col">
