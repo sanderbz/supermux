@@ -5,6 +5,9 @@ target/
 node_modules/
 dist/
 .vite/
+# Playwright e2e run artifacts
+test-results/
+playwright-report/
 # OS
 .DS_Store
 *.log

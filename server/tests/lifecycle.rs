@@ -227,10 +227,15 @@ async fn large_paste_via_load_buffer_round_trips() {
     assert_eq!(status, StatusCode::OK);
 
     // Poll for the file, then assert exact contents (no truncation/corruption).
+    // Wait for the FULL expected byte count, not just "non-empty": under heavy
+    // concurrent tmux load (the full `cargo test` run spins up many tmux-backed
+    // suites at once) `printf` can be observed mid-write — a non-empty but
+    // truncated read would otherwise spuriously fail the length assert. The
+    // window is generous (60 × 250ms = 15s) for the same contention reason.
     let mut on_disk = String::new();
-    for _ in 0..24 {
+    for _ in 0..60 {
         if let Ok(s) = std::fs::read_to_string(&out_file) {
-            if !s.is_empty() {
+            if s.len() >= payload.len() {
                 on_disk = s;
                 break;
             }

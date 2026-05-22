@@ -86,10 +86,23 @@ pub async fn pop_oldest(pool: &SqlitePool, session: &str) -> sqlx::Result<Option
 }
 
 /// Is this a transient SQLite busy/locked error worth retrying?
+///
+/// SQLite reports plain `SQLITE_BUSY` (5) / `SQLITE_LOCKED` (6) AND — under WAL
+/// — the *extended* codes `SQLITE_BUSY_SNAPSHOT` (517) and `SQLITE_BUSY_RECOVERY`
+/// (261). `BUSY_SNAPSHOT` fires when a deferred read transaction tries to
+/// upgrade to a write after another connection committed: `busy_timeout` does
+/// NOT retry it (the snapshot is stale by design), so the whole transaction
+/// must be rolled back and retried. M24b integration fix: `BEGIN IMMEDIATE` in
+/// `pop_oldest_once` avoids the read→write upgrade entirely, and this broadened
+/// predicate catches the extended busy codes as a belt-and-braces guard.
 fn is_locked(e: &sqlx::Error) -> bool {
     if let sqlx::Error::Database(db) = e {
-        // SQLITE_BUSY = 5, SQLITE_LOCKED = 6.
-        matches!(db.code().as_deref(), Some("5") | Some("6"))
+        // SQLITE_BUSY = 5, SQLITE_LOCKED = 6; extended: BUSY_SNAPSHOT = 517,
+        // BUSY_RECOVERY = 261, LOCKED_SHAREDCACHE = 262.
+        matches!(
+            db.code().as_deref(),
+            Some("5") | Some("6") | Some("517") | Some("261") | Some("262")
+        )
     } else {
         false
     }
@@ -97,29 +110,49 @@ fn is_locked(e: &sqlx::Error) -> bool {
 
 /// One attempt at the transactional dequeue (no retry).
 async fn pop_oldest_once(pool: &SqlitePool, session: &str) -> sqlx::Result<Option<String>> {
-    // `begin()` issues `BEGIN`; SQLite upgrades to a write lock on the DELETE.
-    // The SELECT…LIMIT 1 + DELETE WHERE id=? pair inside one tx is the
-    // single-flight dequeue from the plan.
-    let mut tx = pool.begin().await?;
-    let row: Option<(i64, String)> = sqlx::query_as(
+    // `BEGIN IMMEDIATE` takes the write lock UP FRONT. sqlx's `pool.begin()`
+    // issues a plain (deferred) `BEGIN`: the SELECT then starts a read snapshot
+    // and the later `DELETE` must upgrade read→write — under WAL that upgrade
+    // fails with `SQLITE_BUSY_SNAPSHOT` (517) if another connection committed in
+    // between, and `busy_timeout` will not retry it. Acquiring a connection and
+    // opening the txn with `BEGIN IMMEDIATE` makes the dequeue a single,
+    // properly-serialized writer (M24b integration fix). On any early return the
+    // connection is dropped, which rolls back the open transaction.
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+
+    let row: sqlx::Result<Option<(i64, String)>> = sqlx::query_as(
         "SELECT id, text FROM steering_queue WHERE session = ? ORDER BY id ASC LIMIT 1",
     )
     .bind(session)
-    .fetch_optional(&mut *tx)
-    .await?;
+    .fetch_optional(&mut *conn)
+    .await;
+    let row = match row {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(e);
+        }
+    };
 
     let Some((id, text)) = row else {
-        tx.rollback().await?;
+        sqlx::query("ROLLBACK").execute(&mut *conn).await?;
         return Ok(None);
     };
 
-    let deleted = sqlx::query("DELETE FROM steering_queue WHERE id = ?")
+    let deleted = match sqlx::query("DELETE FROM steering_queue WHERE id = ?")
         .bind(id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+        .execute(&mut *conn)
+        .await
+    {
+        Ok(r) => r.rows_affected(),
+        Err(e) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(e);
+        }
+    };
 
-    tx.commit().await?;
+    sqlx::query("COMMIT").execute(&mut *conn).await?;
 
     // If another pass deleted it first (deleted == 0), report empty so we don't
     // re-deliver a message we never owned.
