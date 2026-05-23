@@ -144,9 +144,13 @@ export function FocusHeader({
         // status-bar / Dynamic Island region from the first frame instead of
         // snapping into place when the transition ends. Mirrors the desktop
         // <MobileTopBar> pattern (layout.tsx) where pt-safe also lives ON the
-        // header. The 44pt hit target (h-11) is unchanged — pt-safe is
-        // additive.
-        'flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-1 pt-safe',
+        // header. Use min-h-11 (NOT h-11): the element is border-box, so a fixed
+        // h-11 would let pt-safe's env(safe-area-inset-top) eat INTO the 44px
+        // box and clip the title from the bottom on notched devices. min-h-11
+        // keeps the 44pt hit-target floor while letting the safe-area padding
+        // grow the box additively (44px content + inset), so the title clears
+        // both the notch above and the terminal below.
+        'flex min-h-11 shrink-0 items-center gap-1 border-b border-border/60 px-1 pt-safe',
         className,
       )}
       // Shared-element View Transition target (§M23a): same name as the tile, so
