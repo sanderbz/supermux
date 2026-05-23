@@ -35,6 +35,30 @@ pub struct KbdGroup {
     pub position: i64,
 }
 
+// ── prefs (key/value) ────────────────────────────────────────────────────────
+
+/// Read a single pref value by key (returns `None` if unset).
+pub async fn get_pref(pool: &SqlitePool, key: &str) -> sqlx::Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM prefs WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Upsert a single pref. Idempotent — overwrites any prior value.
+pub async fn put_pref(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO prefs (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 // ── snippets ─────────────────────────────────────────────────────────────────
 
 /// List all snippets, ordered by `position` then insertion (`id`).
