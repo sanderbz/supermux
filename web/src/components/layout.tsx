@@ -81,35 +81,35 @@ function SideNav() {
   )
 }
 
-/** Mobile: top app bar with brand + theme toggle (≤md).
+/** Mobile chrome above the route outlet (≤md).
  *
- *  Route-aware (Fix 3): on the **overview** route (`/`) the full-width wordmark
- *  bar wasted a whole `h-12 + pt-safe` band above the session grid, so there it
- *  collapses to a minimal top-right icon (just the ThemeToggle) pinned to the
- *  safe-area corner — the grid reclaims the band. The overview route itself now
- *  owns a `pt-safe` inset (overview.tsx) so its content still clears the notch /
- *  Dynamic Island; the floating icon is offset by the same inset.
+ *  Overview (`/`): a minimal top-right ThemeToggle pinned to the safe-area
+ *  corner — no in-flow band. The overview body re-homes its own `pt-safe`
+ *  (overview.tsx) so its content still clears the notch / Dynamic Island.
+ *  This was commit b5c8f14.
  *
- *  On every OTHER mobile route the full bar renders as before. On the focus route
- *  it renders nothing at all (gated out in <Layout>, Fix 1b). */
+ *  R5: every OTHER non-focus route (board / scheduler / settings / files)
+ *  used to render a full `h-12 + pt-safe` band carrying just a `supermux`
+ *  wordmark + a redundant ThemeToggle — wasted vertical space, since each of
+ *  those routes already self-renders its own header/title and the theme
+ *  control already lives in Settings → Appearance (settings.tsx, backed by the
+ *  same `supermux-theme` localStorage source as the desktop SideNav toggle).
+ *  So we drop the band entirely and return `null` for those routes; each route
+ *  absorbs its own mobile `pt-safe` inset (matching overview.tsx) so its header
+ *  still clears the notch. Desktop SideNav keeps its ThemeToggle untouched.
+ *
+ *  Focus (`/focus/:name`) renders nothing at all (gated out in <Layout>). */
 function MobileTopBar({ overview }: { overview: boolean }) {
-  if (overview) {
-    // Minimal corner affordance — no in-flow band. `top` clears the notch via
-    // the same safe-area inset the bar's pt-safe used; the overview body re-homes
-    // its own pt-safe so nothing slides under the Dynamic Island.
-    return (
-      <div className="pointer-events-none fixed right-3 top-[calc(env(safe-area-inset-top)+0.5rem)] z-40 md:hidden">
-        <div className="pointer-events-auto">
-          <ThemeToggle />
-        </div>
-      </div>
-    )
-  }
+  if (!overview) return null
+  // Minimal corner affordance — no in-flow band. `top` clears the notch via
+  // the same safe-area inset the old bar's pt-safe used; the overview body
+  // re-homes its own pt-safe so nothing slides under the Dynamic Island.
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-4 pt-safe md:hidden">
-      <span className="text-base font-semibold tracking-tight">supermux</span>
-      <ThemeToggle />
-    </header>
+    <div className="pointer-events-none fixed right-3 top-[calc(env(safe-area-inset-top)+0.5rem)] z-40 md:hidden">
+      <div className="pointer-events-auto">
+        <ThemeToggle />
+      </div>
+    </div>
   )
 }
 

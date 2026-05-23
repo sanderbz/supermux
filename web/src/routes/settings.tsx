@@ -349,9 +349,14 @@ export function Settings() {
     <div ref={scrollRef} className="relative h-full overflow-y-auto">
       {/* Floating glass nav bar — the only glass surface here; grouped cards
           below use the opaque iOS settings-list material. Fades in on scroll. */}
+      {/* R5: the shared mobile top bar was removed, so this sticky glass header
+          owns the safe-area top inset on mobile (≤md) via `pt-safe`, reset at
+          `sm` once the desktop SideNav owns the chrome. As the first in-flow
+          child it reserves that height regardless of its scroll-driven opacity,
+          so the big `<h1>` title block below it also clears the notch. */}
       <motion.header
         style={{ opacity: navOpacity }}
-        className="pointer-events-none sticky top-0 z-20 flex h-12 items-center justify-center border-b border-border/60 bg-background/70 backdrop-blur-xl"
+        className="pointer-events-none sticky top-0 z-20 flex h-12 items-center justify-center border-b border-border/60 bg-background/70 pt-safe backdrop-blur-xl sm:pt-0"
       >
         <span className="text-[17px] font-semibold tracking-tight">Settings</span>
       </motion.header>

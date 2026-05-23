@@ -26,11 +26,18 @@ export interface KbdGroup {
   keys: string[]
 }
 
-/** Audit-log row (§6.4). */
+/** Audit-log row (§6.4). Field shape mirrors the server serializer exactly
+ *  (`server/src/db/runtime_state.rs` `AuditEntry`, serialized verbatim with no
+ *  `serde(rename)`): `ts` is epoch **seconds** as a number — NOT `at`/string.
+ *  Reading `row.at` here used to yield `undefined`, corrupting the timestamp
+ *  column to `—`. */
 export interface AuditEntry {
   id: number
-  at: string
+  /** Epoch seconds (server: `ts = Utc::now().timestamp()`). */
+  ts: number
+  actor: string
   action: string
+  target: string
   detail?: string
 }
 
