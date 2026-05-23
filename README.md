@@ -97,8 +97,14 @@ For a fresh host where you have key-based SSH and passwordless sudo, the
 ```bash
 cp .env.example .env
 $EDITOR .env          # set SUPERMUX_DEPLOY_HOST=<user@host>
-bash scripts/deploy.sh
+# On a fresh host with no toolchains, prepend SUPERMUX_INSTALL_TOOLCHAINS=1 so
+# deploy.sh installs bun + cargo for you (the wizard asks this and defaults Yes):
+SUPERMUX_INSTALL_TOOLCHAINS=1 bash scripts/deploy.sh
 ```
+
+(If the host already has `bun` and `cargo` for the service user, drop the
+`SUPERMUX_INSTALL_TOOLCHAINS=1` prefix — or just use `scripts/setup.sh`, which
+asks and wires it for you.)
 
 `deploy.sh` runs an upfront preflight against the host and prints a one-page
 plan before doing anything destructive. The defaults are noob-proof:

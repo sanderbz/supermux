@@ -138,6 +138,29 @@ path_under_home "/home/supermux" "/home/supermux";          assert_rc "home itse
 path_under_home "/home/supermux/" "/home/supermux";         assert_rc "home with trailing slash" 0 $?
 path_under_home "/opt/projects" "/home/supermux";           assert_rc "outside home" 1 $?
 path_under_home "/home/supermuxer/x" "/home/supermux";      assert_rc "sibling prefix is NOT under home" 1 $?
+# home="/" edge (the double-slash bug): any absolute path is under root.
+path_under_home "/anything" "/";                            assert_rc "home='/' — descendant under root" 0 $?
+path_under_home "/" "/";                                    assert_rc "home='/' — root itself" 0 $?
+path_under_home "/opt/work/sub" "/";                        assert_rc "home='/' — deep descendant under root" 0 $?
+
+echo "── pure helper: project_dir_is_safe (chown -R blocklist) ────────────"
+project_dir_is_safe "/opt/projects";  assert_rc "dedicated subdir is safe" 0 $?
+project_dir_is_safe "/srv/work";      assert_rc "another dedicated subdir is safe" 0 $?
+project_dir_is_safe "/home/supermux/projects"; assert_rc "under-home subdir is safe" 0 $?
+project_dir_is_safe "/";              assert_rc "filesystem root is REFUSED" 1 $?
+project_dir_is_safe "";              assert_rc "empty path is REFUSED" 1 $?
+project_dir_is_safe "/etc";          assert_rc "/etc is REFUSED" 1 $?
+project_dir_is_safe "/usr";          assert_rc "/usr is REFUSED" 1 $?
+project_dir_is_safe "/home";         assert_rc "bare /home is REFUSED" 1 $?
+project_dir_is_safe "/opt";          assert_rc "bare /opt is REFUSED" 1 $?
+project_dir_is_safe "/etc/";         assert_rc "/etc with trailing slash is REFUSED" 1 $?
+
+echo "── remote: ensure_project_dir_remote REFUSES a system path (no chown) ─"
+: > "$CHOWN_LOG"
+ensure_project_dir_remote "/etc" "supermux" "/home/supermux" "fakehost" >/dev/null 2>&1
+rc=$?
+assert_rc "chown -R of /etc is refused" 1 "$rc"
+if [ ! -s "$CHOWN_LOG" ]; then pass "/etc was NOT chowned"; else fail "/etc must not be chowned (log: $(cat "$CHOWN_LOG"))"; fi
 
 echo "── remote: ensure_project_dir_remote (under home → no chown) ─────────"
 : > "$CHOWN_LOG"
@@ -200,6 +223,90 @@ EMPTY_DEPLOYER="$SANDBOX/empty-deployer"
 mkdir -p "$EMPTY_DEPLOYER"
 copy_deployer_claude_creds "$EMPTY_DEPLOYER" "$TARGET_HOME" "supermux" "fakehost" >/dev/null 2>&1
 assert_rc "copy fails when deployer has no .claude" 1 $?
+
+# Creds-copy hardens destination perms regardless of source mode.
+LOOSE_DEPLOYER="$SANDBOX/loose-deployer"
+LOOSE_TARGET="$SANDBOX/loose-target"
+mkdir -p "$LOOSE_DEPLOYER/.claude" "$LOOSE_TARGET"
+printf '{"x":1}\n' > "$LOOSE_DEPLOYER/.claude/.credentials.json"
+chmod 644 "$LOOSE_DEPLOYER/.claude/.credentials.json"   # deliberately loose source
+chmod 755 "$LOOSE_DEPLOYER/.claude"
+copy_deployer_claude_creds "$LOOSE_DEPLOYER" "$LOOSE_TARGET" "supermux" "fakehost" >/dev/null 2>&1
+# Read back the destination mode (portable: stat differs across BSD/GNU, so use ls).
+dst_cred_mode="$(ls -l "$LOOSE_TARGET/.claude/.credentials.json" 2>/dev/null | cut -c1-10)"
+assert_eq "destination .credentials.json hardened to -rw------- regardless of loose source" "-rw-------" "$dst_cred_mode"
+
+echo "── orchestration: SERVICE_USER_IS_DEFAULT keys on VALUE not env presence (P0) ─"
+# The P0 was: SERVICE_USER_IS_DEFAULT keyed on env-var PRESENCE, but setup.sh
+# ALWAYS writes SUPERMUX_SERVICE_USER=supermux → wizard .env disabled auto-create.
+# Verify deploy.sh source keys on the VALUE 'supermux' (no presence-only check).
+# 1) Structural: the code must compare SERVICE_USER to "supermux".
+if grep -Eq '\[ "\$SERVICE_USER" = "supermux" \].*SERVICE_USER_IS_DEFAULT=1|SERVICE_USER_IS_DEFAULT=1' "$DEPLOY_SH" \
+   && grep -q '\[ "\$SERVICE_USER" = "supermux" \]' "$DEPLOY_SH"; then
+  pass "deploy.sh keys SERVICE_USER_IS_DEFAULT on value 'supermux'"
+else
+  fail "deploy.sh should key SERVICE_USER_IS_DEFAULT on the value 'supermux'"
+fi
+# 2) The old presence-only check (-z on the env var setting the flag) must be gone.
+if grep -Eq '\[ -z "\$\{?SUPERMUX_SERVICE_USER:?-?\}?" \]' "$DEPLOY_SH" \
+   && grep -A1 -E '\[ -z "\$\{?SUPERMUX_SERVICE_USER' "$DEPLOY_SH" | grep -q 'SERVICE_USER_IS_DEFAULT=1'; then
+  fail "deploy.sh still keys IS_DEFAULT on env-var presence (the P0)"
+else
+  pass "deploy.sh no longer keys IS_DEFAULT on env-var presence"
+fi
+# 3) Behavioural: replicate the exact derivation for the two key cases.
+is_default_for() { local SERVICE_USER="$1" SERVICE_USER_IS_DEFAULT=0
+  [ "$SERVICE_USER" = "supermux" ] && SERVICE_USER_IS_DEFAULT=1
+  printf '%s' "$SERVICE_USER_IS_DEFAULT"; }
+assert_eq "explicit SERVICE_USER=supermux is treated as DEFAULT (auto-createable)" "1" "$(is_default_for supermux)"
+assert_eq "a non-default user is NOT auto-createable (refused)"                     "0" "$(is_default_for alice)"
+
+echo "── orchestration: root RWP fold-in includes external project dirs (P1) ─"
+# Replicate the root READ_WRITE_PATHS_DEFAULT fold-in (uses the REAL helpers
+# split_path_list + path_under_home loaded above). External dirs must be added;
+# dirs already under /root must be skipped.
+root_rwp_default_for() {
+  local PROJECT_DIRS="$1"
+  local READ_WRITE_PATHS_DEFAULT="/root"
+  local pd
+  while IFS= read -r pd; do
+    [ -z "$pd" ] && continue
+    case ":$READ_WRITE_PATHS_DEFAULT:" in
+      *":$pd:"*) : ;;
+      *)
+        if path_under_home "$pd" "/root"; then :; else
+          READ_WRITE_PATHS_DEFAULT="$READ_WRITE_PATHS_DEFAULT:$pd"
+        fi
+        ;;
+    esac
+  done <<EOF_RPD
+$(split_path_list "$PROJECT_DIRS")
+EOF_RPD
+  printf '%s' "$READ_WRITE_PATHS_DEFAULT"
+}
+assert_eq "root: external project dir folded into RWP" "/root:/opt/work" "$(root_rwp_default_for /opt/work)"
+assert_eq "root: project dir under /root is NOT duplicated" "/root" "$(root_rwp_default_for /root/projects)"
+assert_eq "root: mixed dirs — only external one added" "/root:/srv/x" "$(root_rwp_default_for "/root/projects:/srv/x")"
+
+echo "── orchestration: setup.sh public-port accepts 443 (no infinite loop) ─"
+# Regression: the P1-a fix changed D_PUBLIC_PORT 8823→443, but setup.sh validated
+# the public port with is_port (min 1024), which REJECTS 443 — so the prompt loop
+# spun forever in non-interactive mode (ask returns the default → fails validation
+# → loops). The fix splits out is_public_port (full 1..65535) for the TLS port.
+SETUP_SH="$REPO_ROOT/scripts/setup.sh"
+# Replicate the two validators verbatim from setup.sh.
+_is_port() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -lt 1024 ] || [ "$1" -gt 65535 ] && return 1; return 0; }
+_is_public_port() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -lt 1 ] || [ "$1" -gt 65535 ] && return 1; return 0; }
+_is_public_port 443;   assert_rc "public-port validator ACCEPTS 443 (the default)" 0 $?
+_is_public_port 8823;  assert_rc "public-port validator accepts 8823"             0 $?
+_is_public_port 0;     assert_rc "public-port validator rejects 0"                1 $?
+_is_public_port 70000; assert_rc "public-port validator rejects >65535"           1 $?
+_is_port 443;          assert_rc "internal-port validator still rejects 443 (privileged)" 1 $?
+_is_port 8824;         assert_rc "internal-port validator accepts 8824"           0 $?
+# Structural: D_PUBLIC_PORT must default to 443, and the public-port loop must use
+# is_public_port (NOT is_port) so accepting the default can't loop forever.
+if grep -Eq '^D_PUBLIC_PORT="443"' "$SETUP_SH"; then pass "setup.sh D_PUBLIC_PORT defaults to 443"; else fail "setup.sh D_PUBLIC_PORT should default to 443"; fi
+if grep -A3 'public port (TLS)' "$SETUP_SH" | grep -q 'is_public_port'; then pass "public-port prompt validates with is_public_port"; else fail "public-port prompt must use is_public_port (else 443 default loops)"; fi
 
 echo "── summary ──────────────────────────────────────────────────────────"
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

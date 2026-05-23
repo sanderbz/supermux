@@ -90,11 +90,44 @@ path_under_home() {
   # normalize: strip any trailing slash (except root "/")
   [ "$path" != "/" ] && path="${path%/}"
   [ "$home" != "/" ] && home="${home%/}"
+  # Special-case home="/" (the root filesystem): everything absolute is under it.
+  # Without this the prefix built below would be "//" / "//*" (a double slash),
+  # which matches neither the home-itself nor the descendant pattern, so a real
+  # descendant of root would be mis-classified as OUTSIDE home.
+  if [ "$home" = "/" ]; then
+    case "$path" in
+      /*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
   case "$path/" in
     "$home"/) return 0 ;;     # the home dir itself
     "$home"/*) return 0 ;;    # a descendant of home
     *) return 1 ;;
   esac
+}
+
+# ── pure helper: reject a project dir that points at a system path ──────────
+# Guards the `chown -R` below: a typo / copy-paste pointing SUPERMUX_PROJECT_DIRS
+# at "/" or a depth-1 system dir would recursively re-own the host (sshd keys,
+# /etc, sudo, every other service) — a single misconfigured env var bricking the
+# box. Reject "/" and a curated blocklist of system roots outright. Returns 0 if
+# the path is SAFE to chown -R, 1 (with a reason on stderr) if it must be refused.
+# Pure (lexical only) → unit-testable; no I/O.
+project_dir_is_safe() {
+  local dir="$1"
+  # normalize trailing slash (except root)
+  [ "$dir" != "/" ] && dir="${dir%/}"
+  case "$dir" in
+    ""|/) return 1 ;;  # empty or the filesystem root
+  esac
+  # Depth-1 system directories — refusing the bare dir (a child of it, e.g.
+  # /opt/projects or /srv/work, is fine and the common case).
+  case "$dir" in
+    /etc|/usr|/bin|/sbin|/lib|/lib64|/var|/boot|/dev|/proc|/sys|/run|/root|/home|/opt|/srv|/mnt|/media)
+      return 1 ;;
+  esac
+  return 0
 }
 
 # ── remote helper: ensure a single project dir is usable by the service user ─
@@ -114,6 +147,17 @@ ensure_project_dir_remote() {
     fi
     echo "[deploy]   project dir '$dir' — under \$HOME, owned by '$user' (no chown needed)"
   else
+    # OUTSIDE home → we are about to `chown -R` this whole tree to the service
+    # user. Refuse system roots so a misconfigured SUPERMUX_PROJECT_DIRS can't
+    # recursively re-own the host.
+    if ! project_dir_is_safe "$dir"; then
+      echo "[deploy] error: refusing to chown -R the system path '$dir' to '$user'." >&2
+      echo "[deploy]   This looks like '/' or a top-level system directory. Recursively" >&2
+      echo "[deploy]   re-owning it would break the host (sshd keys, /etc, sudo, services)." >&2
+      echo "[deploy]   Fix: point SUPERMUX_PROJECT_DIRS at a dedicated subdirectory, e.g." >&2
+      echo "[deploy]        /opt/projects or /srv/work — not the bare system root." >&2
+      return 1
+    fi
     if ! ssh "$host" "sudo mkdir -p '$dir' && sudo chown -R '$user:$user' '$dir'"; then
       echo "[deploy] error: failed to create + chown external project dir '$dir' to '$user' on $host." >&2
       echo "[deploy]   Fix: ensure your SSH user has passwordless sudo, or pre-create + chown the dir." >&2
@@ -153,11 +197,17 @@ if [ -d "\$src_home/.claude" ]; then
   rm -rf "\$dst_home/.claude"
   cp -a "\$src_home/.claude" "\$dst_home/.claude"
   chown -R "\$user:\$user" "\$dst_home/.claude"
+  # Harden the destination regardless of the source mode: a credential file
+  # must never be group/other-readable, even if the deployer's source tree was
+  # accidentally loose (sloppy umask, restored backup, …). Assert tight perms.
+  chmod 700 "\$dst_home/.claude"
+  [ -f "\$dst_home/.claude/.credentials.json" ] && chmod 600 "\$dst_home/.claude/.credentials.json"
   copied=1
 fi
 if [ -f "\$src_home/.claude.json" ]; then
   cp -a "\$src_home/.claude.json" "\$dst_home/.claude.json"
   chown "\$user:\$user" "\$dst_home/.claude.json"
+  chmod 600 "\$dst_home/.claude.json"
   copied=1
 fi
 if [ "\$copied" = "1" ]; then
@@ -200,8 +250,16 @@ if [ -z "$HOST" ]; then
 fi
 
 SERVICE_USER="${SUPERMUX_SERVICE_USER:-supermux}"
+# "Is this the default user?" must key on the VALUE, not env-var presence: the
+# setup wizard ALWAYS writes SUPERMUX_SERVICE_USER=supermux into .env (even when
+# the operator just accepted the default), so an unset-only check would make a
+# wizard-generated .env look like a deliberate non-default choice and disable
+# auto-create on a fresh host — breaking the advertised one-command deploy.
+# Treat the literal default 'supermux' as default-and-auto-createable however it
+# was set (env, .env, or unset); any OTHER explicit user is still refused so we
+# never silently provision an unexpected account.
 SERVICE_USER_IS_DEFAULT=0
-if [ -z "${SUPERMUX_SERVICE_USER:-}" ]; then
+if [ "$SERVICE_USER" = "supermux" ]; then
   SERVICE_USER_IS_DEFAULT=1
 fi
 ALLOW_ROOT="${SUPERMUX_ALLOW_ROOT:-0}"
@@ -382,10 +440,12 @@ EOF_PD
     if [ -z "$SMART_RWP" ]; then SMART_RWP="$p"; else SMART_RWP="$SMART_RWP:$p"; fi
   done
   export SUPERMUX_READ_WRITE_PATHS="$SMART_RWP"
-elif [ -n "${SUPERMUX_READ_WRITE_PATHS:-}" ] && [ "$SERVICE_USER" != "root" ]; then
-  # Operator set ReadWritePaths explicitly. The project dirs MUST still be
-  # writable or agents can't work, so append any project dir that isn't already
-  # covered. (Idempotent: skip exact duplicates.)
+elif [ -n "${SUPERMUX_READ_WRITE_PATHS:-}" ]; then
+  # Operator set ReadWritePaths explicitly (root or non-root). The project dirs
+  # MUST still be writable or agents can't work, so append any project dir that
+  # isn't already covered. (Idempotent: skip exact duplicates.) This also covers
+  # the root path so a root deploy with an explicit RWP + an external project
+  # dir doesn't end up with a provisioned-but-unwritable dir.
   while IFS= read -r pd; do
     [ -z "$pd" ] && continue
     case ":$SUPERMUX_READ_WRITE_PATHS:" in
@@ -407,7 +467,30 @@ fi
 # "/home/supermux:/opt/projects".
 if [ "$SERVICE_USER" = "root" ]; then
   PROTECT_HOME_DEFAULT="false"
+  # Root's writable set is /root, but a root deploy can still point
+  # SUPERMUX_PROJECT_DIRS at a dir OUTSIDE /root (e.g. /opt/work). 0g-bis
+  # provisions+chowns that dir for any user including root, but with
+  # ProtectSystem=strict + ReadWritePaths=/root the agent could not write
+  # there. Fold any project dir not already under /root into the root RWP
+  # default so provisioned dirs are actually writable. (The non-root branches
+  # below handle this for the unprivileged user; mirror it here.)
   READ_WRITE_PATHS_DEFAULT="/root"
+  while IFS= read -r pd; do
+    [ -z "$pd" ] && continue
+    case ":$READ_WRITE_PATHS_DEFAULT:" in
+      *":$pd:"*) : ;;  # already present
+      *)
+        # Skip dirs already covered by /root (i.e. /root itself or descendants).
+        if path_under_home "$pd" "/root"; then
+          : ;
+        else
+          READ_WRITE_PATHS_DEFAULT="$READ_WRITE_PATHS_DEFAULT:$pd"
+        fi
+        ;;
+    esac
+  done <<EOF_ROOT_PD
+$(split_path_list "$PROJECT_DIRS")
+EOF_ROOT_PD
 else
   PROTECT_HOME_DEFAULT="true"
   READ_WRITE_PATHS_DEFAULT="$DATA_DIR"
@@ -725,14 +808,31 @@ REMOTE_INSTALL
 # The backend speaks plain HTTP on the internal loopback port. Terminate TLS
 # either via `tailscale serve` (set SUPERMUX_USE_TAILSCALE=1 or let the
 # preflight auto-detect a running tailscaled) or with your own reverse proxy.
+# The URL/address the operator should open at the end (filled in per path).
+SERVE_URL=""
 if [ "$USE_TAILSCALE" = "1" ]; then
   echo "[deploy] exposing :$PUBLIC_PORT via tailscale serve → loopback:$INTERNAL_PORT"
-  if ! ssh "$HOST" "sudo tailscale serve --bg --https=$PUBLIC_PORT http://localhost:$INTERNAL_PORT"; then
+  # Quote the ports (operator-controlled but a raw env-set value could be
+  # non-numeric — keep the quoting discipline consistent with the rest of the
+  # script).
+  if ! ssh "$HOST" "sudo tailscale serve --bg --https='$PUBLIC_PORT' 'http://localhost:$INTERNAL_PORT'"; then
     echo "[deploy] error: 'tailscale serve' failed on $HOST." >&2
     echo "[deploy]   Fix: confirm 'tailscale status' is healthy on the host, then re-run." >&2
     echo "[deploy]        OR set SUPERMUX_USE_TAILSCALE=0 to skip Tailscale and front the" >&2
     echo "[deploy]        loopback port with your own reverse proxy." >&2
     exit 1
+  fi
+  # Best-effort: resolve the device's MagicDNS name so we can print a clickable
+  # URL. `tailscale status --json` exposes Self.DNSName (FQDN with a trailing
+  # dot). Falls back gracefully to a generic hint if anything is unavailable.
+  TS_DNSNAME="$(ssh "$HOST" "sudo tailscale status --json 2>/dev/null | tr ',' '\n' | grep -m1 '\"DNSName\"' | sed -E 's/.*\"DNSName\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/'" 2>/dev/null || true)"
+  TS_DNSNAME="${TS_DNSNAME%.}"  # strip the trailing dot if present
+  if [ -n "$TS_DNSNAME" ]; then
+    if [ "$PUBLIC_PORT" = "443" ]; then
+      SERVE_URL="https://$TS_DNSNAME/"
+    else
+      SERVE_URL="https://$TS_DNSNAME:$PUBLIC_PORT/"
+    fi
   fi
 else
   echo "[deploy] skipping 'tailscale serve' — front loopback:$INTERNAL_PORT with your own reverse proxy"
@@ -814,16 +914,20 @@ else
 fi
 
 if [ "$CLAUDE_AUTH_OK" != "1" ]; then
-  echo "[deploy] ╔══════════════════════════════════════════════════════════════════╗" >&2
-  echo "[deploy] ║  ACTION REQUIRED: service user '$SERVICE_USER' is NOT logged in to  " >&2
-  echo "[deploy] ║  Claude. Agents will fail until you log in (subscription, NO API    " >&2
-  echo "[deploy] ║  key). On the host, run:                                            " >&2
-  echo "[deploy] ║                                                                    ║" >&2
-  echo "[deploy] ║    $LOGIN_CMD" >&2
-  echo "[deploy] ║                                                                    ║" >&2
-  echo "[deploy] ║  This opens an interactive Claude session as the service user;      " >&2
-  echo "[deploy] ║  the /login command authenticates against your Claude subscription. " >&2
-  echo "[deploy] ╚══════════════════════════════════════════════════════════════════╝" >&2
+  # Left-bar-only style: the variable-length lines ($SERVICE_USER, $LOGIN_CMD)
+  # can be any length, so a fixed-width right border would render ragged. A
+  # single left rule keeps it tidy regardless of content width, and the command
+  # gets its own un-boxed indented line so it's easy to copy.
+  echo "[deploy] ┌─ ACTION REQUIRED ──────────────────────────────────────────────" >&2
+  echo "[deploy] │  service user '$SERVICE_USER' is NOT logged in to Claude." >&2
+  echo "[deploy] │  Agents will fail until you log in (subscription, NO API key)." >&2
+  echo "[deploy] │  On the host, run:" >&2
+  echo "[deploy] │" >&2
+  echo "[deploy] │      $LOGIN_CMD" >&2
+  echo "[deploy] │" >&2
+  echo "[deploy] │  This opens an interactive Claude session as the service user;" >&2
+  echo "[deploy] │  the /login command authenticates against your Claude subscription." >&2
+  echo "[deploy] └────────────────────────────────────────────────────────────────" >&2
 fi
 
 echo "[deploy] done — supermux (commit $GIT_SHA_SHORT) live on $HOST loopback:$INTERNAL_PORT"
@@ -831,4 +935,20 @@ if [ "$CLAUDE_AUTH_OK" = "1" ]; then
   echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; Claude login verified."
 else
   echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; FINISH SETUP by logging in to Claude (see above)."
+fi
+
+# ── 8. tell the operator WHERE to open it — the payoff ───────────────────────
+# The auth token auto-injects into the served HTML, so reaching the page = logged
+# in. Print the concrete address so the operator doesn't have to guess.
+if [ "$USE_TAILSCALE" = "1" ]; then
+  if [ -n "$SERVE_URL" ]; then
+    echo "[deploy] open: $SERVE_URL"
+  else
+    echo "[deploy] open: https://<this-host>.<your-tailnet>.ts.net/  (Tailscale MagicDNS)"
+    echo "[deploy]   tip: 'tailscale status' on the host shows the device's DNS name;"
+    echo "[deploy]        'sudo tailscale set --hostname=supermux' gives it a clean name."
+  fi
+else
+  echo "[deploy] open: front loopback:$INTERNAL_PORT with your reverse proxy, OR tunnel from your laptop:"
+  echo "[deploy]   ssh -L $INTERNAL_PORT:127.0.0.1:$INTERNAL_PORT $HOST   # then open http://127.0.0.1:$INTERNAL_PORT/"
 fi
