@@ -25,6 +25,8 @@ import {
 import {
   boardApi,
   BoardError,
+  sessionsApi,
+  type ApiSession,
   type BoardIssue,
   type BoardIssuePatch,
   type BoardStatus,
@@ -32,6 +34,7 @@ import {
   type NewBoardIssue,
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
+import { SESSIONS_KEY } from '@/hooks/use-sessions'
 
 const ISSUES_KEY = ['board', 'issues'] as const
 const STATUSES_KEY = ['board', 'statuses'] as const
@@ -81,6 +84,53 @@ export function sortIssues(issues: BoardIssue[]): BoardIssue[] {
 
 function patchCache(qc: QueryClient, updater: (prev: BoardIssue[]) => BoardIssue[]) {
   qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], (prev) => updater(prev ?? []))
+}
+
+/** The live state of the session a card is linked to (U1). `null` when the card
+ *  has no linked session. The board joins this onto each card by `issue.session`
+ *  so the card renders the real overview `StatusDot` + tail-peek instead of a
+ *  hard-coded dot. */
+export interface LiveSession {
+  status: ApiSession['status']
+  /** Last ~6 lines of the session's `last_capture`, ANSI-stripped (§3.6) — the
+   *  same source as the overview `TailPreview`. */
+  preview_lines: string[]
+  /** Same tail WITH SGR escapes preserved (colour-true peek), when present. */
+  preview_ansi?: string[]
+}
+
+/** Join a board card to the LINKED session's live status + tail by name (U1).
+ *
+ *  Reads the SHARED `['sessions']` TanStack cache — the exact source the overview
+ *  tiles render from — so live `status`/`sessions` SSE deltas (merged into that
+ *  cache by the `useSessions` mounted on the board route) reach the card with NO
+ *  new EventSource and NO server fan-out. The query is deduped by key; we only
+ *  read the cache here (`enabled:false` keeps this selector from firing its own
+ *  fetch — the board's `useSessions` owns the fetch + the live subscription).
+ *
+ *  Returns `null` when `name` is null/empty or the session isn't in the cache
+ *  yet (the card then falls back to its static link pill until the row arrives).
+ */
+export function useLiveSession(name: string | null | undefined): LiveSession | null {
+  const sessionsQuery = useQuery({
+    queryKey: [...SESSIONS_KEY],
+    queryFn: sessionsApi.list,
+    // The board route already mounts `useSessions`, which owns the fetch + the
+    // SSE live-merge. This selector only READS the resulting cache — never
+    // fetches — so it adds zero round-trips and zero subscribers.
+    enabled: false,
+    staleTime: 30_000,
+  })
+  return useMemo(() => {
+    if (!name) return null
+    const row = (sessionsQuery.data ?? []).find((s) => s.name === name)
+    if (!row) return null
+    return {
+      status: row.status,
+      preview_lines: row.preview_lines ?? [],
+      preview_ansi: row.preview_ansi,
+    }
+  }, [name, sessionsQuery.data])
 }
 
 /** Subscribe the board cache to the SHARED SSE stream's `board` event. No
@@ -157,6 +207,12 @@ export function useBoard(): UseBoardResult {
         comments: [],
         acceptance: [],
         links: [],
+        // R1/R2 flags default off; a freshly-created card with a live session
+        // link reads live until the server says otherwise (session_live true so
+        // the optimistic card shows the live dot, not a stale-link badge).
+        needs_review: false,
+        awaiting_input: false,
+        session_live: input.session != null,
       }
       patchCache(qc, (p) => [optimistic, ...p])
       return { prev }
