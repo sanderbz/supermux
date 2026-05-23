@@ -91,6 +91,17 @@ export interface BoardIssue {
   comments: IssueComment[]
   acceptance: AcceptanceItem[]
   links: IssueLink[]
+  /** R1 session→board reaction flags (migration 0011). `needs_review` is set
+   *  when the owning agent finished its turn (went idle) and a human should
+   *  look; `awaiting_input` is set when the agent has been sitting in `waiting`
+   *  (it needs you). Always present (default false). The card badges off these. */
+  needs_review: boolean
+  awaiting_input: boolean
+  /** R2 computed link-liveness. True when `session` points to a session row that
+   *  exists AND is not archived; false when unassigned, archived, or deleted. A
+   *  card with `session !== null` but `session_live === false` shows
+   *  "session archived — reassign?" instead of a confidently-wrong live dot. */
+  session_live: boolean
 }
 
 /** The claim response (S3): the full issue PLUS the dispatch outcome. When
