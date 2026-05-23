@@ -438,8 +438,20 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
 // no synchronous setState during render). Mounts immediately so the underlying
 // WS starts — but stays opacity:0 UNTIL the first real pty frame arrives, so
 // the tile never flashes a blank-black void during the WS handshake. Crossfade
-// is short (~120-180ms via springs.snappy); under Reduce Motion the swap is
+// IN is short (~120-180ms via springs.snappy); under Reduce Motion the swap is
 // instant. The static tail underneath stays at full opacity throughout.
+//
+// DISMISSAL (no `exit` opacity tween). When the peek closes (hover-out without
+// typing, or stickiness timer expiry) we DO NOT crossfade the live layer back
+// out. Reason: the static tail sits BEHIND this layer, so an opacity 1 → 0
+// spring on the live surface would visually BLEND the two — the user sees a
+// transient half-transparent state of "live terminal + tail showing through"
+// before the layer fully unmounts. That double-image is the bug the user
+// reported ("eerst naar soort halve transparant state, voordat hij echt weg
+// gaat"). Instead, the live layer unmounts atomically while the container's
+// height spring (springs.cardExpand) and the card's hover-scale revert
+// (springs.tileHover) carry the dismissal as a SINGLE motion. Net effect:
+// one clean shrink, no half-transparent flash — same vibe as pre-polish-pass.
 function LivePeekLayer({
   name,
   width,
@@ -459,7 +471,10 @@ function LivePeekLayer({
     <motion.div
       initial={reduce ? false : { opacity: 0 }}
       animate={{ opacity: liveReady ? 1 : 0 }}
-      exit={reduce ? undefined : { opacity: 0 }}
+      // No `exit` — intentional. See block comment above: an opacity tween
+      // on dismissal would blend the live surface with the static tail behind
+      // it, producing the "half-transparent intermediate" state. AnimatePresence
+      // still unmounts the layer (just without a custom exit animation).
       transition={reduce ? { duration: 0 } : springs.snappy}
       className="absolute inset-0"
     >
