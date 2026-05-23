@@ -29,12 +29,27 @@ import type { TileSession } from './types'
 const HEADER_H = 12 + 32 + 16 + 4 // pt-3 + title row + meta row + mt-1
 const TAIL_LINE_H = 14
 const TAIL_PAD = 8
-const IDLE_LINES = 6
+const BASE_IDLE_LINES = 6
 // Hover ceilings. `live` mode shows a fixed-height zoomed terminal; `expanded`
-// mode grows the static tail to ~20 lines (vs the 6 idle lines).
-const EXPANDED_LINES = 20
-const LIVE_PREVIEW_H = 230 // px — the scaled live-terminal viewport
-const IDLE_H = HEADER_H + IDLE_LINES * TAIL_LINE_H + TAIL_PAD // 156
+// mode grows the static tail to ~20 lines (vs the 6 idle lines at tier 1).
+const BASE_EXPANDED_LINES = 20
+const BASE_LIVE_PREVIEW_H = 230 // px — the scaled live-terminal viewport at tier 1
+
+/** Per-tier-scaled tile geometry. The chrome (HEADER_H, font sizes) does NOT
+ *  scale — only the spatial mass (tail line count, live-zoom pane height) — so
+ *  type hierarchy reads the same at every tier and the live-zoom xterm keeps
+ *  its native font size while FitAddon picks up more cols×rows in the bigger
+ *  container (the user mandate: scale the container, don't warp xterm). */
+function geometryForScale(scale: number) {
+  const idleLines = Math.max(BASE_IDLE_LINES, Math.round(BASE_IDLE_LINES * scale))
+  const expandedLines = Math.max(
+    BASE_EXPANDED_LINES,
+    Math.round(BASE_EXPANDED_LINES * scale),
+  )
+  const livePreviewH = Math.round(BASE_LIVE_PREVIEW_H * scale)
+  const idleH = HEADER_H + idleLines * TAIL_LINE_H + TAIL_PAD
+  return { idleLines, expandedLines, livePreviewH, idleH }
+}
 
 function formatTokens(n: number): string {
   if (n < 1000) return `${n}`
@@ -91,6 +106,12 @@ export interface SessionTileProps {
   session: TileSession
   onReattach?: (name: string) => void
   onRemove?: (name: string) => void
+  /** Density multiplier (feat-overview-sizes). 1.0 = current polish-pass
+   *  baseline; higher = proportionally taller idle preview AND larger live-zoom
+   *  pane on hover. Title/font sizes do NOT scale — only spatial mass — so
+   *  hierarchy stays consistent across tiers. Default 1.0 preserves the
+   *  baseline for non-overview call sites (e.g. dev-tiles). */
+  sizeScale?: number
 }
 
 /** The hero surface (§4.3). One tile = one agent: title (Claude chat summary),
@@ -102,8 +123,19 @@ export interface SessionTileProps {
  *  "Overview hover preview" choice — either a scaled-down LIVE terminal
  *  (default) or ~20 lines of the coloured static tail. The live terminal opens
  *  exactly ONE WebSocket, only while hovered, torn down on hover-leave. */
-export function SessionTile({ session, onReattach, onRemove }: SessionTileProps) {
+export function SessionTile({
+  session,
+  onReattach,
+  onRemove,
+  sizeScale = 1,
+}: SessionTileProps) {
   const reduce = useReducedMotion()
+  const {
+    idleLines: IDLE_LINES,
+    expandedLines: EXPANDED_LINES,
+    livePreviewH: LIVE_PREVIEW_H,
+    idleH: IDLE_H,
+  } = React.useMemo(() => geometryForScale(sizeScale), [sizeScale])
   const fine = useMediaQuery('(pointer: fine)')
   const coarse = useMediaQuery('(pointer: coarse)')
   const navigateMorph = useNavigateMorph()
@@ -239,14 +271,19 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
   // still a normal, navigable tile (calm orange border via <StatusBorder>).
   if (session.missing) {
     return (
-      <div className="relative" style={{ height: IDLE_H }}>
+      <motion.div
+        className="relative"
+        animate={{ height: IDLE_H }}
+        transition={reduce ? { duration: 0 } : springs.cardExpand}
+        initial={false}
+      >
         <TileError
           session={session}
           onReattach={onReattach}
           onRemove={onRemove}
           className="absolute inset-x-0 top-0"
         />
-      </div>
+      </motion.div>
     )
   }
 
@@ -271,8 +308,17 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
 
   return (
     // The slot reserves the idle height; the card floats inside it so hover
-    // growth never reflows neighbours.
-    <div className="relative" style={{ height: IDLE_H }}>
+    // growth never reflows neighbours. The slot height itself springs when the
+    // active density tier changes (feat-overview-sizes), so the whole grid
+    // reflows with the same `springs.cardExpand` motion used inside the tile —
+    // one consistent feel; no `transition: all`. `initial={false}` skips the
+    // mount-time spring so the first paint is exact at the current tier.
+    <motion.div
+      className="relative"
+      animate={{ height: IDLE_H }}
+      transition={reduce ? { duration: 0 } : springs.cardExpand}
+      initial={false}
+    >
       <motion.div
         ref={cardRef}
         role="button"
@@ -427,7 +473,7 @@ export function SessionTile({ session, onReattach, onRemove }: SessionTileProps)
           onOpenChange={setPeekOpen}
         />
       )}
-    </div>
+    </motion.div>
   )
 }
 

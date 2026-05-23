@@ -13,6 +13,12 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+import {
+  clampOverviewSize,
+  MIN_OVERVIEW_SIZE,
+  type OverviewSize,
+} from '@/lib/overview-size'
+
 export type ViewMode = 'tile' | 'list'
 
 /** Overview tile hover behaviour.
@@ -27,9 +33,14 @@ interface UIStore {
   defaultModel: string
   /** What an overview tile shows on hover (§ overview tile preview). */
   hoverPreview: HoverPreview
+  /** Overview density tier — 1 = smallest (default, matches polish-pass), 4 =
+   *  spacious. Per-device, not per-account (phone vs desktop want different
+   *  defaults); see /lib/overview-size.ts. */
+  overviewSize: OverviewSize
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
+  setOverviewSize: (s: OverviewSize) => void
 }
 
 export const useUI = create<UIStore>()(
@@ -38,9 +49,12 @@ export const useUI = create<UIStore>()(
       viewMode: 'tile',
       defaultModel: '',
       hoverPreview: 'live',
+      overviewSize: MIN_OVERVIEW_SIZE,
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),
+      setOverviewSize: (overviewSize) =>
+        set({ overviewSize: clampOverviewSize(overviewSize) }),
     }),
     { name: 'supermux-ui' },
   ),
