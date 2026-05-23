@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "recording": "showcase/out/recording.webm",
+  "duration_s": 53.8,
+  "viewport_desktop": { "width": 1440, "height": 900 },
+  "viewport_mobile_iframe": { "width": 390, "height": 844 },
+  "attempts": 3,
+  "outputs": {
+    "mp4": "docs/showcase/supermux-showcase.mp4",
+    "gif": "docs/showcase/supermux-showcase.gif",
+    "frames_dir": "docs/showcase/frames/"
+  },
+  "size_bytes": {
+    "mp4": 4193958,
+    "gif": 9211196
+  },
+  "beats_total": 9,
+  "beats_present": 9,
+  "beats": [
+    {
+      "beat": 1,
+      "name": "hook",
+      "timestamp_s": 2.0,
+      "frame_path": "docs/showcase/frames/beat-1-hook.png",
+      "present": true,
+      "evidence_note": "Overview shows 8 tiles (auth-rewrite, codex-board, sse-stream, fix-flake, merge-conflict, old-experiment, docs-pass, tile-polish) with live streaming terminal content and a 'Needs input' pill on fix-flake. Caption: 'supermux — every tmux session at a glance'."
+    },
+    {
+      "beat": 2,
+      "name": "hover-peek",
+      "timestamp_s": 6.0,
+      "frame_path": "docs/showcase/frames/beat-2-hover-peek.png",
+      "present": true,
+      "evidence_note": "Hovered tile (tile-polish) is zoomed into the live-terminal peek with the spinner glyph and 'esc to interrupt' content visible. Caption: 'Hover any tile — it zooms in, live.'"
+    },
+    {
+      "beat": 3,
+      "name": "type-on-hover",
+      "timestamp_s": 11.0,
+      "frame_path": "docs/showcase/frames/beat-3-type-on-hover.png",
+      "present": true,
+      "evidence_note": "Same peek as beat 2 with the 'Typing → tile-polish — Esc to close' indicator visible at the bottom of the zoom card. Caption: 'Type while hovering — it lands in the real session.'"
+    },
+    {
+      "beat": "4a",
+      "name": "focus-mode",
+      "timestamp_s": 17.0,
+      "frame_path": "docs/showcase/frames/beat-4a-focus-mode.png",
+      "present": true,
+      "evidence_note": "Focus mode for sse-stream — left session list, big live terminal showing cpu/mem/core graphs, 'Capturing input' badge top-right, keyboard chrome (Esc/Tab/Ctrl-C/Ctrl-U) at bottom. Caption: 'Click → smooth zoom into focus mode.'"
+    },
+    {
+      "beat": "4b",
+      "name": "return-to-overview",
+      "timestamp_s": 22.5,
+      "frame_path": "docs/showcase/frames/beat-4b-return-to-overview.png",
+      "present": true,
+      "evidence_note": "After clicking 'Back to overview', the overview re-renders. fix-flake tile is peeked showing the waiting prompt menu (1. Yes, extend / 2. No, poll cap / 3. Show me the)."
+    },
+    {
+      "beat": 5,
+      "name": "needs-input",
+      "timestamp_s": 23.5,
+      "frame_path": "docs/showcase/frames/beat-5-needs-input.png",
+      "present": true,
+      "evidence_note": "fix-flake tile carries the blue 'Needs input' pill and is peek-zoomed under the cursor. Caption: 'Sessions that need you pulse for attention.'"
+    },
+    {
+      "beat": 6,
+      "name": "cmd-k",
+      "timestamp_s": 26.5,
+      "frame_path": "docs/showcase/frames/beat-6-cmd-k.png",
+      "present": true,
+      "evidence_note": "Cmd+K command palette open with filter text 'auth' typed and 'auth-rewrite' session result shown. Caption: '⌘K — jump anywhere.'"
+    },
+    {
+      "beat": 7,
+      "name": "density-and-sort",
+      "timestamp_s": 32.0,
+      "frame_path": "docs/showcase/frames/beat-7-density-and-sort.png",
+      "present": true,
+      "evidence_note": "Sort dropdown is open showing Smart / A–Z / Custom options. Density tier has been changed (denser 4-column layout). Caption: 'Density and sort — your overview, your way.'"
+    },
+    {
+      "beat": "8a",
+      "name": "mobile-overview",
+      "timestamp_s": 41.0,
+      "frame_path": "docs/showcase/frames/beat-8a-mobile-overview.png",
+      "present": true,
+      "evidence_note": "Phone bezel on left with the real mobile UI rendered via embedded iframe (390x844): header 'supermux'/'Overview', search bar, tile cards, '+' FAB, bottom tab bar (Overview/Board/Files/Scheduler/Settings). Marketing copy 'Same dashboard, on your phone.' on the right."
+    },
+    {
+      "beat": "8b",
+      "name": "mobile-focus-sheet",
+      "timestamp_s": 47.0,
+      "frame_path": "docs/showcase/frames/beat-8b-mobile-focus-sheet.png",
+      "present": true,
+      "evidence_note": "Inside the phone bezel: tapping a tile navigated into the mobile focus sheet with the kbd accessory bar (Esc/Tab/^C/^U) docked at the bottom and a live terminal streaming 'Reading 1 file: …' content above it."
+    },
+    {
+      "beat": 9,
+      "name": "outro",
+      "timestamp_s": 52.0,
+      "frame_path": "docs/showcase/frames/beat-9-outro.png",
+      "present": true,
+      "evidence_note": "Brand fade-out: large 'supermux' wordmark, tagline 'Self-hosted parallel AI coding sessions — overview, peek, focus, mobile.', github.com/sanderbz/supermux chip below."
+    }
+  ],
+  "notes": [
+    "The viewport stayed at 1440x900 for the whole recording (Chromium recordVideo size is fixed at context-create). The mobile beats render an iframe pointed at '/?_token=…' inside a phone-bezel CSS overlay so the canvas remains full-bleed; the iframe carries a 390x844 viewport so the React app inside paints the real mobile layout (bottom tabs, FAB, accessory bar — all unmodified).",
+    "Sessions were seeded via the public HTTP API (POST /api/sessions then /start + /send) with shell commands chosen to trigger each status classifier: 'esc to interrupt'/'Reading N file'/'Running...' for Active (sse-stream, tile-polish, codex-board, auth-rewrite), 'Do you want to proceed' + '❯ N.' selector lines for Waiting (fix-flake), one explicit stop call for Stopped (old-experiment).",
+    "Captions were injected via page.evaluate into a fixed-position '#sm-caption' overlay; the outro overlay '#sm-outro-overlay' fades in over a soft brand-gradient backdrop. A fake cursor SVG follows page.mouse so the storyboard reads as a real person clicking."
+  ]
+}
