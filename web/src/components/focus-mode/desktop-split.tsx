@@ -79,6 +79,18 @@ export function DesktopSplit({
   // installed) or by <LiveTerminal onReady> (the first onReady AFTER arming).
   // Either path focuses xterm exactly once per session entry, so we never
   // steal focus away from a user who has Tab'd into the dock input.
+  //
+  // DEPS — `name` only. The polish pass originally also depended on
+  // `current?.status`, but agent status flips many times during a session
+  // (idle → active → idle on every command), and each flip would re-arm
+  // wantFocusRef + re-call `term.focus()`. Refocusing a textarea that is
+  // already focused can synchronously fire a focusin event on some browsers,
+  // and combined with DECSET ?1004 (focus-event reporting) that emits
+  // `\x1b[I` / `\x1b[O` back into the pty — which is half of the path that
+  // caused the phantom-Enter symptom. The stopped/error guard is now a check
+  // INSIDE the mount-time effect: a stopped session has no pty to focus, but
+  // a later transition to stopped doesn't need to re-run anything (the user
+  // can re-enter the route to retry).
   const wantFocusRef = React.useRef(false)
   React.useEffect(() => {
     if (current?.status === 'stopped' || current?.status === 'error') {
@@ -93,7 +105,8 @@ export function DesktopSplit({
       }
     })
     return () => window.cancelAnimationFrame(raf)
-  }, [name, current?.status])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name])
 
   const handleTermReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t
