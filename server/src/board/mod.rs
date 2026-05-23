@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::db;
-use crate::db::board::{Issue, IssueField, NewIssue};
+use crate::db::board::{AcceptanceItem, Issue, IssueComment, IssueField, IssueLink, NewIssue};
 use crate::error::AppError;
 use crate::state::{AppState, SseEvent};
 
@@ -87,10 +87,22 @@ pub struct IssueView {
     pub pinned: i64,
     pub pos: f64,
     pub tags: Vec<String>,
+    /// Board↔agent relations (migration 0010), carried inline so the SSE/REST
+    /// board payload renders the card + sheet with no extra round-trips. Always
+    /// present — empty vecs when the issue has no comments/items/links.
+    pub comments: Vec<IssueComment>,
+    pub acceptance: Vec<AcceptanceItem>,
+    pub links: Vec<IssueLink>,
 }
 
 impl IssueView {
-    fn from(issue: Issue, tags: Vec<String>) -> Self {
+    fn from(
+        issue: Issue,
+        tags: Vec<String>,
+        comments: Vec<IssueComment>,
+        acceptance: Vec<AcceptanceItem>,
+        links: Vec<IssueLink>,
+    ) -> Self {
         IssueView {
             id: issue.id,
             title: issue.title,
@@ -106,26 +118,44 @@ impl IssueView {
             pinned: issue.pinned,
             pos: issue.pos,
             tags,
+            comments,
+            acceptance,
+            links,
         }
     }
 }
 
-/// Load one issue + its tags as a view, or 404.
+/// Load one issue + its tags and 0010 relations as a view, or 404.
 async fn view_of(state: &AppState, id: &str) -> Result<IssueView, AppError> {
     let issue = db::board::get_issue(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("issue '{id}'")))?;
     let tags = db::board::tags_for(&state.pool, id).await?;
-    Ok(IssueView::from(issue, tags))
+    let comments = db::board::comments_for(&state.pool, id).await?;
+    let acceptance = db::board::acceptance_for(&state.pool, id).await?;
+    let links = db::board::links_for(&state.pool, id).await?;
+    Ok(IssueView::from(issue, tags, comments, acceptance, links))
 }
 
-/// Load the full board (used by `GET /api/board` and the SSE re-publish).
+/// Load the full board (used by `GET /api/board` and the SSE re-publish). The
+/// 0010 relations are batch-loaded in three grouped queries keyed by `issue_id`
+/// (not one query per issue) so a big board stays O(1) round-trips per relation.
 async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>, AppError> {
     let issues = db::board::list_issues(&state.pool, done_limit).await?;
+    let ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
+
+    let mut comments = db::board::comments_for_issues(&state.pool, &ids).await?;
+    let mut acceptance = db::board::acceptance_for_issues(&state.pool, &ids).await?;
+    let mut links = db::board::links_for_issues(&state.pool, &ids).await?;
+
     let mut out = Vec::with_capacity(issues.len());
     for issue in issues {
+        // tags keep their per-issue query (existing behaviour, small + indexed).
         let tags = db::board::tags_for(&state.pool, &issue.id).await?;
-        out.push(IssueView::from(issue, tags));
+        let c = comments.remove(&issue.id).unwrap_or_default();
+        let a = acceptance.remove(&issue.id).unwrap_or_default();
+        let l = links.remove(&issue.id).unwrap_or_default();
+        out.push(IssueView::from(issue, tags, c, a, l));
     }
     Ok(out)
 }
@@ -433,7 +463,7 @@ async fn claim_handler(
     }
 
     match claim::claim(&state.pool, &id, session).await {
-        Ok(issue) => {
+        Ok(_issue) => {
             // Audit (§6.4 / M6 prompt): record the claim.
             db::audit::log(
                 &state.pool,
@@ -443,9 +473,11 @@ async fn claim_handler(
                 json!({ "session": session }),
             )
             .await?;
-            let tags = db::board::tags_for(&state.pool, &id).await?;
             emit_board(&state).await;
-            Ok(ok(IssueView::from(issue, tags)))
+            // Re-read the full view so claim returns the same shape (incl. 0010
+            // relations) as every other board endpoint. `claim` already proved
+            // the issue exists, so `view_of` cannot 404 here.
+            Ok(ok(view_of(&state, &id).await?))
         }
         Err(ClaimError::NotFound) => Err(AppError::NotFound(format!("issue '{id}'"))),
         Err(ClaimError::NotAgentTask) => {
@@ -713,4 +745,124 @@ where
     T: serde::Deserialize<'de>,
 {
     Ok(Some(Option::<T>::deserialize(de)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::db::board::NewIssue;
+    use crate::state::AppState;
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-view-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+        };
+        let pool = db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    async fn seed_issue(state: &AppState, id: &str) {
+        db::board::insert_issue(
+            &state.pool,
+            &NewIssue {
+                id: id.to_string(),
+                title: format!("issue {id}"),
+                desc: String::new(),
+                status: "todo".into(),
+                session: None,
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "agent".into(),
+                pos: 0.0,
+                notified: 0,
+            },
+        )
+        .await
+        .expect("insert issue");
+    }
+
+    #[tokio::test]
+    async fn issueview_empty_relations_for_bare_issue() {
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "T-1").await;
+
+        // view_of: relations are present-but-empty, never null/missing.
+        let v = view_of(&state, "T-1").await.unwrap();
+        assert!(v.comments.is_empty());
+        assert!(v.acceptance.is_empty());
+        assert!(v.links.is_empty());
+
+        // The JSON payload carries the three keys as empty arrays.
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["comments"], serde_json::json!([]));
+        assert_eq!(json["acceptance"], serde_json::json!([]));
+        assert_eq!(json["links"], serde_json::json!([]));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn issueview_populated_relations() {
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "T-1").await;
+        db::board::insert_comment(&state.pool, "T-1", "agent:w2", "working").await.unwrap();
+        db::board::insert_acceptance(&state.pool, "T-1", "compiles").await.unwrap();
+        db::board::insert_link(&state.pool, "T-1", "pr", "https://x/pr/1", "PR").await.unwrap();
+
+        let v = view_of(&state, "T-1").await.unwrap();
+        assert_eq!(v.comments.len(), 1);
+        assert_eq!(v.comments[0].body, "working");
+        assert_eq!(v.acceptance.len(), 1);
+        assert_eq!(v.acceptance[0].body, "compiles");
+        assert_eq!(v.links.len(), 1);
+        assert_eq!(v.links[0].kind, "pr");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn load_board_batches_relations_per_issue() {
+        let (state, dir) = test_state().await;
+        // Three issues; only T-1 and T-2 have relations, T-3 is bare.
+        seed_issue(&state, "T-1").await;
+        seed_issue(&state, "T-2").await;
+        seed_issue(&state, "T-3").await;
+        db::board::insert_comment(&state.pool, "T-1", "user", "a").await.unwrap();
+        db::board::insert_comment(&state.pool, "T-1", "user", "b").await.unwrap();
+        db::board::insert_acceptance(&state.pool, "T-2", "ship it").await.unwrap();
+        db::board::insert_link(&state.pool, "T-2", "commit", "deadbeef", "").await.unwrap();
+
+        let board = load_board(&state, 0).await.unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            board.iter().map(|v| (v.id.as_str(), v)).collect();
+
+        // Correct grouping: each issue gets only its own relations.
+        assert_eq!(by_id["T-1"].comments.len(), 2);
+        assert!(by_id["T-1"].acceptance.is_empty());
+        assert!(by_id["T-1"].links.is_empty());
+
+        assert!(by_id["T-2"].comments.is_empty());
+        assert_eq!(by_id["T-2"].acceptance.len(), 1);
+        assert_eq!(by_id["T-2"].links.len(), 1);
+
+        // Bare issue: all three vecs empty, none leaked from siblings.
+        assert!(by_id["T-3"].comments.is_empty());
+        assert!(by_id["T-3"].acceptance.is_empty());
+        assert!(by_id["T-3"].links.is_empty());
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

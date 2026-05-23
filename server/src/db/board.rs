@@ -412,3 +412,429 @@ pub async fn tag_completion(pool: &SqlitePool, tag: &str) -> sqlx::Result<(i64, 
     .await?;
     Ok((total, done))
 }
+
+// ── comments / acceptance / links (board↔agent foundation, migration 0010) ─────
+
+/// A row of the `issue_comments` table (the per-issue activity stream).
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct IssueComment {
+    pub id: i64,
+    pub issue_id: String,
+    /// `'agent:<session>'` | `'user'` | `'human:<name>'`.
+    pub author: String,
+    pub body: String,
+    pub created: i64,
+}
+
+/// A row of the `acceptance_items` table (the editable/tickable checklist).
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct AcceptanceItem {
+    pub id: i64,
+    pub issue_id: String,
+    pub body: String,
+    /// 0/1 — kept as `i64` to mirror the rest of the board's SQLite booleans.
+    pub done: i64,
+    pub pos: f64,
+}
+
+/// A row of the `issue_links` table (PR/commit refs attached to an issue).
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct IssueLink {
+    pub id: i64,
+    pub issue_id: String,
+    /// `'pr'` | `'commit'` (CHECK-constrained at the schema level).
+    pub kind: String,
+    /// A URL (for `pr`) or a sha (for `commit`).
+    #[serde(rename = "ref")]
+    pub r#ref: String,
+    pub label: String,
+    pub created: i64,
+}
+
+// comments ──────────────────────────────────────────────────────────────────
+
+/// Append a comment to an issue. `created` is set to now. Returns the new row id.
+pub async fn insert_comment(
+    pool: &SqlitePool,
+    issue_id: &str,
+    author: &str,
+    body: &str,
+) -> sqlx::Result<i64> {
+    let now = chrono::Utc::now().timestamp();
+    let res = sqlx::query(
+        "INSERT INTO issue_comments (issue_id, author, body, created) VALUES (?, ?, ?, ?)",
+    )
+    .bind(issue_id)
+    .bind(author)
+    .bind(body)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(res.last_insert_rowid())
+}
+
+/// Comments for one issue, oldest-first (stream order; index `(issue_id, id)`).
+pub async fn comments_for(pool: &SqlitePool, issue_id: &str) -> sqlx::Result<Vec<IssueComment>> {
+    sqlx::query_as::<_, IssueComment>(
+        "SELECT * FROM issue_comments WHERE issue_id = ? ORDER BY id ASC",
+    )
+    .bind(issue_id)
+    .fetch_all(pool)
+    .await
+}
+
+// acceptance items ────────────────────────────────────────────────────────────
+
+/// Append an acceptance item to an issue at the end of its list (max(pos)+1).
+/// Returns the new row id.
+pub async fn insert_acceptance(
+    pool: &SqlitePool,
+    issue_id: &str,
+    body: &str,
+) -> sqlx::Result<i64> {
+    let next_pos: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(pos) + 1.0, 0.0) FROM acceptance_items WHERE issue_id = ?",
+    )
+    .bind(issue_id)
+    .fetch_one(pool)
+    .await?;
+    let res = sqlx::query(
+        "INSERT INTO acceptance_items (issue_id, body, done, pos) VALUES (?, ?, 0, ?)",
+    )
+    .bind(issue_id)
+    .bind(body)
+    .bind(next_pos)
+    .execute(pool)
+    .await?;
+    Ok(res.last_insert_rowid())
+}
+
+/// Acceptance items for one issue, in checklist (`pos`) order.
+pub async fn acceptance_for(
+    pool: &SqlitePool,
+    issue_id: &str,
+) -> sqlx::Result<Vec<AcceptanceItem>> {
+    sqlx::query_as::<_, AcceptanceItem>(
+        "SELECT * FROM acceptance_items WHERE issue_id = ? ORDER BY pos ASC, id ASC",
+    )
+    .bind(issue_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Tick/untick one acceptance item by id. Returns false if the id does not exist.
+pub async fn toggle_acceptance(
+    pool: &SqlitePool,
+    item_id: i64,
+    done: bool,
+) -> sqlx::Result<bool> {
+    let res = sqlx::query("UPDATE acceptance_items SET done = ? WHERE id = ?")
+        .bind(done as i64)
+        .bind(item_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+// links ───────────────────────────────────────────────────────────────────────
+
+/// Attach a PR/commit ref to an issue. `created` is set to now. Returns the new
+/// row id. `kind` must be `'pr'` or `'commit'` (enforced by the schema CHECK).
+pub async fn insert_link(
+    pool: &SqlitePool,
+    issue_id: &str,
+    kind: &str,
+    r#ref: &str,
+    label: &str,
+) -> sqlx::Result<i64> {
+    let now = chrono::Utc::now().timestamp();
+    let res = sqlx::query(
+        "INSERT INTO issue_links (issue_id, kind, ref, label, created) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(issue_id)
+    .bind(kind)
+    .bind(r#ref)
+    .bind(label)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(res.last_insert_rowid())
+}
+
+/// Links for one issue, oldest-first (index `(issue_id, id)`).
+pub async fn links_for(pool: &SqlitePool, issue_id: &str) -> sqlx::Result<Vec<IssueLink>> {
+    sqlx::query_as::<_, IssueLink>("SELECT * FROM issue_links WHERE issue_id = ? ORDER BY id ASC")
+        .bind(issue_id)
+        .fetch_all(pool)
+        .await
+}
+
+// batch loaders (avoid N+1 when building the whole board, plan S2) ─────────────
+
+use std::collections::HashMap;
+
+/// Load all comments for a set of issues in one query, grouped by `issue_id`.
+/// Each group preserves stream order (oldest-first). Issues with no comments are
+/// simply absent from the map (the caller defaults them to an empty vec).
+pub async fn comments_for_issues(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> sqlx::Result<HashMap<String, Vec<IssueComment>>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = sql_placeholders(ids.len());
+    let sql = format!(
+        "SELECT * FROM issue_comments WHERE issue_id IN ({placeholders}) ORDER BY issue_id ASC, id ASC"
+    );
+    let mut q = sqlx::query_as::<_, IssueComment>(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await?;
+    Ok(group_by(rows, |r| r.issue_id.clone()))
+}
+
+/// Load all acceptance items for a set of issues in one query, grouped by
+/// `issue_id`. Each group is in checklist (`pos`) order.
+pub async fn acceptance_for_issues(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> sqlx::Result<HashMap<String, Vec<AcceptanceItem>>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = sql_placeholders(ids.len());
+    let sql = format!(
+        "SELECT * FROM acceptance_items WHERE issue_id IN ({placeholders}) \
+         ORDER BY issue_id ASC, pos ASC, id ASC"
+    );
+    let mut q = sqlx::query_as::<_, AcceptanceItem>(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await?;
+    Ok(group_by(rows, |r| r.issue_id.clone()))
+}
+
+/// Load all links for a set of issues in one query, grouped by `issue_id`. Each
+/// group is oldest-first.
+pub async fn links_for_issues(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> sqlx::Result<HashMap<String, Vec<IssueLink>>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = sql_placeholders(ids.len());
+    let sql = format!(
+        "SELECT * FROM issue_links WHERE issue_id IN ({placeholders}) ORDER BY issue_id ASC, id ASC"
+    );
+    let mut q = sqlx::query_as::<_, IssueLink>(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await?;
+    Ok(group_by(rows, |r| r.issue_id.clone()))
+}
+
+/// `?, ?, …` — `n` bound placeholders for an `IN (…)` clause.
+fn sql_placeholders(n: usize) -> String {
+    std::iter::repeat("?").take(n).collect::<Vec<_>>().join(", ")
+}
+
+/// Group rows into a `HashMap` by a key extracted from each row, preserving the
+/// query's row order within each group.
+fn group_by<T, F>(rows: Vec<T>, key: F) -> HashMap<String, Vec<T>>
+where
+    F: Fn(&T) -> String,
+{
+    let mut map: HashMap<String, Vec<T>> = HashMap::new();
+    for row in rows {
+        map.entry(key(&row)).or_default().push(row);
+    }
+    map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    /// Fresh on-disk pool with all migrations applied (mirrors db::tests).
+    async fn test_pool() -> (SqlitePool, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-board-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (pool, dir)
+    }
+
+    /// Seed a bare agent-owned issue (no session → no FK requirement).
+    async fn seed_issue(pool: &SqlitePool, id: &str) {
+        insert_issue(
+            pool,
+            &NewIssue {
+                id: id.to_string(),
+                title: format!("issue {id}"),
+                desc: String::new(),
+                status: "todo".into(),
+                session: None,
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "agent".into(),
+                pos: 0.0,
+                notified: 0,
+            },
+        )
+        .await
+        .expect("insert issue");
+    }
+
+    #[tokio::test]
+    async fn comment_insert_list_roundtrip() {
+        let (pool, dir) = test_pool().await;
+        seed_issue(&pool, "T-1").await;
+
+        assert!(comments_for(&pool, "T-1").await.unwrap().is_empty());
+
+        let id1 = insert_comment(&pool, "T-1", "agent:worker-2", "first").await.unwrap();
+        let id2 = insert_comment(&pool, "T-1", "user", "second").await.unwrap();
+        assert!(id2 > id1, "ids are monotonically increasing");
+
+        let listed = comments_for(&pool, "T-1").await.unwrap();
+        assert_eq!(listed.len(), 2);
+        // Oldest-first stream order.
+        assert_eq!(listed[0].body, "first");
+        assert_eq!(listed[0].author, "agent:worker-2");
+        assert_eq!(listed[1].body, "second");
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn acceptance_insert_list_toggle() {
+        let (pool, dir) = test_pool().await;
+        seed_issue(&pool, "T-1").await;
+
+        let a = insert_acceptance(&pool, "T-1", "compiles").await.unwrap();
+        let _b = insert_acceptance(&pool, "T-1", "tests pass").await.unwrap();
+
+        let items = acceptance_for(&pool, "T-1").await.unwrap();
+        assert_eq!(items.len(), 2);
+        // pos order; appended item sits after.
+        assert_eq!(items[0].body, "compiles");
+        assert_eq!(items[1].body, "tests pass");
+        assert_eq!(items[0].done, 0);
+        assert!(items[0].pos < items[1].pos, "appended item gets a larger pos");
+
+        assert!(toggle_acceptance(&pool, a, true).await.unwrap());
+        let items = acceptance_for(&pool, "T-1").await.unwrap();
+        assert_eq!(items[0].done, 1, "first item now ticked");
+
+        assert!(toggle_acceptance(&pool, a, false).await.unwrap());
+        let items = acceptance_for(&pool, "T-1").await.unwrap();
+        assert_eq!(items[0].done, 0, "first item un-ticked");
+
+        // Toggling a non-existent id is a no-op (returns false).
+        assert!(!toggle_acceptance(&pool, 999_999, true).await.unwrap());
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn link_insert_list_and_kind_check() {
+        let (pool, dir) = test_pool().await;
+        seed_issue(&pool, "T-1").await;
+
+        insert_link(&pool, "T-1", "pr", "https://example/pr/1", "PR #1").await.unwrap();
+        insert_link(&pool, "T-1", "commit", "deadbeef", "").await.unwrap();
+
+        let links = links_for(&pool, "T-1").await.unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].kind, "pr");
+        assert_eq!(links[0].r#ref, "https://example/pr/1");
+        assert_eq!(links[0].label, "PR #1");
+        assert_eq!(links[1].kind, "commit");
+        assert_eq!(links[1].r#ref, "deadbeef");
+
+        // The schema CHECK rejects an unknown kind.
+        let bad = insert_link(&pool, "T-1", "bogus", "x", "").await;
+        assert!(bad.is_err(), "CHECK(kind IN ('pr','commit')) must reject 'bogus'");
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cascade_delete_clears_relations() {
+        let (pool, dir) = test_pool().await;
+        seed_issue(&pool, "T-1").await;
+        insert_comment(&pool, "T-1", "user", "hi").await.unwrap();
+        insert_acceptance(&pool, "T-1", "do it").await.unwrap();
+        insert_link(&pool, "T-1", "pr", "url", "").await.unwrap();
+
+        // Hard-delete the issue → ON DELETE CASCADE removes all three relations.
+        sqlx::query("DELETE FROM issues WHERE id = ?")
+            .bind("T-1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(comments_for(&pool, "T-1").await.unwrap().is_empty());
+        assert!(acceptance_for(&pool, "T-1").await.unwrap().is_empty());
+        assert!(links_for(&pool, "T-1").await.unwrap().is_empty());
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn batch_loaders_group_by_issue() {
+        let (pool, dir) = test_pool().await;
+        seed_issue(&pool, "T-1").await;
+        seed_issue(&pool, "T-2").await;
+        seed_issue(&pool, "T-3").await; // no relations → absent from every map.
+
+        insert_comment(&pool, "T-1", "user", "c1a").await.unwrap();
+        insert_comment(&pool, "T-1", "user", "c1b").await.unwrap();
+        insert_comment(&pool, "T-2", "user", "c2a").await.unwrap();
+        insert_acceptance(&pool, "T-1", "a1").await.unwrap();
+        insert_link(&pool, "T-2", "pr", "u", "").await.unwrap();
+
+        let ids = vec!["T-1".to_string(), "T-2".to_string(), "T-3".to_string()];
+
+        let comments = comments_for_issues(&pool, &ids).await.unwrap();
+        assert_eq!(comments.get("T-1").map(|v| v.len()), Some(2));
+        assert_eq!(comments.get("T-2").map(|v| v.len()), Some(1));
+        assert!(comments.get("T-3").is_none(), "no comments → absent (defaults to empty)");
+        // Within-group order preserved.
+        assert_eq!(comments["T-1"][0].body, "c1a");
+        assert_eq!(comments["T-1"][1].body, "c1b");
+
+        let acceptance = acceptance_for_issues(&pool, &ids).await.unwrap();
+        assert_eq!(acceptance.get("T-1").map(|v| v.len()), Some(1));
+        assert!(acceptance.get("T-2").is_none());
+
+        let links = links_for_issues(&pool, &ids).await.unwrap();
+        assert_eq!(links.get("T-2").map(|v| v.len()), Some(1));
+        assert!(links.get("T-1").is_none());
+
+        // Empty id slice short-circuits to an empty map (no malformed SQL).
+        assert!(comments_for_issues(&pool, &[]).await.unwrap().is_empty());
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
