@@ -210,6 +210,11 @@ export interface ApiSession {
   last_activity?: number
   /** True when the underlying tmux session is gone → tile renders `<TileError>`. */
   missing?: boolean
+  /** Set to `true` by the `sessions` SSE delta that announces an archive (the
+   *  backend flips `archived = 1` synchronously before broadcasting). The list
+   *  endpoint already filters archived rows out, so this flag only appears on
+   *  the delta — clients drop the row from their cached list when they see it. */
+  archived?: boolean
 }
 
 /** Body for `POST /api/sessions` (§5.1). `command` carries the initial prompt
