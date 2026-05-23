@@ -403,6 +403,20 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     // can never be re-overwritten by a stale list refetch).
     db::sessions::set_archived(&state.pool, name, true).await?;
 
+    // SYNCHRONOUS: audit row per ARCHITECTURE §3.3 — every destructive HTTP
+    // call records a `session.archive` entry. Uses `?` (not `let _ =`) so a
+    // failed audit-insert fails the request rather than silently dropping the
+    // forensic trail (same pattern as board/mod.rs:401, files/mod.rs:262,
+    // scheduler/runner.rs:92, agents/delegate.rs:63).
+    db::audit::log(
+        &state.pool,
+        "user",
+        "session.archive",
+        name,
+        json!({ "job_id": job_id }),
+    )
+    .await?;
+
     // SYNCHRONOUS: broadcast a `sessions` delta with `archived: true` so all
     // connected clients drop the tile from their cached list immediately. The
     // frontend's `applyDelta` reads this flag and removes the row.
