@@ -77,11 +77,18 @@ NoNewPrivileges=true
 # ReadWritePaths below are writable. ProtectSystem=strict deliberately breaks
 # the files API writing outside the data dir — that is the intended jail.
 ProtectSystem=strict
-# /home, /root, /run/user are inaccessible EXCEPT the paths re-granted by
-# ReadWritePaths below. For root deploys deploy.sh renders ProtectHome=false
-# (otherwise /root would be masked and the unit could not chdir to its data
-# dir); for non-root deploys this stays `true`.
+# Home-dir protection. Rendered by deploy.sh per deploy mode:
+#   - non-root → `tmpfs`: /home is replaced by an empty tmpfs so OTHER users'
+#     homes are hidden, and the __BIND_PATHS__ line below re-mounts ONLY this
+#     service user's own home read-write (its WorkingDirectory + data dir +
+#     spawned-agent dotfiles live there). `true` would mask the service user's
+#     OWN home too — systemd then can't chdir to WorkingDirectory (exit
+#     200/CHDIR) and ReadWritePaths can't un-mask it.
+#   - root (SUPERMUX_ALLOW_ROOT=1) → `false`: /root stays reachable; no bind.
 ProtectHome=__PROTECT_HOME__
+# Re-mount the service user's own home past ProtectHome=tmpfs (non-root). For
+# root deploys deploy.sh deletes this line entirely (ProtectHome=false).
+__BIND_PATHS__
 # Paths the service may write to. Defaults to the data dir for non-root
 # deploys; deploy.sh broadens it for root (to /root) and exposes
 # SUPERMUX_READ_WRITE_PATHS so operators can extend it for multi-project

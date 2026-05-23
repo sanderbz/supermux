@@ -467,6 +467,8 @@ fi
 # "/home/supermux:/opt/projects".
 if [ "$SERVICE_USER" = "root" ]; then
   PROTECT_HOME_DEFAULT="false"
+  # ProtectHome=false leaves /root reachable; no BindPaths needed.
+  BIND_PATHS_DEFAULT=""
   # Root's writable set is /root, but a root deploy can still point
   # SUPERMUX_PROJECT_DIRS at a dir OUTSIDE /root (e.g. /opt/work). 0g-bis
   # provisions+chowns that dir for any user including root, but with
@@ -492,10 +494,27 @@ if [ "$SERVICE_USER" = "root" ]; then
 $(split_path_list "$PROJECT_DIRS")
 EOF_ROOT_PD
 else
-  PROTECT_HOME_DEFAULT="true"
+  # ProtectHome=tmpfs (NOT true): the service's own home IS the WorkingDirectory
+  # and must be writable (spawned claude/codex/tmux children write dotfiles to
+  # $HOME, and the data dir lives under it). ProtectHome=true masks ALL of /home
+  # — including the service user's own home — so systemd can't even chdir into
+  # WorkingDirectory (exit 200/CHDIR), and ReadWritePaths can't un-mask it.
+  # tmpfs replaces /home with an empty mount (hiding OTHER users' homes — the
+  # real isolation win) and BindPaths re-mounts ONLY this service user's home
+  # read-write. Caught live: ProtectHome=true broke the first non-root deploy.
+  PROTECT_HOME_DEFAULT="tmpfs"
+  BIND_PATHS_DEFAULT="$USER_HOME"
   READ_WRITE_PATHS_DEFAULT="$DATA_DIR"
 fi
 PROTECT_HOME="${SUPERMUX_PROTECT_HOME:-$PROTECT_HOME_DEFAULT}"
+# BindPaths line for the unit: re-mount the service user's home past
+# ProtectHome=tmpfs (non-root). Empty for root (ProtectHome=false leaves /root
+# reachable). Rendered as a full directive line or blank.
+if [ -n "${BIND_PATHS_DEFAULT:-}" ]; then
+  BIND_PATHS_LINE="BindPaths=$BIND_PATHS_DEFAULT"
+else
+  BIND_PATHS_LINE=""
+fi
 # Accept either colon- or whitespace-separated input; emit whitespace
 # per systemd ReadWritePaths= grammar.
 READ_WRITE_PATHS_RAW="${SUPERMUX_READ_WRITE_PATHS:-$READ_WRITE_PATHS_DEFAULT}"
@@ -744,6 +763,14 @@ sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__PROTECT_HOME__|$PROTECT_HOME|g" \
     -e "s|__READ_WRITE_PATHS__|$READ_WRITE_PATHS|g" \
     etc/systemd/supermux.service > "$UNIT_TMP"
+# __BIND_PATHS__ is its own line in the template: substitute it with the
+# BindPaths directive (non-root), or delete the line entirely (root → empty).
+if [ -n "$BIND_PATHS_LINE" ]; then
+  sed -i.bak "s|__BIND_PATHS__|$BIND_PATHS_LINE|g" "$UNIT_TMP"
+else
+  sed -i.bak '/__BIND_PATHS__/d' "$UNIT_TMP"
+fi
+rm -f "$UNIT_TMP.bak" 2>/dev/null || true
 if [ "$USE_TAILSCALE" = "1" ]; then
   sed -i.bak \
     -e 's|^# After=tailscaled.service|After=tailscaled.service|' \
