@@ -383,11 +383,35 @@ pub async fn peek(state: &AppState, name: &str, lines: usize) -> Result<String, 
 
 /// Archive (async-job-shaped, §3.2.5): returns a `job_id` immediately; the
 /// scrollback dump + teardown run in the background, completion via SSE `alerts`.
+///
+/// The DB flip to `archived = 1` and the SSE `sessions` delta announcing the
+/// removal both run SYNCHRONOUSLY here — before returning the job id — so that:
+///   (a) any subsequent `GET /api/sessions` already filters this row out
+///       (db::sessions::list does `WHERE archived = 0`), and
+///   (b) every connected client immediately drops the tile from its cached list
+///       via the `sessions` SSE delta carrying `archived: true`.
+/// Only the scrollback file-write + tmux teardown stay in the spawned task —
+/// they don't affect whether the session shows up in the overview.
 pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
     let job_id = uuid::Uuid::new_v4().to_string();
+
+    // SYNCHRONOUS: flip `archived = 1` before returning the response so the
+    // very next `GET /api/sessions` excludes this row (the optimistic UI hide
+    // can never be re-overwritten by a stale list refetch).
+    db::sessions::set_archived(&state.pool, name, true).await?;
+
+    // SYNCHRONOUS: broadcast a `sessions` delta with `archived: true` so all
+    // connected clients drop the tile from their cached list immediately. The
+    // frontend's `applyDelta` reads this flag and removes the row.
+    let _ = state.sse_tx.send(SseEvent {
+        event: "sessions".to_string(),
+        payload: json!({
+            "delta": [{ "name": name, "archived": true }],
+        }),
+    });
 
     let state = state.clone();
     let name = name.to_string();
@@ -412,10 +436,6 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
         })
         .await;
 
-        // R1-1: flip `archived = 1` BEFORE waking the loops so that when they
-        // re-evaluate their `exists_active` guard they observe the archived row
-        // and terminate (an archived row no longer satisfies `exists_active`).
-        let _ = db::sessions::set_archived(&state.pool, &name, true).await;
         let _ = tmux.kill_session().await;
 
         // Nudge both per-session background loops to re-check their guard NOW

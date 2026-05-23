@@ -54,17 +54,41 @@ function mergeRow(prev: ApiSession, delta: Partial<ApiSession>): ApiSession {
  *  delta rows keyed by `name`; unknown names are appended (a session created in
  *  another tab), known names are merged. A row carrying `missing: true` /
  *  `status: 'stopped'` stays in the list (the tile shows the right state) — we
- *  only drop rows the next full refetch removes. */
+ *  only drop rows the backend tells us are gone (`archived: true`) or the next
+ *  full refetch removes.
+ *
+ *  `allowAdd` gates the "append unknown name" branch: full `sessions` deltas
+ *  may add (a session created in another tab); status-only deltas may NOT
+ *  (otherwise a `stopped`-status event from a session we just optimistically
+ *  removed via archive would re-add it — the archive bug). */
 function applyDelta(
   prev: ApiSession[] | undefined,
   delta: Partial<ApiSession>[],
+  allowAdd: boolean,
 ): ApiSession[] {
   const list = prev ? [...prev] : []
   const indexByName = new Map(list.map((s, i) => [s.name, i]))
+  // Track removals so we rebuild the index only once at the end.
+  let removed = false
   for (const row of delta) {
     if (!row || typeof row.name !== 'string') continue
     const idx = indexByName.get(row.name)
+    // The backend broadcasts `archived: true` synchronously after flipping the
+    // DB flag — drop the row immediately so every tab's overview updates
+    // without waiting for a refetch.
+    if (row.archived === true) {
+      if (idx !== undefined) {
+        list.splice(idx, 1)
+        removed = true
+        // Rebuild the index lazily after the loop; we keep iterating but use
+        // a fresh lookup on the next mutation to avoid stale offsets.
+        indexByName.clear()
+        list.forEach((s, i) => indexByName.set(s.name, i))
+      }
+      continue
+    }
     if (idx === undefined) {
+      if (!allowAdd) continue
       // New session seen via SSE before the next list refetch. Seed sane
       // defaults so the tile renders even from a partial delta.
       list.push({
@@ -80,6 +104,9 @@ function applyDelta(
       list[idx] = mergeRow(list[idx], row)
     }
   }
+  // `removed` is just a marker so future maintainers see we intentionally
+  // rebuild the index above; no-op otherwise.
+  void removed
   return list
 }
 
@@ -123,14 +150,23 @@ export function useSessions(): UseSessionsResult {
     () => ({
       onEvent: (type: SseEventType, payload: unknown) => {
         if (type === 'sessions') {
+          // Backend sends `{ delta: [...] }` (sessions/auto_actions.rs +
+          // sessions/lifecycle.rs archive). Tolerate a bare array or
+          // `{ payload: [...] }` envelope too — both older shapes are still
+          // safe to merge.
+          const obj = (payload ?? null) as
+            | { delta?: unknown; payload?: unknown }
+            | null
           const delta = Array.isArray(payload)
             ? (payload as Partial<ApiSession>[])
-            : Array.isArray((payload as { payload?: unknown })?.payload)
-              ? ((payload as { payload: Partial<ApiSession>[] }).payload)
-              : null
+            : Array.isArray(obj?.delta)
+              ? (obj.delta as Partial<ApiSession>[])
+              : Array.isArray(obj?.payload)
+                ? (obj.payload as Partial<ApiSession>[])
+                : null
           if (delta) {
             qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
-              applyDelta(prev, delta),
+              applyDelta(prev, delta, /* allowAdd */ true),
             )
           }
         } else if (type === 'status') {
@@ -138,8 +174,11 @@ export function useSessions(): UseSessionsResult {
             (payload as { payload?: unknown })?.payload ?? payload,
           )
           if (delta.length) {
+            // Status deltas merge into existing rows only — never add a new
+            // tile. Otherwise a `stopped` status event from a session we just
+            // optimistically removed via archive would re-add it.
             qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
-              applyDelta(prev, delta),
+              applyDelta(prev, delta, /* allowAdd */ false),
             )
           }
         }
