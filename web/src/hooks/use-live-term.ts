@@ -290,7 +290,12 @@ export function useLiveTerm(
     // 1. Terminal + addons (§4.5). Canvas renderer for desktop perf; FitAddon
     //    snaps the geometry to the container; WebLinks makes URLs clickable.
     const term = new Terminal({
-      fontFamily: 'SF Mono, Menlo, monospace',
+      // Lead with the self-hosted Nerd Font (see globals.css @font-face +
+      // /fonts/NOTICE.md): shell prompts and TUIs ship Powerline / Nerd
+      // Font icons that render as missing-glyph squares without it. SF Mono
+      // / Menlo remain as the first-paint and worst-case fallback chain.
+      fontFamily:
+        '"JetBrainsMono Nerd Font Mono", "SF Mono", Menlo, Monaco, Consolas, monospace',
       fontSize,
       lineHeight: 1.2,
       theme: themeFromCss(),
@@ -328,6 +333,41 @@ export function useLiveTerm(
         // renderer (xterm default) is a safe fallback. Non-fatal.
       }
     })
+
+    // Font-ready refit: xterm caches the renderer's character metrics on
+    // construction. If the embedded Nerd Font woff2 hasn't finished decoding
+    // by then, xterm measures the system fallback (Menlo) — once the Nerd
+    // Font swaps in, the real glyphs render at the fallback's cell width,
+    // which misaligns the grid. document.fonts.load() resolves as soon as
+    // the requested face is ready (or immediately if the browser lacks the
+    // CSS Font Loading API); we then call .clearTextureAtlas() so the
+    // canvas renderer reflows with the now-loaded metrics + a refit.
+    try {
+      const fonts = (document as Document & { fonts?: FontFaceSet }).fonts
+      if (fonts?.load) {
+        void fonts
+          .load(`${fontSize}px "JetBrainsMono Nerd Font Mono"`)
+          .then(() => {
+            if (disposedRef.current) return
+            try {
+              // Force xterm to re-measure: clear the renderer's char atlas
+              // and refit so cell width tracks the now-loaded font.
+              ;(
+                term as Terminal & { clearTextureAtlas?: () => void }
+              ).clearTextureAtlas?.()
+              fit.fit()
+            } catch {
+              /* non-fatal — first-paint already used the fallback chain */
+            }
+          })
+          .catch(() => {
+            /* font not reachable (offline first-paint, blocked) — the
+               fallback chain in fontFamily still renders text legibly. */
+          })
+      }
+    } catch {
+      /* CSS Font Loading API unsupported — fallback chain handles it. */
+    }
 
     // 2. Local echo path: pipe xterm keystrokes back to the pty (§5.2). The
     //    server echoes them via the broadcast stream, so we do NOT write locally.
