@@ -19,6 +19,7 @@
 pub mod auto_actions;
 pub mod lifecycle;
 pub mod pty;
+pub mod resumable;
 pub mod status;
 pub mod steering;
 pub mod tmux;
@@ -72,6 +73,12 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
         .route("/api/sessions/{name}/clone", post(clone_handler))
+        // ── feat-resume-picker: reopen a past Claude conversation for the dir ──
+        .route(
+            "/api/sessions/{name}/resumable",
+            get(resumable_handler),
+        )
+        .route("/api/sessions/{name}/resume", post(resume_handler))
         .route(
             "/api/sessions/{name}/tracked-files",
             get(tracked_list_handler)
@@ -761,6 +768,51 @@ async fn clone_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let v = lifecycle::clone(&state, &name, &input.new_name).await?;
     Ok((StatusCode::CREATED, ok(v)))
+}
+
+// ── feat-resume-picker ─────────────────────────────────────────────────────────
+
+/// `GET /api/sessions/{name}/resumable` — past Claude conversations for the
+/// session's working dir, newest-first. Empty list when the dir has no project
+/// folder / no conversations (the picker hides Resume).
+async fn resumable_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let s = db::sessions::get(&state.pool, &name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
+    let dir = s.dir.clone();
+    // Filesystem scan can touch large transcripts → off the async runtime.
+    let list = tokio::task::spawn_blocking(move || resumable::list_for_dir(&dir))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("resumable scan join failed: {e}")))?;
+    Ok(Json(json!({ "ok": true, "data": list })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ResumeInput {
+    id: String,
+}
+
+/// `POST /api/sessions/{name}/resume {id}` — set the session's Claude
+/// conversation id, then run the existing start path. The launch builder turns
+/// `cc_conversation_id` into `claude --resume <id>`, so the session resumes that
+/// conversation instead of booting fresh.
+async fn resume_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<ResumeInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let id = input.id.trim();
+    if id.is_empty() {
+        return Err(AppError::BadRequest("expected {id}".into()));
+    }
+    // Validate the session exists before touching the row.
+    ensure_session(&state, &name).await?;
+    db::sessions::set_cc_conversation_id(&state.pool, &name, id).await?;
+    let result = lifecycle::start(&state, &name, None).await?;
+    Ok(Json(json!({ "ok": true, "data": result })))
 }
 
 // ── tracked files ────────────────────────────────────────────────────────────

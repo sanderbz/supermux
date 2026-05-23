@@ -24,14 +24,19 @@ import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { Archive, PlayCircle, PowerOff } from 'lucide-react'
+import { Archive, History, PlayCircle, PowerOff } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { EMPTY } from '@/brand/copy'
-import { sessionsApi, type ApiSession } from '@/lib/api'
+import {
+  sessionsApi,
+  type ApiSession,
+  type ResumableConversation,
+} from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import { ResumePicker } from './resume-picker'
 
 export interface StoppedSessionProps {
   /** Session name — the target of the start / archive request. */
@@ -78,6 +83,31 @@ export function StoppedSessionActions({
   const [failed, setFailed] = React.useState(false)
   const [archiveConfirm, setArchiveConfirm] = React.useState(false)
   const [archiving, setArchiving] = React.useState(false)
+  // Resume affordance — lazily probes the dir's Claude conversations so the
+  // button only appears when there's something to resume (no empty picker).
+  const [conversations, setConversations] = React.useState<
+    ResumableConversation[]
+  >([])
+  const [pickerOpen, setPickerOpen] = React.useState(false)
+
+  React.useEffect(() => {
+    if (!name) return
+    let cancelled = false
+    sessionsApi
+      .resumable(name)
+      .then((list) => {
+        if (!cancelled) setConversations(list)
+      })
+      .catch(() => {
+        // Resume just stays hidden on failure — Start is always available.
+        if (!cancelled) setConversations([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [name])
+
+  const canResume = conversations.length > 0
 
   const onStart = React.useCallback(() => {
     if (busy || !name) return
@@ -148,6 +178,20 @@ export function StoppedSessionActions({
         {busy ? 'Starting…' : EMPTY.stoppedSession.cta}
       </Button>
 
+      {/* Resume — only when the dir has past Claude conversations (no empty
+          picker). Opens the <ResumePicker> sheet; Start stays = fresh. */}
+      {canResume && (
+        <Button
+          variant="secondary"
+          onClick={() => setPickerOpen(true)}
+          disabled={busy || archiving}
+          className="h-11"
+        >
+          <History aria-hidden />
+          Resume
+        </Button>
+      )}
+
       {/* Inline confirm — sentence-case, neutral copy (Archive is reversible
           data loss, not destructive deletion; the confirm guards an
           accidental tap rather than an irrecoverable one). */}
@@ -207,6 +251,18 @@ export function StoppedSessionActions({
         >
           Couldn’t complete that action. Try again.
         </span>
+      )}
+
+      {/* Resume picker — mounted lazily; opens on the Resume tap. Selecting a
+          conversation starts the session with `claude --resume <id>` and the
+          SSE status delta swaps in the live terminal. */}
+      {canResume && (
+        <ResumePicker
+          name={name}
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          conversations={conversations}
+        />
       )}
     </div>
   )

@@ -405,6 +405,22 @@ pub async fn clear_cc(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
+/// Set the Claude conversation id to resume on the next start (feat-resume-picker).
+/// The launch builder turns a non-empty `cc_conversation_id` into
+/// `claude --resume <id>`; clearing both is `clear_cc`.
+pub async fn set_cc_conversation_id(
+    pool: &SqlitePool,
+    name: &str,
+    id: &str,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET cc_session_name = '', cc_conversation_id = ? WHERE name = ?")
+        .bind(id)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Set the hibernated flag in `session_runtime` (cleared by `wake`).
 pub async fn set_hibernated(pool: &SqlitePool, name: &str, hibernated: bool) -> sqlx::Result<()> {
     sqlx::query("UPDATE session_runtime SET hibernated = ? WHERE name = ?")
