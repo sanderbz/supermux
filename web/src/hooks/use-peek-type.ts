@@ -20,7 +20,9 @@
 //   3. Tab and arrow keys are routed to the pty ONLY AFTER engagement
 //      (`claimed` — the user has typed at least one printable character).
 //      Before engagement they're left to the page (so the user can still tab
-//      around without us hijacking it).
+//      around without us hijacking it). After engagement, ↑/↓/←/→, Tab, and
+//      Shift+Tab all flow to the pty so the user can navigate a claude menu
+//      (yes/no, multi-choice list) without leaving the peek for focus view.
 //
 // STICKINESS: the first captured printable keystroke flips a `claimed` flag
 // with a sliding ~4s timer. While claimed, the caller's `onActivity` fires on
@@ -97,7 +99,10 @@ function isBrowserOrAppShortcut(e: KeyboardEvent): boolean {
 }
 
 /** Should Tab / arrow keys be sent to the pty? Only AFTER engagement — before
- *  the user has typed anything, leave page navigation alone. */
+ *  the user has typed anything, leave page navigation alone (so a hovered tile
+ *  doesn't steal arrow keys the user meant for browser/page focus traversal).
+ *  Post-engagement these flow to the pty so claude-style menus are navigable
+ *  from the peek without bouncing into focus view. */
 const NAV_KEYS = new Set([
   'Tab',
   'ArrowUp',
@@ -180,7 +185,14 @@ export function usePeekType(opts: UsePeekTypeOptions): UsePeekTypeResult {
       if (NAV_KEYS.has(e.key) && !claimedRef.current) return
 
       // ── Decode the key ──────────────────────────────────────────────────
-      const named = KEY_TO_NAMED[e.key]
+      // Shift+Tab → BackTab (CSI Z, terminfo `kcbt`). Claude/gum/fzf menus use
+      // this for "move selection up" in the reverse direction; the user's
+      // muscle memory comes straight from focus mode where xterm encodes this
+      // same way. We only translate post-claim (the NAV_KEYS gate above
+      // already enforces that for Tab itself, so we're inside the post-claim
+      // branch by the time we reach this lookup).
+      let named = KEY_TO_NAMED[e.key]
+      if (named === 'Tab' && e.shiftKey) named = 'BackTab'
       const isPrintable =
         !named && e.key.length === 1 && !e.altKey
       const isSendableNamed = named !== undefined
@@ -203,10 +215,14 @@ export function usePeekType(opts: UsePeekTypeOptions): UsePeekTypeResult {
       }
 
       if (isSendableNamed) {
+        // Post-claim: arrows / Tab / Shift+Tab / Enter / Backspace / Page* /
+        // Home / End all flow through `sendKey` → `keyToBytes` → the SAME M13
+        // WS the focus terminal uses. So ↓/↑ on a claude option menu (or
+        // ←/→ on a yes/no prompt) navigates exactly as it would in focus view.
         optsRef.current.onKey(named)
-        // Named keys (Enter, Tab, Backspace, arrows) also count as activity —
-        // they're not "engagement" on their own, but they DO reset the
-        // stickiness window so a slow editor doesn't dismiss mid-edit.
+        // Named keys also count as activity — they're not "engagement" on
+        // their own, but they DO reset the stickiness window so a slow editor
+        // doesn't dismiss mid-edit.
         optsRef.current.onActivity(claimedRef.current)
       }
     }
