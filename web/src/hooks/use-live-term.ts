@@ -58,6 +58,10 @@ export interface UseLiveTermResult {
   /** Programmatically focus xterm's input. The focus route calls this on mount
    *  so keystrokes go to the terminal IMMEDIATELY — no second click required. */
   focus(): void
+  /** Blur xterm's input — dismisses the mobile soft keyboard (the "hide
+   *  keyboard" affordance / tap-away). No-op on desktop where there is no
+   *  on-screen keyboard to dismiss. */
+  blur(): void
 }
 
 // ── Tunables (TECH_PLAN §4.5) ─────────────────────────────────────────────────
@@ -321,6 +325,15 @@ export function useLiveTerm(
    *  call before the terminal is mounted (no-op until then). */
   const focus = React.useCallback(() => {
     termRef.current?.focus()
+  }, [])
+
+  /** Blur xterm's hidden helper textarea so the iOS soft keyboard dismisses.
+   *  `term.blur()` is the public xterm API; we also blur the active element as a
+   *  belt-and-suspenders for engines where the helper textarea kept focus. */
+  const blur = React.useCallback(() => {
+    termRef.current?.blur()
+    const active = document.activeElement
+    if (active instanceof HTMLElement) active.blur()
   }, [])
 
   // ── Single mount effect: owns the terminal + WS lifecycle ───────────────────
@@ -798,5 +811,6 @@ export function useLiveTerm(
     copyAll,
     retry,
     focus,
+    blur,
   }
 }
