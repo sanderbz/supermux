@@ -10,7 +10,7 @@
 // props; the merge keeps both by giving the desktop one a distinct name.
 
 import { motion } from 'framer-motion'
-import { ChevronLeft, MoreHorizontal, Minimize2, Square } from 'lucide-react'
+import { ChevronLeft, Minimize2, Square } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -122,7 +122,6 @@ export interface FocusHeaderProps {
   name: string
   status: SessionStatus
   onBack: () => void
-  onOverflow?: () => void
   className?: string
 }
 
@@ -130,7 +129,6 @@ export function FocusHeader({
   name,
   status,
   onBack,
-  onOverflow,
   className,
 }: FocusHeaderProps) {
   return (
@@ -179,16 +177,11 @@ export function FocusHeader({
         </h1>
       </div>
 
-      <motion.button
-        type="button"
-        aria-label="More"
-        whileTap={{ scale: 0.92 }}
-        transition={springs.buttonPress}
-        onClick={onOverflow}
-        className="flex size-11 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
-      >
-        <MoreHorizontal className="size-5" />
-      </motion.button>
+      {/* R5 — the title-bar "···" overflow was removed: it opened the same
+          SessionPickerSheet as the bottom-left session pill (redundant; the
+          pill is the richer affordance). A spacer keeps the title centred
+          against the left back-button. */}
+      <span className="size-11 shrink-0" aria-hidden />
     </header>
   )
 }

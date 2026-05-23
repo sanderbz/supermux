@@ -127,6 +127,35 @@ async fn overview_layout_round_trips() {
 }
 
 #[tokio::test]
+async fn quick_keys_round_trips() {
+    let (app, _dir) = test_app().await;
+    // Unset key returns null (the client renders the default selection).
+    let (status, body) = send(&app, Method::GET, "/api/prefs/quick_keys", None, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["value"], Value::Null);
+
+    let payload = json!({
+        "selected": ["key:Esc", "key:Ctrl-C", "text:continue", "slash:/compact"]
+    })
+    .to_string();
+
+    let (status, body) = send(
+        &app,
+        Method::PUT,
+        "/api/prefs/quick_keys",
+        Some(json!({ "value": payload.clone() })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["value"], Value::String(payload.clone()));
+
+    let (status, body) = send(&app, Method::GET, "/api/prefs/quick_keys", None, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["value"], Value::String(payload));
+}
+
+#[tokio::test]
 async fn oversize_pref_value_rejected() {
     let (app, _dir) = test_app().await;
     let huge = "x".repeat(60 * 1024);
