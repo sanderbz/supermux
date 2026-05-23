@@ -27,6 +27,23 @@ that embeds the web app (a PWA) — no Node, no Docker, no Python at runtime.
 - **Auth by default** — every API route requires a bearer token; there is no
   localhost bypass.
 
+## Quickstart deploy
+
+The friendly path — one command, a few questions, you're deployed:
+
+```bash
+bash scripts/setup.sh     # friendly wizard, ~30 seconds
+bash scripts/deploy.sh    # actual deploy
+```
+
+`setup.sh` walks you through the handful of values `deploy.sh` needs (SSH host,
+service user, ports, optional Tailscale) with smart defaults — hit Enter
+through it for the common case. It also detects your environment (does SSH
+work? is `tailscale` on the host?) and adjusts defaults. Advanced users can
+still hand-edit `.env` directly afterwards, or run the wizard non-interactively
+with `bash scripts/setup.sh --yes` (you'll need `SUPERMUX_DEPLOY_HOST` set in
+the environment).
+
 ## Quickstart (development)
 
 Prerequisites: `cargo` (rustup), `bun`, and `tmux`.
