@@ -3,19 +3,21 @@ import {
   AlertCircle,
   Bot,
   Calendar,
+  GitPullRequest,
   Maximize2,
   MessageSquare,
+  Play,
   RotateCcw,
-  Send,
+  Square,
   User,
 } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import { type BoardIssue } from '@/lib/api'
-import { useLiveSession } from '@/hooks/use-board'
-import { useSendToAgent } from '@/hooks/use-send-to-agent'
+import { focusApi, type BoardIssue } from '@/lib/api'
+import { useBoard, useLiveSession } from '@/hooks/use-board'
+import { useStartAgent } from '@/hooks/use-send-to-agent'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useToast } from '@/components/ui/use-toast'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
@@ -93,17 +95,29 @@ export interface IssueCardProps {
 }
 
 /**
- * A board card — alive like an overview tile (§C.4).
+ * A board card — alive like an overview tile (§C.4), now STATE-AWARE.
  *
- * Borrows the overview's vocabulary: the LINKED session's real `StatusDot`
- * (joined to the shared SSE `status`/`sessions` stream by `issue.session`), a
- * hover tail-peek off the same `last_capture` the tiles render, view-transition
- * morph into focus mode, plus board-native signals (acceptance progress, the
- * R1 needs-review / awaiting-input badges, the R2 stale-link reassign badge).
+ * The primary action is chosen by the issue's **status**, not by `owner_type`
+ * (board-rework spec). Starting an agent on an issue is what *makes* it
+ * agent-owned, so the affordances never gate on `owner_type` and the card never
+ * shows the internal "claim" verb:
  *
- * Affordances are HOVER-revealed (desktop, fine pointer) — no menu, no extra
- * clicks. Tap opens the detail sheet; press-and-drag (pointer) hands off to the
- * board's cross-column drag controller with spring physics.
+ *   - `todo` / `backlog` → ▶ Start agent (the primary action). One tap when the
+ *     issue already has a live linked session; otherwise it opens the detail
+ *     sheet so the start picker can attach-or-spawn.
+ *   - `doing` → it's the agent's live face. Primary Open (morph to focus);
+ *     secondary, hover-revealed Stop (confirm-on-tap, no accidental stops).
+ *   - terminal (review / done / any other column) → calm. A subtle PR/commit
+ *     indicator when there are links; heavier actions route to the sheet.
+ *
+ * Live signals (the linked session's real `StatusDot`, hover tail-peek,
+ * acceptance progress, last comment) are UNGATED from `owner_type` — they show
+ * whenever a session is linked, regardless of who owns the issue.
+ *
+ * Affordances are HOVER-revealed on a fine pointer (desktop) and ALWAYS visible
+ * on a coarse pointer (mobile) — no menu, no extra clicks. Tap opens the detail
+ * sheet; press-and-drag (pointer) hands off to the board's cross-column drag
+ * controller with spring physics.
  *
  * iOS-native finish: 10px continuous-corner radius, ≥44pt tap targets, scale
  * press feedback (no `transition: all`), sentence-case copy, reduced-motion safe.
@@ -117,11 +131,21 @@ export function IssueCard({
   const reduce = useReducedMotion()
   const fine = useMediaQuery('(pointer: fine)')
   const { toast } = useToast()
-  const { sendToAgent } = useSendToAgent()
+  const { startAgent } = useStartAgent()
+  const board = useBoard()
   const navigateMorph = useNavigateMorph()
 
   const due = issue.due ? dueLabel(issue.due) : null
   const OwnerIcon = issue.owner_type === 'agent' ? Bot : User
+
+  // ── State-aware classification (drives the primary action) ──────────────────
+  // `startable` columns are the only places an agent gets started; `doing` is the
+  // agent's live face; everything else (review/done/custom) is a calm terminal
+  // card. This is what structurally removes the old 409 "claim on doing" bug —
+  // the Start affordance simply never renders off a startable column.
+  const isStartable = issue.status === 'todo' || issue.status === 'backlog'
+  const isDoing = issue.status === 'doing'
+  const isTerminal = !isStartable && !isDoing
 
   // Join the card to the LINKED session's live status + tail by name (U1). Reads
   // the shared `['sessions']` cache the overview tiles render from — live status
@@ -136,7 +160,10 @@ export function IssueCard({
   const staleLink = !!issue.session && !issue.session_live
 
   const [hovered, setHovered] = React.useState(false)
-  const [sending, setSending] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  // Stop is a two-tap confirm (no accidental stops). The first tap arms it; a
+  // second tap within the window actually stops. Leaving the card disarms it.
+  const [confirmStop, setConfirmStop] = React.useState(false)
 
   // Tail-peek shows on hover (fine pointer) for a card whose session is live and
   // has captured output — the same source as the overview `TailPreview`. Zero
@@ -145,36 +172,46 @@ export function IssueCard({
   // honours reduce for its own line transitions.
   const tailLines = linkLive ? (live?.preview_lines ?? []) : []
   const showTail = hovered && fine && linkLive && tailLines.length > 0
-  // Hover-revealed inline actions appear for any fine-pointer hover.
-  const showActions = hovered && fine
+  // Hover-revealed inline actions appear for any fine-pointer hover; on a coarse
+  // pointer (mobile) the primary action is ALWAYS shown/tappable (not hover-only).
+  const showActions = (hovered && fine) || !fine
+
+  // A live linked session we can confidently start one-tap against.
+  const hasLiveSession = !!issue.session && issue.session_live
 
   const goFocus = React.useCallback(() => {
     if (!issue.session) return
     navigateMorph(`/focus/${issue.session}`)
   }, [navigateMorph, issue.session])
 
-  // ── Send to agent (claim + deliver) → toast with Undo via the steer_id ──────
-  // Delegates the whole claim→toast→Undo(unsend) flow to the shared hook
-  // (one source of truth across card / sheet / drag / ⌘K); the card only owns
-  // its `sending` latch and its own copy for the edge cases.
-  const onSend = React.useCallback(
+  // ── Start agent (status-aware) → optimistic slide to doing + Undo toast ─────
+  // On a `todo`/`backlog` card with a confidently-live linked session, one tap
+  // starts + delivers via the shared `useStartAgent` flow (optimistic
+  // `board.startIssue` mutation slides the card to `doing`, rolls back on a 409).
+  // Plain copy only — never the internal "claim" verb. Without a live session,
+  // the detail sheet's start picker owns attach-or-spawn (don't build a second
+  // picker on the card).
+  const onStart = React.useCallback(
     async (e: React.MouseEvent | React.KeyboardEvent) => {
       e.stopPropagation()
+      if (busy) return
       const session = issue.session
-      if (!session || sending) return
-      setSending(true)
+      if (!hasLiveSession || !session) {
+        // No live session to attach: let the detail sheet pick/attach/spawn.
+        onOpen(issue)
+        return
+      }
+      setBusy(true)
       try {
-        await sendToAgent({
+        await startAgent({
           id: issue.id,
           session,
-          // A delivered send reads "Sent to <session>" (with Undo when there's a
-          // steer to retract); the rare non-delivered outcome still confirms the
-          // assignment ("Assigned to <session>"). Both use the `active` tone.
-          isSent: (r) => r.delivered,
+          // Optimistic: slide the card to `doing` immediately; roll back on 409.
+          start: (a) => board.startIssue(a),
           sentMessage: () => `Sent to ${session}`,
           sentDuration: 6000,
-          claimedMessage: () => `Assigned to ${session}`,
-          claimedTone: 'active',
+          assignedMessage: () => `Agent started on ${session}`,
+          assignedTone: 'active',
           onUndoError: () => {
             // The agent already consumed it (0 cleared) or a transient failure —
             // non-fatal; the work is on its way.
@@ -186,16 +223,47 @@ export function IssueCard({
           onError: (err) => {
             toast({
               message:
-                err instanceof Error ? err.message : 'Couldn’t send to the agent',
+                err instanceof Error ? err.message : 'Couldn’t start the agent',
               tone: 'error',
             })
           },
         })
       } finally {
-        setSending(false)
+        setBusy(false)
       }
     },
-    [issue.id, issue.session, sending, sendToAgent, toast],
+    [issue, hasLiveSession, busy, startAgent, board, toast, onOpen],
+  )
+
+  // ── Stop the working agent (doing card) — safe, two-tap confirm ─────────────
+  // First tap arms the confirm (the icon turns into a clear "stop?" affordance);
+  // a second tap stops the session via the same control-plane endpoint the focus
+  // dock uses. A non-fatal failure is surfaced as a toast.
+  const onStop = React.useCallback(
+    async (e: React.MouseEvent | React.KeyboardEvent) => {
+      e.stopPropagation()
+      const session = issue.session
+      if (!session || busy) return
+      if (!confirmStop) {
+        setConfirmStop(true)
+        return
+      }
+      setConfirmStop(false)
+      setBusy(true)
+      try {
+        await focusApi.stopSession(session)
+        toast({ message: `Stopped ${session}`, tone: 'default' })
+      } catch (err) {
+        toast({
+          message:
+            err instanceof Error ? err.message : 'Couldn’t stop the agent',
+          tone: 'error',
+        })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [issue.session, busy, confirmStop, toast],
   )
 
   // The most-recent comment (newest last in the array, mirroring the server's
@@ -214,6 +282,12 @@ export function IssueCard({
 
   const hasMetaRow =
     !!issue.session || issue.tags.length > 0 || !!due
+
+  // A calm PR/commit indicator for terminal cards (review/done) that shipped
+  // something — a glance, not an action. Tapping the card opens the sheet where
+  // the full links section lives.
+  const linkCount = issue.links.length
+  const terminalLinkHint = isTerminal && linkCount > 0
 
   return (
     <motion.div
@@ -239,7 +313,11 @@ export function IssueCard({
         }
       }}
       onHoverStart={() => setHovered(true)}
-      onHoverEnd={() => setHovered(false)}
+      onHoverEnd={() => {
+        setHovered(false)
+        // Leaving the card disarms a pending Stop confirm.
+        setConfirmStop(false)
+      }}
       className={cn(
         'group relative flex min-h-[44px] w-full cursor-pointer touch-none select-none flex-col gap-2 rounded-[10px] border border-border bg-background/80 p-3 text-left shadow-sm',
         'transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -260,11 +338,11 @@ export function IssueCard({
           {issue.title}
         </span>
 
-        {/* Live status dot (top-right) — the linked session's real state, joined
-            from the shared SSE stream. Swaps to the hover-revealed action
-            cluster on hover so the resting card stays calm. */}
+        {/* Top-right cluster — state-aware. The hover/coarse-pointer action set
+            swaps in over the resting live status dot so the calm card stays calm.
+            Actions are chosen by STATUS, never by owner_type. */}
         <AnimatePresence mode="wait" initial={false}>
-          {showActions ? (
+          {showActions && (isStartable || isDoing) ? (
             <motion.div
               key="actions"
               initial={reduce ? false : { opacity: 0, scale: 0.9 }}
@@ -273,31 +351,32 @@ export function IssueCard({
               transition={reduce ? { duration: 0 } : springs.snappy}
               className="-mr-1 -mt-1 flex shrink-0 items-center gap-0.5"
             >
-              {/* Send to agent — claim + deliver. Only meaningful for an
-                  agent-owned card with a (live) session link. */}
-              {issue.owner_type === 'agent' && issue.session && (
+              {/* `todo`/`backlog` → ▶ Start agent (the primary action). One tap
+                  attaches the live linked session; with no live session it opens
+                  the sheet's start picker (attach-or-spawn). */}
+              {isStartable && (
                 <button
                   type="button"
-                  aria-label={`Send to ${issue.session}`}
-                  title={`Send to ${issue.session}`}
-                  disabled={sending}
-                  onClick={onSend}
+                  aria-label="Start agent"
+                  title="Start agent"
+                  disabled={busy}
+                  onClick={onStart}
                   onPointerDown={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') onSend(e)
+                    if (e.key === 'Enter' || e.key === ' ') onStart(e)
                   }}
                   className="grid size-11 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 [&_svg]:size-4"
                 >
-                  {sending ? (
+                  {busy ? (
                     <RotateCcw aria-hidden className="animate-spin" />
                   ) : (
-                    <Send aria-hidden />
+                    <Play aria-hidden />
                   )}
                 </button>
               )}
-              {/* Open session — view-transition morph straight into focus mode,
-                  reusing the overview's tile↔focus morph vocabulary. */}
-              {issue.session && (
+
+              {/* `doing` → Open (primary, morph to focus). */}
+              {isDoing && issue.session && (
                 <button
                   type="button"
                   aria-label={`Open session ${issue.session}`}
@@ -318,6 +397,34 @@ export function IssueCard({
                   <Maximize2 aria-hidden />
                 </button>
               )}
+
+              {/* `doing` → Stop (secondary, hover-revealed). Two-tap confirm so a
+                  brush never stops a working agent. No Start/Send here. */}
+              {isDoing && issue.session && (
+                <button
+                  type="button"
+                  aria-label={confirmStop ? `Confirm stop ${issue.session}` : `Stop ${issue.session}`}
+                  title={confirmStop ? 'Tap again to stop' : `Stop ${issue.session}`}
+                  disabled={busy}
+                  onClick={onStop}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') onStop(e)
+                  }}
+                  className={cn(
+                    'grid size-11 place-items-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 [&_svg]:size-4',
+                    confirmStop
+                      ? 'bg-destructive/15 text-destructive hover:bg-destructive/20'
+                      : 'text-muted-foreground hover:bg-destructive/10 hover:text-destructive',
+                  )}
+                >
+                  {busy ? (
+                    <RotateCcw aria-hidden className="animate-spin" />
+                  ) : (
+                    <Square aria-hidden className="fill-current" />
+                  )}
+                </button>
+              )}
             </motion.div>
           ) : liveStatus ? (
             <motion.span
@@ -328,6 +435,19 @@ export function IssueCard({
               title={STATUS_LABEL[liveStatus]}
             >
               <StatusDot status={liveStatus} />
+            </motion.span>
+          ) : terminalLinkHint ? (
+            <motion.span
+              key="link-hint"
+              initial={false}
+              animate={{ opacity: 1 }}
+              className="mt-0.5 inline-flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground"
+              title={`${linkCount} ${linkCount === 1 ? 'link' : 'links'}`}
+            >
+              <GitPullRequest aria-hidden className="size-3.5" />
+              {linkCount > 1 && (
+                <span className="tabular-nums">{linkCount}</span>
+              )}
             </motion.span>
           ) : null}
         </AnimatePresence>
@@ -430,7 +550,8 @@ export function IssueCard({
 
       {/* Hover tail-peek (desktop) — last ~3 lines of the live session's output,
           same source as the overview TailPreview. Springs open on hover; never
-          shown for an archived/stale link (no confidently-live tail). */}
+          shown for an archived/stale link (no confidently-live tail). Ungated
+          from owner_type: shows whenever a session is confidently live. */}
       <AnimatePresence initial={false}>
         {showTail && (
           <motion.div
