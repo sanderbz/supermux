@@ -136,7 +136,17 @@ export function FocusHeader({
   return (
     <header
       className={cn(
-        'flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-1',
+        // pt-safe is owned by the HEADER itself (not the outer sheet) so the
+        // safe-area inset resolves correctly regardless of any transformed
+        // ancestor (the swipe-peek motion.div) AND survives the View Transition
+        // morph — the UA's `::view-transition-group` pseudo-element inherits
+        // the layout from this header, so the morphing top bar reserves the
+        // status-bar / Dynamic Island region from the first frame instead of
+        // snapping into place when the transition ends. Mirrors the desktop
+        // <MobileTopBar> pattern (layout.tsx) where pt-safe also lives ON the
+        // header. The 44pt hit target (h-11) is unchanged — pt-safe is
+        // additive.
+        'flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-1 pt-safe',
         className,
       )}
       // Shared-element View Transition target (§M23a): same name as the tile, so
