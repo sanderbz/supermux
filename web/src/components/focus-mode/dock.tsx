@@ -419,26 +419,50 @@ export function MobileDock({
     [onSend, onFocusTerm],
   )
 
-  // Dictation — the mic toggles Web Speech. `useDictation` streams the CUMULATIVE
-  // transcript on every interim result, so we must NOT send each callback (that
-  // would re-send the growing string and duplicate chars at the prompt). Instead
-  // we stash the latest transcript and send it ONCE when the session ends — the
-  // live-type analogue of "dictate, then it lands at the shell prompt."
+  // Dictation — the mic toggles Web Speech. R5 FIX: the flush no longer depends
+  // on Web Speech firing `onend` (flaky on iOS Safari / WKWebView — when it never
+  // arrives the transcript was silently dropped). Instead `useDictation` surfaces
+  // each FINAL segment via `onFinal` the instant it commits, and we send that
+  // segment STRAIGHT to the pty via `onSend` (the same sendRaw path keystrokes
+  // use). The cumulative interim (`onTranscript`) is buffered only as a SAFETY
+  // tail for any text that finalized late / never finalized — flushed on the stop
+  // tap, blur, and unmount. A "sent length" cursor dedupes the two paths so a
+  // segment can never land twice.
   const pendingTranscriptRef = React.useRef('')
-  const dictation = useDictation(
-    React.useCallback((text: string) => {
+  // Number of leading chars of the cumulative transcript already sent (via
+  // onFinal). The safety flush only emits the UNSENT tail past this cursor.
+  const sentLenRef = React.useRef(0)
+  const dictation = useDictation({
+    // Cumulative interim — buffered for the safety-tail flush; never sent here.
+    onTranscript: React.useCallback((text: string) => {
       pendingTranscriptRef.current = text
     }, []),
-  )
-  // Flush whatever transcript is pending to the terminal, exactly once. Clears
-  // the ref BEFORE sending so two flush paths (the listening-stop effect below
-  // and the unmount cleanup) can never double-send: whichever fires first
-  // consumes the buffer, the other reads empty and no-ops.
+    // Final segment — send immediately (does not wait for the unreliable onend).
+    onFinal: React.useCallback(
+      (segment: string) => {
+        const seg = segment.trim()
+        if (!seg) return
+        onSend(seg + ' ')
+        onFocusTerm()
+        // Advance the dedupe cursor so the safety flush won't re-send this text.
+        // Web Speech's cumulative transcript joins finals with spaces, so account
+        // for the trailing separator we appended.
+        sentLenRef.current = pendingTranscriptRef.current.length
+      },
+      [onSend, onFocusTerm],
+    ),
+  })
+  // Flush only the UNSENT tail of the cumulative transcript — text the user spoke
+  // that never finalized (so `onFinal` never fired for it) before they stopped.
+  // Clears state BEFORE sending so the three flush paths (stop tap, blur, unmount)
+  // can never double-send: whichever runs first consumes the tail, the rest no-op.
   const flushTranscript = React.useCallback(() => {
-    const text = pendingTranscriptRef.current.trim()
+    const full = pendingTranscriptRef.current
+    const tail = full.slice(sentLenRef.current).trim()
     pendingTranscriptRef.current = ''
-    if (text) {
-      onSend(text)
+    sentLenRef.current = 0
+    if (tail) {
+      onSend(tail + ' ')
       onFocusTerm()
     }
   }, [onSend, onFocusTerm])
@@ -450,6 +474,9 @@ export function MobileDock({
     flushTranscriptRef.current = flushTranscript
   }, [flushTranscript])
 
+  // Safety flush on the listening→idle transition (kept for the case where onend
+  // DOES fire) — flushes any unsent interim tail. Belt-and-suspenders with the
+  // stop-tap flush below; the dedupe cursor makes both safe.
   const wasListeningRef = React.useRef(false)
   React.useEffect(() => {
     if (wasListeningRef.current && !dictation.listening) {
@@ -458,13 +485,22 @@ export function MobileDock({
     wasListeningRef.current = dictation.listening
   }, [dictation.listening, flushTranscript])
 
-  // Defensive flush (P2 polish): the normal flush is gated on the listening→idle
-  // transition, which depends on Web Speech firing `onend`. If `onend` never
-  // arrives (the dock unmounts mid-dictation — route change, focus-pane teardown
-  // — or the browser aborts recognition without an end event), the
-  // listening-stop effect never runs and a dictated transcript would be silently
-  // dropped. So on unmount we flush any pending transcript. The clear-before-send
-  // guard in flushTranscript makes this safe against a racing normal flush.
+  // Mic tap: when STOPPING, flush the unsent tail INSIDE the user gesture (WS
+  // still open, dock still mounted) THEN stop — independent of whether `onend`
+  // ever arrives. When starting, just start. (Final segments already streamed via
+  // onFinal while listening; this catches anything still interim at stop time.)
+  const onMicTap = React.useCallback(() => {
+    if (dictation.listening) {
+      flushTranscript()
+      dictation.stop()
+    } else {
+      dictation.start()
+    }
+  }, [dictation, flushTranscript])
+
+  // Defensive flush on unmount: if the dock unmounts mid-dictation (route change,
+  // focus-pane teardown) without a stop tap or `onend`, flush any unsent tail. The
+  // clear-before-send guard in flushTranscript keeps this safe against a race.
   React.useEffect(() => {
     return () => flushTranscriptRef.current()
   }, [])
@@ -569,7 +605,7 @@ export function MobileDock({
         {dictation.supported && (
           <DockIcon
             label={dictation.listening ? 'Stop dictation' : 'Dictate'}
-            onClick={dictation.toggle}
+            onClick={onMicTap}
           >
             <Mic
               className={cn('size-5', dictation.listening && 'text-primary')}

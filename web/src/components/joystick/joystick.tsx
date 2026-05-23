@@ -1,5 +1,5 @@
 // joystick.tsx — M17. The Termius "hold-anywhere arrow joystick" + 2-finger
-// scrollback gesture, as an absolutely-positioned overlay on the terminal.
+// scrollback gesture, layered over the terminal.
 //
 // TECH_PLAN §4.4 (mobile gestures + iOS haptics caveat), §M17 subagent prompt.
 // research/termius-ios-native-spec.md §"Hold-anywhere arrow joystick",
@@ -20,10 +20,23 @@
 // A SECOND finger landing cancels the joystick and hands off to the 2-finger
 // PageUp/PageDown recognizer (use-two-finger.ts).
 //
-// SURGICAL + ADDITIVE: this is a NEW file. It mounts as a sibling overlay over
-// <LiveTerminal/> and drives the SAME `useLiveTerm` handle the dock uses — no
-// second WebSocket, no second xterm. Reduce Motion skips the rose; keys still
-// flow. Spring physics come from lib/springs.ts; no `transition: all`.
+// R5 FIX — DON'T BLANKET THE TERMINAL. The earlier design rendered an
+// `absolute inset-0 z-20 touch-none` overlay with live pointer handlers covering
+// the WHOLE terminal. That overlay was the topmost hit target AND its
+// `touch-action: none` told the engine "no native panning here," so xterm's own
+// `touchmove` scroll handler (which is what scrolls the scrollback) never ran:
+// a plain one-finger drag did nothing. The fix is layering, per the investigation
+// (route A′): observe pointer gestures via NON-blocking listeners attached to the
+// terminal wrapper (the joystick's parent), and only put a capturing surface in
+// front of xterm ONCE the joystick is ARMED. While unarmed the terminal is
+// pass-through, so single-finger drags reach `.xterm-viewport` and scroll the
+// scrollback natively (exactly what xterm is built to do); hold≥350ms still arms,
+// and a 2nd finger still drives PageUp/PageDown.
+//
+// SURGICAL + ADDITIVE: this mounts as a sibling over <LiveTerminal/> and drives
+// the SAME `useLiveTerm` handle the dock uses — no second WebSocket, no second
+// xterm. Reduce Motion skips the rose; keys still flow. Spring physics come from
+// lib/springs.ts; no `transition: all`.
 
 import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
@@ -225,53 +238,95 @@ export function Joystick({
     repeatTimerRef.current = window.setTimeout(() => tickRef.current(), TIER1_MS)
   }, [reduceMotion])
 
-  // ── Two-finger PageUp/Down recognizer — shares this overlay ─────────────────
+  // ── Two-finger PageUp/Down recognizer — shares the gesture stream ────────────
   // A second pointer landing cancels the joystick (research §"Conflict").
   const twoFinger = useTwoFinger({
     sendKey,
     onTwoFingerStart: disarm,
     enabled: active,
   })
+  // The two-finger handlers are stable across renders (useCallback) but keep them
+  // in a ref so the wrapper's native listeners always call the latest without
+  // re-binding the listener set on every render.
+  const twoFingerRef = React.useRef(twoFinger)
+  React.useEffect(() => {
+    twoFingerRef.current = twoFinger
+  }, [twoFinger])
+  const activeRef = React.useRef(active)
+  React.useEffect(() => {
+    activeRef.current = active
+  }, [active])
 
-  // ── Pointer handlers on the overlay ─────────────────────────────────────────
-  const onPointerDown = (e: React.PointerEvent) => {
-    twoFinger.onPointerDown(e)
-    if (!active) return
-    // Only the FIRST pointer arms the joystick; a 2nd is the scrollback gesture.
-    if (pointerIdRef.current !== null) {
-      // Second finger — bail out of any pending arm + active joystick.
-      disarm()
-      return
+  // ── Gesture detection on the terminal wrapper (NON-blocking) ────────────────
+  // The joystick observes pointer events on its PARENT wrapper (which contains
+  // both <LiveTerminal/> and this overlay). The listeners are attached to the
+  // wrapper, not a covering overlay, and they NEVER call preventDefault on the
+  // pre-arm pointer stream — so plain single-finger drags fall through to xterm's
+  // own `touchmove` scroll handler and pan the scrollback. Only once we ARM does
+  // a capturing surface appear in front of xterm to consume the joystick drag.
+  React.useEffect(() => {
+    const overlay = overlayRef.current
+    const wrapper = overlay?.parentElement
+    if (!wrapper) return
+
+    const synth = (e: PointerEvent): React.PointerEvent =>
+      e as unknown as React.PointerEvent
+
+    const handleDown = (e: PointerEvent) => {
+      twoFingerRef.current.onPointerDown(synth(e))
+      if (!activeRef.current) return
+      // Only the FIRST pointer arms the joystick; a 2nd is the scrollback gesture.
+      if (pointerIdRef.current !== null) {
+        // Second finger — bail out of any pending arm + active joystick.
+        disarm()
+        return
+      }
+      pointerIdRef.current = e.pointerId
+      startRef.current = { x: e.clientX, y: e.clientY }
+      lastPosRef.current = { x: e.clientX, y: e.clientY }
+      // Start the 350ms hold-to-arm timer. Movement > 8pt before it fires cancels.
+      clearArmTimer()
+      armTimerRef.current = window.setTimeout(arm, ARM_HOLD_MS)
     }
-    pointerIdRef.current = e.pointerId
-    startRef.current = { x: e.clientX, y: e.clientY }
-    lastPosRef.current = { x: e.clientX, y: e.clientY }
-    // Start the 350ms hold-to-arm timer. Movement > 8pt before it fires cancels.
-    clearArmTimer()
-    armTimerRef.current = window.setTimeout(arm, ARM_HOLD_MS)
-  }
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    twoFinger.onPointerMove(e)
-    if (!active) return
-    if (e.pointerId !== pointerIdRef.current) return
-    lastPosRef.current = { x: e.clientX, y: e.clientY }
+    const handleMove = (e: PointerEvent) => {
+      twoFingerRef.current.onPointerMove(synth(e))
+      if (!activeRef.current) return
+      if (e.pointerId !== pointerIdRef.current) return
+      lastPosRef.current = { x: e.clientX, y: e.clientY }
 
-    if (!armedRef.current) {
-      // Pre-arm: a >8pt move cancels into normal selection (criterion #2).
-      const dx = e.clientX - startRef.current.x
-      const dy = e.clientY - startRef.current.y
-      if (Math.hypot(dx, dy) > ARM_CANCEL_PT) {
-        clearArmTimer()
-        pointerIdRef.current = null
+      if (!armedRef.current) {
+        // Pre-arm: a >8pt move cancels into normal scroll/selection (criterion
+        // #2). We do NOT preventDefault here, so xterm's own touchmove scroll
+        // runs and the scrollback pans — the joystick simply stands down.
+        const dx = e.clientX - startRef.current.x
+        const dy = e.clientY - startRef.current.y
+        if (Math.hypot(dx, dy) > ARM_CANCEL_PT) {
+          clearArmTimer()
+          pointerIdRef.current = null
+        }
       }
     }
-  }
 
-  const onPointerEnd = (e: React.PointerEvent) => {
-    twoFinger.onPointerUp(e)
-    if (e.pointerId === pointerIdRef.current) disarm()
-  }
+    const handleEnd = (e: PointerEvent) => {
+      twoFingerRef.current.onPointerUp(synth(e))
+      if (e.pointerId === pointerIdRef.current) disarm()
+    }
+
+    // Passive listeners — never block native scroll. The armed capturing surface
+    // (rendered below, pointer-events-auto only when armed) is what swallows the
+    // drag once the joystick is up.
+    wrapper.addEventListener('pointerdown', handleDown, { passive: true })
+    wrapper.addEventListener('pointermove', handleMove, { passive: true })
+    wrapper.addEventListener('pointerup', handleEnd, { passive: true })
+    wrapper.addEventListener('pointercancel', handleEnd, { passive: true })
+    return () => {
+      wrapper.removeEventListener('pointerdown', handleDown)
+      wrapper.removeEventListener('pointermove', handleMove)
+      wrapper.removeEventListener('pointerup', handleEnd)
+      wrapper.removeEventListener('pointercancel', handleEnd)
+    }
+  }, [arm, disarm])
 
   // Cleanup on unmount — never leave a repeat timer running.
   React.useEffect(() => disarm, [disarm])
@@ -286,19 +341,18 @@ export function Joystick({
   return (
     <div
       ref={overlayRef}
-      // Absolute overlay covering the terminal viewport. `touch-none` so the
-      // browser doesn't claim the gesture for native scroll/selection. When
-      // disabled it's pointer-events-none so taps reach xterm beneath.
+      // R5: this layer is PASS-THROUGH (`pointer-events-none`) until the joystick
+      // arms. While unarmed it never intercepts touches — xterm's `.xterm-viewport`
+      // receives the touchmove and scrolls the scrollback natively. Gesture
+      // detection (hold-to-arm, two-finger) is wired to the wrapper above. ONCE
+      // armed we flip to a capturing surface (`pointer-events-auto` + `touch-none`)
+      // so the joystick drag drives arrow keys instead of scrolling.
       className={cn(
         'absolute inset-0 z-20',
-        active ? 'touch-none' : 'pointer-events-none',
+        armed ? 'touch-none' : 'pointer-events-none',
         className,
       )}
       data-armed={armed ? 'true' : 'false'}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerEnd}
-      onPointerCancel={onPointerEnd}
       aria-hidden
     >
       {/* The rose — translucent 88px ring at the press origin. Reduce Motion
