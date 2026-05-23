@@ -70,7 +70,7 @@ export default function DevTerm() {
             if (e.key === 'Enter') onSend()
           }}
           placeholder="Type a command, Enter to send"
-          className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-[15px] outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-base outline-none focus:ring-2 focus:ring-ring"
         />
         <motion.button
           type="button"

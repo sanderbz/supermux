@@ -134,7 +134,7 @@ export function MaskedKeyField({
             onKeyDown={(e) => {
               if (e.key === 'Enter') save()
             }}
-            className="h-11 pr-11 font-mono text-[13px]"
+            className="h-11 pr-11 font-mono text-base md:text-[13px]"
           />
           <Button
             type="button"

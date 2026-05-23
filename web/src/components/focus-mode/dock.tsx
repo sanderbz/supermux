@@ -230,7 +230,7 @@ export function DesktopDock({
                 }}
                 placeholder="/command"
                 aria-label="Filter slash commands"
-                className="h-8 w-full rounded-lg bg-transparent px-2 font-mono text-[13px] outline-none"
+                className="h-8 w-full rounded-lg bg-transparent px-2 font-mono text-base md:text-[13px] outline-none"
               />
             </div>
             <div className="pointer-events-auto">
@@ -265,7 +265,7 @@ export function DesktopDock({
                   setChips((c) => c.map((v, j) => (j === i ? e.target.value : v)))
                 }
                 aria-label={`Send-row chip ${i + 1}`}
-                className="h-7 w-16 rounded-lg border border-primary/60 bg-background px-2 text-center font-mono text-[13px] font-semibold outline-none focus:ring-2 focus:ring-ring"
+                className="h-7 w-16 rounded-lg border border-primary/60 bg-background px-2 text-center font-mono text-base md:text-[13px] font-semibold outline-none focus:ring-2 focus:ring-ring"
               />
             ))
           : chips.map((label) => (

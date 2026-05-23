@@ -195,7 +195,7 @@ export function ScheduleForm({
               value={value.boot_dir}
               onChange={(e) => set('boot_dir', e.target.value)}
               placeholder="/Users/you/project"
-              className="h-11 font-mono text-xs"
+              className="h-11 font-mono text-base md:text-xs"
             />
           </Field>
           <div className="grid grid-cols-2 gap-3">
@@ -203,7 +203,7 @@ export function ScheduleForm({
               <select
                 value={value.boot_provider}
                 onChange={(e) => set('boot_provider', e.target.value)}
-                className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm"
               >
                 {PROVIDERS.map((p) => (
                   <option key={p} value={p}>
@@ -225,7 +225,7 @@ export function ScheduleForm({
               value={value.command}
               onChange={(e) => set('command', e.target.value)}
               placeholder="/cso"
-              className="h-11 font-mono text-xs"
+              className="h-11 font-mono text-base md:text-xs"
             />
           </Field>
         </>
@@ -239,7 +239,7 @@ export function ScheduleForm({
               value={value.session}
               onChange={(e) => set('session', e.target.value)}
               placeholder="my-agent"
-              className="h-11 font-mono text-xs"
+              className="h-11 font-mono text-base md:text-xs"
             />
             <datalist id="sched-sessions">
               {sessions.map((s) => (
@@ -252,7 +252,7 @@ export function ScheduleForm({
               value={value.command}
               onChange={(e) => set('command', e.target.value)}
               placeholder="/status"
-              className="h-11 font-mono text-xs"
+              className="h-11 font-mono text-base md:text-xs"
             />
           </Field>
         </>
@@ -264,7 +264,7 @@ export function ScheduleForm({
             value={value.command}
             onChange={(e) => set('command', e.target.value)}
             placeholder="touch /tmp/done"
-            className="h-11 font-mono text-xs"
+            className="h-11 font-mono text-base md:text-xs"
           />
         </Field>
       )}
@@ -316,14 +316,14 @@ export function ScheduleForm({
                     value={value.done_pattern}
                     onChange={(e) => set('done_pattern', e.target.value)}
                     placeholder="✓ done"
-                    className="h-11 font-mono text-xs"
+                    className="h-11 font-mono text-base md:text-xs"
                   />
                 </Field>
                 <Field label="On match">
                   <select
                     value={value.done_action}
                     onChange={(e) => set('done_action', e.target.value)}
-                    className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                    className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm"
                   >
                     {DONE_ACTIONS.map((a) => (
                       <option key={a} value={a}>
@@ -447,7 +447,7 @@ function OneShotPicker({ onPick }: { onPick: (expr: string) => void }) {
       <input
         type="datetime-local"
         onChange={(e) => onChange(e.target.value)}
-        className="mt-2 h-11 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground"
+        className="mt-2 h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm text-foreground"
       />
     </details>
   )

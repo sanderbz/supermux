@@ -113,7 +113,7 @@ function EditorForm({
             aria-label="Snippet title"
             className={cn(
               'h-11 w-full rounded-xl border border-border bg-background px-3',
-              'text-[15px] outline-none focus:ring-2 focus:ring-ring',
+              'text-base outline-none focus:ring-2 focus:ring-ring',
             )}
           />
         </label>
@@ -130,7 +130,7 @@ function EditorForm({
             aria-label="Snippet body"
             className={cn(
               'min-h-[120px] w-full resize-y rounded-xl border border-border bg-background',
-              'px-3 py-2.5 font-mono text-[14px] leading-5 outline-none focus:ring-2 focus:ring-ring',
+              'px-3 py-2.5 font-mono text-base md:text-[14px] leading-5 outline-none focus:ring-2 focus:ring-ring',
             )}
           />
         </label>
