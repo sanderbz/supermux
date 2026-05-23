@@ -9,10 +9,11 @@ import { ClipboardList, Plus, Settings } from 'lucide-react'
 
 import { EmptyStatePlaceholder } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
+import { useToast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useBoard, sortIssues } from '@/hooks/use-board'
-import { BoardError, type BoardIssue } from '@/lib/api'
+import { BoardError, boardApi, type BoardIssue } from '@/lib/api'
 import { IssueCard } from '@/components/board/issue-card'
 import { NewIssueDialog } from '@/components/board/new-issue-dialog'
 import { IssueDetailSheet } from '@/components/board/issue-detail-sheet'
@@ -41,6 +42,7 @@ interface Toast {
 export function Board() {
   const board = useBoard()
   const reduce = useReducedMotion()
+  const { toast } = useToast()
 
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null)
   const [newIssueStatus, setNewIssueStatus] = useState<string | null>(null)
@@ -142,26 +144,55 @@ export function Board() {
         clampedIndex,
       )
 
-      // DRAG-TO-CLAIM: an agent-owned card moved out of todo/backlog INTO `doing`
-      // goes through the ATOMIC claim endpoint (§3.2.10), not a plain status
-      // PATCH. This is the headline board behaviour: two agents can't both grab
-      // the same task.
+      // DRAG-TO-DOING → SEND TO AGENT: an agent-owned card moved out of
+      // todo/backlog INTO `doing` goes through the ATOMIC claim endpoint
+      // (§3.2.10) with `deliver: true`, so the issue context is auto-sent into
+      // the linked session via the steering deliver-loop (C.1) — not just a
+      // status flip. Two agents can't both grab the same task (the CAS), and the
+      // agent actually receives the work. A "Sent to <session>" toast offers an
+      // Undo that retracts the still-undelivered steer (`boardApi.unsend`).
       const wasClaimable =
         issue.owner_type === 'agent' &&
         (issue.status === 'todo' || issue.status === 'backlog')
       if (wasClaimable && toStatus === 'doing') {
         const session = issue.session
         if (!session) {
-          pushToast('Assign a session before claiming this task.', 'info')
+          // No linked session → keep it light: a status flip, with a nudge to
+          // assign a session (the detail sheet / ⌘K "send issue" path picks one).
+          pushToast('Assign a session before sending this task.', 'info')
           return
         }
         try {
-          await board.claimIssue({ id: issue.id, session })
+          const result = await board.claimIssue({
+            id: issue.id,
+            session,
+            deliver: true,
+          })
+          if (result.delivered && result.steer_id != null) {
+            const steerId = result.steer_id
+            toast({
+              message: `Sent to ${session}`,
+              action: {
+                label: 'Undo',
+                onClick: () => {
+                  void boardApi
+                    .unsend(session, steerId)
+                    .catch(() =>
+                      pushToast('Could not undo — the agent already started.'),
+                    )
+                },
+              },
+            })
+          } else {
+            // Claim landed but nothing was dispatched (e.g. deliver suppressed
+            // server-side) — still confirm the move.
+            toast({ message: `Claimed for ${session}` })
+          }
         } catch (e) {
           if (e instanceof BoardError && e.status === 409) {
             pushToast(e.message || 'Claim lost — another session took it.')
           } else {
-            pushToast(e instanceof Error ? e.message : 'Claim failed.')
+            pushToast(e instanceof Error ? e.message : 'Send failed.')
           }
         }
         return
@@ -173,7 +204,7 @@ export function Board() {
         pushToast(e instanceof Error ? e.message : 'Could not move the card.')
       }
     },
-    [board, issuesByStatus, pushToast],
+    [board, issuesByStatus, pushToast, toast],
   )
 
   // Global pointer move/up while a drag is in flight or pending.
