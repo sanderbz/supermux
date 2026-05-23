@@ -76,19 +76,56 @@ const CLOSE_REVOKED = 4001 // explicit token revocation — permanent
 const CLOSE_NOT_RUNNING = 4404 // session's pty is gone — TERMINAL, do NOT retry
 const CLOSE_UNMOUNT = 1000 // normal — our own teardown
 
+/** The supermux 16-colour ANSI palette. Mirrors the static preview palette in
+ *  `web/src/lib/ansi.ts` byte-for-byte so the live xterm renders agent output
+ *  (zsh prompts, `ls --color`, `git status`) with the SAME colours as the tile
+ *  preview — no jarring shift when a session expands from card → live. Tuned
+ *  for legibility on the near-black `--terminal-bg` (One Dark-ish family,
+ *  iOS-native saturation). */
+const ANSI_PALETTE = {
+  black: '#1d1d1f',
+  red: '#ff6b5e',
+  green: '#3fc66b',
+  yellow: '#e0c050',
+  blue: '#5b9dff',
+  magenta: '#c678dd',
+  cyan: '#56c8d8',
+  white: '#c8c8cd',
+  brightBlack: '#6b6b70',
+  brightRed: '#ff8a80',
+  brightGreen: '#69d98b',
+  brightYellow: '#f0d272',
+  brightBlue: '#82b6ff',
+  brightMagenta: '#d99ae8',
+  brightCyan: '#7adfeb',
+  brightWhite: '#f5f5f7',
+} as const
+
 /** Read the live terminal theme from the CSS custom properties (§4.5). This runs
  *  at mount so the terminal tracks whichever theme `<ThemeProvider>` applied to
- *  <html> before first paint — no hardcoded hex (Termius criterion #15). */
-function themeFromCss(): { background: string; foreground: string; cursor: string } {
+ *  <html> before first paint — no hardcoded hex for bg/fg (Termius criterion
+ *  #15). The 16-colour ANSI palette IS hardcoded: those bytes ARE the terminal's
+ *  colours (an agent's SGR escapes), not app chrome, and must stay constant
+ *  across themes. */
+function themeFromCss(): import('@xterm/xterm').ITheme {
   const css = getComputedStyle(document.documentElement)
   const read = (name: string, fallback: string) =>
     css.getPropertyValue(name).trim() || fallback
+  const bg = read('--terminal-bg', '#000000')
   const fg = read('--terminal-fg', '#e5e5e7')
   return {
     // OLED-true terminal surface matching the design tokens (globals.css).
-    background: read('--terminal-bg', '#000000'),
+    background: bg,
     foreground: fg,
     cursor: fg,
+    // Block-cursor fg: punch through to the surface so the glyph under the
+    // cursor stays legible against the cursor fill.
+    cursorAccent: bg,
+    // Selection: translucent brand-blue so highlights stay readable on both
+    // light + dark surfaces (xterm composites this over cell bg).
+    selectionBackground: 'rgba(91, 157, 255, 0.35)',
+    selectionInactiveBackground: 'rgba(91, 157, 255, 0.20)',
+    ...ANSI_PALETTE,
   }
 }
 
