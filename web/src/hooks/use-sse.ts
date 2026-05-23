@@ -8,12 +8,21 @@
 // the TanStack Query cache, so the tile re-renders with fresh tail-preview text
 // without any per-tile WebSocket and without re-fetching the whole list.
 //
+// SINGLETON: every `useSse(handlers)` call subscribes to the SAME module-level
+// EventSource — opening one connection on first subscriber, closing it on last.
+// Earlier versions opened one EventSource INSIDE each hook call's effect, so
+// `useSessions` + `useBoard` + `useScheduler` + the always-mounted
+// `<CommandPalette>` each held their own SSE channel against `/api/events` and
+// the server fan-out scaled linearly with mount points. R3-202 collapsed all of
+// those onto a single shared client; the public hook API (`useSse(handlers) →
+// {status,lastDataAt}`) is unchanged, the change is purely internal.
+//
 // Reliability (Eng P1 #5): auto-reconnect with 300ms × 2^n backoff capped at
 // 30s, plus ±20% decorrelated jitter from day one (no thundering herd on a
 // server restart). A staleness watchdog declares the stream dead after 18s of
 // silence and forces a reconnect (some proxies hold a half-open SSE connection
 // without delivering the `error` event). On `visibilitychange` / `focus` /
-// `online`, if the last data arrived >4s ago, callers are nudged to refetch.
+// `online`, if the last data arrived >4s ago, subscribers are nudged to refetch.
 //
 // Auth: EventSource cannot set an `Authorization` header, so the SSE channel
 // uses the auth layer's `?_token=` fallback (server/src/auth.rs accepts it).
@@ -73,17 +82,239 @@ function sseUrl(): string {
   return `${base}/api/events${token ? `?_token=${encodeURIComponent(token)}` : ''}`
 }
 
+// ── Module-level singleton ────────────────────────────────────────────────────
+//
+// A single EventSource, a Set of subscriber handler-refs, and a Set of status
+// listeners. The first subscriber starts the connection; the last subscriber
+// (count drops to 0) tears it down. Reconnect / staleness / wake hooks live
+// here so they only run once per page, regardless of mount count.
+
+interface SubscriberSlot {
+  handlersRef: { current: SseHandlers }
+}
+
+type StatusListener = (status: SseStatus, lastDataAt: number) => void
+
+const subscribers = new Set<SubscriberSlot>()
+const statusListeners = new Set<StatusListener>()
+
+let es: EventSource | null = null
+let attempt = 0
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let staleTimer: ReturnType<typeof setInterval> | null = null
+let domListenersAttached = false
+let currentStatus: SseStatus = 'connecting'
+let lastDataAt = 0
+
+function notifyStatus() {
+  for (const l of statusListeners) l(currentStatus, lastDataAt)
+}
+
+function setStatus(next: SseStatus) {
+  if (currentStatus === next) return
+  currentStatus = next
+  notifyStatus()
+}
+
+function markData() {
+  lastDataAt = Date.now()
+  notifyStatus()
+}
+
+function dispatchToAll(type: SseEventType, payload: unknown) {
+  for (const s of subscribers) {
+    try {
+      s.handlersRef.current.onEvent?.(type, payload)
+    } catch (err) {
+      console.warn('use-sse: subscriber threw in onEvent', err)
+    }
+  }
+}
+
+function dispatchNamed(type: SseEventType, raw: string) {
+  markData()
+  if (type === 'ping') return
+  let payload: unknown = raw
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    /* keep the raw string for non-JSON frames */
+  }
+  dispatchToAll(type, payload)
+}
+
+function scheduleReconnect() {
+  if (subscribers.size === 0 || reconnectTimer) return
+  const delay = jitter(
+    Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS),
+  )
+  attempt += 1
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connect()
+  }, delay)
+}
+
+function connect() {
+  if (subscribers.size === 0) return
+  setStatus('connecting')
+  try {
+    es = new EventSource(sseUrl())
+  } catch {
+    scheduleReconnect()
+    return
+  }
+
+  es.onopen = () => {
+    attempt = 0
+    setStatus('open')
+    markData()
+  }
+
+  // The default (unnamed) channel: payloads of shape `{type, payload}`.
+  es.onmessage = (ev: MessageEvent) => {
+    markData()
+    try {
+      const data = JSON.parse(ev.data) as {
+        type?: SseEventType
+        payload?: unknown
+      }
+      if (data?.type) {
+        dispatchToAll(data.type, data.payload ?? data)
+        return
+      }
+    } catch {
+      /* keep-alive / non-JSON — markData already ran */
+    }
+  }
+
+  // Named channels (axum SSE adapter emits `event: sessions`, etc.).
+  const NAMED: SseEventType[] = [
+    'sessions',
+    'board',
+    'schedules',
+    'alerts',
+    'status',
+    'prefs',
+    'ping',
+  ]
+  for (const type of NAMED) {
+    es.addEventListener(type, (ev) =>
+      dispatchNamed(type, (ev as MessageEvent).data),
+    )
+  }
+
+  es.onerror = () => {
+    // EventSource auto-reconnects, but its built-in retry has no jitter and
+    // can't recover a half-open proxy connection. Take over: close + back off
+    // ourselves so the policy is uniform.
+    setStatus('closed')
+    es?.close()
+    es = null
+    scheduleReconnect()
+  }
+}
+
+function onWake() {
+  if (subscribers.size === 0) return
+  if (lastDataAt === 0 || Date.now() - lastDataAt > RESYNC_MS) {
+    for (const s of subscribers) {
+      try {
+        s.handlersRef.current.onResync?.()
+      } catch (err) {
+        console.warn('use-sse: subscriber threw in onResync', err)
+      }
+    }
+  }
+}
+
+function onVisible() {
+  if (document.visibilityState === 'visible') onWake()
+}
+
+function attachDomListeners() {
+  if (domListenersAttached) return
+  document.addEventListener('visibilitychange', onVisible)
+  window.addEventListener('focus', onWake)
+  window.addEventListener('online', onWake)
+  domListenersAttached = true
+}
+
+function detachDomListeners() {
+  if (!domListenersAttached) return
+  document.removeEventListener('visibilitychange', onVisible)
+  window.removeEventListener('focus', onWake)
+  window.removeEventListener('online', onWake)
+  domListenersAttached = false
+}
+
+function startWatchdog() {
+  if (staleTimer) return
+  // Staleness watchdog: if no frame (incl. ping) in STALE_MS, force-reconnect.
+  staleTimer = setInterval(() => {
+    if (subscribers.size === 0) return
+    if (lastDataAt === 0) return
+    if (Date.now() - lastDataAt > STALE_MS) {
+      es?.close()
+      es = null
+      // Reset attempt so the forced reconnect fires promptly.
+      attempt = 0
+      scheduleReconnect()
+    }
+  }, STALE_MS / 3)
+}
+
+function stopWatchdog() {
+  if (!staleTimer) return
+  clearInterval(staleTimer)
+  staleTimer = null
+}
+
+function subscribe(slot: SubscriberSlot): () => void {
+  const wasEmpty = subscribers.size === 0
+  subscribers.add(slot)
+  if (wasEmpty) {
+    attachDomListeners()
+    startWatchdog()
+    attempt = 0
+    connect()
+  }
+  return () => {
+    subscribers.delete(slot)
+    if (subscribers.size === 0) {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      stopWatchdog()
+      detachDomListeners()
+      es?.close()
+      es = null
+      // Reset bookkeeping so a future subscriber starts from a clean slate.
+      attempt = 0
+      lastDataAt = 0
+      setStatus('connecting')
+    }
+  }
+}
+
+function subscribeStatus(listener: StatusListener): () => void {
+  statusListeners.add(listener)
+  // Fire once so the new listener sees the current snapshot immediately.
+  listener(currentStatus, lastDataAt)
+  return () => {
+    statusListeners.delete(listener)
+  }
+}
+
 /**
- * Open ONE authenticated EventSource and dispatch its events to `handlers`.
- * Reconnects with jittered exponential backoff; never polls. The `handlers`
- * object is read through a ref so callers can pass inline closures without
- * tearing down the connection on every render.
+ * Subscribe `handlers` to the ONE shared EventSource (opens on first call,
+ * closes when the last consumer unmounts). Reconnect/backoff/staleness/wake are
+ * owned by the singleton, so every call here just costs a Set add/remove. The
+ * `handlers` object is read through a ref so callers can pass inline closures
+ * without re-subscribing on every render.
  */
 export function useSse(handlers: SseHandlers = {}): UseSseResult {
-  const [status, setStatus] = React.useState<SseStatus>('connecting')
-  const lastDataRef = React.useRef(0)
-  const [lastDataAt, setLastDataAt] = React.useState(0)
-
   // Keep the latest handlers in a ref so inline closures don't tear down the
   // connection on every render. Updated in an effect (never during render).
   const handlersRef = React.useRef(handlers)
@@ -91,149 +322,41 @@ export function useSse(handlers: SseHandlers = {}): UseSseResult {
     handlersRef.current = handlers
   }, [handlers])
 
+  const [snapshot, setSnapshot] = React.useState<UseSseResult>(() => ({
+    status: currentStatus,
+    lastDataAt,
+  }))
+
   React.useEffect(() => {
-    let es: EventSource | null = null
-    let attempt = 0
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let staleTimer: ReturnType<typeof setInterval> | null = null
-    let disposed = false
-
-    const markData = () => {
-      const now = Date.now()
-      lastDataRef.current = now
-      setLastDataAt(now)
-    }
-
-    const dispatch = (type: SseEventType, raw: string) => {
-      markData()
-      if (type === 'ping') return
-      let payload: unknown = raw
-      try {
-        payload = JSON.parse(raw)
-      } catch {
-        /* keep the raw string for non-JSON frames */
-      }
-      handlersRef.current.onEvent?.(type, payload)
-    }
-
-    const scheduleReconnect = () => {
-      if (disposed || reconnectTimer) return
-      const delay = jitter(
-        Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS),
-      )
-      attempt += 1
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null
-        connect()
-      }, delay)
-    }
-
-    const connect = () => {
-      if (disposed) return
-      setStatus('connecting')
-      try {
-        es = new EventSource(sseUrl())
-      } catch {
-        scheduleReconnect()
-        return
-      }
-
-      es.onopen = () => {
-        attempt = 0
-        setStatus('open')
-        markData()
-      }
-
-      // The default (unnamed) channel: payloads of shape `{type, payload}`.
-      es.onmessage = (ev: MessageEvent) => {
-        markData()
-        try {
-          const data = JSON.parse(ev.data) as {
-            type?: SseEventType
-            payload?: unknown
-          }
-          if (data?.type) {
-            handlersRef.current.onEvent?.(
-              data.type,
-              data.payload ?? data,
-            )
-            return
-          }
-        } catch {
-          /* keep-alive / non-JSON — markData already ran */
-        }
-      }
-
-      // Named channels (axum SSE adapter emits `event: sessions`, etc.).
-      const NAMED: SseEventType[] = [
-        'sessions',
-        'board',
-        'schedules',
-        'alerts',
-        'status',
-        'prefs',
-        'ping',
-      ]
-      for (const type of NAMED) {
-        es.addEventListener(type, (ev) =>
-          dispatch(type, (ev as MessageEvent).data),
-        )
-      }
-
-      es.onerror = () => {
-        // EventSource auto-reconnects, but its built-in retry has no jitter and
-        // can't recover a half-open proxy connection. Take over: close + back
-        // off ourselves so the policy is uniform.
-        setStatus('closed')
-        es?.close()
-        es = null
-        scheduleReconnect()
-      }
-    }
-
-    // Staleness watchdog: if no frame (incl. ping) in STALE_MS, force-reconnect.
-    staleTimer = setInterval(() => {
-      if (disposed) return
-      if (lastDataRef.current === 0) return
-      if (Date.now() - lastDataRef.current > STALE_MS) {
-        es?.close()
-        es = null
-        // Reset attempt so the forced reconnect fires promptly.
-        attempt = 0
-        scheduleReconnect()
-      }
-    }, STALE_MS / 3)
-
-    // On regaining focus / visibility / network, nudge a resync if data is old.
-    const onWake = () => {
-      if (disposed) return
-      if (
-        lastDataRef.current === 0 ||
-        Date.now() - lastDataRef.current > RESYNC_MS
-      ) {
-        handlersRef.current.onResync?.()
-      }
-    }
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') onWake()
-    }
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onWake)
-    window.addEventListener('online', onWake)
-
-    connect()
-
+    const slot: SubscriberSlot = { handlersRef }
+    const unsubscribe = subscribe(slot)
+    const unsubscribeStatus = subscribeStatus((status, last) => {
+      setSnapshot({ status, lastDataAt: last })
+    })
     return () => {
-      disposed = true
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (staleTimer) clearInterval(staleTimer)
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onWake)
-      window.removeEventListener('online', onWake)
-      es?.close()
-      es = null
+      unsubscribeStatus()
+      unsubscribe()
     }
   }, [])
 
-  return { status, lastDataAt }
+  return snapshot
+}
+
+/**
+ * Read-only view of the shared SSE connection state. Use this when you only
+ * need the status (e.g. registering with the global connection-store at the
+ * shell level) and don't want to add another subscriber that holds the channel
+ * open. Mount once at `<Layout>` for the ReconnectBanner link (R3-202).
+ */
+export function useSseStatus(): UseSseResult {
+  const [snapshot, setSnapshot] = React.useState<UseSseResult>(() => ({
+    status: currentStatus,
+    lastDataAt,
+  }))
+  React.useEffect(() => {
+    return subscribeStatus((status, last) => {
+      setSnapshot({ status, lastDataAt: last })
+    })
+  }, [])
+  return snapshot
 }

@@ -19,7 +19,6 @@ import {
   type NewSession,
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
-import { useSseConnectionLink } from '@/hooks/use-connection-link'
 import { OVERVIEW_LAYOUT_KEY } from '@/hooks/use-overview-layout'
 import {
   parseLayout,
@@ -213,11 +212,11 @@ export function useSessions(): UseSessionsResult {
     [qc],
   )
 
-  // ONE SSE subscription for the whole app (§3.6). Its live `status` is the
-  // SSE link in the global connection store — the <ReconnectBanner> (§M23a)
-  // aggregates it with the live-terminal WebSockets. Single source, no polling.
-  const { status: sseStatus } = useSse(handlers)
-  useSseConnectionLink(sseStatus)
+  // Subscribe to the ONE shared SSE stream (§3.6, R3-202: singleton inside
+  // `use-sse.ts`). The global connection-store link is registered once at the
+  // shell level (Layout → useSseConnectionStatus) so the ReconnectBanner never
+  // sees racing `'sse'` reports from multiple useSessions mount points.
+  useSse(handlers)
 
   const create = useMutation({
     mutationFn: async (input: NewSession): Promise<string> => {

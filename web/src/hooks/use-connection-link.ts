@@ -45,8 +45,9 @@ function fromLiveTerm(state: LiveTermState): LinkState {
   return state === 'live' || state === 'stopped' ? 'connected' : state
 }
 
-/** Register the SSE stream as a connection link. Call once from the component
- *  that owns the app-wide SSE subscription (here: `useSessions`). */
+/** Register the SSE stream as a connection link. MUST be called exactly once
+ *  (R3-202: the shell-level `<Layout>` owns the registration so the store never
+ *  sees racing `'sse'` reports from the many `useSse(...)` subscribers). */
 export function useSseConnectionLink(status: SseStatus): void {
   const report = useConnection((s) => s.report)
   const release = useConnection((s) => s.release)

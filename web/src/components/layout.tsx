@@ -16,6 +16,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
 import { CommandPalette } from '@/components/command-palette/command-palette'
 import { useStandaloneMode } from '@/hooks/use-standalone-mode'
+import { useSseStatus } from '@/hooks/use-sse'
+import { useSseConnectionLink } from '@/hooks/use-connection-link'
 
 interface NavItem {
   to: string
@@ -143,6 +145,13 @@ function BottomNav() {
  *  view-toggle / search / "New session" controls at any breakpoint. */
 export function Layout() {
   const standalone = useStandaloneMode()
+  // R3-202: register the shared SSE channel with the global connection-store
+  // exactly once, at shell level. Previously this lived in `useSessions`, which
+  // could be mounted from multiple routes simultaneously — racing reports under
+  // the same `'sse'` id let last-write-wins flip the banner's view of stream
+  // health. The singleton SSE client (use-sse.ts) is the source of truth.
+  const { status: sseStatus } = useSseStatus()
+  useSseConnectionLink(sseStatus)
   return (
     <div
       className="flex h-full w-full"
