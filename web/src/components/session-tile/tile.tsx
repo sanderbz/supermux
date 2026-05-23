@@ -7,6 +7,7 @@ import { springs, eases } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { sessionsApi, type ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
 import { useToast } from '@/components/ui/use-toast'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useLongPress } from '@/hooks/use-long-press'
@@ -366,12 +367,19 @@ export function SessionTile({
         session as unknown as ApiSession,
       ])
     }
-    sessionsApi.unarchive(session.name).catch(() => {
-      // The server rejected the unarchive — drop the optimistic row back out and
-      // tell the user. Rare (the row exists; this is just a flag flip).
-      removeFromCache()
-      toast({ message: 'Couldn’t undo archive', tone: 'error' })
-    })
+    sessionsApi
+      .unarchive(session.name)
+      .then(() => {
+        // The session left the archived set — refresh the Archived sheet's
+        // count/list so the overflow item and any open sheet stay in sync.
+        void qc.invalidateQueries({ queryKey: ARCHIVED_SESSIONS_KEY })
+      })
+      .catch(() => {
+        // The server rejected the unarchive — drop the optimistic row back out
+        // and tell the user. Rare (the row exists; this is just a flag flip).
+        removeFromCache()
+        toast({ message: 'Couldn’t undo archive', tone: 'error' })
+      })
   }, [qc, session, removeFromCache, toast])
 
   // Commit: fire the server archive, start the exit animation, and (on success)
@@ -388,6 +396,9 @@ export function SessionTile({
     sessionsApi
       .archive(session.name)
       .then(() => {
+        // The session entered the archived set — refresh the Archived sheet's
+        // count/list so the overflow item reflects it without a manual reopen.
+        void qc.invalidateQueries({ queryKey: ARCHIVED_SESSIONS_KEY })
         toast({
           message: `Archived ${label}`,
           duration: 5000,
@@ -399,7 +410,7 @@ export function SessionTile({
         setArchiving(false)
         toast({ message: 'Couldn’t archive session', tone: 'error' })
       })
-  }, [archiving, session.task_summary, session.name, toast, undoArchive])
+  }, [qc, archiving, session.task_summary, session.name, toast, undoArchive])
 
   const onArchiveClick = React.useCallback(
     (e: React.MouseEvent | React.KeyboardEvent) => {

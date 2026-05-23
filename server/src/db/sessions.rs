@@ -69,6 +69,22 @@ pub async fn list(pool: &SqlitePool) -> sqlx::Result<Vec<Session>> {
     .await
 }
 
+/// List archived (soft-deleted) sessions, most-recently-touched first. The
+/// mirror of [`list`] for the Archived sheet: `archive` only flips `archived = 1`
+/// (never DELETEs), so every column survives and these rows are fully
+/// restore-able. There is no `archived_at` column, so "most-recently-archived"
+/// is approximated by the newest of the activity timestamps (a session is
+/// usually archived right after its last send/start), with `name` as a stable
+/// tiebreak.
+pub async fn list_archived(pool: &SqlitePool) -> sqlx::Result<Vec<Session>> {
+    sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE archived = 1 \
+         ORDER BY MAX(last_send, last_started, created_at) DESC, name ASC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// Fetch one session by name.
 pub async fn get(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<Session>> {
     sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE name = ?")
@@ -128,6 +144,29 @@ pub async fn delete(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Permanently DELETE an ARCHIVED session row (the "Delete forever" path), in a
+/// single guarded statement: `WHERE name = ? AND archived = 1`. Returns the
+/// number of rows removed so the caller can refuse (404/409) when the row is
+/// either missing or still live (`archived = 0`) — purge must never nuke a
+/// running/visible session. `session_runtime` + child rows cascade via FK.
+pub async fn purge_archived(pool: &SqlitePool, name: &str) -> sqlx::Result<u64> {
+    let res = sqlx::query("DELETE FROM sessions WHERE name = ? AND archived = 1")
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Is this session row ARCHIVED (`archived = 1`)? Used by purge to refuse a
+/// live session with a clean 409 (vs the row simply not existing → 404).
+pub async fn is_archived(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<bool>> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT archived FROM sessions WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(a,)| a != 0))
 }
 
 /// All runtime rows, fetched once so [`list`] can join in-memory instead of an

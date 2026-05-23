@@ -294,6 +294,12 @@ export const sessionsApi = {
   list: async (): Promise<ApiSession[]> =>
     asSessions(await sessReq<unknown>('/api/sessions')),
 
+  /** `GET /api/sessions/archived` — the archived (soft-deleted) rows for the
+   *  Archived sheet. Mirror of `list` but on `WHERE archived = 1`, ordered
+   *  most-recently-touched first. Each row carries `archived: true`. */
+  listArchived: async (): Promise<ApiSession[]> =>
+    asSessions(await sessReq<unknown>('/api/sessions/archived')),
+
   /** `POST /api/sessions` — create the row (§5.1). The route then sends the
    *  initial prompt via `start` if a `command` is set. */
   create: (input: NewSession): Promise<ApiSession> =>
@@ -331,6 +337,15 @@ export const sessionsApi = {
   unarchive: (name: string): Promise<void> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}/unarchive`, {
       method: 'POST',
+    }),
+
+  /** `DELETE /api/sessions/{name}/purge` — the "Delete forever" path. Hard
+   *  DELETEs an ARCHIVED row permanently (refused with 409 on a live session;
+   *  404 if it doesn't exist). Audited `session.purge`; the archived scrollback
+   *  dump is best-effort removed too. Irreversible — gate behind a confirm. */
+  purge: (name: string): Promise<void> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/purge`, {
+      method: 'DELETE',
     }),
 
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab

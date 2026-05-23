@@ -28,6 +28,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import {
+  Archive,
   LayoutGrid,
   List,
   Minus,
@@ -40,6 +41,8 @@ import {
 import { springs } from '@/lib/springs'
 import { ONBOARDING } from '@/brand/copy'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
+import { useArchivedSessions } from '@/hooks/use-archived-sessions'
+import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useOverviewLayout } from '@/hooks/use-overview-layout'
 import { useUI, type ViewMode } from '@/stores/ui-store'
 import { onboardingApi, type ApiSession } from '@/lib/api'
@@ -220,6 +223,14 @@ export function Overview() {
   const setOverviewSizeMobile = useUI((s) => s.setOverviewSizeMobile)
   const navigate = useNavigate()
   const reduce = useReducedMotion()
+
+  // Archived sessions: a cheap count for the overflow item + the shared
+  // open-state for the shell-mounted Archived sheet. The list endpoint is
+  // light, so reading the count here costs one small request (no permanent
+  // panel / always-on estate — the sheet itself is opt-in).
+  const { archived } = useArchivedSessions()
+  const openArchived = useArchivedSheet((s) => s.openSheet)
+  const archivedCount = archived.length
 
   // Fork the density value/setter by viewport so phone and desktop sizes are
   // saved independently. We track the `md` boundary (the same breakpoint where
@@ -501,8 +512,12 @@ export function Overview() {
       // chrome and the larger `sm:py-6` / `sm:pt-6` applies (inset is mobile).
       className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6`}
     >
-      {/* ── Header: title + search + view toggle + sort + density + new ── */}
-      <header className="mb-4 flex flex-wrap items-center gap-3">
+      {/* ── Header: title + search + view toggle + sort + density + archived + new ──
+          `pr-12 sm:pr-0`: on mobile the shell floats a fixed top-right
+          ThemeToggle (layout.tsx <MobileTopBar>) over this header's top-right
+          corner. Reserve that corner so the rightmost control (the Archived
+          overflow item) never sits UNDER the toggle and become un-tappable. */}
+      <header className="mb-4 flex flex-wrap items-center gap-3 pr-12 sm:pr-0">
         <h1 className="mr-1 text-2xl font-semibold tracking-tight">Overview</h1>
 
         <div className="relative order-last w-full sm:order-none sm:w-auto sm:flex-1 sm:max-w-sm">
@@ -548,6 +563,28 @@ export function Overview() {
             max={sizeMax}
           />
         )}
+
+        {/* Archived overflow item — a small, quiet entry into the recovery
+            sheet. Shows the count when there's anything to recover ("Archived
+            (N)"), else stays out of the way as a bare "Archived" affordance.
+            Opt-in: no always-on panel, just this one cheap control. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={openArchived}
+          aria-label={
+            archivedCount > 0
+              ? `View ${archivedCount} archived session${archivedCount === 1 ? '' : 's'}`
+              : 'View archived sessions'
+          }
+          title="Archived sessions"
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <Archive />
+          <span className="hidden sm:inline">
+            {archivedCount > 0 ? `Archived (${archivedCount})` : 'Archived'}
+          </span>
+        </Button>
 
         <Button onClick={openSheet} className="hidden sm:inline-flex">
           <Plus />
