@@ -108,7 +108,7 @@ function matchesCommand(c: SlashCommand, q: string): boolean {
 // ── The palette ──────────────────────────────────────────────────────────────
 
 export function CommandPalette() {
-  const [open, setOpen] = useGlobalCommandKey()
+  const [open, setOpenRaw] = useGlobalCommandKey()
   const navigate = useNavigate()
   const { sessions } = useSessions()
   const { data: commands = [] } = useSlashCommands()
@@ -116,14 +116,34 @@ export function CommandPalette() {
   const [query, setQuery] = React.useState('')
   const [active, setActive] = React.useState(0)
 
-  // Reset filter + highlight every time the palette opens so it never reopens
-  // mid-search from a stale state. The `open` flip is the only trigger.
-  React.useEffect(() => {
-    if (open) {
-      setQuery('')
-      setActive(0)
-    }
-  }, [open])
+  // Wrap setOpen so the reset always fires from a user-input handler (Cmd+K
+  // toggle, Dialog onOpenChange, pickRow close) rather than from an effect —
+  // this keeps `react-hooks/set-state-in-effect` clean. We reset on the
+  // open=true transition so the palette never reopens mid-search from a stale
+  // filter + highlight.
+  const setOpen = React.useCallback<
+    React.Dispatch<React.SetStateAction<boolean>>
+  >(
+    (next) => {
+      setOpenRaw((prev) => {
+        const resolved = typeof next === 'function' ? next(prev) : next
+        if (resolved && !prev) {
+          setQuery('')
+          setActive(0)
+        }
+        return resolved
+      })
+    },
+    [setOpenRaw],
+  )
+
+  // Wrap setQuery so the active-row reset happens from the user-input change
+  // event — most-relevant match first, mirroring Spotlight / VSCode — without
+  // an effect that the React rules would flag.
+  const updateQuery = React.useCallback((next: string) => {
+    setQuery(next)
+    setActive(0)
+  }, [])
 
   // Build the flat row list — sessions first (when query is not slash-prefixed),
   // then commands. Memoized so arrow-key state stays stable across renders.
@@ -149,12 +169,6 @@ export function CommandPalette() {
   // Clamp the highlight whenever the row list shrinks (so a narrowing filter
   // never leaves the active index past the end).
   const clampedActive = rows.length === 0 ? 0 : Math.min(active, rows.length - 1)
-
-  // Reset highlight on every query change — the most-relevant match is usually
-  // the first row, mirroring Spotlight / VSCode.
-  React.useEffect(() => {
-    setActive(0)
-  }, [query])
 
   // Pick + dismiss. Session picks navigate; command picks navigate to the most
   // recently active session (so the slash command actually runs against a real
@@ -241,7 +255,7 @@ export function CommandPalette() {
           <input
             autoFocus
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => updateQuery(e.target.value)}
             placeholder="Jump to a session or run a /command"
             aria-label="Command palette"
             className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted-foreground"
