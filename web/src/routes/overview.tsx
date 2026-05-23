@@ -474,7 +474,14 @@ export function Overview() {
     // from `sizeScale`), the tile floats inside its slot, and hover-growth
     // overflows downward without reflowing peers.
     <div
-      className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 sm:px-5 sm:py-6`}
+      // Mobile: the shell's full-width top bar collapsed to a top-right icon
+      // (Fix 3), so this route now OWNS the safe-area top inset that the bar's
+      // `pt-safe` used to provide — otherwise the grid would slide under the
+      // notch / Dynamic Island. We fold the inset INTO the top padding via an
+      // arbitrary value (`calc(env(safe-area-inset-top)+1rem)`) so it is robust
+      // against utility ordering with `py-4`. From `sm` up the SideNav owns the
+      // chrome and the larger `sm:py-6` / `sm:pt-6` applies (inset is mobile).
+      className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6`}
     >
       {/* ── Header: title + search + view toggle + sort + density + new ── */}
       <header className="mb-4 flex flex-wrap items-center gap-3">

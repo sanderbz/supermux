@@ -120,7 +120,12 @@ export function LiveTerminal({
     >
       <div
         ref={containerRef}
-        className="h-full w-full p-2"
+        // Fix 2 — `touch-action: pan-y` overrides the `touch-action: none` that
+        // Vaul injects onto its drawer subtree, so vertical drags inside the
+        // terminal produce native vertical-pan gestures that xterm's
+        // `.xterm-viewport` scrollback consumes (instead of being swallowed by
+        // Vaul's drag). Paired with `data-vaul-no-drag` on the focus wrapper.
+        className="h-full w-full p-2 [touch-action:pan-y]"
         // xterm focuses on click; expose to the keyboard-capture layer (M14).
         tabIndex={readOnly ? -1 : 0}
         aria-label={`Live terminal for ${name}`}
