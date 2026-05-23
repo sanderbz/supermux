@@ -651,7 +651,7 @@ check_or_install_toolchain() {
         ;;
       cargo)
         echo "[deploy]     ssh $HOST sudo -u $SERVICE_USER -H bash -c \\" >&2
-        echo "[deploy]       'curl --proto=https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable'" >&2
+        echo "[deploy]       'curl --proto \"=https\" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable'" >&2
         ;;
     esac
     exit 1
@@ -677,7 +677,7 @@ check_or_install_toolchain() {
       ;;
     cargo)
       echo "[deploy]   installing rustup (stable toolchain, non-interactive, profile=default)"
-      if ! ssh "$HOST" "sudo -u '$SERVICE_USER' -H bash -lc 'curl --proto=\"=https\" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile default'"; then
+      if ! ssh "$HOST" "sudo -u '$SERVICE_USER' -H bash -lc 'curl --proto \"=https\" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile default'"; then
         echo "[deploy] error: rustup install failed on $HOST." >&2
         echo "[deploy]   Fix: install rust manually on the host as user '$SERVICE_USER', then retry." >&2
         exit 1
