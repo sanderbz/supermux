@@ -113,9 +113,13 @@ plan before doing anything destructive. The defaults are noob-proof:
   the host). Override `SUPERMUX_READ_WRITE_PATHS` to scope it differently.
 - **Tailscale** — auto-detected. If the host has `tailscale` installed AND
   `tailscaled` is running, `deploy.sh` defaults to exposing the service via
-  `tailscale serve`. Otherwise it skips Tailscale and you front the loopback
-  port with your own reverse proxy. Override with `SUPERMUX_USE_TAILSCALE=0`
-  or `=1` to force either behaviour.
+  `tailscale serve` on port `443`, giving you a clean URL like
+  `https://<host>.<your-tailnet>.ts.net/` (no port suffix). For the nicest
+  hostname, rename the device once: `sudo tailscale set --hostname=supermux`
+  → the URL becomes `https://supermux.<your-tailnet>.ts.net/`. Without
+  Tailscale, `deploy.sh` skips this step and you front the loopback port with
+  your own reverse proxy. Override with `SUPERMUX_USE_TAILSCALE=0` or `=1`,
+  or change the port via `SUPERMUX_PUBLIC_PORT` if `443` is already taken.
 - **Toolchains** — `bun` and `cargo` are required on the host (the build is
   native). They are not installed silently. Set
   `SUPERMUX_INSTALL_TOOLCHAINS=1` to opt in to automatic install via the
@@ -135,8 +139,10 @@ default `8824`) and speaks plain HTTP. Put it behind TLS one of two ways:
    or Caddy and proxy to `http://localhost:<SUPERMUX_INTERNAL_PORT>`.
 2. **`tailscale serve`** — if your host is on a tailnet, set
    `SUPERMUX_USE_TAILSCALE=1` and `deploy.sh` will run
-   `tailscale serve --https=<SUPERMUX_PUBLIC_PORT>` to terminate TLS and proxy
-   to the loopback port.
+   `tailscale serve --https=<SUPERMUX_PUBLIC_PORT>` (default `443`) to
+   terminate TLS and proxy to the loopback port. Rename the device once with
+   `sudo tailscale set --hostname=supermux` for a clean
+   `https://supermux.<your-tailnet>.ts.net/` URL.
 
 The committed systemd unit at [`etc/systemd/supermux.service`](etc/systemd/supermux.service)
 is a **template** — `deploy.sh` substitutes the service user, the user's login

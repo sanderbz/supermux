@@ -31,7 +31,7 @@
 #       SUPERMUX_DATA_DIR            data dir on host        (default: derived from user)
 #       SUPERMUX_READ_WRITE_PATHS    extra writable dirs     (default: smart, see below)
 #       SUPERMUX_INTERNAL_PORT       loopback bind port      (default: 8824)
-#       SUPERMUX_PUBLIC_PORT         tailscale https port    (default: 8823)
+#       SUPERMUX_PUBLIC_PORT         tailscale https port    (default: 443)
 #       SUPERMUX_USE_TAILSCALE       expose via tailscale    (default: auto-detected)
 #       SUPERMUX_INSTALL_TOOLCHAINS  install bun+rust if missing (default: 0)
 #       SUPERMUX_REMOTE_DIR          build dir on host       (default: /opt/supermux)
@@ -58,7 +58,7 @@ if [ -z "${SUPERMUX_SERVICE_USER:-}" ]; then
   SERVICE_USER_IS_DEFAULT=1
 fi
 ALLOW_ROOT="${SUPERMUX_ALLOW_ROOT:-0}"
-PUBLIC_PORT="${SUPERMUX_PUBLIC_PORT:-8823}"
+PUBLIC_PORT="${SUPERMUX_PUBLIC_PORT:-443}"
 INTERNAL_PORT="${SUPERMUX_INTERNAL_PORT:-8824}"
 INSTALL_TOOLCHAINS="${SUPERMUX_INSTALL_TOOLCHAINS:-0}"
 REMOTE_DIR="${SUPERMUX_REMOTE_DIR:-/opt/supermux}"

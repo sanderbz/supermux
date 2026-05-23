@@ -523,6 +523,10 @@ step_tailscale() {
   ask_yn "expose via tailscale serve?" "$default_ts"
   if [ "$ANS" = "y" ]; then
     V_USE_TAILSCALE="1"
+    note "tip: for a clean URL like 'https://supermux.<your-tailnet>.ts.net/'"
+    note "     rename the device once on the host:"
+    note "       sudo tailscale set --hostname=supermux"
+    note "default port is 443 (no port suffix in the URL)."
   else
     V_USE_TAILSCALE="0"
   fi

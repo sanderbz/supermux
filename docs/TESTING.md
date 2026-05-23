@@ -26,12 +26,13 @@ Stop with `Ctrl-C`. Data lives at `~/.supermux/` (sqlite at `data.db`, logs at `
 
 The Rust binary deployed on the Linux server, exposed inside your tailnet (HTTPS, certificate signed by Tailscale).
 
-Open in your browser: **https://clawd-02.taild681cb.ts.net:8823**
+Open in your browser: **https://supermux.taild681cb.ts.net**
 
 - Same UI as local. Auth token is injected from the server's `/root/.supermux/auth_token`; you don't type anything.
-- Server runs under `systemctl status supermux.service` on clawd-02. Restart: `ssh clawd-02 systemctl restart supermux`.
+- Clean URL — port `443` via `tailscale serve`, hostname `supermux` after `sudo tailscale set --hostname=supermux`. Standard Tailscale pattern, no DNS to manage.
+- Server runs under `systemctl status supermux.service` on the box. Restart: `ssh supermux systemctl restart supermux`.
 - Redeploy when main moves: `cd ~/supermux && bash scripts/deploy.sh` (sources `.env` for host + ports).
-- The legacy `amux v2` python service still runs on plain `http://100.95.73.18:8823` — same port, different scheme. Don't confuse them: anything over HTTPS = supermux, anything over plain HTTP on a tailnet IP = old amux.
+- The legacy `amux v2` python service still runs on `http://100.95.73.18:8823` (direct tailnet IP, plain HTTP — no Tailscale TLS proxy anymore). Anything on `https://supermux.*` is supermux.
 
 ---
 
@@ -45,7 +46,7 @@ The full PWA on your phone, served from clawd-02 through the tailnet.
 3. Flip the VPN switch on. The phone now sees the tailnet.
 
 **Use it:**
-- Open **https://clawd-02.taild681cb.ts.net:8823** in mobile Safari (or Chrome).
+- Open **https://supermux.taild681cb.ts.net** in mobile Safari (or Chrome).
 - Add to home screen for an app-like launch (it's a PWA — full-screen, no browser chrome).
 
 **Mobile-specific features to try:**
