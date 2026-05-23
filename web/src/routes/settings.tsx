@@ -6,7 +6,13 @@ import {
   useScroll,
   useTransform,
 } from 'framer-motion'
-import { Check, ChevronsUpDown, PlayCircle, RefreshCw } from 'lucide-react'
+import {
+  Check,
+  ChevronsUpDown,
+  PlayCircle,
+  RefreshCw,
+  SlidersHorizontal,
+} from 'lucide-react'
 
 import { springs } from '@/lib/springs'
 import { appVersion, authToken, baseUrl } from '@/env'
@@ -19,6 +25,7 @@ import {
 import { onboardingApi } from '@/lib/api'
 import { useTheme, type Theme } from '@/components/theme-provider'
 import { useUI, type ViewMode, type HoverPreview } from '@/stores/ui-store'
+import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
 import {
   useEnvKeys,
@@ -325,6 +332,37 @@ function OnboardingSection() {
   )
 }
 
+/** Settings → Claude tools (skills-mcp-manager plan §C.1, entry point 3). Opens
+ *  the same manager sheet the ⌘K command + focus title-bar icon open, scoped to
+ *  global (no session in this context). */
+function ClaudeToolsSection() {
+  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
+  return (
+    <Section
+      title="Claude tools"
+      footnote="MCP servers, skills, and slash commands across this machine. Secrets stay on the server — only key names are shown."
+    >
+      <Row
+        label="Manage MCP / skills / commands"
+        hint="Add, remove, and review what your agents can use."
+        control={
+          <Button
+            asChild
+            variant="outline"
+            onClick={() => openClaudeTools(null)}
+            className="h-11 gap-1.5"
+          >
+            <motion.button whileTap={{ scale: 0.96 }} transition={springs.buttonPress}>
+              <SlidersHorizontal />
+              Manage
+            </motion.button>
+          </Button>
+        }
+      />
+    </Section>
+  )
+}
+
 export function Settings() {
   const { theme, setTheme } = useTheme()
   const viewMode = useUI((s) => s.viewMode)
@@ -433,6 +471,8 @@ export function Settings() {
               control={<ModelPicker />}
             />
           </Section>
+
+          <ClaudeToolsSection />
 
           <OnboardingSection />
 
