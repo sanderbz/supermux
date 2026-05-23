@@ -85,34 +85,22 @@ function SideNav() {
 
 /** Mobile chrome above the route outlet (≤md).
  *
- *  Overview (`/`): a minimal top-right ThemeToggle pinned to the safe-area
- *  corner — no in-flow band. The overview body re-homes its own `pt-safe`
- *  (overview.tsx) so its content still clears the notch / Dynamic Island.
- *  This was commit b5c8f14.
- *
- *  R5: every OTHER non-focus route (board / scheduler / settings / files)
- *  used to render a full `h-12 + pt-safe` band carrying just a `supermux`
- *  wordmark + a redundant ThemeToggle — wasted vertical space, since each of
- *  those routes already self-renders its own header/title and the theme
+ *  MHDR: renders nothing on mobile for EVERY route — including overview (`/`).
+ *  The overview used to float a minimal top-right `<ThemeToggle />` pinned to
+ *  the safe-area corner (commit b5c8f14), but that floating control crowded the
+ *  overview header (it reserved a `pr-12` corner) and is redundant: the theme
  *  control already lives in Settings → Appearance (settings.tsx, backed by the
  *  same `supermux-theme` localStorage source as the desktop SideNav toggle).
- *  So we drop the band entirely and return `null` for those routes; each route
- *  absorbs its own mobile `pt-safe` inset (matching overview.tsx) so its header
- *  still clears the notch. Desktop SideNav keeps its ThemeToggle untouched.
+ *  Every mobile route — overview included — self-homes its own `pt-safe` inset
+ *  (overview.tsx folds it into the body's top padding) so content still clears
+ *  the notch / Dynamic Island without any shell-level top band.
+ *  Desktop SideNav keeps its ThemeToggle untouched.
  *
  *  Focus (`/focus/:name`) renders nothing at all (gated out in <Layout>). */
-function MobileTopBar({ overview }: { overview: boolean }) {
-  if (!overview) return null
-  // Minimal corner affordance — no in-flow band. `top` clears the notch via
-  // the same safe-area inset the old bar's pt-safe used; the overview body
-  // re-homes its own pt-safe so nothing slides under the Dynamic Island.
-  return (
-    <div className="pointer-events-none fixed right-3 top-[calc(env(safe-area-inset-top)+0.5rem)] z-40 md:hidden">
-      <div className="pointer-events-auto">
-        <ThemeToggle />
-      </div>
-    </div>
-  )
+function MobileTopBar(_props: { overview: boolean }) {
+  // No mobile top chrome on any route — see the block comment above. Each route
+  // owns its safe-area inset, and the theme control lives in Settings.
+  return null
 }
 
 /** Mobile: bottom tab bar, 5 icons + label, safe-area inset (≤md). */
