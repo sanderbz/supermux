@@ -1,13 +1,14 @@
 // Scheduler route (M21) — the schedule list on the M8 backend. Columns: title /
-// kind / target / next-run / last-run / enable-toggle. The `+` button opens
-// <NewScheduleDialog> (three preset recipes + expression builder with a live
-// next-5-runs preview + test-fire); a row click opens <ScheduleDetailSheet>
-// (inline edit + run history with idempotency-aware status pills). Real-time via
-// SSE (useSchedulerStream) — never polled.
+// human schedule / next-run / last-run / enable-toggle. The `+` button and the
+// row click both open the SAME <ScheduleDetailSheet> (a full-height right Sheet)
+// — `create` mode (preset recipes + recurrence composer + live next-5-runs
+// preview + test-fire) or `edit` mode (inline edit + fire log + run history with
+// idempotency-aware status pills). One container, no centered modal. Real-time
+// via SSE (useSchedulerStream) — never polled.
 
 import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { CalendarClock, Plus, TriangleAlert } from 'lucide-react'
+import { CalendarClock, History, Plus, Timer, TriangleAlert } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -17,10 +18,13 @@ import { EMPTY } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
 import { listSessionNames } from '@/lib/api'
 import { useSchedules, useSchedulerStream } from '@/hooks/use-scheduler'
-import { NewScheduleDialog } from '@/components/scheduler/new-schedule-dialog'
 import { ScheduleDetailSheet } from '@/components/scheduler/schedule-detail-sheet'
 import { EnableToggle } from '@/components/scheduler/enable-toggle'
-import { formatRunTime, KIND_LABEL } from '@/components/scheduler/helpers'
+import {
+  describeSchedule,
+  formatFull,
+  formatRunTime,
+} from '@/components/scheduler/helpers'
 
 export function Scheduler() {
   // Toasts come from the app-root <ToastProvider> (mounted in App.tsx) — no
@@ -31,14 +35,15 @@ export function Scheduler() {
 function SchedulerInner() {
   useSchedulerStream() // live cache invalidation on every fire — no polling
   const schedules = useSchedules()
+  // A single sheet hosts both flows. `create` opens a blank editor; selecting an
+  // ID opens the same sheet in edit mode. The live row is derived from the list
+  // during render so the open edit sheet always reflects the latest SSE-driven
+  // data without a sync effect.
   const [creating, setCreating] = React.useState(false)
-  // Track only the selected ID; derive the live row from the list during render
-  // so the open detail sheet always reflects the latest SSE-driven data without
-  // a sync effect.
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
   const [sessions, setSessions] = React.useState<string[]>([])
 
-  // Load known session names once (for the tmux target combo / boot context).
+  // Load known session names once (for the tmux target picker / boot context).
   React.useEffect(() => {
     let alive = true
     listSessionNames().then((names) => alive && setSessions(names))
@@ -52,6 +57,16 @@ function SchedulerInner() {
     ? (list.find((s) => s.id === selectedId) ?? null)
     : null
 
+  const mode = creating ? 'create' : selected ? 'edit' : null
+  const closeSheet = () => {
+    setCreating(false)
+    setSelectedId(null)
+  }
+  const openCreate = () => {
+    setSelectedId(null)
+    setCreating(true)
+  }
+
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col">
       <header className="glass flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4 sm:px-6">
@@ -59,7 +74,7 @@ function SchedulerInner() {
         <Button
           size="sm"
           className="h-11"
-          onClick={() => setCreating(true)}
+          onClick={openCreate}
           aria-label="New schedule"
         >
           <Plus className="size-4" />
@@ -77,22 +92,24 @@ function SchedulerInner() {
             <EmptyStatePlaceholder
               icon={<CalendarClock />}
               message={EMPTY.scheduler.body}
-              cta={{ label: EMPTY.scheduler.cta, onClick: () => setCreating(true) }}
+              cta={{ label: EMPTY.scheduler.cta, onClick: openCreate }}
             />
           </div>
         ) : (
-          <ScheduleList list={list} onOpen={(s) => setSelectedId(s.id)} />
+          <ScheduleList
+            list={list}
+            onOpen={(s) => {
+              setCreating(false)
+              setSelectedId(s.id)
+            }}
+          />
         )}
       </div>
 
-      <NewScheduleDialog
-        open={creating}
-        onOpenChange={setCreating}
-        sessions={sessions}
-      />
       <ScheduleDetailSheet
+        mode={mode}
         schedule={selected}
-        onClose={() => setSelectedId(null)}
+        onClose={closeSheet}
         sessions={sessions}
       />
     </div>
@@ -110,73 +127,102 @@ function ScheduleList({
   return (
     <div className="flex flex-col gap-2">
       {/* Column header (desktop only). */}
-      <div className="hidden grid-cols-[1fr_7rem_8rem_8rem_3rem] items-center gap-3 px-3 text-xs font-medium text-muted-foreground md:grid">
+      <div className="hidden grid-cols-[1fr_10rem_7rem_7rem_3rem] items-center gap-3 px-3 text-xs font-medium text-muted-foreground md:grid">
         <span>Title</span>
-        <span>Kind</span>
-        <span>Next run</span>
-        <span>Last run</span>
+        <span>Schedule</span>
+        <span>Next fire</span>
+        <span>Last fired</span>
         <span className="text-right">On</span>
       </div>
 
       {/* The row is a clickable container (not a <button>) so the enable-toggle
           <button> can nest legitimately — no invalid-HTML / hydration error. */}
-      {list.map((s, i) => (
-        <motion.div
-          key={s.id}
-          role="button"
-          tabIndex={0}
-          onClick={() => onOpen(s)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              onOpen(s)
-            }
-          }}
-          initial={reduce ? false : { opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ ...springs.cardExpand, delay: reduce ? 0 : i * 0.03 }}
-          whileTap={reduce ? undefined : { scale: 0.995 }}
-          className={cn(
-            'grid min-h-14 w-full cursor-pointer grid-cols-[1fr_auto] items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            'md:grid-cols-[1fr_7rem_8rem_8rem_3rem]',
-            s.enabled === 1 ? '' : 'opacity-60',
-          )}
-        >
-          {/* Title + secondary meta (target/command). */}
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-foreground">
-              {s.title}
-            </p>
-            <p className="truncate font-mono text-xs text-muted-foreground">
-              {s.kind === 'tmux'
-                ? `${s.session || '—'} · ${s.command}`
-                : s.kind === 'boot'
-                  ? `${s.command} in ${s.boot_dir || '—'}`
-                  : s.command}
-            </p>
-          </div>
+      {list.map((s, i) => {
+        const human = describeSchedule(s.schedule_expr)
+        const target =
+          s.kind === 'tmux'
+            ? `${s.session || '—'} · ${s.command}`
+            : s.kind === 'boot'
+              ? `${s.command} in ${s.boot_dir || '—'}`
+              : s.command
+        return (
+          <motion.div
+            key={s.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => onOpen(s)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onOpen(s)
+              }
+            }}
+            initial={reduce ? false : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ ...springs.cardExpand, delay: reduce ? 0 : i * 0.03 }}
+            whileTap={reduce ? undefined : { scale: 0.995 }}
+            className={cn(
+              'grid min-h-14 w-full cursor-pointer grid-cols-[1fr_auto] items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'md:grid-cols-[1fr_10rem_7rem_7rem_3rem]',
+              s.enabled === 1 ? '' : 'opacity-60',
+            )}
+          >
+            {/* Title + secondary meta (target/command + mobile fire log). */}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-foreground">
+                {s.title}
+              </p>
+              <p className="truncate font-mono text-xs text-muted-foreground">
+                {target}
+              </p>
+              {/* Mobile-only: human schedule + next/last fire (desktop has columns). */}
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground md:hidden">
+                <span className="text-foreground">{human}</span>
+                <span
+                  className="flex items-center gap-1"
+                  title={!s.enabled || !s.next_run ? undefined : formatFull(s.next_run)}
+                >
+                  <Timer className="size-3" />
+                  {s.enabled === 1 ? formatRunTime(s.next_run) : 'paused'}
+                </span>
+                <span
+                  className="flex items-center gap-1"
+                  title={s.last_run ? formatFull(s.last_run) : undefined}
+                >
+                  <History className="size-3" />
+                  {s.last_run ? formatRunTime(s.last_run) : 'never'}
+                </span>
+              </div>
+            </div>
 
-          {/* Kind (desktop column; inline pill on mobile via the meta row). */}
-          <span className="hidden text-xs text-muted-foreground md:block">
-            {KIND_LABEL[s.kind]}
-          </span>
+            {/* Human schedule (desktop column). */}
+            <span className="hidden truncate text-xs text-muted-foreground md:block">
+              {human}
+            </span>
 
-          {/* Next run. */}
-          <span className="hidden text-xs text-foreground md:block">
-            {s.enabled === 1 ? formatRunTime(s.next_run) : 'paused'}
-          </span>
+            {/* Next fire. */}
+            <span
+              className="hidden text-xs text-foreground md:block"
+              title={s.enabled === 1 && s.next_run ? formatFull(s.next_run) : undefined}
+            >
+              {s.enabled === 1 ? formatRunTime(s.next_run) : 'paused'}
+            </span>
 
-          {/* Last run. */}
-          <span className="hidden text-xs text-muted-foreground md:block">
-            {formatRunTime(s.last_run)}
-          </span>
+            {/* Last fired. */}
+            <span
+              className="hidden text-xs text-muted-foreground md:block"
+              title={s.last_run ? formatFull(s.last_run) : undefined}
+            >
+              {formatRunTime(s.last_run)}
+            </span>
 
-          {/* Enable toggle (stops propagation so the row doesn't open). */}
-          <div className="flex items-center justify-self-end md:justify-self-end">
-            <EnableToggle id={s.id} enabled={s.enabled === 1} />
-          </div>
-        </motion.div>
-      ))}
+            {/* Enable toggle (stops propagation so the row doesn't open). */}
+            <div className="flex items-center justify-self-end md:justify-self-end">
+              <EnableToggle id={s.id} enabled={s.enabled === 1} />
+            </div>
+          </motion.div>
+        )
+      })}
     </div>
   )
 }

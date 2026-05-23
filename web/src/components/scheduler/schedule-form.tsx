@@ -1,12 +1,24 @@
-// ScheduleForm (M21) — the kind/fields/expression body shared by the create
-// dialog and the edit sheet. Owns: kind radio, matching field set (boot / tmux /
-// shell), the free-text expression input with helper chips + a DEBOUNCED
-// next-5-runs preview (POST /api/schedules/preview), one-shot datetime picker,
-// optional watch-mode, and a test-fire button. Animations use springs.ts only.
+// ScheduleForm (M21) — the kind/fields/expression body shared by the create +
+// edit surfaces (both now host it in the same right-side Sheet). Owns: kind
+// radio, matching field set (boot / tmux / shell), a real command picker
+// (combobox over GET /api/slash-commands) for boot/tmux prompts, a real session
+// picker (select over the live sessions list) for tmux, a friendly recurrence
+// composer (quick-pick chips → schedule_expr) with a live English render + a
+// Custom escape hatch (raw natural-language / cron) and a DEBOUNCED next-5-runs
+// preview (POST /api/schedules/preview), one-shot datetime picker, optional
+// watch-mode, and a test-fire button. Animations use springs.ts only.
 
 import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { Clock3, FlaskConical, Loader2, Rocket, Terminal } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  Clock3,
+  FlaskConical,
+  Loader2,
+  Rocket,
+  Terminal,
+} from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -17,14 +29,24 @@ import {
   schedulerApi,
   type ScheduleCreateInput,
   type ScheduleKind,
+  type SlashCommand,
 } from '@/lib/api'
 import { useTestFire } from '@/hooks/use-scheduler'
+import { useSlashCommands } from '@/hooks/use-commands'
 import {
   DONE_ACTIONS,
-  EXPR_HELPERS,
+  describeSchedule,
+  EMPTY_RECURRENCE,
+  exprToRecurrence,
   formatFull,
+  FREQUENCY_CHIPS,
+  FREQUENCY_LABEL,
   KIND_LABEL,
   PROVIDERS,
+  recurrenceToExpr,
+  type Frequency,
+  type RecurrenceDraft,
+  WEEKDAYS,
 } from './helpers'
 
 export interface ScheduleFormValue {
@@ -97,7 +119,7 @@ export function isFormValid(v: ScheduleFormValue): boolean {
 interface ScheduleFormProps {
   value: ScheduleFormValue
   onChange: (next: ScheduleFormValue) => void
-  /** Known session names for the tmux target combo (free-text fallback). */
+  /** Known session names for the tmux target picker. */
   sessions: string[]
   /** Hide the test-fire button (e.g. on the edit sheet for an existing job). */
   hideTestFire?: boolean
@@ -117,6 +139,7 @@ export function ScheduleForm({
   const preview = useExpressionPreview(value.schedule_expr)
   const testFire = useTestFire()
   const { toast } = useToast()
+  const slash = useSlashCommands()
   const valid = isFormValid(value)
 
   const runTestFire = () => {
@@ -220,12 +243,13 @@ export function ScheduleForm({
               />
             </Field>
           </div>
-          <Field label="Prompt">
-            <Input
+          <Field label="Command">
+            <CommandPicker
               value={value.command}
-              onChange={(e) => set('command', e.target.value)}
+              onChange={(v) => set('command', v)}
+              commands={slash.data ?? []}
+              loading={slash.isLoading}
               placeholder="/cso"
-              className="h-11 font-mono text-base md:text-xs"
             />
           </Field>
         </>
@@ -234,25 +258,19 @@ export function ScheduleForm({
       {value.kind === 'tmux' && (
         <>
           <Field label="Target session">
-            <Input
-              list="sched-sessions"
+            <SessionPicker
               value={value.session}
-              onChange={(e) => set('session', e.target.value)}
-              placeholder="my-agent"
-              className="h-11 font-mono text-base md:text-xs"
+              onChange={(v) => set('session', v)}
+              sessions={sessions}
             />
-            <datalist id="sched-sessions">
-              {sessions.map((s) => (
-                <option key={s} value={s} />
-              ))}
-            </datalist>
           </Field>
           <Field label="Text to send">
-            <Input
+            <CommandPicker
               value={value.command}
-              onChange={(e) => set('command', e.target.value)}
+              onChange={(v) => set('command', v)}
+              commands={slash.data ?? []}
+              loading={slash.isLoading}
               placeholder="/status"
-              className="h-11 font-mono text-base md:text-xs"
             />
           </Field>
         </>
@@ -269,30 +287,12 @@ export function ScheduleForm({
         </Field>
       )}
 
-      {/* Expression + helpers + preview */}
-      <Field label="When">
-        <Input
-          value={value.schedule_expr}
-          onChange={(e) => set('schedule_expr', e.target.value)}
-          placeholder="every weekday at 9am"
-          className="h-11"
-        />
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {EXPR_HELPERS.map((h) => (
-            <button
-              key={h.label}
-              type="button"
-              onClick={() => set('schedule_expr', h.expr)}
-              className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              {h.label}
-            </button>
-          ))}
-        </div>
-        {/* One-shot datetime → "in <N>m" relative expression. */}
-        <OneShotPicker onPick={(expr) => set('schedule_expr', expr)} />
-        <NextRunsPreview state={preview} />
-      </Field>
+      {/* Recurrence composer + live English render + preview */}
+      <RecurrenceComposer
+        expr={value.schedule_expr}
+        onExpr={(v) => set('schedule_expr', v)}
+        preview={preview}
+      />
 
       {/* Watch mode */}
       <Field label="Watch mode">
@@ -355,6 +355,416 @@ export function ScheduleForm({
           Test fire now
         </Button>
       )}
+    </div>
+  )
+}
+
+// ── recurrence composer ────────────────────────────────────────────────────────
+//
+// Quick-pick chips compose the `schedule_expr` for the common cases; "Custom"
+// reveals the raw free-text escape hatch (natural language or cron — the server
+// parser already accepts every form). A live English render + the debounced
+// next-5-runs preview confirm what was composed.
+
+function RecurrenceComposer({
+  expr,
+  onExpr,
+  preview,
+}: {
+  expr: string
+  onExpr: (v: string) => void
+  preview: PreviewState
+}) {
+  // Seed the composer from the current expression (so edit lands on the right
+  // chip). Stored during render via the wasExpr guard — no setState-in-effect.
+  const [draft, setDraft] = React.useState<RecurrenceDraft>(() =>
+    expr.trim() ? exprToRecurrence(expr) : { ...EMPTY_RECURRENCE },
+  )
+  const [seededFrom, setSeededFrom] = React.useState(expr)
+  if (expr !== seededFrom && expr.trim() && draft.frequency === 'custom') {
+    // External expr change while on custom: keep custom (user is editing raw).
+    setSeededFrom(expr)
+  }
+
+  const applyDraft = (next: RecurrenceDraft) => {
+    setDraft(next)
+    const composed = recurrenceToExpr(next)
+    if (composed !== null) {
+      onExpr(composed)
+      setSeededFrom(composed)
+    }
+  }
+
+  const pickFrequency = (f: Frequency) => {
+    if (f === 'custom') {
+      applyDraft({ ...draft, frequency: f })
+      return
+    }
+    applyDraft({ ...draft, frequency: f })
+  }
+
+  const human = describeSchedule(expr)
+
+  return (
+    <Field label="When">
+      <div className="flex flex-wrap gap-1.5">
+        {FREQUENCY_CHIPS.map((f) => {
+          const active = draft.frequency === f
+          return (
+            <button
+              key={f}
+              type="button"
+              aria-pressed={active}
+              onClick={() => pickFrequency(f)}
+              className={cn(
+                'relative min-h-9 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
+                active
+                  ? 'border-primary text-foreground'
+                  : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              {active && (
+                <motion.span
+                  layoutId="sched-freq-active"
+                  transition={springs.snappy}
+                  className="absolute inset-0 rounded-full bg-primary/10"
+                />
+              )}
+              <span className="relative">{FREQUENCY_LABEL[f]}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Frequency-specific controls. */}
+      <div className="mt-3">
+        {draft.frequency === 'once' && (
+          <OneShotPicker
+            onPick={(e) => {
+              onExpr(e)
+              setSeededFrom(e)
+            }}
+          />
+        )}
+
+        {(draft.frequency === 'daily' || draft.frequency === 'weekdays') && (
+          <TimeRow
+            time={draft.time}
+            onTime={(t) => applyDraft({ ...draft, time: t })}
+          />
+        )}
+
+        {draft.frequency === 'weekly' && (
+          <div className="flex flex-col gap-3">
+            <DayPicker
+              day={draft.day}
+              onDay={(d) => applyDraft({ ...draft, day: d })}
+            />
+            <TimeRow
+              time={draft.time}
+              onTime={(t) => applyDraft({ ...draft, time: t })}
+            />
+          </div>
+        )}
+
+        {draft.frequency === 'monthly' && (
+          <div className="flex flex-col gap-3">
+            <SubField label="Day of month (1–28)">
+              <select
+                value={draft.dom}
+                onChange={(e) =>
+                  applyDraft({ ...draft, dom: Number(e.target.value) })
+                }
+                className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm"
+              >
+                {Array.from({ length: 28 }, (_, i) => i + 1).map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </SubField>
+            <TimeRow
+              time={draft.time}
+              onTime={(t) => applyDraft({ ...draft, time: t })}
+            />
+          </div>
+        )}
+
+        {draft.frequency === 'interval' && (
+          <div className="grid grid-cols-2 gap-3">
+            <SubField label="Every">
+              <Input
+                type="number"
+                min={1}
+                value={draft.intervalN}
+                onChange={(e) =>
+                  applyDraft({
+                    ...draft,
+                    intervalN: Math.max(1, Number(e.target.value) || 1),
+                  })
+                }
+                className="h-11"
+              />
+            </SubField>
+            <SubField label="Unit">
+              <select
+                value={draft.intervalUnit}
+                onChange={(e) =>
+                  applyDraft({ ...draft, intervalUnit: e.target.value })
+                }
+                className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm"
+              >
+                <option value="m">minutes</option>
+                <option value="h">hours</option>
+                <option value="d">days</option>
+              </select>
+            </SubField>
+          </div>
+        )}
+
+        {draft.frequency === 'custom' && (
+          <SubField label="Schedule (natural language or cron)">
+            <Input
+              value={expr}
+              onChange={(e) => {
+                onExpr(e.target.value)
+                setSeededFrom(e.target.value)
+              }}
+              placeholder="every monday at 9am"
+              className="h-11 font-mono text-base md:text-xs"
+            />
+          </SubField>
+        )}
+      </div>
+
+      {/* Live English render. */}
+      {expr.trim() && (
+        <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3">
+          <Clock3 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">{human}</p>
+            {preview.runs[0] && !preview.error && (
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Next fires {formatFull(preview.runs[0])}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      <NextRunsPreview state={preview} />
+    </Field>
+  )
+}
+
+function TimeRow({
+  time,
+  onTime,
+}: {
+  time: string
+  onTime: (t: string) => void
+}) {
+  return (
+    <SubField label="At">
+      <input
+        type="time"
+        value={time}
+        onChange={(e) => onTime(e.target.value)}
+        className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      />
+    </SubField>
+  )
+}
+
+function DayPicker({
+  day,
+  onDay,
+}: {
+  day: string
+  onDay: (d: string) => void
+}) {
+  return (
+    <SubField label="On">
+      <div className="flex flex-wrap gap-1.5">
+        {WEEKDAYS.map((d) => {
+          const active = day === d.value
+          return (
+            <button
+              key={d.value}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onDay(d.value)}
+              className={cn(
+                'min-h-11 min-w-11 rounded-lg border px-2.5 py-2 text-xs font-medium transition-colors',
+                active
+                  ? 'border-primary bg-primary/10 text-foreground'
+                  : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              {d.label}
+            </button>
+          )
+        })}
+      </div>
+    </SubField>
+  )
+}
+
+// ── command picker (combobox over /api/slash-commands) ──────────────────────────
+
+function CommandPicker({
+  value,
+  onChange,
+  commands,
+  loading,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  commands: SlashCommand[]
+  loading: boolean
+  placeholder: string
+}) {
+  const [open, setOpen] = React.useState(false)
+  const ref = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  const q = value.trim().toLowerCase()
+  const filtered = q
+    ? commands.filter(
+        (c) =>
+          c.cmd.toLowerCase().includes(q) ||
+          c.desc.toLowerCase().includes(q),
+      )
+    : commands
+
+  return (
+    <div ref={ref} className="relative">
+      <div className="relative">
+        <Input
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value)
+            setOpen(true)
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          aria-label="Command"
+          className="h-11 pr-10 font-mono text-base md:text-xs"
+        />
+        <button
+          type="button"
+          aria-label="Browse commands"
+          onClick={() => setOpen((o) => !o)}
+          className="absolute inset-y-0 right-0 grid w-10 place-items-center text-muted-foreground hover:text-foreground"
+        >
+          <ChevronDown
+            className={cn('size-4 transition-transform', open && 'rotate-180')}
+          />
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={springs.cardExpand}
+            className="absolute z-50 mt-1.5 max-h-64 w-full overflow-auto rounded-lg border border-border bg-popover p-1 shadow-lg"
+          >
+            {loading ? (
+              <p className="px-2 py-2 text-xs text-muted-foreground">
+                Loading commands…
+              </p>
+            ) : !filtered.length ? (
+              <p className="px-2 py-2 text-xs text-muted-foreground">
+                No matching command — type any text to send it as-is.
+              </p>
+            ) : (
+              filtered.map((c) => {
+                const selected = c.cmd === value.trim()
+                return (
+                  <button
+                    key={c.cmd}
+                    type="button"
+                    onClick={() => {
+                      onChange(c.cmd)
+                      setOpen(false)
+                    }}
+                    className={cn(
+                      'flex min-h-11 w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent',
+                      selected && 'bg-accent',
+                    )}
+                  >
+                    <Check
+                      className={cn(
+                        'mt-0.5 size-3.5 shrink-0',
+                        selected ? 'text-primary' : 'text-transparent',
+                      )}
+                    />
+                    <span className="min-w-0">
+                      <span className="block font-mono text-xs text-foreground">
+                        {c.cmd}
+                      </span>
+                      {c.desc && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {c.desc}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                )
+              })
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+// ── session picker (select over the live sessions list) ─────────────────────────
+
+function SessionPicker({
+  value,
+  onChange,
+  sessions,
+}: {
+  value: string
+  onChange: (v: string) => void
+  sessions: string[]
+}) {
+  // When the bound session isn't in the live list (e.g. an edited row pointing
+  // at a stopped session), keep it selectable so the value isn't silently lost.
+  const options = value && !sessions.includes(value) ? [value, ...sessions] : sessions
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Target session"
+        className="h-11 w-full appearance-none rounded-md border border-input bg-transparent px-3 pr-10 font-mono text-base md:text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <option value="" disabled>
+          {sessions.length ? 'Choose a session…' : 'No live sessions'}
+        </option>
+        {options.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute inset-y-0 right-3 my-auto size-4 text-muted-foreground" />
     </div>
   )
 }
@@ -440,16 +850,13 @@ function OneShotPicker({ onPick }: { onPick: (expr: string) => void }) {
     onPick(`in ${mins}m`)
   }
   return (
-    <details className="mt-2 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none">
-        Or pick a one-shot date + time
-      </summary>
+    <SubField label="Run at">
       <input
         type="datetime-local"
         onChange={(e) => onChange(e.target.value)}
-        className="mt-2 h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm text-foreground"
+        className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
-    </details>
+    </SubField>
   )
 }
 
@@ -465,6 +872,24 @@ function Field({
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+/** A nested label inside a composite control (e.g. inside the composer). */
+function SubField({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-[11px] font-medium text-muted-foreground/80">
+        {label}
+      </span>
       {children}
     </label>
   )
