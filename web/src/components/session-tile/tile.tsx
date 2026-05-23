@@ -520,6 +520,7 @@ export function SessionTile({
                 key="live"
                 name={session.name}
                 width={cardWidth}
+                height={LIVE_PREVIEW_H}
                 reduce={!!reduce}
                 onReady={onLiveReady}
               />
@@ -608,14 +609,27 @@ export function SessionTile({
 // height spring (springs.cardExpand) and the card's hover-scale revert
 // (springs.tileHover) carry the dismissal as a SINGLE motion. Net effect:
 // one clean shrink, no half-transparent flash — same vibe as pre-polish-pass.
+//
+// BOTTOM-ANCHOR + FIXED FINAL HEIGHT (fix-peek-render). The wrapper is NOT
+// `absolute inset-0` — that would make xterm's FitAddon snap its grid to the
+// *animating* parent height (small mid-spring), and the debounced ResizeObserver
+// only catches up at the end → the user saw the terminal render at the TOP with
+// empty space below, then "jump to bottom" when the spring finished. Instead we
+// pin to the bottom of the container at its FINAL height (`height` prop =
+// LIVE_PREVIEW_H) from t=0. The parent's `overflow-hidden` naturally reveals
+// the bottom portion of the live terminal as the container grows — which IS
+// the natural direction for a terminal (new lines push old up, bottom-anchored
+// buffer). FitAddon runs once at the final size, never mid-animation.
 function LivePeekLayer({
   name,
   width,
+  height,
   reduce,
   onReady,
 }: {
   name: string
   width: number
+  height: number
   reduce: boolean
   /** Forwarded to the underlying <TileLiveTerminal> so the parent type-on-hover
    *  layer can capture the imperative `send`/`sendKey` handle the moment the
@@ -632,7 +646,8 @@ function LivePeekLayer({
       // it, producing the "half-transparent intermediate" state. AnimatePresence
       // still unmounts the layer (just without a custom exit animation).
       transition={reduce ? { duration: 0 } : springs.snappy}
-      className="absolute inset-0"
+      className="absolute inset-x-0 bottom-0"
+      style={{ height }}
     >
       <TileLiveTerminal
         name={name}
