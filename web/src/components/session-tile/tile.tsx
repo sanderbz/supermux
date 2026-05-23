@@ -394,8 +394,18 @@ export function SessionTile({
   // the tile (independent of Reduce Motion — it's an affordance, not motion) and
   // the tile isn't already exiting. Coarse pointers (touch) reach archive via the
   // focus pane / stopped-peek actions, so we don't clutter the touch tile.
+  //
+  // EXCEPT on a STOPPED tile (P2 polish): the stopped hover-peek already mounts
+  // its own Start + Archive cluster (<StoppedSessionActions>), so showing this
+  // header icon too would surface Archive TWICE on the same hovered tile. Suppress
+  // the header icon when stopped — one archive affordance per tile state (the peek
+  // owns it for stopped; this header icon owns it for active/idle/waiting/error).
   const showArchiveControl =
-    (hovered || archiveConfirm) && fine && !archiving && !session.missing
+    (hovered || archiveConfirm) &&
+    fine &&
+    !archiving &&
+    !session.missing &&
+    session.status !== 'stopped'
 
   // Stopped peek's keyboard shortcut: Enter → primary "Start" action (power-
   // user nicety; the visible primary button makes the affordance obvious),

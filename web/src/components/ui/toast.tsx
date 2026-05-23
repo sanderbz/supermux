@@ -185,20 +185,37 @@ function ToastViewport({
                 style={{
                   pointerEvents: 'auto',
                   flex: '0 0 auto',
-                  // 44pt hit target via padding; the visible chip stays compact.
-                  minHeight: 28,
+                  // 44pt HIG hit-target floor (P2 polish — the button was 28px,
+                  // below the touch minimum). The button itself is a transparent
+                  // 44px-tall box (top/bottom margin pulls it back inside the
+                  // 36px capsule so the capsule doesn't grow); the VISIBLE chip is
+                  // the inner span, kept compact. So the tappable area meets the
+                  // floor while the chip still reads small within the capsule.
+                  minHeight: 44,
+                  marginTop: -4,
+                  marginBottom: -4,
                   display: 'inline-flex',
                   alignItems: 'center',
-                  padding: '0 12px',
-                  borderRadius: 14,
+                  padding: 0,
                   border: 'none',
-                  background: 'rgba(255,255,255,0.14)',
-                  color: '#fff',
-                  font: '600 13px/1 ui-sans-serif, system-ui, -apple-system, sans-serif',
+                  background: 'transparent',
                   cursor: 'pointer',
                 }}
               >
-                {t.action.label}
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    height: 28,
+                    padding: '0 12px',
+                    borderRadius: 14,
+                    background: 'rgba(255,255,255,0.14)',
+                    color: '#fff',
+                    font: '600 13px/1 ui-sans-serif, system-ui, -apple-system, sans-serif',
+                  }}
+                >
+                  {t.action.label}
+                </span>
               </button>
             )}
           </motion.div>
