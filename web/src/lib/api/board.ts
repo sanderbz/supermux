@@ -250,6 +250,16 @@ export const boardApi = {
       body: JSON.stringify({ id: steerId }),
     }),
 
+  /** Steer a board comment into the linked session as a mid-task nudge (the
+   *  detail sheet's "notify agent" toggle). `POST /api/sessions/{session}/steer`
+   *  with the comment prefixed so the agent reads it as a board note. Reuses the
+   *  session steer endpoint; the caller treats a failure as non-fatal. */
+  nudge: (session: string, body: string): Promise<unknown> =>
+    boardRequest(`/api/sessions/${encodeURIComponent(session)}/steer`, {
+      method: 'POST',
+      body: JSON.stringify({ text: `Board note: ${body}` }),
+    }),
+
   // ── activity stream + acceptance + links (human side, bearer; AB2) ──────────
   // Every mutation returns the refreshed BoardIssue (with relations) and also
   // re-publishes the board over SSE, so the optimistic update is confirmed.

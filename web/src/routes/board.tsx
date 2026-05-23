@@ -9,11 +9,11 @@ import { ClipboardList, Plus, Settings } from 'lucide-react'
 
 import { EmptyStatePlaceholder } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
-import { useToast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useBoard, sortIssues } from '@/hooks/use-board'
-import { BoardError, boardApi, type BoardIssue } from '@/lib/api'
+import { useSendToAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
+import { BoardError, type BoardIssue } from '@/lib/api'
 import { IssueCard } from '@/components/board/issue-card'
 import { NewIssueDialog } from '@/components/board/new-issue-dialog'
 import { IssueDetailSheet } from '@/components/board/issue-detail-sheet'
@@ -42,7 +42,7 @@ interface Toast {
 export function Board() {
   const board = useBoard()
   const reduce = useReducedMotion()
-  const { toast } = useToast()
+  const { sendToAgent } = useSendToAgent()
 
   // Track the OPEN issue by id (not a snapshot) so the detail sheet re-derives
   // from the live `board.issues` cache — comments / acceptance ticks / links
@@ -175,39 +175,20 @@ export function Board() {
           pushToast('Assign a session before sending this task.', 'info')
           return
         }
-        try {
-          const result = await board.claimIssue({
-            id: issue.id,
-            session,
-            deliver: true,
-          })
-          if (result.delivered && result.steer_id != null) {
-            const steerId = result.steer_id
-            toast({
-              message: `Sent to ${session}`,
-              action: {
-                label: 'Undo',
-                onClick: () => {
-                  void boardApi
-                    .unsend(session, steerId)
-                    .catch(() =>
-                      pushToast('Could not undo — the agent already started.'),
-                    )
-                },
-              },
-            })
-          } else {
-            // Claim landed but nothing was dispatched (e.g. deliver suppressed
-            // server-side) — still confirm the move.
-            toast({ message: `Claimed for ${session}` })
-          }
-        } catch (e) {
-          if (e instanceof BoardError && e.status === 409) {
-            pushToast(e.message || 'Claim lost — another session took it.')
-          } else {
-            pushToast(e instanceof Error ? e.message : 'Send failed.')
-          }
-        }
+        // The shared send-to-agent flow (claim→toast→Undo). Drives the claim
+        // through the board's OPTIMISTIC mutation so the card slides to `doing`
+        // and rolls back on a lost race; errors route through the route's own
+        // toaster (`pushToast`) for parity with the other drag failures.
+        await sendToAgent({
+          id: issue.id,
+          session,
+          claim: (a) => board.claimIssue(a),
+          // Match the drag toast's prior styling: default tone + default duration.
+          sentTone: 'default',
+          onUndoError: () =>
+            pushToast('Could not undo — the agent already started.'),
+          onError: (e) => pushToast(claimErrorMessage(e)),
+        })
         return
       }
 
@@ -217,7 +198,7 @@ export function Board() {
         pushToast(e instanceof Error ? e.message : 'Could not move the card.')
       }
     },
-    [board, issuesByStatus, pushToast, toast],
+    [board, issuesByStatus, pushToast, sendToAgent],
   )
 
   // Global pointer move/up while a drag is in flight or pending.
