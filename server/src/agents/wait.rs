@@ -126,10 +126,12 @@ async fn current_status(state: &AppState, name: &str) -> Result<String, AppError
 }
 
 /// Map a stored status onto the client union (an undetected `unknown` reads as
-/// `stopped`, as in `sessions::view`).
+/// `stopped`, as in `sessions::view`). `starting` passes through verbatim so a
+/// long-polling caller observing the BOOTING window sees the real state — it's
+/// just not a valid target for `?state=` (boot is a one-way transient).
 fn normalize(status: &str) -> String {
     match status {
-        "active" | "waiting" | "idle" | "stopped" => status.to_string(),
+        "active" | "waiting" | "idle" | "stopped" | "starting" => status.to_string(),
         _ => "stopped".to_string(),
     }
 }

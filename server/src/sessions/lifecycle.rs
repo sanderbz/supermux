@@ -220,6 +220,35 @@ pub async fn start(
         tmux.new_session(&dir, &env, &shell).await?;
     }
 
+    // BOOTING window (§3.2.8 — overview UX): mark the session `starting` before
+    // we shell-launch the agent so the tile renders the neutral "booting…"
+    // affordance instead of flashing `unknown`/`stopped`/`active` while the TUI
+    // is still printing its splash. The detector loop replaces this with the
+    // real classification on its next tick once the agent UI settles.
+    //
+    // Push it through BOTH the DB (so a `GET /api/sessions` race sees it) AND
+    // the status watch + SSE (so connected clients flip the dot inside ~16ms,
+    // well before the 2s detector tick lands).
+    db::sessions::set_last_status(&state.pool, name, "starting").await?;
+    let starting_version = {
+        let tx = state.status_watch_for(name);
+        let next = tx.borrow().1.wrapping_add(1);
+        tx.send_replace(("starting".to_string(), next));
+        next
+    };
+    let _ = state.sse_tx.send(SseEvent {
+        event: "status".to_string(),
+        payload: json!({
+            "name": name,
+            "status": "starting",
+            "version": starting_version,
+        }),
+    });
+    let _ = state.sse_tx.send(SseEvent {
+        event: "sessions".to_string(),
+        payload: json!({ "delta": [{ "name": name, "status": "starting" }] }),
+    });
+
     let ready = match s.provider.as_str() {
         "shell" => settle_shell(&tmux).await,
         _ => {
@@ -234,6 +263,10 @@ pub async fn start(
 
     db::sessions::bump_start(&state.pool, name).await?;
     db::sessions::set_last_status(&state.pool, name, "active").await?;
+    // Wake the detector so the BOOTING → real-status transition is broadcast
+    // sub-second rather than at the next 2s tick (the tile dot otherwise sits
+    // in the booting affordance for up to 2s after the agent UI is ready).
+    state.wake_detector(name);
 
     if let Some(p) = prompt {
         if !p.trim().is_empty() {

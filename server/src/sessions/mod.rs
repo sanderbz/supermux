@@ -156,7 +156,7 @@ fn view(s: &Session, rt: Option<&SessionRuntime>) -> SessionView {
 /// detection (`unknown`) reads as `stopped` for the client.
 fn normalize_status(s: &str) -> String {
     match s {
-        "active" | "waiting" | "idle" | "stopped" => s.to_string(),
+        "active" | "waiting" | "idle" | "stopped" | "starting" => s.to_string(),
         _ => "stopped".to_string(),
     }
 }

@@ -330,6 +330,13 @@ fn parse_status(s: &str) -> Option<Status> {
         "waiting" => Some(Status::Waiting),
         "idle" => Some(Status::Idle),
         "stopped" => Some(Status::Stopped),
+        // `starting` is a transient lifecycle marker (set by
+        // `lifecycle::start` before the agent UI settles). Seeding the detector
+        // with `Starting` would let the cold-start "hold current status"
+        // fallback freeze the tile on `starting`; map it to `Unknown` instead so
+        // the first decisive capture/heartbeat/hook signal flips the tile out
+        // of booting promptly.
+        "starting" => None,
         _ => None,
     }
 }
