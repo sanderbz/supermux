@@ -25,6 +25,12 @@ pub struct Issue {
     pub pinned: i64,
     pub pos: f64,
     pub notified: i64,
+    /// Set by the auto_actions idle side-effect when the owning agent finished
+    /// its turn (migration 0011, R1). 0/1. FLAG only — the card is not moved.
+    pub needs_review: i64,
+    /// Set by the auto_actions sustained-`waiting` side-effect when the owning
+    /// agent is blocked on the user (migration 0011, R1). 0/1.
+    pub awaiting_input: i64,
 }
 
 /// A row of the `statuses` table (board columns).
@@ -159,26 +165,40 @@ pub async fn get_issue(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Issue
         .await
 }
 
-/// Resolve the (non-deleted) issue currently linked to `session`, preferring the
-/// one in `doing` (the agent's active task). Used by the agent→board hook scope
-/// rule (AB1): an agent may only mutate the issue WHERE `session = <its own>`.
-/// Returns `None` when the session owns no live issue.
-///
-/// If a session somehow owns multiple non-deleted issues (e.g. several were
-/// assigned before any moved to `done`), the `doing` one wins; ties break on the
-/// most-recently-updated so the result is deterministic.
+/// The non-deleted issue a session currently OWNS in the `doing` column, if any
+/// (`WHERE session = <name> AND status = 'doing'`). Two consumers share it:
+///   - AB1 agent→board hook scope rule: an agent may only mutate the issue
+///     linked to its OWN session and currently in `doing` (its active task);
+///   - R1 session→board reaction: resolves "the issue linked to this session"
+///     for the idle/waiting side-effects.
+/// Strict `status = 'doing'` is the correct tight scope for both — an agent
+/// can't touch an issue it already finished, and the reaction only fires on the
+/// active task. If a session somehow owns more than one `doing` issue, the
+/// most-recently-updated one wins (a single deterministic target).
 pub async fn doing_issue_for_session(
     pool: &SqlitePool,
     session: &str,
 ) -> sqlx::Result<Option<Issue>> {
     sqlx::query_as::<_, Issue>(
         "SELECT * FROM issues
-          WHERE session = ? AND deleted IS NULL
-          ORDER BY (status = 'doing') DESC, updated DESC
-          LIMIT 1",
+         WHERE session = ? AND status = 'doing' AND deleted IS NULL
+         ORDER BY updated DESC, id ASC
+         LIMIT 1",
     )
     .bind(session)
     .fetch_optional(pool)
+    .await
+}
+
+/// Every non-deleted issue linked to a session (any status). Used by the
+/// lifecycle paths (archive/unarchive/stop/delete) to decide whether a session
+/// change should re-publish the board (R2). Cheap — indexed by `idx_issues_session`.
+pub async fn issues_for_session(pool: &SqlitePool, session: &str) -> sqlx::Result<Vec<Issue>> {
+    sqlx::query_as::<_, Issue>(
+        "SELECT * FROM issues WHERE session = ? AND deleted IS NULL",
+    )
+    .bind(session)
+    .fetch_all(pool)
     .await
 }
 
@@ -261,6 +281,10 @@ pub enum IssueField {
     Pos(f64),
     /// Reset the notify flag (set when the assignee changes).
     Notified(i64),
+    /// "needs review" flag (R1 idle side-effect). 0/1.
+    NeedsReview(i64),
+    /// "awaiting input" flag (R1 sustained-waiting side-effect). 0/1.
+    AwaitingInput(i64),
 }
 
 /// Apply a set of field updates to one issue, bumping `updated`. Done in a single
@@ -288,6 +312,10 @@ pub async fn patch_issue(
             IssueField::DueTime(v) => bind_set_opt(&mut tx, "due_time", v.as_deref(), id).await?,
             IssueField::Pinned(v) => bind_set_i64(&mut tx, "pinned", *v, id).await?,
             IssueField::Notified(v) => bind_set_i64(&mut tx, "notified", *v, id).await?,
+            IssueField::NeedsReview(v) => bind_set_i64(&mut tx, "needs_review", *v, id).await?,
+            IssueField::AwaitingInput(v) => {
+                bind_set_i64(&mut tx, "awaiting_input", *v, id).await?
+            }
             IssueField::Pos(v) => {
                 sqlx::query("UPDATE issues SET pos = ? WHERE id = ? AND deleted IS NULL")
                     .bind(*v)

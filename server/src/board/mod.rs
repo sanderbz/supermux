@@ -120,6 +120,19 @@ pub struct IssueView {
     pub comments: Vec<IssueComment>,
     pub acceptance: Vec<AcceptanceItem>,
     pub links: Vec<IssueLink>,
+    /// R1 session→board reaction flags (migration 0011). `needs_review` is set
+    /// when the owning agent went idle (turn finished); `awaiting_input` is set
+    /// when it is blocked waiting on the user. The board badges the card off
+    /// these; a human clears them.
+    pub needs_review: bool,
+    pub awaiting_input: bool,
+    /// R2 link liveness — computed at load time (NOT stored). `true` when this
+    /// issue's `session` points to a session row that still exists and is NOT
+    /// archived; `false` when the link is dangling (no session) or points at an
+    /// archived/deleted session. The card uses this to show "session archived —
+    /// reassign?" instead of a confidently-wrong live dot. An issue with no
+    /// `session` is reported `false` (there is no live link to show).
+    pub session_live: bool,
 }
 
 impl IssueView {
@@ -129,6 +142,7 @@ impl IssueView {
         comments: Vec<IssueComment>,
         acceptance: Vec<AcceptanceItem>,
         links: Vec<IssueLink>,
+        session_live: bool,
     ) -> Self {
         IssueView {
             id: issue.id,
@@ -148,7 +162,22 @@ impl IssueView {
             comments,
             acceptance,
             links,
+            needs_review: issue.needs_review != 0,
+            awaiting_input: issue.awaiting_input != 0,
+            session_live,
         }
+    }
+}
+
+/// R2 link liveness: is `session` a live (existing, non-archived) session? An
+/// unassigned issue (`None`) is never "live". Computed from the sessions table at
+/// load time — no schema impact (plan §C.3).
+async fn session_is_live(state: &AppState, session: Option<&str>) -> Result<bool, AppError> {
+    match session {
+        Some(name) if !name.is_empty() => {
+            Ok(db::sessions::exists_active(&state.pool, name).await?)
+        }
+        _ => Ok(false),
     }
 }
 
@@ -161,7 +190,8 @@ async fn view_of(state: &AppState, id: &str) -> Result<IssueView, AppError> {
     let comments = db::board::comments_for(&state.pool, id).await?;
     let acceptance = db::board::acceptance_for(&state.pool, id).await?;
     let links = db::board::links_for(&state.pool, id).await?;
-    Ok(IssueView::from(issue, tags, comments, acceptance, links))
+    let live = session_is_live(state, issue.session.as_deref()).await?;
+    Ok(IssueView::from(issue, tags, comments, acceptance, links, live))
 }
 
 /// Load the full board (used by `GET /api/board` and the SSE re-publish). The
@@ -175,6 +205,14 @@ async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>,
     let mut acceptance = db::board::acceptance_for_issues(&state.pool, &ids).await?;
     let mut links = db::board::links_for_issues(&state.pool, &ids).await?;
 
+    // R2 link liveness, batched: one list of the live (non-archived) sessions,
+    // then an O(1) set membership per card — no per-issue session probe.
+    let live_sessions: std::collections::HashSet<String> = db::sessions::list(&state.pool)
+        .await?
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+
     let mut out = Vec::with_capacity(issues.len());
     for issue in issues {
         // tags keep their per-issue query (existing behaviour, small + indexed).
@@ -182,14 +220,23 @@ async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>,
         let c = comments.remove(&issue.id).unwrap_or_default();
         let a = acceptance.remove(&issue.id).unwrap_or_default();
         let l = links.remove(&issue.id).unwrap_or_default();
-        out.push(IssueView::from(issue, tags, c, a, l));
+        let live = issue
+            .session
+            .as_deref()
+            .is_some_and(|s| live_sessions.contains(s));
+        out.push(IssueView::from(issue, tags, c, a, l, live));
     }
     Ok(out)
 }
 
 /// Re-publish the board over SSE after a mutation (§2.8). Best-effort: a send
 /// error just means no SSE subscribers are connected.
-async fn emit_board(state: &AppState) {
+///
+/// `pub(crate)` so the session lifecycle (R2) and the auto_actions reaction (R1)
+/// can re-publish the board when a session change makes an open board stale —
+/// e.g. archiving a session that owns a `doing` issue flips that card's
+/// `session_live` to false, and the board must reflect it without a manual refetch.
+pub(crate) async fn emit_board(state: &AppState) {
     if let Ok(board) = load_board(state, 0).await {
         let _ = state.sse_tx.send(SseEvent {
             event: "board".to_string(),
@@ -1100,6 +1147,92 @@ mod tests {
         assert_eq!(v.acceptance[0].body, "compiles");
         assert_eq!(v.links.len(), 1);
         assert_eq!(v.links[0].kind, "pr");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn session_live_reflects_archive_state() {
+        let (state, dir) = test_state().await;
+        // A live session + an issue linked to it.
+        db::sessions::insert_minimal(&state.pool, "worker-2", "/tmp", "claude")
+            .await
+            .unwrap();
+        db::board::insert_issue(
+            &state.pool,
+            &NewIssue {
+                id: "B-1".into(),
+                title: "linked".into(),
+                desc: String::new(),
+                status: "doing".into(),
+                session: Some("worker-2".into()),
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "agent".into(),
+                pos: 0.0,
+                notified: 0,
+            },
+        )
+        .await
+        .unwrap();
+        // An unlinked issue is never "live".
+        seed_issue(&state, "B-2").await;
+
+        // Live session → session_live true (both single + batch loaders agree).
+        assert!(view_of(&state, "B-1").await.unwrap().session_live);
+        let board = load_board(&state, 0).await.unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            board.iter().map(|v| (v.id.as_str(), v)).collect();
+        assert!(by_id["B-1"].session_live, "live link reads live in load_board");
+        assert!(!by_id["B-2"].session_live, "unassigned issue is never live");
+
+        // Archive the session → the link goes stale (session_live false).
+        db::sessions::set_archived(&state.pool, "worker-2", true)
+            .await
+            .unwrap();
+        assert!(
+            !view_of(&state, "B-1").await.unwrap().session_live,
+            "archived session → stale link"
+        );
+        let board = load_board(&state, 0).await.unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            board.iter().map(|v| (v.id.as_str(), v)).collect();
+        assert!(!by_id["B-1"].session_live, "load_board marks archived link stale");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn flags_surface_in_issueview() {
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "B-1").await;
+
+        // Default: both flags false.
+        let v = view_of(&state, "B-1").await.unwrap();
+        assert!(!v.needs_review);
+        assert!(!v.awaiting_input);
+
+        // After setting both flags they surface as booleans in the view + JSON.
+        db::board::patch_issue(
+            &state.pool,
+            "B-1",
+            &[
+                db::board::IssueField::NeedsReview(1),
+                db::board::IssueField::AwaitingInput(1),
+            ],
+        )
+        .await
+        .unwrap();
+        let v = view_of(&state, "B-1").await.unwrap();
+        assert!(v.needs_review);
+        assert!(v.awaiting_input);
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["needs_review"], serde_json::json!(true));
+        assert_eq!(json["awaiting_input"], serde_json::json!(true));
+        assert_eq!(json["session_live"], serde_json::json!(false));
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
