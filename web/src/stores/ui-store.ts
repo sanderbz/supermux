@@ -15,6 +15,7 @@ import { persist } from 'zustand/middleware'
 
 import {
   clampOverviewSize,
+  clampOverviewSizeMobile,
   MIN_OVERVIEW_SIZE,
   type OverviewSize,
 } from '@/lib/overview-size'
@@ -35,12 +36,22 @@ interface UIStore {
   hoverPreview: HoverPreview
   /** Overview density tier — 1 = smallest (default, matches polish-pass), 4 =
    *  spacious. Per-device, not per-account (phone vs desktop want different
-   *  defaults); see /lib/overview-size.ts. */
+   *  defaults); see /lib/overview-size.ts. This is the DESKTOP/tablet (≥md)
+   *  value; the coarse-pointer / phone value lives in `overviewSizeMobile` so
+   *  the two never clobber each other (a phone tweak must not shrink the
+   *  laptop's grid and vice-versa). */
   overviewSize: OverviewSize
+  /** Overview density tier for mobile (coarse pointer / <md). Independent from
+   *  `overviewSize` so phone and desktop sizes are saved separately. On mobile
+   *  the grid is single-column, so the tier only changes tile HEIGHT (never the
+   *  column count). Clamped to the mobile max tier (height-meaningful tiers
+   *  only — see MAX_OVERVIEW_SIZE_MOBILE). */
+  overviewSizeMobile: OverviewSize
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
   setOverviewSize: (s: OverviewSize) => void
+  setOverviewSizeMobile: (s: OverviewSize) => void
 }
 
 export const useUI = create<UIStore>()(
@@ -50,11 +61,14 @@ export const useUI = create<UIStore>()(
       defaultModel: '',
       hoverPreview: 'live',
       overviewSize: MIN_OVERVIEW_SIZE,
+      overviewSizeMobile: MIN_OVERVIEW_SIZE,
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),
       setOverviewSize: (overviewSize) =>
         set({ overviewSize: clampOverviewSize(overviewSize) }),
+      setOverviewSizeMobile: (overviewSizeMobile) =>
+        set({ overviewSizeMobile: clampOverviewSizeMobile(overviewSizeMobile) }),
     }),
     { name: 'supermux-ui' },
   ),

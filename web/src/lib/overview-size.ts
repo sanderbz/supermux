@@ -27,6 +27,14 @@ export const OVERVIEW_SIZES: OverviewSize[] = [1, 2, 3, 4]
 export const MIN_OVERVIEW_SIZE: OverviewSize = 1
 export const MAX_OVERVIEW_SIZE: OverviewSize = 4
 
+/** Mobile (coarse-pointer / <md) max tier. Mobile is a fixed single-column
+ *  grid, so the density control there adjusts tile HEIGHT only — and only
+ *  tiers 1→2 differ in height (`idleLines` 6 → 12). Tiers 3 & 4 hold tier-2's
+ *  height and merely drop columns, which is invisible at `grid-cols-1`. We cap
+ *  mobile at tier 2 so every step of the +/− visibly changes the tile and the
+ *  control never feels "stuck". */
+export const MAX_OVERVIEW_SIZE_MOBILE: OverviewSize = 2
+
 /** Per-tier geometry.
  *
  *  - `idleLines`     number of tail-preview lines reserved in the idle tile.
@@ -122,5 +130,16 @@ export function clampOverviewSize(n: number): OverviewSize {
   const r = Math.round(n)
   if (r <= MIN_OVERVIEW_SIZE) return MIN_OVERVIEW_SIZE
   if (r >= MAX_OVERVIEW_SIZE) return MAX_OVERVIEW_SIZE
+  return r as OverviewSize
+}
+
+/** Clamp to the valid MOBILE tier range — same floor as desktop, but capped at
+ *  `MAX_OVERVIEW_SIZE_MOBILE` so the height-only control on a single-column
+ *  grid never lands on a column-drop tier that has no visible effect. */
+export function clampOverviewSizeMobile(n: number): OverviewSize {
+  if (!Number.isFinite(n)) return MIN_OVERVIEW_SIZE
+  const r = Math.round(n)
+  if (r <= MIN_OVERVIEW_SIZE) return MIN_OVERVIEW_SIZE
+  if (r >= MAX_OVERVIEW_SIZE_MOBILE) return MAX_OVERVIEW_SIZE_MOBILE
   return r as OverviewSize
 }

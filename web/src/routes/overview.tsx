@@ -54,9 +54,11 @@ import { Button } from '@/components/ui/button'
 import {
   getOverviewSizeConfig,
   MAX_OVERVIEW_SIZE,
+  MAX_OVERVIEW_SIZE_MOBILE,
   MIN_OVERVIEW_SIZE,
   type OverviewSize,
 } from '@/lib/overview-size'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   newGroupId,
   reconcileCustomLayout,
@@ -68,8 +70,10 @@ import type { TileSession } from '@/components/session-tile'
 
 /** Per-tier grid class — the tile grid keeps `sm:grid-cols-2` (small phones)
  *  and `md:grid-cols-N` (tablet) constant across tiers, then forks at `lg:`
- *  per the density config. Mobile single-column never changes (the +/-
- *  controls are hidden there — see <OverviewSizeControl>). */
+ *  per the density config. The base `grid-cols-1` (true mobile, <sm) never
+ *  changes regardless of tier, which is exactly why the mobile density control
+ *  is HEIGHT-ONLY: stepping the tier moves `idleLines`/`idleBonusPx` (height)
+ *  but the column count is pinned at 1 below `sm`. See <OverviewSizeControl>. */
 function gridClassFor(tier: OverviewSize): string {
   const cfg = getOverviewSizeConfig(tier)
   // Tailwind needs concrete class names at build time; map per tier.
@@ -210,10 +214,24 @@ export function Overview() {
   const { layout, setMode, setLayout } = useOverviewLayout()
   const viewMode = useUI((s) => s.viewMode)
   const setViewMode = useUI((s) => s.setViewMode)
-  const overviewSize = useUI((s) => s.overviewSize)
-  const setOverviewSize = useUI((s) => s.setOverviewSize)
+  const overviewSizeDesktop = useUI((s) => s.overviewSize)
+  const setOverviewSizeDesktop = useUI((s) => s.setOverviewSize)
+  const overviewSizeMobile = useUI((s) => s.overviewSizeMobile)
+  const setOverviewSizeMobile = useUI((s) => s.setOverviewSizeMobile)
   const navigate = useNavigate()
   const reduce = useReducedMotion()
+
+  // Fork the density value/setter by viewport so phone and desktop sizes are
+  // saved independently. We track the `md` boundary (the same breakpoint where
+  // the grid starts forking column count) so the "mobile = single column =
+  // height-only" invariant lines up with the value source. Below `md` the grid
+  // is `grid-cols-1`, so the mobile tier can only ever change tile HEIGHT.
+  const isMobile = useMediaQuery('(max-width: 767px)')
+  const overviewSize = isMobile ? overviewSizeMobile : overviewSizeDesktop
+  const setOverviewSize = isMobile
+    ? setOverviewSizeMobile
+    : setOverviewSizeDesktop
+  const sizeMax = isMobile ? MAX_OVERVIEW_SIZE_MOBILE : MAX_OVERVIEW_SIZE
 
   const tileGridClass = React.useMemo(
     () => gridClassFor(overviewSize),
@@ -267,14 +285,14 @@ export function Overview() {
           setOverviewSize((overviewSize - 1) as OverviewSize)
         }
       } else {
-        if (overviewSize < MAX_OVERVIEW_SIZE) {
+        if (overviewSize < sizeMax) {
           setOverviewSize((overviewSize + 1) as OverviewSize)
         }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [overviewSize, setOverviewSize])
+  }, [overviewSize, setOverviewSize, sizeMax])
 
   // Filter once, then sort/group per mode. Search runs in every mode.
   const filtered = React.useMemo(
@@ -516,14 +534,18 @@ export function Overview() {
             change for non-engaged users (default = Smart = the existing sort). */}
         <SortControl value={layout.mode} onChange={setMode} />
 
-        {/* Density / size control — visible from md+ only (mobile overview is
-            single-column so size adjustment has no useful effect). Lives next
-            to the view toggle so all the overview chrome controls cluster on
-            the right per the polish-pass / Visual critic preference. */}
+        {/* Density / size control — surfaced at every breakpoint. On desktop it
+            steps the full 4-tier curve (height, then column drops); on mobile
+            (single-column grid) it only adjusts tile HEIGHT and is capped at the
+            mobile max tier, with the value saved under a separate store field so
+            phone and desktop sizes stay independent. Lives next to the view
+            toggle so all the overview chrome controls cluster on the right per
+            the polish-pass / Visual critic preference. */}
         {viewMode === 'tile' && (
           <OverviewSizeControl
             value={overviewSize}
             onChange={setOverviewSize}
+            max={sizeMax}
           />
         )}
 
@@ -787,7 +809,15 @@ export function Overview() {
  *  the tile has clickable inner surfaces (peek, archive). Instead, a tiny
  *  drag handle is overlaid in the top-right corner; it has the listeners.
  *  This is a deliberate UX choice: the user must aim for the handle, so a
- *  stray click on the card body navigates to focus mode as it does today. */
+ *  stray click on the card body navigates to focus mode as it does today.
+ *
+ *  Touch: there is no hover on a coarse pointer, so the hover-revealed handle
+ *  would be invisible — making grouping/reorder undiscoverable on mobile. We
+ *  detect `(pointer: coarse)` and render the handle persistently (a visible
+ *  grip) so it's a real, aimable grab target. The TouchSensor's 200ms
+ *  long-press + 5px tolerance (see route sensors) means a tap or a vertical
+ *  scroll still never starts a drag; only a deliberate press-and-hold on the
+ *  grip does, so showing the handle does NOT hijack scroll. */
 function SortableTile({
   id,
   session,
@@ -801,6 +831,7 @@ function SortableTile({
   reduce: boolean
   tour: boolean
 }) {
+  const coarse = useMediaQuery('(pointer: coarse)')
   const {
     attributes,
     listeners,
@@ -821,32 +852,42 @@ function SortableTile({
     <div
       ref={setNodeRef}
       style={style}
-      className="relative"
+      // `group/tile` so the handle's `group-hover/tile:opacity-100` reveal fires
+      // from THIS wrapper on mouse hover (SessionTile's own root doesn't expose
+      // the named group, so anchoring it here is what makes hover-reveal work).
+      className="group/tile relative"
       data-tour={tour ? 'tile' : undefined}
     >
       <SessionTile session={session} sizeTier={sizeTier} />
-      {/* Drag handle — tiny, top-right, only visible on hover/focus. Touch
-          users get a long-press-to-drag affordance via the TouchSensor's
-          activationConstraint, so the handle's visibility doesn't matter on
-          mobile (the whole-card press starts the drag there). */}
+      {/* Drag handle — top-right grab target. On a fine pointer it reveals on
+          hover/focus; on a coarse pointer (touch) it's persistently visible so
+          drag-to-group is discoverable. Either way the drag itself is gated by
+          the TouchSensor's 200ms long-press, so a tap/scroll never drags. */}
       <button
         type="button"
         aria-label={`Drag ${session.name}`}
         title="Drag to reorder"
         {...attributes}
         {...listeners}
-        // h-9 + w-9 (36px) inner; the parent has hover-only opacity so it
-        // doesn't shout in idle state. The hit target is comfortably HIG.
-        className="absolute right-1 top-1 z-20 flex size-9 items-center justify-center rounded-md bg-card/80 text-muted-foreground/60 opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none"
+        // size-11 (44px) on coarse pointers so the grab target meets the HIG
+        // touch minimum; size-9 (36px) for mouse where it's an aim-assisted
+        // hover affordance. Hover-only opacity on fine pointers keeps it quiet
+        // in idle; on coarse pointers it's persistently visible (no hover) so
+        // dragging-to-group is discoverable on mobile.
+        className={`absolute right-1 top-1 z-20 flex items-center justify-center rounded-md bg-card/80 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none [@media(pointer:coarse)]:opacity-100 ${
+          coarse
+            ? 'size-11 text-muted-foreground/80'
+            : 'size-9 text-muted-foreground/60 opacity-0'
+        }`}
         // Stop the tile's onClick (peek/focus) from firing when the user
         // grabs the handle.
         onClick={(e) => e.stopPropagation()}
         // Hint to assistive tech.
         data-dnd-handle
-        // Show the handle on tile hover via the tile's `group/tile` parent —
-        // SessionTile already declares the parent class. (If a future
-        // refactor drops the `group/tile`, the handle just stays hover-shown
-        // via :hover on the absolute parent below.)
+        // Force-visible for reduce-motion users (the transition that would
+        // reveal it on hover is suppressed). Coarse pointers are handled by the
+        // class above (and `coarse` removes the `opacity-0` base), so no inline
+        // override is needed there.
         style={{ opacity: reduce ? 1 : undefined }}
       >
         {/* Tiny chevron / grip glyph; sized to read at the corner without
@@ -866,12 +907,6 @@ function SortableTile({
           <circle cx="6" cy="12" r="0.75" fill="currentColor" />
           <circle cx="10" cy="12" r="0.75" fill="currentColor" />
         </svg>
-        {/* Force visibility (debug ergonomics): the parent's hover doesn't
-            propagate through SessionTile's own DOM, so make the handle's
-            opacity defaultably visible at the corner. This is a tradeoff
-            against the "fully ignorable in idle" rule, but the alternative
-            (invisible until hover) makes mouse-only users miss the handle.
-            We've chosen visible-at-low-opacity as the middle ground. */}
       </button>
     </div>
   )
@@ -1114,10 +1149,12 @@ function useDevMockSeed() {
 /** Overview density / size control (feat-overview-sizes).
  *
  *  A compact pair of icon buttons (− and +) sitting in the overview chrome,
- *  next to the view-mode toggle. Steps the tile grid through 4 density tiers.
- *  Hidden on mobile (<md) — single-column overview gets no benefit from the
- *  toggle there. On tablet (md..lg) the control is visible but the underlying
- *  config only really matters at lg+ since md grid-cols cap at 3 across tiers.
+ *  next to the view-mode toggle. Steps the tile grid through the density tiers.
+ *  Visible at every breakpoint: on desktop/tablet it walks the full 4-tier curve
+ *  (height, then column drops); on mobile the single-column grid means it only
+ *  changes tile HEIGHT, and the caller passes a lower `max` (the mobile cap) so
+ *  the + button disables once every height-meaningful tier is exhausted instead
+ *  of stepping onto invisible column-drop tiers.
  *
  *  Visual + Principle notes:
  *  - Matches the segmented-pill geometry of <ViewToggle> (h-9, rounded-lg,
@@ -1139,13 +1176,17 @@ function useDevMockSeed() {
 function OverviewSizeControl({
   value,
   onChange,
+  max = MAX_OVERVIEW_SIZE,
 }: {
   value: OverviewSize
   onChange: (s: OverviewSize) => void
+  /** Upper tier bound — desktop passes MAX_OVERVIEW_SIZE, mobile passes the
+   *  mobile cap so the control never steps onto a tier with no visible effect. */
+  max?: OverviewSize
 }) {
   const cfg = getOverviewSizeConfig(value)
   const atMin = value <= MIN_OVERVIEW_SIZE
-  const atMax = value >= MAX_OVERVIEW_SIZE
+  const atMax = value >= max
   const dec = () => {
     if (!atMin) onChange((value - 1) as OverviewSize)
   }
@@ -1156,8 +1197,10 @@ function OverviewSizeControl({
     <div
       role="group"
       aria-label="Overview density"
-      // hidden md:flex → hides on phones (<768px), per spec.
-      className="hidden h-9 items-center gap-1 rounded-lg bg-muted p-1 md:flex"
+      // Visible at every breakpoint — `flex` (was `hidden md:flex`). On mobile
+      // the single-column grid means this only changes tile height; the caller
+      // caps `max` so the + button disables at the last height-meaningful tier.
+      className="flex h-9 items-center gap-1 rounded-lg bg-muted p-1"
     >
       <button
         type="button"
