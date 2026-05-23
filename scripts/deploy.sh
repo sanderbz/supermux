@@ -25,6 +25,7 @@
 # Env:  SUPERMUX_DEPLOY_HOST       ssh target              (REQUIRED, no default)
 #       SUPERMUX_SERVICE_USER      service account on host (default: supermux)
 #       SUPERMUX_ALLOW_ROOT        opt in to User=root + relaxed hardening (default: 0)
+#       SUPERMUX_USER_HOME         service user's login home (default: derived from user)
 #       SUPERMUX_DATA_DIR          data dir on host        (default: derived from user)
 #       SUPERMUX_READ_WRITE_PATHS  extra writable dirs     (default: derived from user)
 #       SUPERMUX_INTERNAL_PORT     loopback bind port      (default: 8824)
@@ -70,11 +71,44 @@ if [ "$SERVICE_USER" = "root" ] && [ "$ALLOW_ROOT" != "1" ]; then
   exit 1
 fi
 
-# DATA_DIR default depends on whether the service user is root.
+# ── derive the service user's login HOME (separate from the data dir) ───────
+# The systemd unit's WorkingDirectory + $HOME point at USER_HOME (the actual
+# login home), not the supermux data dir. This keeps spawned shells/agents
+# (claude, codex, tmux children) writing their dotfiles (.bash_history,
+# .claude/, .claude.json, .cache/, .local/, …) into the conventional place
+# instead of polluting $SUPERMUX_DATA_DIR.
+#
+# Resolution order:
+#   1. SUPERMUX_USER_HOME if set (operator override for non-standard layouts).
+#   2. /root if the service user is root.
+#   3. The home field from `getent passwd` on the LOCAL deploy host if the
+#      account happens to exist here too (common dev setup: same username on
+#      laptop and server). This is a local-only convenience; the host's own
+#      passwd database is what actually matters at runtime, but the systemd
+#      unit just embeds an absolute path so a local lookup is fine for the
+#      vast majority of standard Linux layouts.
+#   4. /home/<user> as the Linux-convention fallback. Warn so the operator
+#      knows we guessed (the account may not even exist on the host yet).
+if [ -n "${SUPERMUX_USER_HOME:-}" ]; then
+  USER_HOME="$SUPERMUX_USER_HOME"
+elif [ "$SERVICE_USER" = "root" ]; then
+  USER_HOME="/root"
+elif command -v getent >/dev/null 2>&1 && getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
+  USER_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+else
+  USER_HOME="/home/$SERVICE_USER"
+  echo "[deploy] warn: could not resolve home for '$SERVICE_USER' locally;" >&2
+  echo "[deploy]       defaulting to $USER_HOME (override via SUPERMUX_USER_HOME)." >&2
+fi
+
+# DATA_DIR default depends on whether the service user is root. This is
+# DELIBERATELY a sibling of USER_HOME — not equal to it — so the data dir is
+# its own scoped tree (easy to back up, easy to wipe without nuking the
+# user's shell history or agent caches).
 if [ "$SERVICE_USER" = "root" ]; then
   DATA_DIR="${SUPERMUX_DATA_DIR:-/root/.supermux}"
 else
-  DATA_DIR="${SUPERMUX_DATA_DIR:-/home/$SERVICE_USER/.supermux}"
+  DATA_DIR="${SUPERMUX_DATA_DIR:-$USER_HOME/.supermux}"
 fi
 
 # Hardening knobs rendered into the template. Defaults match the unprivileged
@@ -114,6 +148,7 @@ GIT_SHA_SHORT="$(git rev-parse --short "$DEPLOY_REF")"
 
 echo "[deploy] target=$HOST  user=$SERVICE_USER  internal=loopback:$INTERNAL_PORT"
 echo "[deploy] deploying commit $GIT_SHA_SHORT ($GIT_SHA)"
+echo "[deploy] paths:     user_home=$USER_HOME  data_dir=$DATA_DIR (separate)"
 echo "[deploy] hardening: ProtectHome=$PROTECT_HOME  ReadWritePaths=$READ_WRITE_PATHS"
 
 # ── 0b. host preflight: bun + cargo must be provisioned before we ship ──────
@@ -159,13 +194,14 @@ REMOTE_BUILD
 
 # ── 3. render the systemd unit template from env ────────────────────────────
 # The committed unit (etc/systemd/supermux.service) is a template with
-# __SERVICE_USER__ / __DATA_DIR__ / __PROTECT_HOME__ / __READ_WRITE_PATHS__
-# placeholders; fill them in here and, when Tailscale is enabled, uncomment
-# the optional After/Wants=tailscaled lines.
-echo "[deploy] rendering systemd unit (user=$SERVICE_USER data_dir=$DATA_DIR)"
+# __SERVICE_USER__ / __USER_HOME__ / __DATA_DIR__ / __PROTECT_HOME__ /
+# __READ_WRITE_PATHS__ placeholders; fill them in here and, when Tailscale is
+# enabled, uncomment the optional After/Wants=tailscaled lines.
+echo "[deploy] rendering systemd unit (user=$SERVICE_USER home=$USER_HOME data_dir=$DATA_DIR)"
 UNIT_TMP="$(mktemp)"
 trap 'rm -f "$UNIT_TMP"' EXIT
 sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
+    -e "s|__USER_HOME__|$USER_HOME|g" \
     -e "s|__DATA_DIR__|$DATA_DIR|g" \
     -e "s|__PROTECT_HOME__|$PROTECT_HOME|g" \
     -e "s|__READ_WRITE_PATHS__|$READ_WRITE_PATHS|g" \

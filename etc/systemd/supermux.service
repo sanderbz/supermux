@@ -1,9 +1,23 @@
 # supermux systemd unit — TEMPLATE.
 #
 # This is a template, not a ready-to-install unit. `scripts/deploy.sh`
-# substitutes the placeholders (__SERVICE_USER__, __DATA_DIR__,
-# __PROTECT_HOME__, __READ_WRITE_PATHS__) from your environment (or .env)
-# and installs the result to /etc/systemd/system/supermux.service on the host.
+# substitutes the placeholders (__SERVICE_USER__, __USER_HOME__, __DATA_DIR__,
+# __PROTECT_HOME__, __READ_WRITE_PATHS__) from your environment (or .env) and
+# installs the result to /etc/systemd/system/supermux.service on the host.
+#
+# HOME vs DATA_DIR — DELIBERATELY SEPARATE.
+#   __USER_HOME__  is the service user's actual login home (/home/<user> or
+#                  /root). The unit's WorkingDirectory and $HOME both point
+#                  here so spawned shells/agents (claude, codex, tmux children)
+#                  resolve their dotfiles (.bash_history, .claude/,
+#                  .claude.json, .cache/, .local/, …) in the conventional
+#                  place — NOT inside the supermux data dir.
+#   __DATA_DIR__   is supermux's own data dir (SQLite, auth token, config.toml,
+#                  uploads). The server reads SUPERMUX_DATA_DIR from the
+#                  environment; it does not — and should not — share storage
+#                  with the user's shell dotfiles. Keeping the two separate
+#                  also means a `rm -rf $SUPERMUX_DATA_DIR` does not nuke the
+#                  user's shell history or agent caches.
 #
 # SECURITY: by default the service is NOT run as root. supermux-server exposes
 # a full filesystem read/write API (GET /api/ls, GET/PUT /api/file,
@@ -39,8 +53,14 @@ Type=simple
 # Run as the unprivileged deployment account. This account owns the data dir
 # and the tmux server it drives — no root privilege required.
 User=__SERVICE_USER__
-WorkingDirectory=__DATA_DIR__
-Environment=HOME=__DATA_DIR__
+# WorkingDirectory + HOME point at the SERVICE USER's actual login home (NOT
+# the supermux data dir). This keeps spawned shells/agents (claude, codex,
+# tmux children) writing their dotfiles (.bash_history, .claude/,
+# .claude.json, .cache/, .local/, …) into the conventional place instead of
+# polluting the data dir. SUPERMUX_DATA_DIR below is what supermux-server
+# actually reads for its own storage.
+WorkingDirectory=__USER_HOME__
+Environment=HOME=__USER_HOME__
 Environment=SUPERMUX_DATA_DIR=__DATA_DIR__
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/supermux-server

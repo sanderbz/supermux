@@ -84,10 +84,22 @@ default `8824`) and speaks plain HTTP. Put it behind TLS one of two ways:
    to the loopback port.
 
 The committed systemd unit at [`etc/systemd/supermux.service`](etc/systemd/supermux.service)
-is a **template** — `deploy.sh` substitutes the service user, data directory,
-and the hardening knobs (`ProtectHome`, `ReadWritePaths`) from your environment
-at install time. By default it keeps the service unprivileged and applies a
-full set of systemd sandboxing directives.
+is a **template** — `deploy.sh` substitutes the service user, the user's login
+home, the data directory, and the hardening knobs (`ProtectHome`,
+`ReadWritePaths`) from your environment at install time. By default it keeps
+the service unprivileged and applies a full set of systemd sandboxing
+directives.
+
+**HOME and DATA_DIR are deliberately separate.** The unit's `WorkingDirectory`
+and `$HOME` point at the service user's actual login home
+(`SUPERMUX_USER_HOME`, derived from the account or `/root`), while
+`SUPERMUX_DATA_DIR` (e.g. `~/.supermux`) lives as a scoped sibling of it. This
+way the dotfiles that spawned shells and agents (claude, codex, tmux children)
+write — `.bash_history`, `.claude/`, `.claude.json`, `.cache/`, `.local/`, … —
+land in the conventional place under `$HOME` and do **not** pollute the data
+dir. The data dir stays scoped to supermux's own state (SQLite DB, auth
+token, `config.toml`, uploads), so backing it up or wiping it never touches
+the user's shell history or agent caches.
 
 - **Default (unprivileged user).** `SUPERMUX_SERVICE_USER` defaults to
   `supermux`; the unit renders with `ProtectHome=true` and `ReadWritePaths=`
