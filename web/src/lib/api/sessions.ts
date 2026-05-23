@@ -217,6 +217,20 @@ export interface ApiSession {
   archived?: boolean
 }
 
+/** A past Claude conversation for a session's working dir (feat-resume-picker).
+ *  Surfaced by `GET /api/sessions/{name}/resumable`; picking one resumes it via
+ *  `claude --resume <id>`. */
+export interface ResumableConversation {
+  /** Conversation UUID — the `claude --resume <id>` argument. */
+  id: string
+  /** Human title: latest `aiTitle`, else first user message, else a fallback. */
+  summary: string
+  /** RFC3339 last-activity timestamp (the transcript file's mtime). */
+  updated_at: string
+  /** Count of user + assistant messages (non-sidechain). */
+  message_count: number
+}
+
 /** Body for `POST /api/sessions` (§5.1). `command` carries the initial prompt
  *  the Quick-start presets prefill; `worktree` requests an isolated git worktree. */
 export interface NewSession {
@@ -331,6 +345,33 @@ export const sessionsApi = {
   unarchive: (name: string): Promise<void> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}/unarchive`, {
       method: 'POST',
+    }),
+
+  /** `GET /api/sessions/{name}/resumable` — past Claude conversations for the
+   *  session's working dir, newest-first (feat-resume-picker). Empty array when
+   *  the dir has no conversations → the UI hides Resume. */
+  resumable: async (name: string): Promise<ResumableConversation[]> => {
+    const body = await sessReq<unknown>(
+      `/api/sessions/${encodeURIComponent(name)}/resumable`,
+    )
+    const arr = Array.isArray(body)
+      ? body
+      : ((body as { data?: unknown })?.data ?? [])
+    return Array.isArray(arr)
+      ? arr.filter(
+          (c): c is ResumableConversation =>
+            !!c && typeof (c as { id?: unknown }).id === 'string',
+        )
+      : []
+  },
+
+  /** `POST /api/sessions/{name}/resume {id}` — start the session resuming the
+   *  chosen Claude conversation (`claude --resume <id>`). The SSE `status` delta
+   *  flips the tile to running, same as a fresh start. */
+  resume: (name: string, id: string): Promise<unknown> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/resume`, {
+      method: 'POST',
+      body: JSON.stringify({ id }),
     }),
 
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
