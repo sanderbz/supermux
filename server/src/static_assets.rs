@@ -202,9 +202,13 @@ fn json_string(s: &str) -> String {
 }
 
 /// Cache policy: content-hashed asset filenames (Vite emits `name-<hash>.ext`)
-/// are immutable, everything else short-lived.
+/// are immutable. The embedded terminal fonts (`/fonts/*.woff2`) are not
+/// hashed but rotate only with a server release, so they're safe to mark
+/// immutable too — keeps the SW happy and skips revalidation roundtrips on
+/// every navigation. Everything else stays short-lived (the HTML doc needs
+/// short TTL — auth token rotation, see vite.config.ts PWA notes).
 fn cache_control(path: &str) -> &'static str {
-    if path.starts_with("assets/") {
+    if path.starts_with("assets/") || path.starts_with("fonts/") {
         "public, max-age=31536000, immutable"
     } else {
         "public, max-age=3600"

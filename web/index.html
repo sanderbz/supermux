@@ -23,6 +23,17 @@
       content="black-translucent"
     />
     <meta name="apple-mobile-web-app-title" content="supermux" />
+    <!-- Embedded terminal font (Powerline + Nerd Font glyphs). Preload the
+         Regular face so xterm's font-ready refit fires as soon as possible —
+         no flash of fallback (Menlo) glyphs misaligning the grid. Bold is
+         loaded lazily by @font-face when the shell first writes bold text. -->
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/JetBrainsMonoNerdFontMono-Regular.woff2"
+      crossorigin="anonymous"
+    />
     <title>supermux</title>
   </head>
   <body>

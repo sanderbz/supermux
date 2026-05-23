@@ -17,6 +17,31 @@
 /* `dark:` variant keys off a `.dark` class on an ancestor (set on <html>). */
 @custom-variant dark (&:is(.dark *));
 
+/* ── Embedded terminal font (Nerd Font) ───────────────────────────────────────
+   xterm.js renders glyphs using whatever fontFamily we configure — if the
+   user's system font lacks Powerline / Nerd Font icons (most modern shell
+   prompts and Claude Code itself emit these), they show as missing-glyph
+   squares. To guarantee correct rendering on every device we self-host
+   JetBrainsMono Nerd Font Mono (OFL, MIT patches — see /fonts/NOTICE.md).
+   The "Mono" variant is single-cell-wide, which is required for xterm's
+   character grid to stay aligned. font-display: swap keeps the first paint
+   instant — the system monospace fallback (Menlo / SF Mono) renders until
+   the woff2 is decoded, then xterm refits transparently. */
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
+}
+
 /* ── Light theme (iOS light system colors) ───────────────────────────────── */
 :root {
   --radius: 0.75rem; /* 12px — matches the session-tile rounded-xl spec (§4.3) */
@@ -148,11 +173,17 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* SF Pro / SF Mono with system fallbacks (iOS-native typography, §spec) */
+  /* SF Pro / SF Mono with system fallbacks (iOS-native typography, §spec).
+     --font-mono leads with the embedded Nerd Font (Powerline + icon coverage
+     — see the @font-face block above and /fonts/NOTICE.md) so the live
+     terminal AND the static tile ANSI preview render shell-prompt glyphs as
+     real icons instead of missing-glyph squares. SF Mono / Menlo remain as
+     the first-paint and worst-case fallback chain. */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro",
     "Segoe UI", Roboto, Helvetica, Arial, system-ui, sans-serif;
-  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, "JetBrains Mono",
-    Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --font-mono: "JetBrainsMono Nerd Font Mono", "SF Mono", ui-monospace,
+    SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
 }
 
 /* ── Safe-area utilities (PWA / Capacitor, §4.8 — no extra plugin needed) ──── */
