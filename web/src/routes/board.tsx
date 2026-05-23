@@ -12,8 +12,8 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useBoard, sortIssues } from '@/hooks/use-board'
-import { useSendToAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
-import { BoardError, type BoardIssue } from '@/lib/api'
+import { useStartAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
+import { type BoardIssue } from '@/lib/api'
 import { IssueCard } from '@/components/board/issue-card'
 import { NewIssueDialog } from '@/components/board/new-issue-dialog'
 import { IssueDetailSheet } from '@/components/board/issue-detail-sheet'
@@ -42,7 +42,7 @@ interface Toast {
 export function Board() {
   const board = useBoard()
   const reduce = useReducedMotion()
-  const { sendToAgent } = useSendToAgent()
+  const { startAgent } = useStartAgent()
 
   // Track the OPEN issue by id (not a snapshot) so the detail sheet re-derives
   // from the live `board.issues` cache — comments / acceptance ticks / links
@@ -157,36 +157,42 @@ export function Board() {
         clampedIndex,
       )
 
-      // DRAG-TO-DOING → SEND TO AGENT: an agent-owned card moved out of
-      // todo/backlog INTO `doing` goes through the ATOMIC claim endpoint
-      // (§3.2.10) with `deliver: true`, so the issue context is auto-sent into
-      // the linked session via the steering deliver-loop (C.1) — not just a
-      // status flip. Two agents can't both grab the same task (the CAS), and the
-      // agent actually receives the work. A "Sent to <session>" toast offers an
-      // Undo that retracts the still-undelivered steer (`boardApi.unsend`).
-      const wasClaimable =
-        issue.owner_type === 'agent' &&
-        (issue.status === 'todo' || issue.status === 'backlog')
-      if (wasClaimable && toStatus === 'doing') {
+      // DRAG-TO-DOING → START AGENT: a card dragged out of `todo`/`backlog` INTO
+      // `doing` runs the unified Start flow (BR1) rather than a bare status flip —
+      // start makes the issue agent-owned, atomic-claims it (so two agents can't
+      // both grab the same task), and auto-delivers the issue context into the
+      // linked session via the steering deliver-loop. State drives the action, not
+      // `owner_type`, so the affordance never needs the internal "claim" verb.
+      //   • Live linked session → start + deliver. The card slides to `doing`
+      //     optimistically; a "Sent to <session>" toast offers an Undo that
+      //     retracts the still-undelivered steer (via the shared toast system).
+      //   • NO linked session → DON'T error. Open the detail sheet so BR3's
+      //     attach-or-spawn start picker handles it (pick a running agent, or
+      //     spawn a new one in a chosen project). Drop the old "assign a session"
+      //     dead-end entirely.
+      const startable = issue.status === 'todo' || issue.status === 'backlog'
+      if (startable && toStatus === 'doing') {
         const session = issue.session
-        if (!session) {
-          // No linked session → keep it light: a status flip, with a nudge to
-          // assign a session (the detail sheet / ⌘K "send issue" path picks one).
-          pushToast('Assign a session before sending this task.', 'info')
+        if (!session || !issue.session_live) {
+          // No confidently-live session to deliver into → hand off to the sheet's
+          // attach-or-spawn picker instead of a status-flip-with-a-nudge.
+          setDetailId(issue.id)
           return
         }
-        // The shared send-to-agent flow (claim→toast→Undo). Drives the claim
-        // through the board's OPTIMISTIC mutation so the card slides to `doing`
-        // and rolls back on a lost race; errors route through the route's own
-        // toaster (`pushToast`) for parity with the other drag failures.
-        await sendToAgent({
+        // The shared start-agent flow (start → toast → Undo). Drives start through
+        // the board's OPTIMISTIC mutation so the card slides to `doing` and rolls
+        // back on a lost race; the success toast + Undo come from the shared toast
+        // system, while errors route through the route's own toaster for parity
+        // with the other drag failures (plain language, never "claim").
+        await startAgent({
           id: issue.id,
           session,
-          claim: (a) => board.claimIssue(a),
-          // Match the drag toast's prior styling: default tone + default duration.
-          sentTone: 'default',
+          start: (a) => board.startIssue(a),
+          sentMessage: () => `Sent to ${session}`,
+          sentDuration: 6000,
+          assignedMessage: () => `Agent started on ${session}`,
           onUndoError: () =>
-            pushToast('Could not undo — the agent already started.'),
+            pushToast('Already picked up — can’t undo.', 'info'),
           onError: (e) => pushToast(claimErrorMessage(e)),
         })
         return
@@ -198,7 +204,7 @@ export function Board() {
         pushToast(e instanceof Error ? e.message : 'Could not move the card.')
       }
     },
-    [board, issuesByStatus, pushToast, sendToAgent],
+    [board, issuesByStatus, pushToast, startAgent],
   )
 
   // Global pointer move/up while a drag is in flight or pending.
@@ -375,7 +381,9 @@ export function Board() {
         )}
       </AnimatePresence>
 
-      {/* Toasts (atomic-claim 409 surfaces here, visibly). */}
+      {/* Toasts — a lost-race 409 from drag-to-start surfaces here, in plain
+          language (the success "Sent to …" toast + Undo come from the shared
+          toast system inside useStartAgent). */}
       <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[70] flex flex-col items-center gap-2 px-4">
         <AnimatePresence>
           {toasts.map((t) => (
@@ -410,6 +418,10 @@ export function Board() {
         }}
       />
 
+      {/* BR3's sheet drives Start internally (attach-or-spawn via useStartAgent /
+          board.startIssue) and owns its own success toast + Undo + in-place 409,
+          so the route no longer passes an `onClaim` — it only feeds the live
+          issue + the patch/delete/status wiring. */}
       <IssueDetailSheet
         issue={detailIssue}
         statuses={board.statuses}
@@ -419,20 +431,6 @@ export function Board() {
         }}
         onDelete={async (id) => {
           await board.deleteIssue(id)
-        }}
-        onClaim={async (id, session, deliver) => {
-          // The sheet owns the success toast + Undo (it needs the steer_id from
-          // the ClaimResult). The route still surfaces a 409 as a toast for
-          // parity with drag-to-claim, then re-throws so the sheet shows it
-          // in-place too.
-          try {
-            return await board.claimIssue({ id, session, deliver })
-          } catch (e) {
-            if (e instanceof BoardError && e.status === 409) {
-              pushToast(e.message || 'Claim lost — another session took it.')
-            }
-            throw e
-          }
         }}
       />
 

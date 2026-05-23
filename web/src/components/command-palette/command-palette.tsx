@@ -34,6 +34,7 @@ import {
   ChevronLeft,
   Command as CommandIcon,
   MessageSquare,
+  Play,
   Send,
   TerminalSquare,
   User,
@@ -48,7 +49,7 @@ import {
 import { useSessions } from '@/hooks/use-sessions'
 import { useSlashCommands } from '@/hooks/use-commands'
 import { useBoard } from '@/hooks/use-board'
-import { useSendToAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
+import { useStartAgent, useSendToAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
 import { useToast } from '@/components/ui/use-toast'
 import { settingsRequest } from '@/lib/api/client'
 import { boardApi, type ApiSession, type BoardIssue, type SlashCommand } from '@/lib/api'
@@ -100,6 +101,8 @@ type PaletteMode =
   | { step: 'root' }
   | { step: 'send-pick-issue' }
   | { step: 'send-pick-session'; issue: BoardIssue }
+  | { step: 'start-pick-issue' }
+  | { step: 'start-pick-session'; issue: BoardIssue }
   | { step: 'comment-pick-issue' }
   | { step: 'comment-type'; issue: BoardIssue }
   | { step: 'done-pick-issue' }
@@ -181,6 +184,7 @@ export function CommandPalette() {
   const board = useBoard()
   const { toast } = useToast()
   const { sendToAgent } = useSendToAgent()
+  const { startAgent } = useStartAgent()
 
   // Board verbs only surface on the board route (so they don't clutter the
   // palette elsewhere). `useLocation` keeps it reactive to client-side nav.
@@ -254,6 +258,14 @@ export function CommandPalette() {
       ...base,
       {
         kind: 'action',
+        id: 'action:board-start',
+        label: 'Start agent on issue…',
+        keywords: 'board issue start agent run begin work attach spawn session',
+        icon: Play,
+        run: () => enterMode({ step: 'start-pick-issue' }),
+      },
+      {
+        kind: 'action',
         id: 'action:board-send',
         label: 'Send issue to session…',
         keywords: 'board issue send deliver agent claim dispatch session',
@@ -290,6 +302,16 @@ export function CommandPalette() {
     () => board.issues.filter((i) => i.status !== 'done'),
     [board.issues],
   )
+  // "Start agent" targets the entry columns (`todo`/`backlog`) — the only place
+  // an agent gets started. Owner is NOT a precondition (starting MAKES the issue
+  // agent-owned), so this offers every startable card, human- or agent-owned.
+  const startableIssues = React.useMemo(
+    () =>
+      board.issues.filter(
+        (i) => i.status === 'todo' || i.status === 'backlog',
+      ),
+    [board.issues],
+  )
 
   // Build the flat row list. In a board sub-flow the list is the step's pick
   // targets (issues / sessions); otherwise it's the normal palette — sessions
@@ -302,12 +324,17 @@ export function CommandPalette() {
         .filter((i) => matchesIssue(i, query))
         .map<IssueRow>((i) => ({ kind: 'issue', id: `issue:${i.id}`, issue: i }))
     }
+    if (mode.step === 'start-pick-issue') {
+      return startableIssues
+        .filter((i) => matchesIssue(i, query))
+        .map<IssueRow>((i) => ({ kind: 'issue', id: `issue:${i.id}`, issue: i }))
+    }
     if (mode.step === 'done-pick-issue') {
       return openIssues
         .filter((i) => matchesIssue(i, query))
         .map<IssueRow>((i) => ({ kind: 'issue', id: `issue:${i.id}`, issue: i }))
     }
-    if (mode.step === 'send-pick-session') {
+    if (mode.step === 'send-pick-session' || mode.step === 'start-pick-session') {
       return sessions
         .filter((s) => matchesSession(s, query))
         .map<SessionRow>((s) => ({
@@ -340,7 +367,16 @@ export function CommandPalette() {
       .filter((c) => matchesCommand(c, cmdQ))
       .map<CommandRow>((c) => ({ kind: 'command', id: `command:${c.cmd}`, cmd: c }))
     return [...sessionRows, ...actionRows, ...commandRows]
-  }, [mode, sessions, actions, commands, query, sendableIssues, openIssues])
+  }, [
+    mode,
+    sessions,
+    actions,
+    commands,
+    query,
+    sendableIssues,
+    openIssues,
+    startableIssues,
+  ])
 
   // Clamp the highlight whenever the row list shrinks (so a narrowing filter
   // never leaves the active index past the end).
@@ -365,6 +401,29 @@ export function CommandPalette() {
       })
     },
     [board, setOpen, sendToAgent, toast],
+  )
+
+  // ── Start agent on an issue (the unified BR1 flow) ─────────────────────────
+  // Calm + state-aware: when the issue already has a live linked session, one
+  // pick starts + delivers right away (toast + Undo, shared toast system). With
+  // no live session, advance to a pick-a-running-agent step so the start can
+  // attach to one — never the internal "claim" verb, never a dead-end. (Spawning
+  // a brand-new agent in a project lives in the board's detail-sheet picker,
+  // which has the dir/provider/worktree inputs ⌘K shouldn't reproduce.)
+  const startAgentOnIssue = React.useCallback(
+    async (issue: BoardIssue, session: string) => {
+      setOpen(false)
+      await startAgent({
+        id: issue.id,
+        session,
+        start: (a) => board.startIssue(a),
+        sentMessage: () => `Sent to ${session}`,
+        sentDuration: 6000,
+        assignedMessage: () => `Agent started on ${session}`,
+        onError: (e) => toast({ message: claimErrorMessage(e), tone: 'error' }),
+      })
+    },
+    [board, setOpen, startAgent, toast],
   )
 
   const markIssueDone = React.useCallback(
@@ -413,6 +472,14 @@ export function CommandPalette() {
       if (row.kind === 'issue') {
         if (mode.step === 'send-pick-issue') {
           enterMode({ step: 'send-pick-session', issue: row.issue })
+        } else if (mode.step === 'start-pick-issue') {
+          // Confidently-live linked session → start + deliver in one pick;
+          // otherwise advance to "pick a running agent" to attach to.
+          if (row.issue.session && row.issue.session_live) {
+            void startAgentOnIssue(row.issue, row.issue.session)
+          } else {
+            enterMode({ step: 'start-pick-session', issue: row.issue })
+          }
         } else if (mode.step === 'comment-pick-issue') {
           enterMode({ step: 'comment-type', issue: row.issue })
         } else if (mode.step === 'done-pick-issue') {
@@ -422,6 +489,10 @@ export function CommandPalette() {
       }
       if (row.kind === 'session' && mode.step === 'send-pick-session') {
         void sendIssueToSession(mode.issue, row.name)
+        return
+      }
+      if (row.kind === 'session' && mode.step === 'start-pick-session') {
+        void startAgentOnIssue(mode.issue, row.name)
         return
       }
       if (row.kind === 'session') {
@@ -468,6 +539,7 @@ export function CommandPalette() {
       enterMode,
       markIssueDone,
       sendIssueToSession,
+      startAgentOnIssue,
     ],
   )
 
@@ -478,9 +550,12 @@ export function CommandPalette() {
       switch (m.step) {
         case 'send-pick-session':
           return { step: 'send-pick-issue' }
+        case 'start-pick-session':
+          return { step: 'start-pick-issue' }
         case 'comment-type':
           return { step: 'comment-pick-issue' }
         case 'send-pick-issue':
+        case 'start-pick-issue':
         case 'comment-pick-issue':
         case 'done-pick-issue':
           return { step: 'root' }
@@ -658,6 +733,10 @@ export function CommandPalette() {
 /** Breadcrumb label for the active board sub-flow step (null = root). */
 function subFlowBreadcrumb(mode: PaletteMode): string | null {
   switch (mode.step) {
+    case 'start-pick-issue':
+      return 'Start agent on issue — pick an issue'
+    case 'start-pick-session':
+      return `Start ${mode.issue.id} — pick an agent`
     case 'send-pick-issue':
       return 'Send issue to session — pick an issue'
     case 'send-pick-session':
@@ -676,11 +755,13 @@ function subFlowBreadcrumb(mode: PaletteMode): string | null {
 /** Filter-input placeholder per step. */
 function subFlowPlaceholder(mode: PaletteMode): string {
   switch (mode.step) {
+    case 'start-pick-issue':
     case 'send-pick-issue':
     case 'comment-pick-issue':
     case 'done-pick-issue':
       return 'Filter issues by title or id'
     case 'send-pick-session':
+    case 'start-pick-session':
       return 'Filter sessions'
     default:
       return 'Jump to a session or run a /command'
