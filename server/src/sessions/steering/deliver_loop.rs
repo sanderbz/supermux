@@ -65,7 +65,18 @@ pub fn spawn(state: AppState, name: String) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
+                    // R1-9: throttle the Err path. Without this sleep a
+                    // persistent DB error (busy SQLite under contention, a
+                    // transient pool error, a corrupted file) would put this
+                    // loop into a tight CPU-burn — `continue` here returns
+                    // BEFORE the `tokio::select!` await below, so nothing
+                    // throttles the retry. One affected session = one core
+                    // saturated; N stuck sessions = N cores. A 2s backoff
+                    // matches the detector's natural tick cadence and lets a
+                    // transient DB hiccup recover without observable steering
+                    // latency in the common case.
                     tracing::debug!(name = %name, error = %e, "steering: exists_active() failed");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             }

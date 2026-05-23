@@ -163,7 +163,15 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
+                    // R1-9 sibling-hardening: this loop's `tokio::select!` runs
+                    // at the TOP of the body so a `continue` here is already
+                    // throttled by the 2s ticker / wake on the next iteration
+                    // — safe today. Defence-in-depth: sleep on Err so a future
+                    // refactor that flips the check above the select cannot
+                    // re-introduce the steering-style CPU hot-spin on a
+                    // persistent DB error.
                     tracing::debug!(name = %name, error = %e, "status detector: exists_active() failed");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             }
