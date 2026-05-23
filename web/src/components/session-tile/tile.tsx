@@ -73,7 +73,12 @@ function formatTokens(n: number): string {
 /** Animated status border overlay (§4.3). Active = amber pulse 1.6s, Waiting =
  *  blue pulse 2.2s, Error = static calm orange. Reduce Motion → static
  *  full-opacity border (no pulse). Lives on its own inset overlay so it never
- *  competes with the card's hover-scale transform. */
+ *  competes with the card's hover-scale transform.
+ *
+ *  Note: `starting` no longer borrows the amber active treatment — the dot's
+ *  neutral booting pulse already carries that signal, and the amber border
+ *  would falsely advertise "active work in progress" while the agent is still
+ *  spawning. No border during boot keeps the tile calm. */
 function StatusBorder({
   status,
   reduce,
@@ -83,7 +88,7 @@ function StatusBorder({
 }) {
   let token: string | null = null
   let duration = 1.6
-  if (status === 'active' || status === 'starting') token = '--status-active'
+  if (status === 'active') token = '--status-active'
   else if (status === 'waiting') {
     token = '--status-waiting'
     duration = 2.2

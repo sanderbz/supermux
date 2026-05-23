@@ -44,10 +44,17 @@ pub const CAPTURE_LINES: usize = 30;
 /// minutes ago so the first tick never spuriously reads `Active` (§3.2.8).
 pub const COLD_START_IDLE: Duration = Duration::from_secs(300);
 
-/// The five live-status states surfaced to the UI (§3.2.8).
+/// The live-status states surfaced to the UI (§3.2.8).
 ///
 /// Serialises lower-case (`"active"`, …) to match the `last_status` CHECK values
 /// and the frontend `Session.status` union.
+///
+/// `Starting` is a short-lived boot/spawn marker emitted by
+/// [`super::lifecycle::start`] before the agent UI is ready (the spawn window
+/// between session create and the first stable detector classification). The
+/// detector loop replaces it with the real status on the next tick — the
+/// classifier itself never returns `Starting`, so the multi-signal fusion stays
+/// intact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -55,6 +62,7 @@ pub enum Status {
     Waiting,
     Idle,
     Stopped,
+    Starting,
     Unknown,
 }
 
@@ -66,6 +74,7 @@ impl Status {
             Status::Waiting => "waiting",
             Status::Idle => "idle",
             Status::Stopped => "stopped",
+            Status::Starting => "starting",
             Status::Unknown => "unknown",
         }
     }
@@ -462,6 +471,21 @@ mod tests {
         // Active but stale heartbeat → must re-capture.
         let stale = Instant::now() - Duration::from_secs(5);
         assert!(!should_skip_capture(stale, Status::Active));
+    }
+
+    #[test]
+    fn status_starting_serialises_lowercase() {
+        // Starting must round-trip via its lower-case token (matches the DB
+        // CHECK + the frontend `SessionStatus` union member).
+        assert_eq!(Status::Starting.as_str(), "starting");
+        // Pure-classifier guarantee: the detector itself never returns
+        // `Starting` — it is a lifecycle-set transient. Idle/active/waiting
+        // capture markers should still classify their own status, never get
+        // shadowed by a `Starting` branch in the bank.
+        let mut d = StatusDetector::new();
+        d.force(Status::Starting);
+        // Active marker beats a held `Starting` (classifier reads the bank).
+        assert_eq!(d.detect("esc to interrupt", neutral_pty(), None), Status::Active);
     }
 
     #[test]
