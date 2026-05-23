@@ -334,8 +334,9 @@ export default DesktopDock
 //   • Session pill   — status dot + name + chevron; tap → SessionPickerSheet;
 //     horizontal swipe → prev/next session (peek-of-next), unchanged.
 //   • ⌨ toggle       — focuses/blurs the TERMINAL (summons/dismisses keyboard).
-//   • Specials (···) — opens the SpecialsSheet (kbd-groups 2×2 pager).
-//   • ＋ snippets     — opens the M18 snippet panel; snippet run → term.send.
+//   • / slash (R5)   — opens the route-level SlashMenuSheet (shared Vaul shell).
+//   • Specials (···) — opens the QuickKeysSheet (curated tap-to-send chips).
+//   • ＋ snippets     — opens the snippet panel; snippet run → term.send.
 //   • 🎙 dictate      — Web Speech; the transcript is sent to the terminal +'\r'.
 //   • Accessory strip — Esc/Tab/Ctrl-C/arrows, each → `sendKey` (the SAME named-
 //     key path desktop's send-row + the joystick use). Pinned above the keyboard
@@ -363,6 +364,8 @@ export interface MobileDockProps {
   prevSession: ApiSession | null
   nextSession: ApiSession | null
   onOpenPicker: () => void
+  /** Open the route-level slash-command sheet (R5 — was an inline popover). */
+  onOpenSlash: () => void
   onOpenSpecials: () => void
   /** Switch focus to a neighbour session (committed pill swipe). */
   onSwitchSession: (name: string) => void
@@ -393,6 +396,7 @@ export function MobileDock({
   prevSession,
   nextSession,
   onOpenPicker,
+  onOpenSlash,
   onOpenSpecials,
   onSwitchSession,
   onSend,
@@ -404,21 +408,12 @@ export function MobileDock({
   registerInsert,
   className,
 }: MobileDockProps) {
-  // ── M18: slash menu + dictation ───────────────────────────────────────────
-  // The "/" affordance lives in the SlashMenu, anchored above the dock. With no
-  // composer to type into, the menu opens on demand and a pick is sent LIVE to
-  // the terminal (`cmd\r`) — the keystroke-capture stays xterm's helper textarea.
-  const [slashOpen, setSlashOpen] = React.useState(false)
-  const onSlashSelect = React.useCallback(
-    (cmd: string) => {
-      // Send the picked command live + keep the keyboard up for the next line.
-      onSend(`${cmd} `)
-      setSlashOpen(false)
-      onFocusTerm()
-    },
-    [onSend, onFocusTerm],
-  )
-
+  // ── dictation ──────────────────────────────────────────────────────────────
+  // The "/" affordance now opens the route-level SlashMenuSheet (R5 — the old
+  // inline popover had no backdrop + an unselectable item pick; it's replaced by
+  // the shared Vaul shell). The dock just calls `onOpenSlash` and the route runs
+  // the picked command live (`cmd\r`); MobileDock keeps NO inline slash state.
+  //
   // Dictation — the mic toggles Web Speech. R5 FIX: the flush no longer depends
   // on Web Speech firing `onend` (flaky on iOS Safari / WKWebView — when it never
   // arrives the transcript was silently dropped). Instead `useDictation` surfaces
@@ -527,18 +522,6 @@ export function MobileDock({
         className,
       )}
     >
-      {/* M18 slash menu — floats ABOVE the dock. */}
-      <div className="pointer-events-none absolute inset-x-2 bottom-full mb-2">
-        <div className="pointer-events-auto">
-          <SlashMenu
-            value="/"
-            open={slashOpen}
-            onSelect={onSlashSelect}
-            onDismiss={() => setSlashOpen(false)}
-          />
-        </div>
-      </div>
-
       {/* Accessory key strip — Termius-style, shown while the keyboard is open
           (the route pins the whole dock above the keyboard via `keyboardInset`).
           Each chip drives `sendKey` — the keys a soft keyboard lacks. */}
@@ -588,7 +571,7 @@ export function MobileDock({
           />
         </DockIcon>
 
-        <DockIcon label="Slash command" onClick={() => setSlashOpen((o) => !o)}>
+        <DockIcon label="Slash command" onClick={onOpenSlash}>
           <Slash className="size-5" />
         </DockIcon>
 

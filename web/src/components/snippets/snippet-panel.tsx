@@ -1,10 +1,11 @@
 // SnippetPanel — M18 (TECH_PLAN §M18, research/termius-ios-native-spec.md
 // §"Snippet picker" #5).
 //
-// An IN-PLACE slide-up panel (never a modal sheet — that is the deliberate spec
-// choice #5) that rises from above the accessory bar. Height min(320px, 50vh).
-// Spring per spec: `response: 0.35, dampingFraction: 0.85` — the framer-motion
-// equivalent of which is `springs.snippetSlide` (added to lib/springs.ts).
+// R5 panels-unify: the hand-rolled framer-motion slide-up + bespoke tap-catcher
+// backdrop were replaced by the shared `<MobileActionSheet>` Vaul shell, so the
+// snippet panel now inherits the SAME backdrop / tap-away / drag-down-to-dismiss
+// / focus-trap / safe-area as the dots panel — only the row CONTENT (tap-insert /
+// long-press-run / swipe-to-edit-delete) is bespoke here.
 //
 // Per-row interactions (spec #5):
 //   • Tap          → insert the snippet body into the composer (onInsert).
@@ -24,7 +25,6 @@
 
 import * as React from 'react'
 import {
-  AnimatePresence,
   motion,
   useMotionValue,
   useReducedMotion,
@@ -37,6 +37,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useSnippets, useCreateSnippet, useDeleteSnippet } from '@/hooks/use-commands'
 import type { SnippetRow } from '@/lib/api'
+import { MobileActionSheet } from '@/components/focus-mode/mobile-action-sheet'
 import { SnippetEditor } from './snippet-editor'
 
 /** The three default snippets seeded on a fresh install (§M18 subagent prompt).
@@ -63,7 +64,6 @@ export function SnippetPanel({
   onInsert,
   onRun,
 }: SnippetPanelProps) {
-  const reduceMotion = useReducedMotion()
   const { data: snippets = [], isLoading } = useSnippets()
   const createSnippet = useCreateSnippet()
 
@@ -84,85 +84,58 @@ export function SnippetPanel({
 
   return (
     <>
-      <AnimatePresence>
-        {open && (
-          <>
-            {/* Tap-catcher — dismisses the panel without a heavy modal overlay
-                so the terminal stays visible behind the .thinMaterial panel. */}
-            <motion.button
-              type="button"
-              aria-label="Close snippets"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-              onClick={() => onOpenChange(false)}
-              className="fixed inset-0 z-[55] bg-black/20"
+      <MobileActionSheet
+        open={open}
+        onOpenChange={onOpenChange}
+        title="Snippets"
+        headerAction={
+          <motion.button
+            type="button"
+            aria-label="New snippet"
+            onClick={openNew}
+            whileTap={{ scale: 0.94 }}
+            transition={springs.buttonPress}
+            className="flex size-9 items-center justify-center rounded-xl text-foreground/80 hover:bg-secondary"
+          >
+            <Plus className="size-[18px]" />
+          </motion.button>
+        }
+      >
+        {/* data-vaul-no-drag — the inner scroll + per-row swipe-to-reveal win
+            over the sheet's drag-to-dismiss (same pattern as the terminal body
+            and the quick-keys grid). */}
+        <div
+          data-vaul-no-drag
+          className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-1"
+        >
+          {isLoading ? (
+            <p className="px-2 py-6 text-center text-[13px] text-muted-foreground">
+              Loading snippets…
+            </p>
+          ) : isEmpty ? (
+            <DefaultSeeds
+              onCreate={(s) => createSnippet.mutate(s)}
+              creating={createSnippet.isPending}
             />
-
-            <motion.div
-              role="dialog"
-              aria-label="Snippets"
-              initial={reduceMotion ? false : { y: '100%' }}
-              animate={{ y: 0 }}
-              exit={reduceMotion ? { opacity: 0 } : { y: '100%' }}
-              transition={reduceMotion ? { duration: 0 } : springs.snippetSlide}
-              // Rises from above the accessory bar; height min(320px, 50vh).
-              className={cn(
-                'glass fixed inset-x-0 bottom-0 z-[56] flex flex-col',
-                'rounded-t-2xl border-t border-border/60 pb-safe',
-              )}
-              style={{ height: 'min(320px, 50vh)' }}
-            >
-              {/* Header — title + new-snippet button. */}
-              <div className="flex shrink-0 items-center justify-between px-4 pb-1 pt-3">
-                <span className="text-[13px] font-semibold text-muted-foreground">
-                  Snippets
-                </span>
-                <motion.button
-                  type="button"
-                  aria-label="New snippet"
-                  onClick={openNew}
-                  whileTap={{ scale: 0.94 }}
-                  transition={springs.buttonPress}
-                  className="flex size-9 items-center justify-center rounded-xl text-foreground/80 hover:bg-secondary"
-                >
-                  <Plus className="size-[18px]" />
-                </motion.button>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-                {isLoading ? (
-                  <p className="px-2 py-6 text-center text-[13px] text-muted-foreground">
-                    Loading snippets…
-                  </p>
-                ) : isEmpty ? (
-                  <DefaultSeeds
-                    onCreate={(s) => createSnippet.mutate(s)}
-                    creating={createSnippet.isPending}
-                  />
-                ) : (
-                  snippets.map((s) => (
-                    <SnippetRowItem
-                      key={s.id}
-                      snippet={s}
-                      onInsert={() => {
-                        onInsert(s.body)
-                        onOpenChange(false)
-                      }}
-                      onRun={() => {
-                        onRun(s.body)
-                        onOpenChange(false)
-                      }}
-                      onEdit={() => openEdit(s)}
-                    />
-                  ))
-                )}
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+          ) : (
+            snippets.map((s) => (
+              <SnippetRowItem
+                key={s.id}
+                snippet={s}
+                onInsert={() => {
+                  onInsert(s.body)
+                  onOpenChange(false)
+                }}
+                onRun={() => {
+                  onRun(s.body)
+                  onOpenChange(false)
+                }}
+                onEdit={() => openEdit(s)}
+              />
+            ))
+          )}
+        </div>
+      </MobileActionSheet>
 
       <SnippetEditor
         open={editorOpen}

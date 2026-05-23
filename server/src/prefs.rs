@@ -59,7 +59,10 @@ pub fn router_for(state: AppState) -> Router {
 /// keys MUST be added here — drift between client and server keys is then a
 /// compile-time/test surface rather than a silent bag-of-strings.
 fn is_known_pref_key(key: &str) -> bool {
-    matches!(key, "overview_layout")
+    // `quick_keys` — the mobile quick-keys tap-to-send selection (an ordered id
+    // list). Account-wide so the user's curated keys follow them phone↔desktop,
+    // same rationale as `overview_layout`.
+    matches!(key, "overview_layout" | "quick_keys")
 }
 
 /// Maximum bytes accepted for a single pref value. Generous (50 KB) — enough

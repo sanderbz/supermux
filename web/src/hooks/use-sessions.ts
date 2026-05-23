@@ -25,6 +25,11 @@ import {
   OVERVIEW_LAYOUT_PREF_KEY,
   type OverviewLayout,
 } from '@/lib/overview-layout'
+import { QUICK_KEYS_QUERY_KEY } from '@/hooks/use-quick-keys'
+import {
+  parseQuickKeys,
+  QUICK_KEYS_PREF_KEY,
+} from '@/components/focus-mode/quick-keys'
 
 export const SESSIONS_KEY = ['sessions'] as const
 
@@ -192,13 +197,17 @@ export function useSessions(): UseSessionsResult {
           // emits `{ key, value }` so we can route just the keys we own — the
           // overview layout cache, today; future keys can extend this switch.
           const p = (payload as { key?: unknown; value?: unknown }) ?? {}
-          if (
-            p.key === OVERVIEW_LAYOUT_PREF_KEY &&
-            (typeof p.value === 'string' || p.value === null)
-          ) {
+          const valueIsStr = typeof p.value === 'string' || p.value === null
+          if (p.key === OVERVIEW_LAYOUT_PREF_KEY && valueIsStr) {
             qc.setQueryData<OverviewLayout>(
               OVERVIEW_LAYOUT_KEY,
               parseLayout(p.value as string | null),
+            )
+          } else if (p.key === QUICK_KEYS_PREF_KEY && valueIsStr) {
+            // Mobile quick-keys selection changed on a peer tab / device.
+            qc.setQueryData<string[]>(
+              QUICK_KEYS_QUERY_KEY,
+              parseQuickKeys(p.value as string | null).selected,
             )
           }
         }
