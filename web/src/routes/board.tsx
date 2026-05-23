@@ -44,7 +44,11 @@ export function Board() {
   const reduce = useReducedMotion()
   const { toast } = useToast()
 
-  const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null)
+  // Track the OPEN issue by id (not a snapshot) so the detail sheet re-derives
+  // from the live `board.issues` cache — comments / acceptance ticks / links
+  // that arrive over SSE update the open sheet in place. A snapshot would go
+  // stale the moment the agent (or another tab) touched the card.
+  const [detailId, setDetailId] = useState<string | null>(null)
   const [newIssueStatus, setNewIssueStatus] = useState<string | null>(null)
   const [manageOpen, setManageOpen] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -57,6 +61,15 @@ export function Board() {
       3200,
     )
   }, [])
+
+  // The live issue object for the open sheet, re-derived from the cache so SSE
+  // pushes (agent comments, acceptance ticks, link adds) flow straight into the
+  // open sheet. Null when nothing is open or the issue was deleted out from
+  // under us.
+  const detailIssue = useMemo(
+    () => board.issues.find((i) => i.id === detailId) ?? null,
+    [board.issues, detailId],
+  )
 
   // Group issues by column. Non-deleted only (server already omits deleted).
   const issuesByStatus = useMemo(() => {
@@ -342,7 +355,7 @@ export function Board() {
                             )}
                             <IssueCard
                               issue={issue}
-                              onOpen={setDetailIssue}
+                              onOpen={(i) => setDetailId(i.id)}
                               isDragging={drag?.issue.id === issue.id}
                               onDragStart={onCardDragStart}
                             />
@@ -419,17 +432,20 @@ export function Board() {
       <IssueDetailSheet
         issue={detailIssue}
         statuses={board.statuses}
-        onClose={() => setDetailIssue(null)}
+        onClose={() => setDetailId(null)}
         onPatch={async (id, patch) => {
           await board.patchIssue(id, patch)
         }}
         onDelete={async (id) => {
           await board.deleteIssue(id)
         }}
-        onClaim={async (id, session) => {
+        onClaim={async (id, session, deliver) => {
+          // The sheet owns the success toast + Undo (it needs the steer_id from
+          // the ClaimResult). The route still surfaces a 409 as a toast for
+          // parity with drag-to-claim, then re-throws so the sheet shows it
+          // in-place too.
           try {
-            await board.claimIssue({ id, session })
-            pushToast(`Claimed for ${session}.`, 'info')
+            return await board.claimIssue({ id, session, deliver })
           } catch (e) {
             if (e instanceof BoardError && e.status === 409) {
               pushToast(e.message || 'Claim lost — another session took it.')

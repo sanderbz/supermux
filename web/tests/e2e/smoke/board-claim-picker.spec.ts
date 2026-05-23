@@ -90,15 +90,16 @@ test.describe('board claim picker', () => {
     await expect(optAlpha).toBeVisible()
     await expect(optBravo).toBeVisible()
 
-    // Before picking, the claim button is disabled (the old guard is unreachable).
-    const claimBtn = page.getByRole('button', { name: /Pick a session above/i })
-    await expect(claimBtn).toBeDisabled()
+    // Before picking, the primary action is disabled (the old guard is
+    // unreachable). U2 promoted it to "Send to agent" (auto-dispatch).
+    const sendBtn = page.getByRole('button', { name: /Pick a session above/i })
+    await expect(sendBtn).toBeDisabled()
 
-    // Pick alpha → the button enables and reads "Claim for alpha".
+    // Pick alpha → the button enables and reads "Send to alpha".
     await optAlpha.click()
-    const claimForAlpha = page.getByRole('button', { name: /Claim for alpha/i })
-    await expect(claimForAlpha).toBeEnabled()
-    await claimForAlpha.click()
+    const sendToAlpha = page.getByRole('button', { name: /Send to alpha/i })
+    await expect(sendToAlpha).toBeEnabled()
+    await sendToAlpha.click()
 
     // No dead-end error; the sheet closes; the card now shows the bound session.
     await expect(page.getByText('Pick a session to claim this for.')).toHaveCount(0)
