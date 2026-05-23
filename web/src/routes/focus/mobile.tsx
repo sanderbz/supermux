@@ -88,6 +88,12 @@ export function MobileFocus() {
   // (hardware keyboard, or the iOS soft keyboard once the user taps in) route
   // to xterm IMMEDIATELY — the focus pane is the terminal, not the dock
   // input. Re-armed per session-name change so jumping sessions follows focus.
+  //
+  // DEPS — `name` only. Mirrors the desktop fix: agent status flips many times
+  // during a session, and each flip re-firing `term.focus()` could synchronously
+  // emit a focusin event whose reporting bytes (`\x1b[I` under DECSET ?1004)
+  // land back at the pty as part of the phantom-Enter symptom path. Status
+  // changes don't warrant re-focusing the terminal.
   const wantFocusRef = React.useRef(false)
   React.useEffect(() => {
     if (current.status === 'stopped' || current.status === 'error') {
@@ -102,7 +108,8 @@ export function MobileFocus() {
       }
     })
     return () => window.cancelAnimationFrame(raf)
-  }, [name, current.status])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name])
   const onTermReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t
     if (wantFocusRef.current) {

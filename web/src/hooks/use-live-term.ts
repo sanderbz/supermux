@@ -371,8 +371,61 @@ export function useLiveTerm(
 
     // 2. Local echo path: pipe xterm keystrokes back to the pty (§5.2). The
     //    server echoes them via the broadcast stream, so we do NOT write locally.
+    //
+    //    PHANTOM-ENTER GUARD (root-cause fix). `term.onData` fires for two very
+    //    different kinds of data:
+    //      (a) real user input — a keystroke / paste / mouse selection / IME burst,
+    //      (b) xterm-synthesized control-sequence responses — focus events
+    //          (`\x1b[I`/`\x1b[O` from DECSET ?1004), DSR/CPR cursor reports,
+    //          device attribute replies, window-option reports, etc. — fired by
+    //          xterm itself in response to PROGRAMMATIC events (e.g. our own
+    //          `term.focus()` call from the auto-focus polish, or the parser
+    //          seeing a DSR request in the replay stream).
+    //
+    //    Forwarding (b) to the pty is the source of the "phantom Enter on panel
+    //    switch" bug: programmatic focus / mount / route-change causes xterm to
+    //    emit a focus/CSI response, which lands at the bash prompt as an unknown
+    //    escape sequence that shells variously interpret (or print) — at small
+    //    geometries (the prewarm/hover-zoom buffer is ~45 cols) the partial
+    //    sequence even gets split mid-byte by the renderer, producing the empty
+    //    `~ ❯` accumulation visible in saved sessions like livezoom-test / prewarm-live-1.
+    //
+    //    xterm's internal `coreService.triggerDataEvent(data, wasUserInput)` is
+    //    the single chokepoint that distinguishes the two: keystroke / paste
+    //    paths pass `true`; every synthesized response defaults to `false`. The
+    //    public `onData` event drops that flag, but `coreService.onUserInput`
+    //    fires (with no payload) IMMEDIATELY before `onData` on the user-input
+    //    path — same synchronous tick — so a flag-then-forward gate gives us
+    //    exactly user-initiated bytes without touching xterm's parser or
+    //    duplicating its keymap.
+    //
+    //    We send ONLY (a). The agent (claude, etc.) re-enables and uses focus
+    //    events / DSR-CPR via the server→client direction; nothing of value
+    //    flows back through client→server other than what the user typed.
     if (!readOnly) {
-      term.onData((s) => sendRaw(s))
+      // `coreService` is documented as `public readonly` on CoreTerminal — stable
+      // since xterm 5.x. We reach it via `_core` (private on the public Terminal
+      // wrapper) with a typed local cast; if a future xterm rev drops the
+      // accessor the runtime guard falls back to the legacy "forward everything"
+      // behaviour so we never silently break the pty.
+      const coreService = (term as unknown as { _core?: { coreService?: { onUserInput?: (cb: () => void) => unknown } } })
+        ._core?.coreService
+      if (coreService?.onUserInput) {
+        let wasUserInput = false
+        coreService.onUserInput(() => {
+          wasUserInput = true
+        })
+        term.onData((s) => {
+          if (!wasUserInput) return
+          wasUserInput = false
+          sendRaw(s)
+        })
+      } else {
+        // Fallback: xterm internals moved — preserve the v1 behaviour so we
+        // never silently break the pty. The known phantom-Enter symptoms still
+        // hit, but the terminal at least functions.
+        term.onData((s) => sendRaw(s))
+      }
     }
 
     // 3. WebSocket connect with first-frame auth (§4.5). No `?_token=` in URL.
