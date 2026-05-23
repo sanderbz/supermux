@@ -10,7 +10,11 @@ import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useToast } from '@/components/ui/use-toast'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useLongPress } from '@/hooks/use-long-press'
-import { usePeekType, PEEK_STICKY_MS } from '@/hooks/use-peek-type'
+import {
+  usePeekType,
+  PEEK_STICKY_MS,
+  PEEK_LEAVE_GRACE_MS,
+} from '@/hooks/use-peek-type'
 import { usePeekPrewarm } from '@/hooks/use-peek-prewarm'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useUI } from '@/stores/ui-store'
@@ -211,35 +215,94 @@ export function SessionTile({
   const onLiveReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t
   }, [])
-  // Sliding stickiness timer. While alive, hover-leave does NOT dismiss the
-  // peek (mouse drift would otherwise kill mid-typing). Reset on every
-  // captured keystroke; clears itself after PEEK_STICKY_MS of silence — and
-  // when it clears, if the mouse is no longer over the card, we dismiss now
-  // (otherwise the peek would be orphaned with no event to release it).
+  // ── Stickiness, decoupled into TWO distinct timers (fix-peek-sticky) ────────
+  //
+  // The sticky window has TWO jobs that used to be conflated into one long
+  // (PEEK_STICKY_MS = 4s) silence timer — which is exactly what caused the bug:
+  // a mouse-leave right after typing did NOTHING (onHoverEnd early-returned
+  // while `sticky` was true) and dismissal waited out the FULL 4s of keystroke
+  // silence. The user wants a prompt shrink on mouse-leave WITHOUT losing the
+  // "don't vanish while I'm actively typing" guarantee.
+  //
+  //   1. WHILE STILL HOVERING — bridge inter-keystroke gaps + brief pointer
+  //      drift. This is the long PEEK_STICKY_MS window: re-armed on every
+  //      keystroke, marks the peek `sticky` so a momentary hover-leave (mouse
+  //      grazes the card edge) can't kill a half-typed message. This window is
+  //      KEPT — do NOT shrink it; its whole point is to be forgiving while the
+  //      pointer is in/around the tile.
+  //
+  //   2. AFTER A GENUINE MOUSE-LEAVE — a SHORT grace (PEEK_LEAVE_GRACE_MS).
+  //      Once the pointer is actually gone, we no longer owe the user the full
+  //      4s: we dismiss after a brief grace UNLESS a keystroke arrives (which
+  //      means they're still typing with the pointer parked elsewhere — that
+  //      re-arms and re-starts the grace, so continuous typing holds the peek
+  //      open even with the mouse away).
+  //
+  // DO NOT "restore" a single 4s timer here: that re-introduces the ~4s linger
+  // on mouse-leave-after-typing. The two timers MUST stay separate.
   const stickyTimerRef = React.useRef<number | null>(null)
+  // Pending post-mouse-leave dismissal. Distinct from the sticky window so a
+  // real leave shrinks promptly while keystrokes can still cancel/re-arm it.
+  const leaveGraceRef = React.useRef<number | null>(null)
   const mouseInsideRef = React.useRef(false)
   const [sticky, setSticky] = React.useState(false)
-  const armSticky = React.useCallback(() => {
+  const clearStickyTimer = React.useCallback(() => {
     if (stickyTimerRef.current !== null) {
       window.clearTimeout(stickyTimerRef.current)
+      stickyTimerRef.current = null
     }
+  }, [])
+  const clearLeaveGrace = React.useCallback(() => {
+    if (leaveGraceRef.current !== null) {
+      window.clearTimeout(leaveGraceRef.current)
+      leaveGraceRef.current = null
+    }
+  }, [])
+  // Arm the SHORT post-mouse-leave grace: dismiss after PEEK_LEAVE_GRACE_MS
+  // unless a keystroke re-arms it (continuous typing keeps the peek alive even
+  // with the pointer gone). Re-entering the tile cancels it (onHoverStart).
+  const armLeaveGrace = React.useCallback(() => {
+    clearLeaveGrace()
+    leaveGraceRef.current = window.setTimeout(() => {
+      leaveGraceRef.current = null
+      // Guard: only dismiss if the pointer is still outside (a re-entry would
+      // have cleared this timer, but belt-and-suspenders against races).
+      if (!mouseInsideRef.current) {
+        clearStickyTimer()
+        setSticky(false)
+        setHovered(false)
+      }
+    }, PEEK_LEAVE_GRACE_MS)
+  }, [clearLeaveGrace, clearStickyTimer])
+  // Called on every captured keystroke. Re-arms the long while-hovering sticky
+  // window AND, if the pointer is currently outside, re-arms the short leave
+  // grace — so a user typing with the mouse parked elsewhere keeps the peek
+  // open, and it shrinks promptly the moment they STOP typing.
+  const armSticky = React.useCallback(() => {
+    clearStickyTimer()
     setSticky(true)
     stickyTimerRef.current = window.setTimeout(() => {
       stickyTimerRef.current = null
       setSticky(false)
+      // Silence-window expiry while the pointer is already outside: dismiss now
+      // (covers the case where the pointer left WITHOUT us arming a leave grace,
+      // e.g. the leave fired before any keystroke). Normally the short leave
+      // grace beats this timer to the punch.
       if (!mouseInsideRef.current) {
         setHovered(false)
       }
     }, PEEK_STICKY_MS)
-  }, [])
+    // If the pointer already left while the user keeps typing, restart the short
+    // grace so it dismisses ~PEEK_LEAVE_GRACE_MS after the LAST keystroke — not
+    // after the full silence window.
+    if (!mouseInsideRef.current) armLeaveGrace()
+  }, [clearStickyTimer, armLeaveGrace])
   React.useEffect(
     () => () => {
-      if (stickyTimerRef.current !== null) {
-        window.clearTimeout(stickyTimerRef.current)
-        stickyTimerRef.current = null
-      }
+      clearStickyTimer()
+      clearLeaveGrace()
     },
-    [],
+    [clearStickyTimer, clearLeaveGrace],
   )
 
   // One-shot haptic on transition into "waiting" (§4.3), debounced via ref so a
@@ -465,13 +528,11 @@ export function SessionTile({
     onKey: (k) => termRef.current?.sendKey(k),
     onDismiss: () => {
       // Esc closes the peek without sending Esc to the pty (policy a — the web
-      // norm). Clear sticky + drop hover so the live terminal unmounts and the
-      // WS closes via useLiveTerm teardown.
+      // norm). Clear BOTH timers + drop hover so the live terminal unmounts and
+      // the WS closes via useLiveTerm teardown.
       setSticky(false)
-      if (stickyTimerRef.current !== null) {
-        window.clearTimeout(stickyTimerRef.current)
-        stickyTimerRef.current = null
-      }
+      clearStickyTimer()
+      clearLeaveGrace()
       setHovered(false)
     },
     onActivity: () => armSticky(),
@@ -571,16 +632,25 @@ export function SessionTile({
         {...(coarse ? longPress : null)}
         onHoverStart={() => {
           mouseInsideRef.current = true
+          // Re-entry cancels any pending post-leave dismissal (the user came
+          // back before the short grace elapsed — keep the peek up).
+          clearLeaveGrace()
           setHovered(true)
         }}
         onHoverEnd={() => {
           mouseInsideRef.current = false
-          // Stickiness: while the user is mid-typing (or within the sliding
-          // window after the last keystroke), refuse to dismiss on mouse-leave
-          // — mouse drift would otherwise kill an in-progress interjection.
-          // When the sticky timer expires it checks `mouseInsideRef` and
-          // dismisses then if the mouse is still outside.
-          if (sticky) return
+          // A genuine mouse-leave. If the user is mid-typing (or just typed —
+          // `sticky` is alive), we DON'T dismiss immediately (a stray drift or
+          // an in-flight keystroke shouldn't kill a half-typed message), but we
+          // also DON'T wait out the full PEEK_STICKY_MS silence window (the old
+          // bug). Instead we arm a SHORT grace: dismiss in ~PEEK_LEAVE_GRACE_MS
+          // unless a keystroke re-arms it. Continuous typing => stays open;
+          // stopped typing + pointer gone => prompt shrink.
+          if (sticky) {
+            armLeaveGrace()
+            return
+          }
+          // Not sticky (plain hover, no typing) → dismiss promptly as before.
           setHovered(false)
         }}
         whileHover={
