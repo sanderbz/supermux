@@ -111,3 +111,69 @@ async fn detector_publishes_sessions_delta_for_live_pane() {
 
     assert!(got, "expected a `sessions` SSE delta for the live session");
 }
+
+/// Regression: `lifecycle::start` must broadcast an explicit `status:active` SSE
+/// once the boot completes. Previously it only emitted `status:starting` on spawn
+/// and relied on the detector loop to broadcast `active` — but the detector seeds
+/// its in-memory `prev` from the freshly-written DB row (`active`), so the first
+/// observed tick sees `new_status == prev` and emits nothing. Result: the client
+/// cache stayed wedged on `starting` ("Booting" pill) until a full GET refresh
+/// happened. Asserts the SSE `status` frame with `status == "active"` lands within
+/// the boot window (well under the 2s detector tick interval).
+#[tokio::test]
+async fn lifecycle_start_emits_status_active_sse() {
+    if !tmux_available() {
+        eprintln!("skipping: tmux not on PATH");
+        return;
+    }
+    let (state, app, dir) = setup().await;
+    let name = format!("act{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+
+    let mut rx = state.sse_tx.subscribe();
+
+    assert_eq!(
+        api(&app, Method::POST, "/api/sessions", Some(serde_json::json!({
+            "name": name, "provider": "shell", "dir": "/tmp"
+        }))).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        api(&app, Method::POST, &format!("/api/sessions/{name}/start"), None).await,
+        StatusCode::OK
+    );
+
+    // We expect TWO status frames: first `starting`, then `active`. Both must
+    // arrive from lifecycle itself — do NOT rely on the detector loop here. The
+    // 5s budget is well below the detector tick (2s) + ready timeout (10s) but
+    // long enough that an unrelated stall is the real failure, not a slow tick.
+    let saw_active = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut saw_starting = false;
+        loop {
+            match rx.recv().await {
+                Ok(ev) if ev.event == "status" => {
+                    let n = ev.payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if n != name { continue; }
+                    let s = ev.payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    match s {
+                        "starting" => { saw_starting = true; }
+                        "active" if saw_starting => { return true; }
+                        _ => {}
+                    }
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    let _ = api(&app, Method::DELETE, &format!("/api/sessions/{name}"), None).await;
+    let _ = std::process::Command::new("tmux")
+        .args(["kill-session", "-t", &format!("supermux-{name}")])
+        .output();
+    let _ = std::fs::remove_dir_all(dir);
+
+    assert!(saw_active, "expected `status:active` SSE after `status:starting` from lifecycle::start");
+}

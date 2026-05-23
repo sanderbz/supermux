@@ -273,6 +273,31 @@ pub async fn start(
 
     db::sessions::bump_start(&state.pool, name).await?;
     db::sessions::set_last_status(&state.pool, name, "active").await?;
+    // Explicitly publish the `starting → active` transition ourselves. The
+    // detector loop can't be trusted to do it: by the time it ticks, it seeds
+    // its in-memory `prev` from the DB row we just wrote (`active`), so the
+    // first observed tick has `new_status == prev` and emits nothing. Without
+    // this explicit broadcast the client cache stays wedged on `starting`
+    // until a full `GET /api/sessions` refresh (focus, reconnect, hard reload)
+    // pulls the up-to-date row. Mirrors the `starting` triplet ~30 lines above.
+    let active_version = {
+        let tx = state.status_watch_for(name);
+        let next = tx.borrow().1.wrapping_add(1);
+        tx.send_replace(("active".to_string(), next));
+        next
+    };
+    let _ = state.sse_tx.send(SseEvent {
+        event: "status".to_string(),
+        payload: json!({
+            "name": name,
+            "status": "active",
+            "version": active_version,
+        }),
+    });
+    let _ = state.sse_tx.send(SseEvent {
+        event: "sessions".to_string(),
+        payload: json!({ "delta": [{ "name": name, "status": "active" }] }),
+    });
     // Wake the detector so the BOOTING → real-status transition is broadcast
     // sub-second rather than at the next 2s tick (the tile dot otherwise sits
     // in the booting affordance for up to 2s after the agent UI is ready).
