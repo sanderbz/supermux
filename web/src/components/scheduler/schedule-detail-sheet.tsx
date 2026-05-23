@@ -1,14 +1,16 @@
-// ScheduleDetailSheet (M21) — open one schedule for inline edit + run history.
-// Right-side sheet: header with title + enable toggle + run-now/delete, the
-// shared ScheduleForm bound to the existing values (Save patches), then the last
-// 20 runs with status pills. The `skipped` status surfaces the M8 missed-window
-// / idempotency behaviour (a fire-key collision or a >60s-late window logs a
-// skipped run rather than double-firing) — shown explicitly so the user can see
-// WHY a tick didn't run.
+// ScheduleDetailSheet (M21) — the single editor surface for BOTH create and
+// edit. One full-height right-side <Sheet> shell (the one that scrolls correctly
+// — see schedule-rework.plan.md: the old centered create Dialog couldn't bound
+// its ScrollArea on mobile). `create` mode shows preset recipes + a blank
+// editor; `edit` mode binds an existing row, adds the fire log, the run-now /
+// delete / enable header actions, and the run history. Both render the shared
+// <ScheduleEditor>. The `skipped` run status surfaces the M8 missed-window /
+// idempotency behaviour (a fire-key collision or a >60s-late window logs a
+// skipped run rather than double-firing).
 
 import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { Loader2, Play, Trash2 } from 'lucide-react'
+import { Play, Trash2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -34,54 +36,39 @@ import { CONFIRM } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
 import {
   useDeleteSchedule,
-  usePatchSchedule,
   useRunSchedule,
   useScheduleRuns,
 } from '@/hooks/use-scheduler'
-import {
-  isFormValid,
-  ScheduleForm,
-  toCreateInput,
-  type ScheduleFormValue,
-} from './schedule-form'
-import { formatRanAt } from './helpers'
+import { ScheduleEditor } from './schedule-editor'
+import { describeSchedule, formatRanAt } from './helpers'
 import { EnableToggle } from './enable-toggle'
 
 interface ScheduleDetailSheetProps {
+  /** `create` opens a blank editor; `edit` binds the row. `null` keeps it closed. */
+  mode: 'create' | 'edit' | null
   schedule: ScheduleRow | null
   onClose: () => void
   sessions: string[]
 }
 
-function rowToForm(s: ScheduleRow): ScheduleFormValue {
-  return {
-    title: s.title,
-    kind: s.kind,
-    command: s.command,
-    schedule_expr: s.schedule_expr ?? '',
-    session: s.session,
-    boot_dir: s.boot_dir,
-    boot_provider: s.boot_provider || 'claude',
-    boot_worktree: s.boot_worktree === 1,
-    watch: s.watch === 1,
-    done_pattern: s.done_pattern ?? '',
-    done_action: s.done_action || 'disable',
-  }
-}
-
 export function ScheduleDetailSheet({
+  mode,
   schedule,
   onClose,
   sessions,
 }: ScheduleDetailSheetProps) {
+  const open = mode === 'create' || (mode === 'edit' && !!schedule)
   return (
-    <Sheet open={!!schedule} onOpenChange={(o) => !o && onClose()}>
+    <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent
         side="right"
         className="flex w-full flex-col gap-0 p-0 sm:max-w-md"
       >
-        {schedule && (
-          <DetailBody
+        {mode === 'create' && (
+          <CreateBody key="create" onClose={onClose} sessions={sessions} />
+        )}
+        {mode === 'edit' && schedule && (
+          <EditBody
             key={schedule.id}
             schedule={schedule}
             onClose={onClose}
@@ -93,7 +80,36 @@ export function ScheduleDetailSheet({
   )
 }
 
-function DetailBody({
+// ── create mode ─────────────────────────────────────────────────────────────────
+
+function CreateBody({
+  onClose,
+  sessions,
+}: {
+  onClose: () => void
+  sessions: string[]
+}) {
+  return (
+    <>
+      <SheetHeader className="border-b border-border px-5 py-4 text-left">
+        <SheetTitle>New schedule</SheetTitle>
+        <SheetDescription>
+          Boot an agent, send a command, or run a shell job on a timer.
+        </SheetDescription>
+      </SheetHeader>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="px-5 py-5">
+          <ScheduleEditor mode="create" sessions={sessions} onClose={onClose} />
+        </div>
+      </ScrollArea>
+    </>
+  )
+}
+
+// ── edit mode ────────────────────────────────────────────────────────────────────
+
+function EditBody({
   schedule,
   onClose,
   sessions,
@@ -102,47 +118,11 @@ function DetailBody({
   onClose: () => void
   sessions: string[]
 }) {
-  const [form, setForm] = React.useState<ScheduleFormValue>(() =>
-    rowToForm(schedule),
-  )
   const [confirmDelete, setConfirmDelete] = React.useState(false)
   const runs = useScheduleRuns(schedule.id)
-  const patch = usePatchSchedule()
   const runNow = useRunSchedule()
   const del = useDeleteSchedule()
   const { toast } = useToast()
-
-  const valid = isFormValid(form)
-
-  const save = () => {
-    const input = toCreateInput(form)
-    patch.mutate(
-      {
-        id: schedule.id,
-        patch: {
-          title: input.title,
-          kind: input.kind,
-          command: input.command,
-          schedule_expr: input.schedule_expr,
-          session: input.session,
-          watch: input.watch,
-          done_pattern: input.done_pattern,
-          done_action: input.done_action,
-        },
-      },
-      {
-        onSuccess: () => {
-          toast({ message: 'Schedule updated', tone: 'active' })
-        },
-        onError: (e) =>
-          toast({
-            message: `Update failed — ${(e as Error).message}`,
-            tone: 'error',
-            duration: 4000,
-          }),
-      },
-    )
-  }
 
   const fireNow = () => {
     runNow.mutate(schedule.id, {
@@ -171,8 +151,8 @@ function DetailBody({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <SheetTitle className="truncate">{schedule.title}</SheetTitle>
-            <SheetDescription className="font-mono text-xs">
-              {schedule.id}
+            <SheetDescription className="truncate">
+              {describeSchedule(schedule.schedule_expr)}
             </SheetDescription>
           </div>
           <EnableToggle
@@ -206,21 +186,12 @@ function DetailBody({
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-6 px-5 py-5">
-          <ScheduleForm
-            value={form}
-            onChange={setForm}
+          <ScheduleEditor
+            mode="edit"
+            schedule={schedule}
             sessions={sessions}
-            hideTestFire
+            onClose={onClose}
           />
-
-          <Button
-            className="h-11 self-start"
-            onClick={save}
-            disabled={!valid || patch.isPending}
-          >
-            {patch.isPending && <Loader2 className="size-4 animate-spin" />}
-            Save changes
-          </Button>
 
           <div className="h-px bg-border" />
 
