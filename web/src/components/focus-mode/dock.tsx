@@ -430,18 +430,44 @@ export function MobileDock({
       pendingTranscriptRef.current = text
     }, []),
   )
+  // Flush whatever transcript is pending to the terminal, exactly once. Clears
+  // the ref BEFORE sending so two flush paths (the listening-stop effect below
+  // and the unmount cleanup) can never double-send: whichever fires first
+  // consumes the buffer, the other reads empty and no-ops.
+  const flushTranscript = React.useCallback(() => {
+    const text = pendingTranscriptRef.current.trim()
+    pendingTranscriptRef.current = ''
+    if (text) {
+      onSend(text)
+      onFocusTerm()
+    }
+  }, [onSend, onFocusTerm])
+  // Keep a ref to the latest flush so the unmount cleanup (which must run with an
+  // empty dep list, or it would fire on every onSend identity change) always
+  // calls the current version.
+  const flushTranscriptRef = React.useRef(flushTranscript)
+  React.useEffect(() => {
+    flushTranscriptRef.current = flushTranscript
+  }, [flushTranscript])
+
   const wasListeningRef = React.useRef(false)
   React.useEffect(() => {
     if (wasListeningRef.current && !dictation.listening) {
-      const text = pendingTranscriptRef.current.trim()
-      pendingTranscriptRef.current = ''
-      if (text) {
-        onSend(text)
-        onFocusTerm()
-      }
+      flushTranscript()
     }
     wasListeningRef.current = dictation.listening
-  }, [dictation.listening, onSend, onFocusTerm])
+  }, [dictation.listening, flushTranscript])
+
+  // Defensive flush (P2 polish): the normal flush is gated on the listening→idle
+  // transition, which depends on Web Speech firing `onend`. If `onend` never
+  // arrives (the dock unmounts mid-dictation — route change, focus-pane teardown
+  // — or the browser aborts recognition without an end event), the
+  // listening-stop effect never runs and a dictated transcript would be silently
+  // dropped. So on unmount we flush any pending transcript. The clear-before-send
+  // guard in flushTranscript makes this safe against a racing normal flush.
+  React.useEffect(() => {
+    return () => flushTranscriptRef.current()
+  }, [])
 
   // M18 snippet-panel tap-to-insert: with no composer, "insert" now sends the
   // snippet body straight to the terminal (live-type model — the body lands at
