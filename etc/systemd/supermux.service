@@ -66,6 +66,18 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/supermux-server
 Restart=always
 RestartSec=2
+# KillMode=process — NOT the default control-group. supermux is a SESSION
+# SUPERVISOR: it spawns a tmux server (+ claude/codex/shell panes) that must
+# OUTLIVE a restart of supermux-server itself. The default control-group would
+# SIGKILL the whole cgroup — tmux and every agent pane — on every deploy,
+# crash-restart, or `systemctl restart`, so all sessions would come back
+# `stopped`. With `process`, systemd signals ONLY the main supermux-server
+# process; the tmux server keeps running and the freshly-started supermux
+# re-attaches to it (the spawn path checks `tmux has-session` first). Trade-off:
+# `systemctl stop` then leaves agents running (intended — that's the persistence
+# guarantee). NOTE: a machine reboot still ends everything; surviving reboots is
+# a separate restore-on-boot feature.
+KillMode=process
 LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
