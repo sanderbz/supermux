@@ -78,15 +78,27 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}m`
 }
 
-/** Animated status border overlay (§4.3). Active = amber pulse 1.6s, Waiting =
- *  blue pulse 2.2s, Error = static calm orange. Reduce Motion → static
- *  full-opacity border (no pulse). Lives on its own inset overlay so it never
- *  competes with the card's hover-scale transform.
+/** Animated status border overlay (§4.3) — the CARD-level "attention" glow.
+ *  The pulse lives HERE on the card, not on the status dot (the dot is a static
+ *  colour indicator). Model:
  *
- *  Note: `starting` no longer borrows the amber active treatment — the dot's
- *  neutral booting pulse already carries that signal, and the amber border
- *  would falsely advertise "active work in progress" while the agent is still
- *  spawning. No border during boot keeps the tile calm. */
+ *    • `active`  (loading / working) → NO glow. While the agent is loading or
+ *      thinking the top-right active spinner dot already carries the "busy"
+ *      signal; a pulsing card on top of it reads as an alarm and was the
+ *      unwanted "pulse while loading" (the detector classifies a freshly-booted
+ *      session `active` the moment its boot output streams, so an `active` glow
+ *      = a loading-phase glow). Keep the loading tile calm; the spinner is enough.
+ *    • `idle`    (turn ended / done → green) → a SUBTLE green "ready" breath.
+ *      Lower peak opacity (0.30 vs 0.55) and a slower cadence (2.8s) than the
+ *      waiting pulse so a finished session announces itself as a calm "ready",
+ *      never an alarm.
+ *    • `waiting` (needs input) → the blue attention pulse (2.2s), kept.
+ *    • `error`   → static calm orange border (no pulse), kept.
+ *    • `starting` / `stopped` → no glow (boot stays calm; stopped is "off").
+ *
+ *  Reduce Motion → static border at the token's resting opacity (no pulse).
+ *  Lives on its own inset overlay so it never competes with the card's
+ *  hover-scale transform. */
 function StatusBorder({
   status,
   reduce,
@@ -95,12 +107,25 @@ function StatusBorder({
   reduce: boolean | null
 }) {
   let token: string | null = null
-  let duration = 1.6
-  if (status === 'active') token = '--status-active'
-  else if (status === 'waiting') {
+  let duration = 2.2
+  // Peak halo opacity at the bright end of the breath. The green "ready" glow
+  // is deliberately subtler than the blue "needs input" attention pulse.
+  let peak = 0.55
+  // Resting opacity used for the static (Reduce Motion / error) border.
+  let restOpacity = 0.9
+  if (status === 'waiting') {
     token = '--status-waiting'
     duration = 2.2
+    peak = 0.55
+  } else if (status === 'idle') {
+    // Done / ready — subtle green card glow. Lower peak + slower breath so it
+    // reads as a calm "ready", distinct from (and gentler than) the blue pulse.
+    token = '--status-ready'
+    duration = 2.8
+    peak = 0.3
+    restOpacity = 0.6
   } else if (status === 'error') token = '--status-error'
+  // NOTE: no `active` branch — loading/working shows no card glow by design.
 
   if (!token) return null
 
@@ -111,10 +136,10 @@ function StatusBorder({
       className="pointer-events-none absolute inset-0 z-10 rounded-xl"
       animate={
         isStatic
-          ? { boxShadow: `inset 0 0 0 1.5px hsl(var(${token}) / 0.9)` }
+          ? { boxShadow: `inset 0 0 0 1.5px hsl(var(${token}) / ${restOpacity})` }
           : {
               boxShadow: [
-                `inset 0 0 0 1.5px hsl(var(${token}) / 0.55)`,
+                `inset 0 0 0 1.5px hsl(var(${token}) / ${peak})`,
                 `inset 0 0 0 1.5px hsl(var(${token}) / 0)`,
               ],
             }
