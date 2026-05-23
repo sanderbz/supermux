@@ -111,6 +111,11 @@ function keyToBytes(name: string): string {
       return '\r'
     case 'Tab':
       return '\t'
+    case 'BackTab':
+    case 'ShiftTab':
+      // CSI Z — terminfo `kcbt`. The standard back-tab sequence agents (claude,
+      // gum, fzf, …) recognise for menu navigation in the reverse direction.
+      return '\x1b[Z'
     case 'Esc':
     case 'Escape':
       return '\x1b'
