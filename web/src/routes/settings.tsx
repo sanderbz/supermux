@@ -400,7 +400,7 @@ export function Settings() {
             <Row
               label="Overview hover preview"
               hint="Hovering a tile shows a live terminal, or more lines of recent output."
-              stacked={
+              control={
                 <SegmentedControl
                   ariaLabel="Overview hover preview"
                   value={hoverPreview}
