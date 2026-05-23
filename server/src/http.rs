@@ -18,6 +18,7 @@ use crate::agents;
 use crate::audit;
 use crate::auth;
 use crate::board;
+use crate::claude_tools;
 use crate::files;
 use crate::hooks;
 use crate::prefs;
@@ -75,6 +76,8 @@ fn protected_router(state: AppState) -> Router {
         .merge(scheduler::router_for(state.clone())) // M8
         .merge(sse::router_for(state.clone())) // M27: GET /api/events SSE stream
         .merge(agents::router_for(state.clone())) // M5b (wait); M9 extends
+        // skills-mcp-manager: Claude tools registry + MCP CRUD (bearer-protected).
+        .merge(claude_tools::router_for(state.clone()))
         .merge(prefs::router_for(state.clone())) // M9 (snippets + kbd-groups)
         .merge(audit::router_for(state.clone())) // M9 (audit log read)
         .layer(from_fn_with_state(state, auth::auth_middleware))
