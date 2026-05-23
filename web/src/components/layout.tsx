@@ -15,6 +15,8 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
 import { CommandPalette } from '@/components/command-palette/command-palette'
+import { ArchivedSheet } from '@/components/archived/archived-sheet'
+import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useStandaloneMode } from '@/hooks/use-standalone-mode'
 import { useSseStatus } from '@/hooks/use-sse'
 import { useSseConnectionLink } from '@/hooks/use-connection-link'
@@ -183,6 +185,11 @@ export function Layout() {
   const { pathname } = useLocation()
   const isFocus = pathname.startsWith('/focus/')
   const isOverview = pathname === '/'
+  // Archived sheet open-state lives in a shared store so the ⌘K command and the
+  // overview overflow item open the same shell-mounted instance (no permanent
+  // estate — the sheet is only in the DOM as an overlay when opened).
+  const archivedOpen = useArchivedSheet((s) => s.open)
+  const setArchivedOpen = useArchivedSheet((s) => s.setOpen)
   return (
     <div
       className="flex h-full w-full"
@@ -203,6 +210,11 @@ export function Layout() {
        *  to the console — opening Cmd+K did nothing visible. The palette owns
        *  its own document-level keydown capture + preventDefault. */}
       <CommandPalette />
+      {/* feat-archive-recover: the Archived sessions sheet, mounted ONCE at
+       *  shell level so the ⌘K "View archived sessions" command and the overview
+       *  overflow item open the same instance. Opt-in — zero always-on estate
+       *  (it's only in the DOM as an overlay while open). */}
+      <ArchivedSheet open={archivedOpen} onOpenChange={setArchivedOpen} />
     </div>
   )
 }

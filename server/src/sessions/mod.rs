@@ -49,10 +49,16 @@ pub fn router_for(state: AppState) -> Router {
     use axum::routing::{get, patch, post};
     Router::new()
         .route("/api/sessions", get(list_handler).post(create_handler))
+        // Archived (soft-deleted) sessions — the Archived sheet's data source.
+        // Registered BEFORE `/api/sessions/{name}` so `archived` is matched as a
+        // literal segment, never captured as a `{name}` path param.
+        .route("/api/sessions/archived", get(list_archived_handler))
         .route(
             "/api/sessions/{name}",
             get(get_handler).delete(delete_handler),
         )
+        // Hard delete (the "Delete forever" path) — archived-only, audited.
+        .route("/api/sessions/{name}/purge", axum::routing::delete(purge_handler))
         .route("/api/sessions/{name}/duplicate", post(duplicate_handler))
         .route("/api/sessions/{name}/config", patch(config_handler))
         // ── M3 tmux lifecycle ──
@@ -251,6 +257,80 @@ pub async fn get(state: &AppState, name: &str) -> Result<SessionView, AppError> 
         .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
     let rt = db::sessions::runtime(&state.pool, name).await?;
     Ok(view(&s, rt.as_ref()))
+}
+
+/// List archived (soft-deleted) sessions — the Archived sheet's data source.
+/// Mirrors [`list`] but on `WHERE archived = 1` (most-recently-touched first).
+/// Each row carries `archived: true` so the client renders them in the recovery
+/// sheet rather than the live overview.
+pub async fn list_archived(state: &AppState) -> Result<Vec<SessionView>, AppError> {
+    let sessions = db::sessions::list_archived(&state.pool).await?;
+    let rt_map: HashMap<String, SessionRuntime> = db::sessions::list_runtimes(&state.pool)
+        .await?
+        .into_iter()
+        .map(|r| (r.name.clone(), r))
+        .collect();
+    Ok(sessions
+        .iter()
+        .map(|s| view(s, rt_map.get(&s.name)))
+        .collect())
+}
+
+/// Hard-delete (the "Delete forever" path): permanently DELETE an ARCHIVED
+/// session row. Refuses when the row is missing (404) or still live (409,
+/// `archived = 0`) so purge can never nuke a running/visible session. Audited
+/// as `session.purge` (harder-destructive than `session.delete` — the archived
+/// scrollback dump goes too), and the dump file under `<data_dir>/archives/` is
+/// best-effort removed. `session_runtime` + child rows cascade via FK.
+pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
+    // Refuse a live (or absent) session BEFORE the destructive DELETE so the
+    // caller gets a clean 404/409 rather than a silent no-op.
+    match db::sessions::is_archived(&state.pool, name).await? {
+        None => return Err(AppError::NotFound(format!("session '{name}'"))),
+        Some(false) => {
+            return Err(AppError::Conflict(format!(
+                "session '{name}' is not archived — archive it before purging"
+            )))
+        }
+        Some(true) => {}
+    }
+
+    let removed = db::sessions::purge_archived(&state.pool, name).await?;
+    if removed == 0 {
+        // Raced with another purge/unarchive between the guard and the DELETE.
+        return Err(AppError::NotFound(format!("session '{name}'")));
+    }
+
+    // R2-011: audit row per ARCHITECTURE §3.3 — every destructive HTTP call
+    // records an entry. `purge` is the hardest-destructive session op (the row
+    // AND its archived scrollback are gone), so it MUST leave a forensic trace.
+    // `?` (not `let _ =`) so a failed audit-insert fails the request, matching
+    // the `session.delete`/`session.archive` patterns.
+    db::audit::log(&state.pool, "user", "session.purge", name, json!({})).await?;
+
+    // Best-effort: remove the scrollback dump(s) this session wrote on archive
+    // (`<data_dir>/archives/<name>-<ts>.log`). Failure is non-fatal — the row is
+    // already gone; a stale dump is harmless and never re-surfaces in the UI.
+    let archive_dir = state.config.data_dir.join("archives");
+    let prefix = format!("{name}-");
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(entries) = std::fs::read_dir(&archive_dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let fname = fname.to_string_lossy();
+                if fname.starts_with(&prefix) && fname.ends_with(".log") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    })
+    .await;
+
+    // Drop any lingering per-session in-memory maps (hook token, locks, watches).
+    // The background loops already exited at archive time (they guard on
+    // `exists_active`), so this is just final cleanup.
+    state.forget_session(name);
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,6 +561,12 @@ async fn list_handler(
     Ok(ok(list(&state).await?))
 }
 
+async fn list_archived_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Envelope<Vec<SessionView>>>, AppError> {
+    Ok(ok(list_archived(&state).await?))
+}
+
 async fn get_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -501,6 +587,14 @@ async fn delete_handler(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     delete(&state, &name).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn purge_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    purge(&state, &name).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

@@ -27,7 +27,7 @@
 
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Command as CommandIcon, TerminalSquare } from 'lucide-react'
+import { Archive, Command as CommandIcon, TerminalSquare } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import {
@@ -40,6 +40,7 @@ import { useSlashCommands } from '@/hooks/use-commands'
 import { settingsRequest } from '@/lib/api/client'
 import type { ApiSession, SlashCommand } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
+import { useArchivedSheet } from '@/stores/archived-sheet-store'
 
 // ── Row shape: one normalized item the palette can render & invoke ────────────
 
@@ -56,7 +57,18 @@ interface CommandRow {
   cmd: SlashCommand
 }
 
-type PaletteRow = SessionRow | CommandRow
+/** An in-app action (not a session, not a slash command) — e.g. "View archived
+ *  sessions". Routed to a local handler rather than a pty send. */
+interface ActionRow {
+  kind: 'action'
+  id: string // `action:${key}`
+  label: string
+  keywords: string
+  icon: typeof Archive
+  run: () => void
+}
+
+type PaletteRow = SessionRow | CommandRow | ActionRow
 
 // ── Hook: the global ⌘K / Ctrl+K listener ────────────────────────────────────
 //
@@ -105,6 +117,15 @@ function matchesCommand(c: SlashCommand, q: string): boolean {
   return false
 }
 
+function matchesAction(a: ActionRow, q: string): boolean {
+  if (!q) return true
+  const needle = q.toLowerCase()
+  return (
+    a.label.toLowerCase().includes(needle) ||
+    a.keywords.toLowerCase().includes(needle)
+  )
+}
+
 // ── The palette ──────────────────────────────────────────────────────────────
 
 export function CommandPalette() {
@@ -112,6 +133,7 @@ export function CommandPalette() {
   const navigate = useNavigate()
   const { sessions } = useSessions()
   const { data: commands = [] } = useSlashCommands()
+  const openArchived = useArchivedSheet((s) => s.openSheet)
 
   const [query, setQuery] = React.useState('')
   const [active, setActive] = React.useState(0)
@@ -145,8 +167,26 @@ export function CommandPalette() {
     setActive(0)
   }, [])
 
+  // In-app actions (not sessions, not slash commands). Hidden in slash mode
+  // (a leading "/" means the user wants a command). Stable identity so arrow-key
+  // state survives re-renders.
+  const actions: ActionRow[] = React.useMemo(
+    () => [
+      {
+        kind: 'action',
+        id: 'action:view-archived',
+        label: 'View archived sessions',
+        keywords: 'archived archive restore recover trash deleted purge',
+        icon: Archive,
+        run: openArchived,
+      },
+    ],
+    [openArchived],
+  )
+
   // Build the flat row list — sessions first (when query is not slash-prefixed),
-  // then commands. Memoized so arrow-key state stays stable across renders.
+  // then in-app actions, then commands. Memoized so arrow-key state stays stable
+  // across renders.
   const rows: PaletteRow[] = React.useMemo(() => {
     const slashMode = query.startsWith('/')
     const cmdQ = slashMode ? query.slice(1) : query
@@ -160,11 +200,14 @@ export function CommandPalette() {
             name: s.name,
             session: s,
           }))
+    const actionRows: PaletteRow[] = slashMode
+      ? []
+      : actions.filter((a) => matchesAction(a, query))
     const commandRows: PaletteRow[] = commands
       .filter((c) => matchesCommand(c, cmdQ))
       .map<CommandRow>((c) => ({ kind: 'command', id: `command:${c.cmd}`, cmd: c }))
-    return [...sessionRows, ...commandRows]
-  }, [sessions, commands, query])
+    return [...sessionRows, ...actionRows, ...commandRows]
+  }, [sessions, actions, commands, query])
 
   // Clamp the highlight whenever the row list shrinks (so a narrowing filter
   // never leaves the active index past the end).
@@ -180,6 +223,13 @@ export function CommandPalette() {
       if (row.kind === 'session') {
         setOpen(false)
         navigate(`/focus/${encodeURIComponent(row.name)}`)
+        return
+      }
+      if (row.kind === 'action') {
+        // In-app action (e.g. open the Archived sheet) — close the palette then
+        // run the local handler.
+        setOpen(false)
+        row.run()
         return
       }
       // Command row — pick the freshest session by `last_activity` (falling back
@@ -332,6 +382,16 @@ function PaletteRowView({
               {row.session.task_summary}
             </span>
           )}
+        </>
+      ) : row.kind === 'action' ? (
+        <>
+          <row.icon
+            className="size-4 shrink-0 text-muted-foreground"
+            aria-hidden
+          />
+          <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
+            {row.label}
+          </span>
         </>
       ) : (
         <>
