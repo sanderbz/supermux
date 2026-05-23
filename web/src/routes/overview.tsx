@@ -113,15 +113,10 @@ export function Overview() {
   const navigate = useNavigate()
   const reduce = useReducedMotion()
 
-  const sizeConfig = React.useMemo(
-    () => getOverviewSizeConfig(overviewSize),
-    [overviewSize],
-  )
   const tileGridClass = React.useMemo(
     () => gridClassFor(overviewSize),
     [overviewSize],
   )
-  const tileScale = sizeConfig.scale
 
   const [rawQuery, setRawQuery] = React.useState('')
   const [query, setQuery] = React.useState('')
@@ -213,14 +208,15 @@ export function Overview() {
 
   // Desktop container widens at `lg` (polish-pass #3) — mobile/tablet keep
   // the existing max-w-6xl so nothing reflows below the breakpoint. The lg
-  // max-width tracks the active density tier so larger cards get breathing
-  // room instead of crashing into the viewport edge (feat-overview-sizes).
-  // All four max-widths are concrete Tailwind literals so JIT compiles them.
+  // max-width tracks the active density tier so wider cards (tier 3+) get
+  // breathing room instead of crashing into the viewport edge. Tiers 1 & 2
+  // share the historical baseline (same column count, just more vertical room).
+  // All max-widths are concrete Tailwind literals so JIT compiles them.
   const containerMaxClass: Record<OverviewSize, string> = {
     1: 'lg:max-w-[82rem]',
-    2: 'lg:max-w-[86rem]',
-    3: 'lg:max-w-[90rem]',
-    4: 'lg:max-w-[96rem]',
+    2: 'lg:max-w-[82rem]',
+    3: 'lg:max-w-[86rem]',
+    4: 'lg:max-w-[90rem]',
   }
 
   return (
@@ -327,7 +323,7 @@ export function Overview() {
                 layoutId={`session-${s.name}`}
                 transition={springs.smooth}
               >
-                <SessionTile session={toTileSession(s)} sizeScale={tileScale} />
+                <SessionTile session={toTileSession(s)} sizeTier={overviewSize} />
               </motion.div>
             ))}
           </div>

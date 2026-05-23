@@ -11,6 +11,11 @@ import { usePeekPrewarm } from '@/hooks/use-peek-prewarm'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useUI } from '@/stores/ui-store'
 import {
+  MIN_OVERVIEW_SIZE,
+  getOverviewSizeConfig,
+  type OverviewSize,
+} from '@/lib/overview-size'
+import {
   useNavigateMorph,
   vtSessionName,
   supportsViewTransitions,
@@ -26,32 +31,36 @@ import {
 } from '@/components/terminal/stopped-session'
 import type { TileSession } from './types'
 
-// Idle geometry (px) — must match the header + 6-line tail so the grid slot
-// reserves exactly the idle height. The card is absolutely positioned inside
-// that slot, so its hover-growth overflows downward over the next row WITHOUT
-// reflowing the grid (Codex #8: container-only morph, not canvas).
+// Idle geometry (px) — the slot reserves exactly the idle tile height so the
+// card can be absolutely positioned inside that slot and its hover-growth can
+// overflow downward over the next row WITHOUT reflowing the grid (Codex #8:
+// container-only morph, not canvas).
 const HEADER_H = 12 + 32 + 16 + 4 // pt-3 + title row + meta row + mt-1
 const TAIL_LINE_H = 14
 const TAIL_PAD = 8
-const BASE_IDLE_LINES = 6
-// Hover ceilings. `live` mode shows a fixed-height zoomed terminal; `expanded`
-// mode grows the static tail to ~20 lines (vs the 6 idle lines at tier 1).
-const BASE_EXPANDED_LINES = 20
-const BASE_LIVE_PREVIEW_H = 230 // px — the scaled live-terminal viewport at tier 1
+// Hover ceiling for the `expanded` (non-live) preview mode — grows the static
+// tail beyond the idle line count so the hover-peek shows meaningfully more.
+const EXPANDED_LINES_BONUS = 14
 
-/** Per-tier-scaled tile geometry. The chrome (HEADER_H, font sizes) does NOT
- *  scale — only the spatial mass (tail line count, live-zoom pane height) — so
- *  type hierarchy reads the same at every tier and the live-zoom xterm keeps
- *  its native font size while FitAddon picks up more cols×rows in the bigger
- *  container (the user mandate: scale the container, don't warp xterm). */
-function geometryForScale(scale: number) {
-  const idleLines = Math.max(BASE_IDLE_LINES, Math.round(BASE_IDLE_LINES * scale))
-  const expandedLines = Math.max(
-    BASE_EXPANDED_LINES,
-    Math.round(BASE_EXPANDED_LINES * scale),
-  )
-  const livePreviewH = Math.round(BASE_LIVE_PREVIEW_H * scale)
-  const idleH = HEADER_H + idleLines * TAIL_LINE_H + TAIL_PAD
+/** Per-tier-resolved tile geometry. The chrome (HEADER_H, font sizes) does NOT
+ *  change — only the spatial mass (tail line count, idle bonus height, live-zoom
+ *  pane height) — so type hierarchy reads the same at every tier and the
+ *  live-zoom xterm keeps its native font size while FitAddon picks up more
+ *  cols×rows in the bigger container (the user mandate: scale the container,
+ *  don't warp xterm).
+ *
+ *  Tier-1 baseline is +20px taller than the historical pre-rework default
+ *  (`idleBonusPx`) so the preview area breathes without a jolt; tier 2 adds
+ *  ~50% more vertical room via a higher `idleLines`; tiers 3 & 4 hold the
+ *  tier-2 vertical room and drop a column instead (cards get wider, not
+ *  taller). All live-peek heights scale proportionally so the hover stays
+ *  representative of the tile size. */
+function geometryForTier(tier: OverviewSize) {
+  const cfg = getOverviewSizeConfig(tier)
+  const idleLines = cfg.idleLines
+  const expandedLines = idleLines + EXPANDED_LINES_BONUS
+  const livePreviewH = cfg.livePreviewPx
+  const idleH = HEADER_H + idleLines * TAIL_LINE_H + TAIL_PAD + cfg.idleBonusPx
   return { idleLines, expandedLines, livePreviewH, idleH }
 }
 
@@ -110,12 +119,12 @@ export interface SessionTileProps {
   session: TileSession
   onReattach?: (name: string) => void
   onRemove?: (name: string) => void
-  /** Density multiplier (feat-overview-sizes). 1.0 = current polish-pass
-   *  baseline; higher = proportionally taller idle preview AND larger live-zoom
-   *  pane on hover. Title/font sizes do NOT scale — only spatial mass — so
-   *  hierarchy stays consistent across tiers. Default 1.0 preserves the
-   *  baseline for non-overview call sites (e.g. dev-tiles). */
-  sizeScale?: number
+  /** Density tier (card-sizes-rework). 1 = default (current baseline + 20px
+   *  idle height); 2 = ~+50% taller (same column count); 3+ = one fewer column
+   *  per step (cards get wider). Title/font sizes do NOT scale — only spatial
+   *  mass — so hierarchy stays consistent across tiers. Default 1 preserves
+   *  the baseline for non-overview call sites (e.g. dev-tiles). */
+  sizeTier?: OverviewSize
 }
 
 /** The hero surface (§4.3). One tile = one agent: title (Claude chat summary),
@@ -131,7 +140,7 @@ export function SessionTile({
   session,
   onReattach,
   onRemove,
-  sizeScale = 1,
+  sizeTier = MIN_OVERVIEW_SIZE,
 }: SessionTileProps) {
   const reduce = useReducedMotion()
   const {
@@ -139,7 +148,7 @@ export function SessionTile({
     expandedLines: EXPANDED_LINES,
     livePreviewH: LIVE_PREVIEW_H,
     idleH: IDLE_H,
-  } = React.useMemo(() => geometryForScale(sizeScale), [sizeScale])
+  } = React.useMemo(() => geometryForTier(sizeTier), [sizeTier])
   const fine = useMediaQuery('(pointer: fine)')
   const coarse = useMediaQuery('(pointer: coarse)')
   const navigateMorph = useNavigateMorph()
