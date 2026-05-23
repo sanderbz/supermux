@@ -36,6 +36,7 @@ import {
   MessageSquare,
   Play,
   Send,
+  SlidersHorizontal,
   TerminalSquare,
   User,
 } from 'lucide-react'
@@ -55,6 +56,8 @@ import { settingsRequest } from '@/lib/api/client'
 import { boardApi, type ApiSession, type BoardIssue, type SlashCommand } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
+import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
+import { ClaudeToolsHost } from '@/components/claude-tools/claude-tools-host'
 
 // ── Row shape: one normalized item the palette can render & invoke ────────────
 
@@ -181,6 +184,7 @@ export function CommandPalette() {
   const { sessions } = useSessions()
   const { data: commands = [] } = useSlashCommands()
   const openArchived = useArchivedSheet((s) => s.openSheet)
+  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
   const board = useBoard()
   const { toast } = useToast()
   const { sendToAgent } = useSendToAgent()
@@ -252,6 +256,16 @@ export function CommandPalette() {
         icon: Archive,
         run: openArchived,
       },
+      {
+        kind: 'action',
+        id: 'action:claude-tools',
+        label: 'Manage MCP / skills / commands…',
+        keywords: 'mcp skills commands tools claude manage servers plugins config',
+        icon: SlidersHorizontal,
+        // Scope to the freshest session's project (if any) so the project-scoped
+        // reads resolve; falls back to global-only when there are no sessions.
+        run: () => openClaudeTools(pickFreshestSession(sessions)?.name ?? null),
+      },
     ]
     if (!onBoard) return base
     return [
@@ -289,7 +303,7 @@ export function CommandPalette() {
         run: () => enterMode({ step: 'done-pick-issue' }),
       },
     ]
-  }, [openArchived, onBoard, enterMode])
+  }, [openArchived, openClaudeTools, sessions, onBoard, enterMode])
 
   // Issues a board verb can target. "Send" only offers agent-owned issues (a
   // human-owned card can't be claimed/dispatched); comment + done offer any
@@ -615,6 +629,14 @@ export function CommandPalette() {
   const placeholder = subFlowPlaceholder(mode)
 
   return (
+    <>
+    {/* The Claude tools manager (skills/MCP/commands) — mounted here, alongside
+     *  the palette, so it shares the shell-level mount the palette already has in
+     *  <Layout>. The ⌘K "Manage MCP / skills / commands…" action, the focus
+     *  title-bar icon, and the Settings section all open this ONE instance via
+     *  the claude-tools store. Opt-in — only in the DOM as an overlay while
+     *  open. */}
+    <ClaudeToolsHost />
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         className={cn(
@@ -727,6 +749,7 @@ export function CommandPalette() {
         )}
       </DialogContent>
     </Dialog>
+    </>
   )
 }
 

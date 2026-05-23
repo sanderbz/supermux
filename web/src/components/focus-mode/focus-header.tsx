@@ -10,11 +10,12 @@
 // props; the merge keeps both by giving the desktop one a distinct name.
 
 import { motion } from 'framer-motion'
-import { ChevronLeft, Minimize2, Square } from 'lucide-react'
+import { ChevronLeft, Minimize2, SlidersHorizontal, Square } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import type { SessionStatus } from '@/lib/api'
+import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import {
   supportsViewTransitions,
@@ -54,6 +55,9 @@ export function DesktopFocusHeader({
   onDetach,
   onStop,
 }: DesktopFocusHeaderProps) {
+  // Entry point 1 (skills-mcp-manager plan §C.1): the Claude tools manager,
+  // pre-scoped to THIS session's project so .mcp.json / .claude/* resolve.
+  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
   return (
     <header
       className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3"
@@ -77,6 +81,22 @@ export function DesktopFocusHeader({
       </span>
 
       <div className="flex shrink-0 items-center gap-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <motion.button
+              type="button"
+              onClick={() => openClaudeTools(name)}
+              whileTap={{ scale: 0.96 }}
+              transition={springs.buttonPress}
+              aria-label="Claude tools"
+              className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary"
+            >
+              <SlidersHorizontal className="size-4" />
+            </motion.button>
+          </TooltipTrigger>
+          <TooltipContent>Claude tools</TooltipContent>
+        </Tooltip>
+
         <Tooltip>
           <TooltipTrigger asChild>
             <motion.button
@@ -131,6 +151,11 @@ export function FocusHeader({
   onBack,
   className,
 }: FocusHeaderProps) {
+  // Entry point 1, mobile (skills-mcp-manager plan §C.1): the right slot — a bare
+  // spacer since R5 removed the redundant "···" — now hosts the Claude tools
+  // icon, pre-scoped to THIS session's project. Keeps the title centred against
+  // the left back-button (same 44pt footprint as the old spacer).
+  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
   return (
     <header
       className={cn(
@@ -177,11 +202,20 @@ export function FocusHeader({
         </h1>
       </div>
 
-      {/* R5 — the title-bar "···" overflow was removed: it opened the same
-          SessionPickerSheet as the bottom-left session pill (redundant; the
-          pill is the richer affordance). A spacer keeps the title centred
-          against the left back-button. */}
-      <span className="size-11 shrink-0" aria-hidden />
+      {/* R5 removed the redundant "···" overflow (it duplicated the session
+          pill). The freed right slot now carries the Claude tools manager icon
+          — a single 44pt affordance, keeping the title centred against the left
+          back-button. */}
+      <motion.button
+        type="button"
+        aria-label="Claude tools"
+        whileTap={{ scale: 0.92 }}
+        transition={springs.buttonPress}
+        onClick={() => openClaudeTools(name)}
+        className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
+      >
+        <SlidersHorizontal className="size-5" />
+      </motion.button>
     </header>
   )
 }
