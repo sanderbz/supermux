@@ -192,6 +192,23 @@ async fn require_session(state: &AppState, name: &str) -> Result<Session, AppErr
         .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))
 }
 
+/// R2 board↔session link liveness: when a session's lifecycle changes
+/// (archive/unarchive/stop/delete), any board card linked to it goes stale —
+/// `IssueView::session_live` flips, so an open board would keep showing a
+/// confidently-wrong live dot until a manual refetch. Re-publish the board over
+/// SSE so every open board updates, but ONLY when the session actually has linked
+/// issues (otherwise a board re-publish on every unrelated session op is pure
+/// noise). Best-effort: a failed lookup is logged, never fatal to the lifecycle op.
+async fn emit_board_if_linked(state: &AppState, name: &str) {
+    match db::board::issues_for_session(&state.pool, name).await {
+        Ok(issues) if !issues.is_empty() => crate::board::emit_board(state).await,
+        Ok(_) => {} // no linked issues — nothing on the board to refresh.
+        Err(e) => {
+            tracing::debug!(name = %name, error = %e, "emit_board_if_linked: issues_for_session failed")
+        }
+    }
+}
+
 // ── public lifecycle API ────────────────────────────────────────────────────
 
 /// Spawn (or re-attach to) the session's tmux session and launch the agent.
@@ -330,6 +347,7 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
 
     if !tmux.exists().await? {
         db::sessions::set_last_status(&state.pool, name, "stopped").await?;
+        emit_board_if_linked(state, name).await;
         return Ok(());
     }
 
@@ -369,6 +387,10 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
         emit_alert(state, name, "error", &format!("stop teardown failed: {e}"));
     }
     db::sessions::set_last_status(&state.pool, name, "stopped").await?;
+    // R2: stopping the agent doesn't archive the row (the link stays live), but
+    // the board card mirrors the linked session's state — re-publish so a linked
+    // card reflects the now-stopped session rather than a stale running dot.
+    emit_board_if_linked(state, name).await;
     Ok(())
 }
 
@@ -495,6 +517,13 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
         }),
     });
 
+    // R2: the session is now archived (archived = 1 committed above), so any card
+    // linked to it just went stale (`session_live` → false). Re-publish the board
+    // so open boards swap the live dot for "session archived — reassign?" without
+    // a manual refetch. Synchronous + before the spawned teardown so the board
+    // reflects the change as promptly as the overview tile does.
+    emit_board_if_linked(state, name).await;
+
     let state = state.clone();
     let name = name.to_string();
     let job = job_id.clone();
@@ -597,6 +626,10 @@ pub async fn unarchive(state: &AppState, name: &str) -> Result<(), AppError> {
         });
     }
 
+    // R2: un-archiving makes a linked card's session live again (`session_live`
+    // → true). Re-publish the board so the card recovers its live dot.
+    emit_board_if_linked(state, name).await;
+
     Ok(())
 }
 
@@ -648,3 +681,86 @@ static KEY_ALLOWLIST: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     }
     s
 });
+
+#[cfg(test)]
+mod link_liveness_tests {
+    //! R2: a session lifecycle change re-publishes the board ONLY when the
+    //! session has linked issues (otherwise it's noise). [`emit_board_if_linked`]
+    //! is the gate used by archive/unarchive/stop; this exercises it directly so
+    //! the rule is covered without driving real tmux.
+
+    use super::*;
+    use crate::config::Config;
+    use crate::db::board::NewIssue;
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-link-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    fn saw_board_event(rx: &mut tokio::sync::broadcast::Receiver<SseEvent>) -> bool {
+        let mut seen = false;
+        while let Ok(ev) = rx.try_recv() {
+            if ev.event == "board" {
+                seen = true;
+            }
+        }
+        seen
+    }
+
+    #[tokio::test]
+    async fn emit_board_only_when_session_has_linked_issues() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "worker-2", "/tmp", "claude")
+            .await
+            .unwrap();
+        db::sessions::insert_minimal(&state.pool, "lonely", "/tmp", "claude")
+            .await
+            .unwrap();
+        db::board::insert_issue(
+            &state.pool,
+            &NewIssue {
+                id: "B-1".into(),
+                title: "linked".into(),
+                desc: String::new(),
+                status: "doing".into(),
+                session: Some("worker-2".into()),
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "agent".into(),
+                pos: 0.0,
+                notified: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        // A session WITH a linked issue → board re-published.
+        let mut rx = state.sse_tx.subscribe();
+        emit_board_if_linked(&state, "worker-2").await;
+        assert!(saw_board_event(&mut rx), "linked session re-publishes the board");
+
+        // A session with NO linked issue → no board re-publish (no noise).
+        let mut rx = state.sse_tx.subscribe();
+        emit_board_if_linked(&state, "lonely").await;
+        assert!(
+            !saw_board_event(&mut rx),
+            "unlinked session must not re-publish the board"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

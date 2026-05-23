@@ -412,6 +412,15 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
 
 pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     ensure_session(state, name).await?;
+    // R2: capture whether any board card links to this session BEFORE the delete.
+    // The `issues.session` FK is `ON DELETE SET NULL`, so after the row is gone
+    // the link is already nulled and `issues_for_session` would find nothing — we
+    // must check first, then re-publish the board AFTER so open boards drop the
+    // now-dangling link (`session_live` → false) without a manual refetch.
+    let had_linked_issues = !db::board::issues_for_session(&state.pool, name)
+        .await
+        .unwrap_or_default()
+        .is_empty();
     // Best-effort tmux teardown so a deleted session leaves no orphan pane/FIFO.
     let _ = tmux::Tmux::new(name).kill_session().await;
     db::sessions::delete(&state.pool, name).await?;
@@ -446,6 +455,12 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     // §3.2.5 lock-map lifecycle: drop every per-session in-memory map entry so
     // session churn does not leak DashMap entries.
     state.forget_session(name);
+
+    // R2: if any card linked to this (now-deleted) session, re-publish the board
+    // so open boards reflect the FK-nulled, now-stale link immediately.
+    if had_linked_issues {
+        crate::board::emit_board(state).await;
+    }
     Ok(())
 }
 
