@@ -36,7 +36,6 @@ import { StatusDot } from '@/components/session-tile/status-dot'
 import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
 import { FocusHeader } from '@/components/focus-mode/focus-header'
 import { MobileDock } from '@/components/focus-mode/dock'
-import { AccessoryBar } from '@/components/kbd-accessory/accessory-bar'
 import { useKbdGroups } from '@/hooks/use-kbd-groups'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { SpecialsSheet } from '@/components/focus-mode/specials-sheet'
@@ -205,20 +204,15 @@ export function MobileFocus() {
             )}
           </div>
 
-          {/* M16 — swipeable kbd-accessory bar, pinned directly above the
-              dock so it sits over the keyboard. `onMore` reuses the M15
-              SpecialsSheet (all-groups vertical list). The Gesture / slash /
-              snippet plug-in props are intentionally left for M17 / M18 to
-              wire WITHOUT editing accessory-bar.tsx (§29 dep-graph fix). */}
-          <AccessoryBar
-            onKey={(key) => termRef.current?.sendKey(key)}
-            onBack={goOverview}
-            onHideKeyboard={() => {
-              const el = document.activeElement
-              if (el instanceof HTMLElement) el.blur()
-            }}
-            onMore={() => setSpecialsOpen(true)}
-          />
+          {/* The M16 swipeable kbd-accessory bar (formerly mounted here) was
+              removed in the mobile-finishing pass: it sat ABOVE the MobileDock
+              as a second toolbar, and its Pager chips no-op'd silently because
+              the terminal imperative handle wasn't registered until after the
+              terminal mounted via onTermReady — leaving users tapping a dead
+              bar. The lower MobileDock already covers the same shortcuts
+              (keyboard toggle, specials/SpecialsSheet, snippets, send),
+              and `kbdGroups` are still exposed via the "···" Specials sheet
+              below. Clean removal — no orphaned import. */}
 
           <MobileDock
             current={current}

@@ -99,7 +99,15 @@ export function MobileSheet({ onDismiss, children }: MobileSheetProps) {
             'fixed inset-x-0 bottom-0 z-50 flex h-full flex-col',
             // 10px continuous top corners (Apple Maps), glass regularMaterial.
             'rounded-t-[10px] border-t border-border/60 outline-none',
-            'glass pt-safe',
+            // No `pt-safe` here: the FocusHeader (first real child of the
+            // sheet) carries its OWN pt-safe so the safe-area inset resolves
+            // against the header itself rather than the sheet. This survives
+            // (a) the swipe-peek motion.div's transform (which creates a
+            // containing block above this sheet) and (b) the View Transition
+            // morph (the UA pseudo-element inherits the header layout). Single
+            // source of safe-area, matching the desktop Layout/MobileTopBar
+            // pattern.
+            'glass',
           )}
         >
           <Drawer.Title className="sr-only">Focus session</Drawer.Title>

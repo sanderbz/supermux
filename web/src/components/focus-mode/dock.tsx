@@ -533,7 +533,11 @@ export function MobileDock({
         placeholder={value.startsWith('/') ? 'Slash command…' : 'Message…'}
         className={cn(
           'mb-0.5 min-h-11 min-w-0 flex-1 resize-none rounded-2xl border border-border bg-background',
-          'px-3 py-2.5 text-[15px] leading-5 outline-none focus:ring-2 focus:ring-ring',
+          // text-base (16px) — iOS Safari auto-zooms any focused input <16px;
+          // bumping from 15px → 16px is the proper modern fix. Do NOT add
+          // user-scalable=no to the viewport meta (a11y regression). leading-5
+          // (20px) is unchanged so the row height stays the same.
+          'px-3 py-2.5 text-base leading-5 outline-none focus:ring-2 focus:ring-ring',
         )}
       />
 
