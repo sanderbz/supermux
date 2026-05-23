@@ -6,7 +6,7 @@
 //! session reattach join in later milestones. Module definitions live in
 //! `lib.rs` so the binary and integration tests share them.
 
-use supermux_server::{config, db, http, log_redact, scheduler, sessions, state};
+use supermux_server::{agents, config, db, http, log_redact, scheduler, sessions, state};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,6 +31,11 @@ async fn main() -> anyhow::Result<()> {
     sessions::auto_actions::spawn_all(&state).await;
     // M9: resume per-session steering delivery on boot (§3.9 deliver loop).
     sessions::steering::deliver_loop::spawn_all(&state).await;
+    // AB3 (board-integration §C.2): auto-install supermux-managed commands (e.g.
+    // `/supermux-task`) into the service user's `~/.claude/commands/` so the
+    // agent's board-write surface is present with no manual step. Idempotent +
+    // non-clobbering (preserves a co-located user command of the same name).
+    agents::skills::seed_managed_commands().await;
 
     let app = http::router(state);
 
