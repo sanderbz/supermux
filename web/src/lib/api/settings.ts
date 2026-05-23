@@ -79,4 +79,31 @@ export const settingsApi = {
   /** POST `/api/settings/regenerate-token` — rotate the dashboard bearer. */
   regenerateToken: (): Promise<RegenerateTokenResult> =>
     settingsRequest('/api/settings/regenerate-token', { method: 'POST' }),
+
+  /** `GET /api/prefs/:key` — fetch the account-wide opaque pref value (or `null`
+   *  if unset). Currently used by `overview_layout` (sort mode + custom-mode
+   *  ordering + groups). The server allowlists the key set; unknown keys 404.
+   *  We treat 404 as "unset" so a client running ahead of the server doesn't
+   *  hard-error — the UI falls back to its default state. */
+  getPref: async (key: string): Promise<string | null> => {
+    try {
+      const data = await settingsRequest<{ key: string; value: string | null }>(
+        `/api/prefs/${encodeURIComponent(key)}`,
+      )
+      return data?.value ?? null
+    } catch (err) {
+      // ApiError carries .status; a 404 (unknown key) is the same as "unset"
+      // from the UI's perspective.
+      const status = (err as { status?: number }).status
+      if (status === 404) return null
+      throw err
+    }
+  },
+  /** `PUT /api/prefs/:key` — upsert the opaque value. The server broadcasts an
+   *  SSE `prefs` event so peer tabs reconcile live (no polling). */
+  putPref: (key: string, value: string): Promise<{ key: string; value: string }> =>
+    settingsRequest(`/api/prefs/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ value }),
+    }),
 }

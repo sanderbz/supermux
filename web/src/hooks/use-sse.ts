@@ -34,6 +34,7 @@ export type SseEventType =
   | 'schedules'
   | 'alerts'
   | 'status'
+  | 'prefs'
   | 'ping'
 
 export interface SseHandlers {
@@ -170,6 +171,7 @@ export function useSse(handlers: SseHandlers = {}): UseSseResult {
         'schedules',
         'alerts',
         'status',
+        'prefs',
         'ping',
       ]
       for (const type of NAMED) {

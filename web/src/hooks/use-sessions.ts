@@ -20,6 +20,12 @@ import {
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
 import { useSseConnectionLink } from '@/hooks/use-connection-link'
+import { OVERVIEW_LAYOUT_KEY } from '@/hooks/use-overview-layout'
+import {
+  parseLayout,
+  OVERVIEW_LAYOUT_PREF_KEY,
+  type OverviewLayout,
+} from '@/lib/overview-layout'
 
 export const SESSIONS_KEY = ['sessions'] as const
 
@@ -179,6 +185,21 @@ export function useSessions(): UseSessionsResult {
             // optimistically removed via archive would re-add it.
             qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
               applyDelta(prev, delta, /* allowAdd */ false),
+            )
+          }
+        } else if (type === 'prefs') {
+          // Account-wide prefs change from a peer tab / device
+          // (feat-sort-and-groups). The server's `/api/prefs/:key` PUT handler
+          // emits `{ key, value }` so we can route just the keys we own — the
+          // overview layout cache, today; future keys can extend this switch.
+          const p = (payload as { key?: unknown; value?: unknown }) ?? {}
+          if (
+            p.key === OVERVIEW_LAYOUT_PREF_KEY &&
+            (typeof p.value === 'string' || p.value === null)
+          ) {
+            qc.setQueryData<OverviewLayout>(
+              OVERVIEW_LAYOUT_KEY,
+              parseLayout(p.value as string | null),
             )
           }
         }
