@@ -142,7 +142,10 @@ ask_yn() {
     y|Y|yes|YES|Yes) ANS="y" ;;
     n|N|no|NO|No)    ANS="n" ;;
     "")              if [ "$default" = "Y" ]; then ANS="y"; else ANS="n"; fi ;;
-    *)               if [ "$default" = "Y" ]; then ANS="y"; else ANS="n"; fi ;;
+    *)
+      warn "didn't understand '$_reply' — using default '$default'"
+      if [ "$default" = "Y" ]; then ANS="y"; else ANS="n"; fi
+      ;;
   esac
 }
 
@@ -251,11 +254,15 @@ detect_remote_user() {
 }
 
 detect_tailscale() {
-  # detect_tailscale HOST -> 0 if `tailscale` is on PATH on the host
+  # detect_tailscale HOST -> 0 if `tailscale` is on PATH on the host AND the
+  # `tailscaled` service is active. Mirrors deploy.sh's check so the wizard
+  # doesn't default to Y when the daemon is dead/masked (which would fail
+  # late at `tailscale serve` after the unit was already installed).
   local host="$1"
   command -v ssh >/dev/null 2>&1 || return 1
-  ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
-      "command -v tailscale >/dev/null 2>&1" >/dev/null 2>&1
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" \
+      'command -v tailscale >/dev/null 2>&1 && systemctl is-active --quiet tailscaled' \
+      >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -320,6 +327,13 @@ V_USE_TAILSCALE=""
 V_ALLOW_ROOT=""
 V_AUTO_INSTALL=""
 
+# "Did the operator explicitly customize this via the advanced step (or carry
+# it over from an existing .env)?" — controls whether we write the var into
+# .env at all. When unset, deploy.sh's smarter resolution (getent for HOME,
+# DATA_DIR:HOME[:/opt/projects] for RW paths) is the source of truth.
+V_USER_HOME_CUSTOMIZED=0
+V_READ_WRITE_PATHS_CUSTOMIZED=0
+
 # Defaults
 D_HOST=""
 D_USER="supermux"
@@ -338,6 +352,16 @@ derive_defaults_from_existing() {
     v=$(read_env_value SUPERMUX_PUBLIC_PORT "$ENV_FILE");    [ -n "$v" ] && D_PUBLIC_PORT="$v"
     v=$(read_env_value SUPERMUX_USE_TAILSCALE "$ENV_FILE");  [ -n "$v" ] && D_USE_TAILSCALE="$v"
     v=$(read_env_value SUPERMUX_DEPLOY_REF "$ENV_FILE");     [ -n "$v" ] && D_DEPLOY_REF="$v"
+    # Carry forward operator-customized path overrides if present in the
+    # existing .env, and mark them as customized so write_env preserves them.
+    # Absent = let deploy.sh's smart defaults (getent USER_HOME, smart
+    # DATA_DIR:HOME[:/opt/projects] for RW paths) fire on re-deploy.
+    v=$(read_env_value SUPERMUX_USER_HOME "$ENV_FILE")
+    if [ -n "$v" ]; then V_USER_HOME="$v"; V_USER_HOME_CUSTOMIZED=1; fi
+    v=$(read_env_value SUPERMUX_READ_WRITE_PATHS "$ENV_FILE")
+    if [ -n "$v" ]; then V_READ_WRITE_PATHS="$v"; V_READ_WRITE_PATHS_CUSTOMIZED=1; fi
+    v=$(read_env_value SUPERMUX_DATA_DIR "$ENV_FILE");       [ -n "$v" ] && V_DATA_DIR="$v"
+    v=$(read_env_value SUPERMUX_REMOTE_DIR "$ENV_FILE");     [ -n "$v" ] && V_REMOTE_DIR="$v"
   fi
 }
 
@@ -516,16 +540,27 @@ step_advanced() {
   fi
 
   # Pre-derive so the prompt defaults are pre-filled with sensible paths.
+  # Snapshot the derived defaults so we can tell whether the operator actually
+  # changed anything — if they just Enter through, we keep CUSTOMIZED=0 and
+  # let deploy.sh's smarter resolution (getent / smart RW default) win.
   derive_user_paths
+  local derived_user_home="$V_USER_HOME"
+  local derived_rw_paths="$V_READ_WRITE_PATHS"
 
   ask "service user's HOME on the host" "$V_USER_HOME"
   V_USER_HOME="$ANS"
+  if [ "$V_USER_HOME" != "$derived_user_home" ]; then
+    V_USER_HOME_CUSTOMIZED=1
+  fi
 
   ask "data directory (SQLite, auth token, config.toml, uploads)" "$V_DATA_DIR"
   V_DATA_DIR="$ANS"
 
   ask "extra writable roots (colon-separated, for ReadWritePaths)" "$V_READ_WRITE_PATHS"
   V_READ_WRITE_PATHS="$ANS"
+  if [ "$V_READ_WRITE_PATHS" != "$derived_rw_paths" ]; then
+    V_READ_WRITE_PATHS_CUSTOMIZED=1
+  fi
 
   ask "remote build/source directory on the host" "$V_REMOTE_DIR"
   V_REMOTE_DIR="$ANS"
@@ -564,9 +599,17 @@ step_summary_and_confirm() {
   if [ "$V_ALLOW_ROOT" = "1" ]; then
     printf "  %sallow root             %s1 (ProtectHome=false)\n" "$c_dim" "$c_reset"
   fi
-  printf "  %sservice user HOME      %s%s\n" "$c_dim" "$c_reset" "$V_USER_HOME"
+  if [ "$V_USER_HOME_CUSTOMIZED" = "1" ]; then
+    printf "  %sservice user HOME      %s%s\n" "$c_dim" "$c_reset" "$V_USER_HOME"
+  else
+    printf "  %sservice user HOME      %s(deploy.sh resolves via getent)\n" "$c_dim" "$c_reset"
+  fi
   printf "  %sdata directory         %s%s\n" "$c_dim" "$c_reset" "$V_DATA_DIR"
-  printf "  %sextra writable roots   %s%s\n" "$c_dim" "$c_reset" "$V_READ_WRITE_PATHS"
+  if [ "$V_READ_WRITE_PATHS_CUSTOMIZED" = "1" ]; then
+    printf "  %sextra writable roots   %s%s\n" "$c_dim" "$c_reset" "$V_READ_WRITE_PATHS"
+  else
+    printf "  %sextra writable roots   %s(deploy.sh smart default: DATA_DIR:HOME[:/opt/projects])\n" "$c_dim" "$c_reset"
+  fi
   printf "  %sremote build dir       %s%s\n" "$c_dim" "$c_reset" "$V_REMOTE_DIR"
   printf "  %sinternal port          %s%s\n" "$c_dim" "$c_reset" "$V_INTERNAL_PORT"
   printf "  %spublic port            %s%s\n" "$c_dim" "$c_reset" "$V_PUBLIC_PORT"
@@ -597,18 +640,29 @@ write_env() {
     if [ "$V_ALLOW_ROOT" = "1" ]; then
       printf "SUPERMUX_ALLOW_ROOT=1\n"
     fi
-    printf "SUPERMUX_USER_HOME=%s\n" "$V_USER_HOME"
+    # Only pin USER_HOME / READ_WRITE_PATHS when the operator explicitly
+    # customized them (advanced step) or carried them forward from an
+    # existing .env. Otherwise omit and let deploy.sh's smarter resolution
+    # win: getent passwd $SERVICE_USER for HOME, and
+    # DATA_DIR:USER_HOME[:/opt/projects] for ReadWritePaths.
+    if [ "$V_USER_HOME_CUSTOMIZED" = "1" ]; then
+      printf "SUPERMUX_USER_HOME=%s\n" "$V_USER_HOME"
+    fi
     printf "SUPERMUX_DATA_DIR=%s\n" "$V_DATA_DIR"
-    printf "SUPERMUX_READ_WRITE_PATHS=%s\n" "$V_READ_WRITE_PATHS"
+    if [ "$V_READ_WRITE_PATHS_CUSTOMIZED" = "1" ]; then
+      printf "SUPERMUX_READ_WRITE_PATHS=%s\n" "$V_READ_WRITE_PATHS"
+    fi
     printf "SUPERMUX_INTERNAL_PORT=%s\n" "$V_INTERNAL_PORT"
     printf "SUPERMUX_PUBLIC_PORT=%s\n" "$V_PUBLIC_PORT"
     printf "SUPERMUX_USE_TAILSCALE=%s\n" "$V_USE_TAILSCALE"
     printf "SUPERMUX_REMOTE_DIR=%s\n" "$V_REMOTE_DIR"
     printf "SUPERMUX_DEPLOY_REF=%s\n" "$V_DEPLOY_REF"
+    # NOTE: the var is SUPERMUX_INSTALL_TOOLCHAINS (plural, no AUTO_ prefix)
+    # — must match what deploy.sh reads. .env.example documents it the same.
     if [ "$V_AUTO_INSTALL" = "1" ]; then
-      printf "SUPERMUX_AUTO_INSTALL_TOOLCHAIN=1\n"
+      printf "SUPERMUX_INSTALL_TOOLCHAINS=1\n"
     else
-      printf "SUPERMUX_AUTO_INSTALL_TOOLCHAIN=0\n"
+      printf "SUPERMUX_INSTALL_TOOLCHAINS=0\n"
     fi
   } > "$ENV_TMP"
   chmod 600 "$ENV_TMP" 2>/dev/null || true
@@ -629,7 +683,7 @@ offer_deploy() {
   fi
   ask_yn "run deploy.sh now?" "N"
   if [ "$ANS" = "y" ]; then
-    ok "handing off to deploy.sh — 🎉"
+    ok "handing off to deploy.sh."
     exec bash "$SCRIPT_DIR/deploy.sh"
   fi
 }
@@ -661,7 +715,7 @@ main() {
   write_env
   offer_deploy
   printf "\n"
-  ok "all done — 🎉"
+  ok "all set."
 }
 
 main "$@"
