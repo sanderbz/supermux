@@ -37,7 +37,42 @@ export interface CreateIssueInput {
 
 // ── M6 wire types ─────────────────────────────────────────────────────────────
 
-/** An issue exactly as M6's `IssueView` serialises it (server/src/board/mod.rs). */
+/** A comment on an issue (server/src/db/board.rs `IssueComment`). The `author`
+ *  is `'user'` (human via bearer), `'agent:<session>'` (agent via hook), or
+ *  `'human:<name>'`. */
+export interface IssueComment {
+  id: number
+  issue_id: string
+  author: string
+  body: string
+  created: number
+}
+
+/** An acceptance-checklist item (server/src/db/board.rs `AcceptanceItem`).
+ *  `done` is a 0/1 integer (mirrors the board's SQLite booleans). */
+export interface AcceptanceItem {
+  id: number
+  issue_id: string
+  body: string
+  done: number
+  pos: number
+}
+
+/** A PR/commit ref attached to an issue (server/src/db/board.rs `IssueLink`).
+ *  Note the JSON key is `ref` (not `r#ref`). */
+export interface IssueLink {
+  id: number
+  issue_id: string
+  kind: 'pr' | 'commit'
+  ref: string
+  label: string
+  created: number
+}
+
+/** An issue exactly as M6's `IssueView` serialises it (server/src/board/mod.rs).
+ *  The `comments`/`acceptance`/`links` relations (S1/S2) are always present —
+ *  empty arrays when the issue has none — so the card + sheet render with no
+ *  extra round-trips. */
 export interface BoardIssue {
   id: string
   title: string
@@ -53,6 +88,19 @@ export interface BoardIssue {
   pinned: number
   pos: number
   tags: string[]
+  comments: IssueComment[]
+  acceptance: AcceptanceItem[]
+  links: IssueLink[]
+}
+
+/** The claim response (S3): the full issue PLUS the dispatch outcome. When
+ *  `delivered` is true the work was auto-sent to the agent and `steer_id` holds
+ *  the steering-queue row id — pass it to `boardApi.unsend(session, steer_id)`
+ *  to power the Undo toast (retracts a still-undelivered steer). */
+export interface ClaimResult {
+  issue: BoardIssue
+  delivered: boolean
+  steer_id: number | null
 }
 
 /** A board column (server/src/db/board.rs `BoardStatus`). */
@@ -161,13 +209,93 @@ export const boardApi = {
   remove: (id: string): Promise<{ ok: boolean; deleted: string }> =>
     boardRequest(`/api/board/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  /** `POST /api/board/{id}/claim` — the ATOMIC claim (§3.2.10). Throws a
-   *  `BoardError` with `status === 409` when the race is lost / the issue is
-   *  not a claimable agent task. */
-  claim: (id: string, session: string): Promise<BoardIssue> =>
+  /** `POST /api/board/{id}/claim` — the ATOMIC claim (§3.2.10) that ALSO
+   *  auto-sends the work to the agent (S3). `deliver` defaults to true (the
+   *  user-chosen default); pass `false` for "Claim only" (flip the link without
+   *  dispatching). Returns `{ issue, delivered, steer_id }` — use `steer_id`
+   *  with {@link boardApi.unsend} for the Undo toast. Throws a `BoardError` with
+   *  `status === 409` when the race is lost / the issue is not a claimable agent
+   *  task. */
+  claim: (
+    id: string,
+    session: string,
+    deliver = true,
+  ): Promise<ClaimResult> =>
     boardRequest(`/api/board/${encodeURIComponent(id)}/claim`, {
       method: 'POST',
-      body: JSON.stringify({ session }),
+      body: JSON.stringify({ session, deliver }),
+    }),
+
+  /** Undo a just-claimed auto-send: retract the enqueued steer before the agent
+   *  receives it. `DELETE /api/sessions/{session}/steer` with the `steer_id`
+   *  returned by {@link boardApi.claim}. No-op (0 cleared) if the agent already
+   *  consumed it. */
+  unsend: (
+    session: string,
+    steerId: number,
+  ): Promise<{ ok: boolean; cleared: number }> =>
+    boardRequest(`/api/sessions/${encodeURIComponent(session)}/steer`, {
+      method: 'DELETE',
+      body: JSON.stringify({ id: steerId }),
+    }),
+
+  // ── activity stream + acceptance + links (human side, bearer; AB2) ──────────
+  // Every mutation returns the refreshed BoardIssue (with relations) and also
+  // re-publishes the board over SSE, so the optimistic update is confirmed.
+
+  /** `POST /api/board/{id}/comment` — post a human comment (author `'user'`). */
+  comment: (id: string, body: string): Promise<BoardIssue> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/comment`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+
+  /** `POST /api/board/{id}/acceptance` — add an acceptance item (appended). */
+  addAcceptance: (id: string, body: string): Promise<BoardIssue> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/acceptance`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+
+  /** `PATCH /api/board/{id}/acceptance/{itemId}` — edit body and/or toggle done. */
+  patchAcceptance: (
+    id: string,
+    itemId: number,
+    patch: { body?: string; done?: boolean },
+  ): Promise<BoardIssue> =>
+    boardRequest(
+      `/api/board/${encodeURIComponent(id)}/acceptance/${itemId}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+
+  /** `DELETE /api/board/{id}/acceptance/{itemId}` — remove an acceptance item. */
+  removeAcceptance: (id: string, itemId: number): Promise<BoardIssue> =>
+    boardRequest(
+      `/api/board/${encodeURIComponent(id)}/acceptance/${itemId}`,
+      { method: 'DELETE' },
+    ),
+
+  /** `PUT /api/board/{id}/acceptance/reorder` — set the checklist order. */
+  reorderAcceptance: (id: string, order: number[]): Promise<BoardIssue> =>
+    boardRequest(
+      `/api/board/${encodeURIComponent(id)}/acceptance/reorder`,
+      { method: 'PUT', body: JSON.stringify({ order }) },
+    ),
+
+  /** `POST /api/board/{id}/link` — attach a PR/commit ref. */
+  addLink: (
+    id: string,
+    link: { kind: 'pr' | 'commit'; ref: string; label?: string },
+  ): Promise<BoardIssue> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/link`, {
+      method: 'POST',
+      body: JSON.stringify(link),
+    }),
+
+  /** `DELETE /api/board/{id}/link/{linkId}` — remove a PR/commit ref. */
+  removeLink: (id: string, linkId: number): Promise<BoardIssue> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/link/${linkId}`, {
+      method: 'DELETE',
     }),
 
   /** `POST /api/board/clear-done` — soft-delete every `done` issue. */

@@ -342,7 +342,9 @@ async fn claim_error_surfaces() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // Happy path → 200, status doing, assigned.
+    // Happy path → 200. The claim response is now `{ issue, delivered, steer_id }`
+    // (S3): the issue moved to `doing`+assigned, and deliver defaults true so the
+    // work was auto-sent (a steer enqueued, its id returned for the Undo toast).
     let (status, body) = send(
         &app,
         Method::POST,
@@ -351,8 +353,10 @@ async fn claim_error_surfaces() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["status"], json!("doing"));
-    assert_eq!(body["data"]["session"], json!("worker"));
+    assert_eq!(body["data"]["issue"]["status"], json!("doing"));
+    assert_eq!(body["data"]["issue"]["session"], json!("worker"));
+    assert_eq!(body["data"]["delivered"], json!(true));
+    assert!(body["data"]["steer_id"].is_number(), "steer_id returned for Undo");
 
     // Re-claiming the now-doing issue → 409.
     let (status, _) = send(

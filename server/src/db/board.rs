@@ -159,6 +159,29 @@ pub async fn get_issue(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Issue
         .await
 }
 
+/// Resolve the (non-deleted) issue currently linked to `session`, preferring the
+/// one in `doing` (the agent's active task). Used by the agent→board hook scope
+/// rule (AB1): an agent may only mutate the issue WHERE `session = <its own>`.
+/// Returns `None` when the session owns no live issue.
+///
+/// If a session somehow owns multiple non-deleted issues (e.g. several were
+/// assigned before any moved to `done`), the `doing` one wins; ties break on the
+/// most-recently-updated so the result is deterministic.
+pub async fn doing_issue_for_session(
+    pool: &SqlitePool,
+    session: &str,
+) -> sqlx::Result<Option<Issue>> {
+    sqlx::query_as::<_, Issue>(
+        "SELECT * FROM issues
+          WHERE session = ? AND deleted IS NULL
+          ORDER BY (status = 'doing') DESC, updated DESC
+          LIMIT 1",
+    )
+    .bind(session)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Issues with a `due` date set (for the iCal feed, feature-extract §2.7).
 pub async fn issues_with_due(pool: &SqlitePool) -> sqlx::Result<Vec<Issue>> {
     sqlx::query_as::<_, Issue>(
@@ -483,6 +506,15 @@ pub async fn comments_for(pool: &SqlitePool, issue_id: &str) -> sqlx::Result<Vec
     .await
 }
 
+/// Delete one comment by id. Returns false if the id does not exist.
+pub async fn delete_comment(pool: &SqlitePool, comment_id: i64) -> sqlx::Result<bool> {
+    let res = sqlx::query("DELETE FROM issue_comments WHERE id = ?")
+        .bind(comment_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 // acceptance items ────────────────────────────────────────────────────────────
 
 /// Append an acceptance item to an issue at the end of its list (max(pos)+1).
@@ -536,6 +568,60 @@ pub async fn toggle_acceptance(
     Ok(res.rows_affected() > 0)
 }
 
+/// Edit one acceptance item's `body`. Returns false if the id does not exist.
+pub async fn update_acceptance_body(
+    pool: &SqlitePool,
+    item_id: i64,
+    body: &str,
+) -> sqlx::Result<bool> {
+    let res = sqlx::query("UPDATE acceptance_items SET body = ? WHERE id = ?")
+        .bind(body)
+        .bind(item_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Delete one acceptance item by id. Returns false if the id does not exist.
+pub async fn delete_acceptance(pool: &SqlitePool, item_id: i64) -> sqlx::Result<bool> {
+    let res = sqlx::query("DELETE FROM acceptance_items WHERE id = ?")
+        .bind(item_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Reorder an issue's acceptance items to the given id order: each listed id gets
+/// `pos` = its index. Unlisted items keep their existing `pos`. Done in one
+/// transaction. Ids that do not belong to `issue_id` are skipped.
+pub async fn reorder_acceptance(
+    pool: &SqlitePool,
+    issue_id: &str,
+    order: &[i64],
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    for (pos, item_id) in order.iter().enumerate() {
+        sqlx::query("UPDATE acceptance_items SET pos = ? WHERE id = ? AND issue_id = ?")
+            .bind(pos as f64)
+            .bind(item_id)
+            .bind(issue_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
+/// Fetch one acceptance item by id (used by the agent hook to verify ownership).
+pub async fn get_acceptance(
+    pool: &SqlitePool,
+    item_id: i64,
+) -> sqlx::Result<Option<AcceptanceItem>> {
+    sqlx::query_as::<_, AcceptanceItem>("SELECT * FROM acceptance_items WHERE id = ?")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await
+}
+
 // links ───────────────────────────────────────────────────────────────────────
 
 /// Attach a PR/commit ref to an issue. `created` is set to now. Returns the new
@@ -567,6 +653,15 @@ pub async fn links_for(pool: &SqlitePool, issue_id: &str) -> sqlx::Result<Vec<Is
         .bind(issue_id)
         .fetch_all(pool)
         .await
+}
+
+/// Delete one link by id. Returns false if the id does not exist.
+pub async fn delete_link(pool: &SqlitePool, link_id: i64) -> sqlx::Result<bool> {
+    let res = sqlx::query("DELETE FROM issue_links WHERE id = ?")
+        .bind(link_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
 }
 
 // batch loaders (avoid N+1 when building the whole board, plan S2) ─────────────
