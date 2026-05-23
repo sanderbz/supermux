@@ -200,6 +200,20 @@
   padding-right: env(safe-area-inset-right);
 }
 
+/* ── Terminal touch-scroll (Fix 2 — scroll vs Vaul drag-to-close) ───────────
+   xterm renders its scrollback into `.xterm-viewport`. Inside the Vaul focus
+   sheet, Vaul injects `touch-action: none` on its whole subtree, which kills
+   native touch panning so the viewport could never scroll on mobile — every
+   swipe became a sheet-drag. With `data-vaul-no-drag` on the terminal wrapper
+   (vaul releases the gesture) plus `touch-action: pan-y` here, a vertical drag
+   inside the terminal pans the tmux scrollback. `overscroll-behavior: contain`
+   stops the pan from chaining out to the sheet/page once the buffer hits an
+   end. !important is needed to beat both xterm.css and Vaul's injected rule. */
+.xterm-viewport {
+  touch-action: pan-y !important;
+  overscroll-behavior: contain;
+}
+
 /* ── Glass material (M20 — iOS-native bars; termius-ios-native-spec §Material) ─
    Regular Liquid-Glass analogue for toolbars/headers above content: a
    translucent surface (mixed from the semantic --card token so it tracks the

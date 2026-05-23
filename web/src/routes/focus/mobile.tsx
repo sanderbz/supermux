@@ -186,8 +186,17 @@ export function MobileFocus() {
           {/* M17 — the LiveTerminal with the joystick + 2-finger gesture
               overlay layered on top. `relative` so the absolute overlay scopes
               to the terminal viewport (excludes header/dock). The overlay
-              drives the SAME `termRef` handle the dock uses — no second WS. */}
-          <div className="relative min-h-0 flex-1">
+              drives the SAME `termRef` handle the dock uses — no second WS.
+
+              Fix 2 — `data-vaul-no-drag`: Vaul wires drag on the whole
+              Drawer.Content, so a downward swipe over the terminal was dragging
+              the SHEET to dismiss instead of scrolling tmux scrollback. This
+              attr makes Vaul's `shouldDrag` short-circuit for touches starting
+              in the terminal body, releasing the gesture to xterm
+              (`.xterm-viewport` gets `touch-action: pan-y` in globals.css). The
+              FocusHeader/handle + MobileDock sit OUTSIDE this region, so
+              drag-the-header-to-dismiss is unchanged. */}
+          <div className="relative min-h-0 flex-1" data-vaul-no-drag>
             {current.status === 'stopped' ? (
               /* The session's tmux pty is gone — render the calm stopped state
                  instead of mounting a live WS that would 101-upgrade then get

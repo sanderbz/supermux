@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   CalendarClock,
@@ -81,8 +81,30 @@ function SideNav() {
   )
 }
 
-/** Mobile: top app bar with brand + theme toggle (≤md). */
-function MobileTopBar() {
+/** Mobile: top app bar with brand + theme toggle (≤md).
+ *
+ *  Route-aware (Fix 3): on the **overview** route (`/`) the full-width wordmark
+ *  bar wasted a whole `h-12 + pt-safe` band above the session grid, so there it
+ *  collapses to a minimal top-right icon (just the ThemeToggle) pinned to the
+ *  safe-area corner — the grid reclaims the band. The overview route itself now
+ *  owns a `pt-safe` inset (overview.tsx) so its content still clears the notch /
+ *  Dynamic Island; the floating icon is offset by the same inset.
+ *
+ *  On every OTHER mobile route the full bar renders as before. On the focus route
+ *  it renders nothing at all (gated out in <Layout>, Fix 1b). */
+function MobileTopBar({ overview }: { overview: boolean }) {
+  if (overview) {
+    // Minimal corner affordance — no in-flow band. `top` clears the notch via
+    // the same safe-area inset the bar's pt-safe used; the overview body re-homes
+    // its own pt-safe so nothing slides under the Dynamic Island.
+    return (
+      <div className="pointer-events-none fixed right-3 top-[calc(env(safe-area-inset-top)+0.5rem)] z-40 md:hidden">
+        <div className="pointer-events-auto">
+          <ThemeToggle />
+        </div>
+      </div>
+    )
+  }
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-4 pt-safe md:hidden">
       <span className="text-base font-semibold tracking-tight">supermux</span>
@@ -152,6 +174,15 @@ export function Layout() {
   // health. The singleton SSE client (use-sse.ts) is the source of truth.
   const { status: sseStatus } = useSseStatus()
   useSseConnectionLink(sseStatus)
+  // Route-aware mobile chrome (Fix 1b / Fix 3). The focus route is a full-screen
+  // experience: the shell's mobile top bar AND bottom tab bar must NOT be in its
+  // tree, or they leak out from under the Vaul sheet when the keyboard opens and
+  // read as duplicate toolbars. The overview route keeps the top bar but in its
+  // collapsed top-right-icon form. (Desktop SideNav is unaffected — it has no
+  // focus-route chrome to leak.)
+  const { pathname } = useLocation()
+  const isFocus = pathname.startsWith('/focus/')
+  const isOverview = pathname === '/'
   return (
     <div
       className="flex h-full w-full"
@@ -159,12 +190,12 @@ export function Layout() {
     >
       <SideNav />
       <div className="flex h-full min-w-0 flex-1 flex-col">
-        <MobileTopBar />
+        {!isFocus && <MobileTopBar overview={isOverview} />}
         <ReconnectBanner />
         <main className={cn('min-h-0 flex-1 overflow-auto')}>
           <Outlet />
         </main>
-        <BottomNav />
+        {!isFocus && <BottomNav />}
       </div>
       {/* M9/M50: the global ⌘K command palette. Mounted ONCE at shell level so
        *  the shortcut works on EVERY route (overview, board, files, scheduler,

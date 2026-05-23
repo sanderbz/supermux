@@ -353,6 +353,25 @@ export function useLiveTerm(
     termRef.current = term
     fitRef.current = fit
 
+    // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
+    // NOT draw its autofill / suggestion / "Done" accessory strip above the
+    // keyboard (which read as a SECOND toolbar stacked over our dock). xterm owns
+    // this `.xterm-helper-textarea` (it creates exactly one real <textarea> for
+    // keystroke/IME capture), so we set the iOS-neutralizing attributes on it
+    // here, once, right after `term.open()` has materialized it in the container.
+    // The "< >" field-nav arrows are OS-drawn for ANY focused field and cannot be
+    // removed via attributes — see the mobile-toolbars investigation (residual).
+    const helper = container.querySelector<HTMLTextAreaElement>(
+      '.xterm-helper-textarea',
+    )
+    if (helper) {
+      helper.setAttribute('autocapitalize', 'off')
+      helper.setAttribute('autocorrect', 'off')
+      helper.setAttribute('autocomplete', 'off')
+      helper.spellcheck = false
+      helper.setAttribute('enterkeyhint', 'send')
+    }
+
     // CanvasAddon needs the renderer's char dimensions to exist, which only
     // happens once the container has a real layout box. Loading it eagerly on a
     // zero-size container (or one that resizes before first paint) throws
