@@ -64,14 +64,44 @@ stripped binary given the dependency set.
 builds **natively** there (no cross-compilation), installs
 `/usr/local/bin/supermux-server` and the systemd unit, and starts the service.
 
-It is driven entirely by environment variables. Copy `.env.example` to `.env`
-and fill in your values — `deploy.sh` sources `.env` automatically if present:
+### Quickstart deploy
+
+For a fresh host where you have key-based SSH and passwordless sudo, the
+"set one variable and go" path is:
 
 ```bash
 cp .env.example .env
-$EDITOR .env          # set SUPERMUX_DEPLOY_HOST etc.
-scripts/deploy.sh
+$EDITOR .env          # set SUPERMUX_DEPLOY_HOST=<user@host>
+bash scripts/deploy.sh
 ```
+
+`deploy.sh` runs an upfront preflight against the host and prints a one-page
+plan before doing anything destructive. The defaults are noob-proof:
+
+- **Service user** — defaults to `supermux`. If the user doesn't exist on the
+  host, `deploy.sh` runs `sudo useradd -m -s /bin/bash supermux` for you. If
+  you pick a non-default `SUPERMUX_SERVICE_USER`, you must create it yourself
+  (the script refuses rather than silently provisioning an unexpected
+  account).
+- **ReadWritePaths** — defaults to a sane set covering the data dir, the
+  service user's home, and `/opt/projects` (only if that directory exists on
+  the host). Override `SUPERMUX_READ_WRITE_PATHS` to scope it differently.
+- **Tailscale** — auto-detected. If the host has `tailscale` installed AND
+  `tailscaled` is running, `deploy.sh` defaults to exposing the service via
+  `tailscale serve`. Otherwise it skips Tailscale and you front the loopback
+  port with your own reverse proxy. Override with `SUPERMUX_USE_TAILSCALE=0`
+  or `=1` to force either behaviour.
+- **Toolchains** — `bun` and `cargo` are required on the host (the build is
+  native). They are not installed silently. Set
+  `SUPERMUX_INSTALL_TOOLCHAINS=1` to opt in to automatic install via the
+  official `bun` and `rustup` installers (pinned to your local `bun` version
+  and `rustup`'s stable channel) — otherwise a missing toolchain is a hard
+  error with manual-install instructions.
+- **Root deploys** — `SUPERMUX_SERVICE_USER=root` is refused unless you also
+  set `SUPERMUX_ALLOW_ROOT=1`. The systemd unit is then rendered with
+  relaxed hardening so `/root` is reachable.
+
+### Configuration reference
 
 The service binds to `127.0.0.1` (a loopback port — `SUPERMUX_INTERNAL_PORT`,
 default `8824`) and speaks plain HTTP. Put it behind TLS one of two ways:
@@ -91,10 +121,9 @@ full set of systemd sandboxing directives.
 
 - **Default (unprivileged user).** `SUPERMUX_SERVICE_USER` defaults to
   `supermux`; the unit renders with `ProtectHome=true` and `ReadWritePaths=`
-  scoped to the data dir. If tmux/git/claude need to write outside the data
-  dir (multi-project workflows), set `SUPERMUX_READ_WRITE_PATHS` to a
-  colon-separated list of extra writable roots — e.g.
-  `SUPERMUX_READ_WRITE_PATHS=/home/supermux:/opt/projects`.
+  set to the smart default (data dir + service-user home + `/opt/projects` if
+  present). Override `SUPERMUX_READ_WRITE_PATHS` (colon-separated) to scope it
+  differently, e.g. `SUPERMUX_READ_WRITE_PATHS=/home/supermux:/srv/scratch`.
 - **Root deploys.** `SUPERMUX_SERVICE_USER=root` is refused by default because
   `ProtectHome=true` would mask `/root` and the unit could not chdir to its
   data dir. To opt in, set `SUPERMUX_ALLOW_ROOT=1`; `deploy.sh` then renders
