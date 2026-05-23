@@ -190,3 +190,96 @@ async fn archive_broadcasts_sessions_delta_with_archived_true() {
         "expected a `sessions` SSE delta with archived=true for {name}",
     );
 }
+
+#[tokio::test]
+async fn unarchive_restores_session_to_list_and_broadcasts_archived_false() {
+    let (state, app, _dir) = setup().await;
+    let name = format!("una{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+
+    // Create + archive so the row is soft-deleted (archived = 1).
+    let (status, _) = req(
+        &app,
+        Method::POST,
+        "/api/sessions",
+        Some(serde_json::json!({
+            "name": name, "provider": "shell", "dir": "/tmp",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = req(
+        &app,
+        Method::POST,
+        &format!("/api/sessions/{name}/archive"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // Sanity: archived row is gone from the list.
+    let (_, body) = req(&app, Method::GET, "/api/sessions", None).await;
+    let arr = body.get("data").and_then(|d| d.as_array()).unwrap();
+    assert!(
+        !arr.iter().any(|s| s.get("name").and_then(|n| n.as_str()) == Some(name.as_str())),
+        "row should be archived out before unarchive: {body:?}"
+    );
+
+    // Subscribe AFTER the archive burst so the channel is clean for the unarchive delta.
+    let mut rx = state.sse_tx.subscribe();
+
+    // Unarchive — the Undo path. Flips `archived = 0` SYNCHRONOUSLY and returns 200.
+    let (status, ok_body) = req(
+        &app,
+        Method::POST,
+        &format!("/api/sessions/{name}/unarchive"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ok_body.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+    // The IMMEDIATELY-next GET must include the row again — proves the flag flip
+    // is synchronous (the overview's Undo re-shows the tile without a refetch).
+    let (status, body) = req(&app, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = body.get("data").and_then(|d| d.as_array()).unwrap();
+    assert!(
+        arr.iter().any(|s| s.get("name").and_then(|n| n.as_str()) == Some(name.as_str())),
+        "post-unarchive list must re-include {name}: {body:?}"
+    );
+
+    // And a `sessions` SSE delta carrying this row with archived=false must reach
+    // subscribers so every tab springs the tile back in live.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut saw_unarchive = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(ev)) if ev.event == "sessions" => {
+                let deltas = ev
+                    .payload
+                    .get("delta")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                for d in deltas {
+                    let is_target = d.get("name").and_then(|n| n.as_str()) == Some(name.as_str());
+                    let archived = d.get("archived").and_then(|a| a.as_bool());
+                    if is_target && archived == Some(false) {
+                        saw_unarchive = true;
+                        break;
+                    }
+                }
+                if saw_unarchive {
+                    break;
+                }
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+    assert!(
+        saw_unarchive,
+        "expected a `sessions` SSE delta with archived=false for {name}",
+    );
+}

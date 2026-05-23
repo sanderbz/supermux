@@ -13,7 +13,6 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { EmptyStatePlaceholder } from '@/components/empty-state'
-import { ToastProvider } from '@/components/ui/toast'
 import { EMPTY } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
 import { listSessionNames } from '@/lib/api'
@@ -24,12 +23,9 @@ import { EnableToggle } from '@/components/scheduler/enable-toggle'
 import { formatRunTime, KIND_LABEL } from '@/components/scheduler/helpers'
 
 export function Scheduler() {
-  // Self-contained toast scope (the app-root provider isn't mounted until M28).
-  return (
-    <ToastProvider>
-      <SchedulerInner />
-    </ToastProvider>
-  )
+  // Toasts come from the app-root <ToastProvider> (mounted in App.tsx) — no
+  // route-local scope needed.
+  return <SchedulerInner />
 }
 
 function SchedulerInner() {

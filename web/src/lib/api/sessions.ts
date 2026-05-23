@@ -323,6 +323,16 @@ export const sessionsApi = {
       method: 'POST',
     }),
 
+  /** `POST /api/sessions/{name}/unarchive` — reverse an archive (the overview's
+   *  Undo affordance). Flips `archived = 0` and broadcasts a `sessions` SSE
+   *  delta carrying the full row with `archived: false`, so the tile springs
+   *  back into every connected tab's overview. The row is never DELETEd on
+   *  archive, so this is always recoverable. */
+  unarchive: (name: string): Promise<void> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/unarchive`, {
+      method: 'POST',
+    }),
+
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
    *  (M7). Returns `[]` on any failure so the field degrades to a plain input. */
   autocompleteDir: async (q: string): Promise<string[]> => {

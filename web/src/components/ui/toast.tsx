@@ -22,14 +22,16 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { TOAST_SPRING, TOAST_SPRING_OUT } from '../../brand/tokens'
 import {
   ToastContext,
+  type ToastAction,
   type ToastApi,
   type ToastOptions,
   type ToastTone,
 } from './use-toast'
 
-interface ToastItem extends Required<Omit<ToastOptions, 'duration'>> {
+interface ToastItem extends Required<Omit<ToastOptions, 'duration' | 'action'>> {
   id: number
   duration: number
+  action?: ToastAction
 }
 
 const MAX_STACK = 3
@@ -57,9 +59,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const toast = useCallback(
-    ({ message, tone = 'default', duration = DEFAULT_DURATION }: ToastOptions) => {
+    ({
+      message,
+      tone = 'default',
+      duration = DEFAULT_DURATION,
+      action,
+    }: ToastOptions) => {
       const id = nextId.current++
-      setItems((prev) => [...prev, { id, message, tone, duration }].slice(-MAX_STACK))
+      setItems((prev) =>
+        [...prev, { id, message, tone, duration, action }].slice(-MAX_STACK),
+      )
       timers.current.set(
         id,
         setTimeout(() => dismiss(id), duration),
@@ -106,9 +115,13 @@ function ToastViewport({
     >
       <AnimatePresence initial={!reduce}>
         {items.map((t) => (
-          <motion.button
+          // A div (not a button) so an inline action <button> (e.g. Undo) can
+          // nest legitimately — no invalid-HTML / button-in-button. Clicking the
+          // capsule body still dismisses; the action button stops propagation so
+          // a tap on Undo doesn't ALSO dismiss before its handler is read.
+          <motion.div
             key={t.id}
-            type="button"
+            role="status"
             onClick={() => onDismiss(t.id)}
             initial={reduce ? { opacity: 0 } : { opacity: 0, y: -44 }}
             animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
@@ -125,7 +138,7 @@ function ToastViewport({
               display: 'inline-flex',
               alignItems: 'center',
               gap: 8,
-              padding: '0 14px',
+              padding: t.action ? '0 6px 0 14px' : '0 14px',
               borderRadius: 18,
               border: '1px solid rgba(255,255,255,0.10)',
               background: 'rgba(20,20,20,0.72)',
@@ -158,7 +171,37 @@ function ToastViewport({
             >
               {t.message}
             </span>
-          </motion.button>
+            {t.action && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  // Run the action FIRST, then dismiss — and stop the capsule's
+                  // own dismiss-on-click from also firing (double dismiss is
+                  // harmless but the explicit order keeps intent clear).
+                  e.stopPropagation()
+                  t.action?.onClick()
+                  onDismiss(t.id)
+                }}
+                style={{
+                  pointerEvents: 'auto',
+                  flex: '0 0 auto',
+                  // 44pt hit target via padding; the visible chip stays compact.
+                  minHeight: 28,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '0 12px',
+                  borderRadius: 14,
+                  border: 'none',
+                  background: 'rgba(255,255,255,0.14)',
+                  color: '#fff',
+                  font: '600 13px/1 ui-sans-serif, system-ui, -apple-system, sans-serif',
+                  cursor: 'pointer',
+                }}
+              >
+                {t.action.label}
+              </button>
+            )}
+          </motion.div>
         ))}
       </AnimatePresence>
     </div>
