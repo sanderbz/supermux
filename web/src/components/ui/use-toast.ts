@@ -8,11 +8,21 @@ import { createContext, useContext } from 'react'
 
 export type ToastTone = 'default' | 'active' | 'waiting' | 'error'
 
+/** An optional inline action rendered inside the toast (e.g. "Undo"). Clicking
+ *  it runs `onClick` then dismisses the toast — used by the overview archive flow
+ *  for a 5s reversible window. */
+export interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
 export interface ToastOptions {
   message: string
   tone?: ToastTone
   /** Auto-dismiss after this many ms. Default 2500. */
   duration?: number
+  /** Optional inline action button (e.g. Undo). */
+  action?: ToastAction
 }
 
 export interface ToastApi {

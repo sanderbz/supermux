@@ -1,9 +1,13 @@
 import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { GitBranch } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { Archive, GitBranch, X } from 'lucide-react'
 
 import { springs, eases } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
+import { sessionsApi, type ApiSession } from '@/lib/api'
+import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import { useToast } from '@/components/ui/use-toast'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useLongPress } from '@/hooks/use-long-press'
 import { usePeekType, PEEK_STICKY_MS } from '@/hooks/use-peek-type'
@@ -252,6 +256,123 @@ export function SessionTile({
     onClick: goFocus,
   })
 
+  // ── Archive affordance (feat-archive-every-tile) ───────────────────────────
+  // Archive used to be reachable ONLY on a stopped tile's hover-peek, so on an
+  // active/idle/waiting tile there was literally nothing to click. We surface a
+  // single hover-revealed icon on EVERY tile (no extra clicks — per the user's
+  // strong preference). A stray hover-click can't archive: the first click flips
+  // an inline confirm (the icon swaps to a clear "confirm/cancel" pair), and only
+  // the second click commits — the same guard the focus-pane stopped-actions use,
+  // important because archiving a RUNNING session also stops + tears it down.
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  const [archiveConfirm, setArchiveConfirm] = React.useState(false)
+  const [archiving, setArchiving] = React.useState(false)
+  // While `archiving`, the tile plays a self-contained exit (the slot collapses
+  // its own height + fades + scales via springs.cardExpand). The cache removal
+  // fires on the exit's animation-complete, so the tile springs OUT instead of
+  // vanishing instantly — and it's gone from the cache by the time the spring
+  // settles, so no flicker / double-render.
+  const archiveConfirmTimer = React.useRef<number | null>(null)
+  React.useEffect(
+    () => () => {
+      if (archiveConfirmTimer.current !== null) {
+        window.clearTimeout(archiveConfirmTimer.current)
+      }
+    },
+    [],
+  )
+
+  const removeFromCache = React.useCallback(() => {
+    qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
+      (prev ?? []).filter((s) => s.name !== session.name),
+    )
+  }, [qc, session.name])
+
+  // Undo flips `archived = 0` server-side; the SSE `sessions` delta re-adds the
+  // full row so the tile springs back into the overview live (every tab). We
+  // also optimistically re-insert here so the local tab doesn't wait on the
+  // round-trip — `applyDelta` merges the authoritative SSE row in by name.
+  const undoArchive = React.useCallback(() => {
+    const snapshot = qc.getQueryData<ApiSession[]>(SESSIONS_KEY)
+    const has = snapshot?.some((s) => s.name === session.name)
+    if (!has && snapshot) {
+      // Re-insert the row we just removed so the user sees it immediately.
+      qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) => [
+        ...(prev ?? []),
+        session as unknown as ApiSession,
+      ])
+    }
+    sessionsApi.unarchive(session.name).catch(() => {
+      // The server rejected the unarchive — drop the optimistic row back out and
+      // tell the user. Rare (the row exists; this is just a flag flip).
+      removeFromCache()
+      toast({ message: 'Couldn’t undo archive', tone: 'error' })
+    })
+  }, [qc, session, removeFromCache, toast])
+
+  // Commit: fire the server archive, start the exit animation, and (on success)
+  // remove from cache + show the Undo toast. The exit plays regardless of the
+  // server round-trip latency (optimistic), reverting only on outright failure.
+  const commitArchive = React.useCallback(() => {
+    if (archiving) return
+    setArchiveConfirm(false)
+    setArchiving(true)
+    // The toast label uses the same title the tile shows (chat summary, else
+    // the session name) — computed inline so this callback doesn't depend on
+    // the `title` const declared after the missing-tile early return.
+    const label = session.task_summary || session.name
+    sessionsApi
+      .archive(session.name)
+      .then(() => {
+        toast({
+          message: `Archived ${label}`,
+          duration: 5000,
+          action: { label: 'Undo', onClick: undoArchive },
+        })
+      })
+      .catch(() => {
+        // Roll the exit back — the tile stays put and the user can retry.
+        setArchiving(false)
+        toast({ message: 'Couldn’t archive session', tone: 'error' })
+      })
+  }, [archiving, session.task_summary, session.name, toast, undoArchive])
+
+  const onArchiveClick = React.useCallback(
+    (e: React.MouseEvent | React.KeyboardEvent) => {
+      // Never let the archive control's click bubble to the tile's onClick
+      // (which navigates to focus view).
+      e.stopPropagation()
+      if (!archiveConfirm) {
+        setArchiveConfirm(true)
+        // Auto-cancel the confirm after a few seconds so the tile doesn't sit in
+        // a half-armed state if the user moves on.
+        if (archiveConfirmTimer.current !== null) {
+          window.clearTimeout(archiveConfirmTimer.current)
+        }
+        archiveConfirmTimer.current = window.setTimeout(() => {
+          setArchiveConfirm(false)
+          archiveConfirmTimer.current = null
+        }, 4000)
+        return
+      }
+      commitArchive()
+    },
+    [archiveConfirm, commitArchive],
+  )
+
+  const cancelArchiveConfirm = React.useCallback(
+    (e: React.MouseEvent | React.KeyboardEvent) => {
+      e.stopPropagation()
+      setArchiveConfirm(false)
+      if (archiveConfirmTimer.current !== null) {
+        window.clearTimeout(archiveConfirmTimer.current)
+        archiveConfirmTimer.current = null
+      }
+    },
+    [],
+  )
+
   // Computed BEFORE the early-return for `session.missing` so the type-on-hover
   // hook below stays in the same call order on every render (rules-of-hooks).
   // A missing-tmux tile renders <TileError>, no preview area, no peek → the
@@ -269,6 +390,12 @@ export function SessionTile({
   const isStoppedPeek = expanded && session.status === 'stopped'
   const showLiveTerm =
     expanded && hoverPreview === 'live' && liveCapable && !isStoppedPeek
+  // The hover-revealed archive control shows whenever a fine-pointer user hovers
+  // the tile (independent of Reduce Motion — it's an affordance, not motion) and
+  // the tile isn't already exiting. Coarse pointers (touch) reach archive via the
+  // focus pane / stopped-peek actions, so we don't clutter the touch tile.
+  const showArchiveControl =
+    (hovered || archiveConfirm) && fine && !archiving && !session.missing
 
   // Stopped peek's keyboard shortcut: Enter → primary "Start" action (power-
   // user nicety; the visible primary button makes the affordance obvious),
@@ -400,8 +527,23 @@ export function SessionTile({
     // mount-time spring so the first paint is exact at the current tier.
     <motion.div
       className="relative"
-      animate={{ height: IDLE_H }}
+      // While archiving, the slot plays a self-contained exit — collapse the
+      // reserved height + fade + slight scale-down via the SAME springs.cardExpand
+      // the tile already uses. `removeFromCache` fires on the exit's completion
+      // so the row is gone from the cache exactly as the spring settles: the tile
+      // springs OUT instead of vanishing instantly (the residual UX defect), and
+      // the LayoutGroup wrapper in the overview reflows neighbours smoothly into
+      // the gap. Reduce Motion → instant removal (height/opacity 0 with no spring).
+      animate={
+        archiving
+          ? { height: 0, opacity: 0, scale: 0.94 }
+          : { height: IDLE_H, opacity: 1, scale: 1 }
+      }
+      style={{ transformOrigin: 'top center' }}
       transition={reduce ? { duration: 0 } : springs.cardExpand}
+      onAnimationComplete={() => {
+        if (archiving) removeFromCache()
+      }}
       initial={false}
     >
       <motion.div
@@ -472,12 +614,12 @@ export function SessionTile({
             <span className="line-clamp-1 flex-1 text-sm font-medium leading-tight">
               {title}
             </span>
-            {session.status === 'waiting' && (
+            {session.status === 'waiting' && !showArchiveControl && (
               <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
                 {MISC.needsInputPill}
               </span>
             )}
-            {isStopped && (
+            {isStopped && !showArchiveControl && (
               // Sentence-case "Stopped" pill — neutral muted treatment, NOT
               // red. Mirrors the needs-input pill geometry so the row stays
               // balanced. Reads at a glance: this tile is OFF.
@@ -485,7 +627,77 @@ export function SessionTile({
                 {STATUS_LABEL.stopped}
               </span>
             )}
-            <StatusDot status={session.status} className="mt-1" />
+            {/* Archive affordance — a single hover-revealed icon, on EVERY tile
+                (no kebab, no extra clicks). Swaps in over the status dot on
+                hover so the resting tile stays calm. First click arms an inline
+                confirm (icon → confirm/cancel pair) so a stray hover-click can't
+                archive a running session (archive also stops + tears it down).
+                44pt hit targets via the touch-target padding trick (the visible
+                glyph is small, the clickable area is ≥44px). */}
+            <AnimatePresence mode="wait" initial={false}>
+              {showArchiveControl ? (
+                archiveConfirm ? (
+                  <motion.div
+                    key="archive-confirm"
+                    initial={reduce ? false : { opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={reduce ? undefined : { opacity: 0, scale: 0.9 }}
+                    transition={reduce ? { duration: 0 } : springs.snappy}
+                    className="-mr-1 -mt-1 flex shrink-0 items-center gap-0.5"
+                  >
+                    <button
+                      type="button"
+                      aria-label="Cancel archive"
+                      onClick={cancelArchiveConfirm}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ')
+                          cancelArchiveConfirm(e)
+                      }}
+                      className="grid size-11 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4"
+                    >
+                      <X aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Confirm archive"
+                      onClick={onArchiveClick}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') onArchiveClick(e)
+                      }}
+                      className="grid size-11 place-items-center rounded-md text-status-error transition-colors hover:bg-status-error/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4"
+                    >
+                      <Archive aria-hidden />
+                    </button>
+                  </motion.div>
+                ) : (
+                  <motion.button
+                    key="archive-icon"
+                    type="button"
+                    aria-label={`Archive ${title}`}
+                    onClick={onArchiveClick}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') onArchiveClick(e)
+                    }}
+                    initial={reduce ? false : { opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={reduce ? undefined : { opacity: 0, scale: 0.9 }}
+                    transition={reduce ? { duration: 0 } : springs.snappy}
+                    className="-mr-1 -mt-1 grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4"
+                  >
+                    <Archive aria-hidden />
+                  </motion.button>
+                )
+              ) : (
+                <motion.span
+                  key="status-dot"
+                  initial={false}
+                  animate={{ opacity: 1 }}
+                  className="shrink-0"
+                >
+                  <StatusDot status={session.status} className="mt-1" />
+                </motion.span>
+              )}
+            </AnimatePresence>
           </div>
           <div className="flex h-4 items-center gap-2 text-xs text-muted-foreground">
             {tokens && <span className="shrink-0">{tokens} tokens</span>}

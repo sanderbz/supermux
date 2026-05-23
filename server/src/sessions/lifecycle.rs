@@ -557,6 +557,49 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     Ok(job_id)
 }
 
+/// Reverse an archive (the overview's "Undo" affordance). Soft-deleted rows keep
+/// every column (archive only flips `archived = 1`, never `DELETE`s — see
+/// db/sessions.rs:set_archived), so unarchive is a pure mirror of `archive`'s
+/// SYNCHRONOUS half:
+///   1. flip `archived = 0` so the next `GET /api/sessions` includes the row;
+///   2. audit `session.unarchive` (same forensic-trail rule as archive);
+///   3. broadcast a `sessions` SSE delta carrying the FULL re-listed row with
+///      `archived: false` so every connected tab springs the tile back in
+///      live (the client's `applyDelta` appends an unknown-name delta when
+///      `allowAdd` is set — `sessions` deltas allow it).
+/// There is NO spawned task: archive's background half tore down tmux + dumped
+/// scrollback; unarchive only restores overview visibility of the row. The
+/// session reads as `stopped` until the user starts it again.
+pub async fn unarchive(state: &AppState, name: &str) -> Result<(), AppError> {
+    if !db::sessions::exists(&state.pool, name).await? {
+        return Err(AppError::NotFound(format!("session '{name}'")));
+    }
+
+    // SYNCHRONOUS: flip `archived = 0` before returning so the very next
+    // `GET /api/sessions` re-includes this row.
+    db::sessions::set_archived(&state.pool, name, false).await?;
+
+    // SYNCHRONOUS: audit the reverse op (mirrors the `session.archive` entry).
+    db::audit::log(&state.pool, "user", "session.unarchive", name, json!({})).await?;
+
+    // SYNCHRONOUS: broadcast the full re-listed row (archived: false) so every
+    // tab re-adds the tile immediately. `super::get` builds the same SessionView
+    // the list endpoint serves — so the resurrected tile has its real status,
+    // preview, branch, etc., not a stub seeded from a thin delta.
+    if let Ok(view) = super::get(state, name).await {
+        let mut row = serde_json::to_value(&view).unwrap_or_else(|_| json!({ "name": name }));
+        // Belt-and-suspenders: ensure the flag is present + false on the wire so
+        // the client's archived-true removal branch never triggers on this row.
+        row["archived"] = json!(false);
+        let _ = state.sse_tx.send(SseEvent {
+            event: "sessions".to_string(),
+            payload: json!({ "delta": [row] }),
+        });
+    }
+
+    Ok(())
+}
+
 /// Wake a (possibly hibernated/stopped) session: clear the hibernate flag and
 /// start it if its tmux session is gone.
 pub async fn wake(state: &AppState, name: &str) -> Result<StartResult, AppError> {

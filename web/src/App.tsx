@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ThemeProvider } from '@/components/theme-provider'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { ToastProvider } from '@/components/ui/toast'
 import { Layout } from '@/components/layout'
 import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
@@ -46,6 +47,11 @@ export default function App() {
       <ThemeProvider>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider delayDuration={200}>
+            {/* App-root toast scope (M28). Mounted here so any route — overview
+                archive Undo, board, scheduler — can fire toasts from one
+                provider. Routes that previously self-wrapped (scheduler) no
+                longer need their own. */}
+            <ToastProvider>
             {/* M23b: "Add to Home Screen" coaching sheet — self-gates to the
                 first iOS-Safari (non-standalone) load, then remembers dismiss. */}
             <A2HSInstructionsSheet />
@@ -92,6 +98,7 @@ export default function App() {
                 />
               )}
             </Routes>
+            </ToastProvider>
           </TooltipProvider>
         </QueryClientProvider>
       </ThemeProvider>

@@ -63,6 +63,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/paste", post(paste_handler))
         .route("/api/sessions/{name}/peek", get(peek_handler))
         .route("/api/sessions/{name}/archive", post(archive_handler))
+        .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
         .route("/api/sessions/{name}/clone", post(clone_handler))
         .route(
@@ -639,6 +640,16 @@ async fn archive_handler(
         StatusCode::ACCEPTED,
         Json(json!({ "ok": true, "job_id": job_id })),
     ))
+}
+
+async fn unarchive_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Reverse of archive (the overview's Undo). Flips `archived = 0` + emits the
+    // `sessions` SSE delta SYNCHRONOUSLY, so it returns 200 once the row is back.
+    lifecycle::unarchive(&state, &name).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn wake_handler(
