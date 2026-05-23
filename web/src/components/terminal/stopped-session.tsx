@@ -54,6 +54,12 @@ export interface StoppedSessionActionsProps {
   /** Optional callback after a successful archive — the focus pane navigates
    *  to '/', the peek host just dismisses itself. */
   onAfterArchive?: () => void
+  /** Fired whenever the Resume picker opens/closes. The overview hover-peek
+   *  host (tile) uses this to PIN the tile expanded while the picker is open —
+   *  otherwise moving the mouse off the card to reach the picker drops `hovered`
+   *  and unmounts this whole surface (incl. the open picker). The focus-pane
+   *  host doesn't pass it (no hover-gating there). */
+  onResumeOpenChange?: (open: boolean) => void
   /** Imperative trigger handle — the peek wires this so an Enter keystroke
    *  while hovered acts as the primary "Start" action. */
   triggerRef?: React.MutableRefObject<StoppedSessionActionsHandle | null>
@@ -73,6 +79,7 @@ export function StoppedSessionActions({
   name,
   compact = false,
   onAfterArchive,
+  onResumeOpenChange,
   triggerRef,
   className,
 }: StoppedSessionActionsProps) {
@@ -89,6 +96,26 @@ export function StoppedSessionActions({
     ResumableConversation[]
   >([])
   const [pickerOpen, setPickerOpen] = React.useState(false)
+
+  // Single source of truth for the picker's open-state: update the local flag
+  // AND notify the host (the overview tile pins itself expanded while open, so
+  // a mouse-leave-to-picker doesn't unmount this surface). The focus pane omits
+  // `onResumeOpenChange`, so there it's just the local setState — unchanged.
+  const setPickerOpenSync = React.useCallback(
+    (open: boolean) => {
+      setPickerOpen(open)
+      onResumeOpenChange?.(open)
+    },
+    [onResumeOpenChange],
+  )
+
+  // Belt-and-suspenders: if the actions cluster unmounts while the picker is
+  // still flagged open (e.g. an archive elsewhere drops the row), release the
+  // host pin so the tile can collapse normally.
+  React.useEffect(() => {
+    if (!onResumeOpenChange) return
+    return () => onResumeOpenChange(false)
+  }, [onResumeOpenChange])
 
   React.useEffect(() => {
     if (!name) return
@@ -183,7 +210,7 @@ export function StoppedSessionActions({
       {canResume && (
         <Button
           variant="secondary"
-          onClick={() => setPickerOpen(true)}
+          onClick={() => setPickerOpenSync(true)}
           disabled={busy || archiving}
           className="h-11"
         >
@@ -260,7 +287,7 @@ export function StoppedSessionActions({
         <ResumePicker
           name={name}
           open={pickerOpen}
-          onOpenChange={setPickerOpen}
+          onOpenChange={setPickerOpenSync}
           conversations={conversations}
         />
       )}
