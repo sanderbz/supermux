@@ -1,72 +1,109 @@
-// R5 — status-dot pulse refinement verification.
+// Card-glow (StatusBorder) model verification — the "attention" pulse lives on
+// the CARD, not the status dot (this was mis-fixed THREE times on the dot).
 //
-// Renders the /dev/tiles page (mocked sessions in every Status) and asserts the
-// post-change motion model on the status DOT itself:
-//   • starting  → NO pulsing dot (loading icon/sweep elsewhere is enough).
-//   • idle/green → calm GREEN halo pulse ("something is ready" / done signal).
-//   • waiting/blue → calm BLUE halo pulse (needs input) — kept, unchanged.
-//   • active → spinner (no halo pulse).
-// The green and blue pulses must be visually distinguishable (different colour).
-// With prefers-reduced-motion / Reduce Motion, no halo pulse on any dot.
+// Renders /dev/tiles (mocked sessions in every Status) and asserts:
+//   CARD GLOW (StatusBorder overlay):
+//     • active   (loading / working) → NO card glow (the top-right active
+//                 spinner dot is the loading signal; the card stays calm).
+//     • idle     (done → green)       → a SUBTLE GREEN card glow, and it must be
+//                 visibly subtler (lower peak opacity) than the blue waiting glow.
+//     • waiting  (needs input → blue) → the BLUE attention card glow.
+//     • starting / stopped            → NO card glow.
+//   STATUS DOT:
+//     • idle + waiting dots are STATIC (no halo pulse) — the earlier green/blue
+//       dot halos (commit 4f2bc52) are reverted; the pulse is the card glow now.
+//   REDUCED MOTION:
+//     • the card glow is STATIC (no pulse) for every status.
 //
-// We detect "is this dot pulsing" by the presence of a Framer-driven halo: a
-// pulsing dot has an inline `box-shadow` (Framer writes the animated halo to the
-// element's inline style and its computed box-shadow carries the status colour),
-// while a static dot has NO inline box-shadow and computes to `none`.
+// We probe the StatusBorder as the only aria-hidden span pinned inset-0 z-10
+// rounded-xl that is a DIRECT child of the card; its inline boxShadow (written
+// by Framer) carries the glow colour/alpha. A status with no glow renders no
+// such element.
 
 import { expect, test } from '@playwright/test'
 
 const BASE = process.env.DEV_BASE_URL ?? 'http://localhost:5199'
 
-// HSL hue families for the two pulse colours (globals.css):
-//   --status-ready (green): hue ~152   --status-waiting (blue): hue ~214
-// A box-shadow string carries the colour, so we can assert the two pulses use
-// different colour channels by checking which hue dominates the rgb triple.
-
-type DotProbe = {
+type CardProbe = {
+  /** the status dot's aria-label, identifying the tile's status */
   label: string
-  // computed box-shadow (carries the halo colour when pulsing, else "none")
-  shadow: string
-  // Framer writes the animated halo to the element's inline style; presence ⇒
-  // the dot is running a halo pulse.
-  hasInlineHalo: boolean
+  /** StatusBorder overlay exists for this card? */
+  hasGlow: boolean
+  /** inline boxShadow Framer wrote on the StatusBorder (carries colour + alpha) */
+  inline: string
 }
 
-async function probeDots(page: import('@playwright/test').Page) {
-  // Status dots carry role="img" with the human status label as aria-label.
-  // Grab one representative dot per status of interest.
-  const wanted = ['Booting', 'Idle', 'Needs input', 'Running']
-  const probes: DotProbe[] = []
-  for (const label of wanted) {
-    const dot = page.locator(`[role="img"][aria-label="${label}"]`).first()
-    // Decorative 8px dots: assert presence (attached), not Playwright "visible"
-    // (its visibility heuristic is flaky on tiny spans / below-fold tiles).
-    await dot.waitFor({ state: 'attached', timeout: 10_000 })
-    await dot.scrollIntoViewIfNeeded().catch(() => {})
-    const { shadow, hasInlineHalo } = await dot.evaluate((el) => ({
-      shadow: getComputedStyle(el).boxShadow,
-      hasInlineHalo: (el as HTMLElement).style.boxShadow !== '',
-    }))
-    probes.push({ label, shadow, hasInlineHalo })
+// Read EVERY card's (dotLabel, StatusBorder inline boxShadow) in one pass.
+async function probeCards(
+  page: import('@playwright/test').Page,
+): Promise<CardProbe[]> {
+  return page.evaluate(() => {
+    const cards = Array.from(
+      document.querySelectorAll('[role="button"]'),
+    ).filter((c) => c.querySelector('[role="img"]'))
+    return cards.map((c) => {
+      const label =
+        c.querySelector('[role="img"]')?.getAttribute('aria-label') ?? '?'
+      const border = c.querySelector(
+        ':scope > span[aria-hidden].pointer-events-none.absolute.inset-0.z-10.rounded-xl',
+      ) as HTMLElement | null
+      return {
+        label,
+        hasGlow: !!border,
+        inline: border ? border.style.boxShadow : '',
+      }
+    })
+  })
+}
+
+// Highest alpha observed across a few samples — the peak of the breath. The
+// inline keyframe form is `inset 0 0 0 1.5px hsl(var(--token) / <alpha>)`.
+async function peakAlphaFor(
+  page: import('@playwright/test').Page,
+  label: string,
+  samples = 30,
+  gapMs = 100,
+): Promise<number> {
+  let mx = 0
+  for (let i = 0; i < samples; i++) {
+    const cards = await probeCards(page)
+    const c = cards.find((p) => p.label === label)
+    const m = c?.inline.match(/\/\s*([\d.]+)\s*\)/)
+    if (m) mx = Math.max(mx, Number(m[1]))
+    await page.waitForTimeout(gapMs)
   }
-  return probes
+  return mx
 }
 
-function isPulsing(p: DotProbe): boolean {
-  // A Framer halo pulse writes an inline box-shadow that computes to a coloured
-  // shadow; a static dot has no inline box-shadow and computes to "none".
-  return p.hasInlineHalo && p.shadow !== 'none'
+// Is the StatusBorder inline boxShadow constant over a window (STATIC) or does
+// it change frame-to-frame (PULSING)?
+async function isPulsing(
+  page: import('@playwright/test').Page,
+  label: string,
+  samples = 8,
+  gapMs = 120,
+): Promise<boolean> {
+  const seen = new Set<string>()
+  for (let i = 0; i < samples; i++) {
+    const cards = await probeCards(page)
+    const c = cards.find((p) => p.label === label)
+    seen.add(c?.inline ?? '')
+    await page.waitForTimeout(gapMs)
+  }
+  return seen.size > 1
 }
 
-// Extract the rgb triple from a computed box-shadow ("rgba(r, g, b, a) ...").
-function shadowRgb(shadow: string): [number, number, number] | null {
-  const m = shadow.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/)
-  if (!m) return null
-  return [Number(m[1]), Number(m[2]), Number(m[3])]
+function hueOf(inline: string): 'green' | 'blue' | 'amber' | 'other' {
+  // inline carries the css var token name directly.
+  if (inline.includes('--status-ready')) return 'green'
+  if (inline.includes('--status-waiting')) return 'blue'
+  if (inline.includes('--status-active') || inline.includes('--status-error'))
+    return 'amber'
+  return 'other'
 }
 
-test.describe('status-dot pulse model', () => {
-  test('starting=no pulse, idle=green pulse, waiting=blue pulse', async ({
+test.describe('card-glow (StatusBorder) model', () => {
+  test('active=no glow, idle=subtle green glow, waiting=blue glow; dots static', async ({
     page,
   }) => {
     await page.goto(`${BASE}/dev/tiles`)
@@ -74,57 +111,79 @@ test.describe('status-dot pulse model', () => {
       state: 'attached',
       timeout: 15_000,
     })
+    await page.waitForTimeout(500)
 
-    const probes = await probeDots(page)
-    const by = (l: string) => probes.find((p) => p.label === l)!
+    const cards = await probeCards(page)
+    const by = (l: string) => cards.filter((p) => p.label === l)
 
-    const booting = by('Booting')
-    const idle = by('Idle')
-    const waiting = by('Needs input')
+    // 1) active (loading/working) → NO card glow.
+    for (const c of by('Running')) {
+      expect(c.hasGlow, 'active/loading card must NOT glow').toBe(false)
+    }
+    // 2) starting + stopped → NO card glow.
+    for (const c of [...by('Booting'), ...by('Stopped')]) {
+      expect(c.hasGlow, `${c.label} card must NOT glow`).toBe(false)
+    }
+    // 3) idle → green card glow.
+    const idle = by('Idle')[0]
+    expect(idle.hasGlow, 'idle/done card must glow').toBe(true)
+    expect(hueOf(idle.inline), 'idle glow must be green').toBe('green')
+    // 4) waiting → blue card glow.
+    const waiting = by('Needs input')[0]
+    expect(waiting.hasGlow, 'waiting card must glow').toBe(true)
+    expect(hueOf(waiting.inline), 'waiting glow must be blue').toBe('blue')
 
-    // 1) starting → NO pulsing dot.
-    expect(isPulsing(booting), 'starting dot must NOT pulse').toBe(false)
-
-    // 2) idle/green → pulsing.
-    expect(isPulsing(idle), 'idle/green dot must pulse (done signal)').toBe(true)
-
-    // 3) waiting/blue → pulsing (kept).
-    expect(isPulsing(waiting), 'waiting/blue dot must pulse').toBe(true)
-
-    // 4) green and blue pulses are visually distinguishable → different colour.
-    const idleRgb = shadowRgb(idle.shadow)
-    const waitRgb = shadowRgb(waiting.shadow)
-    expect(idleRgb, 'idle halo must carry a colour').not.toBeNull()
-    expect(waitRgb, 'waiting halo must carry a colour').not.toBeNull()
-    // Green-dominant for "done" (G > B), blue-dominant for "needs input" (B > G).
-    expect(idleRgb![1], 'idle/done halo must be green-dominant (G>B)').toBeGreaterThan(
-      idleRgb![2],
-    )
+    // 5) the green glow must be SUBTLER than the blue glow (lower peak alpha).
+    const greenPeak = await peakAlphaFor(page, 'Idle')
+    const bluePeak = await peakAlphaFor(page, 'Needs input')
+    expect(greenPeak, 'green peak alpha must be > 0').toBeGreaterThan(0)
+    expect(bluePeak, 'blue peak alpha must be > 0').toBeGreaterThan(0)
     expect(
-      waitRgb![2],
-      'waiting halo must be blue-dominant (B>G)',
-    ).toBeGreaterThan(waitRgb![1])
-    // …and the two colours must differ outright.
-    expect(idle.shadow, 'green done pulse ≠ blue waiting pulse').not.toEqual(
-      waiting.shadow,
+      greenPeak,
+      `green glow (${greenPeak}) must be subtler than blue (${bluePeak})`,
+    ).toBeLessThan(bluePeak)
+
+    // 6) both card glows PULSE under normal motion.
+    expect(await isPulsing(page, 'Idle'), 'idle glow must pulse').toBe(true)
+    expect(await isPulsing(page, 'Needs input'), 'waiting glow must pulse').toBe(
+      true,
     )
+
+    // 7) the status DOTS are static (reverted) — no inline box-shadow halo on
+    // the idle/waiting dots themselves.
+    const dotHalos = await page.evaluate(() => {
+      const wanted = ['Idle', 'Needs input']
+      return wanted.map((label) => {
+        const dot = document.querySelector(
+          `[role="img"][aria-label="${label}"]`,
+        ) as HTMLElement | null
+        return { label, inlineShadow: dot ? dot.style.boxShadow : 'NO-DOT' }
+      })
+    })
+    for (const d of dotHalos) {
+      expect(
+        d.inlineShadow,
+        `${d.label} DOT must be static (no halo) — pulse lives on the card`,
+      ).toBe('')
+    }
   })
 
-  test('reduced motion → no halo pulse on any dot', async ({ browser }) => {
+  test('reduced motion → card glow is static (no pulse) on every status', async ({
+    browser,
+  }) => {
     const ctx = await browser.newContext({ reducedMotion: 'reduce' })
     const page = await ctx.newPage()
-    // ?reduce=1 also forces Framer's reducedMotion="always" on the dev page.
     await page.goto(`${BASE}/dev/tiles?reduce=1`)
     await page.waitForSelector('[role="img"][aria-label="Idle"]', {
       state: 'attached',
       timeout: 15_000,
     })
+    await page.waitForTimeout(400)
 
-    const probes = await probeDots(page)
-    for (const p of probes) {
+    for (const label of ['Idle', 'Needs input', 'Error']) {
       expect(
-        isPulsing(p),
-        `${p.label} dot must NOT pulse under reduced motion`,
+        await isPulsing(page, label),
+        `${label} card glow must be STATIC under reduced motion`,
       ).toBe(false)
     }
     await ctx.close()

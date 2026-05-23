@@ -31,27 +31,24 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'Error',
 }
 
-/** Decorative status indicator (§4.3). Three motion modes, scoped to the dot
- *  itself (not the tile border):
+/** Decorative status indicator (§4.3). The "attention" pulse lives on the CARD
+ *  (`<StatusBorder>`), NOT here — the dot is a static colour indicator. The one
+ *  exception is `active`, where a tiny spinner replaces the disc because that IS
+ *  the loading/working affordance (the "top-right loader icon"):
  *
- *  • `active` — Claude is thinking. A small circular spinner (slightly bigger
- *    than the resting dot) rotates at a calm cadence so the dot reads as
- *    "doing work" without competing for attention with the agent's own
- *    streaming text. The amber border pulse on `<StatusBorder>` keeps the
- *    full-card glance.
- *  • `waiting` — input is required. The dot pulses a calm BLUE halo (2.2s) to
- *    draw the user's eye to the tile that needs them. Distinct from the green
- *    "done" pulse below by colour, so the user can tell "needs input" from
- *    "finished" at a glance.
- *  • `idle` — the turn ended: the agent has finished and is awaiting your next
- *    prompt. The green "ready" dot pulses a calm GREEN halo (2.4s) so a freshly
- *    finished session announces itself ("something is ready"). Because `idle`
- *    only follows the boot/active window, the pulse appears AFTER loading
- *    completes — never while grey/booting. Reduced motion: static green dot.
- *  • `starting` — boot window. NO dot pulse: the loading icon/sweep elsewhere
- *    on the tile already signals "booting", so an extra dot pulse here is too
- *    much. Just a static neutral-grey disc; the detector flips this to
- *    active/idle as soon as a real signal arrives.
+ *  • `active` — Claude is thinking / the session is loading. A small circular
+ *    spinner (slightly bigger than the resting dot) rotates at a calm cadence so
+ *    the dot reads as "doing work" / "loading". This is the only dot that moves.
+ *    The card stays calm (no glow) during this phase by design.
+ *  • `waiting` — input is required. STATIC blue disc. The blue attention signal
+ *    is the card glow (`<StatusBorder>` waiting pulse), not the dot — the dot
+ *    just colours the state. (Earlier this pulsed; reverted to keep the pulse on
+ *    the card so loading/done/needs-input read consistently at the card level.)
+ *  • `idle` — the turn ended (done → green). STATIC green disc. The "ready"
+ *    signal is the subtle green card glow (`<StatusBorder>` idle pulse); the dot
+ *    just colours the state. (Earlier this pulsed green; reverted.)
+ *  • `starting` — boot window. Static neutral-grey disc; the detector flips this
+ *    to active/idle as soon as a real signal arrives.
  *  • everything else (`stopped`, `error`) — static disc, no motion.
  *
  *  Footprint stays ≤ 14px (8px dot + a 2px spinner ring) so it never
@@ -106,101 +103,17 @@ export function StatusDot({
     )
   }
 
-  // ── Needs-input pulse (waiting). Spring-driven opacity + halo ─────────────
+  // ── Static colour discs (waiting, idle, starting, stopped, error) ─────────
   //
-  // The dot itself pulses at the calm `waiting` cadence (2.2s) — same family
-  // as the prior border pulse, just relocated to the dot so the motion lives
-  // at the user-action affordance. Reduced motion: static blue dot with a soft
-  // halo ring so the "needs you" weight still reads.
-  if (status === 'waiting') {
-    if (reduce) {
-      return (
-        <span
-          role="img"
-          aria-label={STATUS_LABEL.waiting}
-          className={cn(
-            'size-2 shrink-0 rounded-full bg-status-waiting ring-2 ring-status-waiting/40',
-            className,
-          )}
-        />
-      )
-    }
-    return (
-      <motion.span
-        role="img"
-        aria-label={STATUS_LABEL.waiting}
-        className={cn(
-          'size-2 shrink-0 rounded-full bg-status-waiting',
-          className,
-        )}
-        animate={{
-          // Halo grows + fades to draw the eye; the inner disc stays solid.
-          boxShadow: [
-            '0 0 0 0 hsl(var(--status-waiting) / 0.55)',
-            '0 0 0 6px hsl(var(--status-waiting) / 0)',
-          ],
-        }}
-        transition={{
-          repeat: Infinity,
-          duration: 2.2,
-          ease: 'easeOut',
-        }}
-      />
-    )
-  }
-
-  // ── Done / ready pulse (idle). Spring-driven GREEN halo ───────────────────
-  //
-  // `idle` is the "turn ended" state: the agent has finished and is awaiting
-  // your next prompt. A calm green halo pulse (2.4s) makes a freshly finished
-  // session announce itself — the "something is ready" signal. Because `idle`
-  // only follows the boot/active window, this pulse appears AFTER loading
-  // completes (never while grey/booting). Same halo family as the blue waiting
-  // pulse but with the green `--status-ready` token + a slightly slower cadence,
-  // so "done" stays visually distinct from "needs input". Reduced motion:
-  // static green dot (no pulse).
-  if (status === 'idle') {
-    if (reduce) {
-      return (
-        <span
-          role="img"
-          aria-label={STATUS_LABEL.idle}
-          className={cn(
-            'size-2 shrink-0 rounded-full bg-status-ready',
-            className,
-          )}
-        />
-      )
-    }
-    return (
-      <motion.span
-        role="img"
-        aria-label={STATUS_LABEL.idle}
-        className={cn(
-          'size-2 shrink-0 rounded-full bg-status-ready',
-          className,
-        )}
-        animate={{
-          // Green halo grows + fades; the inner disc stays solid.
-          boxShadow: [
-            '0 0 0 0 hsl(var(--status-ready) / 0.55)',
-            '0 0 0 6px hsl(var(--status-ready) / 0)',
-          ],
-        }}
-        transition={{
-          repeat: Infinity,
-          duration: 2.4,
-          ease: 'easeOut',
-        }}
-      />
-    )
-  }
-
-  // ── Resting states (starting, stopped, error) — static disc, no motion ────
-  //
-  // `starting` no longer pulses: the loading icon/sweep elsewhere on the tile
-  // already signals "booting", so an extra dot pulse here is too much. It just
-  // shows the neutral-grey disc until the detector flips it to active/idle.
+  // The pulse/halo now lives on the CARD (`<StatusBorder>`), so the dot is a
+  // plain static colour indicator for every non-active state:
+  //   • waiting → blue disc  (card carries the blue "needs input" pulse)
+  //   • idle    → green disc  (card carries the subtle green "ready" glow)
+  //   • starting → neutral-grey disc (boot window)
+  //   • stopped/error → muted / orange disc
+  // Earlier (4f2bc52) the waiting + idle dots pulsed a halo; reverted here so a
+  // single, consistent attention model lives at the card level. STATUS_COLOR
+  // maps each status to its `bg-status-*` token.
   return (
     <span
       role="img"
