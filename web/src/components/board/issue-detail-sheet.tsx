@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { Bot, Trash2, User, X, Zap } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Bot, Search, Trash2, User, X, Zap } from 'lucide-react'
 
 import {
   Sheet,
@@ -12,11 +13,10 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { useSessions } from '@/hooks/use-sessions'
 import {
-  listBoardSessions,
   type BoardIssue,
   type BoardIssuePatch,
-  type BoardSession,
   type BoardStatus,
 } from '@/lib/api'
 
@@ -97,19 +97,23 @@ function IssueDetailForm({
   const [ownerType, setOwnerType] = useState<'human' | 'agent'>(issue.owner_type)
   const [tags, setTags] = useState<string[]>(issue.tags)
   const [tagInput, setTagInput] = useState('')
-  const [sessions, setSessions] = useState<BoardSession[]>([])
+  const [sessionFilter, setSessionFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let alive = true
-    void listBoardSessions().then((s) => {
-      if (alive) setSessions(s)
-    })
-    return () => {
-      alive = false
-    }
-  }, [])
+  // The live session list — the SAME SSE-driven source the overview reads
+  // (`useSessions` / `SESSIONS_KEY`), so the claim picker is never empty when a
+  // session is actually running, and updates in real time.
+  const { sessions } = useSessions()
+
+  // Sessions filtered by the inline live-filter, sorted by name for a stable
+  // list. Used by both the generic "Session" field and the claim combobox.
+  const filteredSessions = useMemo(() => {
+    const q = sessionFilter.trim().toLowerCase()
+    return sessions
+      .filter((s) => !q || s.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [sessions, sessionFilter])
 
   function addTag(raw: string) {
     const t = raw.trim().replace(/,$/, '')
@@ -291,15 +295,94 @@ function IssueDetailForm({
         </Field>
 
         {isClaimable(issue) && (
-          <Button
-            variant="secondary"
-            onClick={() => void claim()}
-            disabled={busy}
-            className="justify-center"
-          >
-            <Zap className="size-4" />
-            Claim for session
-          </Button>
+          <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/30 p-3">
+            <span className="text-xs font-medium text-muted-foreground">
+              Claim for session
+            </span>
+            {sessions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No active sessions —{' '}
+                <Link
+                  to="/"
+                  onClick={onClose}
+                  className="font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  start one from the overview
+                </Link>{' '}
+                first.
+              </p>
+            ) : (
+              <>
+                {/* Live-filter — only worth showing once the list is long. */}
+                {sessions.length > 5 && (
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={sessionFilter}
+                      onChange={(e) => setSessionFilter(e.target.value)}
+                      placeholder="Filter sessions"
+                      aria-label="Filter sessions"
+                      className="h-9 pl-8"
+                    />
+                  </div>
+                )}
+                {/* The picker IS the claim affordance — pick a session here, then
+                    the button enables. */}
+                <div
+                  role="listbox"
+                  aria-label="Sessions"
+                  className="flex max-h-48 flex-col gap-1 overflow-y-auto [scrollbar-width:thin]"
+                >
+                  {filteredSessions.length === 0 ? (
+                    <p className="px-1 py-2 text-sm text-muted-foreground">
+                      No sessions match “{sessionFilter.trim()}”.
+                    </p>
+                  ) : (
+                    filteredSessions.map((s) => {
+                      const active = session === s.name
+                      return (
+                        <button
+                          key={s.name}
+                          type="button"
+                          role="option"
+                          aria-selected={active}
+                          onClick={() => setSession(s.name)}
+                          className={cn(
+                            'flex h-11 items-center gap-2 rounded-md border px-3 text-left text-sm transition-colors',
+                            active
+                              ? 'border-primary bg-primary/10 text-primary'
+                              : 'border-transparent text-foreground hover:border-foreground/15 hover:bg-foreground/5',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'size-1.5 shrink-0 rounded-full',
+                              active ? 'bg-primary' : 'bg-muted-foreground/40',
+                            )}
+                          />
+                          <span className="flex-1 truncate font-medium">
+                            {s.name}
+                          </span>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {s.status}
+                          </span>
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={() => void claim()}
+                  disabled={busy || !session}
+                  className="justify-center"
+                >
+                  <Zap className="size-4" />
+                  {session ? `Claim for ${session}` : 'Pick a session above'}
+                </Button>
+              </>
+            )}
+          </div>
         )}
 
         {error && <p className="text-sm text-destructive">{error}</p>}

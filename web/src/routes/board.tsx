@@ -398,6 +398,7 @@ export function Board() {
         onClaim={async (id, session) => {
           try {
             await board.claimIssue({ id, session })
+            pushToast(`Claimed for ${session}.`, 'info')
           } catch (e) {
             if (e instanceof BoardError && e.status === 409) {
               pushToast(e.message || 'Claim lost — another session took it.')
