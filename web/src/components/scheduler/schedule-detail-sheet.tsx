@@ -15,13 +15,7 @@ import { Play, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import {
   Dialog,
   DialogContent,
@@ -30,7 +24,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { useToast } from '@/components/ui/use-toast'
 import { CONFIRM } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
@@ -57,63 +50,62 @@ export function ScheduleDetailSheet({
   onClose,
   sessions,
 }: ScheduleDetailSheetProps) {
-  const open = mode === 'create' || (mode === 'edit' && !!schedule)
-  return (
-    <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent
-        side="right"
-        className="flex w-full flex-col gap-0 p-0 sm:max-w-md"
-      >
-        {mode === 'create' && (
-          <CreateBody key="create" onClose={onClose} sessions={sessions} />
-        )}
-        {mode === 'edit' && schedule && (
-          <EditBody
-            key={schedule.id}
-            schedule={schedule}
-            onClose={onClose}
-            sessions={sessions}
-          />
-        )}
-      </SheetContent>
-    </Sheet>
-  )
+  // Both modes render through the shared <ResponsiveSheet> (Vaul drag-detent
+  // bottom sheet on mobile, side Sheet on desktop). Keyed remount per mode/row
+  // keeps the form state pristine, same as before.
+  if (mode === 'create') {
+    return (
+      <CreateBody key="create" open onClose={onClose} sessions={sessions} />
+    )
+  }
+  if (mode === 'edit' && schedule) {
+    return (
+      <EditBody
+        key={schedule.id}
+        open
+        schedule={schedule}
+        onClose={onClose}
+        sessions={sessions}
+      />
+    )
+  }
+  return null
 }
 
 // ── create mode ─────────────────────────────────────────────────────────────────
 
 function CreateBody({
+  open,
   onClose,
   sessions,
 }: {
+  open: boolean
   onClose: () => void
   sessions: string[]
 }) {
   return (
-    <>
-      <SheetHeader className="border-b border-border px-5 py-4 text-left">
-        <SheetTitle>New schedule</SheetTitle>
-        <SheetDescription>
-          Boot an agent, send a command, or run a shell job on a timer.
-        </SheetDescription>
-      </SheetHeader>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="px-5 py-5">
-          <ScheduleEditor mode="create" sessions={sessions} onClose={onClose} />
-        </div>
-      </ScrollArea>
-    </>
+    <ResponsiveSheet
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="New schedule"
+      description="Boot an agent, send a command, or run a shell job on a timer."
+    >
+      <div className="px-5 py-5">
+        <ScheduleEditor mode="create" sessions={sessions} onClose={onClose} />
+      </div>
+    </ResponsiveSheet>
   )
 }
 
 // ── edit mode ────────────────────────────────────────────────────────────────────
 
 function EditBody({
+  open,
   schedule,
   onClose,
   sessions,
 }: {
+  open: boolean
   schedule: ScheduleRow
   onClose: () => void
   sessions: string[]
@@ -147,44 +139,45 @@ function EditBody({
 
   return (
     <>
-      <SheetHeader className="border-b border-border px-5 py-4 text-left">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <SheetTitle className="truncate">{schedule.title}</SheetTitle>
-            <SheetDescription className="truncate">
-              {describeSchedule(schedule.schedule_expr)}
-            </SheetDescription>
+      <ResponsiveSheet
+        open={open}
+        onOpenChange={(o) => !o && onClose()}
+        title={schedule.title}
+        description={describeSchedule(schedule.schedule_expr)}
+        headerActions={
+          // Run-now / Delete on the left; the enable toggle pushed to the right
+          // edge of the SAME row (ml-auto), vertically centred with the h-11
+          // buttons — clear of the sheet's top-right close button.
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-11"
+              onClick={fireNow}
+              disabled={runNow.isPending}
+            >
+              <Play className="size-4" />
+              Run now
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-11 text-status-error hover:text-status-error"
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 className="size-4" />
+              Delete
+            </Button>
+            <div className="ml-auto">
+              <EnableToggle
+                id={schedule.id}
+                enabled={schedule.enabled === 1}
+                onError={(m) => toast({ message: m, tone: 'error' })}
+              />
+            </div>
           </div>
-          <EnableToggle
-            id={schedule.id}
-            enabled={schedule.enabled === 1}
-            onError={(m) => toast({ message: m, tone: 'error' })}
-          />
-        </div>
-        <div className="mt-2 flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-11"
-            onClick={fireNow}
-            disabled={runNow.isPending}
-          >
-            <Play className="size-4" />
-            Run now
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-11 text-status-error hover:text-status-error"
-            onClick={() => setConfirmDelete(true)}
-          >
-            <Trash2 className="size-4" />
-            Delete
-          </Button>
-        </div>
-      </SheetHeader>
-
-      <ScrollArea className="min-h-0 flex-1">
+        }
+      >
         <div className="flex flex-col gap-6 px-5 py-5">
           <ScheduleEditor
             mode="edit"
@@ -229,7 +222,7 @@ function EditBody({
             )}
           </section>
         </div>
-      </ScrollArea>
+      </ResponsiveSheet>
 
       <Dialog
         open={confirmDelete}
