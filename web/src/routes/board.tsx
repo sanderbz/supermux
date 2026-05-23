@@ -446,7 +446,12 @@ function BoardPage({
   hasColumns: boolean
 }) {
   return (
-    <div className="mx-auto flex h-full w-full max-w-none flex-col px-4 py-6 sm:px-6">
+    // R5: the shared mobile top bar was removed, so this container owns the
+    // safe-area top inset on mobile (≤md) — folded into the top padding via an
+    // arbitrary `calc(env(safe-area-inset-top)+1.5rem)` so the title clears the
+    // notch / Dynamic Island. `sm:pt-6` restores the normal inset once the
+    // desktop SideNav owns the chrome. Mirrors overview.tsx.
+    <div className="mx-auto flex h-full w-full max-w-none flex-col px-4 py-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:px-6 sm:pt-6">
       <div className="mb-3 flex items-center gap-2">
         <h1 className="flex-1 text-2xl font-semibold tracking-tight">Board</h1>
         <Button

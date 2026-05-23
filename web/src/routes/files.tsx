@@ -133,10 +133,14 @@ export function Files() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      {/* Toolbar — breadcrumb + controls. Hidden on mobile while a file is open. */}
+      {/* Toolbar — breadcrumb + controls. Hidden on mobile while a file is open.
+          R5: the shared mobile top bar was removed, so this header owns the
+          safe-area top inset on mobile (≤md) via `pt-safe` (reset at `sm` once
+          the desktop SideNav owns the chrome). When a file is open the header is
+          hidden on mobile and the viewer below carries the inset instead. */}
       <header
         className={cn(
-          'glass h-14 shrink-0 items-center gap-1 border-b border-border px-2',
+          'glass h-14 shrink-0 items-center gap-1 border-b border-border px-2 pt-safe sm:pt-0',
           selected ? 'hidden md:flex' : 'flex',
         )}
       >

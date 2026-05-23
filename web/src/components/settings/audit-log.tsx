@@ -6,22 +6,23 @@ import { useAuditLog } from '@/hooks/use-settings'
 import { EmptyStatePlaceholder } from '@/components/empty-state'
 import type { AuditEntry } from '@/lib/api'
 
-/** Parse the audit `at` field, which may arrive as epoch seconds, epoch millis,
- *  or an ISO string depending on the backend serializer. */
-function toDate(at: string): Date | null {
-  if (!at) return null
-  const n = Number(at)
-  if (!Number.isNaN(n) && at.trim() !== '') {
-    // Heuristic: 10-digit → seconds, 13-digit → millis.
+/** Parse the audit `ts` field. The server sends epoch **seconds** as a number
+ *  (`runtime_state.rs` → `ts = Utc::now().timestamp()`); we still tolerate a
+ *  string / epoch-millis just in case a different serializer shows up. */
+function toDate(ts: number | string | undefined): Date | null {
+  if (ts == null) return null
+  const n = typeof ts === 'number' ? ts : Number(ts)
+  if (!Number.isNaN(n) && String(ts).trim() !== '') {
+    // Heuristic: < 1e12 → seconds, otherwise millis.
     return new Date(n < 1e12 ? n * 1000 : n)
   }
-  const d = new Date(at)
+  const d = new Date(String(ts))
   return Number.isNaN(d.getTime()) ? null : d
 }
 
-function relativeTime(at: string): string {
-  const d = toDate(at)
-  if (!d) return at || '—'
+function relativeTime(ts: number | string | undefined): string {
+  const d = toDate(ts)
+  if (!d) return '—'
   const diff = Date.now() - d.getTime()
   const s = Math.round(diff / 1000)
   if (s < 60) return `${Math.max(s, 0)}s ago`
@@ -72,21 +73,25 @@ function Inline({ icon, children }: { icon: ReactNode; children: ReactNode }) {
 
 function Entry({ row, dim }: { row: AuditEntry; dim: boolean }) {
   const detail = detailText(row.detail)
+  // Surface who (actor) + what (target) alongside the JSON detail — the server
+  // sends both but the UI used to drop them. Compose a compact context line.
+  const context = [row.actor, row.target].filter(Boolean).join(' · ')
+  const sub = [context, detail].filter(Boolean).join(' — ')
   return (
     <div className="flex items-baseline gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
         <div className="font-mono text-[13px] text-foreground">{row.action}</div>
-        {detail ? (
+        {sub ? (
           <div className="mt-0.5 truncate text-[12px] text-muted-foreground">
-            {detail}
+            {sub}
           </div>
         ) : null}
       </div>
       <time
         className={cn('shrink-0 text-[12px] tabular-nums text-muted-foreground', dim && 'opacity-60')}
-        title={toDate(row.at)?.toLocaleString() ?? row.at}
+        title={toDate(row.ts)?.toLocaleString() ?? undefined}
       >
-        {relativeTime(row.at)}
+        {relativeTime(row.ts)}
       </time>
     </div>
   )

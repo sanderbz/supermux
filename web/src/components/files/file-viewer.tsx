@@ -73,8 +73,11 @@ export function FileViewer({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header — glass bar with filename + actions. */}
-      <header className="glass flex h-14 shrink-0 items-center gap-1 border-b border-border px-2">
+      {/* Header — glass bar with filename + actions. R5: on mobile a file-open
+          state hides the files toolbar (which used to carry the safe-area inset),
+          so this viewer header owns the top inset via `pt-safe` (reset at `sm`
+          once the desktop SideNav owns the chrome) to clear the notch. */}
+      <header className="glass flex h-14 shrink-0 items-center gap-1 border-b border-border px-2 pt-safe sm:pt-0">
         <button
           type="button"
           onClick={onBack}
