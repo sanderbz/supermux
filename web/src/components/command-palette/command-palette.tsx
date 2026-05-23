@@ -48,9 +48,10 @@ import {
 import { useSessions } from '@/hooks/use-sessions'
 import { useSlashCommands } from '@/hooks/use-commands'
 import { useBoard } from '@/hooks/use-board'
+import { useSendToAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
 import { useToast } from '@/components/ui/use-toast'
 import { settingsRequest } from '@/lib/api/client'
-import { BoardError, boardApi, type ApiSession, type BoardIssue, type SlashCommand } from '@/lib/api'
+import { boardApi, type ApiSession, type BoardIssue, type SlashCommand } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 
@@ -179,6 +180,7 @@ export function CommandPalette() {
   const openArchived = useArchivedSheet((s) => s.openSheet)
   const board = useBoard()
   const { toast } = useToast()
+  const { sendToAgent } = useSendToAgent()
 
   // Board verbs only surface on the board route (so they don't clutter the
   // palette elsewhere). `useLocation` keeps it reactive to client-side nav.
@@ -351,37 +353,18 @@ export function CommandPalette() {
   const sendIssueToSession = React.useCallback(
     async (issue: BoardIssue, session: string) => {
       setOpen(false)
-      try {
-        const result = await board.claimIssue({
-          id: issue.id,
-          session,
-          deliver: true,
-        })
-        if (result.delivered && result.steer_id != null) {
-          const steerId = result.steer_id
-          toast({
-            message: `Sent to ${session}`,
-            action: {
-              label: 'Undo',
-              onClick: () => {
-                void boardApi.unsend(session, steerId).catch(() => {})
-              },
-            },
-          })
-        } else {
-          toast({ message: `Claimed for ${session}` })
-        }
-      } catch (e) {
-        const msg =
-          e instanceof BoardError && e.status === 409
-            ? e.message || 'Claim lost — another session took it.'
-            : e instanceof Error
-              ? e.message
-              : 'Send failed.'
-        toast({ message: msg, tone: 'error' })
-      }
+      // The shared send-to-agent flow (claim→toast→Undo) through the board's
+      // optimistic mutation. Undo failures are swallowed silently here, as before.
+      await sendToAgent({
+        id: issue.id,
+        session,
+        claim: (a) => board.claimIssue(a),
+        // Match the palette toast's prior styling: default tone + default duration.
+        sentTone: 'default',
+        onError: (e) => toast({ message: claimErrorMessage(e), tone: 'error' }),
+      })
     },
-    [board, setOpen, toast],
+    [board, setOpen, sendToAgent, toast],
   )
 
   const markIssueDone = React.useCallback(

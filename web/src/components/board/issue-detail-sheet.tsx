@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useSessions } from '@/hooks/use-sessions'
+import { useSendToAgent } from '@/hooks/use-send-to-agent'
 import { useToast } from '@/components/ui/use-toast'
 import {
   boardApi,
@@ -138,6 +139,7 @@ function IssueDetailForm({
   // actually running, and updates in real time.
   const { sessions } = useSessions()
   const { toast } = useToast()
+  const { sendToAgent } = useSendToAgent()
 
   // The live status of the session this issue is linked to (for the stale banner
   // copy). The relations + flags ride in `issue` straight off the SSE `board`
@@ -188,8 +190,9 @@ function IssueDetailForm({
 
   // "Send to agent" (deliver=true) is the primary action; "Claim only"
   // (deliver=false) flips the link without dispatching. Both go through the
-  // atomic claim and surface a 409 in place. On a successful send we toast with
-  // an Undo that retracts the still-undelivered steer.
+  // shared send-to-agent flow (the one source of truth for claim→toast→Undo),
+  // routing the claim through the route's optimistic `onClaim` so the 409
+  // surfaces in-place here too.
   async function claim(deliver: boolean) {
     if (!session) {
       setError('Pick a session to claim this for.')
@@ -198,46 +201,36 @@ function IssueDetailForm({
     setBusy(true)
     setError(null)
     try {
-      const result = await onClaim(issue.id, session, deliver)
-      onClose()
-      if (deliver && result.delivered) {
-        const asleep = !sessions.some((s) => s.name === session)
-        const steerId = result.steer_id
-        toast({
-          message: asleep
+      await sendToAgent({
+        id: issue.id,
+        session,
+        deliver,
+        claim: (a) => onClaim(a.id, a.session, a.deliver),
+        // Match the sheet's prior branch: "Sent" copy on any delivered claim.
+        isSent: (r) => r.delivered,
+        sentMessage: () => {
+          const asleep = !sessions.some((s) => s.name === session)
+          return asleep
             ? `Sent to ${session} — it'll pick this up on wake.`
-            : `Sent to ${session}.`,
-          tone: 'active',
-          duration: 6000,
-          action:
-            steerId != null
-              ? {
-                  label: 'Undo',
-                  onClick: () => {
-                    void boardApi
-                      .unsend(session, steerId)
-                      .then((r) =>
-                        toast({
-                          message:
-                            r.cleared > 0
-                              ? `Unsent — ${session} won't see it.`
-                              : `${session} already picked it up.`,
-                          tone: r.cleared > 0 ? 'default' : 'waiting',
-                        }),
-                      )
-                      .catch(() =>
-                        toast({ message: 'Could not undo.', tone: 'error' }),
-                      )
-                  },
-                }
-              : undefined,
-        })
-      } else {
-        toast({ message: `Claimed for ${session}.` })
-      }
-    } catch (e) {
-      // 409 from the atomic claim surfaces here, in-place.
-      setError(e instanceof Error ? e.message : 'Claim failed.')
+            : `Sent to ${session}.`
+        },
+        sentDuration: 6000,
+        claimedMessage: () => `Claimed for ${session}.`,
+        onSuccess: () => onClose(),
+        onUndone: (cleared) =>
+          toast({
+            message:
+              cleared > 0
+                ? `Unsent — ${session} won't see it.`
+                : `${session} already picked it up.`,
+            tone: cleared > 0 ? 'default' : 'waiting',
+          }),
+        onUndoError: () =>
+          toast({ message: 'Could not undo.', tone: 'error' }),
+        // 409 from the atomic claim surfaces here, in-place.
+        onError: (e) =>
+          setError(e instanceof Error ? e.message : 'Claim failed.'),
+      })
     } finally {
       setBusy(false)
     }
@@ -938,7 +931,7 @@ function ActivityStream({
       await boardApi.comment(issue.id, text)
       // Optional: also steer the comment into the linked session as a nudge.
       if (notify && canSteer && linkedSessionName) {
-        await sendNudge(linkedSessionName, text).catch(() => {
+        await boardApi.nudge(linkedSessionName, text).catch(() => {
           toast({
             message: 'Comment posted, but couldn’t notify the agent.',
             tone: 'waiting',
@@ -1072,23 +1065,6 @@ function ActivityStream({
       </div>
     </Section>
   )
-}
-
-/** Steer a comment into a session as a mid-task nudge (the "notify agent"
- *  toggle). Reuses the session steer endpoint; non-fatal if it fails. */
-async function sendNudge(session: string, body: string): Promise<void> {
-  const { apiToken, apiUrl } = await import('@/lib/api/client')
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  const token = apiToken()
-  if (token) headers.Authorization = `Bearer ${token}`
-  const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(session)}/steer`), {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ text: `Board note: ${body}` }),
-  })
-  if (!res.ok) throw new Error('steer failed')
 }
 
 // ── small shared pieces ───────────────────────────────────────────────────────

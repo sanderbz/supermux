@@ -13,8 +13,9 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import { boardApi, type BoardIssue } from '@/lib/api'
+import { type BoardIssue } from '@/lib/api'
 import { useLiveSession } from '@/hooks/use-board'
+import { useSendToAgent } from '@/hooks/use-send-to-agent'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useToast } from '@/components/ui/use-toast'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
@@ -116,6 +117,7 @@ export function IssueCard({
   const reduce = useReducedMotion()
   const fine = useMediaQuery('(pointer: fine)')
   const { toast } = useToast()
+  const { sendToAgent } = useSendToAgent()
   const navigateMorph = useNavigateMorph()
 
   const due = issue.due ? dueLabel(issue.due) : null
@@ -152,6 +154,9 @@ export function IssueCard({
   }, [navigateMorph, issue.session])
 
   // ── Send to agent (claim + deliver) → toast with Undo via the steer_id ──────
+  // Delegates the whole claim→toast→Undo(unsend) flow to the shared hook
+  // (one source of truth across card / sheet / drag / ⌘K); the card only owns
+  // its `sending` latch and its own copy for the edge cases.
   const onSend = React.useCallback(
     async (e: React.MouseEvent | React.KeyboardEvent) => {
       e.stopPropagation()
@@ -159,45 +164,38 @@ export function IssueCard({
       if (!session || sending) return
       setSending(true)
       try {
-        const { delivered, steer_id } = await boardApi.claim(
-          issue.id,
+        await sendToAgent({
+          id: issue.id,
           session,
-          true,
-        )
-        toast({
-          message: delivered
-            ? `Sent to ${session}`
-            : `Assigned to ${session}`,
-          tone: 'active',
-          duration: 6000,
-          action:
-            delivered && steer_id != null
-              ? {
-                  label: 'Undo',
-                  onClick: () => {
-                    void boardApi.unsend(session, steer_id).catch(() => {
-                      // The agent already consumed it (0 cleared) or a transient
-                      // failure — non-fatal; the work is on its way.
-                      toast({
-                        message: 'Already picked up — can’t undo',
-                        tone: 'default',
-                      })
-                    })
-                  },
-                }
-              : undefined,
-        })
-      } catch (err) {
-        toast({
-          message:
-            err instanceof Error ? err.message : 'Couldn’t send to the agent',
-          tone: 'error',
+          // A delivered send reads "Sent to <session>" (with Undo when there's a
+          // steer to retract); the rare non-delivered outcome still confirms the
+          // assignment ("Assigned to <session>"). Both use the `active` tone.
+          isSent: (r) => r.delivered,
+          sentMessage: () => `Sent to ${session}`,
+          sentDuration: 6000,
+          claimedMessage: () => `Assigned to ${session}`,
+          claimedTone: 'active',
+          onUndoError: () => {
+            // The agent already consumed it (0 cleared) or a transient failure —
+            // non-fatal; the work is on its way.
+            toast({
+              message: 'Already picked up — can’t undo',
+              tone: 'default',
+            })
+          },
+          onError: (err) => {
+            toast({
+              message:
+                err instanceof Error ? err.message : 'Couldn’t send to the agent',
+              tone: 'error',
+            })
+          },
         })
       } finally {
         setSending(false)
       }
     },
-    [issue.id, issue.session, sending, toast],
+    [issue.id, issue.session, sending, sendToAgent, toast],
   )
 
   // The most-recent comment (newest last in the array, mirroring the server's
