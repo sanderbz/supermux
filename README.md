@@ -3,6 +3,14 @@
 A self-hosted terminal multiplexer for running many parallel AI coding-agent
 sessions (Claude Code, Codex, and any other CLI agent) from one dashboard.
 
+<p align="center">
+  <video src="https://github.com/sanderbz/supermux/raw/main/docs/showcase/supermux-showcase.mp4" autoplay loop muted playsinline width="900">
+    <img src="docs/showcase/supermux-showcase.gif" alt="supermux in action — overview, peek, type-on-hover, focus, sort + groups, mobile" width="900">
+  </video>
+</p>
+
+<p align="center"><em>Every tmux session at a glance — hover any tile for a live peek, type without leaving the overview, click for a smooth zoom into focus mode, jump anywhere with ⌘K, and the same dashboard on your phone.</em></p>
+
 supermux drives real `tmux` sessions on your machine and exposes them through a
 fast web UI: a dense overview of every session with live terminal previews, a
 keyboard-captured focus mode on desktop, and a Termius-grade bottom-sheet
