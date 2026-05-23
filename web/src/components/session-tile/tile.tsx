@@ -376,17 +376,19 @@ export function SessionTile({
   // idle tail so the user has scene continuity without a height shift.
   const tailLines =
     expanded && !showLiveTerm && !isStoppedPeek ? EXPANDED_LINES : IDLE_LINES
-  // Stopped peek lifts the preview area to a fixed actions-row height (44pt
-  // Start + 44pt Archive + 12px vertical pad) so the buttons aren't cramped
-  // against the meta row. Geometry stays inside the float so the grid never
-  // reflows.
-  const STOPPED_PEEK_H = 44 + 12 + 12
+  // Stopped peek matches the LIVE peek's height (per-tier LIVE_PREVIEW_H).
+  // Earlier this was a tight 44+12+12 actions-row, but that made the peeked
+  // stopped tile SHORTER than the idle stopped tile (idle = 6 tail lines) — a
+  // jarring shrink right when the user committed to interacting. Matching the
+  // live peek height also keeps the grid feel consistent across statuses: the
+  // tile grows by the same amount whether the peek reveals a live terminal or
+  // the Start + Archive actions, which sit centred in the larger surface.
   // Height the preview area springs to. The card grows with it (the tail-pad is
   // already inside `TailPreview`'s own sizing, so the live height is exact).
   const previewH = showLiveTerm
     ? LIVE_PREVIEW_H
     : isStoppedPeek
-      ? STOPPED_PEEK_H
+      ? LIVE_PREVIEW_H
       : tailLines * TAIL_LINE_H + TAIL_PAD
 
   return (
