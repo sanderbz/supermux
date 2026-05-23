@@ -39,10 +39,27 @@
 
 import * as React from 'react'
 
-/** Sliding stickiness window after the latest captured keystroke. Re-evaluated
- *  on every keypress; while alive, the peek refuses to dismiss on hover-leave.
- *  4s lands between "too short to finish a word" and "annoyingly sticky". */
+/** Sliding stickiness window after the latest captured keystroke, used WHILE
+ *  THE POINTER IS STILL IN/AROUND THE TILE. Re-evaluated on every keypress;
+ *  while alive, a momentary hover-leave (mouse grazing the card edge) won't
+ *  kill a half-typed message — it arms a short grace instead (see
+ *  PEEK_LEAVE_GRACE_MS). 4s lands between "too short to finish a word" and
+ *  "annoyingly sticky".
+ *
+ *  IMPORTANT (fix-peek-sticky): this is NOT the post-mouse-leave dismissal
+ *  delay. A genuine mouse-leave after typing dismisses after PEEK_LEAVE_GRACE_MS,
+ *  not after this full window — decoupling them is the fix for the "~4s linger
+ *  after typing + leaving" bug. Do not collapse these two constants back into
+ *  one. */
 export const PEEK_STICKY_MS = 4000
+
+/** Short grace after a GENUINE mouse-leave while the peek is sticky (the user
+ *  just typed). The peek dismisses after this delay UNLESS a fresh keystroke
+ *  re-arms it (so continuous typing with the pointer parked elsewhere keeps the
+ *  peek open). Long enough to absorb a quick re-entry or an in-flight keystroke,
+ *  short enough that the shrink feels prompt — the user explicitly wanted the
+ *  peek to shrink "promptly" on mouse-leave, not wait out the silence window. */
+export const PEEK_LEAVE_GRACE_MS = 400
 
 export interface UsePeekTypeOptions {
   /** Master enable — the caller passes `peekOpen && desktop` etc. When false,
