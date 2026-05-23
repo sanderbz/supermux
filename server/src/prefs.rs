@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::db;
 use crate::error::AppError;
-use crate::state::AppState;
+use crate::state::{AppState, SseEvent};
 
 /// Build the prefs sub-router (no auth layer — applied by `http::router`).
 pub fn router_for(state: AppState) -> Router {
@@ -39,7 +39,84 @@ pub fn router_for(state: AppState) -> Router {
         )
         .route("/api/kbd-groups/{id}", patch(kbd_patch).delete(kbd_delete))
         // Bare DELETE on the collection path is not exposed; deletions are by id.
+        //
+        // Generic key/value prefs. Account-wide settings that need to follow the
+        // user across devices (e.g. overview sort + custom groups, feat-sort-
+        // and-groups). The key set is curated by [`is_known_pref_key`] so a
+        // typo or hostile client can't fill the table with junk. PUT emits an
+        // `sse:prefs` event so other tabs / devices reconcile live without a
+        // poll (anti-vision: WebSocket-only).
+        .route(
+            "/api/prefs/{key}",
+            get(pref_get).put(pref_put),
+        )
         .with_state(state)
+}
+
+// ── prefs (key/value) ────────────────────────────────────────────────────────
+
+/// Allowlist of pref keys that may be read/written via `/api/prefs/:key`. New
+/// keys MUST be added here — drift between client and server keys is then a
+/// compile-time/test surface rather than a silent bag-of-strings.
+fn is_known_pref_key(key: &str) -> bool {
+    matches!(key, "overview_layout")
+}
+
+/// Maximum bytes accepted for a single pref value. Generous (50 KB) — enough
+/// for hundreds of sessions/groups in `overview_layout` — but bounded so a
+/// runaway client can't grow the prefs table without limit.
+const MAX_PREF_VALUE_BYTES: usize = 50 * 1024;
+
+#[derive(Debug, Deserialize)]
+struct PrefPutBody {
+    /// Opaque string the client controls (typically JSON). Server stores it
+    /// verbatim and never parses it — single source of truth lives in the UI.
+    value: String,
+}
+
+/// `GET /api/prefs/:key` — `{ ok, data: { key, value: string | null } }`.
+async fn pref_get(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if !is_known_pref_key(&key) {
+        return Err(AppError::NotFound(format!("pref {key}")));
+    }
+    let value = db::prefs::get_pref(&state.pool, &key).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "data": { "key": key, "value": value }
+    })))
+}
+
+/// `PUT /api/prefs/:key` — body `{ value }`. Upserts the row and broadcasts an
+/// SSE `prefs` event so peer tabs reconcile live (per the WebSocket-only
+/// anti-vision; no polling).
+async fn pref_put(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    Json(input): Json<PrefPutBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if !is_known_pref_key(&key) {
+        return Err(AppError::NotFound(format!("pref {key}")));
+    }
+    if input.value.len() > MAX_PREF_VALUE_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "value too large ({} bytes; max {})",
+            input.value.len(),
+            MAX_PREF_VALUE_BYTES
+        )));
+    }
+    db::prefs::put_pref(&state.pool, &key, &input.value).await?;
+    // Best-effort SSE fan-out so other tabs / devices reconcile without a poll.
+    let _ = state.sse_tx.send(SseEvent {
+        event: "prefs".to_string(),
+        payload: json!({ "key": key, "value": input.value }),
+    });
+    Ok(Json(json!({
+        "ok": true,
+        "data": { "key": key, "value": input.value }
+    })))
 }
 
 // ── snippets ─────────────────────────────────────────────────────────────────
