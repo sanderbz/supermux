@@ -60,6 +60,16 @@ fn build_env(config: &crate::config::Config, name: &str, hook_token: &str) -> Ha
     env.insert("TMUX_SESSION_NAME".to_string(), name.to_string());
     env.insert("SUPERMUX_URL".to_string(), format!("{scheme}://{}", config.bind));
     env.insert("SUPERMUX_HOOK_TOKEN".to_string(), hook_token.to_string());
+    // Tell the shell it's running in a 256-colour xterm-compatible terminal.
+    // Without TERM the spawned pane inherits whatever (or nothing) the supermux
+    // server saw — often missing or "dumb" — and zsh prompts, `ls --color`,
+    // `git status`, etc. silently drop colour. `xterm-256color` is the broadest
+    // safe baseline (always present in ncurses); `COLORTERM=truecolor` opts in
+    // tools that gate on it (bat, delta, modern prompts) to 24-bit colour.
+    // xterm.js parses the resulting SGR sequences and renders them via the
+    // 16-colour palette set in the web-side `theme`.
+    env.insert("TERM".to_string(), "xterm-256color".to_string());
+    env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env
 }
 
