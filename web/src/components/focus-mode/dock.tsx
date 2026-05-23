@@ -2,9 +2,10 @@
 //
 //   • DesktopDock — M14 (TECH_PLAN §4.4.3): the full desktop dock (left cluster /
 //     editable 4-chip send-row / right cluster). Imported by DesktopSplit.
-//   • MobileDock  — M15 (TECH_PLAN §4.4.1): the 56pt bottom dock inside the Vaul
-//     sheet (session-pill / keyboard toggle / specials / composer). Imported by
-//     focus/mobile.tsx.
+//   • MobileDock  — M15 (TECH_PLAN §4.4.1) → LIVE-TYPE rework: the accessory bar
+//     inside the Vaul sheet (session-pill / ⌨ toggle / slash / specials /
+//     snippets / dictate + a keyboard-pinned Esc/Tab/^C/arrows strip). NO text
+//     composer — you type straight into the terminal. Imported by focus/mobile.tsx.
 //
 // The two are disjoint surfaces co-located here; the merge keeps both.
 
@@ -24,9 +25,9 @@ import {
   Square,
   Settings2,
   ChevronRight,
+  ChevronDown,
   Keyboard,
   MoreHorizontal,
-  ArrowUp,
   Mic,
 } from 'lucide-react'
 
@@ -312,28 +313,49 @@ export function DesktopDock({
 
 export default DesktopDock
 
-// ── MobileDock (M15, TECH_PLAN §4.4.1) ────────────────────────────────────────
+// ── MobileDock (M15 → M-mobile-livetype LIVE-TYPE rework) ─────────────────────
 //
-// The 56pt (+ safe-area-bottom) bar pinned below the terminal inside the Vaul
-// sheet. Layout: [session-pill ▾] [⌨ toggle] [···] [input ──→ send].
+// The bar pinned below the terminal inside the Vaul sheet. LIVE-TYPE model: you
+// type DIRECTLY into the terminal (xterm's hidden helper textarea is the single
+// keystroke-capture element, same `term.onData`→pty path desktop uses) — the
+// dock is now the ACCESSORY surface, not a second input. The old chat-style
+// compose textarea + Send button were removed: two real textareas (xterm vs the
+// composer) fought for focus, which is what made typing feel broken, and a
+// line-buffered composer can't drive interactive TUIs (no live Ctrl-C, no arrow
+// nav in claude/vim/fzf, no char-at-a-time prompts).
 //
-//   • Session pill   — capsule with status dot + name + chevron. Tap opens the
-//     SessionPickerSheet. Horizontal swipe switches prev/next session with a
-//     peek-of-next preview during the drag (Framer Motion drag="x"), springing
-//     back below the 40% threshold and snapping with `springs.sheetDetent` past
-//     it (CEO M15 amplification).
-//   • Keyboard toggle — focuses/blurs the hidden input to show/hide the keyboard.
-//   • Specials (···)  — opens the SpecialsSheet (kbd-groups 2×2 pager).
-//   • Input field     — grows 44→80px (≤3 lines, 44pt floor); Enter (no shift)
-//     sends. A leading "/" surfaces a slash hint (full slash menu lands in M18).
-//   • Send button     — 44pt circular (HIG floor); 40% opacity + disabled when
-//     empty (Linear/ChatGPT composer spec).
+// Layout (two rows when the keyboard is open):
+//   ┌ accessory key strip — rides the keyboard top ──────────────────────────┐
+//   │ [Esc] [Tab] [^C] [←][↑][↓][→] [⌨ hide]                                  │
+//   ├ dock row ───────────────────────────────────────────────────────────────┤
+//   │ [session-pill ▾]  [⌨ toggle]  [···]  [＋ snippets]  [🎙 dictate]         │
+//   └───────────────────────────────────────────────────────────────────────┘
 //
-// HIG: every interactive control here (session pill, ⌨/··· dock icons, composer
-// input, send) is ≥44×44pt — the iOS Human Interface Guidelines tap-target floor.
+//   • Session pill   — status dot + name + chevron; tap → SessionPickerSheet;
+//     horizontal swipe → prev/next session (peek-of-next), unchanged.
+//   • ⌨ toggle       — focuses/blurs the TERMINAL (summons/dismisses keyboard).
+//   • Specials (···) — opens the SpecialsSheet (kbd-groups 2×2 pager).
+//   • ＋ snippets     — opens the M18 snippet panel; snippet run → term.send.
+//   • 🎙 dictate      — Web Speech; the transcript is sent to the terminal +'\r'.
+//   • Accessory strip — Esc/Tab/Ctrl-C/arrows, each → `sendKey` (the SAME named-
+//     key path desktop's send-row + the joystick use). Pinned above the keyboard
+//     via the route's `keyboardInset`, Termius-style.
 //
-// iOS haptics caveat (§4.4): chip presses use a 0.96 scale (CSS-only feedback);
+// HIG: every interactive control here is ≥44×44pt — the iOS tap-target floor.
+//
+// iOS haptics caveat (§4.4): chip presses use a 0.92 scale (CSS-only feedback);
 // navigator.vibrate(8) is gated by `'vibrate' in navigator` (Android only).
+
+/** Accessory-strip keys, in Termius order. Each label maps to a `keyToBytes`
+ *  name understood by `LiveTerminal.sendKey` — Esc/Tab/Ctrl-C plus a 4-way
+ *  arrow cluster, the keys a soft keyboard lacks. */
+const ACCESSORY_KEYS = ['Esc', 'Tab', 'Ctrl-C'] as const
+const ARROW_KEYS = [
+  { key: 'Left', glyph: '←' },
+  { key: 'Up', glyph: '↑' },
+  { key: 'Down', glyph: '↓' },
+  { key: 'Right', glyph: '→' },
+] as const
 
 export interface MobileDockProps {
   current: ApiSession
@@ -344,13 +366,24 @@ export interface MobileDockProps {
   onOpenSpecials: () => void
   /** Switch focus to a neighbour session (committed pill swipe). */
   onSwitchSession: (name: string) => void
-  /** Send literal text (the composed input) to the pty. */
+  /** Send literal text to the pty — used by dictation (transcript +'\r'). */
   onSend: (text: string) => void
+  /** Send a named key (Esc/Tab/Ctrl-C/arrows) — the accessory strip drives this,
+   *  the SAME path the desktop send-row + joystick use. */
+  onSendKey: (key: string) => void
+  /** Focus the terminal (summon the keyboard) — the ⌨ toggle + the strip's
+   *  show-keyboard tap call this so xterm is the unambiguous keyboard owner. */
+  onFocusTerm: () => void
+  /** Blur the terminal (dismiss the keyboard) — the ⌨ toggle when already open. */
+  onBlurTerm: () => void
+  /** True when the soft keyboard is open (from `useKeyboardViewport`). Shows the
+   *  accessory key strip + flips the ⌨ toggle to "hide". */
+  keyboardOpen?: boolean
   /** Open the M18 snippet panel (in-place slide-up). */
   onOpenSnippets?: () => void
-  /** Registration hook the parent calls with this composer's imperative
-   *  `insert(text)` once mounted, so the route-level M18 snippet panel can
-   *  drop a snippet body into THIS input (tap-to-insert). */
+  /** Registration hook the parent calls with this dock's imperative
+   *  `insert(text)` once mounted, so the route-level M18 snippet panel can drop
+   *  a snippet body straight into the terminal (tap-to-insert sends it live). */
   registerInsert?: (insert: ((text: string) => void) | null) => void
   className?: string
 }
@@ -363,199 +396,193 @@ export function MobileDock({
   onOpenSpecials,
   onSwitchSession,
   onSend,
+  onSendKey,
+  onFocusTerm,
+  onBlurTerm,
+  keyboardOpen = false,
   onOpenSnippets,
   registerInsert,
   className,
 }: MobileDockProps) {
-  const [value, setValue] = React.useState('')
-  const inputRef = React.useRef<HTMLTextAreaElement | null>(null)
-  const canSend = value.trim().length > 0
-
   // ── M18: slash menu + dictation ───────────────────────────────────────────
-  // The slash menu shows whenever the composer value starts with "/" and the
-  // field is focused; selecting a command replaces the value (cursor at end).
-  const [focused, setFocused] = React.useState(false)
-  const [slashDismissed, setSlashDismissed] = React.useState(false)
-  const slashOpen = focused && value.startsWith('/') && !slashDismissed
-
-  const setComposer = React.useCallback((next: string) => {
-    setValue(next)
-    const el = inputRef.current
-    if (el) {
-      el.style.height = 'auto'
-      el.style.height = `${Math.min(el.scrollHeight, 80)}px`
-    }
-  }, [])
-
+  // The "/" affordance lives in the SlashMenu, anchored above the dock. With no
+  // composer to type into, the menu opens on demand and a pick is sent LIVE to
+  // the terminal (`cmd\r`) — the keystroke-capture stays xterm's helper textarea.
+  const [slashOpen, setSlashOpen] = React.useState(false)
   const onSlashSelect = React.useCallback(
     (cmd: string) => {
-      // Replace the input with the picked command + a trailing space; park the
-      // caret at the end and keep the keyboard up for the argument.
-      const next = `${cmd} `
-      setComposer(next)
-      setSlashDismissed(true)
-      const el = inputRef.current
-      if (el) {
-        el.focus()
-        requestAnimationFrame(() => el.setSelectionRange(next.length, next.length))
-      }
+      // Send the picked command live + keep the keyboard up for the next line.
+      onSend(`${cmd} `)
+      setSlashOpen(false)
+      onFocusTerm()
     },
-    [setComposer],
+    [onSend, onFocusTerm],
   )
 
-  // Dictation — the mic button toggles Web Speech; results land in the input.
-  const dictation = useDictation(setComposer)
-
-  // M18 snippet-panel tap-to-insert: expose an imperative `insert` to the parent
-  // so the route-level <SnippetPanel> can drop a snippet body into THIS input.
-  // `valueRef` mirrors the latest value (synced in an effect) so the stable
-  // `insert` reads it without re-registering on every keystroke.
-  const valueRef = React.useRef(value)
+  // Dictation — the mic toggles Web Speech. `useDictation` streams the CUMULATIVE
+  // transcript on every interim result, so we must NOT send each callback (that
+  // would re-send the growing string and duplicate chars at the prompt). Instead
+  // we stash the latest transcript and send it ONCE when the session ends — the
+  // live-type analogue of "dictate, then it lands at the shell prompt."
+  const pendingTranscriptRef = React.useRef('')
+  const dictation = useDictation(
+    React.useCallback((text: string) => {
+      pendingTranscriptRef.current = text
+    }, []),
+  )
+  const wasListeningRef = React.useRef(false)
   React.useEffect(() => {
-    valueRef.current = value
-  }, [value])
+    if (wasListeningRef.current && !dictation.listening) {
+      const text = pendingTranscriptRef.current.trim()
+      pendingTranscriptRef.current = ''
+      if (text) {
+        onSend(text)
+        onFocusTerm()
+      }
+    }
+    wasListeningRef.current = dictation.listening
+  }, [dictation.listening, onSend, onFocusTerm])
+
+  // M18 snippet-panel tap-to-insert: with no composer, "insert" now sends the
+  // snippet body straight to the terminal (live-type model — the body lands at
+  // the shell prompt exactly as if typed). The parent's onRun path appends '\r'.
   const insert = React.useCallback(
     (text: string) => {
-      const next = valueRef.current ? `${valueRef.current}${text}` : text
-      setComposer(next)
-      if (text.startsWith('/')) setSlashDismissed(false)
-      const el = inputRef.current
-      if (el) {
-        el.focus()
-        requestAnimationFrame(() =>
-          el.setSelectionRange(next.length, next.length),
-        )
-      }
+      onSend(text)
+      onFocusTerm()
     },
-    [setComposer],
+    [onSend, onFocusTerm],
   )
   React.useEffect(() => {
     registerInsert?.(insert)
     return () => registerInsert?.(null)
   }, [registerInsert, insert])
 
-  const submit = () => {
-    const text = value.trim()
-    if (!text) return
-    onSend(text + '\r')
-    setValue('')
-    // Keep the keyboard up for the next line (composer convention).
-    inputRef.current?.focus()
-  }
-
-  // Auto-grow the textarea 32→80px (≤3 lines), then scroll internally.
-  const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setValue(e.target.value)
-    // A fresh "/" re-arms the slash menu after a previous dismissal.
-    if (e.target.value.startsWith('/')) setSlashDismissed(false)
-    const el = e.target
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 80)}px`
-  }
-
   return (
     <div
       className={cn(
-        'glass relative flex shrink-0 items-end gap-1.5 border-t border-border/60 px-2 pb-safe pt-2',
+        'glass relative flex shrink-0 flex-col gap-1.5 border-t border-border/60 px-2 pb-safe pt-2',
         className,
       )}
     >
-      {/* M18 slash menu — floats ABOVE the dock, anchored to the composer. */}
+      {/* M18 slash menu — floats ABOVE the dock. */}
       <div className="pointer-events-none absolute inset-x-2 bottom-full mb-2">
         <div className="pointer-events-auto">
           <SlashMenu
-            value={value}
+            value="/"
             open={slashOpen}
             onSelect={onSlashSelect}
-            onDismiss={() => setSlashDismissed(true)}
+            onDismiss={() => setSlashOpen(false)}
           />
         </div>
       </div>
 
-      <SessionPill
-        current={current}
-        prevSession={prevSession}
-        nextSession={nextSession}
-        onTap={onOpenPicker}
-        onSwitch={onSwitchSession}
-      />
-
-      <DockIcon
-        label="Toggle keyboard"
-        onClick={() => {
-          const el = inputRef.current
-          if (!el) return
-          if (document.activeElement === el) el.blur()
-          else el.focus()
-        }}
-      >
-        <Keyboard className="size-5" />
-      </DockIcon>
-
-      <DockIcon label="Specials" onClick={onOpenSpecials}>
-        <MoreHorizontal className="size-5" />
-      </DockIcon>
-
-      {onOpenSnippets && (
-        <DockIcon label="Snippets" onClick={onOpenSnippets}>
-          <Plus className="size-5" />
-        </DockIcon>
+      {/* Accessory key strip — Termius-style, shown while the keyboard is open
+          (the route pins the whole dock above the keyboard via `keyboardInset`).
+          Each chip drives `sendKey` — the keys a soft keyboard lacks. */}
+      {keyboardOpen && (
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          {ACCESSORY_KEYS.map((label) => (
+            <AccessoryChip key={label} label={label} onTap={() => onSendKey(label)}>
+              {label}
+            </AccessoryChip>
+          ))}
+          <span className="h-6 w-px shrink-0 bg-border/60" aria-hidden />
+          {ARROW_KEYS.map(({ key, glyph }) => (
+            <AccessoryChip
+              key={key}
+              label={`Arrow ${key}`}
+              onTap={() => onSendKey(key)}
+            >
+              <span aria-hidden className="text-[15px] leading-none">
+                {glyph}
+              </span>
+            </AccessoryChip>
+          ))}
+          <div className="ml-auto shrink-0">
+            <DockIcon label="Hide keyboard" onClick={onBlurTerm}>
+              <ChevronDown className="size-5" />
+            </DockIcon>
+          </div>
+        </div>
       )}
 
-      {dictation.supported && (
+      {/* Dock row — session-pill + accessory dock icons. NO text composer. */}
+      <div className="flex items-end gap-1.5">
+        <SessionPill
+          current={current}
+          prevSession={prevSession}
+          nextSession={nextSession}
+          onTap={onOpenPicker}
+          onSwitch={onSwitchSession}
+        />
+
         <DockIcon
-          label={dictation.listening ? 'Stop dictation' : 'Dictate'}
-          onClick={dictation.toggle}
+          label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
+          onClick={keyboardOpen ? onBlurTerm : onFocusTerm}
         >
-          <Mic
-            className={cn('size-5', dictation.listening && 'text-primary')}
+          <Keyboard
+            className={cn('size-5', keyboardOpen && 'text-primary')}
           />
         </DockIcon>
-      )}
 
-      <textarea
-        ref={inputRef}
-        rows={1}
-        value={value}
-        onChange={onInput}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        onKeyDown={(e) => {
-          // While the slash menu is open let it own Arrow/Enter/Escape.
-          if (slashOpen && ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) {
-            return
-          }
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            submit()
-          }
-        }}
-        placeholder={value.startsWith('/') ? 'Slash command…' : 'Message…'}
-        className={cn(
-          'mb-0.5 min-h-11 min-w-0 flex-1 resize-none rounded-2xl border border-border bg-background',
-          // text-base (16px) — iOS Safari auto-zooms any focused input <16px;
-          // bumping from 15px → 16px is the proper modern fix. Do NOT add
-          // user-scalable=no to the viewport meta (a11y regression). leading-5
-          // (20px) is unchanged so the row height stays the same.
-          'px-3 py-2.5 text-base leading-5 outline-none focus:ring-2 focus:ring-ring',
-        )}
-      />
+        <DockIcon label="Slash command" onClick={() => setSlashOpen((o) => !o)}>
+          <Slash className="size-5" />
+        </DockIcon>
 
-      <motion.button
-        type="button"
-        aria-label="Send"
-        disabled={!canSend}
-        whileTap={canSend ? { scale: 0.92 } : undefined}
-        transition={springs.buttonPress}
-        onClick={submit}
-        className={cn(
-          'mb-0.5 flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground',
-          !canSend && 'opacity-40',
+        <DockIcon label="Specials" onClick={onOpenSpecials}>
+          <MoreHorizontal className="size-5" />
+        </DockIcon>
+
+        {onOpenSnippets && (
+          <DockIcon label="Snippets" onClick={onOpenSnippets}>
+            <Plus className="size-5" />
+          </DockIcon>
         )}
-      >
-        <ArrowUp className="size-4" />
-      </motion.button>
+
+        {dictation.supported && (
+          <DockIcon
+            label={dictation.listening ? 'Stop dictation' : 'Dictate'}
+            onClick={dictation.toggle}
+          >
+            <Mic
+              className={cn('size-5', dictation.listening && 'text-primary')}
+            />
+          </DockIcon>
+        )}
+      </div>
     </div>
+  )
+}
+
+/** An accessory-strip key chip — SF-Mono, 36px tall inside a ≥44pt hit area,
+ *  tap = sendKey. Mirrors the desktop SendChip but tuned for the keyboard-top
+ *  strip (no tooltip — touch has no hover). */
+function AccessoryChip({
+  label,
+  onTap,
+  children,
+}: {
+  label: string
+  onTap: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <motion.button
+      type="button"
+      aria-label={`Send ${label}`}
+      whileTap={{ scale: 0.92 }}
+      transition={springs.buttonPress}
+      onClick={() => {
+        if ('vibrate' in navigator) navigator.vibrate(8)
+        onTap()
+      }}
+      // 36px visible height inside a ≥44pt vertical hit area via py; min-w keeps
+      // single-glyph arrows finger-friendly.
+      className="flex h-9 min-w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-secondary px-2.5 font-mono text-[13px] font-semibold text-secondary-foreground"
+    >
+      {children}
+    </motion.button>
   )
 }
 

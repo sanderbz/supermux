@@ -30,10 +30,26 @@ import { FULL, SNAP_POINTS, VELOCITY_DISMISS } from './detents'
 export interface MobileSheetProps {
   /** Dismiss → return to overview. */
   onDismiss: () => void
+  /** Explicit content height in px, driven by `useKeyboardViewport` so the sheet
+   *  shrinks to sit DIRECTLY above the soft keyboard (the visualViewport height)
+   *  rather than fighting iOS's "scroll the whole page" fallback. When null/
+   *  undefined the CSS `100dvh` height governs (desktop / keyboard closed). We
+   *  set an explicit height on Drawer.Content — never Vaul's transform — so the
+   *  keyboard-driven resize can't be misread as a drag-detent change. */
+  contentHeight?: number | null
+  /** Pixels the soft keyboard overlaps the bottom of the layout viewport. Lifts
+   *  the `bottom-0` sheet UP by this much so its bottom edge sits at the keyboard
+   *  TOP (not behind it). 0 when the keyboard is closed. */
+  keyboardInset?: number
   children: React.ReactNode
 }
 
-export function MobileSheet({ onDismiss, children }: MobileSheetProps) {
+export function MobileSheet({
+  onDismiss,
+  contentHeight,
+  keyboardInset = 0,
+  children,
+}: MobileSheetProps) {
   // Open at the FULL detent (§4.4 "Default detent on open: full").
   const [snap, setSnap] = React.useState<number | string | null>(FULL)
 
@@ -94,9 +110,28 @@ export function MobileSheet({ onDismiss, children }: MobileSheetProps) {
         {/* No dimming scrim — the terminal IS the content; the sheet covers it. */}
         <Drawer.Content
           aria-describedby={undefined}
+          data-testid="focus-sheet"
           onPointerMove={onPointerMove}
+          // Height: prefer the explicit visualViewport-driven px height (so the
+          // sheet sits flush above the soft keyboard); otherwise the CSS class
+          // `h-dvh` (100dvh — accounts for browser chrome, replaces the old
+          // `height:100%` chain that resolved against the un-shrinking layout
+          // viewport). `bottom: keyboardInset` lifts the bottom-0 sheet UP so its
+          // bottom edge lands at the keyboard TOP rather than behind it.
+          // `transition` springs both as the keyboard animates in/out (honored
+          // unless the user prefers reduced motion — handled by globals.css).
+          style={
+            contentHeight != null
+              ? {
+                  height: contentHeight,
+                  bottom: keyboardInset,
+                  transition:
+                    'height 0.28s cubic-bezier(0.32, 0.72, 0, 1), bottom 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
+                }
+              : undefined
+          }
           className={cn(
-            'fixed inset-x-0 bottom-0 z-50 flex h-full flex-col',
+            'fixed inset-x-0 bottom-0 z-50 flex h-dvh flex-col',
             // 10px continuous top corners (Apple Maps), glass regularMaterial.
             'rounded-t-[10px] border-t border-border/60 outline-none',
             // No `pt-safe` here: the FocusHeader (first real child of the

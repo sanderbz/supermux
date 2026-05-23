@@ -1,10 +1,15 @@
 // MobileFocus — M15 focus-mode mobile route (TECH_PLAN §4.4 mobile, §4.4.1).
 //
 // Composes the hero mobile interaction around the M13 LiveTerminal:
-//   <MobileSheet>            ← Vaul drag-detent sheet (peek 40% / full 100%)
+//   <MobileSheet>            ← Vaul drag-detent sheet (peek 40% / full 100%),
+//                              its height driven by useKeyboardViewport so it
+//                              shrinks to sit ABOVE the soft keyboard (no page slide)
 //     <FocusHeader minimal />← 44px top bar
-//     <LiveTerminal />       ← the M13 terminal (flex-1) — REUSED, not rebuilt
-//     <MobileDock />         ← session-pill + kbd + specials + input + send
+//     <LiveTerminal />       ← the M13 terminal (flex-1) — REUSED, the LIVE-TYPE
+//                              keystroke-capture (tap focuses it → keyboard up)
+//     <MobileDock />         ← accessory bar: session-pill + ⌨ + slash + specials
+//                              + snippets + dictate + keyboard-pinned key strip
+//                              (Esc/Tab/^C/arrows). NO text composer (live-type).
 //   <SessionPickerSheet />   ← Vaul half-sheet (full list)
 //   <SpecialsSheet />        ← Vaul half-sheet (kbd-groups 2×2 pager)
 //   edge-of-next peek         ← left-edge drag reveals the next session
@@ -37,6 +42,7 @@ import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
 import { FocusHeader } from '@/components/focus-mode/focus-header'
 import { MobileDock } from '@/components/focus-mode/dock'
 import { useKbdGroups } from '@/hooks/use-kbd-groups'
+import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { SpecialsSheet } from '@/components/focus-mode/specials-sheet'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
@@ -116,8 +122,28 @@ export function MobileFocus() {
       t.focus()
     }
   }, [])
-  // M18: the composer registers its `insert` here so the snippet panel can
-  // tap-to-insert a snippet body into the dock's input without prop-drilling.
+
+  // ── Keyboard-viewport layout (the "page slides weirdly" fix) ────────────────
+  // visualViewport drives the sheet's exact height so the terminal shrinks to
+  // sit DIRECTLY above the soft keyboard (no page scroll), and the accessory
+  // dock rides the keyboard top. No-op on desktop / closed keyboard (height is
+  // null → the sheet falls back to its 100dvh CSS height).
+  const {
+    height: vvHeight,
+    keyboardInset,
+    keyboardOpen,
+  } = useKeyboardViewport()
+
+  // Imperative summon/dismiss of the keyboard. Tapping the terminal must focus
+  // xterm INSIDE the user gesture (iOS only opens the keyboard on a real touch),
+  // so these are passed to both the terminal pane tap-handler and the dock's
+  // ⌨ toggle / accessory strip. xterm is the single keyboard owner — no dock
+  // textarea to compete (LIVE-TYPE).
+  const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
+  const blurTerm = React.useCallback(() => termRef.current?.blur(), [])
+  // M18: the dock registers its `insert` here so the snippet panel can
+  // tap-to-insert a snippet body without prop-drilling. Post LIVE-TYPE the dock's
+  // `insert` sends the body STRAIGHT to the terminal (no composer buffer).
   const composerInsert = React.useRef<((text: string) => void) | null>(null)
   const registerInsert = React.useCallback(
     (fn: ((text: string) => void) | null) => {
@@ -175,7 +201,11 @@ export function MobileFocus() {
         transition={reduceMotion ? { duration: 0 } : springs.sheetDetent}
         className="h-full w-full"
       >
-        <MobileSheet onDismiss={goOverview}>
+        <MobileSheet
+          onDismiss={goOverview}
+          contentHeight={vvHeight}
+          keyboardInset={keyboardInset}
+        >
           <FocusHeader
             name={current.name}
             status={current.status}
@@ -196,7 +226,21 @@ export function MobileFocus() {
               (`.xterm-viewport` gets `touch-action: pan-y` in globals.css). The
               FocusHeader/handle + MobileDock sit OUTSIDE this region, so
               drag-the-header-to-dismiss is unchanged. */}
-          <div className="relative min-h-0 flex-1" data-vaul-no-drag>
+          <div
+            className="relative min-h-0 flex-1"
+            data-vaul-no-drag
+            // Tap-to-focus (LIVE-TYPE): a tap anywhere in the terminal body
+            // focuses xterm INSIDE the touch gesture so iOS summons the soft
+            // keyboard reliably (it only opens the keyboard on a genuine user
+            // gesture; a deferred/rAF focus is silently ignored). xterm also
+            // focuses its helper textarea on pointerdown, but calling
+            // `term.focus()` here makes the summon deterministic. Harmless on
+            // desktop. We use onPointerUp (not onClick) so it fires for the
+            // actual touch even if xterm's own pointer handling stops the click.
+            onPointerUp={() => {
+              if (current.status !== 'stopped') focusTerm()
+            }}
+          >
             {current.status === 'stopped' ? (
               /* The session's tmux pty is gone — render the calm stopped state
                  instead of mounting a live WS that would 101-upgrade then get
@@ -232,6 +276,10 @@ export function MobileFocus() {
             onOpenSnippets={() => setSnippetsOpen(true)}
             onSwitchSession={goSession}
             onSend={(text) => termRef.current?.send(text)}
+            onSendKey={(key) => termRef.current?.sendKey(key)}
+            onFocusTerm={focusTerm}
+            onBlurTerm={blurTerm}
+            keyboardOpen={keyboardOpen}
             registerInsert={registerInsert}
           />
         </MobileSheet>
