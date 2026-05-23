@@ -214,17 +214,24 @@ export function MobileFocus() {
           />
 
           {/* M17 — the LiveTerminal with the joystick + 2-finger gesture
-              overlay layered on top. `relative` so the absolute overlay scopes
-              to the terminal viewport (excludes header/dock). The overlay
+              layered on top. `relative` so the joystick's absolute layer scopes
+              to the terminal viewport (excludes header/dock). The joystick
               drives the SAME `termRef` handle the dock uses — no second WS.
 
-              Fix 2 — `data-vaul-no-drag`: Vaul wires drag on the whole
-              Drawer.Content, so a downward swipe over the terminal was dragging
-              the SHEET to dismiss instead of scrolling tmux scrollback. This
-              attr makes Vaul's `shouldDrag` short-circuit for touches starting
-              in the terminal body, releasing the gesture to xterm
-              (`.xterm-viewport` gets `touch-action: pan-y` in globals.css). The
-              FocusHeader/handle + MobileDock sit OUTSIDE this region, so
+              R5 SCROLL FIX — the joystick no longer blankets the terminal with a
+              `touch-none` capturing overlay (that ate every touch before xterm's
+              own scroll handler ran). It now observes pointer gestures via
+              NON-blocking listeners on this wrapper and only captures once ARMED,
+              so a plain one-finger drag falls through to `.xterm-viewport` and
+              pans the scrollback natively. See joystick.tsx.
+
+              `data-vaul-no-drag` (kept — still load-bearing): Vaul wires drag on
+              the whole Drawer.Content, so a downward swipe over the terminal
+              would otherwise drag the SHEET to dismiss instead of scrolling
+              scrollback. This attr makes Vaul's `shouldDrag` short-circuit for
+              touches starting in the terminal body, releasing the gesture to
+              xterm (`.xterm-viewport` gets `touch-action: pan-y` in globals.css).
+              The FocusHeader/handle + MobileDock sit OUTSIDE this region, so
               drag-the-header-to-dismiss is unchanged. */}
           <div
             className="relative min-h-0 flex-1"
