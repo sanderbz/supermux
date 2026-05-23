@@ -1,7 +1,32 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import {
+  AnimatePresence,
+  LayoutGroup,
+  motion,
+  useReducedMotion,
+} from 'framer-motion'
+import {
+  closestCenter,
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core'
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import {
   LayoutGrid,
   List,
@@ -15,12 +40,15 @@ import {
 import { springs } from '@/lib/springs'
 import { ONBOARDING } from '@/brand/copy'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
+import { useOverviewLayout } from '@/hooks/use-overview-layout'
 import { useUI, type ViewMode } from '@/stores/ui-store'
 import { onboardingApi, type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
+import { SortControl } from '@/components/session-tile/sort-control'
+import { GroupHeader } from '@/components/session-tile/group-header'
 import { EmptyStatePlaceholder } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
 import {
@@ -29,6 +57,13 @@ import {
   MIN_OVERVIEW_SIZE,
   type OverviewSize,
 } from '@/lib/overview-size'
+import {
+  newGroupId,
+  reconcileCustomLayout,
+  type LayoutItem,
+  type OverviewLayout,
+  type SortMode,
+} from '@/lib/overview-layout'
 import type { TileSession } from '@/components/session-tile'
 
 /** Per-tier grid class — the tile grid keeps `sm:grid-cols-2` (small phones)
@@ -65,9 +100,9 @@ const STATUS_RANK: Record<ApiSession['status'], number> = {
   error: 1,
 }
 
-/** Sort sessions per feature-extract §1.2:
+/** Smart sort (the DEFAULT — current behaviour) per feature-extract §1.2:
  *  pinned-desc, running-desc, (active|waiting before idle), -last_activity. */
-function sortSessions(sessions: ApiSession[]): ApiSession[] {
+function smartSort(sessions: ApiSession[]): ApiSession[] {
   return [...sessions].sort((a, b) => {
     const pin = Number(b.pinned ?? false) - Number(a.pinned ?? false)
     if (pin !== 0) return pin
@@ -79,6 +114,14 @@ function sortSessions(sessions: ApiSession[]): ApiSession[] {
     const bAct = b.last_activity ?? activityFrom(b.updated_at)
     return bAct - aAct
   })
+}
+
+/** Alphabetical by name (`alpha` mode). Locale-aware so non-ASCII names sort
+ *  predictably — the user's mental model is "as I'd say it". */
+function alphaSort(sessions: ApiSession[]): ApiSession[] {
+  return [...sessions].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+  )
 }
 
 function activityFrom(updatedAt?: string): number {
@@ -104,8 +147,67 @@ function toTileSession(s: ApiSession): TileSession {
   return { ...s, updated_at: s.updated_at ?? '' }
 }
 
+/** A unit shown by the renderer. `group` items only ever appear in custom
+ *  mode; the smart/alpha branches build a single-section "section" list with
+ *  one big anonymous group. */
+type RenderItem =
+  | { type: 'group'; id: string; name: string; count: number }
+  | { type: 'session'; session: ApiSession }
+
+/** Build the ordered list of `RenderItem`s for the current sort mode. The
+ *  session list is the ALREADY-FILTERED (search-applied) live set, so search
+ *  still works in every mode (custom mode just filters within each group). */
+function buildRenderItems(
+  mode: SortMode,
+  customOrder: LayoutItem[],
+  filtered: ApiSession[],
+): RenderItem[] {
+  if (mode === 'smart') {
+    return smartSort(filtered).map((s) => ({ type: 'session', session: s }))
+  }
+  if (mode === 'alpha') {
+    return alphaSort(filtered).map((s) => ({ type: 'session', session: s }))
+  }
+  // Custom: walk the persisted order, skipping sessions filtered out by the
+  // search box. Compute each group's count from the FILTERED set so the
+  // header reads "Work · 2" when search hides half its tiles, which matches
+  // user expectation ("I see what's there"). Sessions not in any group fall
+  // before the first group header (the implicit "Ungrouped" bucket).
+  const byName = new Map(filtered.map((s) => [s.name, s]))
+  const items: RenderItem[] = []
+  // Pass 1: compute group counts from the filtered set.
+  const counts = new Map<string, number>()
+  {
+    let current: string | null = null
+    for (const item of customOrder) {
+      if (item.type === 'group') {
+        current = item.id
+        counts.set(current, 0)
+      } else if (byName.has(item.name) && current !== null) {
+        counts.set(current, (counts.get(current) ?? 0) + 1)
+      }
+    }
+  }
+  // Pass 2: emit the render list in the user's order.
+  for (const item of customOrder) {
+    if (item.type === 'group') {
+      items.push({
+        type: 'group',
+        id: item.id,
+        name: item.name,
+        count: counts.get(item.id) ?? 0,
+      })
+    } else {
+      const s = byName.get(item.name)
+      if (s) items.push({ type: 'session', session: s })
+    }
+  }
+  return items
+}
+
 export function Overview() {
   const { sessions, isLoading, isError, refetch } = useSessions()
+  const { layout, setMode, setLayout } = useOverviewLayout()
   const viewMode = useUI((s) => s.viewMode)
   const setViewMode = useUI((s) => s.setViewMode)
   const overviewSize = useUI((s) => s.overviewSize)
@@ -179,10 +281,133 @@ export function Overview() {
     return () => window.removeEventListener('keydown', onKey)
   }, [overviewSize, setOverviewSize])
 
-  const sorted = React.useMemo(() => sortSessions(sessions), [sessions])
-  const visible = React.useMemo(
-    () => sorted.filter((s) => matches(s, query)),
-    [sorted, query],
+  // Filter once, then sort/group per mode. Search runs in every mode.
+  const filtered = React.useMemo(
+    () => sessions.filter((s) => matches(s, query)),
+    [sessions, query],
+  )
+
+  // Reconcile the persisted custom order with the LIVE session names — new
+  // sessions float to the top of the implicit "Ungrouped" bucket; archived
+  // sessions are pruned. We DO NOT auto-persist this reconciled view (the
+  // user might be offline / mid-write); writes happen on explicit reorder.
+  const reconciledCustom = React.useMemo(
+    () =>
+      reconcileCustomLayout(
+        layout.custom,
+        sessions.map((s) => s.name),
+      ),
+    [layout.custom, sessions],
+  )
+
+  const renderItems = React.useMemo(
+    () => buildRenderItems(layout.mode, reconciledCustom, filtered),
+    [layout.mode, reconciledCustom, filtered],
+  )
+
+  // The dnd-kit sortable identity for each item. Groups: `g:<id>`, sessions:
+  // `s:<name>` — stable across renders so the drag handle re-binds correctly.
+  const itemIds = React.useMemo(
+    () => renderItems.map((it) => (it.type === 'group' ? `g:${it.id}` : `s:${it.session.name}`)),
+    [renderItems],
+  )
+
+  const writeCustomOrder = React.useCallback(
+    (nextOrder: LayoutItem[]) => {
+      // The reconciled order is what the user sees, so it's the right base
+      // for the persisted write — but persisting also implicitly accepts the
+      // reconciliation (new sessions get pinned at the top). That is the
+      // documented behaviour.
+      const next: OverviewLayout = { ...layout, custom: nextOrder }
+      setLayout(next)
+    },
+    [layout, setLayout],
+  )
+
+  const handleAddGroup = React.useCallback(() => {
+    const name = window.prompt('Group name', 'New group')?.trim()
+    if (!name) return
+    const next = [
+      ...reconciledCustom,
+      { type: 'group', id: newGroupId(), name } as LayoutItem,
+    ]
+    writeCustomOrder(next)
+  }, [reconciledCustom, writeCustomOrder])
+
+  const handleRenameGroup = React.useCallback(
+    (id: string, name: string) => {
+      const next = reconciledCustom.map((it) =>
+        it.type === 'group' && it.id === id ? { ...it, name } : it,
+      )
+      writeCustomOrder(next)
+    },
+    [reconciledCustom, writeCustomOrder],
+  )
+
+  const handleDeleteGroup = React.useCallback(
+    (id: string) => {
+      // Sessions inside the group survive — they flow back to the implicit
+      // "Ungrouped" bucket at the top (the reconciler doesn't drop them).
+      const ok = window.confirm(
+        'Delete this group? Sessions inside it will move to Ungrouped.',
+      )
+      if (!ok) return
+      const next = reconciledCustom.filter(
+        (it) => !(it.type === 'group' && it.id === id),
+      )
+      writeCustomOrder(next)
+    },
+    [reconciledCustom, writeCustomOrder],
+  )
+
+  // dnd-kit sensors — pointer (mouse + trackpad), touch (long-press to avoid
+  // hijacking scroll), keyboard for a11y.
+  const sensors = useSensors(
+    useSensor(MouseSensor, {
+      // 5px activation distance so a click doesn't accidentally initiate a
+      // drag — important since the tile is itself clickable to focus.
+      activationConstraint: { distance: 5 },
+    }),
+    useSensor(TouchSensor, {
+      // 200ms long-press + 5px tolerance: a quick tap or a vertical scroll
+      // never triggers a drag on mobile; an intentional press-and-hold does.
+      activationConstraint: { delay: 200, tolerance: 5 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  )
+
+  const [activeId, setActiveId] = React.useState<string | null>(null)
+  const activeItem = React.useMemo(
+    () => renderItems.find((_, i) => itemIds[i] === activeId) ?? null,
+    [renderItems, itemIds, activeId],
+  )
+  const handleDragStart = React.useCallback((e: DragStartEvent) => {
+    setActiveId(String(e.active.id))
+  }, [])
+  const handleDragCancel = React.useCallback(() => {
+    setActiveId(null)
+  }, [])
+  const handleDragEnd = React.useCallback(
+    (e: DragEndEvent) => {
+      setActiveId(null)
+      const { active, over } = e
+      if (!over || active.id === over.id) return
+      const oldIndex = itemIds.indexOf(String(active.id))
+      const newIndex = itemIds.indexOf(String(over.id))
+      if (oldIndex < 0 || newIndex < 0) return
+      // arrayMove returns the SAME renderItems in a new order; map them back
+      // to LayoutItems and persist.
+      const movedRender = arrayMove(renderItems, oldIndex, newIndex)
+      const nextLayout: LayoutItem[] = movedRender.map((it) =>
+        it.type === 'group'
+          ? { type: 'group', id: it.id, name: it.name }
+          : { type: 'session', name: it.session.name },
+      )
+      writeCustomOrder(nextLayout)
+    },
+    [itemIds, renderItems, writeCustomOrder],
   )
 
   const hasSessions = sessions.length > 0
@@ -223,6 +448,12 @@ export function Overview() {
     4: 'lg:max-w-[96rem]',
   }
 
+  // Custom mode wraps the body in DndContext + SortableContext so any tile or
+  // group is draggable. Smart / Alpha modes render the existing tile grid
+  // EXACTLY as before — no DnD wrappers, no group rows, no extra DOM. That is
+  // the "zero interference for users who don't opt in" guarantee.
+  const isCustom = layout.mode === 'custom'
+
   return (
     // The hover float-over-slot architecture is preserved across tiers: the
     // grid auto-rows reserve the per-tier idle height (the tile sizes itself
@@ -231,7 +462,7 @@ export function Overview() {
     <div
       className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 sm:px-5 sm:py-6`}
     >
-      {/* ── Header: title + search + view toggle + density + (desktop) new ── */}
+      {/* ── Header: title + search + view toggle + sort + density + new ── */}
       <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="mr-1 text-2xl font-semibold tracking-tight">Overview</h1>
 
@@ -258,6 +489,11 @@ export function Overview() {
         </div>
 
         <ViewToggle value={viewMode} onChange={setViewMode} />
+
+        {/* Sort mode — a single icon-button popover. Hidden behind one click;
+            shows the active mode glyph so the state is legible. ZERO visual
+            change for non-engaged users (default = Smart = the existing sort). */}
+        <SortControl value={layout.mode} onChange={setMode} />
 
         {/* Density / size control — visible from md+ only (mobile overview is
             single-column so size adjustment has no useful effect). Lives next
@@ -308,7 +544,7 @@ export function Overview() {
               }}
             />
           </div>
-        ) : visible.length === 0 ? (
+        ) : renderItems.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <EmptyStatePlaceholder
               icon={<Search />}
@@ -316,34 +552,166 @@ export function Overview() {
               cta={{ label: 'Clear search', onClick: () => setRawQuery('') }}
             />
           </div>
+        ) : isCustom && viewMode === 'tile' ? (
+          // Custom mode, tile view: dnd-kit-wrapped grid where group headers
+          // are full-row dividers (col-span-full) and tiles flow normally.
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
+          >
+            <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
+              <div className={tileGridClass}>
+                {renderItems.map((it, i) => {
+                  const id = itemIds[i]
+                  if (it.type === 'group') {
+                    return (
+                      <SortableGroupRow
+                        key={id}
+                        id={id}
+                        name={it.name}
+                        count={it.count}
+                        onRename={(name) => handleRenameGroup(it.id, name)}
+                        onDelete={() => handleDeleteGroup(it.id)}
+                      />
+                    )
+                  }
+                  return (
+                    <SortableTile
+                      key={id}
+                      id={id}
+                      session={toTileSession(it.session)}
+                      sizeScale={tileScale}
+                      reduce={!!reduce}
+                      tour={i === 0}
+                    />
+                  )
+                })}
+              </div>
+            </SortableContext>
+            <DragOverlay dropAnimation={null}>
+              {activeItem && activeItem.type === 'session' ? (
+                // The overlay is a faux-tile that follows the cursor; we keep
+                // it static (no live-terminal) for performance.
+                <div className="pointer-events-none rounded-lg border border-border bg-card/95 px-3 py-2 text-sm shadow-lg">
+                  {activeItem.session.task_summary ?? activeItem.session.name}
+                </div>
+              ) : activeItem && activeItem.type === 'group' ? (
+                <div className="pointer-events-none rounded-md border border-border bg-card/95 px-3 py-1.5 text-xs font-medium shadow-lg">
+                  {activeItem.name}
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        ) : isCustom && viewMode === 'list' ? (
+          // Custom mode, list view: same flat dnd-kit context, just rendering
+          // SessionRow + group headers stacked vertically.
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
+          >
+            <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
+              <div className="flex flex-col gap-1.5">
+                {renderItems.map((it, i) => {
+                  const id = itemIds[i]
+                  if (it.type === 'group') {
+                    return (
+                      <SortableGroupRow
+                        key={id}
+                        id={id}
+                        name={it.name}
+                        count={it.count}
+                        listView
+                        onRename={(name) => handleRenameGroup(it.id, name)}
+                        onDelete={() => handleDeleteGroup(it.id)}
+                      />
+                    )
+                  }
+                  return (
+                    <SortableRow
+                      key={id}
+                      id={id}
+                      session={toTileSession(it.session)}
+                      reduce={!!reduce}
+                      tour={i === 0}
+                    />
+                  )
+                })}
+              </div>
+            </SortableContext>
+            <DragOverlay dropAnimation={null}>
+              {activeItem && activeItem.type === 'session' ? (
+                <div className="pointer-events-none rounded-md border border-border bg-card/95 px-3 py-2 text-sm shadow-lg">
+                  {activeItem.session.task_summary ?? activeItem.session.name}
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
         ) : viewMode === 'tile' ? (
-          <div className={tileGridClass}>
-            {visible.map((s, i) => (
-              <motion.div
-                key={s.name}
-                // M27: the first tile is the tour's "peek + focus" anchor.
-                data-tour={i === 0 ? 'tile' : undefined}
-                layout={!reduce}
-                layoutId={`session-${s.name}`}
-                transition={springs.smooth}
-              >
-                <SessionTile session={toTileSession(s)} sizeScale={tileScale} />
-              </motion.div>
-            ))}
-          </div>
+          // Smart / Alpha, tile view — the ORIGINAL render path, unchanged so
+          // users who never engage the sort control see zero diff.
+          <LayoutGroup>
+            <div className={tileGridClass}>
+              {renderItems.map(
+                (it, i) =>
+                  it.type === 'session' && (
+                    <motion.div
+                      key={it.session.name}
+                      // M27: the first tile is the tour's "peek + focus" anchor.
+                      data-tour={i === 0 ? 'tile' : undefined}
+                      layout={!reduce}
+                      layoutId={`session-${it.session.name}`}
+                      transition={springs.smooth}
+                    >
+                      <SessionTile
+                        session={toTileSession(it.session)}
+                        sizeScale={tileScale}
+                      />
+                    </motion.div>
+                  ),
+              )}
+            </div>
+          </LayoutGroup>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            {visible.map((s, i) => (
-              <motion.div
-                key={s.name}
-                data-tour={i === 0 ? 'tile' : undefined}
-                layout={!reduce}
-                layoutId={`session-${s.name}`}
-                transition={springs.smooth}
-              >
-                <SessionRow session={toTileSession(s)} />
-              </motion.div>
-            ))}
+          <LayoutGroup>
+            <div className="flex flex-col gap-1.5">
+              {renderItems.map(
+                (it, i) =>
+                  it.type === 'session' && (
+                    <motion.div
+                      key={it.session.name}
+                      data-tour={i === 0 ? 'tile' : undefined}
+                      layout={!reduce}
+                      layoutId={`session-${it.session.name}`}
+                      transition={springs.smooth}
+                    >
+                      <SessionRow session={toTileSession(it.session)} />
+                    </motion.div>
+                  ),
+              )}
+            </div>
+          </LayoutGroup>
+        )}
+
+        {/* "+ Add group" affordance — Custom mode only, at the bottom so it
+            doesn't compete with tile content. Minimal chrome: a single
+            text button. */}
+        {isCustom && hasSessions && (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={handleAddGroup}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-dashed border-border/60 px-3 text-xs font-medium text-muted-foreground hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Add a new group"
+            >
+              <Plus className="size-3.5" aria-hidden />
+              Add group
+            </button>
           </div>
         )}
       </div>
@@ -371,6 +739,220 @@ export function Overview() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         onCreated={onCreated}
+      />
+    </div>
+  )
+}
+
+/** A custom-mode tile wrapper. Uses dnd-kit's `useSortable` for keyboard +
+ *  pointer drag; preserves the framer-motion `layoutId` so the focus-route
+ *  view-transition morph still works (the tile's identity is its `name`).
+ *
+ *  We intentionally do NOT spread the dnd `listeners` onto the whole tile —
+ *  the tile has clickable inner surfaces (peek, archive). Instead, a tiny
+ *  drag handle is overlaid in the top-right corner; it has the listeners.
+ *  This is a deliberate UX choice: the user must aim for the handle, so a
+ *  stray click on the card body navigates to focus mode as it does today. */
+function SortableTile({
+  id,
+  session,
+  sizeScale,
+  reduce,
+  tour,
+}: {
+  id: string
+  session: TileSession
+  sizeScale: number
+  reduce: boolean
+  tour: boolean
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition: transition ?? undefined,
+    // The dragged tile floats above its peers + dims its slot so the empty
+    // space is visible during the drag — standard dnd-kit pattern.
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 10 : undefined,
+  }
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="relative"
+      data-tour={tour ? 'tile' : undefined}
+    >
+      <SessionTile session={session} sizeScale={sizeScale} />
+      {/* Drag handle — tiny, top-right, only visible on hover/focus. Touch
+          users get a long-press-to-drag affordance via the TouchSensor's
+          activationConstraint, so the handle's visibility doesn't matter on
+          mobile (the whole-card press starts the drag there). */}
+      <button
+        type="button"
+        aria-label={`Drag ${session.name}`}
+        title="Drag to reorder"
+        {...attributes}
+        {...listeners}
+        // h-9 + w-9 (36px) inner; the parent has hover-only opacity so it
+        // doesn't shout in idle state. The hit target is comfortably HIG.
+        className="absolute right-1 top-1 z-20 flex size-9 items-center justify-center rounded-md bg-card/80 text-muted-foreground/60 opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none"
+        // Stop the tile's onClick (peek/focus) from firing when the user
+        // grabs the handle.
+        onClick={(e) => e.stopPropagation()}
+        // Hint to assistive tech.
+        data-dnd-handle
+        // Show the handle on tile hover via the tile's `group/tile` parent —
+        // SessionTile already declares the parent class. (If a future
+        // refactor drops the `group/tile`, the handle just stays hover-shown
+        // via :hover on the absolute parent below.)
+        style={{ opacity: reduce ? 1 : undefined }}
+      >
+        {/* Tiny chevron / grip glyph; sized to read at the corner without
+            crowding the tile's status chip. */}
+        <svg
+          viewBox="0 0 16 16"
+          aria-hidden
+          className="size-3.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <circle cx="6" cy="4" r="0.75" fill="currentColor" />
+          <circle cx="10" cy="4" r="0.75" fill="currentColor" />
+          <circle cx="6" cy="8" r="0.75" fill="currentColor" />
+          <circle cx="10" cy="8" r="0.75" fill="currentColor" />
+          <circle cx="6" cy="12" r="0.75" fill="currentColor" />
+          <circle cx="10" cy="12" r="0.75" fill="currentColor" />
+        </svg>
+        {/* Force visibility (debug ergonomics): the parent's hover doesn't
+            propagate through SessionTile's own DOM, so make the handle's
+            opacity defaultably visible at the corner. This is a tradeoff
+            against the "fully ignorable in idle" rule, but the alternative
+            (invisible until hover) makes mouse-only users miss the handle.
+            We've chosen visible-at-low-opacity as the middle ground. */}
+      </button>
+    </div>
+  )
+}
+
+/** List-view sortable wrapper — same idea as `SortableTile` but the handle
+ *  goes inline on the left (matches the file-list / kbd-accessory feel). */
+function SortableRow({
+  id,
+  session,
+  reduce,
+  tour,
+}: {
+  id: string
+  session: TileSession
+  reduce: boolean
+  tour: boolean
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition: transition ?? undefined,
+    opacity: isDragging ? 0.4 : 1,
+  }
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="flex items-stretch gap-1"
+      data-tour={tour ? 'tile' : undefined}
+    >
+      <button
+        type="button"
+        aria-label={`Drag ${session.name}`}
+        {...attributes}
+        {...listeners}
+        className="flex w-7 items-center justify-center rounded-md text-muted-foreground/40 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring touch-none"
+        style={{ opacity: reduce ? 1 : undefined }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <svg
+          viewBox="0 0 16 16"
+          aria-hidden
+          className="size-3.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <circle cx="6" cy="4" r="0.75" fill="currentColor" />
+          <circle cx="10" cy="4" r="0.75" fill="currentColor" />
+          <circle cx="6" cy="8" r="0.75" fill="currentColor" />
+          <circle cx="10" cy="8" r="0.75" fill="currentColor" />
+          <circle cx="6" cy="12" r="0.75" fill="currentColor" />
+          <circle cx="10" cy="12" r="0.75" fill="currentColor" />
+        </svg>
+      </button>
+      <div className="min-w-0 flex-1">
+        <SessionRow session={session} />
+      </div>
+    </div>
+  )
+}
+
+/** Sortable group divider row — spans the full grid width so it acts as a
+ *  section break. `listView` makes it stack vertically in list-mode contexts. */
+function SortableGroupRow({
+  id,
+  name,
+  count,
+  listView,
+  onRename,
+  onDelete,
+}: {
+  id: string
+  name: string
+  count: number
+  listView?: boolean
+  onRename: (name: string) => void
+  onDelete: () => void
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition: transition ?? undefined,
+    opacity: isDragging ? 0.4 : 1,
+  }
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      // col-span-full in tile mode so the divider spans the entire grid row.
+      // In list mode, the parent is a flex column so col-span has no effect
+      // but doesn't hurt.
+      className={listView ? '' : 'col-span-full'}
+    >
+      <GroupHeader
+        id={id}
+        name={name}
+        count={count}
+        dragListeners={{ ...attributes, ...listeners }}
+        onRename={onRename}
+        onDelete={onDelete}
       />
     </div>
   )
