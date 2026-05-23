@@ -144,6 +144,58 @@ export function MobileFocus() {
   // textarea to compete (LIVE-TYPE).
   const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
   const blurTerm = React.useCallback(() => termRef.current?.blur(), [])
+
+  // ── Tap-vs-swipe gate for the terminal body (mobile keyboard fix) ───────────
+  // The terminal body now scrolls its scrollback on a one-finger swipe (R5). But
+  // focusing xterm on EVERY pointer-up also summoned the iOS soft keyboard at the
+  // END of a scroll gesture. So we only focus on a genuine TAP: same pointer,
+  // tiny movement (< slop), short duration. A swipe (movement) just scrolls —
+  // xterm's `.xterm-viewport` already handled it — and never opens the keyboard.
+  //
+  // A second pointer going down (multi-touch, e.g. the joystick's 2-finger
+  // gesture) INVALIDATES the candidate so an armed gesture is never a "tap".
+  const TAP_SLOP_PX = 10 // max total finger travel that still counts as a tap
+  const TAP_MAX_MS = 500 // max press duration that still counts as a tap
+  const tapRef = React.useRef<{
+    x: number
+    y: number
+    t: number
+    id: number
+  } | null>(null)
+  const onTermPointerDown = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      // A second concurrent pointer = multi-touch → not a tap. Invalidate.
+      if (tapRef.current && tapRef.current.id !== e.pointerId) {
+        tapRef.current = null
+        return
+      }
+      tapRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        t: Date.now(),
+        id: e.pointerId,
+      }
+    },
+    [],
+  )
+  const onTermPointerUp = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const cand = tapRef.current
+      tapRef.current = null
+      if (!cand || cand.id !== e.pointerId) return // multi-touch / no candidate
+      const dist = Math.hypot(e.clientX - cand.x, e.clientY - cand.y)
+      const elapsed = Date.now() - cand.t
+      const isTap = dist < TAP_SLOP_PX && elapsed < TAP_MAX_MS
+      // A genuine tap = "I want to type" → focus xterm so iOS raises the keyboard
+      // INSIDE this user gesture. A swipe just scrolled the scrollback — do
+      // nothing (no keyboard). Stopped sessions never focus.
+      if (isTap && current.status !== 'stopped') focusTerm()
+    },
+    [current.status, focusTerm],
+  )
+  const onTermPointerCancel = React.useCallback(() => {
+    tapRef.current = null
+  }, [])
   // M18: the dock registers its `insert` here so the snippet panel can
   // tap-to-insert a snippet body without prop-drilling. Post LIVE-TYPE the dock's
   // `insert` sends the body STRAIGHT to the terminal (no composer buffer).
@@ -243,17 +295,18 @@ export function MobileFocus() {
           <div
             className="relative min-h-0 flex-1"
             data-vaul-no-drag
-            // Tap-to-focus (LIVE-TYPE): a tap anywhere in the terminal body
-            // focuses xterm INSIDE the touch gesture so iOS summons the soft
-            // keyboard reliably (it only opens the keyboard on a genuine user
-            // gesture; a deferred/rAF focus is silently ignored). xterm also
-            // focuses its helper textarea on pointerdown, but calling
-            // `term.focus()` here makes the summon deterministic. Harmless on
-            // desktop. We use onPointerUp (not onClick) so it fires for the
-            // actual touch even if xterm's own pointer handling stops the click.
-            onPointerUp={() => {
-              if (current.status !== 'stopped') focusTerm()
-            }}
+            // Tap-to-focus (LIVE-TYPE): a genuine TAP anywhere in the terminal
+            // body focuses xterm INSIDE the touch gesture so iOS summons the soft
+            // keyboard reliably (it only opens the keyboard on a real user
+            // gesture; a deferred/rAF focus is silently ignored). A SWIPE just
+            // scrolls the scrollback (xterm's `.xterm-viewport` handled it) and
+            // must NOT raise the keyboard — so we gate focus behind tap detection
+            // (onTermPointerDown/Up: same pointer, <10px travel, <500ms). We use
+            // pointer events (not onClick) so it fires for the actual touch even
+            // if xterm's own pointer handling stops the click; harmless on mouse.
+            onPointerDown={onTermPointerDown}
+            onPointerUp={onTermPointerUp}
+            onPointerCancel={onTermPointerCancel}
           >
             {current.status === 'stopped' ? (
               /* The session's tmux pty is gone — render the calm stopped state
