@@ -21,8 +21,14 @@ const SESSION = 'demo'
 type WsCapture = { inputs: string[] }
 
 /** Install all REST + SSE + WS mocks, plus the runtime globals. Returns the
- *  shared capture buffers the assertions read. */
-async function installMocks(page: Page): Promise<{
+ *  shared capture buffers the assertions read. An optional `initialQuickKeys`
+ *  seeds the GET /api/prefs/quick_keys response so a test can render chips that
+ *  are not in the default selection (e.g. the Ctrl-L / Esc-Esc / Newline
+ *  control combos) without driving Edit mode first. */
+async function installMocks(
+  page: Page,
+  opts: { initialQuickKeys?: string[] } = {},
+): Promise<{
   ws: WsCapture
   prefsPuts: () => string[]
 }> {
@@ -104,8 +110,12 @@ async function installMocks(page: Page): Promise<{
         prefsPuts.push(value)
         return r.fulfill(json({ ok: true, data: { key: 'quick_keys', value } }))
       }
-      // GET (unset) → null → the default selection renders.
-      return r.fulfill(json({ ok: true, data: { key: 'quick_keys', value: null } }))
+      // GET → either a seeded selection (so a test can render non-default
+      // chips) or null (unset) → the default selection renders.
+      const value = opts.initialQuickKeys
+        ? JSON.stringify({ selected: opts.initialQuickKeys })
+        : null
+      return r.fulfill(json({ ok: true, data: { key: 'quick_keys', value } }))
     }
 
     if (path === '/api/events') {
@@ -209,6 +219,51 @@ test.describe('mobile action panels (R5 unify + quick-keys)', () => {
     await page.getByRole('button', { name: 'Specials' }).click()
     await page.getByRole('button', { name: 'Continue' }).click()
     await expect.poll(() => ws.inputs).toContain('continue\r')
+  })
+
+  test('mode-cycle = Shift+Tab and the new control combos send the right bytes', async ({
+    page,
+  }) => {
+    // Seed a selection containing the corrected mode-cycle chip plus the three
+    // genuinely touch-impossible / browser-intercepted combos so they all
+    // render in tap-to-send mode (none are in the default selection except the
+    // mode-cycle chip).
+    const { ws } = await installMocks(page, {
+      initialQuickKeys: ['key:BackTab', 'key:EscEsc', 'key:Ctrl-L', 'key:Newline'],
+    })
+    await gotoFocus(page)
+
+    // Wait for the WS to authenticate so `sendKey` is not silenced.
+    await expect(page.locator('[data-state="live"]')).toBeVisible({ timeout: 15_000 })
+
+    const open = async () => {
+      await page.getByRole('button', { name: 'Specials' }).click()
+      await expect(page.getByText('Quick keys', { exact: true })).toBeVisible()
+    }
+
+    // Mode-cycle chip → sendKey('BackTab') → CSI Z (Shift+Tab), NOT plain Tab.
+    await open()
+    await page.getByRole('button', { name: /Cycle mode/ }).click()
+    await expect.poll(() => ws.inputs).toContain('\x1b[Z')
+    // It must NOT have sent a plain Tab — that was the bug.
+    expect(ws.inputs).not.toContain('\t')
+
+    // Rewind chip → sendKey('EscEsc') → two Escapes in one send.
+    await open()
+    await page.getByRole('button', { name: /Rewind/ }).click()
+    await expect.poll(() => ws.inputs).toContain('\x1b\x1b')
+
+    // Clear screen → sendKey('Ctrl-L') → FF (\x0c).
+    await open()
+    await page.getByRole('button', { name: 'Clear screen' }).click()
+    await expect.poll(() => ws.inputs).toContain('\x0c')
+
+    // Newline (Shift+Enter) → sendKey('Newline') → LF (\x0a), inserts a line
+    // break in Claude Code's prompt WITHOUT submitting (Enter = \r submits).
+    // Device-verified against Claude Code v2.1.150 (tmux send-keys C-j).
+    await open()
+    await page.getByRole('button', { name: /Newline/ }).click()
+    await expect.poll(() => ws.inputs).toContain('\x0a')
   })
 
   test('Edit mode toggles an entry and persists it to /api/prefs/quick_keys', async ({
