@@ -160,6 +160,21 @@ function keyToBytes(name: string): string {
     case 'Esc':
     case 'Escape':
       return '\x1b'
+    case 'EscEsc':
+      // Two Escapes back-to-back — Claude Code's "rewind / edit previous"
+      // power move. Double-tapping Esc precisely is awful on a touch keyboard,
+      // so the quick-keys chip emits both bytes in one send (kept as a named
+      // key so it routes through the SAME `sendKey` → `keyToBytes` wire).
+      return '\x1b\x1b'
+    case 'Newline':
+      // A literal newline (LF, Ctrl+J) — inserts a line break in Claude Code's
+      // prompt WITHOUT submitting (Enter = `\r` submits; LF = `\x0a` does not).
+      // Verified against Claude Code v2.1.150 via `tmux send-keys C-j`: the
+      // prompt grew a second line and held the buffer. There is no Shift+Enter
+      // byte over a pty — Shift is a modifier the terminal can't encode for
+      // Enter — so the soft keyboard literally cannot produce this; the chip is
+      // the only way to compose a multi-line prompt on mobile.
+      return '\x0a'
     case 'Backspace':
       return '\x7f'
     case 'PageUp':

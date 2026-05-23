@@ -24,10 +24,15 @@ import {
   ArrowRight,
   ArrowUp,
   CornerDownLeft,
+  CornerDownRight,
   Delete,
   Square,
   Eraser,
   ListRestart,
+  Repeat,
+  RotateCcw,
+  Trash2,
+  WrapText,
 } from 'lucide-react'
 
 import type { SlashCommand, SnippetRow } from '@/lib/api'
@@ -69,14 +74,27 @@ export const GROUP_ORDER: QuickGroup[] = ['control', 'replies', 'slash', 'snippe
 export const CONTROL_ENTRIES: QuickEntry[] = [
   { id: 'key:Esc', label: 'Interrupt', kind: 'key', payload: 'Esc', icon: Square, group: 'control' },
   { id: 'key:Ctrl-C', label: 'Stop', kind: 'key', payload: 'Ctrl-C', icon: Square, group: 'control' },
-  { id: 'key:Tab', label: 'Cycle mode', kind: 'key', payload: 'Tab', group: 'control' },
+  // Mode-cycle is Shift+Tab (BackTab → CSI Z) in Claude Code — default →
+  // acceptEdits → plan. Plain Tab is autocomplete, NOT mode-cycle (the old
+  // `key:Tab` "Cycle mode" was wrong). One unambiguous cycle chip lives here;
+  // plain Tab is offered separately as "Autocomplete".
+  { id: 'key:BackTab', label: 'Cycle mode (⇧⇥)', kind: 'key', payload: 'BackTab', icon: Repeat, group: 'control' },
+  { id: 'key:Tab', label: 'Autocomplete', kind: 'key', payload: 'Tab', icon: CornerDownRight, group: 'control' },
   { id: 'key:Enter', label: 'Enter', kind: 'key', payload: 'Enter', icon: CornerDownLeft, group: 'control' },
+  // Newline-without-submit: a literal LF (Ctrl+J) inserts a line break in
+  // Claude Code's prompt without sending it — there is no Shift+Enter byte over
+  // a pty, so the soft keyboard cannot compose a multi-line prompt at all.
+  { id: 'key:Newline', label: 'Newline (⇧⏎)', kind: 'key', payload: 'Newline', icon: WrapText, group: 'control' },
+  // Esc Esc = rewind / edit previous. Double-tapping Esc precisely is awful on
+  // a touch keyboard; this chip emits both Escapes in one send.
+  { id: 'key:EscEsc', label: 'Rewind (esc esc)', kind: 'key', payload: 'EscEsc', icon: RotateCcw, group: 'control' },
   { id: 'key:Ctrl-U', label: 'Clear line', kind: 'key', payload: 'Ctrl-U', icon: Eraser, group: 'control' },
+  // Ctrl-L = clear screen. A true Ctrl combo — not reachable on a soft keyboard.
+  { id: 'key:Ctrl-L', label: 'Clear screen', kind: 'key', payload: 'Ctrl-L', icon: Trash2, group: 'control' },
   { id: 'key:Up', label: 'Up', kind: 'key', payload: 'Up', icon: ArrowUp, group: 'control' },
   { id: 'key:Down', label: 'Down', kind: 'key', payload: 'Down', icon: ArrowDown, group: 'control' },
   { id: 'key:Left', label: 'Left', kind: 'key', payload: 'Left', icon: ArrowLeft, group: 'control' },
   { id: 'key:Right', label: 'Right', kind: 'key', payload: 'Right', icon: ArrowRight, group: 'control' },
-  { id: 'key:BackTab', label: 'Cycle back', kind: 'key', payload: 'BackTab', group: 'control' },
   { id: 'key:Backspace', label: 'Backspace', kind: 'key', payload: 'Backspace', icon: Delete, group: 'control' },
   { id: 'key:PageUp', label: 'Scroll up', kind: 'key', payload: 'PageUp', group: 'control' },
   { id: 'key:PageDown', label: 'Scroll down', kind: 'key', payload: 'PageDown', icon: ListRestart, group: 'control' },
@@ -108,7 +126,7 @@ export const STATIC_ENTRIES: QuickEntry[] = [...CONTROL_ENTRIES, ...REPLY_ENTRIE
 export const DEFAULT_QUICK_SELECTION: string[] = [
   'key:Esc',
   'key:Ctrl-C',
-  'key:Tab',
+  'key:BackTab', // mode-cycle (Shift+Tab) — was the wrong plain-Tab `key:Tab`
   'key:Up',
   'key:Down',
   'key:Enter',
