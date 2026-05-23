@@ -1,22 +1,26 @@
-import { useCallback, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
+  ArrowUpRight,
   Bot,
   Check,
   ChevronDown,
   ChevronUp,
   CircleSlash,
+  FolderOpen,
   GitCommit,
   GitPullRequest,
   Link2,
+  Loader2,
+  Play,
   Plus,
   Search,
   Send,
+  Square,
   Trash2,
   User,
   X,
-  Zap,
 } from 'lucide-react'
 
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
@@ -24,17 +28,21 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
+import { homeDir } from '@/env'
 import { useSessions } from '@/hooks/use-sessions'
-import { useSendToAgent } from '@/hooks/use-send-to-agent'
+import { useStartAgent } from '@/hooks/use-send-to-agent'
 import { useToast } from '@/components/ui/use-toast'
 import {
   boardApi,
+  focusApi,
+  sessionsApi,
   type AcceptanceItem,
   type BoardIssue,
   type BoardIssuePatch,
   type BoardStatus,
   type ClaimResult,
   type IssueLink,
+  type StartSpawn,
 } from '@/lib/api'
 
 export interface IssueDetailSheetProps {
@@ -43,38 +51,49 @@ export interface IssueDetailSheetProps {
   onClose: () => void
   onPatch: (id: string, patch: BoardIssuePatch) => Promise<void>
   onDelete: (id: string) => Promise<void>
-  /** Claim the issue for `session` (atomic CAS). When `deliver` is true the work
-   *  is auto-sent to the agent. Resolves to the `ClaimResult` so the sheet can
-   *  power the Undo toast off `steer_id`. Rejects on a 409. */
-  onClaim: (
+  /** @deprecated Back-compat with the not-yet-migrated route: the atomic CAS used
+   *  by the legacy "Send to agent" block. The Agent section now starts agents
+   *  through the unified `boardApi.start` (attach OR spawn) via `useStartAgent`,
+   *  so the sheet no longer surfaces "claim" to the user. Kept optional so the
+   *  route keeps compiling until BR4 rewires it to `startIssue`. */
+  onClaim?: (
     id: string,
     session: string,
     deliver: boolean,
   ) => Promise<ClaimResult>
 }
 
-/** A claimable agent task sitting in todo/backlog can be CAS-claimed. */
-function isClaimable(issue: BoardIssue): boolean {
-  return (
-    issue.owner_type === 'agent' &&
-    (issue.status === 'todo' || issue.status === 'backlog')
-  )
+/** A startable issue is one sitting in an entry column (`todo`/`backlog`): the
+ *  primary action is **Start agent** (attach a live session, or spawn a new one).
+ *  Starting MAKES it agent-owned server-side — owner is NOT a precondition. */
+function isStartable(issue: BoardIssue): boolean {
+  return issue.status === 'todo' || issue.status === 'backlog'
+}
+
+/** A working issue is `doing` with a live linked session — show Open + Stop, no
+ *  Start. (A `doing` card whose link went stale falls back to the reassign flow.) */
+function isWorking(issue: BoardIssue): boolean {
+  return issue.status === 'doing' && issue.session != null && issue.session_live
 }
 
 /**
  * Edit sheet for one issue (TECH_PLAN §M19, board↔agent §C.4). Beyond the basic
  * fields (title/column/due/owner/tags) it carries the live board↔agent surface:
  *
+ *  • a state-aware AGENT section (the primary action is chosen by STATUS, not
+ *    owner — this structurally removes the old "not claimable" 409): on
+ *    `todo`/`backlog` a **Start agent** block that attaches a running session OR
+ *    spawns a NEW agent in a chosen project (dir autocomplete + provider +
+ *    optional worktree, name derived server-side), one tap → start+deliver +
+ *    Undo toast; on `doing` an **Open** (morph to focus) + **Stop**;
  *  • a live ACTIVITY STREAM (comments + status/check/link events, newest first),
  *    fed straight off the SSE `board` payload (the relations ride in `IssueView`),
  *    with agent/system entries visually distinct from human;
  *  • an inline STYLED comment input (never window.prompt) + an optional
  *    "notify agent" toggle that steers the comment into the linked session;
  *  • an ACCEPTANCE checklist the human edits/reorders and the agent ticks live;
- *  • "Send to agent" as the PRIMARY claim action (auto-send) with an Undo toast,
- *    plus a quieter "Claim only", folding in the decoupled-picker fix;
  *  • a LINKS section (PR/commit) with add/remove;
- *  • a stale-link banner when the linked session was archived.
+ *  • a stale-link banner when the linked session was archived (offer reassign).
  *
  * The form body is keyed by issue id so it remounts pristine per issue.
  */
@@ -84,7 +103,6 @@ export function IssueDetailSheet({
   onClose,
   onPatch,
   onDelete,
-  onClaim,
 }: IssueDetailSheetProps) {
   if (!issue) return null
   return (
@@ -96,7 +114,6 @@ export function IssueDetailSheet({
       onClose={onClose}
       onPatch={onPatch}
       onDelete={onDelete}
-      onClaim={onClaim}
     />
   )
 }
@@ -108,7 +125,6 @@ function IssueDetailForm({
   onClose,
   onPatch,
   onDelete,
-  onClaim,
 }: {
   open: boolean
   issue: BoardIssue
@@ -116,11 +132,6 @@ function IssueDetailForm({
   onClose: () => void
   onPatch: (id: string, patch: BoardIssuePatch) => Promise<void>
   onDelete: (id: string) => Promise<void>
-  onClaim: (
-    id: string,
-    session: string,
-    deliver: boolean,
-  ) => Promise<ClaimResult>
 }) {
   const [title, setTitle] = useState(issue.title)
   const [desc, setDesc] = useState(issue.desc)
@@ -130,16 +141,16 @@ function IssueDetailForm({
   const [ownerType, setOwnerType] = useState<'human' | 'agent'>(issue.owner_type)
   const [tags, setTags] = useState<string[]>(issue.tags)
   const [tagInput, setTagInput] = useState('')
-  const [sessionFilter, setSessionFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // The live session list — the SAME SSE-driven source the overview reads
-  // (`useSessions`), so the claim picker is never empty when a session is
+  // (`useSessions`), so the attach picker is never empty when a session is
   // actually running, and updates in real time.
   const { sessions } = useSessions()
   const { toast } = useToast()
-  const { sendToAgent } = useSendToAgent()
+  const { startAgent } = useStartAgent()
+  const navigate = useNavigate()
 
   // The live status of the session this issue is linked to (for the stale banner
   // copy). The relations + flags ride in `issue` straight off the SSE `board`
@@ -148,13 +159,6 @@ function IssueDetailForm({
     () => sessions.find((s) => s.name === issue.session) ?? null,
     [sessions, issue.session],
   )
-
-  const filteredSessions = useMemo(() => {
-    const q = sessionFilter.trim().toLowerCase()
-    return sessions
-      .filter((s) => !q || s.name.toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  }, [sessions, sessionFilter])
 
   function addTag(raw: string) {
     const t = raw.trim().replace(/,$/, '')
@@ -188,48 +192,49 @@ function IssueDetailForm({
     }
   }
 
-  // "Send to agent" (deliver=true) is the primary action; "Claim only"
-  // (deliver=false) flips the link without dispatching. Both go through the
-  // shared send-to-agent flow (the one source of truth for claim→toast→Undo),
-  // routing the claim through the route's optimistic `onClaim` so the 409
-  // surfaces in-place here too.
-  async function claim(deliver: boolean) {
-    if (!session) {
-      setError('Pick a session to claim this for.')
-      return
-    }
+  // Start an agent on this issue — the ONE gesture, two ways to run:
+  //   • attach: pass a live session name (auto-delivers to it),
+  //   • spawn:  pass `{ dir, provider, worktree }` and the server creates+boots a
+  //     new session named after the issue, then claims + delivers.
+  // Both route through the unified `boardApi.start` (via `useStartAgent`), which
+  // makes the issue agent-owned, atomic-claims, and delivers — plain success
+  // toast with Undo. A 409 (already being worked) surfaces here, in-place.
+  async function start(args: { session?: string; spawn?: StartSpawn }) {
     setBusy(true)
     setError(null)
     try {
-      await sendToAgent({
+      await startAgent({
         id: issue.id,
-        session,
-        deliver,
-        claim: (a) => onClaim(a.id, a.session, a.deliver),
-        // Match the sheet's prior branch: "Sent" copy on any delivered claim.
+        session: args.session,
+        spawn: args.spawn,
         isSent: (r) => r.delivered,
-        sentMessage: () => {
-          const asleep = !sessions.some((s) => s.name === session)
+        sentMessage: (r) => {
+          const target = r.issue.session ?? args.session
+          if (!target) return 'Agent started.'
+          const asleep = args.session
+            ? !sessions.some((s) => s.name === args.session)
+            : false
           return asleep
-            ? `Sent to ${session} — it'll pick this up on wake.`
-            : `Sent to ${session}.`
+            ? `Sent to ${target} — it'll pick this up on wake.`
+            : `Started ${target}.`
         },
         sentDuration: 6000,
-        claimedMessage: () => `Claimed for ${session}.`,
+        assignedMessage: (r) =>
+          r.issue.session ? `Agent on ${r.issue.session}.` : 'Agent started.',
         onSuccess: () => onClose(),
         onUndone: (cleared) =>
           toast({
             message:
               cleared > 0
-                ? `Unsent — ${session} won't see it.`
-                : `${session} already picked it up.`,
+                ? "Undone — the agent won't see it."
+                : 'The agent already picked it up.',
             tone: cleared > 0 ? 'default' : 'waiting',
           }),
         onUndoError: () =>
           toast({ message: 'Could not undo.', tone: 'error' }),
-        // 409 from the atomic claim surfaces here, in-place.
+        // 409 (another session is already on this) surfaces here, in-place.
         onError: (e) =>
-          setError(e instanceof Error ? e.message : 'Claim failed.'),
+          setError(e instanceof Error ? e.message : "Couldn't start the agent."),
       })
     } finally {
       setBusy(false)
@@ -243,6 +248,30 @@ function IssueDetailForm({
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not delete.')
+      setBusy(false)
+    }
+  }
+
+  // Open the working session — morph into focus mode for the linked agent.
+  function openFocus() {
+    if (!issue.session) return
+    onClose()
+    navigate(`/focus/${encodeURIComponent(issue.session)}`)
+  }
+
+  // Stop the working session (control-plane POST /stop, same as focus's ⌘W). The
+  // SSE `sessions` delta flips the card's live dot; we close on success.
+  async function stop() {
+    if (!issue.session) return
+    setBusy(true)
+    setError(null)
+    try {
+      await focusApi.stopSession(issue.session)
+      toast({ message: `Stopped ${issue.session}.`, tone: 'default' })
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not stop the agent.')
+    } finally {
       setBusy(false)
     }
   }
@@ -399,21 +428,28 @@ function IssueDetailForm({
           </div>
         </Field>
 
-        {/* ── Send to agent (PRIMARY) — the claim affordance + picker inline ── */}
-        {isClaimable(issue) && (
-          <SendToAgent
-            sessions={filteredSessions}
-            allSessions={sessions}
-            session={session}
-            setSession={setSession}
-            sessionFilter={sessionFilter}
-            setSessionFilter={setSessionFilter}
+        {/* ── Agent (state-aware) ───────────────────────────────────────────── */}
+        {/* `doing` + live link → Open / Stop. Otherwise (startable, or a stale
+            link that needs reassigning) → Start agent: attach a running session
+            OR spawn a new one. Terminal columns show nothing (calm). */}
+        {isWorking(issue) ? (
+          <WorkingAgentSection
+            sessionName={issue.session as string}
+            liveStatus={linkedSession?.status}
             busy={busy}
-            onSend={() => void claim(true)}
-            onClaimOnly={() => void claim(false)}
-            onClose={onClose}
+            onOpen={openFocus}
+            onStop={() => void stop()}
           />
-        )}
+        ) : isStartable(issue) || staleLink ? (
+          <StartAgentSection
+            sessions={sessions}
+            issueTitle={issue.title}
+            reassign={staleLink}
+            busy={busy}
+            onAttach={(name) => void start({ session: name })}
+            onSpawn={(spawn) => void start({ spawn })}
+          />
+        ) : null}
 
         {/* ── Acceptance checklist ──────────────────────────────────────────── */}
         <AcceptanceChecklist issueId={issue.id} items={issue.acceptance} />
@@ -434,126 +470,367 @@ function IssueDetailForm({
   )
 }
 
-// ── Send to agent (primary) ───────────────────────────────────────────────────
+// ── Agent: working (doing + live link) → Open / Stop ──────────────────────────
 
-function SendToAgent({
-  sessions,
-  allSessions,
-  session,
-  setSession,
-  sessionFilter,
-  setSessionFilter,
+function WorkingAgentSection({
+  sessionName,
+  liveStatus,
   busy,
-  onSend,
-  onClaimOnly,
-  onClose,
+  onOpen,
+  onStop,
 }: {
-  sessions: { name: string; status: string }[]
-  allSessions: { name: string }[]
-  session: string
-  setSession: (s: string) => void
-  sessionFilter: string
-  setSessionFilter: (s: string) => void
+  sessionName: string
+  liveStatus?: string
   busy: boolean
-  onSend: () => void
-  onClaimOnly: () => void
-  onClose: () => void
+  onOpen: () => void
+  onStop: () => void
 }) {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
-      <span className="text-xs font-medium text-muted-foreground">
-        Send to agent
-      </span>
-      {allSessions.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No active sessions —{' '}
-          <Link
-            to="/"
-            onClick={onClose}
-            className="font-medium text-primary underline-offset-2 hover:underline"
-          >
-            start one from the overview
-          </Link>{' '}
-          first.
-        </p>
-      ) : (
-        <>
-          {/* Live-filter — only worth showing once the list is long. */}
-          {allSessions.length > 5 && (
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={sessionFilter}
-                onChange={(e) => setSessionFilter(e.target.value)}
-                placeholder="Filter sessions"
-                aria-label="Filter sessions"
-                className="h-9 pl-8"
-              />
-            </div>
+      <div className="flex items-center gap-2">
+        <Bot className="size-4 shrink-0 text-primary" />
+        <span className="flex-1 truncate text-sm font-medium text-foreground">
+          {sessionName}
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {liveStatus ?? 'working'}
+        </span>
+      </div>
+      <div className="flex gap-2">
+        {/* Primary: Open — morph into focus mode for this agent. */}
+        <Button
+          onClick={onOpen}
+          disabled={busy}
+          className="h-11 flex-1 justify-center"
+        >
+          <ArrowUpRight className="size-4" />
+          Open
+        </Button>
+        {/* Secondary: Stop — control-plane stop (same as focus's ⌘W). */}
+        <Button
+          variant="outline"
+          onClick={onStop}
+          disabled={busy}
+          className="h-11 justify-center"
+        >
+          {busy ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Square className="size-4" />
           )}
-          {/* The picker IS the claim affordance — pick a session, then send. */}
-          <div
-            role="listbox"
-            aria-label="Sessions"
-            className="flex max-h-48 flex-col gap-1 overflow-y-auto [scrollbar-width:thin]"
-          >
-            {sessions.length === 0 ? (
-              <p className="px-1 py-2 text-sm text-muted-foreground">
-                No sessions match “{sessionFilter.trim()}”.
-              </p>
-            ) : (
-              sessions.map((s) => {
-                const active = session === s.name
-                return (
-                  <button
-                    key={s.name}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    onClick={() => setSession(s.name)}
-                    className={cn(
-                      'flex h-11 items-center gap-2 rounded-md border px-3 text-left text-sm transition-colors',
-                      active
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-transparent text-foreground hover:border-foreground/15 hover:bg-foreground/5',
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        'size-1.5 shrink-0 rounded-full',
-                        active ? 'bg-primary' : 'bg-muted-foreground/40',
-                      )}
-                    />
-                    <span className="flex-1 truncate font-medium">{s.name}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {s.status}
-                    </span>
-                  </button>
-                )
-              })
-            )}
-          </div>
-          {/* Primary: Send to agent (auto-dispatch). Quieter: Claim only. */}
-          <Button
-            onClick={onSend}
-            disabled={busy || !session}
-            className="h-11 justify-center"
-          >
-            <Send className="size-4" />
-            {session ? `Send to ${session}` : 'Pick a session above'}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClaimOnly}
-            disabled={busy || !session}
-            className="justify-center text-muted-foreground"
-          >
-            <Zap className="size-3.5" />
-            Claim only (don’t notify)
-          </Button>
-        </>
+          Stop
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ── Agent: start (todo/backlog, or reassign a stale link) ─────────────────────
+// Two ways to run, minimum inputs:
+//   1. Attach to a running agent — pick one from the live list → Start.
+//   2. New agent in a project — a compact inline form mirroring new-session-sheet
+//      (dir autocomplete + provider buttons + optional worktree); the server
+//      derives the session name from the issue, creates+boots it, then delivers.
+// When there are no running sessions we lead with "New agent" (no dead-end).
+
+const PROVIDERS = ['claude', 'codex', 'shell'] as const
+type Provider = (typeof PROVIDERS)[number]
+
+function StartAgentSection({
+  sessions,
+  issueTitle,
+  reassign,
+  busy,
+  onAttach,
+  onSpawn,
+}: {
+  sessions: { name: string; status: string }[]
+  issueTitle: string
+  reassign: boolean
+  busy: boolean
+  onAttach: (session: string) => void
+  onSpawn: (spawn: StartSpawn) => void
+}) {
+  const hasSessions = sessions.length > 0
+  // Default the open mode: attach when something's running, else spawn-new.
+  const [mode, setMode] = useState<'attach' | 'new'>(
+    hasSessions ? 'attach' : 'new',
+  )
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+      <div className="flex items-center gap-2">
+        <Play className="size-4 shrink-0 text-primary" />
+        <span className="text-sm font-medium text-foreground">
+          {reassign ? 'Reassign — start agent' : 'Start agent'}
+        </span>
+      </div>
+
+      {/* Mode toggle — only worth showing when both paths are available. */}
+      {hasSessions && (
+        <div className="grid grid-cols-2 gap-1.5">
+          <ModeTab
+            active={mode === 'attach'}
+            onClick={() => setMode('attach')}
+            label="Attach to running"
+          />
+          <ModeTab
+            active={mode === 'new'}
+            onClick={() => setMode('new')}
+            label="New in project"
+          />
+        </div>
       )}
+
+      {mode === 'attach' && hasSessions ? (
+        <AttachToRunning
+          sessions={sessions}
+          busy={busy}
+          onAttach={onAttach}
+        />
+      ) : (
+        <NewAgentForm
+          issueTitle={issueTitle}
+          busy={busy}
+          onSpawn={onSpawn}
+        />
+      )}
+    </div>
+  )
+}
+
+function ModeTab({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        'flex h-9 items-center justify-center rounded-md border px-3 text-sm font-medium transition-colors',
+        active
+          ? 'border-primary bg-primary/10 text-primary'
+          : 'border-border text-muted-foreground hover:border-foreground/20',
+      )}
+    >
+      {label}
+    </button>
+  )
+}
+
+/** Pick a live session → Start. The picker IS the action: one tap per row starts
+ *  + delivers the issue to that agent (no separate confirm). */
+function AttachToRunning({
+  sessions,
+  busy,
+  onAttach,
+}: {
+  sessions: { name: string; status: string }[]
+  busy: boolean
+  onAttach: (session: string) => void
+}) {
+  const [filter, setFilter] = useState('')
+  const [picked, setPicked] = useState('')
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    return [...sessions]
+      .filter((s) => !q || s.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [sessions, filter])
+
+  return (
+    <div className="flex flex-col gap-2">
+      {/* Live-filter — only worth showing once the list is long. */}
+      {sessions.length > 5 && (
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter sessions"
+            aria-label="Filter sessions"
+            className="h-9 pl-8"
+          />
+        </div>
+      )}
+      <div
+        role="listbox"
+        aria-label="Running agents"
+        className="flex max-h-48 flex-col gap-1 overflow-y-auto [scrollbar-width:thin]"
+      >
+        {filtered.length === 0 ? (
+          <p className="px-1 py-2 text-sm text-muted-foreground">
+            No agents match “{filter.trim()}”.
+          </p>
+        ) : (
+          filtered.map((s) => {
+            const active = picked === s.name
+            return (
+              <button
+                key={s.name}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => setPicked(s.name)}
+                className={cn(
+                  'flex h-11 items-center gap-2 rounded-md border px-3 text-left text-sm transition-colors',
+                  active
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-transparent text-foreground hover:border-foreground/15 hover:bg-foreground/5',
+                )}
+              >
+                <span
+                  className={cn(
+                    'size-1.5 shrink-0 rounded-full',
+                    active ? 'bg-primary' : 'bg-muted-foreground/40',
+                  )}
+                />
+                <span className="flex-1 truncate font-medium">{s.name}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {s.status}
+                </span>
+              </button>
+            )
+          })
+        )}
+      </div>
+      <Button
+        onClick={() => picked && onAttach(picked)}
+        disabled={busy || !picked}
+        className="h-11 justify-center"
+      >
+        {busy ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <Play className="size-4" />
+        )}
+        {picked ? `Start ${picked}` : 'Pick an agent above'}
+      </Button>
+    </div>
+  )
+}
+
+/** Spawn a fresh agent in a chosen project — a compact mirror of
+ *  new-session-sheet.tsx: dir autocomplete (defaults to home), provider buttons
+ *  (claude default), optional isolated worktree. The server derives the session
+ *  name from the issue, creates + boots it, then claims + delivers. One action. */
+function NewAgentForm({
+  issueTitle,
+  busy,
+  onSpawn,
+}: {
+  issueTitle: string
+  busy: boolean
+  onSpawn: (spawn: StartSpawn) => void
+}) {
+  const [dir, setDir] = useState(() => homeDir())
+  const [provider, setProvider] = useState<Provider>('claude')
+  const [worktree, setWorktree] = useState(false)
+  const [suggestions, setSuggestions] = useState<string[]>([])
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Directory typeahead (debounced) against the M7 autocomplete endpoint — the
+  // same source new-session-sheet uses.
+  const onDirChange = (value: string) => {
+    setDir(value)
+    if (debounce.current) clearTimeout(debounce.current)
+    debounce.current = setTimeout(async () => {
+      if (!value.trim()) return setSuggestions([])
+      setSuggestions(await sessionsApi.autocompleteDir(value))
+    }, 200)
+  }
+
+  const submit = () =>
+    onSpawn({ dir: dir.trim() || undefined, provider, worktree })
+
+  return (
+    <div className="flex flex-col gap-3">
+      <label className="flex flex-col gap-1.5">
+        <span className="text-xs font-medium text-muted-foreground">
+          Directory
+        </span>
+        <div className="relative">
+          <FolderOpen className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={dir}
+            onChange={(e) => onDirChange(e.target.value)}
+            placeholder="~/projects/app"
+            aria-label="Project directory"
+            autoComplete="off"
+            spellCheck={false}
+            list="agent-dir-suggestions"
+            className="h-9 pl-8"
+          />
+        </div>
+        {suggestions.length > 0 && (
+          <datalist id="agent-dir-suggestions">
+            {suggestions.map((d) => (
+              <option key={d} value={d} />
+            ))}
+          </datalist>
+        )}
+      </label>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs font-medium text-muted-foreground">
+          Provider
+        </span>
+        <div className="flex gap-2">
+          {PROVIDERS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setProvider(p)}
+              aria-pressed={provider === p}
+              className={cn(
+                'h-11 flex-1 rounded-md border px-3 text-sm font-medium capitalize transition-colors',
+                provider === p
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border text-muted-foreground hover:border-foreground/20',
+              )}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-border px-3">
+        <input
+          type="checkbox"
+          checked={worktree}
+          onChange={(e) => setWorktree(e.target.checked)}
+          className="size-4 accent-[hsl(var(--primary))]"
+        />
+        <span className="flex flex-col">
+          <span className="text-sm font-medium">Isolated worktree</span>
+          <span className="text-xs text-muted-foreground">
+            Run in a fresh git worktree so it can&rsquo;t touch your tree.
+          </span>
+        </span>
+      </label>
+
+      <Button
+        onClick={submit}
+        disabled={busy}
+        className="h-11 justify-center"
+        title={`Start a new ${provider} agent for “${issueTitle}”`}
+      >
+        {busy ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <Play className="size-4" />
+        )}
+        Start new agent
+      </Button>
     </div>
   )
 }
