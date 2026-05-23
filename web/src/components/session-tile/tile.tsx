@@ -20,6 +20,10 @@ import { TailPreview } from './tail-preview'
 import { TileLiveTerminal } from './tile-live-terminal'
 import { TileError } from './tile-error'
 import { QuickPeekModal } from './quick-peek-modal'
+import {
+  StoppedSessionActions,
+  type StoppedSessionActionsHandle,
+} from '@/components/terminal/stopped-session'
 import type { TileSession } from './types'
 
 // Idle geometry (px) — must match the header + 6-line tail so the grid slot
@@ -243,11 +247,66 @@ export function SessionTile({
   // a stopped agent has no pty to stream, so it falls back to the static tail.
   const liveCapable =
     session.status !== 'stopped' && session.status !== 'error'
-  const showLiveTerm = expanded && hoverPreview === 'live' && liveCapable
+  // Stopped peek (feat-stopped-peek-actions): a stopped tile's hover surface
+  // mounts the Start + Archive actions DIRECTLY — skipping the dead-terminal
+  // peek (no WS connection, no empty-black void, no last-static-preview that
+  // can't be acted on). Running/active/idle/booting tiles fall through to the
+  // existing live-zoom / static-tail behaviour, unchanged.
+  const isStoppedPeek = expanded && session.status === 'stopped'
+  const showLiveTerm =
+    expanded && hoverPreview === 'live' && liveCapable && !isStoppedPeek
+
+  // Stopped peek's keyboard shortcut: Enter → primary "Start" action (power-
+  // user nicety; the visible primary button makes the affordance obvious),
+  // Esc → close. No pty to type into so the rest of usePeekType is silenced.
+  const stoppedActionsRef = React.useRef<StoppedSessionActionsHandle | null>(
+    null,
+  )
+  const onStoppedKeyDown = React.useCallback(
+    (e: KeyboardEvent) => {
+      // Same safety as usePeekType: never hijack keys away from an input or
+      // a focused button (e.g. the user is mid-tab through the actions —
+      // their Enter should activate the focused button, not double-fire).
+      const el = document.activeElement as HTMLElement | null
+      if (el && el !== document.body && el !== document.documentElement) {
+        const tag = el.tagName
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          tag === 'BUTTON' ||
+          el.isContentEditable
+        ) {
+          return
+        }
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        stoppedActionsRef.current?.start()
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setHovered(false)
+      }
+    },
+    [],
+  )
+  React.useEffect(() => {
+    if (!isStoppedPeek) return
+    document.addEventListener('keydown', onStoppedKeyDown, { capture: true })
+    return () => {
+      document.removeEventListener('keydown', onStoppedKeyDown, {
+        capture: true,
+      })
+    }
+  }, [isStoppedPeek, onStoppedKeyDown])
 
   // Peek is "active" for typing while the live-zoom preview is showing for THIS
   // tile. usePeekType only installs its document listener while enabled — so
-  // un-hovered tiles add zero global keyboard overhead.
+  // un-hovered tiles add zero global keyboard overhead. Stopped peeks never
+  // enable type-on-hover (no pty target).
   const peekTypable = showLiveTerm
   const { claimed } = usePeekType({
     enabled: peekTypable,
@@ -298,13 +357,23 @@ export function SessionTile({
   const isStopped = session.status === 'stopped'
 
   // Tail line count: 6 idle → 20 when expanded in "expanded text" mode (or as
-  // the live mode's fallback for a session with no pty).
-  const tailLines = expanded && !showLiveTerm ? EXPANDED_LINES : IDLE_LINES
+  // the live mode's fallback for a session with no pty). Stopped peek skips
+  // the tail expansion — the actions panel sits over the (still-rendered)
+  // idle tail so the user has scene continuity without a height shift.
+  const tailLines =
+    expanded && !showLiveTerm && !isStoppedPeek ? EXPANDED_LINES : IDLE_LINES
+  // Stopped peek lifts the preview area to a fixed actions-row height (44pt
+  // Start + 44pt Archive + 12px vertical pad) so the buttons aren't cramped
+  // against the meta row. Geometry stays inside the float so the grid never
+  // reflows.
+  const STOPPED_PEEK_H = 44 + 12 + 12
   // Height the preview area springs to. The card grows with it (the tail-pad is
   // already inside `TailPreview`'s own sizing, so the live height is exact).
   const previewH = showLiveTerm
     ? LIVE_PREVIEW_H
-    : tailLines * TAIL_LINE_H + TAIL_PAD
+    : isStoppedPeek
+      ? STOPPED_PEEK_H
+      : tailLines * TAIL_LINE_H + TAIL_PAD
 
   return (
     // The slot reserves the idle height; the card floats inside it so hover
@@ -438,6 +507,31 @@ export function SessionTile({
                 reduce={!!reduce}
                 onReady={onLiveReady}
               />
+            )}
+          </AnimatePresence>
+          {/* Stopped peek surface (feat-stopped-peek-actions). Instead of a
+              dead live-terminal mount, hover on a stopped tile reveals the
+              Start + Archive actions DIRECTLY — same component the focus
+              pane uses, so behaviour + visuals stay consistent. Sits OVER
+              the dimmed static tail with a frosted scrim so the buttons
+              have legible contrast without losing scene continuity. */}
+          <AnimatePresence>
+            {isStoppedPeek && (
+              <motion.div
+                key="stopped-actions"
+                initial={reduce ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={reduce ? undefined : { opacity: 0 }}
+                transition={reduce ? { duration: 0 } : springs.snappy}
+                className="absolute inset-0 z-10 flex items-center justify-center bg-card/85 backdrop-blur-sm"
+              >
+                <StoppedSessionActions
+                  name={session.name}
+                  compact
+                  onAfterArchive={() => setHovered(false)}
+                  triggerRef={stoppedActionsRef}
+                />
+              </motion.div>
             )}
           </AnimatePresence>
           {/* Type-on-hover indicator. Sentence case, glass-on-dark pill,
