@@ -335,6 +335,14 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     let _ = tmux::Tmux::new(name).kill_session().await;
     db::sessions::delete(&state.pool, name).await?;
 
+    // R2-011: audit row per ARCHITECTURE §3.3 — every destructive HTTP call
+    // records an entry. `delete` is harder-destructive than `archive` (the row
+    // is gone, not just soft-archived), so it MUST leave a forensic trace.
+    // Uses `?` (not `let _ =`) so a failed audit-insert fails the request,
+    // matching board/mod.rs:401, files/mod.rs:262, scheduler/runner.rs:92,
+    // agents/delegate.rs:63, and the archive fix at lifecycle.rs:454.
+    db::audit::log(&state.pool, "user", "session.delete", name, json!({})).await?;
+
     // Nudge the per-session background loops to re-check their `exists_active`
     // guard immediately (detector via the wake handle; steering via a no-op
     // status-watch re-send), so they observe the deleted row and exit.
