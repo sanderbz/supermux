@@ -186,7 +186,7 @@ function StatusRow({
           if (trimmed && trimmed !== status.label) void onRename(status.id, trimmed)
           else setLabel(status.label)
         }}
-        className="h-8 flex-1 rounded-md bg-transparent px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="h-8 flex-1 rounded-md bg-transparent px-2 text-base md:text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
       {builtin ? (
         <span

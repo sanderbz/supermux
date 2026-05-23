@@ -107,7 +107,7 @@ export function GroupHeader({
             }
           }}
           aria-label="Group name"
-          className="min-w-0 flex-1 rounded border border-input bg-transparent px-2 py-1 text-sm font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="min-w-0 flex-1 rounded border border-input bg-transparent px-2 py-1 text-base md:text-sm font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
       ) : (
         <button

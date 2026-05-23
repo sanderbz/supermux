@@ -488,7 +488,7 @@ export function Overview() {
             onChange={(e) => setRawQuery(e.target.value)}
             placeholder="Search sessions"
             aria-label="Search sessions"
-            className="h-9 w-full rounded-md border border-input bg-transparent pl-9 pr-9 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="h-9 w-full rounded-md border border-input bg-transparent pl-9 pr-9 text-base md:text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           {rawQuery && (
             <button
@@ -1063,7 +1063,7 @@ function AddGroupInput({
           }
         }}
         onBlur={commit}
-        className="h-11 min-h-11 w-48 rounded-md border border-input bg-transparent px-3 text-sm text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="h-11 min-h-11 w-48 rounded-md border border-input bg-transparent px-3 text-base md:text-sm text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
       {/* Tiny escape hatch so mouse-only users have a discoverable cancel —
           Esc is the canonical gesture but not everyone reaches for it. The

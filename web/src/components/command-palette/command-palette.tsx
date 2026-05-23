@@ -258,7 +258,7 @@ export function CommandPalette() {
             onChange={(e) => updateQuery(e.target.value)}
             placeholder="Jump to a session or run a /command"
             aria-label="Command palette"
-            className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground"
           />
           <kbd className="hidden shrink-0 rounded border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground sm:inline">
             Esc
