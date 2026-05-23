@@ -179,11 +179,25 @@ ask_choice() {
 # ---------------------------------------------------------------------------
 
 is_port() {
-  # 1024..65535
+  # Unprivileged port (the internal loopback bind): 1024..65535.
   case "$1" in
     ''|*[!0-9]*) return 1 ;;
   esac
   if [ "$1" -lt 1024 ] || [ "$1" -gt 65535 ]; then
+    return 1
+  fi
+  return 0
+}
+
+is_public_port() {
+  # The public/TLS port may be privileged — 443 is the documented default (it
+  # yields a clean no-port-suffix Tailscale URL), so allow the full 1..65535
+  # range here. (Validating it with is_port would reject the very default we
+  # ship, spinning the prompt loop forever in non-interactive mode.)
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
     return 1
   fi
   return 0
@@ -327,6 +341,7 @@ V_PUBLIC_PORT=""
 V_USE_TAILSCALE=""
 V_ALLOW_ROOT=""
 V_AUTO_INSTALL=""
+V_COPY_CLAUDE_CREDS=""
 
 # "Did the operator explicitly customize this via the advanced step (or carry
 # it over from an existing .env)?" — controls whether we write the var into
@@ -339,10 +354,17 @@ V_READ_WRITE_PATHS_CUSTOMIZED=0
 D_HOST=""
 D_USER="supermux"
 D_INTERNAL_PORT="8824"
-D_PUBLIC_PORT="8823"
+# Public TLS port — default 443 so the Tailscale URL has no port suffix
+# (https://supermux.<tailnet>.ts.net/). deploy.sh, .env.example and the README
+# all default to 443; keep this in lockstep so a wizard-generated .env doesn't
+# silently override the clean-URL default.
+D_PUBLIC_PORT="443"
 D_USE_TAILSCALE="0"
 D_DEPLOY_REF="HEAD"
 D_AUTO_INSTALL="Y"
+# Claude-credential copy preference: "ask" (deploy-time interactive consent),
+# "1" (copy the deployer's login non-interactively) or "0" (never copy).
+D_COPY_CLAUDE_CREDS="ask"
 
 derive_defaults_from_existing() {
   if [ "$DISPOSITION" = "edit" ] && [ -f "$ENV_FILE" ]; then
@@ -353,6 +375,7 @@ derive_defaults_from_existing() {
     v=$(read_env_value SUPERMUX_PUBLIC_PORT "$ENV_FILE");    [ -n "$v" ] && D_PUBLIC_PORT="$v"
     v=$(read_env_value SUPERMUX_USE_TAILSCALE "$ENV_FILE");  [ -n "$v" ] && D_USE_TAILSCALE="$v"
     v=$(read_env_value SUPERMUX_DEPLOY_REF "$ENV_FILE");     [ -n "$v" ] && D_DEPLOY_REF="$v"
+    v=$(read_env_value SUPERMUX_COPY_CLAUDE_CREDS "$ENV_FILE"); [ -n "$v" ] && D_COPY_CLAUDE_CREDS="$v"
     # Carry forward operator-customized path overrides if present in the
     # existing .env, and mark them as customized so write_env preserves them.
     # Absent = let deploy.sh's smart defaults (getent USER_HOME, smart
@@ -389,7 +412,7 @@ derive_user_paths() {
 # Steps
 # ---------------------------------------------------------------------------
 
-TOTAL_STEPS=8
+TOTAL_STEPS=9
 
 step_host() {
   step 1 "$TOTAL_STEPS" "deploy target (SSH host)"
@@ -533,10 +556,10 @@ step_ports() {
   done
   while :; do
     ask "public port (TLS)" "$D_PUBLIC_PORT"
-    if is_port "$ANS"; then
+    if is_public_port "$ANS"; then
       V_PUBLIC_PORT="$ANS"; break
     fi
-    err "port must be a number between 1024 and 65535."
+    err "public port must be a number between 1 and 65535 (default 443)."
   done
   if [ "$V_INTERNAL_PORT" = "$V_PUBLIC_PORT" ]; then
     warn "internal and public ports are identical ($V_INTERNAL_PORT) — that's"
@@ -631,17 +654,55 @@ step_toolchain() {
   fi
 }
 
+step_claude_login() {
+  step 8 "$TOTAL_STEPS" "Claude login for the service user"
+  note "supermux drives agents with YOUR Claude SUBSCRIPTION (OAuth) — never an"
+  note "API key, never ANTHROPIC_API_KEY, never API billing. The service user"
+  note "must be logged in to Claude or agents won't run (this is the #1"
+  note "'it doesn't work' cause)."
+  note "after deploy, deploy.sh checks the service user's Claude login. If it's"
+  note "missing it can copy YOUR existing login (the account you deploy as) to"
+  note "the service user — the fast path that reuses your subscription. Either"
+  note "way it verifies before declaring success, and prints the exact"
+  note "'sudo -u $V_USER -i claude' + /login command if you still need to log in."
+  note "choose how the copy should behave on deploy:"
+  note "  ask = prompt me at deploy time (recommended for interactive deploys)"
+  note "  yes = copy automatically (best for hands-off / non-interactive deploys)"
+  note "  no  = never copy; I'll run /login as the service user myself"
+  local default_choice="1"
+  case "$D_COPY_CLAUDE_CREDS" in
+    1) default_choice="2" ;;
+    0) default_choice="3" ;;
+    *) default_choice="1" ;;
+  esac
+  ask_choice "copy your Claude login to the service user on deploy?" "$default_choice" \
+    "ask me at deploy time" \
+    "yes, copy automatically" \
+    "no, I'll log in myself"
+  case "$ANS" in
+    1) V_COPY_CLAUDE_CREDS="ask" ;;
+    2) V_COPY_CLAUDE_CREDS="1" ;;
+    3) V_COPY_CLAUDE_CREDS="0" ;;
+    *) V_COPY_CLAUDE_CREDS="ask" ;;
+  esac
+}
+
 step_deploy_ref_default() {
   # Default deploy ref only set if not already collected via advanced step.
   if [ -z "$V_DEPLOY_REF" ]; then
     V_DEPLOY_REF="$D_DEPLOY_REF"
+  fi
+  # Fall back to the carried-forward / default Claude-creds preference if the
+  # step somehow left it empty (e.g. a future code path that skips it).
+  if [ -z "$V_COPY_CLAUDE_CREDS" ]; then
+    V_COPY_CLAUDE_CREDS="$D_COPY_CLAUDE_CREDS"
   fi
 }
 
 step_summary_and_confirm() {
   derive_user_paths
   step_deploy_ref_default
-  step 8 "$TOTAL_STEPS" "summary"
+  step 9 "$TOTAL_STEPS" "summary"
   printf "  %sdeploy target          %s%s\n" "$c_dim" "$c_reset" "$V_HOST"
   if [ "$V_ALLOW_ROOT" = "1" ]; then
     printf "  %sservice RUNS AS        %s%sroot — LAST RESORT (hardening relaxed, Claude may refuse)%s\n" "$c_dim" "$c_reset" "$c_red" "$c_reset"
@@ -666,7 +727,10 @@ step_summary_and_confirm() {
   printf "  %sexpose via tailscale   %s%s\n" "$c_dim" "$c_reset" "$V_USE_TAILSCALE"
   printf "  %sgit ref to deploy      %s%s\n" "$c_dim" "$c_reset" "$V_DEPLOY_REF"
   printf "  %sauto-install toolchain %s%s\n" "$c_dim" "$c_reset" "$V_AUTO_INSTALL"
+  printf "  %scopy Claude login      %s%s\n" "$c_dim" "$c_reset" "$V_COPY_CLAUDE_CREDS"
   printf "\n"
+  note "after deploy: the service user's Claude login is checked + (per the"
+  note "setting above) copied or you'll be shown the exact /login command."
   ask_yn "write .env and continue?" "Y"
   if [ "$ANS" != "y" ]; then
     warn "aborted — no changes made."
@@ -718,6 +782,10 @@ write_env() {
     else
       printf "SUPERMUX_INSTALL_TOOLCHAINS=0\n"
     fi
+    # How deploy.sh should handle copying YOUR Claude login to the service user:
+    # ask (interactive consent) / 1 (copy automatically) / 0 (never). Writing it
+    # explicitly lets a non-interactive deploy pick the fast path without a TTY.
+    printf "SUPERMUX_COPY_CLAUDE_CREDS=%s\n" "$V_COPY_CLAUDE_CREDS"
   } > "$ENV_TMP"
   chmod 600 "$ENV_TMP" 2>/dev/null || true
   mv "$ENV_TMP" "$ENV_FILE"
@@ -735,7 +803,10 @@ offer_deploy() {
   if [ "$NONINTERACTIVE" = "1" ]; then
     return 0
   fi
-  ask_yn "run deploy.sh now?" "N"
+  # Default Y: after walking the whole wizard the natural momentum is "deploy
+  # now". deploy.sh has its own preflight + plan + confirmation (and a 3s abort
+  # window on the root path), so defaulting Y here is safe and matches intent.
+  ask_yn "run deploy.sh now?" "Y"
   if [ "$ANS" = "y" ]; then
     ok "handing off to deploy.sh."
     exec bash "$SCRIPT_DIR/deploy.sh"
@@ -766,6 +837,7 @@ main() {
   step_tailscale
   step_advanced
   step_toolchain
+  step_claude_login
   step_summary_and_confirm
   write_env
   offer_deploy
