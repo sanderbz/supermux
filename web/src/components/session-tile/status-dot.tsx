@@ -39,19 +39,24 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
  *    "doing work" without competing for attention with the agent's own
  *    streaming text. The amber border pulse on `<StatusBorder>` keeps the
  *    full-card glance.
- *  • `waiting` — input is required. The dot pulses (a calm 2.2s opacity +
- *    soft halo) to draw the user's eye to the tile that needs them. This is
- *    the ONLY status where the dot itself moves — earlier the border did the
- *    pulsing and the dot was static; the swap puts the motion where the user
- *    is asked to act.
- *  • `starting` — boot window. Neutral-grey pulse (faster cadence) marks the
- *    transient spawn phase. The detector flips this to active/idle as soon as
- *    a real signal arrives, so the affordance is brief by construction.
- *  • everything else (`idle`, `stopped`, `error`) — static disc, no motion.
+ *  • `waiting` — input is required. The dot pulses a calm BLUE halo (2.2s) to
+ *    draw the user's eye to the tile that needs them. Distinct from the green
+ *    "done" pulse below by colour, so the user can tell "needs input" from
+ *    "finished" at a glance.
+ *  • `idle` — the turn ended: the agent has finished and is awaiting your next
+ *    prompt. The green "ready" dot pulses a calm GREEN halo (2.4s) so a freshly
+ *    finished session announces itself ("something is ready"). Because `idle`
+ *    only follows the boot/active window, the pulse appears AFTER loading
+ *    completes — never while grey/booting. Reduced motion: static green dot.
+ *  • `starting` — boot window. NO dot pulse: the loading icon/sweep elsewhere
+ *    on the tile already signals "booting", so an extra dot pulse here is too
+ *    much. Just a static neutral-grey disc; the detector flips this to
+ *    active/idle as soon as a real signal arrives.
+ *  • everything else (`stopped`, `error`) — static disc, no motion.
  *
  *  Footprint stays ≤ 14px (8px dot + a 2px spinner ring) so it never
  *  dominates the tile. Reduced-motion users get the static disc + a thin
- *  outline so the active/starting affordance still differentiates. The dot is
+ *  outline so the active affordance still differentiates. The dot is
  *  decorative + non-interactive, so the 44pt tap-target rule does not apply. */
 export function StatusDot({
   status,
@@ -144,22 +149,24 @@ export function StatusDot({
     )
   }
 
-  // ── Booting pulse (starting). Neutral grey, faster cadence ────────────────
+  // ── Done / ready pulse (idle). Spring-driven GREEN halo ───────────────────
   //
-  // The spawn window between `POST /start` and the first stable detector
-  // classification — the agent UI is still booting, so neither active nor
-  // waiting is honest. A faster gentle pulse on the muted-grey dot signals
-  // "something is happening, not yet ready" without competing with active or
-  // waiting. The detector replaces this on its next tick, so the affordance
-  // is transient by construction.
-  if (status === 'starting') {
+  // `idle` is the "turn ended" state: the agent has finished and is awaiting
+  // your next prompt. A calm green halo pulse (2.4s) makes a freshly finished
+  // session announce itself — the "something is ready" signal. Because `idle`
+  // only follows the boot/active window, this pulse appears AFTER loading
+  // completes (never while grey/booting). Same halo family as the blue waiting
+  // pulse but with the green `--status-ready` token + a slightly slower cadence,
+  // so "done" stays visually distinct from "needs input". Reduced motion:
+  // static green dot (no pulse).
+  if (status === 'idle') {
     if (reduce) {
       return (
         <span
           role="img"
-          aria-label={STATUS_LABEL.starting}
+          aria-label={STATUS_LABEL.idle}
           className={cn(
-            'size-2 shrink-0 rounded-full bg-status-idle ring-1 ring-muted-foreground/40',
+            'size-2 shrink-0 rounded-full bg-status-ready',
             className,
           )}
         />
@@ -168,22 +175,32 @@ export function StatusDot({
     return (
       <motion.span
         role="img"
-        aria-label={STATUS_LABEL.starting}
+        aria-label={STATUS_LABEL.idle}
         className={cn(
-          'size-2 shrink-0 rounded-full bg-status-idle',
+          'size-2 shrink-0 rounded-full bg-status-ready',
           className,
         )}
-        animate={{ opacity: [0.45, 1, 0.45] }}
+        animate={{
+          // Green halo grows + fades; the inner disc stays solid.
+          boxShadow: [
+            '0 0 0 0 hsl(var(--status-ready) / 0.55)',
+            '0 0 0 6px hsl(var(--status-ready) / 0)',
+          ],
+        }}
         transition={{
           repeat: Infinity,
-          duration: 1.2,
-          ease: 'easeInOut',
+          duration: 2.4,
+          ease: 'easeOut',
         }}
       />
     )
   }
 
-  // ── Resting states (idle, stopped, error) — static disc, no motion ────────
+  // ── Resting states (starting, stopped, error) — static disc, no motion ────
+  //
+  // `starting` no longer pulses: the loading icon/sweep elsewhere on the tile
+  // already signals "booting", so an extra dot pulse here is too much. It just
+  // shows the neutral-grey disc until the detector flips it to active/idle.
   return (
     <span
       role="img"
