@@ -32,6 +32,7 @@ import {
   type BoardStatus,
   type ClaimResult,
   type NewBoardIssue,
+  type StartSpawn,
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
@@ -45,6 +46,16 @@ export interface ClaimArgs {
   /** Auto-send the work to the agent (S3). Defaults to true (user decision).
    *  Pass `false` for "Claim only" — flip the link without dispatching. */
   deliver?: boolean
+}
+
+/** Args for the unified Start-agent action (BR1). Either attach an existing live
+ *  `session`, OR pass `spawn` to create a NEW agent for the issue. */
+export interface StartArgs {
+  id: string
+  /** Attach to an existing live session. */
+  session?: string
+  /** Spawn a new session for the issue (name auto-derived server-side). */
+  spawn?: StartSpawn
 }
 
 export interface UseBoardResult {
@@ -64,6 +75,12 @@ export interface UseBoardResult {
    *  `boardApi.unsend` for the Undo toast. Rejects with a `BoardError` (status
    *  409) on a lost race / not-claimable so the UI can show the conflict. */
   claimIssue: (args: ClaimArgs) => Promise<ClaimResult>
+  /** Unified Start-agent action (BR1): make the issue agent-owned, attach an
+   *  existing session or spawn a new one, then claim + deliver. Optimistic (card
+   *  slides to `doing`), rolls back on error, surfaces 409 like `claimIssue`.
+   *  Resolves to `{ issue, delivered, steer_id }` — use `steer_id` with
+   *  `boardApi.unsend` for the Undo toast. */
+  startIssue: (args: StartArgs) => Promise<ClaimResult>
   deleteIssue: (id: string) => Promise<void>
 
   // Column (status) management.
@@ -274,6 +291,32 @@ export function useBoard(): UseBoardResult {
     onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
   })
 
+  // ── start agent (optimistic move → doing, rollback shows the 409) ──────────
+  // The unified BR1 action. Optimistically links the card to the chosen session
+  // and slides it to `doing`; a spawn (no session yet) just slides to `doing`
+  // and lets the server-confirmed payload fill in the freshly-created session
+  // name. Same rollback-on-error contract as `claim`.
+  const start = useMutation({
+    mutationFn: ({ id, session, spawn }: StartArgs) =>
+      boardApi.start(id, { session, spawn }),
+    onMutate: async ({ id, session }) => {
+      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
+      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      patchCache(qc, (p) =>
+        p.map((i) =>
+          i.id === id
+            ? { ...i, status: 'doing', session: session ?? i.session }
+            : i,
+        ),
+      )
+      return { prev }
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
+  })
+
   // ── delete (optimistic removal, rollback on error) ─────────────────────────
   const remove = useMutation({
     mutationFn: (id: string) => boardApi.remove(id),
@@ -342,6 +385,7 @@ export function useBoard(): UseBoardResult {
       createIssue: (input) => create.mutateAsync(input),
       patchIssue: (id, p) => patch.mutateAsync({ id, patch: p }),
       claimIssue: (args) => claim.mutateAsync(args),
+      startIssue: (args) => start.mutateAsync(args),
       deleteIssue: (id) => remove.mutateAsync(id).then(() => undefined),
       createStatus: (label) => createStatus.mutateAsync(label),
       renameStatus: (id, label) =>

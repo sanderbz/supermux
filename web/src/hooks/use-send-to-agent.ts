@@ -1,106 +1,231 @@
-// useSendToAgent — the ONE source of truth for "send an issue to its agent".
+// useStartAgent — the ONE source of truth for "start an agent on an issue".
 //
-// The board exposes the same gesture from four places: the card's hover Send
-// button (U1), the detail sheet's primary action + picker (U2), drag-to-`doing`
-// (U3), and the ⌘K "Send issue to session…" verb. Each used to hand-roll the
-// identical sequence:
+// The board exposes the same gesture from several places: the card's primary
+// action, the detail sheet's Agent section + picker, drag-to-`doing`, and the
+// ⌘K "Start agent on <issue>" verb. Each used to hand-roll the identical
+// sequence; that whole flow now lives here, once:
 //
-//   1. run the ATOMIC claim with deliver:true (§3.2.10 / S3),
-//   2. on a delivered send, toast "Sent to <session>" with an Undo action that
+//   1. run the unified Start action (`boardApi.start`) — make the issue
+//      agent-owned, attach an existing session OR spawn a new one, then deliver,
+//   2. on a delivered start, toast "Sent to <session>" with an Undo action that
 //      retracts the still-undelivered steer via `boardApi.unsend(session, id)`,
-//   3. on a claim-only / non-delivered outcome, toast "Claimed for <session>",
-//   4. surface a failure (incl. the 409 lost-race) as a toast.
+//   3. on a non-delivered outcome, toast a plain-language confirmation,
+//   4. surface a failure (incl. the 409 already-working race) as a toast.
 //
-// That whole flow now lives here, once. Call sites pass the small bits that
-// legitimately differ — HOW to run the claim (direct `boardApi.claim` vs the
-// optimistic `board.claimIssue` mutation), the exact copy, and how a 409 should
-// surface (a toast vs an in-place form error) — and get identical behavior.
+// Call sites pass the small bits that legitimately differ — HOW to run the start
+// (direct `boardApi.start` vs the optimistic `board.startIssue` mutation), the
+// exact copy, and how a conflict should surface (a toast vs an in-place form
+// error) — and get identical behavior.
+//
+// Back-compat: `useSendToAgent` is an alias of `useStartAgent`, and the returned
+// `sendToAgent(...)` keeps the legacy options (incl. a custom `claim` runner +
+// `deliver`) so the not-yet-migrated card/sheet/route keep compiling and working
+// until BR2–BR4 move them onto `startAgent`. NOTE: "claim" survives only as an
+// internal symbol — it never appears in any user-facing string.
 
 import { useCallback } from 'react'
 
-import { boardApi, BoardError, type ClaimResult } from '@/lib/api'
+import { boardApi, BoardError, type ClaimResult, type StartSpawn } from '@/lib/api'
 import { useToast, type ToastTone } from '@/components/ui/use-toast'
 
-/** How a single "send to agent" should run + present. Only `id` and `session`
- *  are required; everything else tunes copy / claim mechanics / error routing so
- *  one hook can back all four call sites with no behavior change. */
-export interface SendToAgentOptions {
-  /** The issue to claim. */
+/** How a single "start agent" should run + present. Only `id` is required; pass
+ *  `session` to attach an existing agent OR `spawn` to create a new one. */
+export interface StartAgentOptions {
+  /** The issue to start an agent on. */
   id: string
-  /** The session to claim it for + deliver into. */
-  session: string
-  /** When false, "Claim only" — flip the link without dispatching (no Undo).
-   *  Defaults to true (the user-chosen default). */
-  deliver?: boolean
+  /** Attach to an existing live session. */
+  session?: string
+  /** Spawn a NEW session for the issue (name auto-derived server-side). */
+  spawn?: StartSpawn
 
-  /** Run the actual claim. Defaults to a direct `boardApi.claim` (no optimistic
+  /** Run the actual start. Defaults to a direct `boardApi.start` (no optimistic
    *  cache move). Pass the board's optimistic mutation
-   *  (`(a) => board.claimIssue(a)`) when the caller wants the card to slide to
-   *  `doing` immediately + roll back on a lost race. */
+   *  (`(a) => board.startIssue(a)`) when the caller wants the card to slide to
+   *  `doing` immediately + roll back on a conflict. */
+  start?: (args: {
+    id: string
+    session?: string
+    spawn?: StartSpawn
+  }) => Promise<ClaimResult>
+
+  /** Decide whether an outcome counts as a delivered "send" (the Sent toast) vs
+   *  a no-dispatch assignment. Defaults to "delivered AND we have a steer_id to
+   *  Undo". The Undo action only attaches when `steer_id != null`. */
+  isSent?: (result: ClaimResult) => boolean
+
+  /** Message + tone for a successful delivered send. Defaults to "Sent to
+   *  <session>" / `active`. Receives the result so copy can vary. */
+  sentMessage?: (result: ClaimResult) => string
+  sentTone?: ToastTone
+  /** Auto-dismiss for the sent toast (ms). Omit for the toast system default. */
+  sentDuration?: number
+
+  /** Message for a start that did NOT deliver. Default "Agent started." */
+  assignedMessage?: (result: ClaimResult) => string
+  /** Tone for the non-delivered toast. Default `default`. */
+  assignedTone?: ToastTone
+
+  /** Outcome of the Undo (unsend). `cleared > 0` ⇒ retracted in time; `0` ⇒ the
+   *  agent already picked it up. Default: silent on success, swallow failures. */
+  onUndone?: (cleared: number) => void
+  onUndoError?: (error: unknown) => void
+
+  /** Called after a successful start (delivered OR not), before the toast. The
+   *  detail sheet uses this to close itself. */
+  onSuccess?: (result: ClaimResult) => void
+
+  /** Route a failure. Default: toast the message (409-aware) with `error` tone. */
+  onError?: (error: unknown) => void
+}
+
+/** Legacy options for the back-compat `sendToAgent(...)`. Superset of the start
+ *  options that additionally accepts a `deliver` flag, a custom `claim` runner,
+ *  and the old copy keys — so the not-yet-migrated call sites keep working.
+ *  `session` is required here (the legacy contract always passed one). */
+export interface SendToAgentOptions
+  extends Omit<StartAgentOptions, 'id' | 'session' | 'spawn' | 'start'> {
+  id: string
+  session: string
+  /** When false, flip the link without dispatching (no Undo). Defaults true. */
+  deliver?: boolean
+  /** Run the actual claim (legacy: direct `boardApi.claim` or the optimistic
+   *  `board.claimIssue`). Defaults to `boardApi.start` for the attach case.
+   *  Internal symbol only — never surfaces "claim" to the user. */
   claim?: (args: {
     id: string
     session: string
     deliver: boolean
   }) => Promise<ClaimResult>
-
-  /** Decide whether an outcome counts as a delivered "send" (the Sent toast) vs
-   *  a claim-only (the Claimed toast). Defaults to "delivered AND we have a
-   *  steer_id to Undo" — the strict form used by drag / ⌘K. The card + sheet
-   *  pass `(r) => r.delivered` (Sent copy even if there's no steer to retract).
-   *  Independently, the Undo action only attaches when `steer_id != null`. */
-  isSent?: (result: ClaimResult) => boolean
-
-  /** Message + tone for a successful delivered send. Defaults to "Sent to
-   *  <session>" / `active`. Receives the result so copy can vary (e.g. an
-   *  asleep session "…it'll pick this up on wake."). */
-  sentMessage?: (result: ClaimResult) => string
-  sentTone?: ToastTone
-  /** Auto-dismiss for the sent toast (ms). Omit to fall back to the toast
-   *  system's own default. Card + sheet pass 6000 (long enough to Undo). */
-  sentDuration?: number
-
-  /** Message for a claim that did NOT deliver (claim-only, or deliver
-   *  suppressed). Default "Claimed for <session>". */
+  /** @deprecated legacy alias for {@link StartAgentOptions.assignedMessage}.
+   *  Kept so the not-yet-migrated card/sheet keep compiling; copy never says
+   *  "claim" in any default. */
   claimedMessage?: (result: ClaimResult) => string
-  /** Tone for the claim-only toast. Default `default`. */
+  /** @deprecated legacy alias for {@link StartAgentOptions.assignedTone}. */
   claimedTone?: ToastTone
-
-  /** Outcome of the Undo (unsend). `cleared > 0` ⇒ retracted in time; `0` ⇒ the
-   *  agent already picked it up. Default: silent on success, swallow failures.
-   *  Provide to surface a confirmation / "already picked up" toast. */
-  onUndone?: (cleared: number) => void
-  onUndoError?: (error: unknown) => void
-
-  /** Called after a successful claim (delivered OR claim-only), before the toast.
-   *  The detail sheet uses this to close itself. */
-  onSuccess?: (result: ClaimResult) => void
-
-  /** Route a failure. Default: toast the message (409-aware) with `error` tone.
-   *  Override to surface a 409 in-place (the sheet) or via a different toaster. */
-  onError?: (error: unknown) => void
 }
 
-export interface SendToAgentApi {
-  /** Run one send-to-agent per {@link SendToAgentOptions}. Never throws — all
-   *  outcomes are routed through the toast / callbacks. */
+export interface StartAgentApi {
+  /** Run one start-agent per {@link StartAgentOptions}. Never throws — every
+   *  outcome is routed through the toast / callbacks. */
+  startAgent: (opts: StartAgentOptions) => Promise<void>
+  /** Back-compat alias of {@link startAgent} for the legacy call sites that pass
+   *  `{ id, session, deliver?, claim? }`. Routes through the same flow. */
   sendToAgent: (opts: SendToAgentOptions) => Promise<void>
 }
 
-/** Friendly message for a claim failure — 409 (lost race / not claimable) gets
- *  a specific line; anything else falls back to its own message. */
+/** Friendly message for a start failure — 409 (already being worked) gets a
+ *  specific line; anything else falls back to its own message. The exported name
+ *  keeps `claim` for back-compat with the not-yet-migrated call sites, but the
+ *  RETURNED copy never says "claim". */
 export function claimErrorMessage(error: unknown): string {
   if (error instanceof BoardError && error.status === 409) {
-    return error.message || 'Claim lost — another session took it.'
+    return error.message || 'Another session is already on this.'
   }
-  return error instanceof Error ? error.message : 'Send failed.'
+  return error instanceof Error ? error.message : 'Couldn’t start the agent.'
+}
+
+/** Shared runner: invoke `run`, then route the outcome through the toast +
+ *  callbacks. `targetLabel` is the session name (for default copy) — for a spawn
+ *  the server-confirmed `result.issue.session` is preferred once it resolves. */
+function makeRunner(toast: ReturnType<typeof useToast>['toast']) {
+  return async (
+    run: () => Promise<ClaimResult>,
+    opts: {
+      isSent: (r: ClaimResult) => boolean
+      sentMessage: (r: ClaimResult) => string
+      sentTone: ToastTone
+      sentDuration?: number
+      assignedMessage: (r: ClaimResult) => string
+      assignedTone?: ToastTone
+      delivered: boolean
+      onUndone?: (cleared: number) => void
+      onUndoError?: (error: unknown) => void
+      onSuccess?: (r: ClaimResult) => void
+      onError?: (error: unknown) => void
+    },
+  ) => {
+    try {
+      const result = await run()
+      opts.onSuccess?.(result)
+
+      // The session the work actually went to — prefer the server-confirmed link
+      // (handles the spawn case, where the caller didn't know the name up front).
+      const target = result.issue.session
+      if (opts.delivered && opts.isSent(result)) {
+        const steerId = result.steer_id
+        toast({
+          message: opts.sentMessage(result),
+          tone: opts.sentTone,
+          duration: opts.sentDuration,
+          action:
+            steerId != null && target
+              ? {
+                  label: 'Undo',
+                  onClick: () => {
+                    void boardApi
+                      .unsend(target, steerId)
+                      .then((r) => opts.onUndone?.(r.cleared))
+                      .catch((e) => opts.onUndoError?.(e))
+                  },
+                }
+              : undefined,
+        })
+      } else {
+        toast({ message: opts.assignedMessage(result), tone: opts.assignedTone })
+      }
+    } catch (error) {
+      if (opts.onError) {
+        opts.onError(error)
+      } else {
+        toast({ message: claimErrorMessage(error), tone: 'error' })
+      }
+    }
+  }
 }
 
 /**
- * The shared send-to-agent flow (claim → "Sent to" toast w/ Undo → unsend).
- * One implementation, four call sites.
+ * The shared start-agent flow (start → "Sent to" toast w/ Undo → unsend). One
+ * implementation, every call site.
  */
-export function useSendToAgent(): SendToAgentApi {
+export function useStartAgent(): StartAgentApi {
   const { toast } = useToast()
+
+  const startAgent = useCallback(
+    async (opts: StartAgentOptions) => {
+      const {
+        id,
+        session,
+        spawn,
+        start = (a) => boardApi.start(a.id, { session: a.session, spawn: a.spawn }),
+        isSent = (r) => r.delivered && r.steer_id != null,
+        sentMessage = (r) => `Sent to ${r.issue.session ?? session ?? 'the agent'}`,
+        sentTone = 'active',
+        sentDuration,
+        assignedMessage = () => 'Agent started.',
+        assignedTone,
+        onUndone,
+        onUndoError,
+        onSuccess,
+        onError,
+      } = opts
+
+      const run = makeRunner(toast)
+      await run(() => start({ id, session, spawn }), {
+        isSent,
+        sentMessage,
+        sentTone,
+        sentDuration,
+        assignedMessage,
+        assignedTone,
+        delivered: true,
+        onUndone,
+        onUndoError,
+        onSuccess,
+        onError,
+      })
+    },
+    [toast],
+  )
 
   const sendToAgent = useCallback(
     async (opts: SendToAgentOptions) => {
@@ -108,57 +233,48 @@ export function useSendToAgent(): SendToAgentApi {
         id,
         session,
         deliver = true,
-        claim = ({ id, session, deliver }) => boardApi.claim(id, session, deliver),
+        // Legacy runner: a custom `claim` (when given) or the unified start.
+        claim,
         isSent = (r) => r.delivered && r.steer_id != null,
         sentMessage = () => `Sent to ${session}`,
         sentTone = 'active',
         sentDuration,
-        claimedMessage = () => `Claimed for ${session}`,
-        claimedTone,
+        // Honour the legacy `claimedMessage`/`claimedTone` keys (deprecated) and
+        // the new `assignedMessage`/`assignedTone`, in that fallback order.
+        assignedMessage = opts.claimedMessage ?? (() => `Agent on ${session}.`),
+        assignedTone = opts.claimedTone,
         onUndone,
         onUndoError,
         onSuccess,
         onError,
       } = opts
 
-      try {
-        const result = await claim({ id, session, deliver })
-        onSuccess?.(result)
+      const runStart = (): Promise<ClaimResult> =>
+        claim
+          ? claim({ id, session, deliver })
+          : boardApi.start(id, { session })
 
-        if (deliver && isSent(result)) {
-          const steerId = result.steer_id
-          toast({
-            message: sentMessage(result),
-            tone: sentTone,
-            duration: sentDuration,
-            // The Undo retracts the still-undelivered steer; only meaningful when
-            // there's actually a queued steer id to clear.
-            action:
-              steerId != null
-                ? {
-                    label: 'Undo',
-                    onClick: () => {
-                      void boardApi
-                        .unsend(session, steerId)
-                        .then((r) => onUndone?.(r.cleared))
-                        .catch((e) => onUndoError?.(e))
-                    },
-                  }
-                : undefined,
-          })
-        } else {
-          toast({ message: claimedMessage(result), tone: claimedTone })
-        }
-      } catch (error) {
-        if (onError) {
-          onError(error)
-        } else {
-          toast({ message: claimErrorMessage(error), tone: 'error' })
-        }
-      }
+      const run = makeRunner(toast)
+      await run(runStart, {
+        isSent,
+        sentMessage,
+        sentTone,
+        sentDuration,
+        assignedMessage,
+        assignedTone,
+        delivered: deliver,
+        onUndone,
+        onUndoError,
+        onSuccess,
+        onError,
+      })
     },
     [toast],
   )
 
-  return { sendToAgent }
+  return { startAgent, sendToAgent }
 }
+
+/** Back-compat alias — the canonical hook is now {@link useStartAgent}. The
+ *  not-yet-migrated card/sheet/route import `useSendToAgent`; keep it working. */
+export const useSendToAgent = useStartAgent
