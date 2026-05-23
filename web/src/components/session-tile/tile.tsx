@@ -194,6 +194,14 @@ export function SessionTile({
   const hoverPreview = useUI((s) => s.hoverPreview)
   const [hovered, setHovered] = React.useState(false)
   const [peekOpen, setPeekOpen] = React.useState(false)
+  // Pins the stopped-peek surface EXPANDED while the Resume picker is open,
+  // independent of hover. The picker (a ResponsiveSheet) lives inside the
+  // hover-gated stopped-peek surface, so moving the mouse to the picker drops
+  // `hovered` → the surface (and the open picker) would unmount. Conceptually
+  // the same "keep open regardless of hover" idea as `peekOpen` does for the
+  // mobile long-press quick-peek; kept as its own flag because the stopped-peek
+  // gate is fine-pointer-only and must collapse the instant the picker closes.
+  const [resumePickerOpen, setResumePickerOpen] = React.useState(false)
   const prevStatus = React.useRef(session.status)
 
   // Tile content width — the scale target for the zoomed live terminal. Tracked
@@ -476,7 +484,13 @@ export function SessionTile({
   // hook below stays in the same call order on every render (rules-of-hooks).
   // A missing-tmux tile renders <TileError>, no preview area, no peek → the
   // hook is naturally disabled and a no-op.
-  const expanded = hovered && fine && !reduce && !session.missing
+  // `resumePickerOpen` pins the surface expanded while the Resume picker sheet
+  // is open — without it, leaving the card to interact with the picker drops
+  // `hovered` and unmounts the picker (the bug). It only ever flips true on a
+  // stopped tile (the Resume button lives in the stopped-peek), so it can't
+  // affect the live-peek path. Collapses normally the moment the picker closes.
+  const expanded =
+    (hovered || resumePickerOpen) && fine && !reduce && !session.missing
   // The live terminal is only viable for a session with a live tmux backing —
   // a stopped agent has no pty to stream, so it falls back to the static tail.
   const liveCapable =
@@ -544,14 +558,19 @@ export function SessionTile({
     [],
   )
   React.useEffect(() => {
-    if (!isStoppedPeek) return
+    // While the Resume picker sheet is open it owns the keyboard (its own
+    // Enter/Escape semantics) — don't let the tile's capture-phase handler
+    // hijack Enter (would start a fresh session) or Escape (would collapse the
+    // tile out from under the open sheet). The sheet's onOpenChange(false) flips
+    // `resumePickerOpen` off, re-arming this handler.
+    if (!isStoppedPeek || resumePickerOpen) return
     document.addEventListener('keydown', onStoppedKeyDown, { capture: true })
     return () => {
       document.removeEventListener('keydown', onStoppedKeyDown, {
         capture: true,
       })
     }
-  }, [isStoppedPeek, onStoppedKeyDown])
+  }, [isStoppedPeek, resumePickerOpen, onStoppedKeyDown])
 
   // Peek is "active" for typing while the live-zoom preview is showing for THIS
   // tile. usePeekType only installs its document listener while enabled — so
@@ -874,6 +893,7 @@ export function SessionTile({
                   name={session.name}
                   compact
                   onAfterArchive={() => setHovered(false)}
+                  onResumeOpenChange={setResumePickerOpen}
                   triggerRef={stoppedActionsRef}
                 />
               </motion.div>
