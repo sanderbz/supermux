@@ -318,6 +318,7 @@ V_HOST=""
 V_USER=""
 V_USER_HOME=""
 V_DATA_DIR=""
+V_PROJECT_DIRS=""
 V_READ_WRITE_PATHS=""
 V_REMOTE_DIR=""
 V_DEPLOY_REF=""
@@ -361,12 +362,13 @@ derive_defaults_from_existing() {
     v=$(read_env_value SUPERMUX_READ_WRITE_PATHS "$ENV_FILE")
     if [ -n "$v" ]; then V_READ_WRITE_PATHS="$v"; V_READ_WRITE_PATHS_CUSTOMIZED=1; fi
     v=$(read_env_value SUPERMUX_DATA_DIR "$ENV_FILE");       [ -n "$v" ] && V_DATA_DIR="$v"
+    v=$(read_env_value SUPERMUX_PROJECT_DIRS "$ENV_FILE");   [ -n "$v" ] && V_PROJECT_DIRS="$v"
     v=$(read_env_value SUPERMUX_REMOTE_DIR "$ENV_FILE");     [ -n "$v" ] && V_REMOTE_DIR="$v"
   fi
 }
 
 derive_user_paths() {
-  # Given V_USER, derive default home/data/readwrite/remote-dir paths.
+  # Given V_USER, derive default home/data/projects/readwrite/remote-dir paths.
   local user="$V_USER"
   local home
   if [ "$user" = "root" ]; then
@@ -376,6 +378,9 @@ derive_user_paths() {
   fi
   if [ -z "$V_USER_HOME" ]; then V_USER_HOME="$home"; fi
   if [ -z "$V_DATA_DIR" ]; then V_DATA_DIR="$home/.supermux"; fi
+  # Smart default for the project dirs (where agents work): under the user's
+  # home so the user already owns it — zero chown fuss, noob-proof.
+  if [ -z "$V_PROJECT_DIRS" ]; then V_PROJECT_DIRS="$home/projects"; fi
   if [ -z "$V_READ_WRITE_PATHS" ]; then V_READ_WRITE_PATHS="$V_DATA_DIR"; fi
   if [ -z "$V_REMOTE_DIR" ]; then V_REMOTE_DIR="/opt/supermux"; fi
 }
@@ -384,7 +389,7 @@ derive_user_paths() {
 # Steps
 # ---------------------------------------------------------------------------
 
-TOTAL_STEPS=7
+TOTAL_STEPS=8
 
 step_host() {
   step 1 "$TOTAL_STEPS" "deploy target (SSH host)"
@@ -449,9 +454,12 @@ step_host() {
 
 step_user() {
   step 2 "$TOTAL_STEPS" "service user on the host"
-  note "this is the unprivileged Unix account supermux runs as on the host."
+  note "this is the UNPRIVILEGED Unix account the service RUNS AS on the host."
+  note "it is NOT the account you SSH in as to deploy — deploying over a root"
+  note "SSH session is fine; root just provisions, the service drops to this user."
   note "if 'supermux' doesn't exist yet, deploy.sh creates it automatically."
-  note "common alternatives: 'deploy', your login user, or 'root' (see note)."
+  note "non-root is strongly recommended (running as root breaks Claude Code's"
+  note "--dangerously-skip-permissions and throws away the systemd sandbox)."
   while :; do
     ask "service user" "$D_USER"
     if [ -z "$ANS" ]; then
@@ -466,18 +474,54 @@ step_user() {
     break
   done
   if [ "$V_USER" = "root" ]; then
-    V_ALLOW_ROOT="1"
-    warn "you chose to run as root."
-    note "deploy.sh will render the systemd unit with ProtectHome=false and"
-    note "ReadWritePaths=/root so the data dir is reachable. Other hardening"
-    note "directives still apply, but the user-isolation trade-off is on you."
+    warn "LAST RESORT: you chose to run the SERVICE as root."
+    note "this is a security + functionality trade-off, not just a hardening knob:"
+    note "  - deploy.sh renders ProtectHome=false + ReadWritePaths=/root (the"
+    note "    systemd isolation sandbox is largely given up);"
+    note "  - Claude Code REFUSES --dangerously-skip-permissions as uid 0, so"
+    note "    your agents may not run at all."
+    note "strongly recommended instead: use the default 'supermux' (re-run and"
+    note "accept the default). Root still runs the deploy; only the service drops"
+    note "to the unprivileged user."
+    ask_yn "are you sure you want to run the service as ROOT?" "N"
+    if [ "$ANS" != "y" ]; then
+      note "good call — switching the service user back to the default '$D_USER'."
+      V_USER="$D_USER"
+      V_ALLOW_ROOT="0"
+    else
+      V_ALLOW_ROOT="1"
+      warn "proceeding with the service running as root (SUPERMUX_ALLOW_ROOT=1)."
+    fi
   else
     V_ALLOW_ROOT="0"
   fi
 }
 
+step_project_dirs() {
+  step 3 "$TOTAL_STEPS" "where will your agents work?"
+  note "the service user needs read+write access to the directories where your"
+  note "agents do their work (clone repos, edit files, run builds)."
+  note "the smart default is under the service user's home, so it's already"
+  note "owned by that user — zero permission fuss. Point elsewhere (e.g."
+  note "/opt/projects:/srv/work, colon-separated) and deploy.sh wires the"
+  note "ownership + systemd ReadWritePaths for you."
+  # Pre-derive so the default is a sensible <home>/projects.
+  derive_user_paths
+  ask "project directories (colon-separated)" "$V_PROJECT_DIRS"
+  V_PROJECT_DIRS="$ANS"
+  case "$V_PROJECT_DIRS" in
+    "$V_USER_HOME"/*|"$V_USER_HOME")
+      ok "under the service user's home — owned by '$V_USER', no chown needed." ;;
+    /*)
+      note "outside the user's home — deploy.sh will chown these to '$V_USER' so"
+      note "the agent can write, and add them to ReadWritePaths." ;;
+    *)
+      warn "'$V_PROJECT_DIRS' is not an absolute path — deploy.sh expects /-rooted dirs." ;;
+  esac
+}
+
 step_ports() {
-  step 3 "$TOTAL_STEPS" "ports"
+  step 4 "$TOTAL_STEPS" "ports"
   note "internal = where the binary binds on the host's loopback."
   note "public  = where you reach it from outside (Tailscale or your proxy)."
   while :; do
@@ -501,7 +545,7 @@ step_ports() {
 }
 
 step_tailscale() {
-  step 4 "$TOTAL_STEPS" "expose via Tailscale?"
+  step 5 "$TOTAL_STEPS" "expose via Tailscale?"
   local default_ts="N"
   if [ -n "$V_HOST" ] && [ "$NONINTERACTIVE" = "0" ]; then
     printf "  %schecking for tailscale on %s…%s " "$c_dim" "$V_HOST" "$c_reset"
@@ -533,7 +577,7 @@ step_tailscale() {
 }
 
 step_advanced() {
-  step 5 "$TOTAL_STEPS" "advanced (skippable)"
+  step 6 "$TOTAL_STEPS" "advanced (skippable)"
   note "customize data dir / read-write paths / remote build dir / deploy ref?"
   note "say N to use sensible defaults — you can always edit .env later."
   ask_yn "customize advanced settings?" "N"
@@ -574,7 +618,7 @@ step_advanced() {
 }
 
 step_toolchain() {
-  step 6 "$TOTAL_STEPS" "toolchain auto-install"
+  step 7 "$TOTAL_STEPS" "toolchain auto-install"
   note "if bun or cargo is missing on the host, install them automatically"
   note "(pinned versions). Trade-off: the install fetches an upstream installer"
   note "over HTTPS — convenient, but you're trusting that supply chain. Say N"
@@ -597,17 +641,19 @@ step_deploy_ref_default() {
 step_summary_and_confirm() {
   derive_user_paths
   step_deploy_ref_default
-  step 7 "$TOTAL_STEPS" "summary"
+  step 8 "$TOTAL_STEPS" "summary"
   printf "  %sdeploy target          %s%s\n" "$c_dim" "$c_reset" "$V_HOST"
-  printf "  %sservice user           %s%s\n" "$c_dim" "$c_reset" "$V_USER"
   if [ "$V_ALLOW_ROOT" = "1" ]; then
-    printf "  %sallow root             %s1 (ProtectHome=false)\n" "$c_dim" "$c_reset"
+    printf "  %sservice RUNS AS        %s%sroot — LAST RESORT (hardening relaxed, Claude may refuse)%s\n" "$c_dim" "$c_reset" "$c_red" "$c_reset"
+  else
+    printf "  %sservice RUNS AS        %s%s (unprivileged — recommended)\n" "$c_dim" "$c_reset" "$V_USER"
   fi
   if [ "$V_USER_HOME_CUSTOMIZED" = "1" ]; then
     printf "  %sservice user HOME      %s%s\n" "$c_dim" "$c_reset" "$V_USER_HOME"
   else
     printf "  %sservice user HOME      %s(deploy.sh resolves via getent)\n" "$c_dim" "$c_reset"
   fi
+  printf "  %sproject dirs (agents)  %s%s\n" "$c_dim" "$c_reset" "$V_PROJECT_DIRS"
   printf "  %sdata directory         %s%s\n" "$c_dim" "$c_reset" "$V_DATA_DIR"
   if [ "$V_READ_WRITE_PATHS_CUSTOMIZED" = "1" ]; then
     printf "  %sextra writable roots   %s%s\n" "$c_dim" "$c_reset" "$V_READ_WRITE_PATHS"
@@ -653,6 +699,10 @@ write_env() {
       printf "SUPERMUX_USER_HOME=%s\n" "$V_USER_HOME"
     fi
     printf "SUPERMUX_DATA_DIR=%s\n" "$V_DATA_DIR"
+    # Where agents do their work. deploy.sh provisions these (creates them,
+    # chowns external ones to the service user) and folds them into
+    # ReadWritePaths so the systemd sandbox permits the writes.
+    printf "SUPERMUX_PROJECT_DIRS=%s\n" "$V_PROJECT_DIRS"
     if [ "$V_READ_WRITE_PATHS_CUSTOMIZED" = "1" ]; then
       printf "SUPERMUX_READ_WRITE_PATHS=%s\n" "$V_READ_WRITE_PATHS"
     fi
@@ -711,6 +761,7 @@ main() {
 
   step_host
   step_user
+  step_project_dirs
   step_ports
   step_tailscale
   step_advanced

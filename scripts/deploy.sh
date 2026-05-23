@@ -24,12 +24,24 @@
 # `.env.example` to `.env` and fill in your values — this script sources
 # `.env` automatically if present.
 #
+# NON-ROOT BY DEFAULT — EVEN FROM A ROOT SSH SESSION:
+# The account you DEPLOY WITH (the SSH login, often root on a fresh VPS) is NOT
+# the account the service RUNS AS. Deploying over a root SSH session is fine and
+# expected — root is needed to create the service user and install the systemd
+# unit. But the SERVICE itself runs as the unprivileged `supermux` user, always,
+# unless the operator EXPLICITLY forces SUPERMUX_ALLOW_ROOT=1 (a loud, documented
+# last resort — see the warning block below). Running the service as root would
+# (a) throw away the systemd hardening sandbox and (b) trip Claude Code's refusal
+# to run `--dangerously-skip-permissions` as uid 0. Non-root is the strong path.
+#
 # Env:  SUPERMUX_DEPLOY_HOST         ssh target              (REQUIRED, no default)
 #       SUPERMUX_SERVICE_USER        service account on host (default: supermux)
-#       SUPERMUX_ALLOW_ROOT          opt in to User=root + relaxed hardening (default: 0)
+#       SUPERMUX_ALLOW_ROOT          LAST RESORT: User=root + relaxed hardening (default: 0)
 #       SUPERMUX_USER_HOME           service user's login home (default: derived from user)
 #       SUPERMUX_DATA_DIR            data dir on host        (default: derived from user)
+#       SUPERMUX_PROJECT_DIRS        where agents work       (default: <home>/projects)
 #       SUPERMUX_READ_WRITE_PATHS    extra writable dirs     (default: smart, see below)
+#       SUPERMUX_COPY_CLAUDE_CREDS   copy deployer's Claude login to service user (default: ask)
 #       SUPERMUX_INTERNAL_PORT       loopback bind port      (default: 8824)
 #       SUPERMUX_PUBLIC_PORT         tailscale https port    (default: 443)
 #       SUPERMUX_USE_TAILSCALE       expose via tailscale    (default: auto-detected)
@@ -43,6 +55,141 @@ cd "$ROOT"
 
 # ── source local config from .env if present (gitignored; see .env.example) ─
 [ -f .env ] && set -a && . ./.env && set +a
+
+# ── helpers (defined early so the test hook below can short-circuit before any
+#    config requirement runs, and so they're available to every section) ──────
+# Run a quiet remote check. Returns 0/1 — never prints output. Uses $HOST,
+# which is resolved below — only evaluated at call time, so defining this here
+# is safe.
+remote_check() {
+  ssh "$HOST" "$@" >/dev/null 2>&1
+}
+
+# ── pure helper: split a colon-separated path list into newline-separated ────
+# Pure (no I/O, no ssh) so it is trivially unit-testable. Empty / whitespace-
+# only entries are dropped so a stray leading/trailing/double ':' is harmless.
+split_path_list() {
+  local raw="$1"
+  # The `|| [ -n "$p" ]` guard is REQUIRED: tr leaves no trailing newline, so a
+  # plain `while read` silently drops the LAST element (e.g. /a:/b:/c → /a,/b).
+  # That would lose the final project dir on every multi-dir deploy.
+  printf '%s' "$raw" | tr ':' '\n' | while IFS= read -r p || [ -n "$p" ]; do
+    # trim surrounding whitespace
+    p="${p#"${p%%[![:space:]]*}"}"
+    p="${p%"${p##*[![:space:]]}"}"
+    [ -n "$p" ] && printf '%s\n' "$p"
+  done
+}
+
+# ── pure helper: is PATH under HOME (so the user already owns it)? ───────────
+# Returns 0 if `path` is HOME itself or a descendant of it. Used to decide
+# whether a project dir needs a chown/group fixup (outside home) or "just
+# works" (inside home, already owned by the service user). Pure → testable.
+path_under_home() {
+  local path="$1" home="$2"
+  # normalize: strip any trailing slash (except root "/")
+  [ "$path" != "/" ] && path="${path%/}"
+  [ "$home" != "/" ] && home="${home%/}"
+  case "$path/" in
+    "$home"/) return 0 ;;     # the home dir itself
+    "$home"/*) return 0 ;;    # a descendant of home
+    *) return 1 ;;
+  esac
+}
+
+# ── remote helper: ensure a single project dir is usable by the service user ─
+# - If it is under the service user's HOME → the user already owns it; just
+#   create it (mkdir -p as the user) — zero privilege fuss.
+# - If it is OUTSIDE HOME (e.g. /opt/projects, /srv/...) → create it as root,
+#   then chown -R it to the service user so the agent can read+write freely.
+#   (chown is the cleaner of {chown, shared-group}: a single owner, no acl/
+#   setgid subtlety, and it survives `git checkout` / file recreation.)
+# Echoes one log line describing what it did. Returns non-zero on failure.
+ensure_project_dir_remote() {
+  local dir="$1" user="$2" home="$3" host="$4"
+  if path_under_home "$dir" "$home"; then
+    if ! ssh "$host" "sudo -u '$user' mkdir -p '$dir'"; then
+      echo "[deploy] error: failed to create project dir '$dir' as user '$user' on $host." >&2
+      return 1
+    fi
+    echo "[deploy]   project dir '$dir' — under \$HOME, owned by '$user' (no chown needed)"
+  else
+    if ! ssh "$host" "sudo mkdir -p '$dir' && sudo chown -R '$user:$user' '$dir'"; then
+      echo "[deploy] error: failed to create + chown external project dir '$dir' to '$user' on $host." >&2
+      echo "[deploy]   Fix: ensure your SSH user has passwordless sudo, or pre-create + chown the dir." >&2
+      return 1
+    fi
+    echo "[deploy]   project dir '$dir' — OUTSIDE \$HOME, chowned -R to '$user' (writable by the agent)"
+  fi
+  return 0
+}
+
+# ── remote helper: does the service user have usable Claude credentials? ─────
+# The single biggest "it doesn't work" cause is a service user that never ran
+# `claude /login`. We probe for ~user/.claude/.credentials.json (the OAuth /
+# subscription credential file — NOT an API key; supermux uses the subscription,
+# never API billing). Returns 0 if present, 1 if missing.
+service_user_has_claude_creds() {
+  local home="$1" host="$2"
+  remote_check "sudo test -f '$home/.claude/.credentials.json'"
+}
+
+# ── remote helper: copy the DEPLOYER's Claude login to the service user ──────
+# Fast path (opt-in only): if the account we're SSHing in as (often root) has a
+# valid ~/.claude/.credentials.json, copy the whole .claude dir + .claude.json
+# into the service user's home and chown them. This reuses the deployer's
+# existing subscription login — no API key, no second /login. Returns non-zero
+# on failure. Caller decides whether to invoke this (consent required).
+copy_deployer_claude_creds() {
+  local deployer_home="$1" target_home="$2" user="$3" host="$4"
+  # Copy .claude (dir) and .claude.json (file) if they exist, then chown.
+  ssh "$host" "sudo bash -s" <<COPY_CREDS
+set -euo pipefail
+src_home='$deployer_home'
+dst_home='$target_home'
+user='$user'
+copied=0
+if [ -d "\$src_home/.claude" ]; then
+  rm -rf "\$dst_home/.claude"
+  cp -a "\$src_home/.claude" "\$dst_home/.claude"
+  chown -R "\$user:\$user" "\$dst_home/.claude"
+  copied=1
+fi
+if [ -f "\$src_home/.claude.json" ]; then
+  cp -a "\$src_home/.claude.json" "\$dst_home/.claude.json"
+  chown "\$user:\$user" "\$dst_home/.claude.json"
+  copied=1
+fi
+if [ "\$copied" = "1" ]; then
+  echo "[host] copied Claude login from \$src_home to \$dst_home (chowned to \$user)"
+else
+  echo "[host] error: deployer home \$src_home has no .claude to copy" >&2
+  exit 1
+fi
+COPY_CREDS
+}
+
+# ── remote helper: resolve the DEPLOYER's home + whether it has Claude creds ─
+# Used for the opt-in copy. Echoes the deployer's home dir on stdout (empty if
+# it can't be resolved). Returns 0 if that home has a valid .credentials.json.
+deployer_claude_creds_home() {
+  local host="$1"
+  local dh
+  dh="$(ssh "$host" 'echo "$HOME"' 2>/dev/null || true)"
+  [ -z "$dh" ] && return 1
+  printf '%s' "$dh"
+  remote_check "sudo test -f '$dh/.claude/.credentials.json'"
+}
+
+# ── TEST HOOK ────────────────────────────────────────────────────────────────
+# When sourced with SUPERMUX_DEPLOY_LIB_ONLY=1 (used by the bash unit tests in
+# tests/), stop here: all the pure + remote helpers above are defined, but none
+# of the deploy SIDE EFFECTS below (nor the config-requirement checks) run. This
+# lets us unit-test the user-provisioning / project-dir-perms / claude-auth
+# logic locally without an SSH target. Nothing else in the script consults this.
+if [ "${SUPERMUX_DEPLOY_LIB_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 HOST="${SUPERMUX_DEPLOY_HOST:-}"
 if [ -z "$HOST" ]; then
@@ -58,26 +205,58 @@ if [ -z "${SUPERMUX_SERVICE_USER:-}" ]; then
   SERVICE_USER_IS_DEFAULT=1
 fi
 ALLOW_ROOT="${SUPERMUX_ALLOW_ROOT:-0}"
+# Claude-credential copy: "ask" (default — prompt y/n interactively), "1" (copy
+# without prompting, for non-interactive deploys that want the fast path), or
+# "0" (never copy — just print the manual /login instructions).
+COPY_CLAUDE_CREDS="${SUPERMUX_COPY_CLAUDE_CREDS:-ask}"
 PUBLIC_PORT="${SUPERMUX_PUBLIC_PORT:-443}"
 INTERNAL_PORT="${SUPERMUX_INTERNAL_PORT:-8824}"
 INSTALL_TOOLCHAINS="${SUPERMUX_INSTALL_TOOLCHAINS:-0}"
 REMOTE_DIR="${SUPERMUX_REMOTE_DIR:-/opt/supermux}"
 DEPLOY_REF="${SUPERMUX_DEPLOY_REF:-HEAD}"
 
-# ── refuse User=root unless explicitly opted in ─────────────────────────────
-# The systemd unit's hardening directives are written for an unprivileged
-# user — `ProtectHome=true` masks /root, so a root-owned data dir under
-# /root/.supermux is unreachable and the unit refuses to start (this is the
-# bug that broke clawd-02 and required a hand-edit of the installed unit).
-# Demand an explicit opt-in: SUPERMUX_ALLOW_ROOT=1 trades the user-level
-# isolation away in exchange for ProtectHome=false + ReadWritePaths=/root.
+# ── non-root by default: refuse User=root unless explicitly forced ──────────
+# Deploying OVER a root SSH session is fine — root provisions (creates the
+# service user, installs the unit). But the service must RUN AS the
+# unprivileged user. The systemd unit's hardening directives are written for an
+# unprivileged user — `ProtectHome=true` masks /root, so a root-owned data dir
+# under /root/.supermux is unreachable and the unit refuses to start (this is
+# the bug that broke clawd-02 and required a hand-edit of the installed unit).
+# Worse, running the agent stack as root trips Claude Code's hard refusal to use
+# `--dangerously-skip-permissions` as uid 0 — so an "all root" deploy is broken
+# on two fronts. Demand an explicit, loud opt-in to run as root.
 if [ "$SERVICE_USER" = "root" ] && [ "$ALLOW_ROOT" != "1" ]; then
-  echo "[deploy] error: SUPERMUX_SERVICE_USER=root is incoherent with the hardening directives" >&2
-  echo "[deploy]        (ProtectHome=true blocks /root; the unit won't start)." >&2
-  echo "[deploy]   Fix: pick an unprivileged user (recommended — just unset SUPERMUX_SERVICE_USER" >&2
-  echo "[deploy]        to use the default 'supermux', which deploy.sh will auto-create)," >&2
-  echo "[deploy]        OR set SUPERMUX_ALLOW_ROOT=1 to explicitly accept the security trade-off." >&2
+  echo "[deploy] error: SUPERMUX_SERVICE_USER=root is refused (non-root is the default)." >&2
+  echo "[deploy]        Running the service as root throws away the systemd hardening" >&2
+  echo "[deploy]        sandbox AND breaks Claude Code (it refuses --dangerously-skip-" >&2
+  echo "[deploy]        permissions as uid 0). ProtectHome=true also masks /root so the" >&2
+  echo "[deploy]        unit can't even chdir to its data dir." >&2
+  echo "[deploy]   Fix (recommended): just unset SUPERMUX_SERVICE_USER to use the default" >&2
+  echo "[deploy]        'supermux' — deploy.sh auto-creates it. Root still runs the deploy;" >&2
+  echo "[deploy]        only the service drops to the unprivileged user." >&2
+  echo "[deploy]   Fix (last resort): set SUPERMUX_ALLOW_ROOT=1 to explicitly accept the" >&2
+  echo "[deploy]        security + Claude trade-offs (you will see a loud warning)." >&2
   exit 1
+fi
+
+# If the operator DID force ALLOW_ROOT=1 (with or without User=root), make the
+# downside impossible to miss — this is a last-resort escape hatch, not a knob.
+if [ "$ALLOW_ROOT" = "1" ] && [ "$SERVICE_USER" = "root" ]; then
+  echo "[deploy] ╔══════════════════════════════════════════════════════════════════╗" >&2
+  echo "[deploy] ║  WARNING: SUPERMUX_ALLOW_ROOT=1 — running the SERVICE as root.    ║" >&2
+  echo "[deploy] ║                                                                  ║" >&2
+  echo "[deploy] ║  This is a LAST RESORT. You are giving up:                        ║" >&2
+  echo "[deploy] ║   • the systemd hardening sandbox (ProtectHome relaxed to false,  ║" >&2
+  echo "[deploy] ║     ReadWritePaths broadened to /root) — an auth-token leak or    ║" >&2
+  echo "[deploy] ║     path-jail escape becomes root-equivalent on the host;         ║" >&2
+  echo "[deploy] ║   • a working Claude Code: it REFUSES --dangerously-skip-         ║" >&2
+  echo "[deploy] ║     permissions as uid 0, so agents may not run at all.           ║" >&2
+  echo "[deploy] ║                                                                  ║" >&2
+  echo "[deploy] ║  Recommended instead: unset SUPERMUX_SERVICE_USER (default        ║" >&2
+  echo "[deploy] ║  'supermux', auto-created). Root provisions; the service runs     ║" >&2
+  echo "[deploy] ║  unprivileged. Continuing in 3s — Ctrl-C to abort.                ║" >&2
+  echo "[deploy] ╚══════════════════════════════════════════════════════════════════╝" >&2
+  sleep 3 || true
 fi
 
 # ── derive the service user's login HOME (separate from the data dir) ───────
@@ -120,11 +299,23 @@ else
   DATA_DIR="${SUPERMUX_DATA_DIR:-$USER_HOME/.supermux}"
 fi
 
-# ── helpers ─────────────────────────────────────────────────────────────────
-# Run a quiet remote check. Returns 0/1 — never prints output.
-remote_check() {
-  ssh "$HOST" "$@" >/dev/null 2>&1
-}
+# ── derive PROJECT_DIRS — where agents actually do their work ───────────────
+# This is the missing piece that makes agents able to read/write project files.
+# The service user must own (or have group-write to) these dirs, AND they must
+# be in the systemd ReadWritePaths set or the sandbox blocks every write.
+#
+# Smart default: <user-home>/projects (or /root/projects for root). Because the
+# service user already owns its own home, the zero-config path needs no chown
+# and no group juggling — it just works ("noob-proof"). Advanced users point
+# elsewhere (e.g. /opt/projects:/srv/work) via SUPERMUX_PROJECT_DIRS and
+# deploy.sh wires the perms + ReadWritePaths for them (see §0c-bis below).
+#
+# Colon-separated, matching the SUPERMUX_READ_WRITE_PATHS convention.
+if [ "$SERVICE_USER" = "root" ]; then
+  PROJECT_DIRS="${SUPERMUX_PROJECT_DIRS:-/root/projects}"
+else
+  PROJECT_DIRS="${SUPERMUX_PROJECT_DIRS:-$USER_HOME/projects}"
+fi
 
 # ── 0a. host preflight: SSH reachable? ──────────────────────────────────────
 echo "[deploy] preflight: checking SSH reachability of $HOST"
@@ -163,17 +354,25 @@ fi
 # ── 0c. host preflight: smart default for ReadWritePaths ────────────────────
 # Compute a sensible default that lets tmux/git/claude write where users
 # realistically need them to: the data dir (always), the service user's home
-# (so multi-project work under ~ works out of the box), and /opt/projects if
-# present (common multi-project layout). The operator can override the whole
-# thing by setting SUPERMUX_READ_WRITE_PATHS explicitly.
+# (so multi-project work under ~ works out of the box), the project dirs (where
+# agents do their work), and /opt/projects if present (common multi-project
+# layout). The operator can override the whole thing by setting
+# SUPERMUX_READ_WRITE_PATHS explicitly.
 #
 # Uses the $USER_HOME derived above (which honors SUPERMUX_USER_HOME, getent,
 # or /home/<user> fallback) so a non-standard layout flows through to the
 # writable set without a second source of truth.
 if [ -z "${SUPERMUX_READ_WRITE_PATHS:-}" ] && [ "$SERVICE_USER" != "root" ]; then
   # Build the smart default — colon-separated, matches user-facing convention.
-  # Always: data dir + service-user home. Optional: /opt/projects if present.
+  # Always: data dir + service-user home + the project dirs. Optional:
+  # /opt/projects if present.
   SMART_RWP_PARTS=("$DATA_DIR" "$USER_HOME")
+  # Fold in each project dir (split the colon-separated PROJECT_DIRS).
+  while IFS= read -r pd; do
+    [ -n "$pd" ] && SMART_RWP_PARTS+=("$pd")
+  done <<EOF_PD
+$(split_path_list "$PROJECT_DIRS")
+EOF_PD
   if remote_check "test -d /opt/projects"; then
     SMART_RWP_PARTS+=("/opt/projects")
   fi
@@ -183,6 +382,20 @@ if [ -z "${SUPERMUX_READ_WRITE_PATHS:-}" ] && [ "$SERVICE_USER" != "root" ]; the
     if [ -z "$SMART_RWP" ]; then SMART_RWP="$p"; else SMART_RWP="$SMART_RWP:$p"; fi
   done
   export SUPERMUX_READ_WRITE_PATHS="$SMART_RWP"
+elif [ -n "${SUPERMUX_READ_WRITE_PATHS:-}" ] && [ "$SERVICE_USER" != "root" ]; then
+  # Operator set ReadWritePaths explicitly. The project dirs MUST still be
+  # writable or agents can't work, so append any project dir that isn't already
+  # covered. (Idempotent: skip exact duplicates.)
+  while IFS= read -r pd; do
+    [ -z "$pd" ] && continue
+    case ":$SUPERMUX_READ_WRITE_PATHS:" in
+      *":$pd:"*) : ;;  # already present
+      *) SUPERMUX_READ_WRITE_PATHS="$SUPERMUX_READ_WRITE_PATHS:$pd" ;;
+    esac
+  done <<EOF_PD2
+$(split_path_list "$PROJECT_DIRS")
+EOF_PD2
+  export SUPERMUX_READ_WRITE_PATHS
 fi
 
 # Hardening knobs rendered into the template. Defaults match the unprivileged
@@ -247,23 +460,39 @@ case "$USE_TAILSCALE" in
 esac
 SERVICE_USER_NOTE="$SERVICE_USER"
 if [ "$WILL_AUTO_CREATE_USER" = "1" ]; then
-  SERVICE_USER_NOTE="$SERVICE_USER (will auto-create)"
+  SERVICE_USER_NOTE="$SERVICE_USER (will auto-create: home + login shell + ownership)"
+fi
+# Who are we deploying AS (the SSH login)? This is the privileged provisioner —
+# distinct from the unprivileged user the service RUNS AS.
+DEPLOY_AS_USER="$(ssh "$HOST" 'whoami' 2>/dev/null || echo '?')"
+RUN_AS_NOTE="$SERVICE_USER (unprivileged)"
+if [ "$SERVICE_USER" = "root" ]; then
+  RUN_AS_NOTE="root (ALLOW_ROOT=1 — hardening relaxed, see warning above)"
 fi
 echo "[deploy] ─── plan ───────────────────────────────────────────────────"
 echo "[deploy] target           : $HOST"
-echo "[deploy] service user     : $SERVICE_USER_NOTE"
-echo "[deploy] user home        : $USER_HOME"
-echo "[deploy] data dir         : $DATA_DIR (separate from user home)"
-echo "[deploy] internal port    : $INTERNAL_PORT"
-echo "[deploy] public expose    : $PUBLIC_EXPOSE_DESC  [$TAILSCALE_DETECTION]"
-echo "[deploy] commit           : $GIT_SHA ($GIT_SHA_SHORT)"
-echo "[deploy] read-write paths : $READ_WRITE_PATHS"
-echo "[deploy] hardening        : ProtectHome=$PROTECT_HOME"
+echo "[deploy] deploy AS (ssh)   : $DEPLOY_AS_USER  ← provisions (creates user, installs unit)"
+echo "[deploy] service RUNS AS   : $RUN_AS_NOTE  ← what the daemon executes under"
+echo "[deploy] service user      : $SERVICE_USER_NOTE"
+echo "[deploy] user home         : $USER_HOME"
+echo "[deploy] data dir          : $DATA_DIR (separate from user home)"
+echo "[deploy] project dirs      : $PROJECT_DIRS (where agents work)"
+echo "[deploy] internal port     : $INTERNAL_PORT"
+echo "[deploy] public expose     : $PUBLIC_EXPOSE_DESC  [$TAILSCALE_DETECTION]"
+echo "[deploy] commit            : $GIT_SHA ($GIT_SHA_SHORT)"
+echo "[deploy] read-write paths  : $READ_WRITE_PATHS"
+echo "[deploy] hardening         : ProtectHome=$PROTECT_HOME"
+echo "[deploy] claude auth       : verified after provisioning (see end of run)"
 echo "[deploy] ───────────────────────────────────────────────────────────"
 
-# ── 0g. create the default service user if it's missing ─────────────────────
+# ── 0g. create + fully provision the default service user if it's missing ────
+# "Fully set up" = home dir (-m), login shell (-s /bin/bash), and verified
+# ownership of both its home and (later) its data + project dirs. This is the
+# unprivileged account the SERVICE runs as — root (the deploy login) only
+# provisions it here.
 if [ "$WILL_AUTO_CREATE_USER" = "1" ]; then
-  echo "[deploy] creating service user '$SERVICE_USER' on host $HOST"
+  echo "[deploy] provisioning unprivileged service user '$SERVICE_USER' on host $HOST"
+  echo "[deploy]   (root is creating it; the service will RUN AS this user, not root)"
   if ! ssh "$HOST" "sudo useradd -m -s /bin/bash '$SERVICE_USER'"; then
     echo "[deploy] error: failed to create user '$SERVICE_USER' on $HOST." >&2
     echo "[deploy]   Fix: ensure your SSH user has passwordless sudo, or create the user manually:" >&2
@@ -276,7 +505,28 @@ if [ "$WILL_AUTO_CREATE_USER" = "1" ]; then
     echo "[deploy]        This is unexpected — investigate manually on the host." >&2
     exit 1
   fi
+  # Belt-and-suspenders: ensure the home is actually owned by the user (some
+  # hardened images create /home/<user> root-owned if useradd -m races skel).
+  if ! ssh "$HOST" "sudo chown '$SERVICE_USER:$SERVICE_USER' '$USER_HOME'"; then
+    echo "[deploy] warn: could not chown '$USER_HOME' to '$SERVICE_USER' — continuing, but" >&2
+    echo "[deploy]       verify the home is user-owned if the service fails to start." >&2
+  fi
+  echo "[deploy] service user '$SERVICE_USER' ready (home=$USER_HOME, shell=/bin/bash)"
 fi
+
+# ── 0g-bis. provision the project dirs (where agents do their work) ──────────
+# This is the missing piece that makes agents able to read+write project files.
+# For each colon-separated entry in PROJECT_DIRS: create it, and ensure the
+# service user owns it (under-home → already owned; outside-home → chown -R).
+# The dirs were already folded into READ_WRITE_PATHS above, so the systemd
+# sandbox will permit the writes.
+echo "[deploy] provisioning project dirs for agent work: $PROJECT_DIRS"
+while IFS= read -r pd; do
+  [ -z "$pd" ] && continue
+  ensure_project_dir_remote "$pd" "$SERVICE_USER" "$USER_HOME" "$HOST" || exit 1
+done <<EOF_PROVISION_PD
+$(split_path_list "$PROJECT_DIRS")
+EOF_PROVISION_PD
 
 # ── 0h. host preflight: bun + cargo toolchain (check, then optionally install) ─
 # The build runs as the service user. Check bun + cargo under THAT user's
@@ -498,4 +748,87 @@ if ! ssh "$HOST" "curl -sf -o /dev/null -w '/api/health -> %{http_code}\n' http:
   exit 1
 fi
 
+# ── 7. service-user Claude auth — detect, optionally copy, then VERIFY ───────
+# This is the #1 "it doesn't work" cause: the service user never ran
+# `claude /login`. supermux uses the Claude SUBSCRIPTION (OAuth) — NEVER an API
+# key, never ANTHROPIC_API_KEY, never API billing. We:
+#   1. detect ~user/.claude/.credentials.json;
+#   2. if missing, OFFER (opt-in, with consent) to copy the deployer's existing
+#      login — the fast path that reuses the subscription;
+#   3. VERIFY before declaring success and WARN loudly with the exact /login
+#      command if creds are still absent.
+echo "[deploy] checking Claude login for service user '$SERVICE_USER'"
+LOGIN_CMD="sudo -u $SERVICE_USER -i claude   # then run: /login   (uses your Claude subscription, no API key)"
+CLAUDE_AUTH_OK=0
+if service_user_has_claude_creds "$USER_HOME" "$HOST"; then
+  echo "[deploy] claude auth: ✓ '$SERVICE_USER' has $USER_HOME/.claude/.credentials.json"
+  CLAUDE_AUTH_OK=1
+else
+  echo "[deploy] claude auth: '$SERVICE_USER' has NO Claude credentials yet."
+  # Can we offer the fast path — copy the deployer's existing login?
+  DEPLOYER_HOME="$(deployer_claude_creds_home "$HOST" 2>/dev/null || true)"
+  DEPLOYER_HAS_CREDS=0
+  if [ -n "$DEPLOYER_HOME" ] && remote_check "sudo test -f '$DEPLOYER_HOME/.claude/.credentials.json'"; then
+    DEPLOYER_HAS_CREDS=1
+  fi
+
+  DO_COPY=0
+  if [ "$DEPLOYER_HAS_CREDS" = "1" ]; then
+    case "$COPY_CLAUDE_CREDS" in
+      0)
+        echo "[deploy]   (SUPERMUX_COPY_CLAUDE_CREDS=0 — not copying the deployer's login)"
+        ;;
+      1)
+        echo "[deploy]   SUPERMUX_COPY_CLAUDE_CREDS=1 — copying the deployer's Claude login (subscription)."
+        DO_COPY=1
+        ;;
+      *)
+        # "ask" — interactive consent. If not a TTY, fall back to "don't copy".
+        if [ -t 0 ]; then
+          echo "[deploy]   The account you deployed AS ($DEPLOYER_HOME) has a valid Claude login."
+          echo "[deploy]   I can copy it to '$SERVICE_USER' (reuses your subscription — NO API key)."
+          printf "[deploy]   Copy the deployer's Claude login to '%s'? [y/N] " "$SERVICE_USER"
+          read -r _reply || _reply=""
+          case "$_reply" in
+            y|Y|yes|YES|Yes) DO_COPY=1 ;;
+            *) echo "[deploy]   (skipped — you can copy later or run /login as the service user)" ;;
+          esac
+        else
+          echo "[deploy]   (non-interactive + SUPERMUX_COPY_CLAUDE_CREDS unset — not copying."
+          echo "[deploy]    Set SUPERMUX_COPY_CLAUDE_CREDS=1 to copy automatically.)"
+        fi
+        ;;
+    esac
+  fi
+
+  if [ "$DO_COPY" = "1" ]; then
+    if copy_deployer_claude_creds "$DEPLOYER_HOME" "$USER_HOME" "$SERVICE_USER" "$HOST"; then
+      if service_user_has_claude_creds "$USER_HOME" "$HOST"; then
+        echo "[deploy] claude auth: ✓ copied — '$SERVICE_USER' now has valid Claude credentials."
+        CLAUDE_AUTH_OK=1
+      fi
+    else
+      echo "[deploy] warn: copying the deployer's Claude login failed — falling back to manual /login." >&2
+    fi
+  fi
+fi
+
+if [ "$CLAUDE_AUTH_OK" != "1" ]; then
+  echo "[deploy] ╔══════════════════════════════════════════════════════════════════╗" >&2
+  echo "[deploy] ║  ACTION REQUIRED: service user '$SERVICE_USER' is NOT logged in to  " >&2
+  echo "[deploy] ║  Claude. Agents will fail until you log in (subscription, NO API    " >&2
+  echo "[deploy] ║  key). On the host, run:                                            " >&2
+  echo "[deploy] ║                                                                    ║" >&2
+  echo "[deploy] ║    $LOGIN_CMD" >&2
+  echo "[deploy] ║                                                                    ║" >&2
+  echo "[deploy] ║  This opens an interactive Claude session as the service user;      " >&2
+  echo "[deploy] ║  the /login command authenticates against your Claude subscription. " >&2
+  echo "[deploy] ╚══════════════════════════════════════════════════════════════════╝" >&2
+fi
+
 echo "[deploy] done — supermux (commit $GIT_SHA_SHORT) live on $HOST loopback:$INTERNAL_PORT"
+if [ "$CLAUDE_AUTH_OK" = "1" ]; then
+  echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; Claude login verified."
+else
+  echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; FINISH SETUP by logging in to Claude (see above)."
+fi
