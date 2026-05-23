@@ -33,6 +33,8 @@ import {
   List,
   Minus,
   Plus,
+  Rows2,
+  Rows3,
   Search,
   TerminalSquare,
   X,
@@ -513,11 +515,11 @@ export function Overview() {
       className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6`}
     >
       {/* ── Header: title + search + view toggle + sort + density + archived + new ──
-          `pr-12 sm:pr-0`: on mobile the shell floats a fixed top-right
-          ThemeToggle (layout.tsx <MobileTopBar>) over this header's top-right
-          corner. Reserve that corner so the rightmost control (the Archived
-          overflow item) never sits UNDER the toggle and become un-tappable. */}
-      <header className="mb-4 flex flex-wrap items-center gap-3 pr-12 sm:pr-0">
+          MHDR: the shell no longer floats a mobile ThemeToggle over this corner
+          (layout.tsx <MobileTopBar> now returns null on mobile too), so the old
+          `pr-12 sm:pr-0` right-pad reservation is reclaimed — giving the header
+          its full width back so the controls fit without awkward wrapping. */}
+      <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="mr-1 text-2xl font-semibold tracking-tight">Overview</h1>
 
         <div className="relative order-last w-full sm:order-none sm:w-auto sm:flex-1 sm:max-w-sm">
@@ -561,6 +563,7 @@ export function Overview() {
             value={overviewSize}
             onChange={setOverviewSize}
             max={sizeMax}
+            mobile={isMobile}
           />
         )}
 
@@ -1185,13 +1188,20 @@ function useDevMockSeed() {
 
 /** Overview density / size control (feat-overview-sizes).
  *
- *  A compact pair of icon buttons (− and +) sitting in the overview chrome,
- *  next to the view-mode toggle. Steps the tile grid through the density tiers.
- *  Visible at every breakpoint: on desktop/tablet it walks the full 4-tier curve
- *  (height, then column drops); on mobile the single-column grid means it only
- *  changes tile HEIGHT, and the caller passes a lower `max` (the mobile cap) so
- *  the + button disables once every height-meaningful tier is exhausted instead
- *  of stepping onto invisible column-drop tiers.
+ *  Two forms by viewport (`mobile` prop, fed from `isMobile`):
+ *
+ *  - DESKTOP: a compact pair of icon buttons (− and +) sitting in the overview
+ *    chrome next to the view-mode toggle. Walks the full 4-tier curve (height,
+ *    then column drops). Unchanged from feat-overview-sizes — the `[`/`]`
+ *    keyboard shortcuts still drive it via `overviewSize` upstream.
+ *  - MOBILE (MHDR): a SINGLE size-9 (44pt) icon button that TOGGLES tier 1
+ *    (Compact) ↔ 2 (Roomy). On the single-column mobile grid only those two
+ *    tiers differ (tile HEIGHT — tiers 3/4 only drop columns, invisible at
+ *    grid-cols-1), so a binary toggle is both clearer and smaller than the
+ *    3-cell pill. Rows3 ↔ Rows2 communicate density + current state; a
+ *    crossfade + spring scale/rotate animates the swap (honoring
+ *    `useReducedMotion`), with `whileTap` press feedback and a
+ *    `role="switch"` + `aria-pressed` + stateful aria-label.
  *
  *  Visual + Principle notes:
  *  - Matches the segmented-pill geometry of <ViewToggle> (h-9, rounded-lg,
@@ -1214,13 +1224,71 @@ function OverviewSizeControl({
   value,
   onChange,
   max = MAX_OVERVIEW_SIZE,
+  mobile = false,
 }: {
   value: OverviewSize
   onChange: (s: OverviewSize) => void
   /** Upper tier bound — desktop passes MAX_OVERVIEW_SIZE, mobile passes the
    *  mobile cap so the control never steps onto a tier with no visible effect. */
   max?: OverviewSize
+  /** MHDR: when true, render the compact single-icon density TOGGLE instead of
+   *  the 4-tier `[ − N + ]` stepper. On mobile the grid is single-column and
+   *  only tiers 1 (Compact) ↔ 2 (Roomy) differ (tile HEIGHT), so the stepper is
+   *  effectively binary — a single tap target reads cleaner and reclaims header
+   *  width. The caller passes `isMobile`. */
+  mobile?: boolean
 }) {
+  const reduceMotion = useReducedMotion()
+
+  // ── Mobile: single-icon toggle between tier 1 (Compact) ↔ tier 2 (Roomy) ──
+  // The single-column mobile grid makes the density control binary (only HEIGHT
+  // changes, tiers 3/4 are invisible), so one ~44pt tap target both shrinks the
+  // footprint vs the 3-cell pill AND reads as native. Rows3 (more, shorter
+  // rows = compact) ↔ Rows2 (fewer, taller rows = roomy) communicates tile
+  // height and the CURRENT state at a glance.
+  if (mobile) {
+    const roomy = value >= MAX_OVERVIEW_SIZE_MOBILE
+    // Tapping flips to the other tier, clamped to the valid mobile range.
+    const next = (roomy ? MIN_OVERVIEW_SIZE : MAX_OVERVIEW_SIZE_MOBILE) as OverviewSize
+    const Icon = roomy ? Rows2 : Rows3
+    // aria reflects current state + what a tap does, per the spec.
+    const label = roomy
+      ? 'Tile size: Roomy — tap for Compact'
+      : 'Tile size: Compact — tap for Roomy'
+    return (
+      <motion.button
+        type="button"
+        role="switch"
+        aria-label={label}
+        aria-pressed={roomy}
+        title={label}
+        onClick={() => onChange(next)}
+        whileTap={reduceMotion ? undefined : { scale: 0.9 }}
+        className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {reduceMotion ? (
+          <Icon className="size-4" />
+        ) : (
+          // Crossfade + small spring scale/rotate as the glyph swaps, keyed by
+          // the active tier so AnimatePresence sees a new node on each toggle.
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={roomy ? 'roomy' : 'compact'}
+              initial={{ opacity: 0, scale: 0.6, rotate: -12 }}
+              animate={{ opacity: 1, scale: 1, rotate: 0 }}
+              exit={{ opacity: 0, scale: 0.6, rotate: 12 }}
+              transition={springs.toggleSnap}
+              className="flex items-center justify-center"
+            >
+              <Icon className="size-4" />
+            </motion.span>
+          </AnimatePresence>
+        )}
+      </motion.button>
+    )
+  }
+
+  // ── Desktop: existing 4-tier [ − N + ] stepper (unchanged) ──────────────────
   const cfg = getOverviewSizeConfig(value)
   const atMin = value <= MIN_OVERVIEW_SIZE
   const atMax = value >= max
