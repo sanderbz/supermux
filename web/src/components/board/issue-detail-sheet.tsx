@@ -2,14 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Bot, Search, Trash2, User, X, Zap } from 'lucide-react'
 
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
@@ -52,29 +45,26 @@ export function IssueDetailSheet({
   onDelete,
   onClaim,
 }: IssueDetailSheetProps) {
+  // Keyed remount per issue id keeps the form's local state pristine — same as
+  // before, just hoisted so the form owns its <ResponsiveSheet> shell (and thus
+  // its title/footer slots). When no issue is selected, render nothing.
+  if (!issue) return null
   return (
-    <Sheet open={!!issue} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent
-        side="right"
-        className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-md"
-      >
-        {issue && (
-          <IssueDetailForm
-            key={issue.id}
-            issue={issue}
-            statuses={statuses}
-            onClose={onClose}
-            onPatch={onPatch}
-            onDelete={onDelete}
-            onClaim={onClaim}
-          />
-        )}
-      </SheetContent>
-    </Sheet>
+    <IssueDetailForm
+      key={issue.id}
+      open
+      issue={issue}
+      statuses={statuses}
+      onClose={onClose}
+      onPatch={onPatch}
+      onDelete={onDelete}
+      onClaim={onClaim}
+    />
   )
 }
 
 function IssueDetailForm({
+  open,
   issue,
   statuses,
   onClose,
@@ -82,6 +72,7 @@ function IssueDetailForm({
   onDelete,
   onClaim,
 }: {
+  open: boolean
   issue: BoardIssue
   statuses: BoardStatus[]
   onClose: () => void
@@ -177,15 +168,29 @@ function IssueDetailForm({
   }
 
   return (
-    <>
-      <SheetHeader>
-        <SheetTitle className="pr-8">Issue</SheetTitle>
-        <SheetDescription className="font-mono text-xs">
-          {issue.id}
-        </SheetDescription>
-      </SheetHeader>
-
-      <div className="flex flex-1 flex-col gap-4 py-4">
+    <ResponsiveSheet
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="Issue"
+      description={<span className="font-mono text-xs">{issue.id}</span>}
+      footer={
+        <div className="flex flex-row items-center justify-between gap-2">
+          <Button
+            variant="ghost"
+            onClick={() => void remove()}
+            disabled={busy}
+            className={cn('text-destructive hover:text-destructive')}
+          >
+            <Trash2 className="size-4" />
+            Delete
+          </Button>
+          <Button onClick={() => void save()} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-1 flex-col gap-4 px-5 py-4">
         <Field label="Title">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>
@@ -387,22 +392,7 @@ function IssueDetailForm({
 
         {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
-
-      <SheetFooter className="flex-row items-center justify-between gap-2">
-        <Button
-          variant="ghost"
-          onClick={() => void remove()}
-          disabled={busy}
-          className={cn('text-destructive hover:text-destructive')}
-        >
-          <Trash2 className="size-4" />
-          Delete
-        </Button>
-        <Button onClick={() => void save()} disabled={busy}>
-          {busy ? 'Saving…' : 'Save'}
-        </Button>
-      </SheetFooter>
-    </>
+    </ResponsiveSheet>
   )
 }
 
