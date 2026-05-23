@@ -91,6 +91,17 @@ export interface BoardIssue {
   comments: IssueComment[]
   acceptance: AcceptanceItem[]
   links: IssueLink[]
+  /** R1 session→board reaction flags. `needs_review` is set when the owning
+   *  agent went idle (turn finished); `awaiting_input` when it's blocked on the
+   *  user. A human clears them. */
+  needs_review: boolean
+  awaiting_input: boolean
+  /** R2 link liveness (computed server-side, never stored). `true` when
+   *  `session` points to a live (existing, non-archived) session; `false` when
+   *  the link is dangling or points at an archived/deleted session. The sheet
+   *  shows "session archived — reassign" when this is false but a `session` is
+   *  set. */
+  session_live: boolean
 }
 
 /** The claim response (S3): the full issue PLUS the dispatch outcome. When

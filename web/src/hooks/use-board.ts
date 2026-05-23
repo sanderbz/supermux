@@ -157,6 +157,10 @@ export function useBoard(): UseBoardResult {
         comments: [],
         acceptance: [],
         links: [],
+        // R1/R2 flags — a fresh card has no reactions and no live link yet.
+        needs_review: false,
+        awaiting_input: false,
+        session_live: false,
       }
       patchCache(qc, (p) => [optimistic, ...p])
       return { prev }

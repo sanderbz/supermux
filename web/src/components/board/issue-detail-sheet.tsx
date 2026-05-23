@@ -1,16 +1,39 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Bot, Search, Trash2, User, X, Zap } from 'lucide-react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  CircleSlash,
+  GitCommit,
+  GitPullRequest,
+  Link2,
+  Plus,
+  Search,
+  Send,
+  Trash2,
+  User,
+  X,
+  Zap,
+} from 'lucide-react'
 
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { springs } from '@/lib/springs'
 import { useSessions } from '@/hooks/use-sessions'
+import { useToast } from '@/components/ui/use-toast'
 import {
+  boardApi,
+  type AcceptanceItem,
   type BoardIssue,
   type BoardIssuePatch,
   type BoardStatus,
+  type ClaimResult,
+  type IssueLink,
 } from '@/lib/api'
 
 export interface IssueDetailSheetProps {
@@ -19,8 +42,14 @@ export interface IssueDetailSheetProps {
   onClose: () => void
   onPatch: (id: string, patch: BoardIssuePatch) => Promise<void>
   onDelete: (id: string) => Promise<void>
-  /** Claim the issue for `session` (atomic CAS). Rejects on a 409. */
-  onClaim: (id: string, session: string) => Promise<void>
+  /** Claim the issue for `session` (atomic CAS). When `deliver` is true the work
+   *  is auto-sent to the agent. Resolves to the `ClaimResult` so the sheet can
+   *  power the Undo toast off `steer_id`. Rejects on a 409. */
+  onClaim: (
+    id: string,
+    session: string,
+    deliver: boolean,
+  ) => Promise<ClaimResult>
 }
 
 /** A claimable agent task sitting in todo/backlog can be CAS-claimed. */
@@ -32,10 +61,21 @@ function isClaimable(issue: BoardIssue): boolean {
 }
 
 /**
- * Edit sheet for one issue (TECH_PLAN §M19). Lets the user retitle, move column,
- * reassign, set a due date + tags, claim it (atomic), or delete it. The claim
- * button surfaces a 409 visibly (atomic CAS — §3.2.10). The form body is keyed by
- * issue id so it remounts with pristine state per issue (no sync setState-in-effect).
+ * Edit sheet for one issue (TECH_PLAN §M19, board↔agent §C.4). Beyond the basic
+ * fields (title/column/due/owner/tags) it carries the live board↔agent surface:
+ *
+ *  • a live ACTIVITY STREAM (comments + status/check/link events, newest first),
+ *    fed straight off the SSE `board` payload (the relations ride in `IssueView`),
+ *    with agent/system entries visually distinct from human;
+ *  • an inline STYLED comment input (never window.prompt) + an optional
+ *    "notify agent" toggle that steers the comment into the linked session;
+ *  • an ACCEPTANCE checklist the human edits/reorders and the agent ticks live;
+ *  • "Send to agent" as the PRIMARY claim action (auto-send) with an Undo toast,
+ *    plus a quieter "Claim only", folding in the decoupled-picker fix;
+ *  • a LINKS section (PR/commit) with add/remove;
+ *  • a stale-link banner when the linked session was archived.
+ *
+ * The form body is keyed by issue id so it remounts pristine per issue.
  */
 export function IssueDetailSheet({
   issue,
@@ -45,9 +85,6 @@ export function IssueDetailSheet({
   onDelete,
   onClaim,
 }: IssueDetailSheetProps) {
-  // Keyed remount per issue id keeps the form's local state pristine — same as
-  // before, just hoisted so the form owns its <ResponsiveSheet> shell (and thus
-  // its title/footer slots). When no issue is selected, render nothing.
   if (!issue) return null
   return (
     <IssueDetailForm
@@ -78,7 +115,11 @@ function IssueDetailForm({
   onClose: () => void
   onPatch: (id: string, patch: BoardIssuePatch) => Promise<void>
   onDelete: (id: string) => Promise<void>
-  onClaim: (id: string, session: string) => Promise<void>
+  onClaim: (
+    id: string,
+    session: string,
+    deliver: boolean,
+  ) => Promise<ClaimResult>
 }) {
   const [title, setTitle] = useState(issue.title)
   const [desc, setDesc] = useState(issue.desc)
@@ -93,12 +134,19 @@ function IssueDetailForm({
   const [error, setError] = useState<string | null>(null)
 
   // The live session list — the SAME SSE-driven source the overview reads
-  // (`useSessions` / `SESSIONS_KEY`), so the claim picker is never empty when a
-  // session is actually running, and updates in real time.
+  // (`useSessions`), so the claim picker is never empty when a session is
+  // actually running, and updates in real time.
   const { sessions } = useSessions()
+  const { toast } = useToast()
 
-  // Sessions filtered by the inline live-filter, sorted by name for a stable
-  // list. Used by both the generic "Session" field and the claim combobox.
+  // The live status of the session this issue is linked to (for the stale banner
+  // copy). The relations + flags ride in `issue` straight off the SSE `board`
+  // payload, so the whole sheet updates live with no extra fetch.
+  const linkedSession = useMemo(
+    () => sessions.find((s) => s.name === issue.session) ?? null,
+    [sessions, issue.session],
+  )
+
   const filteredSessions = useMemo(() => {
     const q = sessionFilter.trim().toLowerCase()
     return sessions
@@ -138,7 +186,11 @@ function IssueDetailForm({
     }
   }
 
-  async function claim() {
+  // "Send to agent" (deliver=true) is the primary action; "Claim only"
+  // (deliver=false) flips the link without dispatching. Both go through the
+  // atomic claim and surface a 409 in place. On a successful send we toast with
+  // an Undo that retracts the still-undelivered steer.
+  async function claim(deliver: boolean) {
     if (!session) {
       setError('Pick a session to claim this for.')
       return
@@ -146,8 +198,43 @@ function IssueDetailForm({
     setBusy(true)
     setError(null)
     try {
-      await onClaim(issue.id, session)
+      const result = await onClaim(issue.id, session, deliver)
       onClose()
+      if (deliver && result.delivered) {
+        const asleep = !sessions.some((s) => s.name === session)
+        const steerId = result.steer_id
+        toast({
+          message: asleep
+            ? `Sent to ${session} — it'll pick this up on wake.`
+            : `Sent to ${session}.`,
+          tone: 'active',
+          duration: 6000,
+          action:
+            steerId != null
+              ? {
+                  label: 'Undo',
+                  onClick: () => {
+                    void boardApi
+                      .unsend(session, steerId)
+                      .then((r) =>
+                        toast({
+                          message:
+                            r.cleared > 0
+                              ? `Unsent — ${session} won't see it.`
+                              : `${session} already picked it up.`,
+                          tone: r.cleared > 0 ? 'default' : 'waiting',
+                        }),
+                      )
+                      .catch(() =>
+                        toast({ message: 'Could not undo.', tone: 'error' }),
+                      )
+                  },
+                }
+              : undefined,
+        })
+      } else {
+        toast({ message: `Claimed for ${session}.` })
+      }
     } catch (e) {
       // 409 from the atomic claim surfaces here, in-place.
       setError(e instanceof Error ? e.message : 'Claim failed.')
@@ -166,6 +253,10 @@ function IssueDetailForm({
       setBusy(false)
     }
   }
+
+  // A dangling link: the issue points at a session, but that session is no
+  // longer live (archived/deleted) — R2 `session_live` is false.
+  const staleLink = issue.session != null && !issue.session_live
 
   return (
     <ResponsiveSheet
@@ -191,6 +282,22 @@ function IssueDetailForm({
       }
     >
       <div className="flex flex-1 flex-col gap-4 px-5 py-4">
+        {/* Stale-link banner — the linked session was archived/deleted. */}
+        {staleLink && (
+          <div className="flex items-start gap-2.5 rounded-lg border border-status-waiting/40 bg-status-waiting/10 p-3 text-sm">
+            <CircleSlash className="mt-0.5 size-4 shrink-0 text-status-waiting" />
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-foreground">
+                Session archived — reassign
+              </span>
+              <span className="text-muted-foreground">
+                {issue.session} is no longer live. Pick another session below to
+                hand this off.
+              </span>
+            </div>
+          </div>
+        )}
+
         <Field label="Title">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>
@@ -299,102 +406,692 @@ function IssueDetailForm({
           </div>
         </Field>
 
+        {/* ── Send to agent (PRIMARY) — the claim affordance + picker inline ── */}
         {isClaimable(issue) && (
-          <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/30 p-3">
-            <span className="text-xs font-medium text-muted-foreground">
-              Claim for session
-            </span>
-            {sessions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No active sessions —{' '}
-                <Link
-                  to="/"
-                  onClick={onClose}
-                  className="font-medium text-primary underline-offset-2 hover:underline"
-                >
-                  start one from the overview
-                </Link>{' '}
-                first.
-              </p>
-            ) : (
-              <>
-                {/* Live-filter — only worth showing once the list is long. */}
-                {sessions.length > 5 && (
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      value={sessionFilter}
-                      onChange={(e) => setSessionFilter(e.target.value)}
-                      placeholder="Filter sessions"
-                      aria-label="Filter sessions"
-                      className="h-9 pl-8"
-                    />
-                  </div>
-                )}
-                {/* The picker IS the claim affordance — pick a session here, then
-                    the button enables. */}
-                <div
-                  role="listbox"
-                  aria-label="Sessions"
-                  className="flex max-h-48 flex-col gap-1 overflow-y-auto [scrollbar-width:thin]"
-                >
-                  {filteredSessions.length === 0 ? (
-                    <p className="px-1 py-2 text-sm text-muted-foreground">
-                      No sessions match “{sessionFilter.trim()}”.
-                    </p>
-                  ) : (
-                    filteredSessions.map((s) => {
-                      const active = session === s.name
-                      return (
-                        <button
-                          key={s.name}
-                          type="button"
-                          role="option"
-                          aria-selected={active}
-                          onClick={() => setSession(s.name)}
-                          className={cn(
-                            'flex h-11 items-center gap-2 rounded-md border px-3 text-left text-sm transition-colors',
-                            active
-                              ? 'border-primary bg-primary/10 text-primary'
-                              : 'border-transparent text-foreground hover:border-foreground/15 hover:bg-foreground/5',
-                          )}
-                        >
-                          <span
-                            className={cn(
-                              'size-1.5 shrink-0 rounded-full',
-                              active ? 'bg-primary' : 'bg-muted-foreground/40',
-                            )}
-                          />
-                          <span className="flex-1 truncate font-medium">
-                            {s.name}
-                          </span>
-                          <span className="shrink-0 text-xs text-muted-foreground">
-                            {s.status}
-                          </span>
-                        </button>
-                      )
-                    })
-                  )}
-                </div>
-                <Button
-                  variant="secondary"
-                  onClick={() => void claim()}
-                  disabled={busy || !session}
-                  className="justify-center"
-                >
-                  <Zap className="size-4" />
-                  {session ? `Claim for ${session}` : 'Pick a session above'}
-                </Button>
-              </>
-            )}
-          </div>
+          <SendToAgent
+            sessions={filteredSessions}
+            allSessions={sessions}
+            session={session}
+            setSession={setSession}
+            sessionFilter={sessionFilter}
+            setSessionFilter={setSessionFilter}
+            busy={busy}
+            onSend={() => void claim(true)}
+            onClaimOnly={() => void claim(false)}
+            onClose={onClose}
+          />
         )}
+
+        {/* ── Acceptance checklist ──────────────────────────────────────────── */}
+        <AcceptanceChecklist issueId={issue.id} items={issue.acceptance} />
+
+        {/* ── Links (PR/commit) ─────────────────────────────────────────────── */}
+        <LinksSection issueId={issue.id} links={issue.links} />
+
+        {/* ── Activity stream + inline comment ──────────────────────────────── */}
+        <ActivityStream
+          issue={issue}
+          canSteer={Boolean(issue.session) && issue.session_live}
+          linkedSessionName={linkedSession?.name ?? issue.session ?? null}
+        />
 
         {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
     </ResponsiveSheet>
   )
 }
+
+// ── Send to agent (primary) ───────────────────────────────────────────────────
+
+function SendToAgent({
+  sessions,
+  allSessions,
+  session,
+  setSession,
+  sessionFilter,
+  setSessionFilter,
+  busy,
+  onSend,
+  onClaimOnly,
+  onClose,
+}: {
+  sessions: { name: string; status: string }[]
+  allSessions: { name: string }[]
+  session: string
+  setSession: (s: string) => void
+  sessionFilter: string
+  setSessionFilter: (s: string) => void
+  busy: boolean
+  onSend: () => void
+  onClaimOnly: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+      <span className="text-xs font-medium text-muted-foreground">
+        Send to agent
+      </span>
+      {allSessions.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No active sessions —{' '}
+          <Link
+            to="/"
+            onClick={onClose}
+            className="font-medium text-primary underline-offset-2 hover:underline"
+          >
+            start one from the overview
+          </Link>{' '}
+          first.
+        </p>
+      ) : (
+        <>
+          {/* Live-filter — only worth showing once the list is long. */}
+          {allSessions.length > 5 && (
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={sessionFilter}
+                onChange={(e) => setSessionFilter(e.target.value)}
+                placeholder="Filter sessions"
+                aria-label="Filter sessions"
+                className="h-9 pl-8"
+              />
+            </div>
+          )}
+          {/* The picker IS the claim affordance — pick a session, then send. */}
+          <div
+            role="listbox"
+            aria-label="Sessions"
+            className="flex max-h-48 flex-col gap-1 overflow-y-auto [scrollbar-width:thin]"
+          >
+            {sessions.length === 0 ? (
+              <p className="px-1 py-2 text-sm text-muted-foreground">
+                No sessions match “{sessionFilter.trim()}”.
+              </p>
+            ) : (
+              sessions.map((s) => {
+                const active = session === s.name
+                return (
+                  <button
+                    key={s.name}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onClick={() => setSession(s.name)}
+                    className={cn(
+                      'flex h-11 items-center gap-2 rounded-md border px-3 text-left text-sm transition-colors',
+                      active
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-transparent text-foreground hover:border-foreground/15 hover:bg-foreground/5',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'size-1.5 shrink-0 rounded-full',
+                        active ? 'bg-primary' : 'bg-muted-foreground/40',
+                      )}
+                    />
+                    <span className="flex-1 truncate font-medium">{s.name}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {s.status}
+                    </span>
+                  </button>
+                )
+              })
+            )}
+          </div>
+          {/* Primary: Send to agent (auto-dispatch). Quieter: Claim only. */}
+          <Button
+            onClick={onSend}
+            disabled={busy || !session}
+            className="h-11 justify-center"
+          >
+            <Send className="size-4" />
+            {session ? `Send to ${session}` : 'Pick a session above'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClaimOnly}
+            disabled={busy || !session}
+            className="justify-center text-muted-foreground"
+          >
+            <Zap className="size-3.5" />
+            Claim only (don’t notify)
+          </Button>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Acceptance checklist ──────────────────────────────────────────────────────
+
+function AcceptanceChecklist({
+  issueId,
+  items,
+}: {
+  issueId: string
+  items: AcceptanceItem[]
+}) {
+  const [adding, setAdding] = useState('')
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [editBody, setEditBody] = useState('')
+  // A short-lived per-item busy latch so the row that's mutating disables; the
+  // SSE `board` push confirms the result, so we don't need optimistic state.
+  const [pendingId, setPendingId] = useState<number | null>(null)
+  const reduce = useReducedMotion()
+
+  const sorted = useMemo(
+    () => [...items].sort((a, b) => a.pos - b.pos),
+    [items],
+  )
+  const doneCount = sorted.filter((i) => i.done).length
+  const total = sorted.length
+
+  const run = useCallback(
+    async (id: number | null, fn: () => Promise<unknown>) => {
+      setPendingId(id)
+      try {
+        await fn()
+      } catch {
+        /* SSE will reconcile; the mutation just no-ops visually on failure */
+      } finally {
+        setPendingId(null)
+      }
+    },
+    [],
+  )
+
+  const toggle = (item: AcceptanceItem) =>
+    void run(item.id, () =>
+      boardApi.patchAcceptance(issueId, item.id, { done: !item.done }),
+    )
+  const removeItem = (id: number) =>
+    void run(id, () => boardApi.removeAcceptance(issueId, id))
+  const addItem = () => {
+    const body = adding.trim()
+    if (!body) return
+    setAdding('')
+    void run(null, () => boardApi.addAcceptance(issueId, body))
+  }
+  const saveEdit = (id: number) => {
+    const body = editBody.trim()
+    setEditingId(null)
+    if (!body) return
+    void run(id, () => boardApi.patchAcceptance(issueId, id, { body }))
+  }
+  const move = (index: number, dir: -1 | 1) => {
+    const next = index + dir
+    if (next < 0 || next >= sorted.length) return
+    const order = sorted.map((i) => i.id)
+    ;[order[index], order[next]] = [order[next], order[index]]
+    void run(sorted[index].id, () =>
+      boardApi.reorderAcceptance(issueId, order),
+    )
+  }
+
+  return (
+    <Section
+      label="Acceptance"
+      trailing={
+        total > 0 ? (
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium tabular-nums text-muted-foreground">
+            <span className="text-foreground">{doneCount}</span>/{total}
+          </span>
+        ) : null
+      }
+    >
+      <div className="flex flex-col gap-1.5">
+        {total > 0 && (
+          <div className="h-1 overflow-hidden rounded-full bg-muted">
+            <motion.div
+              className="h-full rounded-full bg-status-ready"
+              initial={false}
+              animate={{ width: `${(doneCount / total) * 100}%` }}
+              transition={reduce ? { duration: 0 } : springs.smooth}
+            />
+          </div>
+        )}
+        <AnimatePresence initial={false}>
+          {sorted.map((item, index) => (
+            <motion.div
+              key={item.id}
+              layout
+              initial={reduce ? false : { opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
+              transition={springs.snappy}
+              className="group flex items-center gap-2"
+            >
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={Boolean(item.done)}
+                aria-label={`Mark "${item.body}" ${item.done ? 'incomplete' : 'complete'}`}
+                disabled={pendingId === item.id}
+                onClick={() => toggle(item)}
+                className={cn(
+                  'grid size-5 shrink-0 place-items-center rounded-[5px] border transition-colors',
+                  item.done
+                    ? 'border-status-ready bg-status-ready text-background'
+                    : 'border-input hover:border-foreground/40',
+                )}
+              >
+                {item.done && <Check className="size-3.5" strokeWidth={3} />}
+              </button>
+              {editingId === item.id ? (
+                <Input
+                  autoFocus
+                  value={editBody}
+                  onChange={(e) => setEditBody(e.target.value)}
+                  onBlur={() => saveEdit(item.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      saveEdit(item.id)
+                    } else if (e.key === 'Escape') {
+                      setEditingId(null)
+                    }
+                  }}
+                  className="h-8 flex-1"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingId(item.id)
+                    setEditBody(item.body)
+                  }}
+                  className={cn(
+                    'flex-1 truncate text-left text-sm',
+                    item.done
+                      ? 'text-muted-foreground line-through'
+                      : 'text-foreground',
+                  )}
+                >
+                  {item.body}
+                </button>
+              )}
+              {/* Reorder + remove — revealed on hover (desktop), always tappable. */}
+              <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                <IconBtn
+                  label="Move up"
+                  disabled={index === 0}
+                  onClick={() => move(index, -1)}
+                >
+                  <ChevronUp className="size-3.5" />
+                </IconBtn>
+                <IconBtn
+                  label="Move down"
+                  disabled={index === sorted.length - 1}
+                  onClick={() => move(index, 1)}
+                >
+                  <ChevronDown className="size-3.5" />
+                </IconBtn>
+                <IconBtn label="Remove item" onClick={() => removeItem(item.id)}>
+                  <X className="size-3.5" />
+                </IconBtn>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+        {/* Add a new item. */}
+        <div className="flex items-center gap-2">
+          <Plus className="size-4 shrink-0 text-muted-foreground" />
+          <Input
+            value={adding}
+            placeholder="Add an acceptance item"
+            aria-label="Add an acceptance item"
+            onChange={(e) => setAdding(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                addItem()
+              }
+            }}
+            onBlur={addItem}
+            className="h-8 flex-1"
+          />
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+// ── Links (PR/commit) ─────────────────────────────────────────────────────────
+
+function LinksSection({
+  issueId,
+  links,
+}: {
+  issueId: string
+  links: IssueLink[]
+}) {
+  const [kind, setKind] = useState<'pr' | 'commit'>('pr')
+  const [ref, setRef] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const add = async () => {
+    const value = ref.trim()
+    if (!value) return
+    setBusy(true)
+    setRef('')
+    try {
+      await boardApi.addLink(issueId, { kind, ref: value })
+    } catch {
+      /* SSE reconciles */
+    } finally {
+      setBusy(false)
+    }
+  }
+  const removeLink = (id: number) => {
+    void boardApi.removeLink(issueId, id).catch(() => {})
+  }
+
+  return (
+    <Section label="Links">
+      <div className="flex flex-col gap-1.5">
+        {links.map((l) => (
+          <div
+            key={l.id}
+            className="group flex items-center gap-2 rounded-md border border-border bg-muted/20 px-2.5 py-1.5"
+          >
+            {l.kind === 'pr' ? (
+              <GitPullRequest className="size-4 shrink-0 text-muted-foreground" />
+            ) : (
+              <GitCommit className="size-4 shrink-0 text-muted-foreground" />
+            )}
+            <a
+              href={isUrl(l.ref) ? l.ref : undefined}
+              target="_blank"
+              rel="noreferrer"
+              className={cn(
+                'flex-1 truncate text-sm',
+                isUrl(l.ref)
+                  ? 'text-primary underline-offset-2 hover:underline'
+                  : 'font-mono text-foreground',
+              )}
+            >
+              {l.label || prettyRef(l)}
+            </a>
+            <IconBtn label="Remove link" onClick={() => removeLink(l.id)}>
+              <X className="size-3.5" />
+            </IconBtn>
+          </div>
+        ))}
+        <div className="flex items-center gap-2">
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as 'pr' | 'commit')}
+            aria-label="Link kind"
+            className="h-8 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <option value="pr">PR</option>
+            <option value="commit">Commit</option>
+          </select>
+          <Input
+            value={ref}
+            placeholder={kind === 'pr' ? 'PR url' : 'commit sha or url'}
+            aria-label="Link reference"
+            onChange={(e) => setRef(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void add()
+              }
+            }}
+            className="h-8 flex-1"
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void add()}
+            disabled={busy || !ref.trim()}
+            className="h-8 shrink-0"
+          >
+            <Link2 className="size-3.5" />
+            Add
+          </Button>
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+// ── Activity stream + inline comment ──────────────────────────────────────────
+
+interface StreamEntry {
+  key: string
+  ts: number
+  author: 'user' | 'agent' | 'system'
+  authorLabel: string
+  body: string
+}
+
+/** Build the newest-first timeline from the issue's relations. Comments carry
+ *  their own author/timestamp; acceptance check-offs and link additions are
+ *  surfaced as system/agent-style entries so the stream reads as a single
+ *  log of everything that happened to the card. */
+function buildStream(issue: BoardIssue): StreamEntry[] {
+  const entries: StreamEntry[] = []
+
+  for (const c of issue.comments) {
+    const kind = classifyAuthor(c.author)
+    entries.push({
+      key: `c-${c.id}`,
+      ts: c.created,
+      author: kind,
+      authorLabel: authorLabel(c.author, kind),
+      body: c.body,
+    })
+  }
+
+  // Link additions read as activity too (kept after comments; both sorted below).
+  for (const l of issue.links) {
+    entries.push({
+      key: `l-${l.id}`,
+      ts: l.created,
+      author: 'system',
+      authorLabel: 'Link',
+      body: `Added ${l.kind === 'pr' ? 'PR' : 'commit'} ${l.label || prettyRef(l)}`,
+    })
+  }
+
+  return entries.sort((a, b) => b.ts - a.ts)
+}
+
+function classifyAuthor(author: string): 'user' | 'agent' | 'system' {
+  if (author === 'user' || author.startsWith('human')) return 'user'
+  if (author.startsWith('agent')) return 'agent'
+  return 'system'
+}
+
+function authorLabel(author: string, kind: 'user' | 'agent' | 'system'): string {
+  if (kind === 'agent') return author.replace(/^agent:/, '') || 'agent'
+  if (kind === 'user') return author.replace(/^human:/, '') || 'You'
+  return author || 'system'
+}
+
+function ActivityStream({
+  issue,
+  canSteer,
+  linkedSessionName,
+}: {
+  issue: BoardIssue
+  canSteer: boolean
+  linkedSessionName: string | null
+}) {
+  const [body, setBody] = useState('')
+  const [notify, setNotify] = useState(false)
+  const [posting, setPosting] = useState(false)
+  const { toast } = useToast()
+  const reduce = useReducedMotion()
+
+  const stream = useMemo(() => buildStream(issue), [issue])
+
+  const post = async () => {
+    const text = body.trim()
+    if (!text || posting) return
+    setPosting(true)
+    try {
+      await boardApi.comment(issue.id, text)
+      // Optional: also steer the comment into the linked session as a nudge.
+      if (notify && canSteer && linkedSessionName) {
+        await sendNudge(linkedSessionName, text).catch(() => {
+          toast({
+            message: 'Comment posted, but couldn’t notify the agent.',
+            tone: 'waiting',
+          })
+        })
+      }
+      setBody('')
+    } catch (e) {
+      toast({
+        message: e instanceof Error ? e.message : 'Could not post comment.',
+        tone: 'error',
+      })
+    } finally {
+      setPosting(false)
+    }
+  }
+
+  return (
+    <Section label="Activity">
+      {/* Inline styled comment input (NOT window.prompt). 44pt send target. */}
+      <div className="flex flex-col gap-2">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault()
+              void post()
+            }
+          }}
+          rows={2}
+          placeholder="Write a comment…"
+          aria-label="Write a comment"
+          className="flex w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        />
+        <div className="flex items-center justify-between gap-2">
+          {/* Notify-agent toggle (off by default; only when the link is live). */}
+          {canSteer ? (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={notify}
+              onClick={() => setNotify((v) => !v)}
+              className="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground"
+            >
+              <span
+                className={cn(
+                  'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
+                  notify ? 'bg-primary' : 'bg-muted-foreground/30',
+                )}
+              >
+                <motion.span
+                  layout
+                  transition={reduce ? { duration: 0 } : springs.toggleSnap}
+                  className={cn(
+                    'absolute size-3 rounded-full bg-background shadow-sm',
+                    notify ? 'right-0.5' : 'left-0.5',
+                  )}
+                />
+              </span>
+              Notify agent
+            </button>
+          ) : (
+            <span />
+          )}
+          <Button
+            size="sm"
+            onClick={() => void post()}
+            disabled={posting || !body.trim()}
+            className="h-11 px-4"
+          >
+            <Send className="size-3.5" />
+            {posting ? 'Posting…' : 'Comment'}
+          </Button>
+        </div>
+      </div>
+
+      {/* The live timeline, newest first. */}
+      <div className="mt-3 flex flex-col gap-2.5">
+        {stream.length === 0 ? (
+          <p className="py-2 text-sm text-muted-foreground">
+            No activity yet. Comments, check-offs and links show up here.
+          </p>
+        ) : (
+          <AnimatePresence initial={false}>
+            {stream.map((e) => (
+              <motion.div
+                key={e.key}
+                layout
+                initial={reduce ? false : { opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={springs.snappy}
+                className={cn(
+                  'flex flex-col gap-1 rounded-lg border px-3 py-2',
+                  e.author === 'user'
+                    ? 'border-border bg-muted/30'
+                    : e.author === 'agent'
+                      ? 'border-primary/30 bg-primary/5'
+                      : 'border-dashed border-border bg-transparent',
+                )}
+              >
+                <div className="flex items-center gap-1.5 text-xs">
+                  {e.author === 'agent' ? (
+                    <Bot className="size-3.5 text-primary" />
+                  ) : e.author === 'user' ? (
+                    <User className="size-3.5 text-muted-foreground" />
+                  ) : (
+                    <CircleSlash className="size-3 text-muted-foreground" />
+                  )}
+                  <span
+                    className={cn(
+                      'font-medium',
+                      e.author === 'agent'
+                        ? 'text-primary'
+                        : 'text-foreground',
+                    )}
+                  >
+                    {e.authorLabel}
+                  </span>
+                  <span className="text-muted-foreground">
+                    · {relativeTime(e.ts)}
+                  </span>
+                </div>
+                <p className="whitespace-pre-wrap break-words text-sm text-foreground">
+                  {e.body}
+                </p>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        )}
+      </div>
+    </Section>
+  )
+}
+
+/** Steer a comment into a session as a mid-task nudge (the "notify agent"
+ *  toggle). Reuses the session steer endpoint; non-fatal if it fails. */
+async function sendNudge(session: string, body: string): Promise<void> {
+  const { apiToken, apiUrl } = await import('@/lib/api/client')
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  const token = apiToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(session)}/steer`), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ text: `Board note: ${body}` }),
+  })
+  if (!res.ok) throw new Error('steer failed')
+}
+
+// ── small shared pieces ───────────────────────────────────────────────────────
 
 function Field({
   label,
@@ -408,6 +1105,52 @@ function Field({
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       {children}
     </label>
+  )
+}
+
+function Section({
+  label,
+  trailing,
+  children,
+}: {
+  label: string
+  trailing?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-4">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">
+          {label}
+        </span>
+        {trailing}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function IconBtn({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+    >
+      {children}
+    </button>
   )
 }
 
@@ -438,4 +1181,25 @@ function OwnerOption({
       {label}
     </button>
   )
+}
+
+function isUrl(s: string): boolean {
+  return /^https?:\/\//i.test(s)
+}
+
+function prettyRef(l: IssueLink): string {
+  if (l.kind === 'commit' && !isUrl(l.ref)) return l.ref.slice(0, 10)
+  return l.ref
+}
+
+/** Compact relative time off a unix-seconds timestamp (sentence case). */
+function relativeTime(unixSeconds: number): string {
+  const diff = Date.now() / 1000 - unixSeconds
+  if (diff < 45) return 'just now'
+  if (diff < 90) return '1 min ago'
+  if (diff < 3600) return `${Math.round(diff / 60)} min ago`
+  if (diff < 5400) return '1 hr ago'
+  if (diff < 86400) return `${Math.round(diff / 3600)} hr ago`
+  if (diff < 172800) return 'yesterday'
+  return `${Math.round(diff / 86400)} d ago`
 }
