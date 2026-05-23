@@ -28,6 +28,7 @@ import {
   type BoardIssue,
   type BoardIssuePatch,
   type BoardStatus,
+  type ClaimResult,
   type NewBoardIssue,
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
@@ -38,6 +39,9 @@ const STATUSES_KEY = ['board', 'statuses'] as const
 export interface ClaimArgs {
   id: string
   session: string
+  /** Auto-send the work to the agent (S3). Defaults to true (user decision).
+   *  Pass `false` for "Claim only" — flip the link without dispatching. */
+  deliver?: boolean
 }
 
 export interface UseBoardResult {
@@ -52,9 +56,11 @@ export interface UseBoardResult {
   // Mutations (each optimistic + rollback). Promises reject with `BoardError`.
   createIssue: (input: NewBoardIssue) => Promise<BoardIssue>
   patchIssue: (id: string, patch: BoardIssuePatch) => Promise<BoardIssue>
-  /** ATOMIC claim (§3.2.10). Rejects with a `BoardError` (status 409) on a lost
-   *  race / not-claimable so the UI can show the conflict. */
-  claimIssue: (args: ClaimArgs) => Promise<BoardIssue>
+  /** ATOMIC claim (§3.2.10) that also auto-sends the work to the agent (S3).
+   *  Resolves to `{ issue, delivered, steer_id }` — use `steer_id` with
+   *  `boardApi.unsend` for the Undo toast. Rejects with a `BoardError` (status
+   *  409) on a lost race / not-claimable so the UI can show the conflict. */
+  claimIssue: (args: ClaimArgs) => Promise<ClaimResult>
   deleteIssue: (id: string) => Promise<void>
 
   // Column (status) management.
@@ -147,6 +153,10 @@ export function useBoard(): UseBoardResult {
         // New cards sit at the top of their column (negative pos).
         pos: Math.min(0, ...prev.map((i) => i.pos)) - 1024,
         tags: input.tags ?? [],
+        // A brand-new card has no relations yet (S1/S2: always-present arrays).
+        comments: [],
+        acceptance: [],
+        links: [],
       }
       patchCache(qc, (p) => [optimistic, ...p])
       return { prev }
@@ -188,7 +198,8 @@ export function useBoard(): UseBoardResult {
 
   // ── atomic claim (optimistic move → doing, rollback shows the 409) ─────────
   const claim = useMutation({
-    mutationFn: ({ id, session }: ClaimArgs) => boardApi.claim(id, session),
+    mutationFn: ({ id, session, deliver }: ClaimArgs) =>
+      boardApi.claim(id, session, deliver ?? true),
     onMutate: async ({ id, session }) => {
       await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
       const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []

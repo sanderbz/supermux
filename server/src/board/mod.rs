@@ -12,6 +12,8 @@
 //! `audit_log` row (§6.4 / M6 prompt).
 
 pub mod claim;
+pub mod dispatch;
+pub mod hook;
 pub mod prefix;
 
 use axum::extract::{Path, Query, State};
@@ -44,9 +46,34 @@ pub fn router_for(state: AppState) -> Router {
             delete(delete_status_handler).patch(rename_status_handler),
         )
         .route("/api/board/tag-completion", get(tag_completion_handler))
+        // AB2 — human-side (bearer) comment + acceptance + link CRUD.
+        .route("/api/board/{id}/comment", post(comment_handler))
+        .route(
+            "/api/board/{id}/acceptance",
+            post(add_acceptance_handler),
+        )
+        .route(
+            "/api/board/{id}/acceptance/reorder",
+            put(reorder_acceptance_handler),
+        )
+        .route(
+            "/api/board/{id}/acceptance/{item_id}",
+            patch(patch_acceptance_handler).delete(delete_acceptance_handler),
+        )
+        .route("/api/board/{id}/link", post(add_link_handler))
+        .route(
+            "/api/board/{id}/link/{link_id}",
+            delete(delete_link_handler),
+        )
         .route("/api/board/{id}", patch(patch_handler).delete(delete_handler))
         .route("/api/board/{id}/claim", post(claim_handler))
         .with_state(state)
+}
+
+/// Build the agent→board hook sub-router (AB1). Re-export of [`hook::router_for`]
+/// so `http::router` mounts it OUTSIDE the bearer layer alongside the status hook.
+pub fn hook_router_for(state: AppState) -> Router {
+    hook::router_for(state)
 }
 
 /// Build the public board sub-router (iCal feed; no auth — feature-extract §2.7).
@@ -193,29 +220,39 @@ async fn session_exists(state: &AppState, name: &str) -> Result<bool, AppError> 
     Ok(db::sessions::exists(&state.pool, name).await?)
 }
 
-/// Auto-notify-on-assign (feature-extract §2.6). When an agent-owned, claimable
-/// issue is assigned to a session by someone *else*, ping the assignee once
-/// (idempotent via the `notified` flag). The literal tmux `send_text` lands with
-/// the session lifecycle (M3); here we emit the observable SSE `alerts` event and
-/// flip `notified=1` so the eventual tmux send fires at most once.
-async fn maybe_notify_assignee(state: &AppState, id: &str) -> Result<(), AppError> {
+/// Auto-send-on-assign (S3; feature-extract §2.6). When an agent-owned issue is
+/// assigned to a session via PATCH, deliver the work to that session — the same
+/// auto-send the claim does, but on the assignment path. This replaces the dead
+/// `notified` TODO ("the literal tmux send_text lands with M3"): the send now
+/// actually exists, via the steering deliver-loop. `notified` is kept purely as
+/// the dedupe latch so one assignment dispatches at most once.
+///
+/// Returns the enqueued steer id when a dispatch fired (so a future UI could
+/// surface Undo on the patch path too); `None` when nothing was sent.
+async fn maybe_notify_assignee(state: &AppState, id: &str) -> Result<Option<i64>, AppError> {
     let Some(issue) = db::board::get_issue(&state.pool, id).await? else {
-        return Ok(());
+        return Ok(None);
     };
-    let Some(session) = issue.session.as_deref() else {
-        return Ok(());
+    let Some(session) = issue.session.clone() else {
+        return Ok(None);
     };
+    // Deliver on assignment to a fresh agent task (not a self-assign by the
+    // creator), exactly once per assignment.
     let claimable = issue.status == "todo" || issue.status == "backlog";
-    let needs_notify = issue.owner_type == "agent"
+    let needs_send = issue.owner_type == "agent"
         && claimable
         && issue.notified == 0
         && issue.creator != session
-        && session_exists(state, session).await?;
-    if needs_notify {
-        emit_alert(state, session, &format!("New task assigned: {}", issue.title));
-        db::board::patch_issue(&state.pool, id, &[IssueField::Notified(1)]).await?;
+        && session_exists(state, &session).await?;
+    if !needs_send {
+        return Ok(None);
     }
-    Ok(())
+    // Observable alert (kept for any browser listening) + the real dispatch.
+    emit_alert(state, &session, &format!("New task assigned: {}", issue.title));
+    let payload = dispatch::build_payload(&state.pool, &issue, &session).await?;
+    let steer_id = db::steering::enqueue(&state.pool, &session, &payload).await?;
+    db::board::patch_issue(&state.pool, id, &[IssueField::Notified(1)]).await?;
+    Ok(Some(steer_id))
 }
 
 // ── issues ───────────────────────────────────────────────────────────────────
@@ -446,38 +483,82 @@ async fn clear_done_handler(
 #[derive(Debug, Deserialize)]
 struct ClaimInput {
     session: String,
+    /// Auto-send the work to the agent (S3, user default = true). When true, the
+    /// claim enqueues the issue's dispatch payload into the session via the
+    /// existing steering deliver-loop (auto-wakes a stopped session). Set false
+    /// for "Claim only" — flip the DB link without dispatching.
+    #[serde(default = "default_deliver")]
+    deliver: bool,
+}
+
+fn default_deliver() -> bool {
+    true
+}
+
+/// The claim response carries the full issue view PLUS the dispatch outcome so
+/// the UI can render the "Sent to <session>" toast + an Undo (the `steer_id` is
+/// what the UI passes to `DELETE /api/sessions/{session}/steering` / the unsend).
+#[derive(Debug, Serialize)]
+struct ClaimResult {
+    issue: IssueView,
+    /// True when a steer was enqueued (deliver=true and the agent got the work).
+    delivered: bool,
+    /// The steering-queue row id of the just-enqueued dispatch, for the Undo
+    /// toast. `None` when `deliver` was false. Pass to the unsend endpoint to
+    /// retract a still-undelivered steer.
+    steer_id: Option<i64>,
 }
 
 async fn claim_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(input): Json<ClaimInput>,
-) -> Result<Json<Envelope<IssueView>>, AppError> {
-    let session = input.session.trim();
+) -> Result<Json<Envelope<ClaimResult>>, AppError> {
+    let session = input.session.trim().to_string();
     if session.is_empty() {
         return Err(AppError::BadRequest("session is required".into()));
     }
     // The claim sets `issues.session`; the FK requires the session to exist.
-    if !session_exists(&state, session).await? {
+    if !session_exists(&state, &session).await? {
         return Err(AppError::BadRequest(format!("unknown session '{session}'")));
     }
 
-    match claim::claim(&state.pool, &id, session).await {
-        Ok(_issue) => {
+    match claim::claim(&state.pool, &id, &session).await {
+        Ok(issue) => {
             // Audit (§6.4 / M6 prompt): record the claim.
             db::audit::log(
                 &state.pool,
                 &format!("agent:{session}"),
                 "issue.claim",
                 &id,
-                json!({ "session": session }),
+                json!({ "session": session, "deliver": input.deliver }),
             )
             .await?;
+
+            // S3 — board→agent: auto-send the work via the steering deliver-loop
+            // (the default). The loop delivers at the agent's next turn boundary
+            // and auto-wakes a stopped session — no new delivery machinery.
+            let steer_id = if input.deliver {
+                let payload = dispatch::build_payload(&state.pool, &issue, &session).await?;
+                let sid = db::steering::enqueue(&state.pool, &session, &payload).await?;
+                // Dedupe one delivery per assignment (repurposes the dead
+                // `notified` latch — it now guards a send that actually exists).
+                db::board::patch_issue(&state.pool, &id, &[IssueField::Notified(1)]).await?;
+                Some(sid)
+            } else {
+                None
+            };
+
             emit_board(&state).await;
             // Re-read the full view so claim returns the same shape (incl. 0010
             // relations) as every other board endpoint. `claim` already proved
             // the issue exists, so `view_of` cannot 404 here.
-            Ok(ok(view_of(&state, &id).await?))
+            let issue = view_of(&state, &id).await?;
+            Ok(ok(ClaimResult {
+                issue,
+                delivered: steer_id.is_some(),
+                steer_id,
+            }))
         }
         Err(ClaimError::NotFound) => Err(AppError::NotFound(format!("issue '{id}'"))),
         Err(ClaimError::NotAgentTask) => {
@@ -491,6 +572,198 @@ async fn claim_handler(
         )),
         Err(ClaimError::Db(e)) => Err(AppError::Internal(e.into())),
     }
+}
+
+// ── human-side comment + acceptance + link CRUD (bearer, AB2) ────────────────
+//
+// These run UNDER the bearer layer (dashboard token). Agent-side equivalents
+// live in `board::hook` (hook-token scoped). All emit_board + audit (actor=user).
+
+/// Resolve an issue id to 404 early, shared by the AB2 sub-resource handlers.
+async fn require_issue(state: &AppState, id: &str) -> Result<Issue, AppError> {
+    db::board::get_issue(&state.pool, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("issue '{id}'")))
+}
+
+#[derive(Debug, Deserialize)]
+struct HumanCommentInput {
+    body: String,
+}
+
+/// `POST /api/board/{id}/comment` — a human comment (author `'user'`).
+async fn comment_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<HumanCommentInput>,
+) -> Result<Json<Envelope<IssueView>>, AppError> {
+    require_issue(&state, &id).await?;
+    let body = input.body.trim();
+    if body.is_empty() {
+        return Err(AppError::BadRequest("body is required".into()));
+    }
+    let comment_id = db::board::insert_comment(&state.pool, &id, "user", body).await?;
+    db::audit::log(
+        &state.pool,
+        "user",
+        "issue.comment",
+        &id,
+        json!({ "comment_id": comment_id }),
+    )
+    .await?;
+    emit_board(&state).await;
+    Ok(ok(view_of(&state, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptanceInput {
+    body: String,
+}
+
+/// `POST /api/board/{id}/acceptance` — add an acceptance item (appended at end).
+async fn add_acceptance_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AcceptanceInput>,
+) -> Result<Json<Envelope<IssueView>>, AppError> {
+    require_issue(&state, &id).await?;
+    let body = input.body.trim();
+    if body.is_empty() {
+        return Err(AppError::BadRequest("body is required".into()));
+    }
+    let item_id = db::board::insert_acceptance(&state.pool, &id, body).await?;
+    db::audit::log(
+        &state.pool,
+        "user",
+        "issue.acceptance.add",
+        &id,
+        json!({ "item_id": item_id }),
+    )
+    .await?;
+    emit_board(&state).await;
+    Ok(ok(view_of(&state, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptancePatchInput {
+    body: Option<String>,
+    done: Option<bool>,
+}
+
+/// `PATCH /api/board/{id}/acceptance/{item_id}` — edit an item's body and/or
+/// toggle its done state. The item must belong to the issue in the path.
+async fn patch_acceptance_handler(
+    State(state): State<AppState>,
+    Path((id, item_id)): Path<(String, i64)>,
+    Json(input): Json<AcceptancePatchInput>,
+) -> Result<Json<Envelope<IssueView>>, AppError> {
+    require_issue(&state, &id).await?;
+    // Ownership: the item must be on this issue (no cross-issue edit by id guess).
+    let item = db::board::get_acceptance(&state.pool, item_id)
+        .await?
+        .filter(|i| i.issue_id == id)
+        .ok_or_else(|| AppError::NotFound(format!("acceptance item {item_id} not on '{id}'")))?;
+    if input.body.is_none() && input.done.is_none() {
+        return Err(AppError::BadRequest("no recognized field".into()));
+    }
+    if let Some(body) = input.body {
+        let body = body.trim();
+        if body.is_empty() {
+            return Err(AppError::BadRequest("body cannot be empty".into()));
+        }
+        db::board::update_acceptance_body(&state.pool, item.id, body).await?;
+    }
+    if let Some(done) = input.done {
+        db::board::toggle_acceptance(&state.pool, item.id, done).await?;
+    }
+    emit_board(&state).await;
+    Ok(ok(view_of(&state, &id).await?))
+}
+
+/// `DELETE /api/board/{id}/acceptance/{item_id}` — remove an acceptance item.
+async fn delete_acceptance_handler(
+    State(state): State<AppState>,
+    Path((id, item_id)): Path<(String, i64)>,
+) -> Result<Json<Envelope<IssueView>>, AppError> {
+    require_issue(&state, &id).await?;
+    let item = db::board::get_acceptance(&state.pool, item_id)
+        .await?
+        .filter(|i| i.issue_id == id)
+        .ok_or_else(|| AppError::NotFound(format!("acceptance item {item_id} not on '{id}'")))?;
+    db::board::delete_acceptance(&state.pool, item.id).await?;
+    emit_board(&state).await;
+    Ok(ok(view_of(&state, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptanceReorderInput {
+    order: Vec<i64>,
+}
+
+/// `PUT /api/board/{id}/acceptance/reorder` — set the checklist display order.
+async fn reorder_acceptance_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<AcceptanceReorderInput>,
+) -> Result<Json<Envelope<IssueView>>, AppError> {
+    require_issue(&state, &id).await?;
+    db::board::reorder_acceptance(&state.pool, &id, &input.order).await?;
+    emit_board(&state).await;
+    Ok(ok(view_of(&state, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct LinkInput {
+    kind: String,
+    #[serde(rename = "ref")]
+    r#ref: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// `POST /api/board/{id}/link` — attach a PR/commit ref (human side).
+async fn add_link_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<LinkInput>,
+) -> Result<Json<Envelope<IssueView>>, AppError> {
+    require_issue(&state, &id).await?;
+    let kind = input.kind.trim();
+    if kind != "pr" && kind != "commit" {
+        return Err(AppError::BadRequest("kind must be 'pr' or 'commit'".into()));
+    }
+    let r#ref = input.r#ref.trim();
+    if r#ref.is_empty() {
+        return Err(AppError::BadRequest("ref is required".into()));
+    }
+    let label = input.label.unwrap_or_default();
+    let link_id = db::board::insert_link(&state.pool, &id, kind, r#ref, label.trim()).await?;
+    db::audit::log(
+        &state.pool,
+        "user",
+        "issue.link.add",
+        &id,
+        json!({ "link_id": link_id, "kind": kind }),
+    )
+    .await?;
+    emit_board(&state).await;
+    Ok(ok(view_of(&state, &id).await?))
+}
+
+/// `DELETE /api/board/{id}/link/{link_id}` — remove a PR/commit ref.
+async fn delete_link_handler(
+    State(state): State<AppState>,
+    Path((id, link_id)): Path<(String, i64)>,
+) -> Result<Json<Envelope<IssueView>>, AppError> {
+    require_issue(&state, &id).await?;
+    // Confirm the link is on this issue before deleting (no cross-issue delete).
+    let links = db::board::links_for(&state.pool, &id).await?;
+    if !links.iter().any(|l| l.id == link_id) {
+        return Err(AppError::NotFound(format!("link {link_id} not on '{id}'")));
+    }
+    db::board::delete_link(&state.pool, link_id).await?;
+    emit_board(&state).await;
+    Ok(ok(view_of(&state, &id).await?))
 }
 
 // ── statuses (board columns) ─────────────────────────────────────────────────
@@ -861,6 +1134,219 @@ mod tests {
         assert!(by_id["T-3"].comments.is_empty());
         assert!(by_id["T-3"].acceptance.is_empty());
         assert!(by_id["T-3"].links.is_empty());
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Seed a live session so the `issues.session` FK + steering accept it.
+    async fn seed_session(state: &AppState, name: &str) {
+        db::sessions::insert_minimal(&state.pool, name, "/tmp", "claude")
+            .await
+            .expect("insert session");
+    }
+
+    // ── S3: claim auto-sends the work to the agent via steering ────────────────
+
+    #[tokio::test]
+    async fn claim_enqueues_steer_by_default() {
+        let (state, dir) = test_state().await;
+        seed_session(&state, "worker-2").await;
+        seed_issue(&state, "T-1").await;
+        db::board::insert_acceptance(&state.pool, "T-1", "compiles").await.unwrap();
+
+        // Default deliver=true (field omitted) → a steer is enqueued.
+        let res = claim_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-2" })).unwrap()),
+        )
+        .await
+        .expect("claim ok");
+        let result = &res.0.data;
+        assert!(result.delivered, "deliver defaults true");
+        let steer_id = result.steer_id.expect("steer id present");
+
+        // The steering row exists and carries the issue context.
+        let queued = db::steering::list(&state.pool, "worker-2").await.unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, steer_id);
+        assert!(queued[0].text.contains("T-1"), "payload names the issue");
+        assert!(queued[0].text.contains("compiles"), "payload has acceptance");
+        assert!(
+            queued[0].text.contains("/api/hook/board/comment"),
+            "payload teaches the report-back footer"
+        );
+
+        // The issue is now `doing`, linked, and `notified` latched once.
+        let issue = db::board::get_issue(&state.pool, "T-1").await.unwrap().unwrap();
+        assert_eq!(issue.status, "doing");
+        assert_eq!(issue.session.as_deref(), Some("worker-2"));
+        assert_eq!(issue.notified, 1);
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn claim_only_skips_the_steer() {
+        let (state, dir) = test_state().await;
+        seed_session(&state, "worker-2").await;
+        seed_issue(&state, "T-1").await;
+
+        // deliver=false → "Claim only": link flips, NO steer enqueued.
+        let res = claim_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-2", "deliver": false })).unwrap()),
+        )
+        .await
+        .expect("claim ok");
+        assert!(!res.0.data.delivered);
+        assert!(res.0.data.steer_id.is_none());
+        assert!(db::steering::list(&state.pool, "worker-2").await.unwrap().is_empty());
+
+        // Issue still claimed (link + status flipped) — only the send was skipped.
+        let issue = db::board::get_issue(&state.pool, "T-1").await.unwrap().unwrap();
+        assert_eq!(issue.status, "doing");
+        assert_eq!(issue.session.as_deref(), Some("worker-2"));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn claim_undo_clears_the_enqueued_steer() {
+        // The Undo toast clears the just-enqueued steer via steering::clear_one
+        // (what the UI's unsend calls). Prove the steer_id retracts it.
+        let (state, dir) = test_state().await;
+        seed_session(&state, "worker-2").await;
+        seed_issue(&state, "T-1").await;
+
+        let res = claim_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-2" })).unwrap()),
+        )
+        .await
+        .unwrap();
+        let steer_id = res.0.data.steer_id.unwrap();
+
+        let cleared = db::steering::clear_one(&state.pool, "worker-2", steer_id).await.unwrap();
+        assert_eq!(cleared, 1, "the enqueued steer is retracted");
+        assert!(db::steering::list(&state.pool, "worker-2").await.unwrap().is_empty());
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── AB2: human-side comment + acceptance CRUD (bearer) ─────────────────────
+
+    #[tokio::test]
+    async fn human_comment_appends_as_user() {
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "T-1").await;
+
+        let res = comment_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "body": "looks good" })).unwrap()),
+        )
+        .await
+        .expect("comment ok");
+        assert_eq!(res.0.data.comments.len(), 1);
+        assert_eq!(res.0.data.comments[0].author, "user");
+        assert_eq!(res.0.data.comments[0].body, "looks good");
+
+        // Empty body → 400.
+        let bad = comment_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "body": "  " })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::BadRequest(_))));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn human_acceptance_crud_roundtrip() {
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "T-1").await;
+
+        // Add.
+        let v = add_acceptance_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "body": "compiles" })).unwrap()),
+        )
+        .await
+        .unwrap();
+        let item_id = v.0.data.acceptance[0].id;
+        assert_eq!(v.0.data.acceptance[0].done, 0);
+
+        // Edit body + toggle done in one patch.
+        let v = patch_acceptance_handler(
+            State(state.clone()),
+            Path(("T-1".into(), item_id)),
+            Json(serde_json::from_value(json!({ "body": "compiles clean", "done": true })).unwrap()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v.0.data.acceptance[0].body, "compiles clean");
+        assert_eq!(v.0.data.acceptance[0].done, 1);
+
+        // A patch targeting an item on a DIFFERENT issue 404s (no cross-issue edit).
+        seed_issue(&state, "T-2").await;
+        let other = db::board::insert_acceptance(&state.pool, "T-2", "x").await.unwrap();
+        let cross = patch_acceptance_handler(
+            State(state.clone()),
+            Path(("T-1".into(), other)),
+            Json(serde_json::from_value(json!({ "done": true })).unwrap()),
+        )
+        .await;
+        assert!(matches!(cross, Err(AppError::NotFound(_))));
+
+        // Delete.
+        let v = delete_acceptance_handler(State(state.clone()), Path(("T-1".into(), item_id)))
+            .await
+            .unwrap();
+        assert!(v.0.data.acceptance.is_empty());
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn human_link_add_and_remove() {
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "T-1").await;
+
+        let v = add_link_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "kind": "pr", "ref": "https://x/pr/1", "label": "PR" })).unwrap()),
+        )
+        .await
+        .unwrap();
+        let link_id = v.0.data.links[0].id;
+        assert_eq!(v.0.data.links[0].kind, "pr");
+
+        // Bad kind → 400.
+        let bad = add_link_handler(
+            State(state.clone()),
+            Path("T-1".into()),
+            Json(serde_json::from_value(json!({ "kind": "bogus", "ref": "x" })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::BadRequest(_))));
+
+        let v = delete_link_handler(State(state.clone()), Path(("T-1".into(), link_id)))
+            .await
+            .unwrap();
+        assert!(v.0.data.links.is_empty());
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
