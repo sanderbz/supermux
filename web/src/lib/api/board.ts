@@ -114,6 +114,16 @@ export interface ClaimResult {
   steer_id: number | null
 }
 
+/** Spawn options for the unified Start-agent action (BR1). When passed to
+ *  {@link boardApi.start} (and no `session` is given) the server creates a NEW
+ *  session for the issue — name auto-derived from the issue title/id — then boots
+ *  it before claiming + delivering. `dir` empty/omitted defaults to home. */
+export interface StartSpawn {
+  dir?: string
+  provider?: string
+  worktree?: boolean
+}
+
 /** A board column (server/src/db/board.rs `BoardStatus`). */
 export interface BoardStatus {
   id: string
@@ -235,6 +245,23 @@ export const boardApi = {
     boardRequest(`/api/board/${encodeURIComponent(id)}/claim`, {
       method: 'POST',
       body: JSON.stringify({ session, deliver }),
+    }),
+
+  /** `POST /api/board/{id}/start` — the unified "Start agent" action (BR1). Makes
+   *  the issue agent-owned, attaches an existing live `session` OR spawns a NEW
+   *  one (pass `spawn`), then atomic-claims + delivers the work via the same
+   *  steering path as {@link boardApi.claim}. Returns `{ issue, delivered,
+   *  steer_id }` — `steer_id` drives the Undo via {@link boardApi.unsend}. Throws
+   *  a `BoardError` (`status === 409`) when another session is already working it,
+   *  400 when neither `session` nor `spawn` is given. `claim` stays available for
+   *  back-compat but the UI starts agents through this. */
+  start: (
+    id: string,
+    opts: { session?: string; spawn?: StartSpawn },
+  ): Promise<ClaimResult> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/start`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
     }),
 
   /** Undo a just-claimed auto-send: retract the enqueued steer before the agent

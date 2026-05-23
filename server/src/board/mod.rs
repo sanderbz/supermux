@@ -67,6 +67,11 @@ pub fn router_for(state: AppState) -> Router {
         )
         .route("/api/board/{id}", patch(patch_handler).delete(delete_handler))
         .route("/api/board/{id}/claim", post(claim_handler))
+        // Board rework (BR1) — the unified "Start agent" action. Makes the issue
+        // agent-owned, optionally spawns+boots a session, then atomic-claims +
+        // delivers via the SAME steering path as `/claim`. Returns a
+        // `ClaimResult` so the frontend Undo (unsend) keeps working unchanged.
+        .route("/api/board/{id}/start", post(start_handler))
         .with_state(state)
 }
 
@@ -619,6 +624,208 @@ async fn claim_handler(
         )),
         Err(ClaimError::Db(e)) => Err(AppError::Internal(e.into())),
     }
+}
+
+// ── unified "Start agent" (BR1) ───────────────────────────────────────────────
+//
+// The board-rework primary action. One call: make the issue agent-owned (so the
+// claim CAS precondition holds without a manual owner toggle), optionally
+// spawn+boot a session, then atomic-claim + deliver through the SAME steering
+// path `/claim` uses. Returns the `ClaimResult` shape so the frontend Undo
+// (unsend) keeps working unchanged.
+
+#[derive(Debug, Deserialize)]
+struct SpawnInput {
+    #[serde(default)]
+    dir: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    worktree: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StartAgentInput {
+    /// Attach to an existing live session. Mutually-exclusive-ish with `spawn`:
+    /// when both are present, `session` wins (attach beats spawn).
+    #[serde(default)]
+    session: Option<String>,
+    /// Spawn a NEW session for this issue (reuse `sessions::create` +
+    /// `lifecycle::start`), name auto-derived from the issue.
+    #[serde(default)]
+    spawn: Option<SpawnInput>,
+}
+
+/// Deliver the dispatch payload to `session` via the steering deliver-loop —
+/// the exact path `claim_handler` runs on a delivered claim. Latches `notified`
+/// so one assignment dispatches at most once. Returns the steer id for Undo.
+async fn deliver_to_session(
+    state: &AppState,
+    id: &str,
+    issue: &Issue,
+    session: &str,
+) -> Result<i64, AppError> {
+    let payload = dispatch::build_payload(&state.pool, issue, session).await?;
+    let steer_id = db::steering::enqueue(&state.pool, session, &payload).await?;
+    db::board::patch_issue(&state.pool, id, &[IssueField::Notified(1)]).await?;
+    Ok(steer_id)
+}
+
+/// Slug for an auto-derived session name: keep `[A-Za-z0-9_.-]`, collapse other
+/// runs to `-`, bound length so it always satisfies `sessions::valid_name`.
+fn session_slug(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+            out.push(c);
+            prev_dash = c == '-';
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').chars().take(60).collect()
+}
+
+/// Pick a session name for a spawn: slug of the issue title (fallback: slug of
+/// the id, fallback: "agent") + a short uniqueness suffix, guaranteed unique
+/// against the sessions table and valid per `sessions::valid_name`.
+async fn derive_session_name(state: &AppState, issue: &Issue) -> Result<String, AppError> {
+    let mut base = session_slug(&issue.title);
+    if base.is_empty() {
+        base = session_slug(&issue.id);
+    }
+    if base.is_empty() {
+        base = "agent".to_string();
+    }
+    // Short suffix from the issue id so re-starts on the same card stay readable.
+    let suffix: String = session_slug(&issue.id)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(4)
+        .collect();
+    let candidate = if suffix.is_empty() {
+        base.clone()
+    } else {
+        format!("{base}-{suffix}")
+    };
+    let candidate: String = candidate.chars().take(90).collect();
+    if !db::sessions::exists(&state.pool, &candidate).await? {
+        return Ok(candidate);
+    }
+    // Collision (rare) — append an incrementing tail until free.
+    for n in 2..1000 {
+        let next: String = format!("{candidate}-{n}").chars().take(95).collect();
+        if !db::sessions::exists(&state.pool, &next).await? {
+            return Ok(next);
+        }
+    }
+    Err(AppError::Internal(anyhow::anyhow!(
+        "could not derive a unique session name for issue '{}'",
+        issue.id
+    )))
+}
+
+/// `POST /api/board/{id}/start` — the unified Start-agent action (BR1).
+async fn start_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<StartAgentInput>,
+) -> Result<Json<Envelope<ClaimResult>>, AppError> {
+    // 1. Load the issue (404 if missing/deleted).
+    let issue = db::board::get_issue(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("issue '{id}'")))?;
+
+    // 2. Starting an agent MAKES the issue agent-owned. Idempotent UPDATE that
+    //    satisfies the claim CAS precondition (`owner_type='agent'`) — the user
+    //    never needs a manual owner toggle.
+    if issue.owner_type != "agent" {
+        db::board::patch_issue(&state.pool, &id, &[IssueField::OwnerType("agent".into())]).await?;
+    }
+
+    // 3. Resolve the target session: attach an existing one, or spawn a new one.
+    let session = match input.session.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => {
+            if !session_exists(&state, s).await? {
+                return Err(AppError::BadRequest(format!("unknown session '{s}'")));
+            }
+            s.to_string()
+        }
+        _ => {
+            let Some(spawn) = input.spawn else {
+                return Err(AppError::BadRequest("provide a session or spawn".into()));
+            };
+            // Create the session (name derived from the issue). Failure → a clean
+            // 4xx/5xx; the issue is only owner-flipped at this point (no claim
+            // yet), so we never leave a half-claimed issue.
+            let name = derive_session_name(&state, &issue).await?;
+            let create_input = crate::sessions::CreateInput {
+                name: name.clone(),
+                dir: spawn.dir,
+                desc: None,
+                provider: spawn.provider,
+                creator: None,
+                flags: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: spawn.worktree,
+            };
+            crate::sessions::create(&state, create_input).await?;
+            // Boot it so the steering deliver-loop has a live pane to talk to.
+            crate::sessions::lifecycle::start(&state, &name, None).await?;
+            name
+        }
+    };
+
+    // 4. Atomic-claim for that session (CAS on status IN (todo,backlog)).
+    let claimed = match claim::claim(&state.pool, &id, &session).await {
+        Ok(issue) => issue,
+        // Idempotent: already `doing` AND linked to the SAME session → success,
+        // not a 409. Re-deliver so a re-tap still pushes the work.
+        Err(ClaimError::WrongStatus(_)) | Err(ClaimError::Taken) => {
+            let current = db::board::get_issue(&state.pool, &id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("issue '{id}'")))?;
+            if current.status == "doing" && current.session.as_deref() == Some(session.as_str()) {
+                current
+            } else {
+                return Err(AppError::Conflict(
+                    "another session is already working this issue".into(),
+                ));
+            }
+        }
+        Err(ClaimError::NotFound) => return Err(AppError::NotFound(format!("issue '{id}'"))),
+        Err(ClaimError::NotAgentTask) => {
+            // Should be unreachable (step 2 made it agent-owned), but stay precise.
+            return Err(AppError::Conflict("item is not an agent task".into()));
+        }
+        Err(ClaimError::Db(e)) => return Err(AppError::Internal(e.into())),
+    };
+
+    // Audit the start as a claim (same actor + action as `/claim`).
+    db::audit::log(
+        &state.pool,
+        &format!("agent:{session}"),
+        "issue.claim",
+        &id,
+        json!({ "session": session, "via": "start" }),
+    )
+    .await?;
+
+    // 5. Deliver via the SAME steering path the claim uses on a delivered claim.
+    let steer_id = deliver_to_session(&state, &id, &claimed, &session).await?;
+
+    emit_board(&state).await;
+    // 6. Re-read the full view so start returns the same shape as `/claim`.
+    let issue = view_of(&state, &id).await?;
+    Ok(ok(ClaimResult {
+        issue,
+        delivered: true,
+        steer_id: Some(steer_id),
+    }))
 }
 
 // ── human-side comment + acceptance + link CRUD (bearer, AB2) ────────────────
@@ -1371,6 +1578,157 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── BR1: unified "Start agent" endpoint ────────────────────────────────────
+
+    #[tokio::test]
+    async fn start_attaches_existing_session_and_delivers() {
+        let (state, dir) = test_state().await;
+        seed_session(&state, "worker-2").await;
+        // A human-owned todo — start MUST flip it to agent-owned itself.
+        db::board::insert_issue(
+            &state.pool,
+            &NewIssue {
+                id: "S-1".into(),
+                title: "do the thing".into(),
+                desc: String::new(),
+                status: "todo".into(),
+                session: None,
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "human".into(),
+                pos: 0.0,
+                notified: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        let res = start_handler(
+            State(state.clone()),
+            Path("S-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-2" })).unwrap()),
+        )
+        .await
+        .expect("start ok");
+        assert!(res.0.data.delivered, "start always delivers");
+        let steer_id = res.0.data.steer_id.expect("steer id present");
+
+        // The issue is agent-owned, doing, linked, and a steer is queued.
+        let issue = db::board::get_issue(&state.pool, "S-1").await.unwrap().unwrap();
+        assert_eq!(issue.owner_type, "agent", "start makes it agent-owned");
+        assert_eq!(issue.status, "doing");
+        assert_eq!(issue.session.as_deref(), Some("worker-2"));
+        let queued = db::steering::list(&state.pool, "worker-2").await.unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, steer_id);
+        assert!(queued[0].text.contains("S-1"), "payload names the issue");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn start_without_session_or_spawn_is_400() {
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "S-1").await;
+        let bad = start_handler(
+            State(state.clone()),
+            Path("S-1".into()),
+            Json(serde_json::from_value(json!({})).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::BadRequest(_))));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn start_missing_issue_is_404() {
+        let (state, dir) = test_state().await;
+        seed_session(&state, "worker-2").await;
+        let bad = start_handler(
+            State(state.clone()),
+            Path("nope".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-2" })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::NotFound(_))));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn start_is_idempotent_for_same_session() {
+        let (state, dir) = test_state().await;
+        seed_session(&state, "worker-2").await;
+        seed_issue(&state, "S-1").await;
+
+        // First start claims + delivers.
+        let _ = start_handler(
+            State(state.clone()),
+            Path("S-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-2" })).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        // Re-start with the SAME session → idempotent success (not a 409), and a
+        // fresh steer is queued so the re-tap still pushes the work.
+        let res = start_handler(
+            State(state.clone()),
+            Path("S-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-2" })).unwrap()),
+        )
+        .await
+        .expect("re-start is idempotent success");
+        assert!(res.0.data.delivered);
+        let queued = db::steering::list(&state.pool, "worker-2").await.unwrap();
+        assert_eq!(queued.len(), 2, "re-start re-delivers");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn start_with_doing_other_session_is_409() {
+        let (state, dir) = test_state().await;
+        seed_session(&state, "worker-a").await;
+        seed_session(&state, "worker-b").await;
+        seed_issue(&state, "S-1").await;
+
+        // worker-a starts it (now doing, linked to worker-a).
+        let _ = start_handler(
+            State(state.clone()),
+            Path("S-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-a" })).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        // worker-b tries to start the SAME (already-doing) issue → 409.
+        let bad = start_handler(
+            State(state.clone()),
+            Path("S-1".into()),
+            Json(serde_json::from_value(json!({ "session": "worker-b" })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::Conflict(_))));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn session_slug_is_name_safe() {
+        assert_eq!(session_slug("Do the thing!"), "Do-the-thing");
+        assert_eq!(session_slug("  spaced  out  "), "spaced-out");
+        assert_eq!(session_slug("keep_dots.and-dashes"), "keep_dots.and-dashes");
+        assert_eq!(session_slug("***"), "");
+        // Bounded to 60 chars.
+        assert!(session_slug(&"a".repeat(200)).len() <= 60);
     }
 
     // ── AB2: human-side comment + acceptance CRUD (bearer) ─────────────────────
