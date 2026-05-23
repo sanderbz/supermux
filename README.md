@@ -103,14 +103,42 @@ bash scripts/deploy.sh
 `deploy.sh` runs an upfront preflight against the host and prints a one-page
 plan before doing anything destructive. The defaults are noob-proof:
 
+- **Non-root by default — even from a root SSH session.** The account you
+  *deploy with* (your SSH login, often `root` on a fresh VPS) is **not** the
+  account the service *runs as*. Deploying over a root SSH session is fine and
+  expected — root provisions (creates the service user, installs the unit) —
+  but the service runs as the unprivileged `supermux` user. Running as root
+  would throw away the systemd hardening sandbox **and** trip Claude Code's
+  refusal to run `--dangerously-skip-permissions` as uid 0, so it is refused
+  unless you explicitly force `SUPERMUX_ALLOW_ROOT=1` (a loud, last-resort
+  escape hatch — see below).
 - **Service user** — defaults to `supermux`. If the user doesn't exist on the
-  host, `deploy.sh` runs `sudo useradd -m -s /bin/bash supermux` for you. If
-  you pick a non-default `SUPERMUX_SERVICE_USER`, you must create it yourself
-  (the script refuses rather than silently provisioning an unexpected
-  account).
+  host, `deploy.sh` fully provisions it for you: `sudo useradd -m -s /bin/bash
+  supermux` plus ownership of its home, data dir, and project dirs. If you pick
+  a non-default `SUPERMUX_SERVICE_USER`, you must create it yourself (the script
+  refuses rather than silently provisioning an unexpected account).
+- **Project directories** (where your agents work) — `deploy.sh` provisions the
+  dirs the service user needs read+write access to. The default is
+  `<user-home>/projects` (e.g. `/home/supermux/projects`), already owned by the
+  service user → zero permission fuss. Point `SUPERMUX_PROJECT_DIRS` elsewhere
+  (colon-separated) and the script wires it up: dirs under the user's home just
+  work; dirs outside it (`/opt/projects`, `/srv/work`, …) are created and
+  `chown -R`'d to the service user, then added to the systemd `ReadWritePaths`
+  so the sandbox permits the writes.
+- **Service-user Claude login** — supermux uses your Claude **subscription**
+  (OAuth), never an API key / `ANTHROPIC_API_KEY` / API billing. The service
+  user must be logged in. After provisioning, `deploy.sh` checks for
+  `~supermux/.claude/.credentials.json`; if it's missing it offers (with your
+  consent) to copy the deployer's existing Claude login to the service user —
+  the fast path that reuses your subscription. Either way it **verifies** the
+  login before declaring success and, if it's still missing, warns loudly with
+  the exact command to run: `sudo -u supermux -i claude` then `/login`. Control
+  the copy behaviour with `SUPERMUX_COPY_CLAUDE_CREDS` (`ask` / `1` / `0`).
 - **ReadWritePaths** — defaults to a sane set covering the data dir, the
-  service user's home, and `/opt/projects` (only if that directory exists on
-  the host). Override `SUPERMUX_READ_WRITE_PATHS` to scope it differently.
+  service user's home, the project dirs, and `/opt/projects` (only if that
+  directory exists on the host). Override `SUPERMUX_READ_WRITE_PATHS` to scope
+  it differently — `deploy.sh` still appends your project dirs so agents can
+  always write there.
 - **Tailscale** — auto-detected. If the host has `tailscale` installed AND
   `tailscaled` is running, `deploy.sh` defaults to exposing the service via
   `tailscale serve` on port `443`, giving you a clean URL like
@@ -126,9 +154,14 @@ plan before doing anything destructive. The defaults are noob-proof:
   official `bun` and `rustup` installers (pinned to your local `bun` version
   and `rustup`'s stable channel) — otherwise a missing toolchain is a hard
   error with manual-install instructions.
-- **Root deploys** — `SUPERMUX_SERVICE_USER=root` is refused unless you also
-  set `SUPERMUX_ALLOW_ROOT=1`. The systemd unit is then rendered with
-  relaxed hardening so `/root` is reachable.
+- **Running as root (last resort)** — `SUPERMUX_SERVICE_USER=root` is refused
+  unless you also set `SUPERMUX_ALLOW_ROOT=1`, which prints a loud warning. This
+  is a security + functionality trade-off, not just a hardening knob: the
+  systemd sandbox is largely given up (`ProtectHome=false`,
+  `ReadWritePaths=/root`) and Claude Code refuses
+  `--dangerously-skip-permissions` as uid 0, so your agents may not run. Prefer
+  the default unprivileged user — root still runs the deploy, only the service
+  drops privileges.
 
 ### Configuration reference
 
@@ -162,18 +195,33 @@ dir. The data dir stays scoped to supermux's own state (SQLite DB, auth
 token, `config.toml`, uploads), so backing it up or wiping it never touches
 the user's shell history or agent caches.
 
-- **Default (unprivileged user).** `SUPERMUX_SERVICE_USER` defaults to
-  `supermux`; the unit renders with `ProtectHome=true` and `ReadWritePaths=`
-  set to the smart default (data dir + service-user home + `/opt/projects` if
-  present). Override `SUPERMUX_READ_WRITE_PATHS` (colon-separated) to scope it
+- **Default (unprivileged user) — even from a root SSH session.**
+  `SUPERMUX_SERVICE_USER` defaults to `supermux`; the unit renders with
+  `ProtectHome=true` and `ReadWritePaths=` set to the smart default (data dir +
+  service-user home + project dirs + `/opt/projects` if present). The account
+  you SSH in as to deploy is independent of this: root (or any sudo-capable
+  login) *provisions* the host, then the service drops to `supermux`. Override
+  `SUPERMUX_READ_WRITE_PATHS` (colon-separated) to scope the writable set
   differently, e.g. `SUPERMUX_READ_WRITE_PATHS=/home/supermux:/srv/scratch`.
-- **Root deploys.** `SUPERMUX_SERVICE_USER=root` is refused by default because
-  `ProtectHome=true` would mask `/root` and the unit could not chdir to its
-  data dir. To opt in, set `SUPERMUX_ALLOW_ROOT=1`; `deploy.sh` then renders
-  the unit with `ProtectHome=false` and `ReadWritePaths=/root` so tmux/claude/
-  git children can operate in arbitrary subdirs. All other hardening directives
-  (NoNewPrivileges, ProtectKernelTunables, PrivateTmp, RestrictAddressFamilies,
-  …) still apply, but the user-isolation trade-off is on the operator.
+- **Project directories.** `SUPERMUX_PROJECT_DIRS` (default
+  `<user-home>/projects`) is where agents do their work. `deploy.sh` creates
+  these and ensures the service user owns them — under-home dirs already are
+  owned; outside-home dirs are `chown -R`'d — and folds them into
+  `ReadWritePaths` so the sandbox permits agent writes.
+- **Claude login (subscription, never API key).** The service user must be
+  logged in to Claude with your **subscription**. `deploy.sh` checks for
+  `~supermux/.claude/.credentials.json` after provisioning, offers (with
+  consent) to copy the deployer's existing login, then verifies — warning loudly
+  with `sudo -u supermux -i claude` + `/login` if it's still missing. supermux
+  never uses `ANTHROPIC_API_KEY` or API billing.
+- **Running as root (last resort).** `SUPERMUX_SERVICE_USER=root` is refused by
+  default — not only because `ProtectHome=true` would mask `/root`, but because
+  Claude Code refuses `--dangerously-skip-permissions` as uid 0 (agents may not
+  run at all). To force it, set `SUPERMUX_ALLOW_ROOT=1`; you'll get a loud
+  warning, and `deploy.sh` renders the unit with `ProtectHome=false` and
+  `ReadWritePaths=/root`. All other hardening directives (NoNewPrivileges,
+  ProtectKernelTunables, PrivateTmp, RestrictAddressFamilies, …) still apply,
+  but the user-isolation + Claude trade-offs are on the operator.
 
 Verify after deploy (the health route is public, no token needed):
 
