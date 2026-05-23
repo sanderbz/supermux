@@ -84,9 +84,24 @@ default `8824`) and speaks plain HTTP. Put it behind TLS one of two ways:
    to the loopback port.
 
 The committed systemd unit at [`etc/systemd/supermux.service`](etc/systemd/supermux.service)
-is a **template** — `deploy.sh` substitutes the service user and data directory
-from your environment at install time. It keeps the service unprivileged and
-applies a full set of systemd sandboxing directives.
+is a **template** — `deploy.sh` substitutes the service user, data directory,
+and the hardening knobs (`ProtectHome`, `ReadWritePaths`) from your environment
+at install time. By default it keeps the service unprivileged and applies a
+full set of systemd sandboxing directives.
+
+- **Default (unprivileged user).** `SUPERMUX_SERVICE_USER` defaults to
+  `supermux`; the unit renders with `ProtectHome=true` and `ReadWritePaths=`
+  scoped to the data dir. If tmux/git/claude need to write outside the data
+  dir (multi-project workflows), set `SUPERMUX_READ_WRITE_PATHS` to a
+  colon-separated list of extra writable roots — e.g.
+  `SUPERMUX_READ_WRITE_PATHS=/home/supermux:/opt/projects`.
+- **Root deploys.** `SUPERMUX_SERVICE_USER=root` is refused by default because
+  `ProtectHome=true` would mask `/root` and the unit could not chdir to its
+  data dir. To opt in, set `SUPERMUX_ALLOW_ROOT=1`; `deploy.sh` then renders
+  the unit with `ProtectHome=false` and `ReadWritePaths=/root` so tmux/claude/
+  git children can operate in arbitrary subdirs. All other hardening directives
+  (NoNewPrivileges, ProtectKernelTunables, PrivateTmp, RestrictAddressFamilies,
+  …) still apply, but the user-isolation trade-off is on the operator.
 
 Verify after deploy (the health route is public, no token needed):
 

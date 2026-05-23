@@ -1,22 +1,30 @@
 # supermux systemd unit — TEMPLATE.
 #
 # This is a template, not a ready-to-install unit. `scripts/deploy.sh`
-# substitutes the __SERVICE_USER__ and __DATA_DIR__ placeholders from your
-# environment (or .env) and installs the result to
-# /etc/systemd/system/supermux.service on the host.
+# substitutes the placeholders (__SERVICE_USER__, __DATA_DIR__,
+# __PROTECT_HOME__, __READ_WRITE_PATHS__) from your environment (or .env)
+# and installs the result to /etc/systemd/system/supermux.service on the host.
 #
-# SECURITY: the service is NOT run as root. supermux-server exposes a full
-# filesystem read/write API (GET /api/ls, GET/PUT /api/file,
+# SECURITY: by default the service is NOT run as root. supermux-server exposes
+# a full filesystem read/write API (GET /api/ls, GET/PUT /api/file,
 # POST /api/fs/upload, DELETE /api/fs/delete) and spawns child processes
 # (tmux, git, claude, codex). Running as uid 0 would make any auth-token leak,
 # path-jail escape or command-injection root-equivalent on the host. The
 # service therefore runs as an unprivileged account, with systemd sandboxing
 # locked down to exactly what the service needs:
-#   - read+write only its data dir — ProtectSystem=strict makes the rest of
-#     the filesystem read-only, ReadWritePaths scopes the writes;
+#   - read+write only the configured paths — ProtectSystem=strict makes the
+#     rest of the filesystem read-only, ReadWritePaths scopes the writes;
 #   - no privilege escalation (NoNewPrivileges), private /tmp, kernel + cgroup
 #     tunables protected, address families restricted to what an HTTP service
 #     plus the tmux AF_UNIX socket need.
+#
+# ROOT DEPLOYS: if you explicitly opt in to running as root (deploy.sh requires
+# SUPERMUX_ALLOW_ROOT=1), the deploy renders __PROTECT_HOME__=false (because
+# ProtectHome=true would mask /root and the unit could not chdir to its
+# WorkingDirectory) and __READ_WRITE_PATHS__=/root (so tmux/claude/git children
+# can write in arbitrary subdirs under /root). All other hardening directives
+# still apply. The remaining sandbox is still meaningful, but the privilege
+# trade-off is on the operator.
 [Unit]
 Description=supermux (Rust)
 After=network.target
@@ -49,10 +57,17 @@ NoNewPrivileges=true
 # ReadWritePaths below are writable. ProtectSystem=strict deliberately breaks
 # the files API writing outside the data dir — that is the intended jail.
 ProtectSystem=strict
-# /home, /root, /run/user are inaccessible EXCEPT the service data dir, which
-# is re-granted read+write via ReadWritePaths.
-ProtectHome=true
-ReadWritePaths=__DATA_DIR__
+# /home, /root, /run/user are inaccessible EXCEPT the paths re-granted by
+# ReadWritePaths below. For root deploys deploy.sh renders ProtectHome=false
+# (otherwise /root would be masked and the unit could not chdir to its data
+# dir); for non-root deploys this stays `true`.
+ProtectHome=__PROTECT_HOME__
+# Paths the service may write to. Defaults to the data dir for non-root
+# deploys; deploy.sh broadens it for root (to /root) and exposes
+# SUPERMUX_READ_WRITE_PATHS so operators can extend it for multi-project
+# workflows (e.g. /home/supermux:/opt/projects). Multiple paths are
+# whitespace-separated per systemd's ReadWritePaths= syntax.
+ReadWritePaths=__READ_WRITE_PATHS__
 # tmux keeps its server socket under $XDG_RUNTIME_DIR (/run/user/<uid>); the
 # service must be able to create/connect to it to drive sessions.
 RuntimeDirectory=supermux

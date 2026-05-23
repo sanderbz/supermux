@@ -22,14 +22,16 @@
 # `.env.example` to `.env` and fill in your values — this script sources
 # `.env` automatically if present.
 #
-# Env:  SUPERMUX_DEPLOY_HOST    ssh target              (REQUIRED, no default)
-#       SUPERMUX_SERVICE_USER   service account on host (default: supermux)
-#       SUPERMUX_DATA_DIR       data dir on host        (default: derived from user)
-#       SUPERMUX_INTERNAL_PORT  loopback bind port      (default: 8824)
-#       SUPERMUX_PUBLIC_PORT    tailscale https port    (default: 8823)
-#       SUPERMUX_USE_TAILSCALE  expose via tailscale    (default: 0 = off)
-#       SUPERMUX_REMOTE_DIR     build dir on host       (default: /opt/supermux)
-#       SUPERMUX_DEPLOY_REF     git ref to deploy       (default: HEAD)
+# Env:  SUPERMUX_DEPLOY_HOST       ssh target              (REQUIRED, no default)
+#       SUPERMUX_SERVICE_USER      service account on host (default: supermux)
+#       SUPERMUX_ALLOW_ROOT        opt in to User=root + relaxed hardening (default: 0)
+#       SUPERMUX_DATA_DIR          data dir on host        (default: derived from user)
+#       SUPERMUX_READ_WRITE_PATHS  extra writable dirs     (default: derived from user)
+#       SUPERMUX_INTERNAL_PORT     loopback bind port      (default: 8824)
+#       SUPERMUX_PUBLIC_PORT       tailscale https port    (default: 8823)
+#       SUPERMUX_USE_TAILSCALE     expose via tailscale    (default: 0 = off)
+#       SUPERMUX_REMOTE_DIR        build dir on host       (default: /opt/supermux)
+#       SUPERMUX_DEPLOY_REF        git ref to deploy       (default: HEAD)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,12 +48,54 @@ if [ -z "$HOST" ]; then
 fi
 
 SERVICE_USER="${SUPERMUX_SERVICE_USER:-supermux}"
-DATA_DIR="${SUPERMUX_DATA_DIR:-/home/$SERVICE_USER/.supermux}"
+ALLOW_ROOT="${SUPERMUX_ALLOW_ROOT:-0}"
 PUBLIC_PORT="${SUPERMUX_PUBLIC_PORT:-8823}"
 INTERNAL_PORT="${SUPERMUX_INTERNAL_PORT:-8824}"
 USE_TAILSCALE="${SUPERMUX_USE_TAILSCALE:-0}"
 REMOTE_DIR="${SUPERMUX_REMOTE_DIR:-/opt/supermux}"
 DEPLOY_REF="${SUPERMUX_DEPLOY_REF:-HEAD}"
+
+# ── refuse User=root unless explicitly opted in ─────────────────────────────
+# The systemd unit's hardening directives are written for an unprivileged
+# user — `ProtectHome=true` masks /root, so a root-owned data dir under
+# /root/.supermux is unreachable and the unit refuses to start (this is the
+# bug that broke clawd-02 and required a hand-edit of the installed unit).
+# Demand an explicit opt-in: SUPERMUX_ALLOW_ROOT=1 trades the user-level
+# isolation away in exchange for ProtectHome=false + ReadWritePaths=/root.
+if [ "$SERVICE_USER" = "root" ] && [ "$ALLOW_ROOT" != "1" ]; then
+  echo "[deploy] error: SUPERMUX_SERVICE_USER=root is incoherent with the hardening directives" >&2
+  echo "[deploy]        (ProtectHome=true blocks /root; the unit won't start)." >&2
+  echo "[deploy]        Pick an unprivileged user (recommended), OR set SUPERMUX_ALLOW_ROOT=1 to" >&2
+  echo "[deploy]        explicitly opt out of hardening and accept the security trade-off." >&2
+  exit 1
+fi
+
+# DATA_DIR default depends on whether the service user is root.
+if [ "$SERVICE_USER" = "root" ]; then
+  DATA_DIR="${SUPERMUX_DATA_DIR:-/root/.supermux}"
+else
+  DATA_DIR="${SUPERMUX_DATA_DIR:-/home/$SERVICE_USER/.supermux}"
+fi
+
+# Hardening knobs rendered into the template. Defaults match the unprivileged
+# baseline (ProtectHome=true, ReadWritePaths=$DATA_DIR). For root deploys we
+# relax ProtectHome to false (so /root is reachable) and broaden the writable
+# set to /root (so tmux/git/claude can operate in arbitrary subdirs).
+# SUPERMUX_READ_WRITE_PATHS lets non-root operators broaden the set too — pass
+# a colon-separated list (converted to spaces for the unit), e.g.
+# "/home/supermux:/opt/projects".
+if [ "$SERVICE_USER" = "root" ]; then
+  PROTECT_HOME_DEFAULT="false"
+  READ_WRITE_PATHS_DEFAULT="/root"
+else
+  PROTECT_HOME_DEFAULT="true"
+  READ_WRITE_PATHS_DEFAULT="$DATA_DIR"
+fi
+PROTECT_HOME="${SUPERMUX_PROTECT_HOME:-$PROTECT_HOME_DEFAULT}"
+# Accept either colon- or whitespace-separated input; emit whitespace
+# per systemd ReadWritePaths= grammar.
+READ_WRITE_PATHS_RAW="${SUPERMUX_READ_WRITE_PATHS:-$READ_WRITE_PATHS_DEFAULT}"
+READ_WRITE_PATHS="$(printf '%s' "$READ_WRITE_PATHS_RAW" | tr ':' ' ')"
 
 # ── 0. pin the source: require a clean tree, resolve the exact commit ───────
 # A non-reproducible deploy (shipping a dirty working tree) is refused here:
@@ -70,6 +114,20 @@ GIT_SHA_SHORT="$(git rev-parse --short "$DEPLOY_REF")"
 
 echo "[deploy] target=$HOST  user=$SERVICE_USER  internal=loopback:$INTERNAL_PORT"
 echo "[deploy] deploying commit $GIT_SHA_SHORT ($GIT_SHA)"
+echo "[deploy] hardening: ProtectHome=$PROTECT_HOME  ReadWritePaths=$READ_WRITE_PATHS"
+
+# ── 0b. host preflight: bun + cargo must be provisioned before we ship ──────
+# The remote build step (§2 below) ALSO checks bun/cargo as a belt-and-braces
+# guard, but doing the check up here saves the cost of shipping a git archive
+# (a few MB over a high-latency link) to a host that we already know cannot
+# build it. Both errors are explicit pointers, not auto-installers.
+echo "[deploy] preflight: checking host toolchain on $HOST"
+if ! ssh "$HOST" 'bash -lc "[ -d \$HOME/.bun/bin ] && export PATH=\$HOME/.bun/bin:\$PATH; [ -f \$HOME/.cargo/env ] && . \$HOME/.cargo/env; command -v bun >/dev/null && command -v cargo >/dev/null"'; then
+  echo "[deploy] error: $HOST is missing bun and/or cargo." >&2
+  echo "[deploy]        Provision them once on the host (out of band — this script never" >&2
+  echo "[deploy]        runs curl|bash toolchain installers as root). See README §Deploy." >&2
+  exit 1
+fi
 
 # ── 1. ship a pinned source snapshot to the host ────────────────────────────
 # `git archive` emits exactly the tracked content at $GIT_SHA — no .git, no
@@ -101,19 +159,30 @@ REMOTE_BUILD
 
 # ── 3. render the systemd unit template from env ────────────────────────────
 # The committed unit (etc/systemd/supermux.service) is a template with
-# __SERVICE_USER__ / __DATA_DIR__ placeholders; fill them in here and, when
-# Tailscale is enabled, uncomment the optional After/Wants=tailscaled lines.
+# __SERVICE_USER__ / __DATA_DIR__ / __PROTECT_HOME__ / __READ_WRITE_PATHS__
+# placeholders; fill them in here and, when Tailscale is enabled, uncomment
+# the optional After/Wants=tailscaled lines.
 echo "[deploy] rendering systemd unit (user=$SERVICE_USER data_dir=$DATA_DIR)"
 UNIT_TMP="$(mktemp)"
 trap 'rm -f "$UNIT_TMP"' EXIT
 sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__DATA_DIR__|$DATA_DIR|g" \
+    -e "s|__PROTECT_HOME__|$PROTECT_HOME|g" \
+    -e "s|__READ_WRITE_PATHS__|$READ_WRITE_PATHS|g" \
     etc/systemd/supermux.service > "$UNIT_TMP"
 if [ "$USE_TAILSCALE" = "1" ]; then
   sed -i.bak \
     -e 's|^# After=tailscaled.service|After=tailscaled.service|' \
     -e 's|^# Wants=tailscaled.service|Wants=tailscaled.service|' \
     "$UNIT_TMP" && rm -f "$UNIT_TMP.bak"
+fi
+
+# Fail loudly if any placeholder leaked through — catches a typo in the
+# template or a future placeholder added without a deploy.sh substitution.
+if grep -q '__[A-Z_]\+__' "$UNIT_TMP"; then
+  echo "[deploy] error: rendered unit still contains unsubstituted placeholders:" >&2
+  grep -nE '__[A-Z_]+__' "$UNIT_TMP" >&2
+  exit 1
 fi
 
 # ── 4. install binary + systemd unit + config (atomic) ──────────────────────
