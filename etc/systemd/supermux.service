@@ -138,7 +138,22 @@ RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
+# W^X (writable-XOR-executable memory). Rendered by deploy.sh from
+# SUPERMUX_HARDENED (default 0 → `no`; set 1 → `yes`):
+#   - no  (DEFAULT, dev-friendly): agents CAN run V8 JIT + WebAssembly build
+#         tools — npm, React, Vite, Next, Jest, esbuild, etc. supermux exists to
+#         host parallel CODING agents, and W^X=yes makes the kernel reject the
+#         JIT's mprotect(PROT_EXEC) (ENOMEM), so every such build fails for the
+#         service AND its children (inherited via NoNewPrivileges). This is the
+#         ONE directive incompatible with the product's core use, so it's off by
+#         default. Every OTHER sandbox directive above/below stays ON either way
+#         (non-root, ProtectSystem=strict, ReadWritePaths jail, PrivateTmp,
+#         dropped capabilities, NoNewPrivileges, syscall filter, …) — that is the
+#         real sandbox; this knob alone does not meaningfully widen it.
+#   - yes (SUPERMUX_HARDENED=1, strict): classic W^X for the security-paranoid;
+#         JS/WASM builds will fail. Only choose this if you do NOT need agents to
+#         run build tools.
+MemoryDenyWriteExecute=__MEMORY_DENY_WRITE_EXECUTE__
 # Drop all Linux capabilities — the service binds an unprivileged port and
 # needs none.
 CapabilityBoundingSet=

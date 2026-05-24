@@ -342,6 +342,9 @@ V_USE_TAILSCALE=""
 V_ALLOW_ROOT=""
 V_AUTO_INSTALL=""
 V_COPY_CLAUDE_CREDS=""
+# Strict memory hardening (W^X). Default 0 (dev-friendly) so agents can run
+# build tools; 1 = strict (blocks V8 JIT/WASM builds).
+V_HARDENED="0"
 
 # "Did the operator explicitly customize this via the advanced step (or carry
 # it over from an existing .env)?" — controls whether we write the var into
@@ -365,6 +368,9 @@ D_AUTO_INSTALL="Y"
 # Claude-credential copy preference: "ask" (deploy-time interactive consent),
 # "1" (copy the deployer's login non-interactively) or "0" (never copy).
 D_COPY_CLAUDE_CREDS="ask"
+# Strict memory hardening (W^X). Default 0 (dev-friendly): agents can run build
+# tools. 1 = strict (blocks V8 JIT/WASM builds). Most coding-agent users want 0.
+D_HARDENED="0"
 
 derive_defaults_from_existing() {
   if [ "$DISPOSITION" = "edit" ] && [ -f "$ENV_FILE" ]; then
@@ -376,6 +382,7 @@ derive_defaults_from_existing() {
     v=$(read_env_value SUPERMUX_USE_TAILSCALE "$ENV_FILE");  [ -n "$v" ] && D_USE_TAILSCALE="$v"
     v=$(read_env_value SUPERMUX_DEPLOY_REF "$ENV_FILE");     [ -n "$v" ] && D_DEPLOY_REF="$v"
     v=$(read_env_value SUPERMUX_COPY_CLAUDE_CREDS "$ENV_FILE"); [ -n "$v" ] && D_COPY_CLAUDE_CREDS="$v"
+    v=$(read_env_value SUPERMUX_HARDENED "$ENV_FILE");          [ -n "$v" ] && D_HARDENED="$v"
     # Carry forward operator-customized path overrides if present in the
     # existing .env, and mark them as customized so write_env preserves them.
     # Absent = let deploy.sh's smart defaults (getent USER_HOME, smart
@@ -412,7 +419,7 @@ derive_user_paths() {
 # Steps
 # ---------------------------------------------------------------------------
 
-TOTAL_STEPS=9
+TOTAL_STEPS=10
 
 step_host() {
   step 1 "$TOTAL_STEPS" "deploy target (SSH host)"
@@ -654,8 +661,27 @@ step_toolchain() {
   fi
 }
 
+step_hardening() {
+  step 8 "$TOTAL_STEPS" "strict memory hardening (W^X)"
+  note "Strict memory hardening (W^X) blocks agents from running build tools —"
+  note "npm, React, Vite, Next, Jest, and anything using V8 JIT or WebAssembly."
+  note "All other sandboxing (non-root, filesystem jail, no privilege escalation,"
+  note "private /tmp) stays on either way."
+  note "Most coding-agent users should say no — leave builds working."
+  # Default No (dev-friendly). Honor an existing .env value as the default.
+  local default_hardened="N"
+  if [ "$D_HARDENED" = "1" ]; then default_hardened="Y"; fi
+  ask_yn "Enable STRICT hardening anyway?" "$default_hardened"
+  if [ "$ANS" = "y" ]; then
+    V_HARDENED="1"
+    warn "strict W^X enabled — agent build tools (npm/React/Vite/Jest/WASM) will fail."
+  else
+    V_HARDENED="0"
+  fi
+}
+
 step_claude_login() {
-  step 8 "$TOTAL_STEPS" "Claude login for the service user"
+  step 9 "$TOTAL_STEPS" "Claude login for the service user"
   note "supermux drives agents with YOUR Claude SUBSCRIPTION (OAuth) — never an"
   note "API key, never ANTHROPIC_API_KEY, never API billing. The service user"
   note "must be logged in to Claude or agents won't run (this is the #1"
@@ -702,7 +728,7 @@ step_deploy_ref_default() {
 step_summary_and_confirm() {
   derive_user_paths
   step_deploy_ref_default
-  step 9 "$TOTAL_STEPS" "summary"
+  step 10 "$TOTAL_STEPS" "summary"
   printf "  %sdeploy target          %s%s\n" "$c_dim" "$c_reset" "$V_HOST"
   if [ "$V_ALLOW_ROOT" = "1" ]; then
     printf "  %sservice RUNS AS        %s%sroot — LAST RESORT (hardening relaxed, Claude may refuse)%s\n" "$c_dim" "$c_reset" "$c_red" "$c_reset"
@@ -728,6 +754,11 @@ step_summary_and_confirm() {
   printf "  %sgit ref to deploy      %s%s\n" "$c_dim" "$c_reset" "$V_DEPLOY_REF"
   printf "  %sauto-install toolchain %s%s\n" "$c_dim" "$c_reset" "$V_AUTO_INSTALL"
   printf "  %scopy Claude login      %s%s\n" "$c_dim" "$c_reset" "$V_COPY_CLAUDE_CREDS"
+  if [ "$V_HARDENED" = "1" ]; then
+    printf "  %sstrict W^X hardening   %s%s1 — agent builds DISABLED (npm/React/Vite/Jest will fail)%s\n" "$c_dim" "$c_reset" "$c_red" "$c_reset"
+  else
+    printf "  %sstrict W^X hardening   %s0 — agent builds enabled\n" "$c_dim" "$c_reset"
+  fi
   printf "\n"
   note "after deploy: the service user's Claude login is checked + (per the"
   note "setting above) copied or you'll be shown the exact /login command."
@@ -786,6 +817,10 @@ write_env() {
     # ask (interactive consent) / 1 (copy automatically) / 0 (never). Writing it
     # explicitly lets a non-interactive deploy pick the fast path without a TTY.
     printf "SUPERMUX_COPY_CLAUDE_CREDS=%s\n" "$V_COPY_CLAUDE_CREDS"
+    # Strict memory hardening (W^X): 0 (default, dev-friendly) keeps agent build
+    # tools working (V8 JIT/WASM — npm/React/Vite/Next/Jest); 1 enables strict
+    # W^X, which blocks those builds. All other sandboxing stays on either way.
+    printf "SUPERMUX_HARDENED=%s\n" "$V_HARDENED"
   } > "$ENV_TMP"
   chmod 600 "$ENV_TMP" 2>/dev/null || true
   mv "$ENV_TMP" "$ENV_FILE"
@@ -837,6 +872,7 @@ main() {
   step_tailscale
   step_advanced
   step_toolchain
+  step_hardening
   step_claude_login
   step_summary_and_confirm
   write_env
