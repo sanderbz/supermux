@@ -291,6 +291,13 @@ function Chip({
       whileTap={{ scale: 0.96 }}
       transition={springs.buttonPress}
       aria-pressed={isToggle ? selected : undefined}
+      // Don't steal focus from xterm's hidden helper textarea — a tap on an
+      // accessory key (Esc/Tab/^C/arrows) must NOT dismiss the iOS soft keyboard.
+      // preventDefault on pointer/mouse-down keeps the textarea focused so the
+      // keyboard stays up; the send still fires on `onClick`. Harmless in edit
+      // mode (toggles), correct in tap-to-send mode (the keyboard-stays-up fix).
+      onPointerDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         if ('vibrate' in navigator) navigator.vibrate(8)
         onClick()

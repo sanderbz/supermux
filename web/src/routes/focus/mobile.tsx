@@ -11,10 +11,12 @@
 //                              + snippets + dictate + keyboard-pinned key strip
 //                              (Esc/Tab/^C/arrows). NO text composer (live-type).
 //   <SessionPickerSheet />   ← Vaul half-sheet (full list)
-//   <SlashMenuSheet /> + <QuickKeysSheet /> + <SnippetPanel />
-//                            ← the three action panels, all hosted in the ONE
-//                              shared Vaul shell (<MobileActionSheet>) so slash/
-//                              dots/+ share one quirk-free sheet (R5 unify)
+//   <QuickKeysSheet /> + <SnippetPanel />
+//                            ← the two action panels, both hosted in the ONE
+//                              shared Vaul shell (<MobileActionSheet>) so dots/+
+//                              share one quirk-free sheet. (DOCK: the slash sheet
+//                              was removed — slash commands now run from the
+//                              Claude Tools sheet's Commands tab.)
 //   edge-of-next peek         ← left-edge drag reveals the next session
 //
 // Edge gestures (CEO M15 amplification): left-edge swipe-right → overview;
@@ -47,7 +49,6 @@ import { MobileDock } from '@/components/focus-mode/dock'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
-import { SlashMenuSheet } from '@/components/focus-mode/slash-menu'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
@@ -210,10 +211,8 @@ export function MobileFocus() {
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
-  // R5 — the slash panel is now a route-level Vaul sheet (like Specials &
-  // Snippets) instead of the old inline dock popover, so all three triggers
-  // share the one quirk-free <MobileActionSheet> shell.
-  const [slashOpen, setSlashOpen] = React.useState(false)
+  // DOCK — the slash panel was removed: slash commands now run from the Claude
+  // Tools sheet's Commands tab (tap a command → it runs in the focused terminal).
   // M17 — joystick on/off. The M16 accessory bar's "Gesture" toggle flips this
   // via `onGestureToggle`; default ON (joystick wins, per the Termius spec).
   const [gestureOn, setGestureOn] = React.useState(true)
@@ -339,7 +338,6 @@ export function MobileFocus() {
             prevSession={prev}
             nextSession={next}
             onOpenPicker={() => setPickerOpen(true)}
-            onOpenSlash={() => setSlashOpen(true)}
             onOpenSpecials={() => setSpecialsOpen(true)}
             onOpenSnippets={() => setSnippetsOpen(true)}
             onSwitchSession={goSession}
@@ -361,20 +359,11 @@ export function MobileFocus() {
         onPick={goSession}
       />
 
-      {/* R5 — all three action panels now share the one Vaul shell
-          (<MobileActionSheet>): the slash sheet, the quick-keys sheet (was
-          SpecialsSheet), and the snippets sheet. Each opens with a backdrop +
-          tap-away + drag-down dismiss; only their CONTENT differs. */}
-      <SlashMenuSheet
-        open={slashOpen}
-        onOpenChange={setSlashOpen}
-        onSelect={(cmd) => {
-          // Run the picked command live (`cmd\r`) + keep the keyboard up.
-          termRef.current?.send(`${cmd}\r`)
-          focusTerm()
-        }}
-      />
-
+      {/* DOCK — the action panels share the one Vaul shell
+          (<MobileActionSheet>): the quick-keys sheet (was SpecialsSheet) and the
+          snippets sheet. Each opens with a backdrop + tap-away + drag-down
+          dismiss; only their CONTENT differs. (The slash sheet was removed —
+          slash commands now run from the Claude Tools sheet's Commands tab.) */}
       <QuickKeysSheet
         open={specialsOpen}
         onOpenChange={setSpecialsOpen}
