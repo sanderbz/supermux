@@ -26,6 +26,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use bytes::Bytes;
+use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::sessions::tmux::Tmux;
@@ -144,7 +145,21 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         return;
     }
 
-    // 5. Unified fan-out + client-read + ping loop (single task, no split — uses
+    // 5. Per-session input task (typing-latency win #1 + #2). The recv branch
+    //    below must NEVER `.await` a `tmux send-keys` fork inline — that
+    //    head-of-line-blocks the OUTBOUND echo branch of the same `select!`. So
+    //    parsed `ClientMsg`s are handed to a dedicated drain task over an mpsc
+    //    queue: the recv branch does a non-blocking `send` and immediately loops
+    //    back to service the echo. The drain task applies messages in ARRIVAL
+    //    ORDER under the per-session lock (preserving §5.2 ordering) and coalesces
+    //    runs of `Input` into ONE `send-keys` (N forks → 1 during fast typing /
+    //    key-repeat / paste bursts). The channel is unbounded: input frames are
+    //    tiny and already rate-limited by the human at the keyboard; an unbounded
+    //    queue means we never drop a keystroke under a momentary fork stall.
+    let (input_tx, input_rx) = mpsc::unbounded_channel::<ClientMsg>();
+    let input_task = tokio::spawn(input_drain_loop(state.clone(), name.clone(), input_rx));
+
+    // 6. Unified fan-out + client-read + ping loop (single task, no split — uses
     //    WebSocket's inherent recv/send).
     let mut last_inbound = Instant::now();
     let mut ping = tokio::time::interval(PING_EVERY);
@@ -160,7 +175,13 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
                         match msg {
                             Message::Text(t) => {
                                 if let Ok(cmd) = serde_json::from_str::<ClientMsg>(t.as_str()) {
-                                    apply_client_msg(&state, &name, cmd).await;
+                                    // Non-blocking hand-off; the drain task applies
+                                    // it in order. A closed channel only happens if
+                                    // the drain task has exited (teardown) — then we
+                                    // break and tear down too.
+                                    if input_tx.send(cmd).is_err() {
+                                        break;
+                                    }
                                 }
                             }
                             Message::Close(_) => break,
@@ -198,20 +219,101 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
             }
         }
     }
+
+    // Teardown: dropping the sender signals the drain task to finish applying any
+    // already-queued input (so a final "type then close" doesn't lose the text)
+    // and then exit cleanly. We await it so the per-session lock is released and
+    // no orphan task lingers past the socket.
+    drop(input_tx);
+    let _ = input_task.await;
 }
 
-/// Route a control frame to tmux. Holds the per-session lock for the duration of
-/// the tmux command (§5.2 keystroke path "acquire session lock").
-async fn apply_client_msg(state: &AppState, name: &str, cmd: ClientMsg) {
+/// One unit of work the drain task applies to tmux, in order. `Text` is a
+/// coalesced run of one-or-more `Input` frames joined into a single literal send;
+/// `Ctrl` is a single non-`Input` control frame (a named `Key`, a `Resize`, or a
+/// no-op) that acts as a coalescing BOUNDARY.
+enum Apply {
+    /// A coalesced literal-text batch (≥1 `Input` frames joined). Never empty.
+    Text(String),
+    /// A single non-`Input` control frame that breaks the batch.
+    Ctrl(ClientMsg),
+}
+
+/// Pure coalescing planner (typing-latency win #2) — single source of the
+/// ordering+batching contract, exercised directly by the unit tests. Folds a
+/// drained run of arrival-ordered `ClientMsg`s into the minimal sequence of
+/// [`Apply`] ops: CONTIGUOUS `Input` frames join into ONE `Text` (N forks → 1),
+/// and every non-`Input` frame is emitted as its own `Ctrl` boundary that flushes
+/// any pending `Text` BEFORE it. The output order matches the input order
+/// exactly, so strict in-order delivery is preserved (type "abc"→"abc"; an Enter
+/// after text submits after the text; a multi-line paste stays contiguous).
+fn plan_applies(msgs: impl IntoIterator<Item = ClientMsg>) -> Vec<Apply> {
+    let mut plan: Vec<Apply> = Vec::new();
+    let mut pending = String::new();
+    for msg in msgs {
+        match msg {
+            ClientMsg::Input { data } => pending.push_str(&data),
+            other => {
+                if !pending.is_empty() {
+                    plan.push(Apply::Text(std::mem::take(&mut pending)));
+                }
+                plan.push(Apply::Ctrl(other));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        plan.push(Apply::Text(pending));
+    }
+    plan
+}
+
+/// Per-session input drain (typing-latency win #1 + #2). Owns the mpsc receiver;
+/// applies messages in arrival order under the per-session lock, COALESCING runs
+/// of `Input` into a single `send-keys` so fast typing / key-repeat / paste
+/// bursts cost one fork instead of N. Coalescing NEVER crosses a non-`Input`
+/// boundary (a named `Key`, a `Resize`, etc.): the buffered `Input` batch is
+/// flushed first, THEN that message is applied — strict in-order delivery is
+/// preserved (type "abc"→"abc"; an Enter after text submits after the text).
+/// Exits when the channel closes (socket teardown), after draining what's left.
+async fn input_drain_loop(
+    state: AppState,
+    name: String,
+    mut rx: mpsc::UnboundedReceiver<ClientMsg>,
+) {
+    // Reused across wakeups to avoid a per-burst allocation.
+    let mut run: Vec<ClientMsg> = Vec::new();
+    while let Some(first) = rx.recv().await {
+        // Greedily drain every frame already queued so a fast burst is coalesced
+        // in one planning pass (non-blocking `try_recv` until the queue empties).
+        run.clear();
+        run.push(first);
+        while let Ok(next) = rx.try_recv() {
+            run.push(next);
+        }
+        for op in plan_applies(run.drain(..)) {
+            apply_one(&state, &name, op).await;
+        }
+    }
+}
+
+/// Apply a single planned op to tmux under the per-session lock (§5.2 keystroke
+/// path "acquire session lock"). A coalesced `Text` batch routes through the
+/// existing [`Tmux::send_text`] (which keeps the ≤[`PASTE_THRESHOLD`] literal
+/// `send-keys` path and the paste-buffer fallback for large merges); a `Ctrl`
+/// boundary applies the named key / resize / no-op as before.
+///
+/// [`PASTE_THRESHOLD`]: crate::sessions::tmux::PASTE_THRESHOLD
+async fn apply_one(state: &AppState, name: &str, op: Apply) {
     let tmux = Tmux::new(name);
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
-    let res = match cmd {
-        ClientMsg::Input { data } => tmux.send_text(&data).await,
-        ClientMsg::Key { data } => tmux.send_key(&data).await,
-        ClientMsg::Resize { cols, rows } => tmux.resize(cols, rows).await,
+    let res = match op {
+        Apply::Text(text) => tmux.send_text(&text).await,
+        Apply::Ctrl(ClientMsg::Input { data }) => tmux.send_text(&data).await,
+        Apply::Ctrl(ClientMsg::Key { data }) => tmux.send_key(&data).await,
+        Apply::Ctrl(ClientMsg::Resize { cols, rows }) => tmux.resize(cols, rows).await,
         // Auth-after-auth and client Ping are no-ops on the input path.
-        ClientMsg::Auth { .. } | ClientMsg::Ping => Ok(()),
+        Apply::Ctrl(ClientMsg::Auth { .. } | ClientMsg::Ping) => Ok(()),
     };
     if let Err(e) = res {
         tracing::debug!(session = %name, error = %e, "ws input → tmux failed");
@@ -282,4 +384,97 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
             reason: Utf8Bytes::from_static(reason),
         })))
         .await;
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    //! Typing-latency win #2: the [`plan_applies`] coalescing contract. Pins that
+    //! contiguous `Input` runs join into ONE send (N forks → 1) while strict
+    //! arrival order is preserved across every non-`Input` boundary.
+
+    use super::*;
+
+    fn input(s: &str) -> ClientMsg {
+        ClientMsg::Input { data: s.to_string() }
+    }
+    fn key(s: &str) -> ClientMsg {
+        ClientMsg::Key { data: s.to_string() }
+    }
+
+    /// Render a plan into a compact, assertable trace: a `Text` batch becomes
+    /// `"=<joined>"`, a `Ctrl` becomes `"K:<key>"` / `"R:<c>x<r>"` / `"X"`.
+    fn trace(plan: &[Apply]) -> Vec<String> {
+        plan.iter()
+            .map(|op| match op {
+                Apply::Text(t) => format!("={t}"),
+                Apply::Ctrl(ClientMsg::Key { data }) => format!("K:{data}"),
+                Apply::Ctrl(ClientMsg::Resize { cols, rows }) => format!("R:{cols}x{rows}"),
+                Apply::Ctrl(_) => "X".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn contiguous_inputs_coalesce_into_one_send() {
+        // Fast typing "a","b","c" arriving together → a single joined send (one
+        // fork), bytes in order → "abc".
+        let plan = plan_applies([input("a"), input("b"), input("c")]);
+        assert_eq!(trace(&plan), vec!["=abc"]);
+    }
+
+    #[test]
+    fn enter_after_text_submits_after_the_text() {
+        // The named Enter must NOT merge into the text batch, and must come AFTER
+        // it — typing then submit preserves order.
+        let plan = plan_applies([input("ls"), input(" -la"), key("Enter")]);
+        assert_eq!(trace(&plan), vec!["=ls -la", "K:Enter"]);
+    }
+
+    #[test]
+    fn interleaved_named_keys_split_batches_preserving_order() {
+        // text → Esc → text → Enter: two separate text batches, the named keys at
+        // their exact positions; nothing reordered, nothing merged across a Key.
+        let plan = plan_applies([
+            input("vi"),
+            key("Escape"),
+            input(":wq"),
+            key("Enter"),
+        ]);
+        assert_eq!(trace(&plan), vec!["=vi", "K:Escape", "=:wq", "K:Enter"]);
+    }
+
+    #[test]
+    fn multiline_paste_run_stays_one_contiguous_batch() {
+        // A multi-line paste split into several Input frames coalesces into ONE
+        // send with the newlines intact and in order (no reordering across lines).
+        let plan = plan_applies([
+            input("line1\n"),
+            input("line2\n"),
+            input("line3"),
+        ]);
+        assert_eq!(trace(&plan), vec!["=line1\nline2\nline3"]);
+    }
+
+    #[test]
+    fn resize_is_a_boundary_too() {
+        // A Resize breaks the batch just like a Key and stays at its position.
+        let plan = plan_applies([
+            input("ab"),
+            ClientMsg::Resize { cols: 80, rows: 24 },
+            input("cd"),
+        ]);
+        assert_eq!(trace(&plan), vec!["=ab", "R:80x24", "=cd"]);
+    }
+
+    #[test]
+    fn empty_run_plans_nothing() {
+        assert!(plan_applies([]).is_empty());
+    }
+
+    #[test]
+    fn key_only_run_has_no_empty_text_batch() {
+        // A lone Enter produces just the Ctrl op — no spurious empty Text send.
+        let plan = plan_applies([key("Enter")]);
+        assert_eq!(trace(&plan), vec!["K:Enter"]);
+    }
 }
