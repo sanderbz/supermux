@@ -23,6 +23,7 @@ use crate::db::sessions::Session;
 use crate::error::AppError;
 use crate::state::{AppState, SseEvent};
 
+use super::status::{self, Mode};
 use super::tmux::Tmux;
 use super::SessionView;
 
@@ -36,6 +37,25 @@ pub struct StartResult {
     pub ready: bool,
     /// `supermux-<name>` — the tmux target.
     pub target: String,
+}
+
+/// Outcome of a `set_mode` (mode-shift). `mode` is the mode actually observed
+/// AFTER the operation (the TRUE mode — the UI reflects truth, not the request):
+/// for the cycle it is the re-read capture's parsed mode; for bypass it is what
+/// the relaunch set. `converged` is false when the Shift+Tab cycle could not
+/// reach the requested target within the retry cap (the UI then shows the real
+/// mode and the user can try again).
+#[derive(Debug, Serialize)]
+pub struct SetModeResult {
+    pub name: String,
+    /// The mode actually in effect after the op (snake_case wire token).
+    pub mode: String,
+    /// True when the requested mode was reached; false if the cycle could not
+    /// converge (UI reflects `mode`, the real state).
+    pub converged: bool,
+    /// True when bypass required a clean relaunch (so the UI can show the "session
+    /// restarted" confirmation). Always false for the in-place Shift+Tab cycle.
+    pub relaunched: bool,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -652,6 +672,207 @@ pub async fn wake(state: &AppState, name: &str) -> Result<StartResult, AppError>
     start(state, name, None).await
 }
 
+// ── mode-shift: switch the permission mode from the UI ────────────────────────
+
+/// The launch flag that activates Claude Code's bypass-permissions mode at boot
+/// (mode-shift). `bypassPermissions` is launch-only — a running session cannot
+/// enter it via Shift+Tab — so entering bypass is a clean relaunch with this flag
+/// (and leaving it strips the flag and resumes). The `--permission-mode <value>`
+/// form is the canonical, documented way to set the launch mode and composes with
+/// `--resume <id>` so the conversation carries over.
+const BYPASS_FLAG: &str = "--permission-mode bypassPermissions";
+
+/// How many Shift+Tabs to send to advance from `from` to `to` around the runtime
+/// cycle (`Normal → AcceptEdits → Plan → Normal`). Returns `None` for a target
+/// that is not on the cycle (i.e. `Bypass`, handled by relaunch). `0` means we
+/// are already there.
+fn cycle_steps(from: Mode, to: Mode) -> Option<u8> {
+    let idx = |m: Mode| match m {
+        Mode::Normal => Some(0u8),
+        Mode::AcceptEdits => Some(1),
+        Mode::Plan => Some(2),
+        Mode::Bypass => None,
+    };
+    let (f, t) = (idx(from)?, idx(to)?);
+    Some((t + 3 - f) % 3)
+}
+
+/// Read the session's CURRENT parsed mode from a fresh capture (mode-shift). Read-
+/// only — no lock (mirrors the §3.2.5 detector rule for `capture-pane`). Falls
+/// back to `Normal` when the pane can't be captured.
+async fn read_mode(tmux: &Tmux<'_>) -> Mode {
+    match tmux.capture_pane(status::CAPTURE_LINES).await {
+        Ok(raw) => status::parse_mode(&status::prepare_capture(&raw)),
+        Err(_) => Mode::Normal,
+    }
+}
+
+/// Switch a session's permission mode from the UI (mode-shift).
+///
+/// * `Normal`/`AcceptEdits`/`Plan` — the runtime cycle: read the live mode, then
+///   send Shift+Tab (`BackTab` → CSI Z, the existing wire) ONE STEP AT A TIME,
+///   RE-READING the capture after each press and capping retries. This is robust
+///   targeting, not blind spamming: a transient bypass-opt-in / auto prompt that
+///   mis-seats the cycle is caught by the re-read, and we never over-send. If it
+///   can't converge, we return the REAL mode so the UI reflects truth.
+/// * `Bypass` — launch-only → a clean RELAUNCH: stop, add [`BYPASS_FLAG`] to the
+///   session `flags`, preserve the Claude conversation id so it resumes (mirrors
+///   `resume_handler`), start. Leaving bypass (any other target while in bypass)
+///   strips the flag and relaunches the same way.
+pub async fn set_mode(state: &AppState, name: &str, target: Mode) -> Result<SetModeResult, AppError> {
+    let s = require_session(state, name).await?;
+    // Mode-shift is a Claude-only affordance (codex/shell have no permission bar).
+    if s.provider != "claude" {
+        return Err(AppError::BadRequest(
+            "mode switching is only available for Claude sessions".into(),
+        ));
+    }
+
+    let currently_bypass = s.flags.contains(BYPASS_FLAG);
+
+    match target {
+        Mode::Bypass => relaunch_for_bypass(state, name, &s, true).await,
+        _ => {
+            // Leaving bypass requires a relaunch (the flag must be stripped, and a
+            // running bypass session can't be cycled out of it via Shift+Tab).
+            if currently_bypass {
+                return relaunch_for_bypass(state, name, &s, false).await.map(|mut r| {
+                    // After the strip-and-resume the session boots in Normal; if the
+                    // user asked for AcceptEdits/Plan they can pick again (one extra
+                    // click only for the rarer leave-bypass-into-a-cycle-mode path).
+                    r.mode = Mode::Normal.as_str().to_string();
+                    r.converged = matches!(target, Mode::Normal);
+                    r
+                });
+            }
+            cycle_to(state, name, target).await
+        }
+    }
+}
+
+/// The Shift+Tab targeting cycle (mode-shift). Reads the live mode, then advances
+/// one press at a time toward `target`, re-reading after each press. Capped so a
+/// stuck cycle can never loop forever. Returns the REAL mode it ended on.
+async fn cycle_to(state: &AppState, name: &str, target: Mode) -> Result<SetModeResult, AppError> {
+    let tmux = Tmux::new(name);
+    if !tmux.exists().await? {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' is not running — start it before switching mode"
+        )));
+    }
+
+    // At most 4 presses: a 3-mode ring needs ≤2 to reach any target, +2 slack for
+    // a transient prompt that mis-seats a press (robust, never blind-spam).
+    const MAX_PRESSES: u8 = 4;
+    let mut current = read_mode(&tmux).await;
+    let mut presses = 0u8;
+    while current != target && presses < MAX_PRESSES {
+        // Guard: if the live mode ever reads Bypass here, the cycle can't reach a
+        // runtime target — bail with the truth rather than spam.
+        if current == Mode::Bypass {
+            break;
+        }
+        // Only press when a forward step is actually warranted (the re-read may
+        // have already advanced us, e.g. a racing user keystroke).
+        match cycle_steps(current, target) {
+            Some(0) => break,
+            Some(_) => {
+                let lock = state.lock_for(name);
+                let guard = lock.lock().await;
+                tmux.send_key("BTab").await?;
+                drop(guard);
+                presses += 1;
+                // Let the status bar repaint before re-reading (it updates within
+                // a frame or two; the detector cadence is slower so we read here).
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                current = read_mode(&tmux).await;
+            }
+            None => break, // target not on the cycle (shouldn't happen — Bypass handled above)
+        }
+    }
+
+    // Persist + broadcast the freshly-observed mode so the menu reflects truth
+    // immediately (the detector loop would also pick it up on its next tick, but
+    // this makes the radio flip sub-second).
+    broadcast_mode(state, name, current);
+
+    Ok(SetModeResult {
+        name: name.to_string(),
+        mode: current.as_str().to_string(),
+        converged: current == target,
+        relaunched: false,
+    })
+}
+
+/// Bypass enter/leave via a clean relaunch (mode-shift). Mirrors `resume_handler`:
+/// stop → toggle [`BYPASS_FLAG`] in `flags` → preserve the Claude conversation id
+/// so `--resume` carries the chat → start. `enter` adds the flag; `!enter` strips
+/// it.
+async fn relaunch_for_bypass(
+    state: &AppState,
+    name: &str,
+    s: &Session,
+    enter: bool,
+) -> Result<SetModeResult, AppError> {
+    // 1. Compute the new flags string (add or strip the bypass flag; trim doubled
+    //    whitespace so repeated toggles never accumulate blanks).
+    let flags = if enter {
+        if s.flags.contains(BYPASS_FLAG) {
+            s.flags.clone()
+        } else {
+            format!("{} {BYPASS_FLAG}", s.flags).trim().to_string()
+        }
+    } else {
+        s.flags.replace(BYPASS_FLAG, "")
+    };
+    let flags = flags.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // 2. Preserve the Claude conversation id so the relaunch RESUMES (mirrors
+    //    resume_handler). Prefer the named session, else the conversation id; if
+    //    neither is set the session simply boots fresh under the new mode.
+    let resume_id = if !s.cc_session_name.is_empty() {
+        Some(s.cc_session_name.clone())
+    } else if !s.cc_conversation_id.is_empty() {
+        Some(s.cc_conversation_id.clone())
+    } else {
+        None
+    };
+
+    // 3. Stop the running agent (best-effort: a not-running session just starts).
+    let tmux = Tmux::new(name);
+    if tmux.exists().await.unwrap_or(false) {
+        stop(state, name).await?;
+    }
+
+    // 4. Apply the flags + (re-)seed the resume id, then start. set_cc_conversation_id
+    //    clears cc_session_name, so re-seed it explicitly when that was the resume
+    //    handle (keeps `--resume <name>` semantics intact).
+    db::sessions::set_flags(&state.pool, name, &flags).await?;
+    if let Some(id) = resume_id.as_deref() {
+        db::sessions::set_cc_conversation_id(&state.pool, name, id).await?;
+    }
+    start(state, name, None).await?;
+
+    let mode = if enter { Mode::Bypass } else { Mode::Normal };
+    broadcast_mode(state, name, mode);
+
+    Ok(SetModeResult {
+        name: name.to_string(),
+        mode: mode.as_str().to_string(),
+        converged: true,
+        relaunched: true,
+    })
+}
+
+/// Broadcast a `sessions` SSE delta carrying the new `mode` so every open tab's
+/// ⋯ menu live-checks the right radio immediately (mode-shift). Best-effort.
+fn broadcast_mode(state: &AppState, name: &str, mode: Mode) {
+    let _ = state.sse_tx.send(SseEvent {
+        event: "sessions".to_string(),
+        payload: json!({ "delta": [{ "name": name, "mode": mode.as_str() }] }),
+    });
+}
+
 /// Clone a session's config under `new_name` (fresh runtime + hook token). The
 /// git-worktree variant of clone is deferred (see agent notes); this mirrors
 /// `duplicate` so the new session is independently startable.
@@ -681,6 +902,38 @@ static KEY_ALLOWLIST: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     }
     s
 });
+
+#[cfg(test)]
+mod mode_cycle_tests {
+    //! mode-shift: the Shift+Tab targeting math is a pure function, so the ring
+    //! (`Normal → AcceptEdits → Plan → Normal`) is unit-tested directly.
+    use super::*;
+
+    #[test]
+    fn cycle_steps_walks_the_ring_forward() {
+        use Mode::*;
+        // Same mode → 0 presses (no-op).
+        assert_eq!(cycle_steps(Normal, Normal), Some(0));
+        assert_eq!(cycle_steps(Plan, Plan), Some(0));
+        // One forward step.
+        assert_eq!(cycle_steps(Normal, AcceptEdits), Some(1));
+        assert_eq!(cycle_steps(AcceptEdits, Plan), Some(1));
+        assert_eq!(cycle_steps(Plan, Normal), Some(1));
+        // Two forward steps (wrap-around — never go backward, the ring is one-way).
+        assert_eq!(cycle_steps(Normal, Plan), Some(2));
+        assert_eq!(cycle_steps(Plan, AcceptEdits), Some(2));
+        assert_eq!(cycle_steps(AcceptEdits, Normal), Some(2));
+    }
+
+    #[test]
+    fn cycle_steps_rejects_bypass_endpoints() {
+        use Mode::*;
+        // Bypass is launch-only — never reachable / leavable via the cycle.
+        assert_eq!(cycle_steps(Normal, Bypass), None);
+        assert_eq!(cycle_steps(Bypass, Normal), None);
+        assert_eq!(cycle_steps(Bypass, Plan), None);
+    }
+}
 
 #[cfg(test)]
 mod link_liveness_tests {

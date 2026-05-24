@@ -174,6 +174,76 @@ impl Status {
     }
 }
 
+/// The Claude Code permission MODE surfaced to the UI (mode-shift).
+///
+/// Distinct from [`Status`] (busy/idle/waiting): this is the *permission mode*
+/// the user picked, persistently shown in Claude's bottom status bar. Three of
+/// the four are runtime-cyclable with Shift+Tab (`Normal → AcceptEdits → Plan →
+/// Normal`); [`Mode::Bypass`] is launch-only and requires a relaunch with a flag.
+///
+/// Serialises lower-case (`"normal"`, `"accept_edits"`, `"plan"`, `"bypass"`) so
+/// the frontend `SessionMode` union matches the wire exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    Normal,
+    AcceptEdits,
+    Plan,
+    Bypass,
+}
+
+impl Mode {
+    /// The canonical lower-case (snake_case) token used over the wire and by the
+    /// set-mode endpoint's request body.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Normal => "normal",
+            Mode::AcceptEdits => "accept_edits",
+            Mode::Plan => "plan",
+            Mode::Bypass => "bypass",
+        }
+    }
+
+    /// Parse the wire/request token back into a [`Mode`]. Accepts a couple of
+    /// spellings (`accept_edits`/`acceptedits`/`accept-edits`) so the API is
+    /// lenient about the client's exact casing. Unknown tokens return `None`.
+    pub fn from_token(s: &str) -> Option<Mode> {
+        match s.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "normal" | "default" => Some(Mode::Normal),
+            "accept_edits" | "acceptedits" | "accept" => Some(Mode::AcceptEdits),
+            "plan" => Some(Mode::Plan),
+            "bypass" | "bypass_permissions" | "bypasspermissions" => Some(Mode::Bypass),
+            _ => None,
+        }
+    }
+}
+
+/// Pure detector for the Claude Code permission mode from a capture-pane snapshot
+/// (mode-shift). Reuses the SAME status-bar markers the classifier's IDLE-bank
+/// comment documents but DELIBERATELY discards (lines ~540-551): `⏵⏵` / `accept
+/// edits` ⇒ [`Mode::AcceptEdits`], `plan mode` ⇒ [`Mode::Plan`], `bypass
+/// permissions` ⇒ [`Mode::Bypass`], else [`Mode::Normal`].
+///
+/// PURE (no clock, no I/O) so it is trivially unit-tested and can never regress
+/// the status classifier — it only READS the capture the detector already holds.
+///
+/// Precedence note: `bypass` is checked first (it is the most consequential and
+/// unambiguous), then `plan`, then accept-edits (`⏵⏵` / "accept edits"). A real
+/// Claude status bar only ever shows one of these at a time, so the order only
+/// matters defensively for a capture that scrolled two bars together.
+pub fn parse_mode(capture: &str) -> Mode {
+    let c = capture.to_lowercase();
+    if c.contains("bypass permissions") || c.contains("bypass-permissions") {
+        Mode::Bypass
+    } else if c.contains("plan mode") {
+        Mode::Plan
+    } else if capture.contains("⏵⏵") || c.contains("accept edits") {
+        Mode::AcceptEdits
+    } else {
+        Mode::Normal
+    }
+}
+
 /// Claude Code `SettingsHook` event kinds (§3.6). Consumed by the fusion rule in
 /// [`StatusDetector::classify`]; fed in by M5b's `/api/_internal/hook` endpoint
 /// via [`AppState::record_hook`](crate::state::AppState::record_hook).
@@ -948,6 +1018,50 @@ mod tests {
         d.force(Status::Starting);
         // Active marker beats a held `Starting` (classifier reads the bank).
         assert_eq!(d.detect("esc to interrupt", neutral_pty(), TurnState::default()), Status::Active);
+    }
+
+    #[test]
+    fn parse_mode_reads_the_status_bar() {
+        // mode-shift: parse_mode reuses the SAME status-bar markers the IDLE bank
+        // deliberately discards. Each persistent bar maps to its mode; a capture
+        // with none of them is Normal (Claude's default, no special bar).
+        assert_eq!(
+            parse_mode("⏵⏵ accept edits on (shift+tab to cycle)"),
+            Mode::AcceptEdits
+        );
+        assert_eq!(parse_mode("ACCEPT EDITS on"), Mode::AcceptEdits);
+        assert_eq!(parse_mode("plan mode"), Mode::Plan);
+        assert_eq!(parse_mode("⏸ plan mode on (shift+tab to cycle)"), Mode::Plan);
+        assert_eq!(parse_mode("bypass permissions"), Mode::Bypass);
+        assert_eq!(parse_mode("Bypass Permissions on"), Mode::Bypass);
+        // No mode bar at all → Normal.
+        assert_eq!(parse_mode(""), Mode::Normal);
+        assert_eq!(parse_mode("❯ \n$ "), Mode::Normal);
+        // A live thinking line with no mode bar is still Normal (mode ≠ status).
+        assert_eq!(parse_mode("✻ Thinking… (esc to interrupt)"), Mode::Normal);
+    }
+
+    #[test]
+    fn parse_mode_bypass_outranks_other_bars() {
+        // Defensive precedence when a capture scrolled two bars together — bypass
+        // is the most consequential, so it wins. (A real bar shows only one.)
+        assert_eq!(
+            parse_mode("plan mode\nbypass permissions"),
+            Mode::Bypass
+        );
+    }
+
+    #[test]
+    fn mode_roundtrips_via_str() {
+        for m in [Mode::Normal, Mode::AcceptEdits, Mode::Plan, Mode::Bypass] {
+            assert_eq!(Mode::from_token(m.as_str()), Some(m), "{m:?}");
+        }
+        // Lenient casing / spellings the set-mode endpoint accepts.
+        assert_eq!(Mode::from_token("AcceptEdits"), Some(Mode::AcceptEdits));
+        assert_eq!(Mode::from_token("accept-edits"), Some(Mode::AcceptEdits));
+        assert_eq!(Mode::from_token("default"), Some(Mode::Normal));
+        assert_eq!(Mode::from_token("bypassPermissions"), Some(Mode::Bypass));
+        assert_eq!(Mode::from_token("garbage"), None);
     }
 
     #[test]

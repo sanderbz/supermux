@@ -74,6 +74,8 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
         .route("/api/sessions/{name}/clone", post(clone_handler))
+        // ── mode-shift: switch the Claude permission mode from the ⋯ menu ──
+        .route("/api/sessions/{name}/mode", post(mode_handler))
         // ── feat-resume-picker: reopen a past Claude conversation for the dir ──
         .route(
             "/api/sessions/{name}/resumable",
@@ -154,6 +156,13 @@ pub struct SessionView {
     /// error badge on the card.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorInfo>,
+    /// The Claude Code permission MODE parsed from the persistent status bar in
+    /// `last_capture` (mode-shift): `normal` / `accept_edits` / `plan` / `bypass`.
+    /// `None` until the first capture (the menu then defaults to `normal`). Drives
+    /// the ⋯ mode menu's live-checked radio — the menu reflects the TRUE mode, not
+    /// an optimistic guess. Cheap (a pure string scan over the held capture).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -199,6 +208,13 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
             error_type,
             message,
         })),
+        // mode-shift: parse the permission mode from the held capture. `None`
+        // before the first capture (the UI defaults the menu to Normal then).
+        mode: if last_capture.is_empty() {
+            None
+        } else {
+            Some(status::parse_mode(last_capture).as_str().to_string())
+        },
         created_at: to_rfc3339(s.created_at),
         updated_at: to_rfc3339(updated_ts),
     }
@@ -821,6 +837,34 @@ async fn clone_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let v = lifecycle::clone(&state, &name, &input.new_name).await?;
     Ok((StatusCode::CREATED, ok(v)))
+}
+
+// ── mode-shift ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ModeInput {
+    /// The target permission mode: `normal` | `accept_edits` | `plan` | `bypass`.
+    mode: String,
+}
+
+/// `POST /api/sessions/{name}/mode {mode}` — switch the Claude permission mode
+/// (mode-shift). `normal`/`accept_edits`/`plan` cycle in place via targeted
+/// Shift+Tab (re-reading the capture, capped retries); `bypass` does a clean
+/// relaunch (stop → add the flag → resume). Returns the mode ACTUALLY in effect
+/// after the op (the UI reflects truth) + whether it converged / relaunched.
+async fn mode_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<ModeInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let target = status::Mode::from_token(&input.mode).ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "invalid mode '{}' (expected normal|accept_edits|plan|bypass)",
+            input.mode
+        ))
+    })?;
+    let result = lifecycle::set_mode(&state, &name, target).await?;
+    Ok(Json(json!({ "ok": true, "data": result })))
 }
 
 // ── feat-resume-picker ─────────────────────────────────────────────────────────

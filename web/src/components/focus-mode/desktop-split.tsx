@@ -200,6 +200,7 @@ export function DesktopSplit({
           status={status}
           activity={current?.activity}
           error={current?.error}
+          mode={current?.mode}
           onDetach={onDetach}
           onStop={onStop}
         />

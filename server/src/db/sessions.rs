@@ -319,6 +319,11 @@ pub async fn set_branch(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Res
 pub async fn set_mcp(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
     set_text_field(pool, name, "mcp", value).await
 }
+/// Set the launch flags string (mode-shift bypass relaunch toggles
+/// `--permission-mode bypassPermissions` on/off here before re-`start`-ing).
+pub async fn set_flags(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "flags", value).await
+}
 /// Set the tags column (JSON-array string).
 pub async fn set_tags(pool: &SqlitePool, name: &str, json: &str) -> sqlx::Result<()> {
     set_text_field(pool, name, "tags", json).await
