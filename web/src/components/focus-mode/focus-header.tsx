@@ -10,7 +10,13 @@
 // props; the merge keeps both by giving the desktop one a distinct name.
 
 import { motion } from 'framer-motion'
-import { ChevronLeft, Minimize2, SlidersHorizontal, Square } from 'lucide-react'
+import {
+  ChevronLeft,
+  CornerDownLeft,
+  Minimize2,
+  SlidersHorizontal,
+  Square,
+} from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -171,7 +177,20 @@ export interface FocusHeaderProps {
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
   onBack: () => void
+  /** Send Enter (`\r`) to the focused terminal (mobile-only). The header button
+   *  lets you submit a prompt WITHOUT the soft keyboard's return key — handy when
+   *  the keyboard is hidden, or just for a one-tap submit. Wired in
+   *  focus/mobile.tsx to `termRef.current?.sendKey('Enter')`. */
+  onEnter?: () => void
   className?: string
+}
+
+/** Truncate a session name for the mobile top bar so a long name never overflows
+ *  / pushes the right-side controls off-screen. ~8 chars then a trailing ellipsis;
+ *  the FULL name stays in the accessible `title`/`aria-label` (see usage). */
+const NAME_MAX = 8
+function truncateName(name: string): string {
+  return name.length > NAME_MAX ? `${name.slice(0, NAME_MAX)}…` : name
 }
 
 export function FocusHeader({
@@ -180,6 +199,7 @@ export function FocusHeader({
   activity,
   error,
   onBack,
+  onEnter,
   className,
 }: FocusHeaderProps) {
   const showActivity =
@@ -231,8 +251,17 @@ export function FocusHeader({
       <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-1">
         <div className="flex min-w-0 max-w-full items-center justify-center gap-1.5">
           <StatusDot status={status} />
-          <h1 className="min-w-0 truncate text-[15px] font-semibold tracking-tight">
-            {name}
+          {/* Truncate to ~8 chars + ellipsis so a long session name never
+              overflows or shoves the right-side controls off-screen. The FULL
+              name stays the accessible label (title + aria-label) so it's never
+              lost. (CSS `truncate` is still kept as a width-safety net for the
+              centred flex column on the narrowest devices.) */}
+          <h1
+            title={name}
+            aria-label={name}
+            className="min-w-0 truncate text-[15px] font-semibold tracking-tight"
+          >
+            {truncateName(name)}
           </h1>
           {error && <ErrorBadge error={error} />}
         </div>
@@ -248,20 +277,44 @@ export function FocusHeader({
         )}
       </div>
 
-      {/* R5 removed the redundant "···" overflow (it duplicated the session
-          pill). The freed right slot now carries the Claude tools manager icon
-          — a single 44pt affordance, keeping the title centred against the left
-          back-button. */}
-      <motion.button
-        type="button"
-        aria-label="Claude tools"
-        whileTap={{ scale: 0.92 }}
-        transition={springs.buttonPress}
-        onClick={() => openClaudeTools(name)}
-        className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
-      >
-        <SlidersHorizontal className="size-5" />
-      </motion.button>
+      {/* Right cluster. The space freed by truncating the name (above) now also
+          carries an Enter affordance next to the Claude tools icon — both 44pt
+          targets, keeping the title centred against the left back-button. */}
+      <div className="flex shrink-0 items-center">
+        {/* Enter — sends `\r` to the focused terminal so you can submit a prompt
+            WITHOUT the soft keyboard's return key (very handy on mobile). The
+            `preventDefault` on pointer/mouse-down is load-bearing: it stops the
+            tap from moving DOM focus off xterm's hidden helper textarea, which on
+            iOS would dismiss the keyboard. The send still fires on `onClick`, so
+            the keyboard stays up. Mirrors the dock accessory-key pattern. */}
+        {onEnter && (
+          <motion.button
+            type="button"
+            aria-label="Send Enter"
+            whileTap={{ scale: 0.92 }}
+            transition={springs.buttonPress}
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onEnter}
+            className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
+          >
+            <CornerDownLeft className="size-5" />
+          </motion.button>
+        )}
+
+        {/* R5 removed the redundant "···" overflow (it duplicated the session
+            pill). This slot carries the Claude tools manager icon. */}
+        <motion.button
+          type="button"
+          aria-label="Claude tools"
+          whileTap={{ scale: 0.92 }}
+          transition={springs.buttonPress}
+          onClick={() => openClaudeTools(name)}
+          className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
+        >
+          <SlidersHorizontal className="size-5" />
+        </motion.button>
+      </div>
     </header>
   )
 }

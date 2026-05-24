@@ -1,0 +1,10 @@
+{
+  "milestone": "MHEADER",
+  "branch": "fix/mobile-header-enter",
+  "commit": "4b31eec19620da3730dcb750a70f07539f9e2eae",
+  "summary": "Polished the mobile focus top bar: session name now truncates to ~8 chars with a trailing ellipsis (full name kept as the accessible title/aria-label so it never overflows or shoves controls off-screen), and a new Enter affordance (CornerDownLeft ↵ glyph, 44pt target, spring press) sits in the right cluster next to Claude tools. It sends Enter (\\r) to the focused terminal via the existing handle (termRef.current?.sendKey('Enter')) and uses the dock accessory-key onPointerDown/onMouseDown preventDefault pattern so the soft keyboard stays up. Desktop header unchanged.",
+  "files_changed": [
+    "web/src/components/focus-mode/focus-header.tsx",
+    "web/src/routes/focus/mobile.tsx"
+  ]
+}
