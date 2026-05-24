@@ -30,6 +30,7 @@ import {
   supportsViewTransitions,
 } from '@/components/view-transitions/morph'
 import { StatusDot, STATUS_LABEL } from './status-dot'
+import { ActivityLine, ErrorBadge } from './activity-status'
 import { TailPreview } from './tail-preview'
 import { TileLiveTerminal } from './tile-live-terminal'
 import { TileError } from './tile-error'
@@ -638,6 +639,17 @@ export function SessionTile({
   // (status-idle), not a destructive red — stopped is just "not running".
   const isStopped = session.status === 'stopped'
 
+  // Live activity (hooks-10x): the backend sets `session.activity` only while a
+  // tool is mid-run and clears it on Stop/SessionEnd, but we still gate on a
+  // "working" status (active/starting) so a stale label can never linger as the
+  // calm line on an idle/waiting/stopped tile. When working + activity present,
+  // the meta row shows the activity instead of the tokens/branch (the live "what
+  // is this agent doing now" signal wins the one-line slot); otherwise the meta
+  // row falls back to the existing tokens/branch UI — no change.
+  const isWorking = session.status === 'active' || session.status === 'starting'
+  const activity = session.activity?.trim()
+  const showActivity = isWorking && !!activity
+
   // Tail line count: 6 idle → 20 when expanded in "expanded text" mode (or as
   // the live mode's fallback for a session with no pty). Stopped peek skips
   // the tail expansion — the actions panel sits over the (still-rendered)
@@ -764,6 +776,13 @@ export function SessionTile({
             <span className="line-clamp-1 flex-1 text-sm font-medium leading-tight">
               {title}
             </span>
+            {/* Dead/blocked agent badge (hooks-10x). Sits before the status pills
+                so a blocked agent reads at a glance; clears automatically when the
+                backend nulls `session.error` on resume. Hidden while the archive
+                control is showing so the title row never overflows on hover. */}
+            {session.error && !showArchiveControl && (
+              <ErrorBadge error={session.error} className="self-center" />
+            )}
             {session.status === 'waiting' && !showArchiveControl && (
               <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
                 {MISC.needsInputPill}
@@ -850,12 +869,21 @@ export function SessionTile({
             </AnimatePresence>
           </div>
           <div className="flex h-4 items-center gap-2 text-xs text-muted-foreground">
-            {tokens && <span className="shrink-0">{tokens} tokens</span>}
-            {session.branch && (
-              <span className="flex min-w-0 items-center gap-1">
-                <GitBranch className="size-3 shrink-0" />
-                <span className="truncate">{session.branch}</span>
-              </span>
+            {showActivity ? (
+              // Working + live activity → the calm "what is this agent doing now"
+              // line claims the meta slot (same h-4 row, no height change), so the
+              // signal is obvious at a glance without fighting the live preview.
+              <ActivityLine activity={activity} className="text-xs" />
+            ) : (
+              <>
+                {tokens && <span className="shrink-0">{tokens} tokens</span>}
+                {session.branch && (
+                  <span className="flex min-w-0 items-center gap-1">
+                    <GitBranch className="size-3 shrink-0" />
+                    <span className="truncate">{session.branch}</span>
+                  </span>
+                )}
+              </>
             )}
           </div>
         </div>

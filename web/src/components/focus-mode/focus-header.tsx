@@ -18,6 +18,10 @@ import type { SessionStatus } from '@/lib/api'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import {
+  ActivityLine,
+  ErrorBadge,
+} from '@/components/session-tile/activity-status'
+import {
   supportsViewTransitions,
   vtSessionName,
 } from '@/components/view-transitions/morph'
@@ -42,6 +46,11 @@ export interface DesktopFocusHeaderProps {
   name: string
   title?: string
   status: SessionStatus
+  /** Live "what the agent is doing now" label (hooks-10x) — shown next to the
+   *  status while the agent is working; falls back to the status label otherwise. */
+  activity?: string
+  /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
+  error?: { type: string; message: string }
   /** Detach (⌘D): return to overview WITHOUT stopping the session (§4.4). */
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave (§4.4.3). */
@@ -52,6 +61,8 @@ export function DesktopFocusHeader({
   name,
   title,
   status,
+  activity,
+  error,
   onDetach,
   onStop,
 }: DesktopFocusHeaderProps) {
@@ -71,13 +82,26 @@ export function DesktopFocusHeader({
       }
     >
       <StatusDot status={status} className="shrink-0" />
-      <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span className="truncate text-sm font-semibold tracking-tight">
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
           {title || name}
         </span>
-        <span className="shrink-0 text-[11px] text-muted-foreground">
-          {STATUS_LABEL[status]}
-        </span>
+        {error && <ErrorBadge error={error} />}
+        {/* While the agent is working with a live activity label, show the
+            activity line in place of the static status word (the live "what is
+            it doing now" signal). Otherwise fall back to the status label. The
+            title keeps `flex-1` priority, so the activity only takes its own
+            (shrinkable, truncating) width and never starves the name. */}
+        {(status === 'active' || status === 'starting') && activity?.trim() ? (
+          <ActivityLine
+            activity={activity}
+            className="min-w-0 shrink basis-auto text-[11px]"
+          />
+        ) : (
+          <span className="shrink-0 text-[11px] text-muted-foreground">
+            {STATUS_LABEL[status]}
+          </span>
+        )}
       </span>
 
       <div className="flex shrink-0 items-center gap-1">
@@ -141,6 +165,11 @@ export function DesktopFocusHeader({
 export interface FocusHeaderProps {
   name: string
   status: SessionStatus
+  /** Live "what the agent is doing now" label (hooks-10x) — shown under the name
+   *  while the agent is working. */
+  activity?: string
+  /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
+  error?: { type: string; message: string }
   onBack: () => void
   className?: string
 }
@@ -148,9 +177,13 @@ export interface FocusHeaderProps {
 export function FocusHeader({
   name,
   status,
+  activity,
+  error,
   onBack,
   className,
 }: FocusHeaderProps) {
+  const showActivity =
+    (status === 'active' || status === 'starting') && !!activity?.trim()
   // Entry point 1, mobile (skills-mcp-manager plan §C.1): the right slot — a bare
   // spacer since R5 removed the redundant "···" — now hosts the Claude tools
   // icon, pre-scoped to THIS session's project. Keeps the title centred against
@@ -195,11 +228,24 @@ export function FocusHeader({
         <ChevronLeft className="size-5" />
       </motion.button>
 
-      <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-1">
-        <StatusDot status={status} />
-        <h1 className="min-w-0 truncate text-[15px] font-semibold tracking-tight">
-          {name}
-        </h1>
+      <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-1">
+        <div className="flex min-w-0 max-w-full items-center justify-center gap-1.5">
+          <StatusDot status={status} />
+          <h1 className="min-w-0 truncate text-[15px] font-semibold tracking-tight">
+            {name}
+          </h1>
+          {error && <ErrorBadge error={error} />}
+        </div>
+        {/* Live activity sub-line (hooks-10x) — sits under the name while the
+            agent is working so "what is it doing now" is obvious. The header is
+            min-h-11 (grows additively), so a second line never clips the 44pt
+            hit-target floor. */}
+        {showActivity && (
+          <ActivityLine
+            activity={activity}
+            className="max-w-full text-center text-[11px] leading-tight"
+          />
+        )}
       </div>
 
       {/* R5 removed the redundant "···" overflow (it duplicated the session

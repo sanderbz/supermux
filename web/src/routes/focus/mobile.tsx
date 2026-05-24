@@ -268,6 +268,8 @@ export function MobileFocus() {
           <FocusHeader
             name={current.name}
             status={current.status}
+            activity={current.activity}
+            error={current.error}
             onBack={goOverviewMorph}
           />
 
