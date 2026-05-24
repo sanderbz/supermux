@@ -325,6 +325,10 @@ async fn list_handler(
 
 #[derive(Debug, Deserialize)]
 struct CreateInput {
+    // Optional at the wire level too: a client may send only `desc` (the
+    // "title OR description" rule is enforced in the handler). Without this an
+    // omitted title 422s before that rule runs.
+    #[serde(default)]
     title: String,
     #[serde(default)]
     session: Option<String>,
