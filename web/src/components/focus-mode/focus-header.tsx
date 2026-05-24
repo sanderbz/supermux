@@ -12,7 +12,6 @@
 import { motion } from 'framer-motion'
 import {
   ChevronLeft,
-  CornerDownLeft,
   Minimize2,
   SlidersHorizontal,
   Square,
@@ -217,20 +216,7 @@ export interface FocusHeaderProps {
   /** Live Claude permission mode (mode-shift) — drives the ⋯ menu + the chip. */
   mode?: SessionMode
   onBack: () => void
-  /** Send Enter (`\r`) to the focused terminal (mobile-only). The header button
-   *  lets you submit a prompt WITHOUT the soft keyboard's return key — handy when
-   *  the keyboard is hidden, or just for a one-tap submit. Wired in
-   *  focus/mobile.tsx to `termRef.current?.sendKey('Enter')`. */
-  onEnter?: () => void
   className?: string
-}
-
-/** Truncate a session name for the mobile top bar so a long name never overflows
- *  / pushes the right-side controls off-screen. ~8 chars then a trailing ellipsis;
- *  the FULL name stays in the accessible `title`/`aria-label` (see usage). */
-const NAME_MAX = 8
-function truncateName(name: string): string {
-  return name.length > NAME_MAX ? `${name.slice(0, NAME_MAX)}…` : name
 }
 
 export function FocusHeader({
@@ -240,7 +226,6 @@ export function FocusHeader({
   error,
   mode,
   onBack,
-  onEnter,
   className,
 }: FocusHeaderProps) {
   const showActivity =
@@ -292,17 +277,16 @@ export function FocusHeader({
       <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-1">
         <div className="flex min-w-0 max-w-full items-center justify-center gap-1.5">
           <StatusDot status={status} />
-          {/* Truncate to ~8 chars + ellipsis so a long session name never
-              overflows or shoves the right-side controls off-screen. The FULL
-              name stays the accessible label (title + aria-label) so it's never
-              lost. (CSS `truncate` is still kept as a width-safety net for the
-              centred flex column on the narrowest devices.) */}
+          {/* CSS `truncate` ellipsises a long name to fit the centred column;
+              the full name stays the accessible label (title + aria-label).
+              (The hard ~8-char truncation lives on the bottom DOCK session
+              switcher, where horizontal room is tight — not here.) */}
           <h1
             title={name}
             aria-label={name}
             className="min-w-0 truncate text-[15px] font-semibold tracking-tight"
           >
-            {truncateName(name)}
+            {name}
           </h1>
           {/* Glanceable mode chip (mode-shift) — non-default modes only. */}
           {mode && mode !== 'normal' && <ModeChip mode={mode} />}
@@ -320,31 +304,10 @@ export function FocusHeader({
         )}
       </div>
 
-      {/* Right cluster. The space freed by truncating the name (above) now also
-          carries an Enter affordance next to the Claude tools icon — both 44pt
-          targets, keeping the title centred against the left back-button. */}
+      {/* Right cluster: the ⋯ permission-mode menu + the Claude tools icon.
+          (The Enter affordance lives in the bottom DOCK, beside the session
+          switcher — not in this header.) */}
       <div className="flex shrink-0 items-center">
-        {/* Enter — sends `\r` to the focused terminal so you can submit a prompt
-            WITHOUT the soft keyboard's return key (very handy on mobile). The
-            `preventDefault` on pointer/mouse-down is load-bearing: it stops the
-            tap from moving DOM focus off xterm's hidden helper textarea, which on
-            iOS would dismiss the keyboard. The send still fires on `onClick`, so
-            the keyboard stays up. Mirrors the dock accessory-key pattern. */}
-        {onEnter && (
-          <motion.button
-            type="button"
-            aria-label="Send Enter"
-            whileTap={{ scale: 0.92 }}
-            transition={springs.buttonPress}
-            onPointerDown={(e) => e.preventDefault()}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={onEnter}
-            className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
-          >
-            <CornerDownLeft className="size-5" />
-          </motion.button>
-        )}
-
         {/* ⋯ permission-mode menu (mode-shift) — live-checked radios; cycle modes
             via Shift+Tab, Bypass confirms + relaunches. Sits left of Claude tools
             so the title's right cluster stays a single tap-row (≥44pt each). */}

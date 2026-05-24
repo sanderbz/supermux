@@ -272,11 +272,6 @@ export function MobileFocus() {
             error={current.error}
             mode={current.mode}
             onBack={goOverviewMorph}
-            // Submit Enter (`\r`) to the focused terminal from the top bar —
-            // routes through the SAME imperative handle every key path uses
-            // (dock send-row, joystick). The header button's preventDefault keeps
-            // the soft keyboard up, so it's a one-tap submit without losing it.
-            onEnter={() => termRef.current?.sendKey('Enter')}
           />
 
           {/* M17 — the LiveTerminal with the joystick + 2-finger gesture
