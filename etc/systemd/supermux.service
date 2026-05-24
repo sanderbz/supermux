@@ -62,6 +62,13 @@ User=__SERVICE_USER__
 WorkingDirectory=__USER_HOME__
 Environment=HOME=__USER_HOME__
 Environment=SUPERMUX_DATA_DIR=__DATA_DIR__
+# Anchor tmux's control socket in the PERSISTENT data dir (not the default /tmp).
+# With PrivateTmp=true below, /tmp is recreated every (re)start, which would
+# orphan all running tmux sessions on each restart/deploy despite KillMode=process
+# — the new instance could not reach the previous tmux server. A path under the
+# bind-mounted data dir survives restarts, so sessions reconnect. (The server also
+# defaults this in code; this line makes it explicit + covers any early tmux use.)
+Environment=TMUX_TMPDIR=__DATA_DIR__/tmux
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/supermux-server
 Restart=always

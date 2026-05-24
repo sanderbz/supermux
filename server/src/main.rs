@@ -13,6 +13,30 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let config = config::load()?;
+
+    // Session survival across restarts/deploys (§3.5). tmux keeps its control
+    // socket under $TMUX_TMPDIR (default `/tmp`). Under the systemd hardening
+    // `PrivateTmp=true`, `/tmp` is recreated fresh on every (re)start, so a new
+    // instance cannot reach the PREVIOUS tmux server — every session would read
+    // `stopped` even though `KillMode=process` kept it alive. Anchor the socket
+    // in the PERSISTENT data dir instead so the server reconnects to the same
+    // tmux server (and thus the same live sessions) across restarts. Must run
+    // BEFORE any tmux call (reconcile_on_boot below). Honor an operator-set
+    // TMUX_TMPDIR if present.
+    let tmux_dir = std::env::var_os("TMUX_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config.data_dir.join("tmux"));
+    match std::fs::create_dir_all(&tmux_dir) {
+        // Set it unconditionally so every tmux child inherits the same persistent
+        // socket dir, whether it came from the unit's Environment or this default.
+        Ok(()) => std::env::set_var("TMUX_TMPDIR", &tmux_dir),
+        Err(e) => tracing::warn!(
+            tmux_dir = %tmux_dir.display(),
+            error = %e,
+            "could not create persistent TMUX_TMPDIR — sessions may not survive restarts",
+        ),
+    }
+
     let pool = db::init(&config).await?;
     let bind = config.bind;
 
