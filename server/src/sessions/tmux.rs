@@ -113,9 +113,18 @@ impl<'a> Tmux<'a> {
 
     // ── lifecycle ────────────────────────────────────────────────────────────
 
+    /// Generous scrollback retained per pane (`history-limit`). The tmux default
+    /// is a mere ~2000 lines, which caps how far back a freshly-attached client
+    /// can scroll regardless of the WS replay size. 50000 lines comfortably
+    /// exceeds the replayed byte budget and the xterm.js `scrollback` so the
+    /// history actually exists to replay/scroll. tmux trims oldest lines past
+    /// this, so per-session memory stays bounded.
+    const HISTORY_LIMIT: u32 = 50_000;
+
     /// Create a detached session running `shell`, with `dir` as the working
     /// directory and `env` injected per-pane. Sets `remain-on-exit on` (so a dead
-    /// pane stays capturable for status/archive) and disables auto-rename.
+    /// pane stays capturable for status/archive), a generous `history-limit` (so
+    /// scrollback history exists to replay/scroll), and disables auto-rename.
     ///
     /// `env` MUST NOT contain the dashboard bearer token (§6.5) — only the
     /// narrow `SUPERMUX_HOOK_TOKEN`/`SUPERMUX_SESSION`/`SUPERMUX_URL`.
@@ -127,6 +136,16 @@ impl<'a> Tmux<'a> {
     ) -> Result<()> {
         let target = self.target();
         let dir_str = dir.to_string_lossy().to_string();
+        let history_limit = Self::HISTORY_LIMIT.to_string();
+
+        // tmux reads `history-limit` at PANE-creation time, so the session's
+        // initial pane only inherits a generous scrollback if the option is set
+        // BEFORE `new-session`. Set it on the global server option (a sensible
+        // server-wide default; harmless and idempotent). Best-effort: a failure
+        // here just falls back to tmux's small default, never blocks the session.
+        let _ = self
+            .run(&["set-option", "-g", "history-limit", &history_limit])
+            .await;
 
         // Build argv: new-session -d -s supermux-<name> -n <name> -c <dir> [-e K=V…] <shell>
         let mut args: Vec<String> = vec![
@@ -152,9 +171,13 @@ impl<'a> Tmux<'a> {
         self.run(&arg_refs).await.context("tmux new-session")?;
 
         // Best-effort hardening; failures here are not fatal to a live session.
+        // `history-limit` is also set session-scoped so any panes/windows created
+        // later in this session inherit the generous scrollback even if the global
+        // default changes underneath us.
         for opt in [
             ["set-option", "-t", &target, "remain-on-exit", "on"],
             ["set-option", "-t", &target, "allow-rename", "off"],
+            ["set-option", "-t", &target, "history-limit", &history_limit],
             ["set-window-option", "-t", &target, "automatic-rename", "off"],
         ] {
             let _ = self.run(&opt).await;
