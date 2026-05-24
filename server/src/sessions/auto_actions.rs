@@ -4,8 +4,10 @@
 //! [`StatusDetector`] fusion rule, and writes the hero data flow:
 //!
 //! ```text
-//! status detector tick (every 2s, or sooner on a hook wake)
-//!   ├─ skip?  pty bytes <2s AND last_status == Active → reuse last_capture
+//! status detector tick (ADAPTIVE cadence, or sooner on a hook wake — M-CADENCE:
+//!   1s hot-active / 2s active / 4s idle / 5s waiting)
+//!   ├─ skip?  pty bytes <2s AND last_status == Active AND preview < tier
+//!   │         → reuse last_capture
 //!   ├─ capture = tmux capture-pane -p -S -30   (ANSI-stripped, last 30 lines)
 //!   ├─ status  = detector.detect(capture, last_pty, last_hook)   ← M5b: hook signal
 //!   ├─ UPDATE session_runtime SET last_capture = ?               (ALWAYS)
@@ -33,7 +35,6 @@
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::time::{interval, MissedTickBehavior};
 
 use crate::db;
 use crate::state::{AppState, SseEvent};
@@ -41,8 +42,13 @@ use crate::state::{AppState, SseEvent};
 use super::status::{self, Status, StatusDetector};
 use super::tmux::Tmux;
 
-/// Detector cadence (§3.6 — "runs every 2s"). A hook wake can re-tick sooner.
-const TICK: Duration = Duration::from_secs(2);
+/// Detector cadence floor (§3.6 — "runs every 2s" baseline). The loop no longer
+/// uses a single fixed interval: after each tick it computes an ADAPTIVE delay
+/// via [`status::cadence_for`] (1s hot-active / 2s active / 4s idle / 5s waiting,
+/// M-CADENCE). This constant is the safe fallback delay used only when a tick
+/// errors out before it can report a status (so a persistent failure can't
+/// hot-spin). A hook wake can still re-tick sooner than any computed delay.
+const FALLBACK_DELAY: Duration = Duration::from_secs(2);
 
 /// Flap debounce (§3.7): on a detected transition, re-confirm against fresh
 /// signals after this window and only commit a status that held stable, so a
@@ -116,7 +122,8 @@ pub async fn spawn_all(state: &AppState) {
     }
 }
 
-/// Spawn the 2s status detector loop for one session. Idempotent at the
+/// Spawn the adaptive-cadence status detector loop for one session (M-CADENCE:
+/// 1s hot-active / 2s active / 4s idle / 5s waiting). Idempotent at the
 /// system level: the loop self-terminates the moment the session row is gone
 /// OR archived (R1-1 — `exists_active` filters `archived = 0`), so churn never
 /// leaks tasks. Safe to call once per session (boot via [`spawn_all`], create
@@ -141,23 +148,31 @@ pub fn spawn_status_loop(state: AppState, name: String) {
         // a tick re-emits a `sessions` delta only when the visible tail changed.
         let mut last_tail: Option<Vec<String>> = None;
         // When we last actually ran a capture. The capture-skip optimization is
-        // bounded by this (status::MAX_PREVIEW_STALENESS) so a continuously
-        // streaming agent still re-captures + re-broadcasts its live tail instead
-        // of freezing the overview preview for the whole duration of its work.
-        // Seed it "stale" so the very first tick always captures.
+        // bounded by this so a continuously streaming agent still re-captures +
+        // re-broadcasts its live tail instead of freezing the overview preview for
+        // the whole duration of its work. The bound is now the session's CURRENT
+        // cadence tier (M-CADENCE) — not a fixed 4s — so a 1s-tier hot session
+        // re-captures within ~1s. Seed it "stale" so the very first tick captures.
         let mut last_capture_at = Instant::now() - status::MAX_PREVIEW_STALENESS;
 
-        let mut ticker = interval(TICK);
-        // Skip (don't burst) ticks missed while a capture-pane ran long.
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         // Sub-second wake: the hook endpoint pings this so a real Claude
         // notification surfaces well within the §3.6 "1s" bound, not at the next
-        // 2s edge. `notify_one` parks a permit, so a wake between ticks is kept.
+        // tier edge. `notify_one` parks a permit, so a wake between ticks is kept.
         let wake = state.detector_wake_for(&name);
 
+        // Adaptive delay until the NEXT tick (M-CADENCE). Starts at the floor so
+        // the first sleep is short; after each tick it is recomputed from the
+        // observed status + hot-set membership via `status::cadence_for`.
+        let mut delay = FALLBACK_DELAY;
+
         loop {
+            // ADAPTIVE pacing: sleep the computed tier delay, but a hook wake can
+            // cut it short for the §3.6 sub-second path. `sleep` (vs a fixed
+            // `interval`) is what lets the cadence change every iteration; a wake
+            // simply re-ticks now and the next delay is recomputed as usual, so
+            // missed-tick behaviour is inherently "skip, don't burst".
             tokio::select! {
-                _ = ticker.tick() => {}
+                _ = tokio::time::sleep(delay) => {}
                 _ = wake.notified() => {}
             }
 
@@ -169,20 +184,20 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
-                    // R1-9 sibling-hardening: this loop's `tokio::select!` runs
-                    // at the TOP of the body so a `continue` here is already
-                    // throttled by the 2s ticker / wake on the next iteration
-                    // — safe today. Defence-in-depth: sleep on Err so a future
+                    // R1-9 sibling-hardening: this loop's `tokio::select!` runs at
+                    // the TOP of the body so a `continue` here is already throttled
+                    // by the sleep / wake on the next iteration. Defence-in-depth:
+                    // reset the delay to the floor and sleep it on Err so a future
                     // refactor that flips the check above the select cannot
-                    // re-introduce the steering-style CPU hot-spin on a
-                    // persistent DB error.
+                    // re-introduce a CPU hot-spin on a persistent DB error.
                     tracing::debug!(name = %name, error = %e, "status detector: exists_active() failed");
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    delay = FALLBACK_DELAY;
+                    tokio::time::sleep(delay).await;
                     continue;
                 }
             }
 
-            if let Err(e) = tick(
+            match tick(
                 &state,
                 &name,
                 &mut detector,
@@ -191,7 +206,19 @@ pub fn spawn_status_loop(state: AppState, name: String) {
             )
             .await
             {
-                tracing::debug!(name = %name, error = %e, "status detector tick");
+                // Recompute the next-tick cadence from the JUST-observed status +
+                // live hot-set membership (M-CADENCE tiers): 1s hot-active /
+                // 2s active / 4s idle / 5s waiting. A `tick` that skipped its
+                // capture still reports the held status, so the cadence is correct.
+                Ok(observed) => {
+                    delay = status::cadence_for(observed, state.is_hot(&name));
+                }
+                Err(e) => {
+                    tracing::debug!(name = %name, error = %e, "status detector tick");
+                    // Unknown post-error status → use the safe floor, never a
+                    // hot-spin.
+                    delay = FALLBACK_DELAY;
+                }
             }
         }
 
@@ -200,18 +227,23 @@ pub fn spawn_status_loop(state: AppState, name: String) {
 }
 
 /// One detector tick. Public so an integration test can drive a single tick
-/// deterministically (rather than waiting on the 2s interval). `last_tail` carries
+/// deterministically (rather than waiting on the interval). `last_tail` carries
 /// the previously-broadcast preview tail across ticks for the §3.6 "status OR
 /// tail6 changed" SSE rule. `last_capture_at` is the time of the last actual
 /// `capture-pane`, used to bound the capture-skip optimization so the live
-/// preview never freezes while an agent streams (see [`status::should_skip_capture`]).
+/// preview never freezes while an agent streams (see [`status::should_skip_capture_within`]).
+///
+/// Returns the session's status AS OF THIS TICK (the detector's `last_status`
+/// after the tick, whether it ran a capture or held on a skip). The loop feeds
+/// it into [`status::cadence_for`] to pick the NEXT adaptive delay (M-CADENCE),
+/// and the tick records it into the shared recency tracker for the hot-set rank.
 pub async fn tick(
     state: &AppState,
     name: &str,
     detector: &mut StatusDetector,
     last_tail: &mut Option<Vec<String>>,
     last_capture_at: &mut Instant,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Status> {
     // While the detector's internal status is still `Unknown` (cold-start), pull
     // the persisted `last_status` from the DB and force it in. This satisfies
     // the "Unknown stays Unknown" cold-start guard in `classify` so a session
@@ -232,14 +264,28 @@ pub async fn tick(
     // bank + heartbeat inside `detect` (§3.6).
     let last_hook = state.last_hook_event(name);
 
+    // Record this session's CURRENT (held) status into the shared recency tracker
+    // BEFORE the skip check, so the hot-set ranking sees a streaming session as
+    // recently-active even on the ticks it skips its capture. Cheap O(1) write.
+    let held = detector.last_status();
+    state.record_recency(name, held);
+
+    // The capture-skip staleness is bound to this session's CURRENT cadence tier
+    // (M-CADENCE) rather than a fixed 4s: a 1s-tier hot-active session must
+    // re-capture within ~1s during streaming, otherwise the old fixed bound would
+    // let it skip three 1s ticks in a row and defeat the hot tier. Idle/waiting
+    // sessions are not `Active`, so they never reach the staleness check and stay
+    // cheap regardless. A tiny margin avoids re-capturing one tick too early.
+    let tier = status::cadence_for(held, state.is_hot(name));
+
     // capture-pane skip optimization (§3.6 [P2] #7): once M4's reader feeds the
     // heartbeat, a streaming-Active session keeps its status without a shell-out.
-    // BOUNDED by preview staleness: a session that streams every tick must still
-    // re-capture at least every status::MAX_PREVIEW_STALENESS so its live tail
-    // keeps refreshing on the overview (otherwise the preview freezes for the
-    // whole duration of the agent's work — the reported mobile/desktop bug).
-    if status::should_skip_capture(last_pty, detector.last_status(), last_capture_at.elapsed()) {
-        return Ok(());
+    // BOUNDED by the per-tier preview staleness so a session that streams every
+    // tick still re-captures within its cadence and its live tail keeps refreshing
+    // on the overview (otherwise the preview freezes for the whole duration of the
+    // agent's work — the reported mobile/desktop bug).
+    if status::should_skip_capture_within(last_pty, held, last_capture_at.elapsed(), tier) {
+        return Ok(held);
     }
 
     let tmux = Tmux::new(name);
@@ -248,7 +294,7 @@ pub async fn tick(
         // a never-started session stays Unknown (API renders 'stopped'), and the
         // explicit 'Any → Stopped' transition + side-effects on tmux death are a
         // separate auto-actions concern deferred past the M5a core (§3.6).
-        return Ok(());
+        return Ok(held);
     }
 
     // M5a heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
@@ -268,8 +314,8 @@ pub async fn tick(
     // read the ANSI-stripped form, the colour-true tile preview reads the raw
     // form. A single shell-out feeds both — no extra `capture-pane` per tick.
     let raw_ansi = tmux.capture_pane_ansi(status::CAPTURE_LINES).await?;
-    // Stamp the capture time the moment a shell-out succeeds so the skip bound
-    // (status::MAX_PREVIEW_STALENESS) measures from the last REAL capture.
+    // Stamp the capture time the moment a shell-out succeeds so the per-tier skip
+    // bound (status::cadence_for) measures from the last REAL capture.
     *last_capture_at = Instant::now();
     let capture = status::prepare_capture(&raw_ansi);
     let capture_ansi = status::prepare_capture_ansi(&raw_ansi);
@@ -354,7 +400,15 @@ pub async fn tick(
         broadcast(state, "sessions", json!({ "delta": [Value::Object(item)] }));
     }
 
-    Ok(())
+    // Re-record recency with the status the detector settled on this tick (after
+    // a flap-suppressed transition reverts, `last_status` is back to `prev`). This
+    // is what the loop's `cadence_for` reads to pick the next adaptive delay, and
+    // what the hot-set ranks — so a session that just went active climbs the
+    // recency order immediately rather than on the following tick.
+    let observed = detector.last_status();
+    state.record_recency(name, observed);
+
+    Ok(observed)
 }
 
 /// R1 session→board reaction (plan §C.3). Called on a COMMITTED status

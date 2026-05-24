@@ -3,6 +3,7 @@
 //! Cloned into every axum handler via `State<AppState>`. All fields are cheap to
 //! clone (an `Arc`, a connection pool handle, or a broadcast sender).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +15,7 @@ use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use crate::config::Config;
 use crate::sessions::pty::PtyStream;
-use crate::sessions::status::HookEvent;
+use crate::sessions::status::{HookEvent, Status};
 use crate::sessions::tmux::Tmux;
 use crate::ws::streamer::PtyStreamer;
 
@@ -43,6 +44,66 @@ pub struct SseEvent {
 
 /// Default fan-out capacity for the SSE broadcast channel.
 const SSE_CHANNEL_CAP: usize = 256;
+
+/// How many most-recently-active working/loading sessions get the 1s preview
+/// tier (M-CADENCE — the user's "top 4"). The rest of the working/loading
+/// sessions fall to the 2s tier.
+pub const HOT_SET_SIZE: usize = 4;
+
+/// One session's adaptive-cadence recency record (M-CADENCE). Updated by the
+/// detector loop every tick. `last_active` is the most recent instant the
+/// session was observed working/loading (active|starting); it is what the hot-set
+/// ranking sorts by, so the freshest workers win the 1s tier.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionRecency {
+    /// The session's status as of its last detector tick.
+    pub status: Status,
+    /// The most recent instant the session was working/loading. Stays put while
+    /// the session is idle/waiting so a recently-busy session keeps its place in
+    /// the recency order versus an old one, but only working sessions are ever
+    /// *eligible* for the hot set (the ranking filters on live status).
+    pub last_active: Instant,
+}
+
+/// Pure hot-set membership test (M-CADENCE): is `name` among the top
+/// [`HOT_SET_SIZE`] most-recently-active working/loading sessions in `map`?
+///
+/// Extracted from [`AppState::is_hot`] as a free function so the ranking is
+/// unit-testable without a DB-backed `AppState`. Only sessions whose
+/// last-recorded status is working/loading (active|starting) are eligible; the
+/// order is `last_active` descending, ties broken by name ascending for
+/// determinism. Runs O(n) over the live set with no allocation.
+pub fn is_hot_in(map: &HashMap<String, SessionRecency>, name: &str) -> bool {
+    let Some(me) = map.get(name) else {
+        return false;
+    };
+    // Only working/loading sessions are eligible for the hot set.
+    if !matches!(me.status, Status::Active | Status::Starting) {
+        return false;
+    }
+    // Count how many OTHER working sessions rank strictly ahead of me. If fewer
+    // than HOT_SET_SIZE are ahead, I'm in the top-4. A tie on `last_active` is
+    // broken by name ascending, so the set is deterministic and exactly one
+    // session occupies each rank.
+    let mut ahead = 0usize;
+    for (other_name, other) in map.iter() {
+        if other_name == name {
+            continue;
+        }
+        if !matches!(other.status, Status::Active | Status::Starting) {
+            continue;
+        }
+        let more_recent = other.last_active > me.last_active
+            || (other.last_active == me.last_active && other_name.as_str() < name);
+        if more_recent {
+            ahead += 1;
+            if ahead >= HOT_SET_SIZE {
+                return false;
+            }
+        }
+    }
+    true
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -79,6 +140,17 @@ pub struct AppState {
     /// reader writes `Instant::now()` here on each byte batch**; until then a
     /// missing entry reads as the cold-start sentinel (see [`Self::last_pty`]).
     pub pty_heartbeat: Arc<DashMap<String, Instant>>,
+    /// Adaptive-cadence recency tracker (M-CADENCE). Each per-session detector
+    /// loop writes its CURRENT status + the instant it was last "active" (the
+    /// last tick it read working/loading) here every tick; [`is_hot`](Self::is_hot)
+    /// ranks the working/loading sessions by recency and returns true for the top
+    /// 4 — the sessions that get the 1s preview tier. Kept tiny + in-memory (no
+    /// per-tick DB scan); pruned on session stop/delete via `forget_session`.
+    ///
+    /// A `std::sync::Mutex` (not the tokio one used elsewhere) because the
+    /// critical section is a tiny synchronous map read/write that is NEVER held
+    /// across an `.await` — a blocking lock is correct and cheaper here.
+    pub cadence_recency: Arc<std::sync::Mutex<HashMap<String, SessionRecency>>>,
     /// Wakes background consumers when session status may have changed.
     pub status_notify: Arc<Notify>,
     /// Broadcast channel feeding the SSE endpoint.
@@ -112,6 +184,7 @@ impl AppState {
             last_hook: Arc::new(DashMap::new()),
             detector_wake: Arc::new(DashMap::new()),
             pty_heartbeat: Arc::new(DashMap::new()),
+            cadence_recency: Arc::new(std::sync::Mutex::new(HashMap::new())),
             status_notify: Arc::new(Notify::new()),
             sse_tx,
             pty,
@@ -181,6 +254,48 @@ impl AppState {
         self.last_hook.get(name).map(|e| *e.value())
     }
 
+    /// Record `name`'s current status for the adaptive-cadence hot-set
+    /// (M-CADENCE). Called by the detector loop every tick. When the session is
+    /// working/loading (active|starting) its `last_active` is bumped to now, so it
+    /// rises in the recency order that [`is_hot`](Self::is_hot) ranks; for any
+    /// other status the prior `last_active` is preserved (it stops climbing but
+    /// keeps its place, and the status filter excludes it from the hot set
+    /// anyway). Cheap O(1) map write under a short mutex — no DB.
+    pub fn record_recency(&self, name: &str, status: Status) {
+        let working = matches!(status, Status::Active | Status::Starting);
+        let now = Instant::now();
+        // A poisoned lock (a prior panic while holding it) is recovered, not
+        // propagated — the recency map is a best-effort cadence hint, never a
+        // correctness invariant, so a stale entry is far better than a panic.
+        let mut map = self
+            .cadence_recency
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = map.entry(name.to_string()).or_insert(SessionRecency {
+            status,
+            last_active: now,
+        });
+        entry.status = status;
+        if working {
+            entry.last_active = now;
+        }
+    }
+
+    /// Is `name` among the TOP-[`HOT_SET_SIZE`] most-recently-active
+    /// working/loading sessions (M-CADENCE)? Membership earns the 1s preview
+    /// tier. Ranking is over only the sessions whose LAST-RECORDED status is
+    /// working/loading (active|starting), ordered by `last_active` descending; a
+    /// session that is idle/waiting/stopped is never hot. O(n) over the live
+    /// session set (a handful), no DB scan, no allocation beyond a small partial
+    /// selection.
+    pub fn is_hot(&self, name: &str) -> bool {
+        let map = self
+            .cadence_recency
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        is_hot_in(&map, name)
+    }
+
     /// The per-session detector wake handle (get-or-create). The detector loop
     /// holds one end; the hook endpoint `notify_one`s it for sub-second status
     /// updates (§3.6 "within 1s").
@@ -230,6 +345,10 @@ impl AppState {
         self.detector_wake.remove(name);
         self.pty_heartbeat.remove(name);
         self.session_tasks.remove(name);
+        self.cadence_recency
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name);
         self.pty.forget(name);
     }
 
@@ -257,6 +376,12 @@ impl AppState {
         if let Some((_, v)) = self.session_tasks.remove(old) {
             self.session_tasks.insert(new.to_string(), v);
         }
+        {
+            let mut rec = self.cadence_recency.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(v) = rec.remove(old) {
+                rec.insert(new.to_string(), v);
+            }
+        }
         self.pty.rename(old, new);
     }
 }
@@ -280,5 +405,111 @@ impl SessionTaskGuard {
 impl Drop for SessionTaskGuard {
     fn drop(&mut self) {
         self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod hot_set_tests {
+    //! Adaptive-cadence hot-set ranking (M-CADENCE). Drives the pure
+    //! [`is_hot_in`] over a hand-built recency map so the top-4-by-recency rule
+    //! is pinned without a DB-backed `AppState`.
+
+    use super::*;
+
+    /// A recency record `secs_ago` seconds in the past with the given status.
+    fn rec(status: Status, secs_ago: u64) -> SessionRecency {
+        SessionRecency {
+            status,
+            last_active: Instant::now() - Duration::from_secs(secs_ago),
+        }
+    }
+
+    #[test]
+    fn top_four_working_sessions_are_hot_rest_are_not() {
+        // Six working sessions; the four most-recently-active are hot, the two
+        // oldest are not — the exact "top 4 most-recently-active" rule.
+        let mut map = HashMap::new();
+        map.insert("s0".to_string(), rec(Status::Active, 0)); // newest
+        map.insert("s1".to_string(), rec(Status::Active, 1));
+        map.insert("s2".to_string(), rec(Status::Starting, 2)); // loading counts
+        map.insert("s3".to_string(), rec(Status::Active, 3));
+        map.insert("s4".to_string(), rec(Status::Active, 4));
+        map.insert("s5".to_string(), rec(Status::Active, 5)); // oldest
+
+        for hot in ["s0", "s1", "s2", "s3"] {
+            assert!(is_hot_in(&map, hot), "{hot} should be in the top-4 hot set");
+        }
+        for cold in ["s4", "s5"] {
+            assert!(!is_hot_in(&map, cold), "{cold} should be below the top-4");
+        }
+    }
+
+    #[test]
+    fn only_working_sessions_are_eligible() {
+        // Idle/waiting/stopped sessions are NEVER hot, even when they are the
+        // most-recently-touched record in the map.
+        let mut map = HashMap::new();
+        map.insert("idle".to_string(), rec(Status::Idle, 0));
+        map.insert("waiting".to_string(), rec(Status::Waiting, 0));
+        map.insert("stopped".to_string(), rec(Status::Stopped, 0));
+        map.insert("working".to_string(), rec(Status::Active, 10));
+
+        assert!(!is_hot_in(&map, "idle"));
+        assert!(!is_hot_in(&map, "waiting"));
+        assert!(!is_hot_in(&map, "stopped"));
+        // The lone working session is hot despite being the OLDEST record —
+        // non-working records don't occupy a hot slot.
+        assert!(is_hot_in(&map, "working"));
+    }
+
+    #[test]
+    fn idle_sessions_do_not_consume_hot_slots() {
+        // Many idle sessions newer than five working ones must not push a working
+        // session out of the top-4: only working sessions count toward the cap.
+        let mut map = HashMap::new();
+        for i in 0..10 {
+            map.insert(format!("idle{i}"), rec(Status::Idle, 0));
+        }
+        map.insert("w0".to_string(), rec(Status::Active, 5));
+        map.insert("w1".to_string(), rec(Status::Active, 6));
+        map.insert("w2".to_string(), rec(Status::Active, 7));
+        map.insert("w3".to_string(), rec(Status::Active, 8));
+
+        for w in ["w0", "w1", "w2", "w3"] {
+            assert!(is_hot_in(&map, w), "{w} hot — idle sessions don't take slots");
+        }
+    }
+
+    #[test]
+    fn fewer_than_four_workers_all_hot() {
+        let mut map = HashMap::new();
+        map.insert("a".to_string(), rec(Status::Active, 0));
+        map.insert("b".to_string(), rec(Status::Starting, 1));
+        map.insert("c".to_string(), rec(Status::Active, 2));
+        for w in ["a", "b", "c"] {
+            assert!(is_hot_in(&map, w));
+        }
+    }
+
+    #[test]
+    fn ties_are_broken_deterministically_by_name() {
+        // Five working sessions sharing the EXACT same last_active: the cap still
+        // admits exactly four, broken by name ascending, so the result is stable.
+        let t = Instant::now();
+        let mut map = HashMap::new();
+        for n in ["e", "d", "c", "b", "a"] {
+            map.insert(n.to_string(), SessionRecency { status: Status::Active, last_active: t });
+        }
+        // a,b,c,d sort ahead → hot; e is the 5th → not hot.
+        for hot in ["a", "b", "c", "d"] {
+            assert!(is_hot_in(&map, hot), "{hot} hot under name tie-break");
+        }
+        assert!(!is_hot_in(&map, "e"), "e is the 5th by name → not hot");
+    }
+
+    #[test]
+    fn unknown_session_is_not_hot() {
+        let map = HashMap::new();
+        assert!(!is_hot_in(&map, "ghost"));
     }
 }
