@@ -1,0 +1,38 @@
+{
+  "milestone": "SYNC",
+  "title": "Core reliability: live status/preview sync on mobile (SSE wake recovery + live preview + deterministic spinner)",
+  "branch": "fix/mobile-live-sync",
+  "worktree": "/Users/sandervm/supermux-worktrees/mobile-live-sync",
+  "commit": "f94a00d85c2a781a82e2685a54b1436892aa86a4",
+  "summary": "Fixed the product's core live-sync on mobile by repairing three underlying mechanisms (no per-component band-aids). (1) MOBILE WAKE RECOVERY: the SSE singleton's onWake (visibilitychange/focus/online) was a partial nudge — it refetched ONCE but never restarted the EventSource, which mobile Safari SUSPENDS while backgrounded/locked (and the staleness watchdog's setInterval is frozen too, so it can't catch the dead stream on return). Result: returning to the overview got one stale refresh, then nothing was live. Now onWake runs ONE complete deterministic path: forceReconnect() a fresh EventSource whenever the stream is suspect (silent > 2s, or es===null, or readyState !== OPEN) AND resyncAll() to refetch every subscriber's source-of-truth query (sessions/board/schedules) when data is older than RESYNC_MS. forceReconnect() is the single recovery primitive — the staleness watchdog now reuses it too (DRY). The onResync contract is unchanged, so use-sessions/use-board/use-scheduler need no edits. (2) LIVE PREVIEW FROZE DURING WORK: the capture-skip optimization (auto_actions.rs tick) returned early on EVERY tick for a streaming-Active session, so the tail-preview never re-captured while the agent worked — the exact 'Claude is doing things but the card doesn't update' symptom. Bounded the skip by status::MAX_PREVIEW_STALENESS (4s): a busy agent still re-captures + re-broadcasts its tail at a live cadence, while still roughly halving the tmux spawn rate. (3) NON-DETERMINISTIC SPINNER: only `active` rendered the rotating loader; `starting` showed a static disc — so whether the loader animated depended on which loading sub-state the (sometimes-stale) sync held, plus a delayed starting→active delta froze it. Made the spinner a PURE function of status in {starting, active} via a LOADING_STATUSES set, with a stable React key so the rotation continues seamlessly across the starting→active flip and never restarts/stalls.",
+  "root_cause": "mobile-Safari SUSPENDS the EventSource (and its watchdog timers) when backgrounded, and the wake path only did a partial refetch-nudge without restarting the dead stream; plus the capture-skip froze the live preview during active work and the spinner only covered `active` not `starting`",
+
+  "tasks": {
+    "mobile_wake_force_reconnect_plus_resync": true,
+    "watchdog_reuses_force_reconnect_dry": true,
+    "live_preview_unfrozen_during_active_work": true,
+    "spinner_pure_function_of_loading_status": true
+  },
+
+  "files_changed": [
+    "web/src/hooks/use-sse.ts — onWake is now a complete deterministic recovery: forceReconnect() when the stream is suspect (silent > WAKE_RECONNECT_IF_SILENT_MS=2s, or es===null, or es.readyState !== EventSource.OPEN) + resyncAll() when data older than RESYNC_MS. Added forceReconnect() as the single reused recovery primitive (close + reset attempt + connect immediately); the staleness watchdog now calls it instead of inlining the close/scheduleReconnect dance. Header docs updated to describe the mobile wake-recovery model.",
+    "server/src/sessions/status.rs — added pub const MAX_PREVIEW_STALENESS=4s; should_skip_capture() now takes last_capture_elapsed and only skips while ALSO under that bound, so a streaming agent's preview never freezes. Updated the existing skip unit test for the new arg + added skip_bounded_by_preview_staleness.",
+    "server/src/sessions/auto_actions.rs — detector loop tracks last_capture_at (seeded stale so the first tick captures); tick() takes &mut last_capture_at, passes its elapsed into should_skip_capture, and stamps it on each successful capture-pane. Threaded through the loop call site.",
+    "server/tests/status_detector_cold_start.rs — updated both auto_actions::tick call sites for the new last_capture_at parameter (seeded appropriately)."
+  ],
+
+  "not_touched": "Did NOT modify server/src/sse.rs (it already emits status + sessions deltas correctly at a live cadence — the gap was the capture-skip upstream, not the SSE emit). Did NOT touch board.tsx, the dock, or terminal WS files (owned by other workers). use-sessions.ts / use-board.ts / overview.tsx / tile.tsx needed no changes: the singleton wake-recovery + the unchanged onResync contract fix them for free.",
+
+  "verify": {
+    "cargo_build": "PASS — cargo build clean (warnings are pre-existing: empty server/static).",
+    "cargo_test": "PASS — cargo test --lib sessions::status (17/17, incl. new skip_bounded_by_preview_staleness) + sessions::auto_actions (4/4 board reaction). Integration test status_detector_cold_start compiles clean with the new tick signature.",
+    "web_build": "PASS — cd web && bun run build (tsc -b && vite build) typechecks + builds clean.",
+    "web_lint": "PASS — cd web && bun run lint: 0 errors, 17 pre-existing react-refresh warnings (none NEW; status-dot.tsx's only warning is the pre-existing STATUS_LABEL export, untouched by this change)."
+  },
+
+  "design_notes": {
+    "dry": "ONE recovery primitive (forceReconnect) shared by wake + watchdog; ONE resync fan-out (resyncAll); the spinner is ONE pure function over a LOADING_STATUSES set. No per-component patches.",
+    "desktop_safe": "Desktop keeps working — forceReconnect on a healthy stream costs one extra GET on wake; the onResync/onEvent contracts are unchanged so all subscribers behave as before.",
+    "spinner_key": "Stable key='loading-spinner' keeps the same motion element across starting→active so the rotation never resets/stalls."
+  }
+}
