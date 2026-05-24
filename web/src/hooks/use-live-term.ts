@@ -256,6 +256,16 @@ export function useLiveTerm(
      *  default so the focus terminal + quick-peek modal keep their existing
      *  single-WS lifecycle. */
     prewarmSeed?: boolean
+    /** Fires ONCE per (re)connection the moment the replay has SETTLED — i.e.
+     *  the snapshot finished streaming AND the viewport was pinned to the bottom
+     *  (the same instant `ready` flips true: `replay_done`, the short fallback,
+     *  or the prewarm-adopt hydrate). Distinct from `onFirstFrame` (the FIRST
+     *  raw pty byte, mid-fill). The overview hover-peek gates its static→live
+     *  crossfade on THIS so the live content is coherent when it fades in (no
+     *  fill-in flicker). Kept separate from the imperative-handle `onReady` so
+     *  callers can subscribe to "settled" without re-receiving the whole handle.
+     *  No delay: it fires as soon as the replay is in — same tick as `ready`. */
+    onSettled?: () => void
   },
 ): UseLiveTermResult {
   const readOnly = opts?.readOnly ?? false
@@ -272,6 +282,16 @@ export function useLiveTerm(
   // by default so the focus terminal + quick-peek modal keep their existing
   // single-WS lifecycle.
   const prewarmSeed = opts?.prewarmSeed ?? false
+
+  // Keep the latest `onSettled` in a ref so the single mount effect (which owns
+  // the whole WS lifecycle and must NOT re-subscribe on every render) always
+  // calls the current callback without it living in the effect deps. Written in
+  // an effect (not during render) per the react-hooks/refs rule.
+  const onSettled = opts?.onSettled
+  const onSettledRef = React.useRef(onSettled)
+  React.useEffect(() => {
+    onSettledRef.current = onSettled
+  }, [onSettled])
 
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<Terminal | null>(null)
@@ -655,6 +675,12 @@ export function useLiveTerm(
         /* terminal disposed mid-connect — the reveal is harmless either way */
       }
       setReady(true)
+      // The replay has SETTLED (snapshot in, viewport pinned). Notify subscribers
+      // SYNCHRONOUSLY in the same tick `ready` flips — the overview hover-peek
+      // gates its static→live crossfade on this coherent frame (no fill-in
+      // flicker), with NO added delay. Fired exactly once per connection (guarded
+      // by `readyRef`); reset on every (re)connect via `resetReady`.
+      onSettledRef.current?.()
     }
 
     /** Re-cover the terminal for a fresh (re)connect: a reconnect replays the

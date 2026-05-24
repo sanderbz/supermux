@@ -48,6 +48,13 @@ export interface TileLiveTerminalProps {
    *  static preview stays visible until then, so the tile never flashes a
    *  blank-black void during the WS handshake (peek crossfade polish). */
   onFirstFrame?: () => void
+  /** Fires ONCE when the replay has SETTLED — the snapshot finished streaming
+   *  AND the viewport is pinned to the bottom (the live term's `ready`). The
+   *  tile gates its static→live crossfade on THIS rather than `onFirstFrame`,
+   *  so the live content is coherent (not mid-fill) when it fades in — no
+   *  flicker / double-image. No delay: settled fires as soon as the replay is
+   *  in. */
+  onSettled?: () => void
   /** Type-on-hover: capture the imperative handle (`send`/`sendKey`) so the
    *  parent's document-level keydown listener can pipe keystrokes through the
    *  existing M13 wire. The terminal stays `readOnly` (no DOM-level stdin, no
@@ -66,8 +73,10 @@ export interface TileLiveTerminalProps {
  *  `allowProgrammaticInput` flag opens the `send`/`sendKey` imperative surface
  *  for the type-on-hover keydown listener WITHOUT changing any of the other
  *  readOnly side-effects (Steve-Jobs bar: change one thing at a time). The
- *  parent ALSO uses the polish-pass `onFirstFrame` callback to crossfade this
- *  surface in over the static ANSI preview — both signals coexist.
+ *  parent ALSO uses the polish-pass `onSettled` callback to crossfade this
+ *  surface in over the static ANSI preview ONCE the replay has settled (the
+ *  coherent frame), not on the first raw byte — so the live content never
+ *  fades in mid-fill. `onFirstFrame` stays available; all signals coexist.
  *
  *  PRE-WARM (polish-pass). The parent already maintains a headless pre-warm
  *  WS + ring buffer for visible tiles (see `usePeekPrewarm`). We opt in via
@@ -87,7 +96,12 @@ export interface TileLiveTerminalProps {
  *  overlay (that would stack TWO covers). With it suppressed the peek's xterm
  *  reveals as soon as it has content — the tile's single static→live crossfade
  *  is the one coherent transition (no inner blank, no double cover). */
-export function TileLiveTerminal({ name, onFirstFrame, onReady }: TileLiveTerminalProps) {
+export function TileLiveTerminal({
+  name,
+  onFirstFrame,
+  onSettled,
+  onReady,
+}: TileLiveTerminalProps) {
   return (
     <div
       aria-hidden
@@ -102,6 +116,7 @@ export function TileLiveTerminal({ name, onFirstFrame, onReady }: TileLiveTermin
         suppressCachedTail
         className="rounded-none"
         onFirstFrame={onFirstFrame}
+        onSettled={onSettled}
         onReady={onReady}
       />
     </div>

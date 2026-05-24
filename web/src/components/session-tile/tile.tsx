@@ -984,10 +984,17 @@ export function SessionTile({
 // Owns the local `liveReady` state so it auto-resets on each fresh mount via
 // React's standard component lifecycle (no setState-in-effect lint friction,
 // no synchronous setState during render). Mounts immediately so the underlying
-// WS starts — but stays opacity:0 UNTIL the first real pty frame arrives, so
-// the tile never flashes a blank-black void during the WS handshake. Crossfade
-// IN is short (~120-180ms via springs.snappy); under Reduce Motion the swap is
-// instant. The static tail underneath stays at full opacity throughout.
+// WS starts — but stays opacity:0 UNTIL the replay has SETTLED (snapshot done +
+// viewport pinned to the bottom, surfaced via the hook's `onSettled`). Gating
+// on the SETTLED frame — not the first raw pty byte (`onFirstFrame`) — means
+// the live pane is coherent when it reveals: no mid-fill flicker / double-image
+// (the terminal is no longer painting content DURING the fade). The tile never
+// flashes a blank-black void either — the static tail underneath stays at full
+// opacity throughout, until the reveal. Crossfade IN is a gentle ~180ms opacity
+// tween ({ duration: 0.18, ease: eases.out }) — smooth, not the abrupt
+// springs.snappy; under Reduce Motion the swap is instant (duration 0). No
+// added delay: settled fires as soon as the replay is in, and the WS streams
+// the whole time underneath.
 //
 // DISMISSAL (no `exit` opacity tween). When the peek closes (hover-out without
 // typing, or stickiness timer expiry) we DO NOT crossfade the live layer back
@@ -1036,14 +1043,25 @@ function LivePeekLayer({
       // on dismissal would blend the live surface with the static tail behind
       // it, producing the "half-transparent intermediate" state. AnimatePresence
       // still unmounts the layer (just without a custom exit animation).
-      transition={reduce ? { duration: 0 } : springs.snappy}
+      //
+      // GENTLE REVEAL TWEEN. A smooth ~180ms opacity tween (NOT the abrupt
+      // springs.snappy, stiffness 500) so the static→live handoff reads as a
+      // soft crossfade, not a switch-flick. Reduced-motion → instant (duration
+      // 0), unchanged. Only the VISUAL reveal is eased — the live WS still
+      // connects + streams immediately underneath, so there is no added delay.
+      transition={reduce ? { duration: 0 } : { duration: 0.18, ease: eases.out }}
       className="absolute inset-x-0 bottom-0"
       style={{ height }}
     >
       <TileLiveTerminal
         name={name}
         width={width}
-        onFirstFrame={() => setLiveReady(true)}
+        // Crossfade on the SETTLED frame (replay done + pinned to bottom), NOT
+        // the first raw pty byte. On `onFirstFrame` the terminal is still
+        // filling in DURING the fade → flicker/double-image. `onSettled` fires
+        // the instant the content is coherent (same tick `ready` flips), with
+        // no added delay — so the live pane is whole when it reveals.
+        onSettled={() => setLiveReady(true)}
         onReady={onReady}
       />
     </motion.div>
