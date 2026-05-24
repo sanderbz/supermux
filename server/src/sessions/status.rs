@@ -39,14 +39,75 @@ const HOOK_FRESH: Duration = Duration::from_secs(3);
 /// capture-pane skip optimization window (§3.6 [P2] #7).
 const SKIP_WINDOW: Duration = Duration::from_secs(2);
 /// Upper bound on how stale the live preview tail may get while we are skipping
-/// captures for a streaming-`Active` session. The skip (above) keeps the status
-/// `Active` cheaply off the PTY heartbeat — but a session whose bytes flow every
-/// tick would NEVER re-capture, so its overview tail-preview would freeze for the
+/// captures for a streaming-`Active` session. The skip keeps the status `Active`
+/// cheaply off the PTY heartbeat — but a session whose bytes flow every tick
+/// would NEVER re-capture, so its overview tail-preview would freeze for the
 /// whole duration of the agent's work (exactly the "Claude is doing things but
 /// the card doesn't update" bug). Capping the skip at this staleness forces a
-/// capture every ~4s so the hero live-preview keeps refreshing while still
-/// roughly halving the tmux spawn rate under a chatty agent.
+/// re-capture so the hero live-preview keeps refreshing.
+///
+/// **Adaptive cadence (M-CADENCE).** This is now the *coarse* upper bound used
+/// only when a per-tier bound is not supplied. The detector loop binds the
+/// effective staleness to the session's CURRENT cadence tier
+/// ([`cadence_for`]) — so a 1s-tier (hot, working) session re-captures within
+/// ~1s during streaming, while an idle/waiting session keeps the cheap, coarse
+/// bound. See [`should_skip_capture_within`].
 pub const MAX_PREVIEW_STALENESS: Duration = Duration::from_secs(4);
+
+// ── adaptive overview-preview cadence (M-CADENCE) ────────────────────────────
+//
+// Per session, the next capture/broadcast cadence is chosen by the live status
+// and recency so the at-rest card preview feels ~1s WHERE IT MATTERS without
+// wasting tmux shell-outs on quiet sessions. Tiers (the user's exact spec):
+//
+//   working/loading (active|starting) AND in the TOP-4 most-recently-active such
+//     sessions ("hot")                                              → 1s
+//   working/loading (active|starting) but NOT hot                   → 2s
+//   idle (the existing skip-optimization already avoids needless captures
+//     when nothing changed — that benefit is preserved)             → 4s
+//   blocked on the user (waiting / awaiting_input; nothing changing) → 5s
+//
+// `cadence_for` is a pure function so the tiers are trivially unit-testable; the
+// "top 4" hot-set ranking lives in [`crate::state::AppState`] (cheap in-memory,
+// no per-tick DB scan) and is passed in here as the `is_hot` boolean.
+
+/// 1s tier — a hot (top-4 most-recently-active) working/loading session.
+pub const CADENCE_HOT: Duration = Duration::from_secs(1);
+/// 2s tier — a working/loading session that is not in the hot top-4.
+pub const CADENCE_ACTIVE: Duration = Duration::from_secs(2);
+/// 4s tier — an idle session (skip-optimization still elides captures when
+/// nothing changed).
+pub const CADENCE_IDLE: Duration = Duration::from_secs(4);
+/// 5s tier — a session blocked on the user (waiting / awaiting_input).
+pub const CADENCE_WAITING: Duration = Duration::from_secs(5);
+/// Fallback cadence for any status with no explicit tier (e.g. `Unknown`,
+/// `Stopped`) — the original fixed detector tick, a safe middle ground.
+pub const CADENCE_DEFAULT: Duration = Duration::from_secs(2);
+
+/// The adaptive cadence for the NEXT tick, by `status` + hotness (M-CADENCE).
+///
+/// Pure function (no clock, no I/O) so the tier table is unit-tested directly:
+/// `(status, is_hot) -> Duration`.
+///
+/// * `Active` / `Starting` (working or loading): `1s` when `is_hot` (top-4 most
+///   recently active among working sessions), else `2s`.
+/// * `Idle`: `4s` — nothing is changing fast; the capture-skip keeps it cheap.
+/// * `Waiting`: `5s` — blocked on the user, the screen is frozen on a prompt.
+/// * anything else (`Unknown`, `Stopped`): the `2s` default.
+pub fn cadence_for(status: Status, is_hot: bool) -> Duration {
+    match status {
+        Status::Active | Status::Starting => {
+            if is_hot {
+                CADENCE_HOT
+            } else {
+                CADENCE_ACTIVE
+            }
+        }
+        Status::Idle => CADENCE_IDLE,
+        Status::Waiting => CADENCE_WAITING,
+        Status::Stopped | Status::Unknown => CADENCE_DEFAULT,
+    }
+}
 /// How many trailing scroll-back lines the detector classifies + stores.
 pub const CAPTURE_LINES: usize = 30;
 /// Cold-start sentinel: a freshly-booted server pretends the last PTY byte was 5
@@ -257,9 +318,28 @@ pub fn should_skip_capture(
     last_status: Status,
     last_capture_elapsed: Duration,
 ) -> bool {
+    should_skip_capture_within(last_pty, last_status, last_capture_elapsed, MAX_PREVIEW_STALENESS)
+}
+
+/// Tier-bounded variant of [`should_skip_capture`] (M-CADENCE).
+///
+/// Identical skip logic, but the max-staleness is the caller-supplied
+/// `max_staleness` (the session's CURRENT cadence tier) instead of the fixed
+/// [`MAX_PREVIEW_STALENESS`]. Binding the skip to the live tier is what lets a
+/// 1s-tier (hot, streaming) session actually re-capture within ~1s — the old
+/// fixed 4s bound would otherwise let a chatty agent skip three 1s ticks in a
+/// row and defeat the whole point of the hot tier. Idle/waiting sessions are
+/// `last_status != Active`, so they never reach the staleness check and stay
+/// cheap regardless of the (larger) bound passed in.
+pub fn should_skip_capture_within(
+    last_pty: Instant,
+    last_status: Status,
+    last_capture_elapsed: Duration,
+    max_staleness: Duration,
+) -> bool {
     last_status == Status::Active
         && last_pty.elapsed() < SKIP_WINDOW
-        && last_capture_elapsed < MAX_PREVIEW_STALENESS
+        && last_capture_elapsed < max_staleness
 }
 
 // ── capture preparation helpers ──────────────────────────────────────────────
@@ -518,6 +598,63 @@ mod tests {
             Instant::now(),
             Status::Active,
             fresh_preview
+        ));
+    }
+
+    #[test]
+    fn cadence_tiers_match_the_spec() {
+        // working/loading + hot → 1s; not hot → 2s.
+        assert_eq!(cadence_for(Status::Active, true), Duration::from_secs(1));
+        assert_eq!(cadence_for(Status::Active, false), Duration::from_secs(2));
+        assert_eq!(cadence_for(Status::Starting, true), Duration::from_secs(1));
+        assert_eq!(cadence_for(Status::Starting, false), Duration::from_secs(2));
+        // idle → 4s (hotness is irrelevant — idle is never hot).
+        assert_eq!(cadence_for(Status::Idle, true), Duration::from_secs(4));
+        assert_eq!(cadence_for(Status::Idle, false), Duration::from_secs(4));
+        // blocked-on-user → 5s.
+        assert_eq!(cadence_for(Status::Waiting, true), Duration::from_secs(5));
+        assert_eq!(cadence_for(Status::Waiting, false), Duration::from_secs(5));
+        // fallthrough statuses get the safe 2s default.
+        assert_eq!(cadence_for(Status::Stopped, false), Duration::from_secs(2));
+        assert_eq!(cadence_for(Status::Unknown, false), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn staleness_tracks_the_active_tier() {
+        // A hot (1s) streaming-Active session must NOT skip once its preview is
+        // older than its 1s tier, even though the heartbeat is fresh — otherwise
+        // the old fixed 4s bound would let it skip and defeat the 1s tier.
+        let hot = cadence_for(Status::Active, true); // 1s
+        let stale_for_hot = hot + Duration::from_millis(1);
+        assert!(!should_skip_capture_within(
+            Instant::now(),
+            Status::Active,
+            stale_for_hot,
+            hot,
+        ));
+        // Below the 1s tier it may still skip (fresh heartbeat + fresh preview).
+        let fresh_for_hot = hot - Duration::from_millis(200);
+        assert!(should_skip_capture_within(
+            Instant::now(),
+            Status::Active,
+            fresh_for_hot,
+            hot,
+        ));
+        // The SAME preview age that is "stale" for the 1s tier is still "fresh"
+        // for the 2s (not-hot) tier — proof the bound really tracks the tier.
+        let warm = cadence_for(Status::Active, false); // 2s
+        assert!(should_skip_capture_within(
+            Instant::now(),
+            Status::Active,
+            stale_for_hot,
+            warm,
+        ));
+        // Idle/waiting are never Active → never skip, regardless of the bound.
+        assert!(!should_skip_capture_within(
+            Instant::now(),
+            Status::Idle,
+            Duration::from_millis(0),
+            cadence_for(Status::Idle, false),
         ));
     }
 
