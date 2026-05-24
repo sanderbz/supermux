@@ -192,6 +192,14 @@ export function SessionTile({
   const coarse = useMediaQuery('(pointer: coarse)')
   const navigateMorph = useNavigateMorph()
   const hoverPreview = useUI((s) => s.hoverPreview)
+  // Master preview mode (Settings → "Overview preview"). `text` is a hard
+  // override: the tile shows ONLY the static text tail — no live xterm peek and
+  // no live WS peek connection (no hover-warm, no on-hover connect), at rest and
+  // on hover. `live` keeps the existing behaviour, with `hoverPreview` choosing
+  // between the live terminal and the expanded-text hover. One source of truth:
+  // this store field (the same one Settings writes), so the switch is reactive.
+  const overviewPreview = useUI((s) => s.overviewPreview)
+  const liveModeEnabled = overviewPreview === 'live'
   const [hovered, setHovered] = React.useState(false)
   const [peekOpen, setPeekOpen] = React.useState(false)
   // Pins the stopped-peek surface EXPANDED while the Resume picker is open,
@@ -232,7 +240,8 @@ export function SessionTile({
   const liveCapableEarly =
     session.status !== 'stopped' && session.status !== 'error'
   usePeekPrewarm(session.name, cardRef, {
-    enabled: fine && hoverPreview === 'live' && liveCapableEarly,
+    enabled:
+      liveModeEnabled && fine && hoverPreview === 'live' && liveCapableEarly,
   })
 
   const goFocus = React.useCallback(
@@ -501,8 +510,14 @@ export function SessionTile({
   // can't be acted on). Running/active/idle/booting tiles fall through to the
   // existing live-zoom / static-tail behaviour, unchanged.
   const isStoppedPeek = expanded && session.status === 'stopped'
+  // `text` mode short-circuits the live terminal entirely (no WS opened): the
+  // tile falls through to the static `TailPreview` at rest and on hover.
   const showLiveTerm =
-    expanded && hoverPreview === 'live' && liveCapable && !isStoppedPeek
+    liveModeEnabled &&
+    expanded &&
+    hoverPreview === 'live' &&
+    liveCapable &&
+    !isStoppedPeek
   // The hover-revealed archive control shows whenever a fine-pointer user hovers
   // the tile (independent of Reduce Motion — it's an affordance, not motion) and
   // the tile isn't already exiting. Coarse pointers (touch) reach archive via the

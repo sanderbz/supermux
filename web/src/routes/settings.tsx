@@ -24,7 +24,12 @@ import {
 } from '@/lib/onboarding'
 import { onboardingApi } from '@/lib/api'
 import { useTheme, type Theme } from '@/components/theme-provider'
-import { useUI, type ViewMode, type HoverPreview } from '@/stores/ui-store'
+import {
+  useUI,
+  type ViewMode,
+  type HoverPreview,
+  type OverviewPreview,
+} from '@/stores/ui-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
 import {
@@ -78,6 +83,11 @@ const VIEW_OPTIONS: { value: ViewMode; label: string }[] = [
 const HOVER_OPTIONS: { value: HoverPreview; label: string }[] = [
   { value: 'live', label: 'Live terminal' },
   { value: 'expanded', label: 'Expanded text' },
+]
+
+const OVERVIEW_PREVIEW_OPTIONS: { value: OverviewPreview; label: string }[] = [
+  { value: 'live', label: 'Live' },
+  { value: 'text', label: 'Text' },
 ]
 
 /** Fixed default-model list (§M22). '' = whatever the server is configured to. */
@@ -369,6 +379,8 @@ export function Settings() {
   const setViewMode = useUI((s) => s.setViewMode)
   const hoverPreview = useUI((s) => s.hoverPreview)
   const setHoverPreview = useUI((s) => s.setHoverPreview)
+  const overviewPreview = useUI((s) => s.overviewPreview)
+  const setOverviewPreview = useUI((s) => s.setOverviewPreview)
   const [sound, setSound] = React.useState(() => getSoundsEnabled())
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
@@ -441,17 +453,31 @@ export function Settings() {
               }
             />
             <Row
-              label="Overview hover preview"
-              hint="Hovering a tile shows a live terminal, or more lines of recent output."
+              label="Overview preview"
+              hint="Live shows a peek of each agent’s terminal; Text shows only the recent-output tail (lighter on resources)."
               control={
                 <SegmentedControl
-                  ariaLabel="Overview hover preview"
-                  value={hoverPreview}
-                  onChange={setHoverPreview}
-                  options={HOVER_OPTIONS}
+                  ariaLabel="Overview preview"
+                  value={overviewPreview}
+                  onChange={setOverviewPreview}
+                  options={OVERVIEW_PREVIEW_OPTIONS}
                 />
               }
             />
+            {overviewPreview === 'live' ? (
+              <Row
+                label="Overview hover preview"
+                hint="Hovering a tile shows a live terminal, or more lines of recent output."
+                control={
+                  <SegmentedControl
+                    ariaLabel="Overview hover preview"
+                    value={hoverPreview}
+                    onChange={setHoverPreview}
+                    options={HOVER_OPTIONS}
+                  />
+                }
+              />
+            ) : null}
             <Row
               label={MISC.soundsToggleLabel}
               control={

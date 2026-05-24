@@ -27,13 +27,29 @@ export type ViewMode = 'tile' | 'list'
  *  - `expanded` — hover expands the static preview to ~20 coloured lines. */
 export type HoverPreview = 'live' | 'expanded'
 
+/** Overview tile PREVIEW mode — the master switch for what an overview tile may
+ *  show, distinct from `hoverPreview` (which only chooses BETWEEN the two live-
+ *  mode hover behaviours).
+ *  - `live` — the tile may open a scaled-down LIVE terminal peek (default;
+ *    hover-warmed via a WebSocket). Honours `hoverPreview` for the exact hover
+ *    behaviour.
+ *  - `text` — the tile shows ONLY the static, coloured text tail (the
+ *    `TailPreview`), both at rest and on hover. No live xterm peek, no live WS
+ *    peek connection (no hover-warm, no on-hover connect) — saves resources. */
+export type OverviewPreview = 'live' | 'text'
+
 interface UIStore {
   /** Overview default layout. */
   viewMode: ViewMode
   /** Default `--model` flag for new sessions ('' = server default). */
   defaultModel: string
-  /** What an overview tile shows on hover (§ overview tile preview). */
+  /** What an overview tile shows on hover (§ overview tile preview). Only
+   *  consulted while `overviewPreview === 'live'`. */
   hoverPreview: HoverPreview
+  /** Master overview-tile preview mode: live xterm peek vs static text tail
+   *  only (§ overview tile preview). `text` suppresses the live peek + its WS
+   *  entirely — at rest and on hover. */
+  overviewPreview: OverviewPreview
   /** Overview density tier — 1 = smallest (default, matches polish-pass), 4 =
    *  spacious. Per-device, not per-account (phone vs desktop want different
    *  defaults); see /lib/overview-size.ts. This is the DESKTOP/tablet (≥md)
@@ -50,6 +66,7 @@ interface UIStore {
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
+  setOverviewPreview: (p: OverviewPreview) => void
   setOverviewSize: (s: OverviewSize) => void
   setOverviewSizeMobile: (s: OverviewSize) => void
 }
@@ -60,11 +77,13 @@ export const useUI = create<UIStore>()(
       viewMode: 'tile',
       defaultModel: '',
       hoverPreview: 'live',
+      overviewPreview: 'live',
       overviewSize: MIN_OVERVIEW_SIZE,
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),
+      setOverviewPreview: (overviewPreview) => set({ overviewPreview }),
       setOverviewSize: (overviewSize) =>
         set({ overviewSize: clampOverviewSize(overviewSize) }),
       setOverviewSizeMobile: (overviewSizeMobile) =>
