@@ -52,6 +52,13 @@ export interface LiveTerminalProps {
    *  live terminal IN once it actually has content — keeping the static ANSI
    *  preview visible until then so the tile never flashes blank-black. */
   onFirstFrame?: () => void
+  /** Fires ONCE per connection the moment the replay has SETTLED — the snapshot
+   *  finished streaming AND the viewport is pinned to the bottom (the instant
+   *  the hook's `ready` flips). The overview hover-peek gates its static→live
+   *  crossfade on THIS (not `onFirstFrame`) so the live content is coherent when
+   *  it fades in — no mid-fill flicker. Pure passthrough to `useLiveTerm`'s
+   *  `onSettled`; the focus/quick-peek paths omit it and are unaffected. */
+  onSettled?: () => void
   /** Notified whenever the WS lifecycle state changes — used by the overview
    *  hover-zoom embed to disarm the crossfade if the connection drops to a
    *  retry/stopped state without ever delivering a frame. */
@@ -94,6 +101,7 @@ export function LiveTerminal({
   prewarmSeed,
   onReady,
   onFirstFrame,
+  onSettled,
   onStateChange,
   allowProgrammaticInput = false,
   previewAnsi,
@@ -105,6 +113,7 @@ export function LiveTerminal({
     fontSize,
     allowProgrammaticInput,
     prewarmSeed,
+    onSettled,
   })
   const { containerRef, state, hasFirstFrame, ready, retry } = term
 
