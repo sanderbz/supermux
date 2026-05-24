@@ -168,7 +168,7 @@ export function DesktopSplit({
   const title = current?.task_summary || name
 
   return (
-    <div className="flex h-full w-full bg-background">
+    <div className="flex h-full w-full bg-background" data-testid="desktop-split">
       {/* Left: 320px session-strip (vertical scroll). */}
       <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background/60">
         <div className="flex h-11 shrink-0 items-center px-3 text-[13px] font-semibold tracking-tight text-muted-foreground">
