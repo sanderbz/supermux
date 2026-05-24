@@ -211,6 +211,48 @@ async fn ws_auth_live_stream_and_replay() {
     teardown(&state, &name, dir).await;
 }
 
+/// TYPESRV (typing-latency win #1 + #2): a rapid burst of single-char `input`
+/// frames immediately followed by a named `Enter` must echo IN ORDER through the
+/// async drain + coalescing path — the chars stay contiguous and the Enter
+/// submits AFTER them (the command runs and its output appears). Proves the
+/// off-the-select! drain preserves strict ordering across an Input→Key boundary.
+#[tokio::test]
+async fn ws_burst_input_then_enter_preserves_order() {
+    if !tmux_available() {
+        eprintln!("skipping ws_burst_input_then_enter_preserves_order: tmux not on PATH");
+        return;
+    }
+    let (state, addr, dir) = spawn_server(WsConfig::default()).await;
+    let name = format!("wsburst{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    make_session(&state, &name).await;
+
+    let mut a = connect(addr, &name).await;
+    auth(&mut a).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Fire the command one char at a time (a fast-typing / key-repeat burst) so
+    // the drain has many contiguous Input frames to coalesce, then a named Enter.
+    // The chars must NOT reorder and Enter must land last → the command executes
+    // and emits a UNIQUE marker only producible by the in-order full command.
+    for ch in "echo BURSTOK".chars() {
+        a.send(text(&format!(r#"{{"type":"input","data":"{ch}"}}"#)))
+            .await
+            .unwrap();
+    }
+    a.send(text(r#"{"type":"key","data":"Enter"}"#)).await.unwrap();
+
+    // The literal command echoes AND, because Enter submitted after the full text,
+    // `echo` runs and prints the marker on its own output line. Seeing the marker
+    // proves the bytes arrived in order and the Enter followed the text.
+    assert!(
+        read_binary_until(&mut a, "BURSTOK", Duration::from_secs(10)).await,
+        "coalesced burst + Enter never produced the in-order command output"
+    );
+
+    drop(a);
+    teardown(&state, &name, dir).await;
+}
+
 /// With `subscribers_per_session = 2`, the 3rd subscriber is closed 1013 (the
 /// "33rd at the default cap of 32" acceptance, scaled down for a fast test).
 #[tokio::test]
