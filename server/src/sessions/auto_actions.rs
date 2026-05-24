@@ -259,6 +259,16 @@ pub async fn tick(
         }
     }
 
+    // hooks-10x lifecycle: a `SessionEnd` hook may have forced this session
+    // `Stopped` (a clean exit the capture classifier cannot infer). Apply +
+    // consume the override so the detector holds `Stopped` this tick instead of
+    // re-deriving `active`; `SessionStart` clears the override so a re-launched
+    // session is re-evaluated freely. We force BEFORE the capture so the held
+    // status flows through the normal change/broadcast path below.
+    if let Some(forced) = state.take_forced_status(name) {
+        detector.force(forced);
+    }
+
     let last_pty = state.last_pty(name);
     // The apex fusion signal — the per-session TURN STATE (newest instant of each
     // turn-relevant hook). The turn state machine inside `detect` marks the

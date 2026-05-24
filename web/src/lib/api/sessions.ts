@@ -215,6 +215,22 @@ export interface ApiSession {
    *  endpoint already filters archived rows out, so this flag only appears on
    *  the delta — clients drop the row from their cached list when they see it. */
   archived?: boolean
+  /** Live "current activity" line derived from the latest `PreToolUse` hook
+   *  PAYLOAD (hooks-10x): a short emoji-prefixed label like `✎ tile.tsx` /
+   *  `⚡ npm test`. In-memory only server-side (never persisted); present while
+   *  the agent is mid-tool, cleared on `Stop`/`SessionEnd`. Arrives on both the
+   *  `GET /api/sessions` list and the `sessions` SSE delta (Track 3 renders it
+   *  under the status dot, falling back to the spinner when absent). */
+  activity?: string
+  /** Machine-readable class for `activity` (`bash`/`edit`/`read`/`search`/`web`/
+   *  `task`/`mcp`/`tool`/`failed`) so the UI can style without re-parsing the
+   *  emoji. Present iff `activity` is. */
+  activity_kind?: string
+  /** The latest unrecovered agent error from a `StopFailure` hook (hooks-10x):
+   *  `{type, message}` (e.g. `rate_limit` / `billing_error`). In-memory only;
+   *  cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
+   *  error badge on the card (Track 3). */
+  error?: { type: string; message: string }
 }
 
 /** A past Claude conversation for a session's working dir (feat-resume-picker).
