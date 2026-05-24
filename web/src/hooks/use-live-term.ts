@@ -466,8 +466,39 @@ export function useLiveTerm(
     // only happens once the container has a real layout box. Loading eagerly on a
     // zero-size container (or one that resizes before first paint) throws
     // "Cannot read properties of undefined (reading 'dimensions')". So we defer:
-    // wait a frame, perform the FIRST fit (now the box is laid out), THEN attach
-    // the renderer. xterm's DOM renderer covers the gap before this runs.
+    // wait a frame (now the box is laid out), perform the first fit, attach the
+    // GPU renderer, then re-fit. xterm's DOM renderer covers the gap before this.
+    //
+    // DESKTOP-OPEN FIX (no mobile-width flash). The fit + the GPU-renderer attach
+    // happen in ONE rAF, so the terminal's FINAL geometry is committed before the
+    // browser paints the frame — there is no intermediate paint at the wrong cols.
+    //
+    //   ROOT CAUSE (measured via chrome-devtools on open — proposeDimensions()
+    //   logged at each fit). FitAddon derives cols from
+    //   `floor(containerWidth / cellWidth)`, and the built-in DOM renderer and the
+    //   WebGL renderer measure DIFFERENT cell widths for the SAME font/container
+    //   (measured: DOM → 133 cols, WebGL → 138 cols at a 1056px pane). The previous
+    //   flow fit ONCE here against the DOM renderer's metrics (→ 133 cols) and
+    //   attached the GPU renderer AFTER — so the WebGL renderer then rendered the
+    //   133-col grid with its own (narrower) cells, and the LATER async refits (the
+    //   font-load re-measure below + the debounced ResizeObserver pass, ~300ms out)
+    //   eventually re-fit to the WebGL metrics (→ 138 cols). The terminal therefore
+    //   visibly snapped width on open — the desktop-open jank. The container width
+    //   itself was correct and constant the whole time (1056px); only the cols/grid
+    //   reflowed.
+    //
+    //   THE FIX. Fit FIRST (the DOM renderer always has valid cell metrics the
+    //   instant `term.open()` returns, so this fit lands the correct cols), THEN
+    //   attach the GPU renderer, THEN fit AGAIN — all synchronously in this same
+    //   rAF, before paint. The second fit absorbs any cell-width delta the
+    //   renderer swap introduces in the SAME frame (FitAddon's `fit()` is a no-op
+    //   when cols/rows are unchanged, so it costs nothing on the common path where
+    //   the GPU cell width matches). Fitting the GPU renderer alone (without the
+    //   prior DOM-renderer fit) is NOT enough: right after `loadAddon`, the GPU
+    //   renderer's `dimensions.css.cell.width` can still be 0 (it measures on its
+    //   first render), and FitAddon bails on a 0 cell — leaving the 80-col default
+    //   (≈624px) visible until the ResizeObserver finally fires. The prior fit is
+    //   what guarantees a correct first paint.
     //
     // RENDERER STRATEGY (typing-speed win #3). Try the WebGL renderer FIRST —
     // it gives materially faster glyph render / lower paint latency and smoother
@@ -488,14 +519,20 @@ export function useLiveTerm(
         // renderer (xterm default) is a safe fallback. Non-fatal.
       }
     }
-    const raf = window.requestAnimationFrame(() => {
-      if (disposedRef.current) return
+    const safeFit = () => {
       try {
         fit.fit()
       } catch {
         /* container still 0-size — the ResizeObserver fit covers it */
       }
+    }
+    const raf = window.requestAnimationFrame(() => {
+      if (disposedRef.current) return
+      // 1. Fit against the built-in DOM renderer (its cell metrics are valid
+      //    immediately) so the correct desktop cols are committed up front.
+      safeFit()
       if (term.cols <= 0 || term.rows <= 0) return
+      // 2. Attach the GPU renderer.
       try {
         const webgl = new WebglAddon()
         // Context loss (backgrounded tab, GPU reset): dispose the dead WebGL
@@ -514,6 +551,10 @@ export function useLiveTerm(
         // back to the Canvas renderer (the previous default — robust).
         loadCanvasFallback()
       }
+      // 3. Re-fit so any cell-width delta the renderer swap introduced is applied
+      //    in THIS same rAF, before paint — no intermediate-cols frame is ever
+      //    shown. No-op when the GPU cell width matches the DOM renderer's.
+      safeFit()
     })
 
     // Font-ready refit: xterm caches the renderer's character metrics on
@@ -524,11 +565,32 @@ export function useLiveTerm(
     // the requested face is ready (or immediately if the browser lacks the
     // CSS Font Loading API); we then call .clearTextureAtlas() so the
     // canvas renderer reflows with the now-loaded metrics + a refit.
+    //
+    // DESKTOP-OPEN FIX (no mobile-width flash). Only refit when the font was
+    // NOT already available at mount. On the common path the Nerd Font is
+    // already cached (warm load / second open), so the initial fit above ALREADY
+    // measured the correct cell width — re-running `clearTextureAtlas()` + a
+    // second `fit()` here would just reflow the grid a SECOND time on first
+    // paint (measured as the transient narrow-then-wide snap), for zero metric
+    // change. `document.fonts.check()` is synchronous, so we read it once now to
+    // decide; if the face is already present we skip the redundant refit and let
+    // the single initial fit stand. Only a genuinely-late font (cold first load)
+    // takes the re-measure path, where the reflow is correcting real misalignment.
     try {
-      const fonts = (document as Document & { fonts?: FontFaceSet }).fonts
-      if (fonts?.load) {
+      const fonts = (document as Document & {
+        fonts?: FontFaceSet
+      }).fonts
+      const faceSpec = `${fontSize}px "JetBrainsMono Nerd Font Mono"`
+      const alreadyLoaded = (() => {
+        try {
+          return fonts?.check?.(faceSpec) ?? false
+        } catch {
+          return false
+        }
+      })()
+      if (fonts?.load && !alreadyLoaded) {
         void fonts
-          .load(`${fontSize}px "JetBrainsMono Nerd Font Mono"`)
+          .load(faceSpec)
           .then(() => {
             if (disposedRef.current) return
             try {
