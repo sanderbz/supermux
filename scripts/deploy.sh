@@ -520,6 +520,19 @@ fi
 READ_WRITE_PATHS_RAW="${SUPERMUX_READ_WRITE_PATHS:-$READ_WRITE_PATHS_DEFAULT}"
 READ_WRITE_PATHS="$(printf '%s' "$READ_WRITE_PATHS_RAW" | tr ':' ' ')"
 
+# W^X (MemoryDenyWriteExecute) — the one hardening directive that's off by
+# default. supermux hosts CODING agents: with W^X=yes the kernel rejects V8 JIT
+# + WebAssembly (mprotect(PROT_EXEC) → ENOMEM), so npm/React/Vite/Next/Jest and
+# anything JIT/WASM-based fail for the service AND its children (NoNewPrivileges
+# makes it inherited). So default to dev-friendly (no); flip to strict (yes) only
+# when the operator explicitly sets SUPERMUX_HARDENED=1. NOTHING else changes
+# between modes — every other sandbox directive stays on in both.
+if [ "${SUPERMUX_HARDENED:-0}" = "1" ]; then
+  MEMORY_DENY_WRITE_EXECUTE=yes
+else
+  MEMORY_DENY_WRITE_EXECUTE=no
+fi
+
 # ── 0d. host preflight: Tailscale auto-detect ───────────────────────────────
 # If the operator didn't set SUPERMUX_USE_TAILSCALE, sniff the host: if
 # tailscale is installed AND tailscaled is running, default to exposing the
@@ -584,6 +597,11 @@ echo "[deploy] public expose     : $PUBLIC_EXPOSE_DESC  [$TAILSCALE_DETECTION]"
 echo "[deploy] commit            : $GIT_SHA ($GIT_SHA_SHORT)"
 echo "[deploy] read-write paths  : $READ_WRITE_PATHS"
 echo "[deploy] hardening         : ProtectHome=$PROTECT_HOME"
+if [ "$MEMORY_DENY_WRITE_EXECUTE" = "yes" ]; then
+  echo "[deploy] agent builds      : DISABLED (strict W^X — npm/React/Vite/Jest will fail)"
+else
+  echo "[deploy] agent builds      : enabled (W^X off)"
+fi
 echo "[deploy] claude auth       : verified after provisioning (see end of run)"
 echo "[deploy] ───────────────────────────────────────────────────────────"
 
@@ -762,6 +780,7 @@ sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__DATA_DIR__|$DATA_DIR|g" \
     -e "s|__PROTECT_HOME__|$PROTECT_HOME|g" \
     -e "s|__READ_WRITE_PATHS__|$READ_WRITE_PATHS|g" \
+    -e "s|__MEMORY_DENY_WRITE_EXECUTE__|$MEMORY_DENY_WRITE_EXECUTE|g" \
     etc/systemd/supermux.service > "$UNIT_TMP"
 # __BIND_PATHS__ is its own line in the template: substitute it with the
 # BindPaths directive (non-root), or delete the line entirely (root → empty).
