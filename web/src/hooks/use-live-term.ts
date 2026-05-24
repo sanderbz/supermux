@@ -85,6 +85,11 @@ const AUTH_GRACE_MS = 4_000 // server allots 2s for the first frame; we give sla
 // Kept short — long enough to swallow the replay-scroll on a healthy server,
 // short enough that a legacy server's reveal still feels instant.
 const REPLAY_DONE_FALLBACK_MS = 400
+// Soft-keyboard detection threshold (px of visualViewport inset). Mirrors
+// `useKeyboardViewport`'s 80px floor so the live-render kick agrees with the
+// route's keyboard-open state; below this, iOS jitter (URL-bar collapse,
+// rubber-band) must not flip us into the kick path.
+const KEYBOARD_OPEN_THRESHOLD = 80
 
 // Close codes with explicit v2 semantics (§4.5).
 const CLOSE_AUTH = 1008 // auth/origin reject — permanent
@@ -305,6 +310,9 @@ export function useLiveTerm(
   const visibilityPendingRef = React.useRef(false) // 1013 → wait for visible
   const lastVisibleAtRef = React.useRef(0)
   const disposedRef = React.useRef(false)
+  // True while the mobile soft keyboard is open (visualViewport shrunk past the
+  // threshold). Drives the live-render kick below: see the binary-frame branch.
+  const keyboardOpenRef = React.useRef(false)
   // `connectRef` lets the close handler call the latest `connect` without
   // recreating the effect; assigned once below.
   const connectRef = React.useRef<() => void>(() => {})
@@ -545,6 +553,38 @@ export function useLiveTerm(
         // hit, but the terminal at least functions.
         term.onData((s) => sendRaw(s))
       }
+
+      // SHIFT+ENTER = NEWLINE (desktop). A bare Enter (`\r`) submits Claude
+      // Code's prompt; Shift+Enter (and Alt/Option+Enter as an alias) should
+      // instead insert a literal newline WITHOUT submitting. There is no
+      // distinct byte a terminal can encode for "Shift+Enter" over a pty, so
+      // the soft keyboard / xterm's default keymap collapses it to a plain
+      // `\r` — which submits. We intercept the keydown BEFORE xterm's keymap
+      // runs and send LF (`\x0a`, Ctrl+J) ourselves down the SAME input wire
+      // every keystroke uses (`sendRaw` → {type:'input'} → pty), then return
+      // false to swallow the event so xterm does NOT also emit its `\r`.
+      //
+      // Scope is deliberately narrow: ONLY a keydown whose key is exactly
+      // "Enter" with shiftKey (or altKey) and no other primary modifiers
+      // (ctrl/meta) is handled — so Ctrl-C, ⌘-anything, plain Enter (=submit),
+      // paste, and the phantom-Enter guard are all untouched. We also bail
+      // during IME composition (`isComposing` / keyCode 229) so a CJK
+      // candidate-commit Enter still reaches the composer normally.
+      term.attachCustomKeyEventHandler((e) => {
+        if (
+          e.type === 'keydown' &&
+          e.key === 'Enter' &&
+          (e.shiftKey || e.altKey) &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.isComposing &&
+          e.keyCode !== 229
+        ) {
+          sendRaw('\x0a')
+          return false
+        }
+        return true
+      })
     }
 
     // 3. WebSocket connect with first-frame auth (§4.5). No `?_token=` in URL.
@@ -588,6 +628,57 @@ export function useLiveTerm(
       clearReadyFallback()
       readyRef.current = false
       setReady(false)
+    }
+
+    // ── Live-render kick while the soft keyboard is open (mobile) ────────────────
+    //
+    // ROOT CAUSE. xterm's renderer batches every paint — including the canvas
+    // repaint that `term.write(ptyBytes)` triggers — into ONE requestAnimationFrame
+    // via its internal RenderDebouncer. On mobile, while the soft keyboard is up
+    // the visual viewport shrinks and the engine (iOS Safari / WKWebView)
+    // composites our terminal layer behind the keyboard overlay; the debounced rAF
+    // that flushes the canvas is throttled/coalesced and effectively does not paint
+    // until the next layout change. So incoming pty bytes (Esc/Tab/arrow → Claude
+    // redraw) land in xterm's buffer but the CANVAS doesn't repaint — the user sees
+    // a frozen pane. Closing the keyboard fired a ResizeObserver → fit() →
+    // handleResize() → full refresh, which is what *accidentally* forced the paint
+    // before the accessory buttons stopped blurring xterm.
+    //
+    // THE FIX (minimal, no polling). When pty bytes arrive AND the keyboard is
+    // open AND the terminal is focused (i.e. we are exactly in the frozen-canvas
+    // condition), schedule one explicit `refresh()` on the next animation frame.
+    // `term.refresh(0, rows-1)` re-queues a full repaint through the same renderer;
+    // issuing it from a fresh rAF (rather than relying on the write's own debounced
+    // frame) lands the paint in the compositor's live animation pipeline so the
+    // canvas actually updates. A single rAF is coalesced across a burst of writes
+    // (we clear+reschedule), so a redraw storm still paints exactly once per frame
+    // — no busy loop, no per-byte work. On desktop / keyboard-closed this is a
+    // no-op (the guard is false), so the normal live-stream paint path is untouched.
+    let renderKickRaf: number | null = null
+    const kickRenderWhileKeyboardOpen = () => {
+      if (!keyboardOpenRef.current) return
+      const t = termRef.current
+      if (!t) return
+      // Only when xterm actually owns focus — that's the precise "keyboard is up
+      // FOR this terminal" condition; avoids forcing paints for an off-screen or
+      // backgrounded terminal.
+      const active = document.activeElement
+      const focused =
+        active instanceof HTMLElement &&
+        container.contains(active) &&
+        active.classList.contains('xterm-helper-textarea')
+      if (!focused) return
+      if (renderKickRaf !== null) return
+      renderKickRaf = window.requestAnimationFrame(() => {
+        renderKickRaf = null
+        const term2 = termRef.current
+        if (!term2) return
+        try {
+          term2.refresh(0, Math.max(0, term2.rows - 1))
+        } catch {
+          /* terminal disposed mid-frame — harmless */
+        }
+      })
     }
 
     const scheduleReconnect = () => {
@@ -670,6 +761,7 @@ export function useLiveTerm(
         } else if (data instanceof Blob) {
           term.write(new Uint8Array(await data.arrayBuffer()))
         }
+        kickRenderWhileKeyboardOpen()
         // Mark the first real pty frame so the overview hover-zoom can swap the
         // static ANSI preview out (peek crossfade polish). Cheap idempotent
         // ref-then-state flip — re-renders happen ONCE per mount.
@@ -876,12 +968,64 @@ export function useLiveTerm(
     }
     document.addEventListener('visibilitychange', onVisibility)
 
+    // 5b. Track soft-keyboard open/close off `visualViewport` so the live-render
+    //     kick (above) knows when xterm's canvas is in the frozen-while-keyboard-up
+    //     condition. Mirrors `useKeyboardViewport`'s detection (inset vs the layout
+    //     viewport, same 80px threshold) but kept LOCAL to the hook so the fix is
+    //     self-contained — no new prop threaded through the route → split → terminal
+    //     chain. When the keyboard CLOSES we also kick one final refresh so the last
+    //     bytes that arrived while it was up are painted immediately (belt-and-
+    //     suspenders; the close-induced resize usually covers this). No-op when
+    //     `visualViewport` is absent (desktop) — `keyboardOpenRef` stays false.
+    const visual =
+      typeof window !== 'undefined' ? window.visualViewport : undefined
+    let kbRaf = 0
+    const measureKeyboard = () => {
+      kbRaf = 0
+      if (!visual) return
+      const inset = Math.max(
+        0,
+        window.innerHeight - visual.height - visual.offsetTop,
+      )
+      const open = inset > KEYBOARD_OPEN_THRESHOLD
+      const was = keyboardOpenRef.current
+      keyboardOpenRef.current = open
+      // On the open→closed edge, force one repaint so anything written while the
+      // canvas was frozen lands now (covers engines whose close doesn't fire a
+      // ResizeObserver pass before our kick guard goes false).
+      if (was && !open) {
+        const t = termRef.current
+        if (t) {
+          try {
+            t.refresh(0, Math.max(0, t.rows - 1))
+          } catch {
+            /* disposed mid-frame — harmless */
+          }
+        }
+      }
+    }
+    const scheduleKeyboard = () => {
+      if (kbRaf) return
+      kbRaf = window.requestAnimationFrame(measureKeyboard)
+    }
+    if (visual) {
+      measureKeyboard()
+      visual.addEventListener('resize', scheduleKeyboard)
+      visual.addEventListener('scroll', scheduleKeyboard)
+    }
+
     // 6. Teardown — dispose terminal + close WS so the mount/unmount cycle test
     //    (100 iterations, §4.5 / §11) returns WS count to zero, no leaks.
     return () => {
       disposedRef.current = true
       window.cancelAnimationFrame(raf)
       document.removeEventListener('visibilitychange', onVisibility)
+      if (visual) {
+        visual.removeEventListener('resize', scheduleKeyboard)
+        visual.removeEventListener('scroll', scheduleKeyboard)
+      }
+      if (kbRaf) window.cancelAnimationFrame(kbRaf)
+      if (renderKickRaf !== null) window.cancelAnimationFrame(renderKickRaf)
       ro.disconnect()
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
       clearReconnectTimer()
