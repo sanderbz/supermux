@@ -86,9 +86,13 @@ async fn tick_on_unstarted_session_leaves_status_unknown() {
 
     let mut detector = StatusDetector::new();
     // M5b: `tick` now carries the cross-tick preview-tail memo (last broadcast
-    // tail) for the SSE "status OR tail6 changed" rule.
+    // tail) for the SSE "status OR tail6 changed" rule, plus the last-capture
+    // time that bounds the capture-skip optimization.
     let mut tail = None;
-    auto_actions::tick(&state, "ghost", &mut detector, &mut tail).await.unwrap();
+    let mut last_capture_at = Instant::now();
+    auto_actions::tick(&state, "ghost", &mut detector, &mut tail, &mut last_capture_at)
+        .await
+        .unwrap();
 
     let rt = db::sessions::runtime(&state.pool, "ghost").await.unwrap().unwrap();
     assert_eq!(rt.last_status, "unknown", "unstarted session stays Unknown");
@@ -123,9 +127,15 @@ async fn detector_tick_writes_last_capture() {
     // every tick, canonical preview source).
     let mut detector = StatusDetector::new();
     let mut tail = None;
+    // Seed "stale" so the first manual tick always captures (the loop seeds it
+    // the same way).
+    let mut last_capture_at = Instant::now()
+        - supermux_server::sessions::status::MAX_PREVIEW_STALENESS;
     let mut captured = String::new();
     for _ in 0..24 {
-        auto_actions::tick(&state, &name, &mut detector, &mut tail).await.unwrap();
+        auto_actions::tick(&state, &name, &mut detector, &mut tail, &mut last_capture_at)
+            .await
+            .unwrap();
         let rt = db::sessions::runtime(&state.pool, &name).await.unwrap().unwrap();
         captured = rt.last_capture;
         if captured.contains(marker) {

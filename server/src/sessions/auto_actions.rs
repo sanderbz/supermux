@@ -30,7 +30,7 @@
 //! (`capture-pane`) and MUST NOT take the per-session `SessionLock`, or a chatty
 //! `send` burst would starve detection.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::time::{interval, MissedTickBehavior};
@@ -140,6 +140,12 @@ pub fn spawn_status_loop(state: AppState, name: String) {
         // Per-session broadcast memo: the last preview tail we pushed over SSE, so
         // a tick re-emits a `sessions` delta only when the visible tail changed.
         let mut last_tail: Option<Vec<String>> = None;
+        // When we last actually ran a capture. The capture-skip optimization is
+        // bounded by this (status::MAX_PREVIEW_STALENESS) so a continuously
+        // streaming agent still re-captures + re-broadcasts its live tail instead
+        // of freezing the overview preview for the whole duration of its work.
+        // Seed it "stale" so the very first tick always captures.
+        let mut last_capture_at = Instant::now() - status::MAX_PREVIEW_STALENESS;
 
         let mut ticker = interval(TICK);
         // Skip (don't burst) ticks missed while a capture-pane ran long.
@@ -176,7 +182,15 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 }
             }
 
-            if let Err(e) = tick(&state, &name, &mut detector, &mut last_tail).await {
+            if let Err(e) = tick(
+                &state,
+                &name,
+                &mut detector,
+                &mut last_tail,
+                &mut last_capture_at,
+            )
+            .await
+            {
                 tracing::debug!(name = %name, error = %e, "status detector tick");
             }
         }
@@ -188,12 +202,15 @@ pub fn spawn_status_loop(state: AppState, name: String) {
 /// One detector tick. Public so an integration test can drive a single tick
 /// deterministically (rather than waiting on the 2s interval). `last_tail` carries
 /// the previously-broadcast preview tail across ticks for the §3.6 "status OR
-/// tail6 changed" SSE rule.
+/// tail6 changed" SSE rule. `last_capture_at` is the time of the last actual
+/// `capture-pane`, used to bound the capture-skip optimization so the live
+/// preview never freezes while an agent streams (see [`status::should_skip_capture`]).
 pub async fn tick(
     state: &AppState,
     name: &str,
     detector: &mut StatusDetector,
     last_tail: &mut Option<Vec<String>>,
+    last_capture_at: &mut Instant,
 ) -> anyhow::Result<()> {
     // While the detector's internal status is still `Unknown` (cold-start), pull
     // the persisted `last_status` from the DB and force it in. This satisfies
@@ -216,9 +233,12 @@ pub async fn tick(
     let last_hook = state.last_hook_event(name);
 
     // capture-pane skip optimization (§3.6 [P2] #7): once M4's reader feeds the
-    // heartbeat, a streaming-Active session keeps its status + recent preview
-    // without a shell-out. Until then the sentinel keeps this false.
-    if status::should_skip_capture(last_pty, detector.last_status()) {
+    // heartbeat, a streaming-Active session keeps its status without a shell-out.
+    // BOUNDED by preview staleness: a session that streams every tick must still
+    // re-capture at least every status::MAX_PREVIEW_STALENESS so its live tail
+    // keeps refreshing on the overview (otherwise the preview freezes for the
+    // whole duration of the agent's work — the reported mobile/desktop bug).
+    if status::should_skip_capture(last_pty, detector.last_status(), last_capture_at.elapsed()) {
         return Ok(());
     }
 
@@ -248,6 +268,9 @@ pub async fn tick(
     // read the ANSI-stripped form, the colour-true tile preview reads the raw
     // form. A single shell-out feeds both — no extra `capture-pane` per tick.
     let raw_ansi = tmux.capture_pane_ansi(status::CAPTURE_LINES).await?;
+    // Stamp the capture time the moment a shell-out succeeds so the skip bound
+    // (status::MAX_PREVIEW_STALENESS) measures from the last REAL capture.
+    *last_capture_at = Instant::now();
     let capture = status::prepare_capture(&raw_ansi);
     let capture_ansi = status::prepare_capture_ansi(&raw_ansi);
 
