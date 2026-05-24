@@ -127,8 +127,11 @@ ProtectControlGroups=true
 ProtectClock=true
 ProtectHostname=true
 # Localhost HTTP service + tmux AF_UNIX socket: AF_INET/AF_INET6 for the
-# listener, AF_UNIX for tmux. Nothing else (no AF_NETLINK, AF_PACKET, …).
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# listener, AF_UNIX for tmux. AF_NETLINK so agent dev tooling that enumerates
+# network interfaces works — e.g. glibc getifaddrs()/`os.networkInterfaces()`,
+# which Vite/Next/webpack-dev-server call to print the "Network:" URL. No
+# AF_PACKET / raw families.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 # No new namespaces, no realtime scheduling, no personality (ABI) changes,
 # no setuid/setgid binaries, no executable+writable memory.
 RestrictNamespaces=true
