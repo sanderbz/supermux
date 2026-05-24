@@ -125,6 +125,25 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         }
     }
 
+    // 4b. Replay boundary marker. The replay frames above visibly scroll the
+    //     client viewport as they stream (the snapshot is up to 512 KB / several
+    //     thousand lines); the client wants to APPEAR already at the bottom, not
+    //     watch the history chase down. We send a control text frame the instant
+    //     the (possibly empty) replay batch is flushed and BEFORE the live
+    //     fan-out below — the client keeps its viewport hidden until it sees
+    //     this, then jumps to the bottom + reveals in one paint. Always sent,
+    //     even for an empty replay, so the client always gets the signal (an old
+    //     server that omits it is covered by the client's fallback timeout).
+    if socket
+        .send(Message::Text(Utf8Bytes::from_static(
+            r#"{"type":"replay_done"}"#,
+        )))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
     // 5. Unified fan-out + client-read + ping loop (single task, no split — uses
     //    WebSocket's inherent recv/send).
     let mut last_inbound = Instant::now();

@@ -13,6 +13,16 @@
 // The command palette (⌘K) is mounted globally in <Layout>; the slash menu is
 // owned by <DesktopDock> itself (anchored popover above the "/" button) — this
 // route no longer needs to pass stub callbacks for either.
+//
+// CACHED-TAIL CROSSFADE (scroll-on-open). The <LiveTerminal> that shows this
+// session's pty is rendered deep inside <DesktopSplit>, not here — so rather
+// than thread the cached last-screen capture (`preview_ansi`/`preview_lines`)
+// through that component, <LiveTerminal> falls back to the SHARED `useSessions`
+// cache by name when no preview props are supplied. That is the same SSE-merged
+// source `useFocusSessions` (below) reads, so the desktop focus terminal shows
+// the CURRENT screen instantly on open (no blank, no replay scroll) and then
+// crossfades to live — identical UX to the mobile route, which passes the row
+// explicitly. Empty/new sessions reveal the xterm directly (nothing to scroll).
 
 import * as React from 'react'
 import { useParams } from 'react-router-dom'

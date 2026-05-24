@@ -24,6 +24,8 @@ import { springs } from '@/lib/springs'
 import { useLiveTerm } from '@/hooks/use-live-term'
 import type { LiveTermState, UseLiveTermResult } from '@/hooks/use-live-term'
 import { useTerminalConnectionLink } from '@/hooks/use-connection-link'
+import { useSession } from '@/hooks/use-sessions'
+import { TailPreview } from '@/components/session-tile/tail-preview'
 
 export interface LiveTerminalProps {
   /** Session name — maps to the M4 WS route `/ws/sessions/:name`. */
@@ -60,6 +62,28 @@ export interface LiveTerminalProps {
    *  while xterm's own DOM stdin stays disabled (the peek user never focuses
    *  the xterm element). Default false preserves the M11 readOnly contract. */
   allowProgrammaticInput?: boolean
+  /** The session's already-cached last-screen capture WITH SGR escapes (the
+   *  same `SessionView.preview_ansi` the overview cards render via
+   *  <TailPreview>). Shown INSTANTLY as a static overlay on open — the user
+   *  sees the current screen already-at-the-bottom with NO blank flash and NO
+   *  visible replay scroll — then we crossfade to the live xterm once it's
+   *  pinned to the bottom (`ready`). When omitted, the focus path falls back to
+   *  the shared `useSessions` cache (look-up by `name`); when there's no cached
+   *  tail at all (a new/empty session) we skip the overlay and reveal the
+   *  xterm directly — nothing to scroll, so it's already instant. */
+  previewAnsi?: string[]
+  /** ANSI-stripped twin of `previewAnsi` (`SessionView.preview_lines`) — the
+   *  plain-text fallback <TailPreview> renders when no SGR-coloured tail is
+   *  available. Same fallback-to-`useSessions` behaviour as `previewAnsi`. */
+  previewLines?: string[]
+  /** Suppress the internal cached-tail overlay. The overview hover-peek
+   *  (<TileLiveTerminal>) ALREADY owns a static→live crossfade — its <TailPreview>
+   *  sits behind the live layer which fades in on `onFirstFrame`. Rendering the
+   *  overlay here too would stack TWO covers. With it suppressed the peek's xterm
+   *  reveals as soon as it has content (no inner blank), so the peek keeps ONE
+   *  coherent crossfade. The focus routes leave this false (they own no outer
+   *  crossfade, so the overlay IS their instant current-screen). */
+  suppressCachedTail?: boolean
 }
 
 export function LiveTerminal({
@@ -72,6 +96,9 @@ export function LiveTerminal({
   onFirstFrame,
   onStateChange,
   allowProgrammaticInput = false,
+  previewAnsi,
+  previewLines,
+  suppressCachedTail = false,
 }: LiveTerminalProps) {
   const term = useLiveTerm(name, {
     readOnly,
@@ -79,7 +106,33 @@ export function LiveTerminal({
     allowProgrammaticInput,
     prewarmSeed,
   })
-  const { containerRef, state, hasFirstFrame, retry } = term
+  const { containerRef, state, hasFirstFrame, ready, retry } = term
+
+  // Resolve the cached tail. Callers that already hold the session row (mobile
+  // focus route, the overview peek) pass it explicitly. The desktop focus route
+  // renders us deep inside <DesktopSplit> without threading it, so when no props
+  // are given we fall back to the shared SSE-merged `useSessions` cache by name
+  // — the SAME source the overview tiles render, so the static screen matches.
+  // Skip the lookup entirely when the overlay is suppressed (the peek owns its
+  // own crossfade) or when explicit preview props were supplied.
+  const wantFallback = !suppressCachedTail && !previewAnsi && !previewLines
+  const fallback = useSession(wantFallback ? name : '').session
+  const tailAnsi = previewAnsi ?? fallback?.preview_ansi
+  const tailLines = previewLines ?? fallback?.preview_lines
+  // A cached tail exists when either array has content. With no tail there is
+  // nothing to scroll, so we reveal the xterm directly (instant) rather than
+  // covering it with an empty overlay. Suppressed → never render the overlay.
+  const hasTail =
+    !suppressCachedTail &&
+    ((tailAnsi?.length ?? 0) > 0 || (tailLines?.length ?? 0) > 0)
+  // Reveal the xterm when it's pinned to the bottom (`ready`) — OR immediately
+  // when there is nothing behind it to cover the replay. "Nothing behind" means:
+  // no cached-tail overlay AND no external cover. The suppressed peek path keeps
+  // an EXTERNAL cover (the tile's own static <TailPreview> behind <LivePeekLayer>),
+  // so we still gate it on `ready` — the static preview shows through during
+  // replay, so the peek never shows the scroll either (one coherent crossfade).
+  // A focus terminal with no cached tail (empty/new session) reveals instantly.
+  const showTerm = ready || (!hasTail && !suppressCachedTail)
 
   React.useEffect(() => {
     onReady?.(term)
@@ -125,12 +178,56 @@ export function LiveTerminal({
         // terminal produce native vertical-pan gestures that xterm's
         // `.xterm-viewport` scrollback consumes (instead of being swallowed by
         // Vaul's drag). Paired with `data-vaul-no-drag` on the focus wrapper.
-        className="h-full w-full p-2 [touch-action:pan-y]"
+        //
+        // SCROLL-ON-OPEN FIX (cached-tail crossfade). On open we INSTANTLY show
+        // the session's already-cached last-screen capture as a static overlay
+        // (the cached-tail overlay below) — the user sees the CURRENT screen,
+        // already-at-the-bottom, with NO blank flash and NO visible replay
+        // scroll. Behind it the live xterm connects, writes the replay, and
+        // `scrollToBottom()`s; once it's pinned (`ready`) we crossfade: the
+        // overlay fades OUT and the xterm fades IN. We use OPACITY (not
+        // display/visibility) so the layout box stays intact — FitAddon still
+        // measures real cols/rows while covered. When there's no cached tail
+        // (empty/new session) `showTerm` is true from t=0 so the xterm reveals
+        // immediately — nothing to scroll. Reduced-motion: no transition.
+        className={cn(
+          'h-full w-full p-2 [touch-action:pan-y]',
+          'transition-opacity duration-150 ease-out motion-reduce:transition-none',
+          showTerm ? 'opacity-100' : 'opacity-0',
+        )}
         // xterm focuses on click; expose to the keyboard-capture layer (M14).
         tabIndex={readOnly ? -1 : 0}
         aria-label={`Live terminal for ${name}`}
         role="application"
       />
+
+      {/* Cached-tail overlay — the instant "current screen" on open. Renders the
+          session's last-screen capture (the same preview the overview cards
+          show), terminal-bg, bottom-anchored so it reads as the live screen
+          already-at-the-bottom. Mounts whenever a cached tail EXISTS and fades
+          OUT once the live xterm is `ready` (a quick ~150ms crossfade,
+          reduced-motion-safe) — staying mounted at opacity-0 through the fade so
+          the crossfade actually plays (unmounting on `ready` would pop, not
+          fade). Mirrors the proven overview peek pattern (static preview behind,
+          live surface fades in over it). Pointer-events-none so a click during
+          the brief crossfade lands on the xterm beneath it. */}
+      {hasTail && (
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-0 bg-[var(--terminal-bg)] p-2',
+            'transition-opacity duration-150 ease-out motion-reduce:transition-none',
+            ready ? 'opacity-0' : 'opacity-100',
+          )}
+        >
+          <TailPreview
+            lines={tailLines ?? []}
+            ansiLines={tailAnsi}
+            fill
+            className="h-full px-0"
+          />
+        </div>
+      )}
 
       {/* In-terminal connection pill — kept ONLY for read-only embeds (e.g. the
           quick-peek modal), which do NOT register with the global connection

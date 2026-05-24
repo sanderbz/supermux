@@ -316,7 +316,18 @@ export function MobileFocus() {
               <StoppedSession name={name} />
             ) : (
               <>
-                <LiveTerminal name={name} onReady={onTermReady} />
+                {/* Pass the session's cached last-screen capture so the terminal
+                    shows the CURRENT screen INSTANTLY on open (no blank, no
+                    replay scroll), then crossfades to the live xterm. The
+                    `current` row is the shared SSE-merged source the overview
+                    tiles render, so the static screen matches what the user just
+                    tapped (cached-tail crossfade). */}
+                <LiveTerminal
+                  name={name}
+                  onReady={onTermReady}
+                  previewAnsi={current.preview_ansi}
+                  previewLines={current.preview_lines}
+                />
                 <Joystick
                   enabled={gestureOn}
                   sendKey={(key) => termRef.current?.sendKey(key)}
