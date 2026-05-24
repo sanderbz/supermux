@@ -19,7 +19,6 @@ import {
 } from 'framer-motion'
 import {
   Command,
-  Slash,
   Plus,
   Minimize2,
   Square,
@@ -35,7 +34,6 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import type { ApiSession } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
-import { SlashMenu } from '@/components/focus-mode/slash-menu'
 import { useDictation } from '@/components/focus-mode/use-dictation'
 import {
   Tooltip,
@@ -45,15 +43,15 @@ import {
 
 // ── DesktopDock (M14, TECH_PLAN §4.4.3 — full desktop dock, pixel spec) ────────
 //
-//   ┌─[⌘K]─[/]─[+]─┃─[Esc][Tab][^C][^U]⚙─┃─[Detach ⌘D]─[Stop ⌘W]─┐
+//   ┌─[⌘K]─[+]─┃─[Esc][Tab][^C][^U]⚙─┃─[Detach ⌘D]─[Stop ⌘W]─┐
 //   │  left cluster   editable 4-chip send-row    right cluster     │
 //   └────────────────────────────────────────────────────────────────┘
 //
 // 56px tall (mirrors the mobile dock for muscle-memory), bg-card + 1px top
 // border. The send-row chips call `sendKey(label)`; they are editable via a gear
-// icon. The "/" slash button surfaces the M18 slash menu (stubbed to a callback
-// here so M18 plugs in WITHOUT editing this file — §29 dep-graph fix). The "+"
-// snippet button + ⌘K palette button take callbacks too.
+// icon. The "+" snippet button + ⌘K palette button take callbacks too. The old
+// "/" slash button was removed (DOCK) — slash commands now run from the Claude
+// Tools sheet's Commands tab (tap a command → run in the focused terminal).
 //
 // VISUAL: iOS-native — SF Mono chips, 8px continuous corners, ≥44pt hit targets,
 // Title-Case tooltips, spring button-press, no `transition: all`.
@@ -67,12 +65,10 @@ export interface DesktopDockProps {
   onSendKey: (label: string) => void
   /** "+" snippet-drawer toggle — opens the M18 snippet side-sheet. */
   onSnippets?: () => void
-  /** Run a slash command in the focused session — sends `cmd\r` to the pty so
-   *  the agent actually executes it. Wired by DesktopSplit to the M13 live
-   *  terminal's `send`. The desktop dock has NO text composer (deliberate —
-   *  the terminal is the composer), so the "/" button opens an inline popover
-   *  hosting the M18 SlashMenu instead of typing into a hidden input. */
-  onRunSlash: (cmd: string) => void
+  /** DEPRECATED (DOCK): the "/" slash button was removed — slash commands now
+   *  run from the Claude Tools sheet's Commands tab. Kept optional + unused so
+   *  DesktopSplit's existing call site still type-checks; safe to drop later. */
+  onRunSlash?: (cmd: string) => void
   /** Detach (⌘D): leave to overview, keep the session alive. */
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session. */
@@ -147,7 +143,6 @@ function SendChip({
 
 export function DesktopDock({
   onSendKey,
-  onRunSlash,
   onSnippets,
   onDetach,
   onStop,
@@ -158,26 +153,6 @@ export function DesktopDock({
   // for THIS dock); M16's manage-sheet supersedes it.
   const [chips, setChips] = React.useState<string[]>([...DEFAULT_SEND_CHIPS])
   const [editing, setEditing] = React.useState(false)
-
-  // The "/" button opens the M18 SlashMenu in an anchored popover above the
-  // dock. The menu drives a tiny in-dock filter string (the popover header)
-  // since the desktop dock has no text composer to feed `value` from. Picking
-  // a command sends `cmd\r` to the pty (via the `onRunSlash` parent callback)
-  // and closes the popover.
-  const [slashOpen, setSlashOpen] = React.useState(false)
-  const [slashQuery, setSlashQuery] = React.useState('/')
-  const openSlash = React.useCallback(() => {
-    setSlashQuery('/')
-    setSlashOpen(true)
-  }, [])
-  const closeSlash = React.useCallback(() => setSlashOpen(false), [])
-  const onPickSlash = React.useCallback(
-    (cmd: string) => {
-      setSlashOpen(false)
-      onRunSlash(cmd)
-    },
-    [onRunSlash],
-  )
 
   // The global ⌘K palette is mounted at shell level (see <Layout>). The visible
   // "command" button is a convenience — it synthesizes the same keystroke so the
@@ -199,57 +174,11 @@ export function DesktopDock({
 
   return (
     <div className="relative flex h-14 shrink-0 items-center gap-2 border-t border-border bg-card px-6">
-      {/* Slash-menu popover: anchored ABOVE the "/" button. A bare input sits
-       *  on top — desktop has no text composer, so this serves the same role
-       *  the mobile composer plays for the SlashMenu's `value` prop. */}
-      {slashOpen && (
-        <>
-          {/* Backdrop — a click outside closes the popover. */}
-          <button
-            type="button"
-            aria-hidden
-            tabIndex={-1}
-            onClick={closeSlash}
-            className="fixed inset-0 z-20 cursor-default bg-transparent"
-          />
-          <div className="pointer-events-none absolute bottom-full left-6 z-30 mb-2 w-[min(420px,90vw)] space-y-2">
-            <div className="pointer-events-auto rounded-xl border border-border bg-card p-1.5 shadow-lg">
-              <input
-                autoFocus
-                value={slashQuery}
-                onChange={(e) => {
-                  const v = e.target.value
-                  // Always keep a leading "/" so the menu filter stays aligned
-                  // with the M18 mobile composer's prefix contract.
-                  setSlashQuery(v.startsWith('/') ? v : `/${v}`)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    closeSlash()
-                  }
-                }}
-                placeholder="/command"
-                aria-label="Filter slash commands"
-                className="h-8 w-full rounded-lg bg-transparent px-2 font-mono text-base md:text-[13px] outline-none"
-              />
-            </div>
-            <div className="pointer-events-auto">
-              <SlashMenu
-                value={slashQuery}
-                open={slashOpen}
-                onSelect={onPickSlash}
-                onDismiss={closeSlash}
-              />
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Left cluster (24px ≈ px-6 from edge): ⌘K palette, / slash, + snippets. */}
+      {/* Left cluster (24px ≈ px-6 from edge): ⌘K palette, + snippets. The "/"
+          slash button was removed (DOCK) — slash commands now run from the
+          Claude Tools sheet's Commands tab. */}
       <div className="flex shrink-0 items-center gap-1">
         <IconButton icon={Command} label="Command palette (⌘K)" onClick={triggerPalette} />
-        <IconButton icon={Slash} label="Slash menu" onClick={openSlash} />
         <IconButton icon={Plus} label="Snippets" onClick={onSnippets} />
       </div>
 
@@ -334,7 +263,6 @@ export default DesktopDock
 //   • Session pill   — status dot + name + chevron; tap → SessionPickerSheet;
 //     horizontal swipe → prev/next session (peek-of-next), unchanged.
 //   • ⌨ toggle       — focuses/blurs the TERMINAL (summons/dismisses keyboard).
-//   • / slash (R5)   — opens the route-level SlashMenuSheet (shared Vaul shell).
 //   • Specials (···) — opens the QuickKeysSheet (curated tap-to-send chips).
 //   • ＋ snippets     — opens the snippet panel; snippet run → term.send.
 //   • 🎙 dictate      — Web Speech; the transcript is sent to the terminal +'\r'.
@@ -364,8 +292,6 @@ export interface MobileDockProps {
   prevSession: ApiSession | null
   nextSession: ApiSession | null
   onOpenPicker: () => void
-  /** Open the route-level slash-command sheet (R5 — was an inline popover). */
-  onOpenSlash: () => void
   onOpenSpecials: () => void
   /** Switch focus to a neighbour session (committed pill swipe). */
   onSwitchSession: (name: string) => void
@@ -396,7 +322,6 @@ export function MobileDock({
   prevSession,
   nextSession,
   onOpenPicker,
-  onOpenSlash,
   onOpenSpecials,
   onSwitchSession,
   onSend,
@@ -409,10 +334,9 @@ export function MobileDock({
   className,
 }: MobileDockProps) {
   // ── dictation ──────────────────────────────────────────────────────────────
-  // The "/" affordance now opens the route-level SlashMenuSheet (R5 — the old
-  // inline popover had no backdrop + an unselectable item pick; it's replaced by
-  // the shared Vaul shell). The dock just calls `onOpenSlash` and the route runs
-  // the picked command live (`cmd\r`); MobileDock keeps NO inline slash state.
+  // The "/" slash affordance was removed (DOCK): slash commands now run from the
+  // Claude Tools sheet's Commands tab (tap a command → it runs in the focused
+  // terminal). MobileDock keeps NO slash state.
   //
   // Dictation — the mic toggles Web Speech. R5 FIX: the flush no longer depends
   // on Web Speech firing `onend` (flaky on iOS Safari / WKWebView — when it never
@@ -571,10 +495,6 @@ export function MobileDock({
           />
         </DockIcon>
 
-        <DockIcon label="Slash command" onClick={onOpenSlash}>
-          <Slash className="size-5" />
-        </DockIcon>
-
         <DockIcon label="Specials" onClick={onOpenSpecials}>
           <MoreHorizontal className="size-5" />
         </DockIcon>
@@ -618,6 +538,14 @@ function AccessoryChip({
       aria-label={`Send ${label}`}
       whileTap={{ scale: 0.92 }}
       transition={springs.buttonPress}
+      // Don't steal focus from xterm's hidden helper textarea — without this the
+      // tap moves DOM focus to the button, which on iOS dismisses the soft
+      // keyboard (and breaks live-type). preventDefault on pointer/mouse-down
+      // keeps the textarea focused so the keyboard stays up; the sendKey on
+      // `onClick` still fires (the key reaches the pty). The standard accessory-
+      // bar pattern (Termius / CodeEditor toolbars use the same trick).
+      onPointerDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         if ('vibrate' in navigator) navigator.vibrate(8)
         onTap()

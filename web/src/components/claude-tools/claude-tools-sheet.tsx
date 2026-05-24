@@ -9,8 +9,12 @@
 //     spawns servers, so it never auto-runs on list open). Rows expand to show
 //     transport + command/url + env/header KEY names with MASKED values
 //     ('••• set') — raw secrets never leave the server.
-//   • Skills / Commands — read-only listing for v1: name · scope · provenance ·
-//     path. supermux-managed commands + plugin/cloud entries are flagged.
+//   • Skills — read-only listing: name · scope · provenance · path.
+//   • Commands — tap-to-RUN (DOCK): a row is now a button that runs the command
+//     in the focused session's terminal (POST /api/sessions/:name/send with
+//     `/<cmd>\r`), then closes the sheet. This replaces the old dock slash menu.
+//     With no focused session a calm toast explains there's nothing to run in.
+//     supermux-managed commands + plugin/cloud entries are still flagged.
 //
 // Scope picking on add defaults to local/user and NEVER project implicitly;
 // writing the git-tracked .mcp.json takes an explicit choice + a loud warning
@@ -33,6 +37,7 @@ import {
   CircleSlash,
   Loader2,
   Lock,
+  Play,
   Plus,
   Puzzle,
   RefreshCw,
@@ -44,6 +49,7 @@ import {
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
+import { settingsRequest } from '@/lib/api/client'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useToast } from '@/components/ui/use-toast'
@@ -91,16 +97,60 @@ export function ClaudeToolsSheet({
       description={description}
       className="sm:max-w-lg"
     >
-      {open && <ClaudeToolsBody cwd={cwd} />}
+      {open && (
+        <ClaudeToolsBody
+          cwd={cwd}
+          sessionName={sessionName}
+          onClose={() => onOpenChange(false)}
+        />
+      )}
     </ResponsiveSheet>
   )
 }
 
-function ClaudeToolsBody({ cwd }: { cwd?: string }) {
+function ClaudeToolsBody({
+  cwd,
+  sessionName,
+  onClose,
+}: {
+  cwd?: string
+  sessionName?: string | null
+  onClose: () => void
+}) {
   const [tab, setTab] = React.useState<TabKey>('mcp')
   const [adding, setAdding] = React.useState(false)
   const registry = useClaudeRegistry(cwd, true)
   const { toast } = useToast()
+
+  // Run a slash command in the focused session's terminal (DOCK). Robust path:
+  // POST the command + carriage return to the session's send endpoint (the SAME
+  // route the ⌘K palette uses to run a command), so it works regardless of where
+  // this sheet is mounted (shell level) — no terminal handle to prop-drill. Then
+  // close the sheet so the user lands back on the running terminal. Fire-and-
+  // forget; the shared `settingsRequest` reads the bearer off env.ts.
+  const runCommand = React.useCallback(
+    (name: string) => {
+      if (!sessionName) {
+        toast({
+          message: 'Open a session first — there’s no terminal to run this in.',
+          tone: 'error',
+        })
+        return
+      }
+      onClose()
+      void settingsRequest(
+        `/api/sessions/${encodeURIComponent(sessionName)}/send`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: `/${name}\r` }),
+        },
+      ).catch((e) => {
+        console.warn('claude-tools: run command failed', e)
+        toast({ message: 'Couldn’t run the command.', tone: 'error' })
+      })
+    },
+    [sessionName, onClose, toast],
+  )
 
   const restartNote = React.useCallback(() => {
     toast({
@@ -161,6 +211,8 @@ function ClaudeToolsBody({ cwd }: { cwd?: string }) {
                 loading={registry.isLoading}
                 error={registry.isError}
                 onRetry={registry.refetch}
+                onRun={runCommand}
+                runnable={Boolean(sessionName)}
               />
             </TabsContent>
           </div>
@@ -751,18 +803,25 @@ function SkillRow({ entry }: { entry: SkillEntry }) {
   )
 }
 
-// ── Commands tab (read-only listing for v1) ───────────────────────────────────
+// ── Commands tab (tap-to-run in the focused terminal — DOCK) ──────────────────
 
 function CommandsTab({
   entries,
   loading,
   error,
   onRetry,
+  onRun,
+  runnable,
 }: {
   entries: CommandEntry[]
   loading: boolean
   error: boolean
   onRetry: () => void
+  /** Run a command (`/<name>\r`) in the focused session's terminal. */
+  onRun: (name: string) => void
+  /** True when there is a focused session to run a command in (else the rows
+   *  still render but a hint explains there's no terminal). */
+  runnable: boolean
 }) {
   if (error) return <ErrorState onRetry={onRetry} />
   if (loading && entries.length === 0) return <LoadingRows />
@@ -776,24 +835,29 @@ function CommandsTab({
 
   return (
     <div className="pt-1">
+      {!runnable && (
+        <p className="px-3 pb-2 text-[12px] text-muted-foreground">
+          Open a session to run a command in its terminal.
+        </p>
+      )}
       {project.length > 0 && (
         <ScopeGroup label="This project">
           {project.map((e) => (
-            <CommandRowView key={`p-${e.name}`} entry={e} />
+            <CommandRowView key={`p-${e.name}`} entry={e} onRun={onRun} />
           ))}
         </ScopeGroup>
       )}
       {global.length > 0 && (
         <ScopeGroup label="Global">
           {global.map((e) => (
-            <CommandRowView key={`g-${e.name}`} entry={e} />
+            <CommandRowView key={`g-${e.name}`} entry={e} onRun={onRun} />
           ))}
         </ScopeGroup>
       )}
       {readonly.length > 0 && (
         <ScopeGroup label="Read-only">
           {readonly.map((e) => (
-            <CommandRowView key={`r-${e.scope}-${e.name}`} entry={e} />
+            <CommandRowView key={`r-${e.scope}-${e.name}`} entry={e} onRun={onRun} />
           ))}
         </ScopeGroup>
       )}
@@ -801,33 +865,52 @@ function CommandsTab({
   )
 }
 
-function CommandRowView({ entry }: { entry: CommandEntry }) {
+/** One tap-to-run command row. Tapping runs `/<name>\r` in the focused terminal
+ *  (DOCK) and closes the sheet — the row is a ≥44pt button so it reads + behaves
+ *  as the primary action. */
+function CommandRowView({
+  entry,
+  onRun,
+}: {
+  entry: CommandEntry
+  onRun: (name: string) => void
+}) {
   return (
-    <li className="flex items-start gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5">
-      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
-        <SlashSquare aria-hidden />
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex flex-wrap items-center gap-1">
-          <span className="truncate font-mono text-[14px] font-semibold text-foreground">
-            /{entry.name}
-          </span>
-          {entry.managed && <Badge tone="accent">managed by supermux</Badge>}
-          {entry.scope === 'builtin' && <Badge tone="muted">built-in</Badge>}
-          {entry.scope === 'plugin' && <Badge tone="muted" icon={Puzzle}>plugin</Badge>}
+    <motion.li layout={false} className="list-none">
+      <motion.button
+        type="button"
+        onClick={() => onRun(entry.name)}
+        whileTap={{ scale: 0.98 }}
+        transition={springs.buttonPress}
+        aria-label={`Run /${entry.name} in the focused terminal`}
+        className="flex w-full items-start gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:bg-accent/40"
+      >
+        <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
+          <SlashSquare aria-hidden />
         </span>
-        {entry.description && (
-          <span className="line-clamp-2 text-[12px] leading-snug text-muted-foreground">
-            {entry.description}
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex flex-wrap items-center gap-1">
+            <span className="truncate font-mono text-[14px] font-semibold text-foreground">
+              /{entry.name}
+            </span>
+            {entry.managed && <Badge tone="accent">managed by supermux</Badge>}
+            {entry.scope === 'builtin' && <Badge tone="muted">built-in</Badge>}
+            {entry.scope === 'plugin' && <Badge tone="muted" icon={Puzzle}>plugin</Badge>}
           </span>
-        )}
-        {entry.path && (
-          <span className="truncate font-mono text-[11px] text-muted-foreground/80">
-            {entry.path}
-          </span>
-        )}
-      </div>
-    </li>
+          {entry.description && (
+            <span className="line-clamp-2 text-[12px] leading-snug text-muted-foreground">
+              {entry.description}
+            </span>
+          )}
+          {entry.path && (
+            <span className="truncate font-mono text-[11px] text-muted-foreground/80">
+              {entry.path}
+            </span>
+          )}
+        </div>
+        <Play className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
+      </motion.button>
+    </motion.li>
   )
 }
 

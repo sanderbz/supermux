@@ -1,0 +1,43 @@
+{
+  "milestone": "DOCK",
+  "title": "Claude Tools Commands → terminal, remove slash button, keyboard-stays-up",
+  "branch": "fix/dock-slash-keys",
+  "worktree": "/Users/sandervm/supermux-worktrees/dock-slash-keys",
+  "commit": "9554c412a1c12dce195d59fdd039c2ec3452a682",
+  "summary": "Three focused mobile focus-dock + Claude-tools changes. (1) The Claude Tools manager sheet's Commands tab is now tap-to-RUN: each command row is a >=44pt button that runs the command in the FOCUSED session's terminal by POSTing /api/sessions/:name/send {text:'/<cmd>\\r'} (the same robust send endpoint the Cmd+K palette uses) then closes the sheet. The sheet is mounted at shell level (ClaudeToolsHost inside CommandPalette), so it derives the focused session from the claude-tools store's sessionName instead of prop-drilling a terminal handle — works regardless of mount point. With no focused session a calm error toast + an inline hint explain there's nothing to run in. (2) Removed the now-redundant slash affordance everywhere: the MobileDock '/' DockIcon + onOpenSlash prop, the DesktopDock '/' IconButton + its anchored SlashMenu popover (onRunSlash kept as an optional UNUSED prop only so desktop-split.tsx — not in scope — still type-checks), the route-level SlashMenuSheet usage + slashOpen state in focus/mobile.tsx, and deleted the fully-unused slash-menu.tsx (no remaining imports of SlashMenu / SlashMenuSheet anywhere). (3) Keyboard-stays-up: the accessory key buttons (Esc/Tab/Ctrl-C + arrows in the dock's keyboard-pinned strip, and every chip in the QuickKeys sheet) now preventDefault on onPointerDown + onMouseDown so they never take DOM focus from xterm's hidden helper textarea — the iOS soft keyboard stays up while the sendKey/send still fires on onClick. Standard accessory-bar pattern, non-hacky.",
+
+  "tasks": {
+    "commands_tab_runs_in_terminal": true,
+    "slash_button_removed_mobile_dock": true,
+    "slash_popover_removed_desktop_dock": true,
+    "slash_menu_sheet_removed_from_route": true,
+    "slash_menu_file_deleted": true,
+    "accessory_keys_keep_keyboard_up": true
+  },
+
+  "files_changed": [
+    "web/src/components/claude-tools/claude-tools-sheet.tsx — Commands tab rows are now tap-to-run buttons; new runCommand() POSTs /api/sessions/:name/send {text:'/<cmd>\\r'} via settingsRequest (fire-and-forget) then closes the sheet; ClaudeToolsBody now takes sessionName + onClose; CommandsTab takes onRun + runnable (inline hint when no session); CommandRowView is a >=44pt motion.button with a Play affordance; added Play to the lucide imports.",
+    "web/src/components/focus-mode/dock.tsx — removed Slash icon + SlashMenu imports; DesktopDock dropped the '/' IconButton + the anchored SlashMenu popover + slashOpen/slashQuery state (onRunSlash kept optional+unused so desktop-split.tsx still compiles); MobileDock dropped the '/' DockIcon + onOpenSlash prop; AccessoryChip now preventDefaults on pointer/mouse-down (keyboard-stays-up).",
+    "web/src/components/focus-mode/quick-keys-sheet.tsx — the Chip button now preventDefaults on pointer/mouse-down so tapping an accessory key never dismisses the iOS soft keyboard (send still fires on onClick).",
+    "web/src/routes/focus/mobile.tsx — removed the SlashMenuSheet import, the slashOpen state, the MobileDock onOpenSlash pass, and the <SlashMenuSheet> JSX block; updated the route header comment.",
+    "web/src/components/focus-mode/slash-menu.tsx — DELETED (fully unused after the slash removal; no remaining imports of SlashMenu / SlashMenuSheet)."
+  ],
+
+  "wiring": {
+    "run_path": "claude-tools-sheet runCommand() -> settingsRequest('/api/sessions/'+encodeURIComponent(sessionName)+'/send', POST {text:'/<name>\\r'}) -> sheet closes. Mirrors command-palette.tsx's command-run path; bearer read off env.ts inside settingsRequest.",
+    "focused_session_source": "useClaudeToolsSheet store's sessionName (set by openSheet) -> ClaudeToolsSheet sessionName prop -> ClaudeToolsBody. Shell-level mount, so no terminal-handle prop-drilling.",
+    "keyboard_stays_up": "onPointerDown + onMouseDown e.preventDefault() on the accessory key buttons keeps focus on xterm's helper textarea; iOS keeps the soft keyboard up; sendKey/send still fire on onClick."
+  },
+
+  "verify": {
+    "bun_install": "PASS — 553 packages, no new deps added.",
+    "web_build": "PASS — cd web && bun run build (vite, 2434 modules) builds clean.",
+    "web_lint": "PASS — cd web && bun run lint exit 0; 0 errors, 17 pre-existing react-refresh warnings (none in any touched file).",
+    "no_regressions": "Dictation, snippets, specials/quick-keys, session pill, send, keyboard toggle all untouched. Desktop dock builds (onRunSlash now optional+unused). Claude Tools MCP + Skills tabs unchanged; Commands tab now runnable."
+  },
+
+  "scope_notes": {
+    "localized": "Edits confined to the allowed set: claude-tools-sheet.tsx, dock.tsx, quick-keys-sheet.tsx, focus/mobile.tsx + deletion of slash-menu.tsx. command-palette.tsx and focus/desktop.tsx were in-scope but needed no change (the sheet already gets sessionName via the store). No new store/hook file needed — the existing claude-tools store carries sessionName. Did NOT touch desktop-split.tsx (out of scope) — onRunSlash kept as an optional unused prop so its call site still type-checks. Did NOT touch board, overview, sync hooks, or terminal WS files.",
+    "design": "Command rows are >=44pt tap targets with continuous corners, springs.buttonPress press feedback, focus-visible ring, sentence-case copy, a Play affordance, and design tokens throughout — consistent with the MCP/Skills rows."
+  }
+}
