@@ -1,0 +1,21 @@
+{
+  "milestone": "MODE",
+  "branch": "feat/mode-shift",
+  "commit": "df71415a76a24ed29d6953f2c385ce7bf34febb4",
+  "summary": "Mode-shifting from the UI: switch a running Claude session's permission mode from a chic ⋯ dropdown in both focus headers. Normal/Accept-edits/Plan cycle in place via targeted Shift+Tab (server re-reads the status-bar capture after each press and caps retries — robust targeting, not blind spam); Bypass is launch-only so it confirms then does a clean relaunch that resumes the same conversation. Pure parse_mode reuses the status-bar markers the detector already matches (classify logic untouched, only ADDED); SessionView.mode + a mode key on the SSE sessions delta keep the menu live-checked to the TRUE mode; a bearer-gated POST /api/sessions/:name/mode endpoint drives it. Frontend adds a reusable <ModeMenu> (Radix dropdown, keyboard-accessible, ≥44pt, live-checked radios), a glanceable mode chip, and a setMode client method. cargo build/test/clippy + bun build/lint all green.",
+  "mechanism": "shift-tab cycle + bypass relaunch",
+  "files_changed": [
+    "server/src/sessions/status.rs",
+    "server/src/sessions/mod.rs",
+    "server/src/sessions/lifecycle.rs",
+    "server/src/sessions/auto_actions.rs",
+    "server/src/db/sessions.rs",
+    "web/src/lib/api/sessions.ts",
+    "web/src/components/focus-mode/mode-menu.tsx",
+    "web/src/components/focus-mode/mode-labels.ts",
+    "web/src/components/focus-mode/focus-header.tsx",
+    "web/src/components/focus-mode/desktop-split.tsx",
+    "web/src/routes/focus/mobile.tsx",
+    "web/src/brand/copy.ts"
+  ]
+}
