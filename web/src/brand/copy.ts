@@ -41,7 +41,7 @@ export const EMPTY = {
   },
   board: {
     title: 'No issues on the board',
-    body: 'Add a task here and an agent can claim it.',
+    body: 'Add a task and start an agent on it.',
     cta: 'New issue',
   },
   files: {
@@ -152,7 +152,7 @@ export const TOAST = {
   sessionStopped: 'Session stopped',
   copied: 'Copied to clipboard',
   fileSaved: 'File saved',
-  issueClaimed: 'Issue claimed',
+  issueStarted: 'Agent started',
   jobScheduled: 'Job scheduled',
   needsInput: 'Needs input',
 } as const
