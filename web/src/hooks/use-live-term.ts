@@ -44,6 +44,14 @@ export interface UseLiveTermResult {
    *  static ANSI preview visible UNTIL the live terminal has actual content,
    *  then crossfade — no blank-black-void flicker (peek crossfade polish). */
   hasFirstFrame: boolean
+  /** True once the replay snapshot has finished streaming and the viewport has
+   *  been pinned to the bottom — i.e. it's safe to REVEAL the terminal already
+   *  at the bottom. While false the terminal is covered (opacity-0) so the user
+   *  never sees the replay history visibly scroll from top to bottom on open
+   *  (the scroll-on-open jank). Flips true on the server's `{"type":"replay_done"}`
+   *  control frame, or — for an old server that doesn't send it — a short
+   *  fallback timeout after the first frame. Reset to false on reconnect. */
+  ready: boolean
   /** Send literal text to the pty (e.g. a pasted snippet, a slash command). */
   send(text: string): void
   /** Send a named key (Up/Down/Left/Right/PageUp/Enter/…) — see §4.4 gestures. */
@@ -71,6 +79,12 @@ const MAX_ATTEMPTS = 6 // 1011 server-error path then permanent
 const RESIZE_DEBOUNCE_MS = 100
 const VISIBILITY_DEBOUNCE_MS = 2_000
 const AUTH_GRACE_MS = 4_000 // server allots 2s for the first frame; we give slack
+// Fallback for an OLD server that doesn't emit `{"type":"replay_done"}`: if no
+// such control frame arrives within this window AFTER the first pty byte, we
+// reveal anyway (scroll-to-bottom first) so the terminal is never stuck hidden.
+// Kept short — long enough to swallow the replay-scroll on a healthy server,
+// short enough that a legacy server's reveal still feels instant.
+const REPLAY_DONE_FALLBACK_MS = 400
 
 // Close codes with explicit v2 semantics (§4.5).
 const CLOSE_AUTH = 1008 // auth/origin reject — permanent
@@ -271,6 +285,17 @@ export function useLiveTerm(
   // hover-zoom uses THIS signal to gate its crossfade (no blank-black flicker).
   const [hasFirstFrame, setHasFirstFrame] = React.useState(false)
   const hasFirstFrameRef = React.useRef(false)
+
+  // `ready` gates the cover-until-bottom reveal: while false the terminal is
+  // visually hidden (opacity-0) so the user never sees the replay snapshot
+  // scroll from top → bottom on open. Flips true on the server's `replay_done`
+  // control frame (or a short fallback timeout for an old server), AFTER a
+  // `scrollToBottom()` so the reveal lands already pinned to the bottom. Reset
+  // to false on every (re)connect so a reconnect re-covers + re-pins.
+  const [ready, setReady] = React.useState(false)
+  const readyRef = React.useRef(false)
+  // Fallback timer armed on the first pty byte; cleared once `ready` flips.
+  const readyFallbackTimerRef = React.useRef<number | null>(null)
 
   // Mutable connection bookkeeping kept in refs so the single mount effect owns
   // the whole lifecycle (no re-subscribe churn on re-render).
@@ -530,6 +555,41 @@ export function useLiveTerm(
       }
     }
 
+    // ── Cover-until-bottom reveal (scroll-on-open fix) ──────────────────────────
+    const clearReadyFallback = () => {
+      if (readyFallbackTimerRef.current !== null) {
+        window.clearTimeout(readyFallbackTimerRef.current)
+        readyFallbackTimerRef.current = null
+      }
+    }
+
+    /** Pin the viewport to the bottom and reveal the terminal (set `ready`). Runs
+     *  once per connection: on the server's `replay_done` control frame, or the
+     *  short fallback timeout, or — on the prewarm-adopt path — right after the
+     *  buffered hydrate. Idempotent: a second call (e.g. fallback firing after
+     *  replay_done already revealed) is a cheap no-op. */
+    const markReady = () => {
+      clearReadyFallback()
+      if (readyRef.current) return
+      readyRef.current = true
+      // Pin to the bottom BEFORE the reveal so the first painted frame is the
+      // freshest output — never an intermediate mid-replay scroll position.
+      try {
+        termRef.current?.scrollToBottom()
+      } catch {
+        /* terminal disposed mid-connect — the reveal is harmless either way */
+      }
+      setReady(true)
+    }
+
+    /** Re-cover the terminal for a fresh (re)connect: a reconnect replays the
+     *  snapshot again, so we hide + re-pin until the next `replay_done`. */
+    const resetReady = () => {
+      clearReadyFallback()
+      readyRef.current = false
+      setReady(false)
+    }
+
     const scheduleReconnect = () => {
       if (disposedRef.current) return
       const attempt = attemptRef.current
@@ -586,6 +646,13 @@ export function useLiveTerm(
               // Push our geometry so the pty matches the viewport immediately.
               const t = termRef.current
               if (t) resize(t.cols, t.rows)
+            } else if (msg.type === 'replay_done') {
+              // The server has flushed the entire replay snapshot and is about
+              // to start the live fan-out. Pin to the bottom and REVEAL — the
+              // user never saw the replay scroll because the terminal was
+              // covered (opacity-0) until exactly now. Sent even for an empty
+              // replay, so a short/no-history session reveals instantly too.
+              markReady()
             }
           } catch {
             /* ignore non-JSON text frames */
@@ -609,6 +676,16 @@ export function useLiveTerm(
         if (!hasFirstFrameRef.current) {
           hasFirstFrameRef.current = true
           setHasFirstFrame(true)
+          // Arm the reveal fallback: if `replay_done` never arrives (an old
+          // server that predates the control frame), reveal anyway a short
+          // moment after the first byte so the terminal is never stuck covered.
+          // A healthy server's `replay_done` fires first and clears this.
+          if (!readyRef.current && readyFallbackTimerRef.current === null) {
+            readyFallbackTimerRef.current = window.setTimeout(() => {
+              readyFallbackTimerRef.current = null
+              markReady()
+            }, REPLAY_DONE_FALLBACK_MS)
+          }
         }
       }
 
@@ -653,6 +730,9 @@ export function useLiveTerm(
       if (disposedRef.current) return
       clearReconnectTimer()
       authedRef.current = false
+      // A fresh connection replays the snapshot again — re-cover + re-pin until
+      // the next replay_done so a reconnect never shows the scroll-on-open jank.
+      resetReady()
 
       const base = wsUrl().replace(/\/$/, '')
       const url = `${base}/ws/sessions/${encodeURIComponent(name)}`
@@ -724,7 +804,14 @@ export function useLiveTerm(
           } catch {
             /* xterm rejected the write — non-fatal; live stream still flows */
           }
+          // The buffered bytes landed in one synchronous write (no visible
+          // replay scroll on the adopt path); pin to the bottom and reveal.
+          markReady()
         })
+      } else {
+        // Empty pre-warm buffer (an idle session): nothing to hydrate — reveal
+        // immediately so the adopted terminal isn't stuck covered.
+        markReady()
       }
       // Push our current geometry to the server so the pty matches what xterm
       // just laid out (the pre-warm never sent a resize — it didn't know the
@@ -798,6 +885,7 @@ export function useLiveTerm(
       ro.disconnect()
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
       clearReconnectTimer()
+      clearReadyFallback()
       const ws = wsRef.current
       if (ws) {
         // Drop handlers before closing so a late onclose can't re-arm a retry.
@@ -825,6 +913,7 @@ export function useLiveTerm(
     containerRef,
     state,
     hasFirstFrame,
+    ready,
     send,
     sendKey,
     resize,

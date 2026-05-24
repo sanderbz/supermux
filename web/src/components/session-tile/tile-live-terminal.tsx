@@ -76,7 +76,15 @@ export interface TileLiveTerminalProps {
  *  streaming, perceived latency ≈ <16ms (xterm allocate + buffer write). When
  *  no pre-warm exists (cap was full, tile only just became visible) the hook
  *  falls back to the original connect path — the polish-pass crossfade covers
- *  that case. */
+ *  that case.
+ *
+ *  SCROLL-ON-OPEN FIX. The hover live-peek reuses the SAME <LiveTerminal>, so it
+ *  inherits the cover-until-bottom reveal: <LiveTerminal>'s xterm container
+ *  stays opacity-0 until the hook has pinned the viewport to the bottom (on the
+ *  server's `replay_done`, or right after the single-rAF prewarm hydrate, or a
+ *  short fallback). The peek therefore appears already-at-bottom — never showing
+ *  the replay snapshot scroll down. The opacity gate composes cleanly with this
+ *  tile's outer crossfade-over-static-preview (two independent fades). */
 export function TileLiveTerminal({ name, onFirstFrame, onReady }: TileLiveTerminalProps) {
   return (
     <div

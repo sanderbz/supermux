@@ -79,7 +79,7 @@ export function LiveTerminal({
     allowProgrammaticInput,
     prewarmSeed,
   })
-  const { containerRef, state, hasFirstFrame, retry } = term
+  const { containerRef, state, hasFirstFrame, ready, retry } = term
 
   React.useEffect(() => {
     onReady?.(term)
@@ -125,7 +125,19 @@ export function LiveTerminal({
         // terminal produce native vertical-pan gestures that xterm's
         // `.xterm-viewport` scrollback consumes (instead of being swallowed by
         // Vaul's drag). Paired with `data-vaul-no-drag` on the focus wrapper.
-        className="h-full w-full p-2 [touch-action:pan-y]"
+        //
+        // SCROLL-ON-OPEN FIX. Until `ready`, the terminal is covered (opacity-0)
+        // so the user never sees the replay snapshot scroll from top → bottom on
+        // open. `ready` flips once the hook has pinned the viewport to the bottom
+        // (on the server's `replay_done`, or a short fallback for old servers),
+        // and a quick fade-in reveals it already-at-bottom. We use OPACITY (not
+        // display/visibility) so the layout box stays intact — FitAddon still
+        // measures real cols/rows while covered. Reduced-motion: no transition.
+        className={cn(
+          'h-full w-full p-2 [touch-action:pan-y]',
+          'transition-opacity duration-150 ease-out motion-reduce:transition-none',
+          ready ? 'opacity-100' : 'opacity-0',
+        )}
         // xterm focuses on click; expose to the keyboard-capture layer (M14).
         tabIndex={readOnly ? -1 : 0}
         aria-label={`Live terminal for ${name}`}
