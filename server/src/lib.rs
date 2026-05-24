@@ -19,6 +19,7 @@ pub mod http;
 pub mod log_redact;
 pub mod prefs;
 pub mod public;
+pub mod push;
 pub mod scheduler;
 pub mod sessions;
 pub mod sse;

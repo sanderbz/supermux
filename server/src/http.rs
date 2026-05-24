@@ -23,6 +23,7 @@ use crate::files;
 use crate::hooks;
 use crate::prefs;
 use crate::public;
+use crate::push;
 use crate::scheduler;
 use crate::sessions;
 use crate::sse;
@@ -80,5 +81,8 @@ fn protected_router(state: AppState) -> Router {
         .merge(claude_tools::router_for(state.clone()))
         .merge(prefs::router_for(state.clone())) // M9 (snippets + kbd-groups)
         .merge(audit::router_for(state.clone())) // M9 (audit log read)
+        // PUSH: web-push VAPID key + subscribe/unsubscribe (single-user dashboard,
+        // so bearer-gated like the rest of /api).
+        .merge(push::router_for(state.clone()))
         .layer(from_fn_with_state(state, auth::auth_middleware))
 }

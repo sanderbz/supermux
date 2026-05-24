@@ -68,6 +68,11 @@ export default defineConfig({
         // content-hashed, so CacheFirst is safe and `cleanupOutdatedCaches`
         // sweeps superseded revisions on every SW activation.
         globPatterns: ['**/*.{js,css,svg,png,woff2}'],
+        // PUSH: import the hand-written push/notificationclick handlers into the
+        // generated SW. This ADDS listeners without switching to injectManifest,
+        // so the offline-shell precaching behaviour is left untouched. The path
+        // is root-relative — push-sw.js is a public asset served at /push-sw.js.
+        importScripts: ['/push-sw.js'],
         cleanupOutdatedCaches: true,
         // Single-page-app fallback: an unknown navigation re-serves index.html…
         navigateFallback: '/index.html',

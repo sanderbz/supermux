@@ -54,6 +54,24 @@ rand = "0.8"
 base64 = "0.22"
 constant_time_eq = "0.3"                                 # auth token compare
 
+# ── web push (VAPID + RFC8291 http-ece) ──
+# default-features = false drops the bundled isahc/curl HTTP client: we build the
+# encrypted WebPushMessage with this crate and POST it via the project's existing
+# rustls reqwest. web-push still pulls `ece` (RFC8291 payload encryption), which
+# uses openssl for its crypto — pinned + vendored below so the build needs no
+# system OpenSSL.
+web-push = { version = "0.11.0", default-features = false }
+# `ece` (web-push's payload-encryption dep) links OpenSSL. Pull it in directly
+# with the `vendored` feature so OpenSSL compiles from source — `cargo build` is
+# then self-contained on any machine (no system libssl headers required).
+openssl = { version = "0.10", features = ["vendored"] }
+# Pure-Rust ES256 (P-256) keygen for the persisted VAPID keypair. Same crate
+# web-push uses internally for VAPID, pinned + default-features off (no openssl).
+jwt-simple = { version = "0.12.16", default-features = false, features = ["pure-rust"] }
+# Outbound HTTPS to push endpoints (FCM/Mozilla/Apple), rustls — matches the
+# project's TLS stack. Promoted from a dev-dependency.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
 # ── misc ──
 anyhow = "1.0"
 thiserror = "2.0"
