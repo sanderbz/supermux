@@ -25,9 +25,14 @@ import {
   Settings2,
   ChevronRight,
   ChevronDown,
+  CornerDownLeft,
   Keyboard,
-  MoreHorizontal,
+  Ellipsis,
   Mic,
+  ArrowLeft,
+  ArrowUp,
+  ArrowDown,
+  ArrowRight,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -257,20 +262,31 @@ export default DesktopDock
 //   ┌ accessory key strip — rides the keyboard top ──────────────────────────┐
 //   │ [Esc] [Tab] [^C] [←][↑][↓][→] [⌨ hide]                                  │
 //   ├ dock row ───────────────────────────────────────────────────────────────┤
-//   │ [session-pill ▾]  [⌨ toggle]  [···]  [＋ snippets]  [🎙 dictate]         │
+//   │ [session ▾]  [⌨]  [···]  [＋]  [🎙]              [↵ Enter]               │
 //   └───────────────────────────────────────────────────────────────────────┘
 //
-//   • Session pill   — status dot + name + chevron; tap → SessionPickerSheet;
-//     horizontal swipe → prev/next session (peek-of-next), unchanged.
+//   • Session pill   — status dot + name (truncated ~8ch) + chevron; tap →
+//     SessionPickerSheet; horizontal swipe → prev/next session (peek-of-next),
+//     unchanged. Truncating the name frees the horizontal room the dock needs.
 //   • ⌨ toggle       — focuses/blurs the TERMINAL (summons/dismisses keyboard).
 //   • Specials (···) — opens the QuickKeysSheet (curated tap-to-send chips).
 //   • ＋ snippets     — opens the snippet panel; snippet run → term.send.
 //   • 🎙 dictate      — Web Speech; the transcript is sent to the terminal +'\r'.
+//   • ↵ Enter        — sends Enter (`\r`) to the terminal via `onSendKey('Enter')`
+//     and KEEPS the soft keyboard up (preventDefault on pointer/mouse-down so the
+//     tap never steals focus from xterm's hidden helper textarea — the SAME
+//     focus-preservation trick the accessory keys use). Right-aligned cluster.
 //   • Accessory strip — Esc/Tab/Ctrl-C/arrows, each → `sendKey` (the SAME named-
 //     key path desktop's send-row + the joystick use). Pinned above the keyboard
 //     via the route's `keyboardInset`, Termius-style.
 //
 // HIG: every interactive control here is ≥44×44pt — the iOS tap-target floor.
+//
+// VISUAL (DOCK polish): SF (sans) controls, NOT terminal-mono — the chips read as
+// iOS QuickType-bar pills, not a hacker keymap. Soft `bg-secondary` fills with no
+// hard 1px border, continuous 12px corners (rounded-xl), a single lighter SF-style
+// icon stroke weight (1.75) at one 20px size, and `text-primary` only for the
+// active/toggled state. One coherent rhythm with the overview/settings surfaces.
 //
 // iOS haptics caveat (§4.4): chip presses use a 0.92 scale (CSS-only feedback);
 // navigator.vibrate(8) is gated by `'vibrate' in navigator` (Android only).
@@ -279,11 +295,14 @@ export default DesktopDock
  *  name understood by `LiveTerminal.sendKey` — Esc/Tab/Ctrl-C plus a 4-way
  *  arrow cluster, the keys a soft keyboard lacks. */
 const ACCESSORY_KEYS = ['Esc', 'Tab', 'Ctrl-C'] as const
+// Arrows render as real SF-style chevron/arrow ICONS (not raw ←↑↓→ glyphs) so
+// they share the dock's single icon stroke weight + size — cleaner than the
+// terminal-y unicode arrows. Each `key` is the `keyToBytes` name `sendKey` wants.
 const ARROW_KEYS = [
-  { key: 'Left', glyph: '←' },
-  { key: 'Up', glyph: '↑' },
-  { key: 'Down', glyph: '↓' },
-  { key: 'Right', glyph: '→' },
+  { key: 'Left', Glyph: ArrowLeft },
+  { key: 'Up', Glyph: ArrowUp },
+  { key: 'Down', Glyph: ArrowDown },
+  { key: 'Right', Glyph: ArrowRight },
 ] as const
 
 export interface MobileDockProps {
@@ -442,42 +461,43 @@ export function MobileDock({
   return (
     <div
       className={cn(
-        'glass relative flex shrink-0 flex-col gap-1.5 border-t border-border/60 px-2 pb-safe pt-2',
+        'glass relative flex shrink-0 flex-col gap-2 border-t border-border/60 px-2.5 pb-safe pt-2',
         className,
       )}
     >
-      {/* Accessory key strip — Termius-style, shown while the keyboard is open
-          (the route pins the whole dock above the keyboard via `keyboardInset`).
-          Each chip drives `sendKey` — the keys a soft keyboard lacks. */}
+      {/* Accessory key strip — iOS QuickType-style, shown while the keyboard is
+          open (the route pins the whole dock above the keyboard via
+          `keyboardInset`). Each chip drives `sendKey` — the keys a soft keyboard
+          lacks. Soft SF pills, not a terminal keymap. */}
       {keyboardOpen && (
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+        <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
           {ACCESSORY_KEYS.map((label) => (
             <AccessoryChip key={label} label={label} onTap={() => onSendKey(label)}>
               {label}
             </AccessoryChip>
           ))}
-          <span className="h-6 w-px shrink-0 bg-border/60" aria-hidden />
-          {ARROW_KEYS.map(({ key, glyph }) => (
+          <span className="h-5 w-px shrink-0 bg-border/50" aria-hidden />
+          {ARROW_KEYS.map(({ key, Glyph }) => (
             <AccessoryChip
               key={key}
               label={`Arrow ${key}`}
               onTap={() => onSendKey(key)}
             >
-              <span aria-hidden className="text-[15px] leading-none">
-                {glyph}
-              </span>
+              <Glyph className="size-[18px]" strokeWidth={1.75} aria-hidden />
             </AccessoryChip>
           ))}
           <div className="ml-auto shrink-0">
             <DockIcon label="Hide keyboard" onClick={onBlurTerm}>
-              <ChevronDown className="size-5" />
+              <ChevronDown className="size-5" strokeWidth={1.75} />
             </DockIcon>
           </div>
         </div>
       )}
 
-      {/* Dock row — session-pill + accessory dock icons. NO text composer. */}
-      <div className="flex items-end gap-1.5">
+      {/* Dock row — session-pill + accessory dock icons + Enter. NO text
+          composer. The icon cluster is one balanced group; Enter is pushed to
+          the right edge (the room the name-truncation frees). */}
+      <div className="flex items-center gap-1">
         <SessionPill
           current={current}
           prevSession={prevSession}
@@ -489,19 +509,18 @@ export function MobileDock({
         <DockIcon
           label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
           onClick={keyboardOpen ? onBlurTerm : onFocusTerm}
+          active={keyboardOpen}
         >
-          <Keyboard
-            className={cn('size-5', keyboardOpen && 'text-primary')}
-          />
+          <Keyboard className="size-5" strokeWidth={1.75} />
         </DockIcon>
 
         <DockIcon label="Specials" onClick={onOpenSpecials}>
-          <MoreHorizontal className="size-5" />
+          <Ellipsis className="size-5" strokeWidth={1.75} />
         </DockIcon>
 
         {onOpenSnippets && (
           <DockIcon label="Snippets" onClick={onOpenSnippets}>
-            <Plus className="size-5" />
+            <Plus className="size-5" strokeWidth={1.75} />
           </DockIcon>
         )}
 
@@ -509,20 +528,61 @@ export function MobileDock({
           <DockIcon
             label={dictation.listening ? 'Stop dictation' : 'Dictate'}
             onClick={onMicTap}
+            active={dictation.listening}
           >
-            <Mic
-              className={cn('size-5', dictation.listening && 'text-primary')}
-            />
+            <Mic className="size-5" strokeWidth={1.75} />
           </DockIcon>
         )}
+
+        {/* Enter — sends `\r` to the focused terminal so you can submit without
+            the soft keyboard's return key. The `preventDefault` on
+            pointer/mouse-down is load-bearing: it stops the tap from moving DOM
+            focus off xterm's hidden helper textarea, which on iOS would dismiss
+            the keyboard. The send still fires on `onClick`, so the keyboard
+            stays up. Mirrors the accessory-key focus-preservation pattern.
+            Right-aligned (ml-auto) into the space the name-truncation frees;
+            primary-tinted as the dock's one affirmative action. */}
+        <EnterButton onSend={() => onSendKey('Enter')} />
       </div>
     </div>
   )
 }
 
-/** An accessory-strip key chip — SF-Mono, 36px tall inside a ≥44pt hit area,
- *  tap = sendKey. Mirrors the desktop SendChip but tuned for the keyboard-top
- *  strip (no tooltip — touch has no hover). */
+/** The dock's Enter affordance — a primary-tinted ↵ pill pinned to the right of
+ *  the dock row. Sends Enter (`\r`) via `onSendKey('Enter')` WITHOUT stealing
+ *  focus from xterm (preventDefault on pointer/mouse-down keeps the soft keyboard
+ *  up — the SAME trick the accessory keys use). ≥44pt, spring press, reduced-
+ *  motion-safe (springs.buttonPress is a no-op scale change framer respects under
+ *  prefers-reduced-motion). */
+function EnterButton({ onSend }: { onSend: () => void }) {
+  return (
+    <motion.button
+      type="button"
+      aria-label="Send Enter"
+      whileTap={{ scale: 0.94 }}
+      transition={springs.buttonPress}
+      onPointerDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => {
+        if ('vibrate' in navigator) navigator.vibrate(8)
+        onSend()
+      }}
+      // ≥44pt hit target; primary-tinted soft fill matching the app's affirmative
+      // controls (no hard border — iOS-native). The ↵ glyph mirrors the dock's
+      // single SF-style stroke weight + 20px icon size.
+      className="ml-auto flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-primary/15 px-3.5 font-medium text-primary active:bg-primary/25"
+    >
+      <CornerDownLeft className="size-5" strokeWidth={1.75} aria-hidden />
+      <span className="text-[15px]">Enter</span>
+    </motion.button>
+  )
+}
+
+/** An accessory-strip key chip — iOS QuickType-bar style, ~38px tall inside a
+ *  ≥44pt hit area, tap = sendKey. SF (sans) text, NOT terminal-mono; a soft
+ *  `bg-secondary` fill with no hard border + continuous 12px corner, so the strip
+ *  reads as a native keyboard accessory bar rather than a hacker keymap. No
+ *  tooltip — touch has no hover. */
 function AccessoryChip({
   label,
   onTap,
@@ -550,9 +610,10 @@ function AccessoryChip({
         if ('vibrate' in navigator) navigator.vibrate(8)
         onTap()
       }}
-      // 36px visible height inside a ≥44pt vertical hit area via py; min-w keeps
-      // single-glyph arrows finger-friendly.
-      className="flex h-9 min-w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-secondary px-2.5 font-mono text-[13px] font-semibold text-secondary-foreground"
+      // ~38px visible height inside a ≥44pt vertical hit area via py; min-w keeps
+      // single-glyph arrows finger-friendly. SF text (no font-mono), soft fill,
+      // no border — the iOS-native accessory-bar look.
+      className="flex h-[38px] min-w-11 shrink-0 items-center justify-center rounded-xl bg-secondary px-3 text-[14px] font-medium text-secondary-foreground active:bg-secondary/70"
     >
       {children}
     </motion.button>
@@ -560,6 +621,16 @@ function AccessoryChip({
 }
 
 // ── Session pill with swipe-to-switch + peek-of-next ──────────────────────────
+
+/** Truncate the bottom-left switcher's session name to ~8 chars + a trailing
+ *  ellipsis so the pill stays compact — this frees the horizontal room the dock
+ *  row (icon cluster + Enter) needs. The FULL name is always kept as the
+ *  accessible `title`/`aria-label` on the pill, so nothing is lost. (This is the
+ *  bottom switcher ONLY — the top header truncation lives in focus-header.tsx.) */
+const PILL_NAME_MAX = 8
+function truncatePillName(name: string): string {
+  return name.length > PILL_NAME_MAX ? `${name.slice(0, PILL_NAME_MAX)}…` : name
+}
 
 function SessionPill({
   current,
@@ -606,7 +677,7 @@ function SessionPill({
   const swipeable = Boolean(prevSession || nextSession)
 
   return (
-    <div ref={ref} className="relative h-11 shrink-0" style={{ maxWidth: '46%' }}>
+    <div ref={ref} className="relative h-11 shrink-0" style={{ maxWidth: '40%' }}>
       {/* Peek-of-next, revealed beneath the dragging pill. */}
       <motion.div
         aria-hidden
@@ -616,8 +687,8 @@ function SessionPill({
         {peekSession && (
           <>
             <StatusDot status={peekSession.status} />
-            <span className="min-w-0 truncate text-[13px] font-medium text-muted-foreground">
-              {peekSession.name}
+            <span className="min-w-0 truncate text-[14px] font-medium text-muted-foreground">
+              {truncatePillName(peekSession.name)}
             </span>
           </>
         )}
@@ -633,32 +704,51 @@ function SessionPill({
         transition={reduceMotion ? { duration: 0 } : springs.sheetDetent}
         onDragEnd={onDragEnd}
         onClick={onTap}
+        // FULL name stays the accessible label so the truncated display never
+        // hides which session you're on.
+        title={current.name}
+        aria-label={`Session ${current.name} — switch session`}
         className={cn(
-          'relative flex h-11 w-full items-center gap-1.5 rounded-full border border-border bg-card px-3',
-          'text-[13px] font-medium',
+          'relative flex h-11 w-full items-center gap-1.5 rounded-full bg-secondary px-3.5',
+          'text-[14px] font-medium active:bg-secondary/70',
         )}
       >
         <StatusDot status={current.status} />
-        <span className="min-w-0 flex-1 truncate text-left">{current.name}</span>
-        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+        {/* Display name truncated to ~8ch + ellipsis (frees dock room); the full
+            name lives in title/aria-label above. */}
+        <span className="min-w-0 flex-1 truncate text-left">
+          {truncatePillName(current.name)}
+        </span>
+        <ChevronRight
+          className="size-4 shrink-0 text-muted-foreground"
+          strokeWidth={1.75}
+        />
       </motion.button>
     </div>
   )
 }
 
+/** A dock icon button — ≥44pt hit target, one 20px SF-weight glyph. `active`
+ *  tints it `text-primary` with a soft fill (the toggled state: keyboard open /
+ *  dictation live), otherwise it rests as a quiet `muted-foreground` icon. One
+ *  coherent style across the whole row (iOS-native, no hard borders). */
 function DockIcon({
   label,
   onClick,
+  active = false,
   children,
 }: {
   label: string
   onClick: () => void
+  /** Toggled/on state — primary tint + soft primary fill. */
+  active?: boolean
   children: React.ReactNode
 }) {
   return (
     <motion.button
       type="button"
       aria-label={label}
+      aria-pressed={active || undefined}
       whileTap={{ scale: 0.92 }}
       transition={springs.buttonPress}
       onClick={() => {
@@ -666,7 +756,14 @@ function DockIcon({
         onClick()
       }}
       // ≥44pt hit target (size-11 = 44px) per the iOS HIG floor; glyph stays 20px.
-      className="mb-0.5 flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
+      // Continuous 12px corner; active = primary tint + soft fill, else a quiet
+      // muted icon — one rhythm for the whole dock row.
+      className={cn(
+        'flex size-11 shrink-0 items-center justify-center rounded-xl',
+        active
+          ? 'bg-primary/15 text-primary active:bg-primary/25'
+          : 'text-muted-foreground active:bg-secondary',
+      )}
     >
       {children}
     </motion.button>
