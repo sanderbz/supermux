@@ -198,6 +198,8 @@ export function DesktopSplit({
           name={name}
           title={title}
           status={status}
+          activity={current?.activity}
+          error={current?.error}
           onDetach={onDetach}
           onStop={onStop}
         />

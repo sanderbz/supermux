@@ -15,4 +15,14 @@ export interface TileSession extends SessionSummary {
   branch?: string
   /** True when the underlying tmux session is gone → render `<TileError>`. */
   missing?: boolean
+  /** Live "what the agent is doing now" label from the latest PreToolUse hook
+   *  (hooks-10x) — e.g. "✎ tile.tsx" / "⚡ npm test". Present only while a tool
+   *  is running; cleared on Stop/SessionEnd. Drives the calm activity line. */
+  activity?: string
+  /** Machine class for `activity` (`bash`/`edit`/`read`/`search`/`web`/`task`/
+   *  `mcp`/`fail`). Present iff `activity` is. */
+  activity_kind?: string
+  /** The latest unrecovered agent error from a StopFailure hook (hooks-10x).
+   *  Cleared when the agent resumes — drives the amber error badge. */
+  error?: { type: string; message: string }
 }
