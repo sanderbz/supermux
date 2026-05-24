@@ -38,6 +38,15 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const HOOK_FRESH: Duration = Duration::from_secs(3);
 /// capture-pane skip optimization window (§3.6 [P2] #7).
 const SKIP_WINDOW: Duration = Duration::from_secs(2);
+/// Upper bound on how stale the live preview tail may get while we are skipping
+/// captures for a streaming-`Active` session. The skip (above) keeps the status
+/// `Active` cheaply off the PTY heartbeat — but a session whose bytes flow every
+/// tick would NEVER re-capture, so its overview tail-preview would freeze for the
+/// whole duration of the agent's work (exactly the "Claude is doing things but
+/// the card doesn't update" bug). Capping the skip at this staleness forces a
+/// capture every ~4s so the hero live-preview keeps refreshing while still
+/// roughly halving the tmux spawn rate under a chatty agent.
+pub const MAX_PREVIEW_STALENESS: Duration = Duration::from_secs(4);
 /// How many trailing scroll-back lines the detector classifies + stores.
 pub const CAPTURE_LINES: usize = 30;
 /// Cold-start sentinel: a freshly-booted server pretends the last PTY byte was 5
@@ -234,12 +243,23 @@ impl StatusDetector {
 /// Should the 2s tick skip the `tmux capture-pane` shell-out (§3.6 [P2] #7)?
 ///
 /// When PTY bytes flowed in the last 2s **and** we are already `Active`, the
-/// heartbeat alone keeps the session `Active` and the recent `last_capture`
-/// stays the freshest preview — so the shell-out is pure overhead. Halves the
-/// tmux spawn rate under a chatty agent. (Dormant in M5a until M4 feeds the
-/// heartbeat; unit-tested as a pure function.)
-pub fn should_skip_capture(last_pty: Instant, last_status: Status) -> bool {
-    last_status == Status::Active && last_pty.elapsed() < SKIP_WINDOW
+/// heartbeat alone keeps the session `Active` — so the shell-out is overhead for
+/// STATUS purposes. BUT the capture also produces the live preview tail, so we
+/// must NOT skip forever: `last_capture_elapsed` bounds the skip so a session
+/// that streams every tick still re-captures (and re-broadcasts its tail) at
+/// least every [`MAX_PREVIEW_STALENESS`]. Without that bound a busy agent's
+/// overview tile froze its preview for the entire duration of the work (the
+/// "Claude is doing things but the card doesn't update" bug). The bound still
+/// lets a chatty agent skip most ticks, keeping roughly the intended tmux
+/// spawn-rate reduction. Unit-tested as a pure function.
+pub fn should_skip_capture(
+    last_pty: Instant,
+    last_status: Status,
+    last_capture_elapsed: Duration,
+) -> bool {
+    last_status == Status::Active
+        && last_pty.elapsed() < SKIP_WINDOW
+        && last_capture_elapsed < MAX_PREVIEW_STALENESS
 }
 
 // ── capture preparation helpers ──────────────────────────────────────────────
@@ -465,12 +485,40 @@ mod tests {
 
     #[test]
     fn skip_optimization_only_when_active_and_fresh() {
-        assert!(should_skip_capture(Instant::now(), Status::Active));
+        let fresh_capture = Duration::from_millis(0);
+        assert!(should_skip_capture(
+            Instant::now(),
+            Status::Active,
+            fresh_capture
+        ));
         // Not active → never skip.
-        assert!(!should_skip_capture(Instant::now(), Status::Idle));
+        assert!(!should_skip_capture(
+            Instant::now(),
+            Status::Idle,
+            fresh_capture
+        ));
         // Active but stale heartbeat → must re-capture.
         let stale = Instant::now() - Duration::from_secs(5);
-        assert!(!should_skip_capture(stale, Status::Active));
+        assert!(!should_skip_capture(stale, Status::Active, fresh_capture));
+    }
+
+    #[test]
+    fn skip_bounded_by_preview_staleness() {
+        // Active + fresh heartbeat but the preview has gone stale past the cap →
+        // must re-capture so the live tail keeps refreshing (the "busy agent's
+        // overview tile froze" bug). Below the cap it may still skip.
+        let stale_preview = MAX_PREVIEW_STALENESS + Duration::from_millis(1);
+        assert!(!should_skip_capture(
+            Instant::now(),
+            Status::Active,
+            stale_preview
+        ));
+        let fresh_preview = MAX_PREVIEW_STALENESS - Duration::from_millis(500);
+        assert!(should_skip_capture(
+            Instant::now(),
+            Status::Active,
+            fresh_preview
+        ));
     }
 
     #[test]

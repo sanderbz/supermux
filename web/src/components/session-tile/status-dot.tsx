@@ -21,6 +21,25 @@ const STATUS_COLOR: Record<SessionStatus, string> = {
   error: 'bg-status-error',
 }
 
+/** The "loading / working" states that render the animated spinner instead of a
+ *  static disc. BOTH the boot window (`starting`) and the working window
+ *  (`active`) are "the agent is busy, hang on" — so the top-right loader must
+ *  animate for EITHER, deterministically.
+ *
+ *  This is the fix for the reported "spinner sometimes animates, sometimes not":
+ *  previously only `active` spun, so whether you saw motion depended entirely on
+ *  WHICH of the two loading statuses the (sometimes-stale) synced data happened
+ *  to hold — a freshly-started session sits in `starting` until the detector's
+ *  first capture flips it to `active`, and if that delta is delayed (or the SSE
+ *  stream was suspended on mobile, the companion bug) the dot froze as a static
+ *  grey disc. Making the spinner a pure function of `status ∈ LOADING_STATUSES`
+ *  removes that race: the indicator is decided solely by the status value, with
+ *  no dependence on transition timing or re-render ordering. */
+const LOADING_STATUSES: ReadonlySet<SessionStatus> = new Set([
+  'starting',
+  'active',
+])
+
 /** Status → human label (sentence case, never UPPERCASE — BRAND voice). */
 export const STATUS_LABEL: Record<SessionStatus, string> = {
   starting: 'Booting',
@@ -33,13 +52,17 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
 
 /** Decorative status indicator (§4.3). The "attention" pulse lives on the CARD
  *  (`<StatusBorder>`), NOT here — the dot is a static colour indicator. The one
- *  exception is `active`, where a tiny spinner replaces the disc because that IS
- *  the loading/working affordance (the "top-right loader icon"):
+ *  exception is the LOADING states (`starting` + `active`), where a tiny spinner
+ *  replaces the disc because that IS the loading/working affordance (the
+ *  "top-right loader icon"):
  *
- *  • `active` — Claude is thinking / the session is loading. A small circular
+ *  • `starting` / `active` — the agent is booting or thinking. A small circular
  *    spinner (slightly bigger than the resting dot) rotates at a calm cadence so
- *    the dot reads as "doing work" / "loading". This is the only dot that moves.
- *    The card stays calm (no glow) during this phase by design.
+ *    the dot reads as "doing work" / "loading". This is the only dot that moves,
+ *    and it moves for BOTH loading states so the indicator is a PURE function of
+ *    status — never dependent on which loading sub-state a (possibly-stale) sync
+ *    happens to hold (that timing dependence was the "sometimes animates,
+ *    sometimes not" bug). The card stays calm (no glow) during this phase.
  *  • `waiting` — input is required. STATIC blue disc. The blue attention signal
  *    is the card glow (`<StatusBorder>` waiting pulse), not the dot — the dot
  *    just colours the state. (Earlier this pulsed; reverted to keep the pulse on
@@ -47,13 +70,11 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
  *  • `idle` — the turn ended (done → green). STATIC green disc. The "ready"
  *    signal is the subtle green card glow (`<StatusBorder>` idle pulse); the dot
  *    just colours the state. (Earlier this pulsed green; reverted.)
- *  • `starting` — boot window. Static neutral-grey disc; the detector flips this
- *    to active/idle as soon as a real signal arrives.
  *  • everything else (`stopped`, `error`) — static disc, no motion.
  *
  *  Footprint stays ≤ 14px (8px dot + a 2px spinner ring) so it never
  *  dominates the tile. Reduced-motion users get the static disc + a thin
- *  outline so the active affordance still differentiates. The dot is
+ *  outline so the loading affordance still differentiates. The dot is
  *  decorative + non-interactive, so the 44pt tap-target rule does not apply. */
 export function StatusDot({
   status,
@@ -64,18 +85,20 @@ export function StatusDot({
 }) {
   const reduce = useReducedMotion()
 
-  // ── Thinking spinner (active). A 12px conic-gradient disc that rotates ────
+  // ── Loading spinner (starting + active) — a PURE function of status ────────
   //
   // Slightly bigger than the resting dot, with the brand amber as the visible
   // sweep and transparent as the tail — the "loading" semantic without
-  // wrestling SVG. Reduced-motion: a static ringed dot (foreground stays
+  // wrestling SVG. The SAME spinner renders for `starting` and `active`: both
+  // are "busy, hang on", so the loader never depends on which of the two the
+  // synced status holds. Reduced-motion: a static ringed dot (foreground stays
   // amber, the ring tells the user "doing work" without the rotation).
-  if (status === 'active') {
+  if (LOADING_STATUSES.has(status)) {
     if (reduce) {
       return (
         <span
           role="img"
-          aria-label={STATUS_LABEL.active}
+          aria-label={STATUS_LABEL[status]}
           className={cn(
             'inline-block size-3 shrink-0 rounded-full bg-status-active ring-2 ring-status-active/30',
             className,
@@ -85,11 +108,15 @@ export function StatusDot({
     }
     // Border-trick spinner: a 12px ring whose top arc is amber and the rest is
     // transparent. Rotating the whole element makes the amber arc sweep —
-    // canonical "tiny spinner" without an SVG dep, ≤ 14px footprint.
+    // canonical "tiny spinner" without an SVG dep, ≤ 14px footprint. A STABLE
+    // `key` keeps it the same element across a `starting`→`active` transition so
+    // the rotation animation continues seamlessly (never restarts/stalls when
+    // the status flips between the two loading sub-states).
     return (
       <motion.span
+        key="loading-spinner"
         role="img"
-        aria-label={STATUS_LABEL.active}
+        aria-label={STATUS_LABEL[status]}
         className={cn(
           // Top border carries the active color; left + right + bottom stay
           // transparent so we read an arc, not a full ring. Brand status token
@@ -103,17 +130,17 @@ export function StatusDot({
     )
   }
 
-  // ── Static colour discs (waiting, idle, starting, stopped, error) ─────────
+  // ── Static colour discs (waiting, idle, stopped, error) ────────────────────
   //
   // The pulse/halo now lives on the CARD (`<StatusBorder>`), so the dot is a
-  // plain static colour indicator for every non-active state:
+  // plain static colour indicator for every non-loading state:
   //   • waiting → blue disc  (card carries the blue "needs input" pulse)
   //   • idle    → green disc  (card carries the subtle green "ready" glow)
-  //   • starting → neutral-grey disc (boot window)
   //   • stopped/error → muted / orange disc
-  // Earlier (4f2bc52) the waiting + idle dots pulsed a halo; reverted here so a
-  // single, consistent attention model lives at the card level. STATUS_COLOR
-  // maps each status to its `bg-status-*` token.
+  // (`starting` + `active` never reach here — they render the loading spinner
+  // above.) Earlier (4f2bc52) the waiting + idle dots pulsed a halo; reverted
+  // here so a single, consistent attention model lives at the card level.
+  // STATUS_COLOR maps each remaining status to its `bg-status-*` token.
   return (
     <span
       role="img"

@@ -21,8 +21,19 @@
 // 30s, plus ±20% decorrelated jitter from day one (no thundering herd on a
 // server restart). A staleness watchdog declares the stream dead after 18s of
 // silence and forces a reconnect (some proxies hold a half-open SSE connection
-// without delivering the `error` event). On `visibilitychange` / `focus` /
-// `online`, if the last data arrived >4s ago, subscribers are nudged to refetch.
+// without delivering the `error` event).
+//
+// MOBILE WAKE RECOVERY (the core fix). On `visibilitychange→visible` / `focus` /
+// `online`, the recovery is DETERMINISTIC and COMPLETE — not a partial nudge.
+// Mobile Safari SUSPENDS the EventSource (and freezes the timers that would
+// otherwise notice) while the tab is backgrounded or the phone is locked, so on
+// return the live channel is almost always a zombie: still `open` but silent, or
+// errored with no `onerror` and no scheduled reconnect. `onWake` therefore (1)
+// FORCE-reconnects a fresh EventSource whenever the stream is suspect (silent,
+// missing, or not in the OPEN readyState) so live deltas resume, AND (2) fires
+// every subscriber's `onResync` to refetch the source-of-truth queries so any
+// delta missed while suspended is reconciled at once. Both run on every wake —
+// reconnecting a healthy stream costs one GET, the price of reliability.
 //
 // Auth: EventSource cannot set an `Authorization` header, so the SSE channel
 // uses the auth layer's `?_token=` fallback (server/src/auth.rs accepts it).
@@ -65,6 +76,14 @@ const BASE_BACKOFF_MS = 300
 const MAX_BACKOFF_MS = 30_000
 const STALE_MS = 18_000 // force-reconnect after this much silence
 const RESYNC_MS = 4_000 // refetch on focus if data older than this
+// On a wake (visibilitychange/focus/online) we treat the live channel as
+// SUSPECT if it has been silent for longer than this — shorter than RESYNC_MS,
+// because a mobile-Safari background suspend freezes the EventSource AND the
+// timers (the staleness watchdog can't fire while backgrounded), so the stream
+// is almost always dead on return even when `lastDataAt` looks "recent" against
+// a clock that was itself frozen. Reconnecting an already-healthy stream is
+// cheap (one extra GET) and the only deterministic way to recover a zombie one.
+const WAKE_RECONNECT_IF_SILENT_MS = 2_000
 
 /** Decorrelated ±20% jitter (Eng P1 #5) so simultaneous clients don't reconnect
  *  in lockstep after a server bounce. */
@@ -155,6 +174,30 @@ function scheduleReconnect() {
   }, delay)
 }
 
+/** Tear down the current EventSource (if any) and reconnect IMMEDIATELY — the
+ *  single, reused recovery primitive for both the staleness watchdog and the
+ *  wake path. Used when we KNOW the stream is dead/suspect (a backgrounded
+ *  mobile-Safari tab freezes the EventSource and its `error` handler never
+ *  fires, so we can't wait for `onerror` + backoff to notice). Cancels any
+ *  pending backoff timer and resets `attempt` so the reconnect is prompt, then
+ *  connects synchronously — `connect()` sets status `connecting`, so the
+ *  ReconnectBanner reflects the recovery. */
+function forceReconnect() {
+  if (subscribers.size === 0) return
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  try {
+    es?.close()
+  } catch {
+    /* closing an already-dead source is fine */
+  }
+  es = null
+  attempt = 0
+  connect()
+}
+
 function connect() {
   if (subscribers.size === 0) return
   setStatus('connecting')
@@ -215,17 +258,47 @@ function connect() {
   }
 }
 
-function onWake() {
-  if (subscribers.size === 0) return
-  if (lastDataAt === 0 || Date.now() - lastDataAt > RESYNC_MS) {
-    for (const s of subscribers) {
-      try {
-        s.handlersRef.current.onResync?.()
-      } catch (err) {
-        console.warn('use-sse: subscriber threw in onResync', err)
-      }
+/** Fire every subscriber's `onResync` so they re-pull their source-of-truth
+ *  query (sessions / board / schedules). The ONE place a "refetch everything"
+ *  reconciliation happens. */
+function resyncAll() {
+  for (const s of subscribers) {
+    try {
+      s.handlersRef.current.onResync?.()
+    } catch (err) {
+      console.warn('use-sse: subscriber threw in onResync', err)
     }
   }
+}
+
+/** The COMPLETE, deterministic recovery path on returning to the foreground
+ *  (visibilitychange→visible / focus / online). On mobile Safari a backgrounded
+ *  or locked tab SUSPENDS the EventSource — and the timers that would normally
+ *  notice (the staleness watchdog) are frozen too — so on return the live channel
+ *  is almost always a zombie: it may still report `open` while delivering nothing,
+ *  or it errored silently with no `onerror` + no backoff scheduled. A partial
+ *  "nudge" (refetch once, leave the dead stream in place) is exactly why the
+ *  overview went stale and stayed stale after backgrounding.
+ *
+ *  So recovery does BOTH, unconditionally enough to be reliable:
+ *    1. FORCE a fresh EventSource if the stream is suspect — silent for longer
+ *       than WAKE_RECONNECT_IF_SILENT_MS, OR there's no live source object, OR
+ *       it's not in the OPEN readyState. This restores live deltas going forward.
+ *    2. RESYNC every subscriber's query if data is older than RESYNC_MS, so any
+ *       delta missed while suspended is reconciled immediately (don't wait for
+ *       the reconnected stream's first event — that could be seconds away).
+ *
+ *  Reconnecting a stream that happened to still be healthy costs one extra GET;
+ *  that's an acceptable price for a deterministic recovery on every wake. */
+function onWake() {
+  if (subscribers.size === 0) return
+  const silentFor = lastDataAt === 0 ? Infinity : Date.now() - lastDataAt
+  const streamSuspect =
+    silentFor > WAKE_RECONNECT_IF_SILENT_MS ||
+    es === null ||
+    es.readyState !== EventSource.OPEN
+  if (streamSuspect) forceReconnect()
+  if (silentFor > RESYNC_MS) resyncAll()
 }
 
 function onVisible() {
@@ -255,11 +328,10 @@ function startWatchdog() {
     if (subscribers.size === 0) return
     if (lastDataAt === 0) return
     if (Date.now() - lastDataAt > STALE_MS) {
-      es?.close()
-      es = null
-      // Reset attempt so the forced reconnect fires promptly.
-      attempt = 0
-      scheduleReconnect()
+      // Stream went silent past the watchdog window (e.g. a half-open proxy that
+      // never delivers `error`). Reuse the same recovery primitive the wake path
+      // uses: close + reconnect immediately, no backoff wait.
+      forceReconnect()
     }
   }, STALE_MS / 3)
 }
