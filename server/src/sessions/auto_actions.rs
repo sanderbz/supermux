@@ -378,6 +378,12 @@ pub async fn tick(
         if let Err(e) = react_to_transition(state, name, s).await {
             tracing::debug!(name = %name, error = %e, "board reaction on status transition failed");
         }
+        // ── PUSH: phone notification on a blocked/error transition ─────────────
+        // Fires ONLY on the genuine, flap-confirmed transition edge (`committed`),
+        // so it is inherently debounced to one push per transition INTO the state
+        // — never every tick. The send is spawned so the detector tick is not
+        // blocked on network I/O to the push service.
+        maybe_push_on_transition(state, name, s);
     }
 
     // ── SSE `sessions` delta — when status committed OR the tail changed ───────
@@ -511,6 +517,43 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
         _ => {}
     }
     Ok(())
+}
+
+/// PUSH milestone: send a phone notification when a session transitions INTO a
+/// state that needs the user (spec TRACK 2 §4). Called from [`tick`] on the
+/// `committed` (flap-confirmed) transition edge ONLY, so it is debounced to one
+/// push per transition — never per tick.
+///
+/// * `Waiting` — the agent is blocked on the user (it asked a question / needs
+///   approval). Push `agent {name} needs you` linking to `/focus/{name}`.
+///
+/// The blocked REASON is generic here. A parallel worker (`feat/hooks-be`) is
+/// enriching a per-session blocked-reason / `last_error` in `state.rs`; this
+/// helper reads [`AppState::push_reason_for`] which returns that enriched reason
+/// when present and a generic fallback otherwise — so the wiring is already
+/// additive and improves automatically once that field lands.
+///
+/// The actual encrypt + HTTPS POST runs in a spawned task so the detector tick
+/// (which holds no lock here) is never blocked on the push service. `send_push`
+/// itself no-ops cheaply when nobody is subscribed.
+fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
+    // Only the "needs you" transition pushes. Active/Idle/Starting/Unknown are
+    // not user-blocking; Stopped-with-error is handled by the hooks-be track's
+    // error field once it lands (read via `push_reason_for`).
+    if new != Status::Waiting {
+        return;
+    }
+    let state = state.clone();
+    let name = name.to_string();
+    tokio::spawn(async move {
+        let title = format!("agent {name} needs you");
+        let body = state.push_reason_for(&name, Status::Waiting);
+        let url = format!("/focus/{name}");
+        let n = crate::push::send_push(&state, &title, &body, &url).await;
+        if n > 0 {
+            tracing::debug!(name = %name, devices = n, "push sent for waiting transition");
+        }
+    });
 }
 
 /// Last [`PREVIEW_LINES`] lines of the (already ANSI-stripped) capture — the tile

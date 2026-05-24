@@ -32,6 +32,7 @@ import {
 } from '@/stores/ui-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
+import { usePush } from '@/hooks/use-push'
 import {
   useEnvKeys,
   usePatchDefaultModel,
@@ -373,6 +374,63 @@ function ClaudeToolsSection() {
   )
 }
 
+/** Settings → Notifications (PUSH milestone). "Enable phone notifications"
+ *  subscribes this device to web push so the user gets pinged when an agent is
+ *  blocked on them (transitions to Waiting) or errors. Degrades gracefully:
+ *  shows blocked / unsupported states instead of a dead toggle. iOS requires the
+ *  PWA installed to the home screen + permission — that's the `unsupported`
+ *  state until installed. */
+function NotificationsSection() {
+  const { state, busy, error, enable, disable } = usePush()
+
+  const footnote = (() => {
+    switch (state) {
+      case 'unsupported':
+        return 'This device can’t receive web push. On iPhone/iPad, add supermux to your Home Screen first, then enable it from the installed app.'
+      case 'blocked':
+        return 'Notifications are blocked for this site. Allow them in your browser settings, then turn this on.'
+      default:
+        return 'Get a notification on this device when an agent is waiting on you or hits an error.'
+    }
+  })()
+
+  function onToggle(next: boolean) {
+    // Unsupported devices have nothing to toggle; the footnote explains why.
+    if (busy || state === 'unsupported') return
+    if (next) void enable()
+    else void disable()
+  }
+
+  return (
+    <Section title="Notifications" footnote={footnote}>
+      <Row
+        label="Enable phone notifications"
+        hint={
+          state === 'blocked'
+            ? 'Blocked in browser settings'
+            : state === 'unsupported'
+              ? 'Not available on this device'
+              : busy
+                ? 'Working…'
+                : undefined
+        }
+        control={
+          <Switch
+            ariaLabel="Enable phone notifications"
+            checked={state === 'enabled'}
+            onCheckedChange={onToggle}
+          />
+        }
+      />
+      {error ? (
+        <Row>
+          <p className="text-[13px] text-destructive">{error}</p>
+        </Row>
+      ) : null}
+    </Section>
+  )
+}
+
 export function Settings() {
   const { theme, setTheme } = useTheme()
   const viewMode = useUI((s) => s.viewMode)
@@ -489,6 +547,8 @@ export function Settings() {
               }
             />
           </Section>
+
+          <NotificationsSection />
 
           <Section title="Model">
             <Row

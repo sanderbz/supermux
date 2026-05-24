@@ -168,6 +168,10 @@ pub struct AppState {
     /// stopped — otherwise a still-running loop's `or_insert_with` re-creates the
     /// very `DashMap` entries `forget_session` removed (R1-2).
     pub session_tasks: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    /// Shared VAPID keypair for web push (PUSH milestone). Computed once at
+    /// startup (loaded/generated from the data dir); the public half is served by
+    /// `GET /api/push/key`, the private half signs every push. Cheap `Arc` clone.
+    pub vapid: Arc<crate::push::Vapid>,
 }
 
 impl AppState {
@@ -178,9 +182,14 @@ impl AppState {
             config.data_dir.join("logs"),
             config.ws.broadcast_capacity,
         ));
+        // Load (or first-run generate) the persisted VAPID keypair for web push
+        // before `config` is moved into the Arc. Non-fatal on failure (push then
+        // stays disabled; the rest of the server still boots).
+        let vapid = crate::push::init_vapid(&config.data_dir);
         Self {
             pool,
             config: Arc::new(config),
+            vapid,
             session_locks: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),
@@ -332,6 +341,21 @@ impl AppState {
             .entry(name.to_string())
             .or_insert_with(|| watch::channel(("unknown".to_string(), 0)).0)
             .clone()
+    }
+
+    /// The human-readable reason to put in a web-push notification body for
+    /// `name` transitioning into `status` (PUSH milestone). Generic by design:
+    /// a parallel worker (`feat/hooks-be`) is enriching a per-session blocked
+    /// reason / `last_error` in this struct; when that lands, this is the single
+    /// place to prefer it (e.g. `self.last_error.get(name)` / a blocked-reason
+    /// map) before falling back to these generics — keeping the push wiring
+    /// additive and the fallback always-present.
+    pub fn push_reason_for(&self, _name: &str, status: Status) -> String {
+        match status {
+            Status::Waiting => "The agent is waiting for your input.".to_string(),
+            Status::Stopped => "The agent stopped.".to_string(),
+            _ => "The agent needs your attention.".to_string(),
+        }
     }
 
     /// Get (creating on first use) the per-session lock.
