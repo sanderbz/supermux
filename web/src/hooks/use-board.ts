@@ -14,7 +14,7 @@
 // + rollback"). The atomic claim surfaces a 409 visibly via the thrown
 // `BoardError` (§3.2.10).
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useRef, type MutableRefObject } from 'react'
 import {
   useMutation,
   useQuery,
@@ -103,6 +103,57 @@ function patchCache(qc: QueryClient, updater: (prev: BoardIssue[]) => BoardIssue
   qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], (prev) => updater(prev ?? []))
 }
 
+/** A live set of issue ids with an IN-FLIGHT optimistic move (patch / claim /
+ *  start / create / delete that has changed the card's column / position /
+ *  session / existence and is still awaiting the server). The SSE `board`
+ *  reconciler reads this so a snapshot pushed mid-flight — possibly loaded
+ *  before THIS client's move persisted — never clobbers the optimistic state of
+ *  a card the user just dropped. Each id is added in `onMutate` and removed in
+ *  `onSettled`, after which the authoritative refetch reconciles it for real. */
+type PendingMoves = Set<string>
+
+/** Merge a server board snapshot into the optimistic cache while PRESERVING any
+ *  issue with a pending in-flight move (TanStack-standard "don't clobber
+ *  optimistic state from a concurrent push"). For non-pending cards the snapshot
+ *  is authoritative — so live agent deltas (comments, acceptance, status,
+ *  needs_review) still land. For a pending card we keep the optimistic entry
+ *  (its column/pos the user just chose); its own `onSettled` refetch reconciles
+ *  it once the move resolves. A pending card the snapshot DROPS (e.g. a
+ *  still-uncommitted optimistic create) is carried over so it doesn't vanish
+ *  mid-flight; a pending DELETE that's already gone from the optimistic cache
+ *  simply isn't re-added. */
+function reconcileBoard(
+  prev: BoardIssue[],
+  snapshot: BoardIssue[],
+  pending: PendingMoves,
+): BoardIssue[] {
+  if (pending.size === 0) return snapshot
+  const prevById = new Map(prev.map((i) => [i.id, i]))
+  const seen = new Set<string>()
+  const merged: BoardIssue[] = []
+  for (const incoming of snapshot) {
+    seen.add(incoming.id)
+    if (pending.has(incoming.id)) {
+      // A card with a pending move keeps its optimistic entry. If the optimistic
+      // cache no longer has it, the user optimistically DELETED it — so drop the
+      // snapshot's still-present copy rather than resurrecting it mid-flight.
+      const optimistic = prevById.get(incoming.id)
+      if (optimistic) merged.push(optimistic)
+      continue
+    }
+    // Not pending → take the fresh server truth (live agent deltas land here).
+    merged.push(incoming)
+  }
+  // Carry over pending cards the snapshot doesn't yet include (in-flight creates,
+  // or a move whose persist the snapshot predates) so they don't pop out.
+  for (const id of pending) {
+    if (seen.has(id)) continue
+    const optimistic = prevById.get(id)
+    if (optimistic) merged.push(optimistic)
+  }
+  return merged
+}
+
 /** The live state of the session a card is linked to (U1). `null` when the card
  *  has no linked session. The board joins this onto each card by `issue.session`
  *  so the card renders the real overview `StatusDot` + tail-peek instead of a
@@ -152,8 +203,17 @@ export function useLiveSession(name: string | null | undefined): LiveSession | n
 
 /** Subscribe the board cache to the SHARED SSE stream's `board` event. No
  *  standalone EventSource — `useSse` owns the one app-wide connection (M12).
- *  No polling. */
-function useBoardSse(qc: QueryClient) {
+ *  No polling.
+ *
+ *  `pendingRef` holds the ids of cards with an in-flight optimistic move. A
+ *  `board` snapshot that arrives DURING a drag's PATCH can be a server view
+ *  loaded BEFORE this client's move persisted (it's pushed by ANY mutation /
+ *  agent write, not just ours) — so a blind `setQueryData(snapshot)` would
+ *  overwrite the optimistic card with its stale old column and the card would
+ *  pop back. We MERGE instead: every card takes the fresh snapshot EXCEPT those
+ *  with a pending move, whose optimistic state is preserved until their own
+ *  `onSettled` refetch reconciles them. */
+function useBoardSse(qc: QueryClient, pendingRef: MutableRefObject<PendingMoves>) {
   const onEvent = useCallback(
     (type: SseEventType, payload: unknown) => {
       if (type !== 'board') return
@@ -165,13 +225,15 @@ function useBoardSse(qc: QueryClient) {
           ? ((payload as { payload: BoardIssue[] }).payload)
           : null
       if (board) {
-        qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], board)
+        qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], (prev) =>
+          reconcileBoard(prev ?? [], board, pendingRef.current),
+        )
         return
       }
       void qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
       void qc.invalidateQueries({ queryKey: [...STATUSES_KEY] })
     },
-    [qc],
+    [qc, pendingRef],
   )
   // On a focus/visibility/online resync after a quiet stretch, re-pull the board
   // so a missed delta is reconciled. Still no polling.
@@ -185,7 +247,18 @@ function useBoardSse(qc: QueryClient) {
 
 export function useBoard(): UseBoardResult {
   const qc = useQueryClient()
-  useBoardSse(qc)
+  // Ids of cards with an in-flight optimistic move. The SSE `board` reconciler
+  // reads this so a snapshot pushed mid-drag can't clobber the optimistic
+  // column/pos of a card the user just dropped (the pop-back race). Stable
+  // across renders (a ref) so the SSE subscription never re-runs for it.
+  const pendingRef = useRef<PendingMoves>(new Set())
+  useBoardSse(qc, pendingRef)
+  const markPending = useCallback((id: string) => {
+    pendingRef.current.add(id)
+  }, [])
+  const clearPending = useCallback((id: string) => {
+    pendingRef.current.delete(id)
+  }, [])
 
   const issuesQuery = useQuery({
     queryKey: [...ISSUES_KEY],
@@ -204,8 +277,12 @@ export function useBoard(): UseBoardResult {
     onMutate: async (input) => {
       await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
       const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      const optimisticId = `optimistic-${Date.now()}`
+      // Guard the not-yet-persisted card so a concurrent `board` snapshot (which
+      // can't contain this client-only id) doesn't drop it before it commits.
+      markPending(optimisticId)
       const optimistic: BoardIssue = {
-        id: `optimistic-${Date.now()}`,
+        id: optimisticId,
         title: input.title,
         desc: input.desc ?? '',
         status: input.status ?? 'todo',
@@ -232,12 +309,15 @@ export function useBoard(): UseBoardResult {
         session_live: input.session != null,
       }
       patchCache(qc, (p) => [optimistic, ...p])
-      return { prev }
+      return { prev, optimisticId }
     },
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
+    onSettled: (_d, _e, _v, ctx) => {
+      if (ctx?.optimisticId) clearPending(ctx.optimisticId)
+      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    },
   })
 
   // ── patch (optimistic merge, rollback on error) ────────────────────────────
@@ -247,6 +327,10 @@ export function useBoard(): UseBoardResult {
     onMutate: async ({ id, patch }) => {
       await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
       const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      // A move (column / position / session change) must survive a concurrent
+      // `board` snapshot that predates this PATCH's persist — otherwise the card
+      // pops back to its old column mid-drag. Guard it until settle.
+      markPending(id)
       patchCache(qc, (p) =>
         p.map((i) =>
           i.id === id
@@ -266,7 +350,10 @@ export function useBoard(): UseBoardResult {
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
+    onSettled: (_d, _e, { id }) => {
+      clearPending(id)
+      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    },
   })
 
   // ── atomic claim (optimistic move → doing, rollback shows the 409) ─────────
@@ -276,6 +363,7 @@ export function useBoard(): UseBoardResult {
     onMutate: async ({ id, session }) => {
       await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
       const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      markPending(id)
       patchCache(qc, (p) =>
         p.map((i) =>
           i.id === id ? { ...i, status: 'doing', session } : i,
@@ -288,7 +376,10 @@ export function useBoard(): UseBoardResult {
       // user SEES the 409 (the route surfaces the BoardError as a toast).
       if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
+    onSettled: (_d, _e, { id }) => {
+      clearPending(id)
+      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    },
   })
 
   // ── start agent (optimistic move → doing, rollback shows the 409) ──────────
@@ -302,6 +393,7 @@ export function useBoard(): UseBoardResult {
     onMutate: async ({ id, session }) => {
       await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
       const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      markPending(id)
       patchCache(qc, (p) =>
         p.map((i) =>
           i.id === id
@@ -314,7 +406,10 @@ export function useBoard(): UseBoardResult {
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
+    onSettled: (_d, _e, { id }) => {
+      clearPending(id)
+      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    },
   })
 
   // ── delete (optimistic removal, rollback on error) ─────────────────────────
@@ -323,13 +418,20 @@ export function useBoard(): UseBoardResult {
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
       const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      // Guard the optimistic removal: a `board` snapshot loaded before this
+      // soft-delete persisted would otherwise re-add the card mid-flight. The
+      // reconciler keeps the optimistic (absent) state for a pending id.
+      markPending(id)
       patchCache(qc, (p) => p.filter((i) => i.id !== id))
       return { prev }
     },
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
+    onSettled: (_d, _e, id) => {
+      clearPending(id)
+      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    },
   })
 
   // ── column management (invalidate statuses on settle) ──────────────────────
