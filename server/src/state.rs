@@ -15,7 +15,7 @@ use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use crate::config::Config;
 use crate::sessions::pty::PtyStream;
-use crate::sessions::status::{HookEvent, Status};
+use crate::sessions::status::{HookEvent, Status, TurnState};
 use crate::sessions::tmux::Tmux;
 use crate::ws::streamer::PtyStreamer;
 
@@ -122,11 +122,14 @@ pub struct AppState {
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
     /// per-session `SUPERMUX_HOOK_TOKEN`. M5b's `/api/_internal/hook` reads it.
     pub hook_tokens: Arc<DashMap<String, String>>,
-    /// Per-session most-recent Claude `SettingsHook` event (§3.6, M5b). Written by
-    /// `/api/_internal/hook`; read by the status detector's fusion rule, where a
-    /// fresh (<3s) event outranks the regex bank + heartbeat. The `Instant` is the
-    /// receive time, so freshness is judged server-side (clock-skew safe).
-    pub last_hook: Arc<DashMap<String, (Instant, HookEvent)>>,
+    /// Per-session TURN STATE (§3.6; the "busy while thinking" fix). Written by
+    /// `/api/_internal/hook` (folding each Claude `SettingsHook` event into the
+    /// matching per-type timestamp via [`TurnState::apply`]); read by the status
+    /// detector's turn state machine, which marks the session `Active` for the
+    /// WHOLE turn (start → silent think → tool → … → Stop), not just within a 3s
+    /// window of the last hook. Each timestamp is the server-side receive
+    /// `Instant`, so freshness is judged locally (clock-skew safe).
+    pub last_hook: Arc<DashMap<String, TurnState>>,
     /// Per-session detector wake (§3.6 — "within 1s of a real Claude
     /// notification"). The hook endpoint `notify_one`s this so the affected
     /// session's 2s detector loop re-ticks immediately instead of waiting out the
@@ -239,19 +242,24 @@ impl AppState {
             .unwrap_or_else(|| Instant::now() - COLD_START_PTY_IDLE)
     }
 
-    /// Record a Claude `SettingsHook` event for `name` at the current instant
-    /// (§3.6, M5b). Called by `/api/_internal/hook` after the per-session hook
-    /// token validates. Overwrites any prior event — the detector only cares about
-    /// the most recent one within the 3s freshness window.
+    /// Fold a Claude `SettingsHook` event for `name` into its per-session
+    /// [`TurnState`] at the current instant (§3.6). Called by `/api/_internal/hook`
+    /// after the per-session hook token validates. Unlike the old single-slot
+    /// store, this bumps ONLY the matching event-type's newest timestamp, so a
+    /// `PreToolUse` followed by a silent think still has a `turn_start` newer than
+    /// any `turn_end` — keeping the turn `Active` (the "busy while thinking" fix).
     pub fn record_hook(&self, name: &str, event: HookEvent) {
         self.last_hook
-            .insert(name.to_string(), (Instant::now(), event));
+            .entry(name.to_string())
+            .or_default()
+            .apply(Instant::now(), event);
     }
 
-    /// The most-recent hook event for `name`, if any (§3.6). Fed into
-    /// `StatusDetector::detect` as the apex signal.
-    pub fn last_hook_event(&self, name: &str) -> Option<(Instant, HookEvent)> {
-        self.last_hook.get(name).map(|e| *e.value())
+    /// The current per-session [`TurnState`] snapshot for `name` (§3.6). Fed into
+    /// `StatusDetector::detect` as the apex signal; a never-seen session returns
+    /// the empty default (non-decisive, so the bank/heartbeat decide).
+    pub fn turn_state(&self, name: &str) -> TurnState {
+        self.last_hook.get(name).map(|e| *e.value()).unwrap_or_default()
     }
 
     /// Record `name`'s current status for the adaptive-cadence hot-set

@@ -9,7 +9,7 @@
 //!   ├─ skip?  pty bytes <2s AND last_status == Active AND preview < tier
 //!   │         → reuse last_capture
 //!   ├─ capture = tmux capture-pane -p -S -30   (ANSI-stripped, last 30 lines)
-//!   ├─ status  = detector.detect(capture, last_pty, last_hook)   ← M5b: hook signal
+//!   ├─ status  = detector.detect(capture, last_pty, turn_state) ← hook turn-state signal
 //!   ├─ UPDATE session_runtime SET last_capture = ?               (ALWAYS)
 //!   ├─ if status changed (confirmed stable for 50ms — flap debounce):
 //!   │      UPDATE last_status / last_status_at
@@ -260,9 +260,11 @@ pub async fn tick(
     }
 
     let last_pty = state.last_pty(name);
-    // M5b: the apex fusion signal — a fresh Claude hook event outranks the regex
-    // bank + heartbeat inside `detect` (§3.6).
-    let last_hook = state.last_hook_event(name);
+    // The apex fusion signal — the per-session TURN STATE (newest instant of each
+    // turn-relevant hook). The turn state machine inside `detect` marks the
+    // session Active for the whole turn (incl. a silent think), outranking the
+    // regex bank + heartbeat (§3.6; the "busy while thinking" fix).
+    let turn = state.turn_state(name);
 
     // Record this session's CURRENT (held) status into the shared recency tracker
     // BEFORE the skip check, so the hot-set ranking sees a streaming session as
@@ -321,7 +323,7 @@ pub async fn tick(
     let capture_ansi = status::prepare_capture_ansi(&raw_ansi);
 
     let prev = detector.last_status();
-    let new_status = detector.detect(&capture, last_pty, last_hook);
+    let new_status = detector.detect(&capture, last_pty, turn);
 
     // last_capture writeback — ALWAYS (canonical preview source, CEO #1).
     db::sessions::set_last_capture(&state.pool, name, &capture, &capture_ansi).await?;
@@ -337,7 +339,7 @@ pub async fn tick(
         // after a short settle. A transient flap (e.g. a stale-by-now hook) that
         // reverts is suppressed; only a status that still holds is broadcast.
         tokio::time::sleep(FLAP_DEBOUNCE).await;
-        let confirmed = detector.detect(&capture, state.last_pty(name), state.last_hook_event(name));
+        let confirmed = detector.detect(&capture, state.last_pty(name), state.turn_state(name));
         if confirmed != prev {
             // DB first, THEN the watch send — a `wait` handler that subscribed
             // late reads the persisted status as its baseline, so no transition is

@@ -1,6 +1,6 @@
 //! Golden-fixture tests for the status detector core (TECH_PLAN §3.6, M5a).
 //!
-//! The crown-jewel reliability guarantee: 30 real-shaped `capture-pane`
+//! The crown-jewel reliability guarantee: 33 real-shaped `capture-pane`
 //! snapshots are each classified to their expected status (encoded in the
 //! filename, `<name>.<active|waiting|idle>.txt`), plus 5 corruption fixtures
 //! that must be handled WITHOUT panicking. The classifications are also pinned by
@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use supermux_server::sessions::status::{prepare_capture, StatusDetector};
+use supermux_server::sessions::status::{prepare_capture, StatusDetector, TurnState};
 
 /// A heartbeat in the neutral band (1.5s–30s): neither the `Active` window nor
 /// the idle timeout fires, so a regex-matching fixture is decided solely by the
@@ -25,7 +25,7 @@ fn neutral_pty() -> Instant {
 fn classify(capture: &str) -> &'static str {
     let prepared = prepare_capture(capture);
     let mut detector = StatusDetector::new();
-    detector.detect(&prepared, neutral_pty(), None).as_str()
+    detector.detect(&prepared, neutral_pty(), TurnState::default()).as_str()
 }
 
 fn fixtures_dir() -> std::path::PathBuf {
@@ -78,7 +78,7 @@ fn golden_fixtures_classify_correctly() {
         }
     }
 
-    assert_eq!(golden, 30, "expected exactly 30 golden fixtures");
+    assert_eq!(golden, 33, "expected exactly 33 golden fixtures");
     assert_eq!(corrupt, 5, "expected exactly 5 corruption fixtures");
 
     // Regression guard: pin every classification (committed snapshot).

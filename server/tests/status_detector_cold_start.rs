@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
 use supermux_server::sessions::auto_actions;
-use supermux_server::sessions::status::StatusDetector;
+use supermux_server::sessions::status::{StatusDetector, TurnState};
 use supermux_server::state::AppState;
 use supermux_server::{db, sessions};
 
@@ -63,12 +63,12 @@ async fn cold_start_first_tick_is_unknown_then_active_on_byte() {
 
     // First tick: empty capture + cold heartbeat + never-classified → Unknown
     // (the idle timeout must NOT fabricate Idle off the cold sentinel).
-    let first = detector.detect("", state.last_pty("alpha"), None);
+    let first = detector.detect("", state.last_pty("alpha"), TurnState::default());
     assert_eq!(first.as_str(), "unknown", "cold-start first tick must be Unknown");
 
     // A real PTY byte arrives (what M4's reader will record): → Active.
     state.pty_heartbeat.insert("alpha".to_string(), Instant::now());
-    let second = detector.detect("", state.last_pty("alpha"), None);
+    let second = detector.detect("", state.last_pty("alpha"), TurnState::default());
     assert_eq!(second.as_str(), "active", "fresh PTY byte must read Active");
 
     std::fs::remove_dir_all(dir).ok();
