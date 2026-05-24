@@ -12,6 +12,10 @@ import {
   User,
 } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import type {
+  DraggableAttributes,
+  DraggableSyntheticListeners,
+} from '@dnd-kit/core'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -90,8 +94,15 @@ export interface IssueCardProps {
   onOpen: (issue: BoardIssue) => void
   /** True while this card is the drag source (dims the placeholder slot). */
   isDragging?: boolean
-  /** Pointer-down begins a drag (the board owns the drag session). */
-  onDragStart: (issue: BoardIssue, e: React.PointerEvent) => void
+  /** @dnd-kit `useSortable` attributes (role / tabIndex / aria-*) spread on the
+   *  card root. Narrow by design — `DraggableAttributes` carries no native
+   *  `onDrag`, so it won't collide with framer-motion's own drag gesture typing. */
+  dragAttributes?: DraggableAttributes
+  /** @dnd-kit `useSortable` listeners (pointer/touch/keyboard drag activation)
+   *  spread on the card root. The board's sensors (PointerSensor distance +
+   *  TouchSensor long-press) decide when a drag actually starts, so a tap still
+   *  opens the sheet and a vertical swipe still scrolls the column. */
+  dragListeners?: DraggableSyntheticListeners
 }
 
 /**
@@ -126,7 +137,8 @@ export function IssueCard({
   issue,
   onOpen,
   isDragging,
-  onDragStart,
+  dragAttributes,
+  dragListeners,
 }: IssueCardProps) {
   const reduce = useReducedMotion()
   const fine = useMediaQuery('(pointer: fine)')
@@ -291,6 +303,15 @@ export function IssueCard({
 
   return (
     <motion.div
+      // dnd-kit wiring: the spread attributes/listeners arm the drag via the
+      // board's sensors (PointerSensor distance / TouchSensor long-press). They
+      // come FIRST so the card's own `onClick` (open sheet), `onKeyDown`, `role`
+      // and `tabIndex` below win — keeping tap-to-open and keyboard-open intact
+      // (the whole card is the grab target; there's no separate drag handle).
+      // The sortable transform + ref live on the wrapper in <SortableIssueCard>
+      // so they don't fight framer-motion's `whileTap` / `layoutId` transforms.
+      {...dragAttributes}
+      {...dragListeners}
       role="button"
       tabIndex={0}
       aria-label={issue.title}
@@ -299,12 +320,6 @@ export function IssueCard({
       transition={springs.smooth}
       whileTap={reduce ? undefined : { scale: 0.97 }}
       data-issue-id={issue.id}
-      onPointerDown={(e) => {
-        // Only primary button / touch starts a drag; let the click fall through
-        // to onClick for taps (the board cancels the drag if movement < threshold).
-        if (e.button !== undefined && e.button !== 0) return
-        onDragStart(issue, e)
-      }}
       onClick={() => onOpen(issue)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -319,7 +334,11 @@ export function IssueCard({
         setConfirmStop(false)
       }}
       className={cn(
-        'group relative flex min-h-[44px] w-full cursor-pointer touch-none select-none flex-col gap-2 rounded-[10px] border border-border bg-background/80 p-3 text-left shadow-sm',
+        // No `touch-none` here: the column owns `touch-pan-y` so a vertical swipe
+        // scrolls natively; the TouchSensor's 250ms long-press is what claims a
+        // deliberate press as a card drag. Keeping `touch-none` would re-break
+        // scroll (the exact bug being fixed).
+        'group relative flex min-h-[44px] w-full cursor-pointer select-none flex-col gap-2 rounded-[10px] border border-border bg-background/80 p-3 text-left shadow-sm',
         'transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         isDragging && 'opacity-40',
       )}

@@ -1,10 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import * as React from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
-  AnimatePresence,
-  motion,
-  useMotionValue,
-  useReducedMotion,
-} from 'framer-motion'
+  closestCorners,
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type CollisionDetection,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { ClipboardList, Plus, Settings } from 'lucide-react'
 
 import { EmptyStatePlaceholder } from '@/components/empty-state'
@@ -21,22 +39,19 @@ import { ManageStatusesSheet } from '@/components/board/manage-statuses-sheet'
 import { BoardSkeleton } from '@/components/board/board-skeleton'
 import { midpointPos } from '@/components/board/pos'
 
-// A move is interpreted as a drag (not a tap) only past this pointer distance.
-const DRAG_THRESHOLD = 6
-
-interface DragState {
-  issue: BoardIssue
-  /** Pointer offset within the card at grab time (keeps the ghost under the cursor). */
-  offsetX: number
-  offsetY: number
-  width: number
-  height: number
-}
-
 interface Toast {
   id: number
   message: string
   tone: 'error' | 'info'
+}
+
+/** The drop slot resolved from dnd-kit's `over` target: a column id + the index
+ *  the dragged card would land at within that column. Mirrors what the old
+ *  custom controller's `computeDropTarget` produced, so `handleDrop` / midpoint
+ *  pos / drag-to-doing logic are reused verbatim. */
+interface DropSlot {
+  status: string
+  index: number
 }
 
 export function Board() {
@@ -83,60 +98,74 @@ export function Board() {
     return map
   }, [board.issues, board.statuses])
 
-  // ── cross-column drag controller (pointer-based, spring-physics ghost) ──────
-  const [drag, setDrag] = useState<DragState | null>(null)
-  const [dropTarget, setDropTarget] = useState<{
-    status: string
-    index: number
-  } | null>(null)
-  const ghostX = useMotionValue(0)
-  const ghostY = useMotionValue(0)
-  const candidate = useRef<{
-    issue: BoardIssue
-    startX: number
-    startY: number
-    rect: DOMRect
-    moved: boolean
-  } | null>(null)
-
-  const computeDropTarget = useCallback(
-    (clientX: number, clientY: number) => {
-      const colEl = document
-        .elementsFromPoint(clientX, clientY)
-        .find((el) => el instanceof HTMLElement && el.dataset.columnId) as
-        | HTMLElement
-        | undefined
-      if (!colEl) return null
-      const status = colEl.dataset.columnId!
-      // Find insert index by comparing pointer Y to each card's vertical centre.
-      const cards = Array.from(
-        colEl.querySelectorAll<HTMLElement>('[data-issue-id]'),
-      )
-      let index = cards.length
-      for (let i = 0; i < cards.length; i++) {
-        const r = cards[i].getBoundingClientRect()
-        if (clientY < r.top + r.height / 2) {
-          index = i
-          break
-        }
-      }
-      return { status, index }
-    },
-    [],
+  // ── @dnd-kit drag controller (matches the overview's sensor setup) ──────────
+  // Standard, library-blessed drag-vs-scroll: the TouchSensor only arms a drag
+  // after a 250ms press-and-hold (within a 5px tolerance), so a quick vertical
+  // swipe falls through to the column's native `overflow-y-auto` scroll instead
+  // of being captured as a drag — the bug the old custom pointer controller
+  // caused. Desktop is a PointerSensor with a small distance constraint so a
+  // press-move drags exactly as it did before (the old DRAG_THRESHOLD = 6px).
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      // 6px activation distance == the old DRAG_THRESHOLD, so a click/tap on the
+      // card (which opens the sheet) never accidentally starts a drag.
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(TouchSensor, {
+      // 250ms long-press + 5px tolerance: a tap or a vertical scroll never
+      // triggers a drag on mobile; an intentional press-and-hold lifts the card.
+      // Matches the overview's TouchSensor (which uses 200ms) — slightly longer
+      // here because the whole card is the grab target (no dedicated handle), so
+      // a touch more dwell makes "lift vs scroll" unambiguous.
+      activationConstraint: { delay: 250, tolerance: 5 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
   )
 
-  const onCardDragStart = useCallback(
-    (issue: BoardIssue, e: React.PointerEvent) => {
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-      candidate.current = {
-        issue,
-        startX: e.clientX,
-        startY: e.clientY,
-        rect,
-        moved: false,
+  // The issue currently being dragged (drives the DragOverlay ghost). The id is
+  // the issue id; we resolve the live issue from the cache.
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const activeIssue = useMemo(
+    () => board.issues.find((i) => i.id === activeId) ?? null,
+    [board.issues, activeId],
+  )
+  // The resolved drop slot (column + index) for the live drag — drives the
+  // column highlight + drop indicator, same visuals as before.
+  const [dropTarget, setDropTarget] = useState<DropSlot | null>(null)
+
+  // Resolve dnd-kit's `over` (a card id or a column id) into a {status, index}
+  // drop slot. Dropping over a card → that card's column at the card's index;
+  // dropping over a column's empty area → end of that column. Excludes the
+  // dragged card from the index math so cross-list/in-list reorder lands right.
+  const resolveDropSlot = useCallback(
+    (activeIssueId: string, overId: string): DropSlot | null => {
+      // `overId` is either a column id (droppable column) or an issue id (a
+      // sortable card). Columns are registered under their status id; cards
+      // under their issue id.
+      if (issuesByStatus.has(overId)) {
+        // Hovering the column container itself → append to the end (after any
+        // existing cards, excluding the dragged one if it lives here).
+        const list = (issuesByStatus.get(overId) ?? []).filter(
+          (i) => i.id !== activeIssueId,
+        )
+        return { status: overId, index: list.length }
       }
+      // Otherwise `overId` is a card — find its column + position.
+      for (const [status, list] of issuesByStatus) {
+        const idx = list.findIndex((i) => i.id === overId)
+        if (idx === -1) continue
+        // Insert at the hovered card's index. dnd-kit's sortable strategy keeps
+        // the visual order honest while dragging; we land the card where the
+        // placeholder sits. When dragging within the same column past the
+        // dragged card's original slot, the filtered-list math in `handleDrop`
+        // collapses any off-by-one, so a raw index is correct here.
+        return { status, index: idx }
+      }
+      return null
     },
-    [],
+    [issuesByStatus],
   )
 
   const handleDrop = useCallback(
@@ -207,50 +236,40 @@ export function Board() {
     [board, issuesByStatus, pushToast, startAgent],
   )
 
-  // Global pointer move/up while a drag is in flight or pending.
-  useEffect(() => {
-    function onMove(e: PointerEvent) {
-      const cand = candidate.current
-      if (!cand) return
-      const dx = e.clientX - cand.startX
-      const dy = e.clientY - cand.startY
-      if (!cand.moved) {
-        if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return
-        cand.moved = true
-        setDrag({
-          issue: cand.issue,
-          offsetX: cand.startX - cand.rect.left,
-          offsetY: cand.startY - cand.rect.top,
-          width: cand.rect.width,
-          height: cand.rect.height,
-        })
+  const handleDragStart = useCallback((e: DragStartEvent) => {
+    setActiveId(String(e.active.id))
+  }, [])
+
+  const handleDragOver = useCallback(
+    (e: DragOverEvent) => {
+      const { active, over } = e
+      if (!over) {
+        setDropTarget(null)
+        return
       }
-      ghostX.set(e.clientX - (cand.startX - cand.rect.left))
-      ghostY.set(e.clientY - (cand.startY - cand.rect.top))
-      setDropTarget(computeDropTarget(e.clientX, e.clientY))
-    }
+      setDropTarget(resolveDropSlot(String(active.id), String(over.id)))
+    },
+    [resolveDropSlot],
+  )
 
-    function onUp(e: PointerEvent) {
-      const cand = candidate.current
-      candidate.current = null
-      if (!cand) return
-      const wasDragging = cand.moved
-      setDrag(null)
-      const target = computeDropTarget(e.clientX, e.clientY)
+  const handleDragCancel = useCallback(() => {
+    setActiveId(null)
+    setDropTarget(null)
+  }, [])
+
+  const handleDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const { active, over } = e
+      const issue = board.issues.find((i) => i.id === String(active.id))
+      setActiveId(null)
       setDropTarget(null)
-      if (!wasDragging || !target) return // a tap → onClick handles it
-      void handleDrop(cand.issue, target.status, target.index)
-    }
-
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onUp)
-    return () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onUp)
-    }
-  }, [computeDropTarget, handleDrop, ghostX, ghostY])
+      if (!issue || !over) return
+      const slot = resolveDropSlot(issue.id, String(over.id))
+      if (!slot) return
+      void handleDrop(issue, slot.status, slot.index)
+    },
+    [board.issues, handleDrop, resolveDropSlot],
+  )
 
   // ── render ──────────────────────────────────────────────────────────────────
   if (board.isLoading) {
@@ -297,89 +316,54 @@ export function Board() {
             />
           </div>
         ) : (
-          <div className="flex h-full gap-3 overflow-x-auto pb-2 [scrollbar-width:thin]">
-            {board.statuses.map((status) => {
-              const list = issuesByStatus.get(status.id) ?? []
-              const isDropCol = dropTarget?.status === status.id
-              return (
-                <section
-                  key={status.id}
-                  data-column-id={status.id}
-                  className={cn(
-                    'flex w-[280px] shrink-0 flex-col rounded-xl border bg-card/40 transition-colors',
-                    isDropCol
-                      ? 'border-primary/60 bg-primary/5'
-                      : 'border-border',
-                  )}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={boardCollision}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
+          >
+            <div className="flex h-full gap-3 overflow-x-auto pb-2 [scrollbar-width:thin]">
+              {board.statuses.map((status) => {
+                const list = issuesByStatus.get(status.id) ?? []
+                return (
+                  <BoardColumn
+                    key={status.id}
+                    status={status.id}
+                    label={status.label}
+                    list={list}
+                    dropTarget={dropTarget}
+                    activeId={activeId}
+                    onAdd={() => setNewIssueStatus(status.id)}
+                    onOpen={(i) => setDetailId(i.id)}
+                  />
+                )
+              })}
+            </div>
+
+            {/* Floating drag ghost — dnd-kit's DragOverlay follows the pointer
+                (and the keyboard sensor), replacing the old hand-rolled motion
+                ghost. Spring scale/tilt on lift, reduced-motion safe. */}
+            <DragOverlay dropAnimation={null}>
+              {activeIssue ? (
+                <motion.div
+                  className="pointer-events-none"
+                  initial={reduce ? false : { scale: 1 }}
+                  animate={reduce ? {} : { scale: 1.04, rotate: -1.5 }}
+                  transition={springs.cardExpand}
                 >
-                  <header className="flex items-center gap-2 px-3 py-2.5">
-                    <h2 className="flex-1 text-sm font-semibold tracking-tight">
-                      {status.label}
-                    </h2>
-                    <span className="rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums text-muted-foreground">
-                      {list.length}
+                  <div className="rounded-[10px] border border-primary/40 bg-card p-3 shadow-2xl">
+                    <span className="line-clamp-3 text-sm font-medium leading-snug">
+                      {activeIssue.title}
                     </span>
-                    <button
-                      type="button"
-                      aria-label={`Add issue to ${status.label}`}
-                      onClick={() => setNewIssueStatus(status.id)}
-                      className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                    >
-                      <Plus className="size-4" />
-                    </button>
-                  </header>
-                  <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2 [scrollbar-width:thin]">
-                    {list.length === 0 ? (
-                      <div className="flex flex-1 items-center justify-center px-2 py-6 text-center text-xs text-muted-foreground/60">
-                        {isDropCol ? 'Drop here' : 'No issues'}
-                      </div>
-                    ) : (
-                      <AnimatePresence initial={false}>
-                        {list.map((issue, idx) => (
-                          <div key={issue.id} className="flex flex-col gap-2">
-                            {isDropCol && dropTarget?.index === idx && (
-                              <DropIndicator />
-                            )}
-                            <IssueCard
-                              issue={issue}
-                              onOpen={(i) => setDetailId(i.id)}
-                              isDragging={drag?.issue.id === issue.id}
-                              onDragStart={onCardDragStart}
-                            />
-                            {isDropCol &&
-                              dropTarget?.index === idx + 1 &&
-                              idx === list.length - 1 && <DropIndicator />}
-                          </div>
-                        ))}
-                      </AnimatePresence>
-                    )}
                   </div>
-                </section>
-              )
-            })}
-          </div>
+                </motion.div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
         )}
       </BoardPage>
-
-      {/* Floating drag ghost — follows the pointer with spring physics. */}
-      <AnimatePresence>
-        {drag && (
-          <motion.div
-            className="pointer-events-none fixed left-0 top-0 z-[60]"
-            style={{ x: ghostX, y: ghostY, width: drag.width }}
-            initial={reduce ? false : { scale: 1 }}
-            animate={reduce ? {} : { scale: 1.04, rotate: -1.5 }}
-            exit={reduce ? {} : { scale: 1 }}
-            transition={springs.cardExpand}
-          >
-            <div className="rounded-[10px] border border-primary/40 bg-card p-3 shadow-2xl">
-              <span className="line-clamp-3 text-sm font-medium leading-snug">
-                {drag.issue.title}
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Toasts — a lost-race 409 from drag-to-start surfaces here, in plain
           language (the success "Sent to …" toast + Undo come from the shared
@@ -456,6 +440,149 @@ export function Board() {
         }}
       />
     </>
+  )
+}
+
+/** A custom collision strategy: prefer the nearest card/column corner so the
+ *  drop slot tracks the pointer cleanly across columns (the standard kanban
+ *  choice — `closestCorners` reads better than `closestCenter` for tall lists
+ *  of varying-height cards). */
+const boardCollision: CollisionDetection = (args) => closestCorners(args)
+
+/** One board column: a droppable container that also hosts a vertical
+ *  SortableContext for its cards. The whole column is droppable (so an empty
+ *  column / the gap below the last card still accepts a drop), and each card is
+ *  a sortable. Highlights + drop indicator are driven by the resolved
+ *  `dropTarget` exactly as the old controller did. */
+function BoardColumn({
+  status,
+  label,
+  list,
+  dropTarget,
+  activeId,
+  onAdd,
+  onOpen,
+}: {
+  status: string
+  label: string
+  list: BoardIssue[]
+  dropTarget: DropSlot | null
+  activeId: string | null
+  onAdd: () => void
+  onOpen: (issue: BoardIssue) => void
+}) {
+  // The column itself is a droppable so dropping onto its empty area (or the
+  // gap under the last card) resolves to this status. `data-column-id` is kept
+  // for any external probes / tests that relied on it.
+  const { setNodeRef } = useDroppable({ id: status })
+  const isDropCol = dropTarget?.status === status
+  const itemIds = useMemo(() => list.map((i) => i.id), [list])
+
+  return (
+    <section
+      data-column-id={status}
+      className={cn(
+        'flex w-[280px] shrink-0 flex-col rounded-xl border bg-card/40 transition-colors',
+        isDropCol ? 'border-primary/60 bg-primary/5' : 'border-border',
+      )}
+    >
+      <header className="flex items-center gap-2 px-3 py-2.5">
+        <h2 className="flex-1 text-sm font-semibold tracking-tight">{label}</h2>
+        <span className="rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums text-muted-foreground">
+          {list.length}
+        </span>
+        <button
+          type="button"
+          aria-label={`Add issue to ${label}`}
+          onClick={onAdd}
+          className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Plus className="size-4" />
+        </button>
+      </header>
+      {/* `touch-action: pan-y` (Tailwind `touch-pan-y`) makes the browser's
+          intent explicit: vertical drags scroll this list natively, while the
+          TouchSensor's long-press still claims a deliberate press-and-hold for a
+          card drag. This is the standard mobile drag-vs-scroll pairing. */}
+      <div
+        ref={setNodeRef}
+        className="flex flex-1 touch-pan-y flex-col gap-2 overflow-y-auto px-2 pb-2 [scrollbar-width:thin]"
+      >
+        {list.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center px-2 py-6 text-center text-xs text-muted-foreground/60">
+            {isDropCol ? 'Drop here' : 'No issues'}
+          </div>
+        ) : (
+          <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
+            <AnimatePresence initial={false}>
+              {list.map((issue, idx) => (
+                <div key={issue.id} className="flex flex-col gap-2">
+                  {isDropCol && dropTarget?.index === idx && <DropIndicator />}
+                  <SortableIssueCard
+                    issue={issue}
+                    activeId={activeId}
+                    onOpen={onOpen}
+                  />
+                  {isDropCol &&
+                    dropTarget?.index === idx + 1 &&
+                    idx === list.length - 1 && <DropIndicator />}
+                </div>
+              ))}
+            </AnimatePresence>
+          </SortableContext>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/** A board card wrapped in dnd-kit's `useSortable`. The whole card is the grab
+ *  target (no separate handle): on desktop a 6px press-move drags; on touch a
+ *  250ms press-and-hold lifts it (a quick swipe scrolls the column instead).
+ *  The card's own inner buttons (Start / Open / Stop) stop pointer propagation
+ *  already, so they keep working as taps without arming a drag.
+ *
+ *  We spread `attributes` + `listeners` and let IssueCard render the card body;
+ *  the card's existing `onClick` opens the detail sheet (dnd-kit suppresses the
+ *  click when a drag actually fired, so tap-to-open and drag stay distinct). */
+function SortableIssueCard({
+  issue,
+  activeId,
+  onOpen,
+}: {
+  issue: BoardIssue
+  activeId: string | null
+  onOpen: (issue: BoardIssue) => void
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: issue.id })
+  // The transform + ref live on this wrapper (not the card's motion root) so the
+  // sortable's CSS transform never fights framer-motion's `whileTap` scale or the
+  // card's `layoutId` focus-route morph. The wrapper tightly boxes the card, so
+  // dnd-kit measures the same rect.
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition: transition ?? undefined,
+  }
+  return (
+    <div ref={setNodeRef} style={style}>
+      <IssueCard
+        dragAttributes={attributes}
+        dragListeners={listeners}
+        issue={issue}
+        onOpen={onOpen}
+        // The source card dims while its overlay ghost floats (matches the old
+        // `drag?.issue.id === issue.id` behaviour). dnd-kit reports `isDragging`
+        // per sortable; `activeId` is a belt-and-suspenders for the overlay state.
+        isDragging={isDragging || activeId === issue.id}
+      />
+    </div>
   )
 }
 
