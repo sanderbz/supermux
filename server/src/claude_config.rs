@@ -32,9 +32,16 @@ use serde_json::{json, Value};
 /// presence is how a re-install finds the entry it owns.
 const MARKER: &str = "supermux-hook";
 
-/// The five Claude `SettingsHook` events supermux installs, paired with the `event`
+/// The Claude `SettingsHook` events supermux installs, paired with the `event`
 /// token sent in the POST body (consumed by [`crate::sessions::status::HookEvent`]).
-const EVENTS: [(&str, &str); 5] = [
+///
+/// `UserPromptSubmit` is the turn-start signal: it fires the moment the user
+/// submits a prompt — BEFORE the model's first (often silent) "thinking" and
+/// before any tool call — so the turn state machine in
+/// [`crate::sessions::status`] can mark the session `Active` for the whole turn,
+/// not just while a tool is running (the "busy while thinking" fix).
+const EVENTS: [(&str, &str); 6] = [
+    ("UserPromptSubmit", "user_prompt"),
     ("PreToolUse", "pre_tool"),
     ("PostToolUse", "post_tool"),
     ("Notification", "notification"),
@@ -198,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_writes_all_five_events() {
+    fn fresh_install_writes_all_events() {
         let dir = temp_dir();
         install_hooks_at(&dir).unwrap();
         let v = read(&dir);

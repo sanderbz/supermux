@@ -1,3 +1,5 @@
 ● Waiting for your next instruction.
 
+  ? for shortcuts
+❯
 ⏵⏵ accept edits on (shift+tab to cycle)

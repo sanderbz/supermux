@@ -6,20 +6,26 @@
 //! fixtures (`tests/fixtures/status/*.txt`) and never silently regresses when the
 //! regex bank evolves.
 //!
-//! **M5a / M5b split (§3.6).** M5a shipped the fusion order *regex bank → PTY
-//! heartbeat → idle timeout*, the cold-start init, and the `last_capture`
-//! writeback. **M5b** wires the real hook-event branch in (the top of
-//! [`StatusDetector::classify`]): a fresh Claude `SettingsHook` event now
-//! outranks the regex bank + heartbeat, fed by `/api/_internal/hook` →
+//! **M5a / M5b / STATUS split (§3.6).** M5a shipped the fusion order *regex bank
+//! → PTY heartbeat → idle timeout*, the cold-start init, and the `last_capture`
+//! writeback. **M5b** wired the hook-event branch in. **STATUS** ("busy while
+//! thinking" fix) replaces the 3s single-hook fast-path with a TURN STATE MACHINE
+//! ([`TurnState`]): the per-session newest instant of EACH turn-relevant hook,
+//! fed by `/api/_internal/hook` →
 //! [`AppState::record_hook`](crate::state::AppState::record_hook) →
-//! [`AppState::last_hook_event`](crate::state::AppState::last_hook_event).
+//! [`AppState::turn_state`](crate::state::AppState::turn_state). A turn in
+//! progress reads `Active` for its WHOLE duration — even during a silent "think"
+//! between tool calls — which is the bug this module exists to fix.
 //!
 //! **Fusion rule** (per-session, evaluated every 2s — or sooner, on a hook wake —
 //! by the detector loop in [`super::auto_actions`]):
-//! 1. Fresh hook event (<3s) outranks everything (M5b): `Notification`→`Waiting`,
-//!    `PreToolUse`→`Active`, `Stop`/`SubagentStop`→`Idle`; `PostToolUse` is
-//!    non-decisive and falls through.
-//! 2. capture-pane regex bank (ported verbatim from v2 §1.3 — golden-tested).
+//! 1. Hook turn state machine (`TurnState::classify`) — the apex signal. When
+//!    the newest turn hook is within the `TURN_SAFETY` bound (≈15 min):
+//!    `Notification` newest → `Waiting`; `turn_start > turn_end` → `Active` (a
+//!    turn is running, incl. a silent think); `turn_end ≥ turn_start` → `Idle`.
+//!    The classic <3s fast-path is a strict subset. A missed `Stop` older than
+//!    the safety bound falls through (never pins `Active` forever).
+//! 2. capture-pane regex bank (broadened spinner-glyph class; golden-tested).
 //! 3. PTY heartbeat: bytes <1.5s → `Active`.
 //! 4. Idle timeout: silent ≥30s → `Idle` (only downgrades an already-known
 //!    status; a never-seen session stays `Unknown` — cold-start safety).
@@ -34,8 +40,26 @@ use serde::Serialize;
 const PTY_ACTIVE_WINDOW: Duration = Duration::from_millis(1500);
 /// Silent for at least this long (and previously known) ⇒ `Idle`.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-/// A hook event newer than this outranks the regex bank + heartbeat (M5b).
+/// A hook event newer than this is the classic <3s fresh-hook fast-path (M5b).
+/// The turn state machine (below) GENERALISES it: it trusts the per-turn hook
+/// timestamps for a much longer [`TURN_SAFETY`] window, so a silent "thinking"
+/// gap between tool calls (routinely 10–60s, sometimes minutes) keeps the
+/// session `Active` instead of expiring after 3s and falling back to a
+/// content-scrape that misses the silent think. The 3s window is kept as a
+/// documented strict subset: any event newer than `HOOK_FRESH` is, a fortiori,
+/// newer than `TURN_SAFETY`, so the state machine decides it identically to the
+/// old fast-path (Notification→Waiting, turn-start→Active, turn-end→Idle).
+#[allow(dead_code)]
 const HOOK_FRESH: Duration = Duration::from_secs(3);
+/// Generous upper bound on how long the turn state machine trusts the newest
+/// turn-relevant hook before it gives up and falls through to the content bank +
+/// heartbeat (the "busy while thinking" fix; spec §B). A real turn can think
+/// silently for many seconds to a couple of minutes, so this is intentionally
+/// large — but bounded, so a *missed* `Stop` hook (the curl raced a server
+/// restart, the network blipped, …) can never pin a session `Active` forever.
+/// Once the newest hook is older than this, the detector behaves exactly as it
+/// did pre-fix: regex bank → PTY heartbeat → idle timeout.
+const TURN_SAFETY: Duration = Duration::from_secs(15 * 60);
 /// capture-pane skip optimization window (§3.6 [P2] #7).
 const SKIP_WINDOW: Duration = Duration::from_secs(2);
 /// Upper bound on how stale the live preview tail may get while we are skipping
@@ -155,6 +179,9 @@ impl Status {
 /// via [`AppState::record_hook`](crate::state::AppState::record_hook).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
+    /// `UserPromptSubmit` — the user submitted a prompt ⇒ a turn STARTS (the model
+    /// begins thinking, possibly silently, before any tool call) ⇒ `Active`.
+    UserPromptSubmit,
     /// `PreToolUse` — the agent began a tool call ⇒ `Active`.
     PreToolUse,
     /// `PostToolUse` — a tool finished ⇒ no override (fall through).
@@ -170,17 +197,122 @@ pub enum HookEvent {
 impl HookEvent {
     /// Parse the `event` field of an `/api/_internal/hook` POST body (§3.6 event
     /// types). Accepts the snake_case wire form supermux's hook command emits
-    /// (`pre_tool`, `post_tool`, `notification`, `stop`, `subagent_stop`) plus the
-    /// PascalCase Claude SettingsHook names, so either spelling is robust. Unknown
-    /// kinds return `None` (the endpoint treats them as a no-op).
+    /// (`user_prompt`, `pre_tool`, `post_tool`, `notification`, `stop`,
+    /// `subagent_stop`) plus the PascalCase Claude SettingsHook names, so either
+    /// spelling is robust. Unknown kinds return `None` (the endpoint treats them
+    /// as a no-op).
     pub fn from_event_str(s: &str) -> Option<HookEvent> {
         match s {
+            "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => {
+                Some(HookEvent::UserPromptSubmit)
+            }
             "pre_tool" | "pre_tool_use" | "PreToolUse" => Some(HookEvent::PreToolUse),
             "post_tool" | "post_tool_use" | "PostToolUse" => Some(HookEvent::PostToolUse),
             "notification" | "Notification" => Some(HookEvent::Notification),
             "stop" | "Stop" => Some(HookEvent::Stop),
             "subagent_stop" | "SubagentStop" => Some(HookEvent::SubagentStop),
             _ => None,
+        }
+    }
+}
+
+/// A per-session snapshot of the LATEST instant each turn-relevant hook fired
+/// (spec §B — the turn state machine, the core reliability win). Unlike the old
+/// single "last hook" `(Instant, HookEvent)`, this remembers each event TYPE's
+/// most recent time independently, so a `PreToolUse` followed by a long silent
+/// think still has a `turn_start` newer than any `turn_end` — keeping the
+/// session `Active` for the whole turn rather than expiring 3s after the last
+/// tool call.
+///
+/// Built in [`crate::state::AppState`] from the per-session per-event timestamp
+/// map and passed *into* [`StatusDetector::detect`] so the classifier stays a
+/// pure function of its inputs (golden-testable; v2 lesson #4). All fields are
+/// `Option<Instant>` because a session may not have seen every event yet.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TurnState {
+    /// Newest `UserPromptSubmit` — the user submitted a prompt (a turn begins).
+    pub user_prompt: Option<Instant>,
+    /// Newest `PreToolUse` — the agent started a tool call (a turn is running).
+    pub pre_tool: Option<Instant>,
+    /// Newest `PostToolUse` — a tool finished (still mid-turn; the model may now
+    /// think silently before the next tool or the `Stop`).
+    pub post_tool: Option<Instant>,
+    /// Newest `Stop` — the agent's turn ended.
+    pub stop: Option<Instant>,
+    /// Newest `SubagentStop` — a sub-agent turn ended.
+    pub subagent_stop: Option<Instant>,
+    /// Newest `Notification` — Claude is asking the user something (blocked).
+    pub notification: Option<Instant>,
+}
+
+impl TurnState {
+    /// Fold one hook event at `at` into the snapshot (bump that type's newest
+    /// instant). Used by [`crate::state::AppState::record_hook`].
+    pub fn apply(&mut self, at: Instant, event: HookEvent) {
+        let slot = match event {
+            HookEvent::UserPromptSubmit => &mut self.user_prompt,
+            HookEvent::PreToolUse => &mut self.pre_tool,
+            HookEvent::PostToolUse => &mut self.post_tool,
+            HookEvent::Stop => &mut self.stop,
+            HookEvent::SubagentStop => &mut self.subagent_stop,
+            HookEvent::Notification => &mut self.notification,
+        };
+        // Monotonic per type: never let an out-of-order delivery move a slot back.
+        if slot.map(|prev| at > prev).unwrap_or(true) {
+            *slot = Some(at);
+        }
+    }
+
+    /// `turn_start` = newest of {UserPromptSubmit, PreToolUse, PostToolUse}.
+    fn turn_start(&self) -> Option<Instant> {
+        [self.user_prompt, self.pre_tool, self.post_tool]
+            .into_iter()
+            .flatten()
+            .max()
+    }
+
+    /// `turn_end` = newest of {Stop, SubagentStop}.
+    fn turn_end(&self) -> Option<Instant> {
+        [self.stop, self.subagent_stop].into_iter().flatten().max()
+    }
+
+    /// The newest of ALL turn-relevant hooks (start/end/notif), if any.
+    fn newest(&self) -> Option<Instant> {
+        [self.turn_start(), self.turn_end(), self.notification]
+            .into_iter()
+            .flatten()
+            .max()
+    }
+
+    /// Classify purely from the turn timestamps, when the newest is within
+    /// [`TURN_SAFETY`] (spec §B):
+    /// * `Notification` newest ⇒ `Waiting` (blocked on the user);
+    /// * else `turn_start > turn_end` ⇒ `Active` (a turn is in progress — this is
+    ///   what covers a silent think between/after tool calls);
+    /// * else (`turn_end ≥ turn_start`, turn ended) ⇒ `Idle`.
+    ///
+    /// Returns `None` when there are no hooks yet OR the newest hook is older
+    /// than [`TURN_SAFETY`] — the caller then falls through to the content bank +
+    /// heartbeat, so a *missed* `Stop` can never pin `Active` forever.
+    fn classify(&self) -> Option<Status> {
+        let newest = self.newest()?;
+        if newest.elapsed() >= TURN_SAFETY {
+            return None;
+        }
+        // Notification is decisive only when it is itself the newest signal — a
+        // mid-turn notification that has since been superseded by a PreToolUse /
+        // Stop must not pin Waiting.
+        if self.notification == Some(newest) {
+            return Some(Status::Waiting);
+        }
+        let start = self.turn_start();
+        let end = self.turn_end();
+        match (start, end) {
+            (Some(s), Some(e)) if s > e => Some(Status::Active),
+            (Some(_), None) => Some(Status::Active),
+            (Some(_), Some(_)) => Some(Status::Idle), // turn_end ≥ turn_start
+            (None, Some(_)) => Some(Status::Idle),    // only an end seen
+            (None, None) => None,                     // only a (stale) notif — handled above
         }
     }
 }
@@ -228,49 +360,40 @@ impl StatusDetector {
     /// * `capture` — last [`CAPTURE_LINES`] of `tmux capture-pane`, ANSI-stripped.
     /// * `last_pty` — instant the live reader last saw a byte (cold-start
     ///   sentinel until M4 wires the reader).
-    /// * `last_hook` — most recent Claude hook event, if any (**M5b**; M5a passes
-    ///   `None`).
+    /// * `turn` — the per-session [`TurnState`] (the newest instant of each
+    ///   turn-relevant hook). The PRIMARY signal: a turn in progress reads
+    ///   `Active` for the whole turn, even during a silent think (spec §B).
     ///
-    /// Deterministic given `(capture, last_pty, last_hook, self.last_status)` —
-    /// the property the golden-fixture snapshot tests rely on.
-    pub fn detect(
-        &mut self,
-        capture: &str,
-        last_pty: Instant,
-        last_hook: Option<(Instant, HookEvent)>,
-    ) -> Status {
-        let status = self.classify(capture, last_pty, last_hook);
+    /// Deterministic given `(capture, last_pty, turn, self.last_status)` — the
+    /// property the golden-fixture snapshot tests rely on.
+    pub fn detect(&mut self, capture: &str, last_pty: Instant, turn: TurnState) -> Status {
+        let status = self.classify(capture, last_pty, turn);
         self.last_status = status;
         status
     }
 
-    fn classify(
-        &self,
-        capture: &str,
-        last_pty: Instant,
-        last_hook: Option<(Instant, HookEvent)>,
-    ) -> Status {
-        // ── 1. hook-event branch (M5b — the multi-signal apex) ────────────────
-        // A fresh Claude `SettingsHook` event (<3s) is the most authoritative
-        // signal we have — it comes straight from the agent runtime, not a
-        // best-effort scrape of the pane — so it OUTRANKS the regex bank and the
-        // PTY heartbeat (§3.6 fusion rule). `PostToolUse` is deliberately
-        // non-decisive: "a tool finished" doesn't say whether that left the agent
-        // idle, waiting, or mid-turn, so it falls THROUGH to the capture/heartbeat
-        // branches below rather than pinning a status (§3.6: "no override; fall
-        // through to other signals").
-        if let Some((t, evt)) = last_hook {
-            if t.elapsed() < HOOK_FRESH {
-                match evt {
-                    HookEvent::Notification => return Status::Waiting,
-                    HookEvent::PreToolUse => return Status::Active,
-                    HookEvent::Stop | HookEvent::SubagentStop => return Status::Idle,
-                    HookEvent::PostToolUse => { /* fall through to §2–5 */ }
-                }
-            }
+    fn classify(&self, capture: &str, last_pty: Instant, turn: TurnState) -> Status {
+        // ── 1. hook TURN STATE MACHINE (the multi-signal apex; spec §B) ────────
+        // The per-turn hook timestamps come straight from the agent runtime — the
+        // most authoritative signal we have — so they OUTRANK the regex bank and
+        // the PTY heartbeat. Unlike the old <3s single-hook fast-path (which the
+        // 3s window made expire mid-think, the smoking-gun bug), the state machine
+        // trusts the newest turn hook for a generous [`TURN_SAFETY`] window:
+        //   * Notification newest        → Waiting (blocked on the user)
+        //   * turn_start > turn_end       → Active  (a turn is running — covers a
+        //                                            silent think between tools!)
+        //   * turn_end ≥ turn_start       → Idle    (the turn ended)
+        // It returns `None` only when there are NO hooks yet or the newest is
+        // older than the safety bound — so a *missed* Stop can never pin Active
+        // forever; we then fall through to the content bank + heartbeat below.
+        // (`PostToolUse` is still non-decisive in the sense that it contributes to
+        // `turn_start` only as part of "a turn is in progress" — a lone PostToolUse
+        // older than any Stop yields Idle, not a pinned Active.)
+        if let Some(s) = turn.classify() {
+            return s;
         }
 
-        // ── 2. capture-pane regex bank (v2 §1.3, ported verbatim) ────────────
+        // ── 2. capture-pane regex bank (v2 §1.3) ─────────────────────────────
         if ACTIVE_BANK.is_match(capture) {
             return Status::Active;
         }
@@ -393,8 +516,20 @@ pub fn prepare_capture_ansi(raw: &str) -> String {
 // and WAITING use no line anchors, so they stay `(?i)`.
 
 /// ACTIVE markers: a running spinner / interrupt hint / file read.
-static ACTIVE_BANK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)(esc to interrupt|running\.\.\.|reading \d+ file|esc t…|✻.*…)").unwrap());
+///
+/// Anchored primarily on **`esc to interrupt`** — shown the WHOLE time Claude is
+/// interruptible/busy (the modern line is
+/// `✻ Thinking… (esc to interrupt · 12s · ↑ 2.1k tokens)`), so it survives every
+/// spinner glyph frame. Plus a glyph CLASS + ellipsis (Claude cycles the spinner
+/// glyph ✻ ✶ ✳ ✢ ✽ ✺ ❋ ⚹ ∗ · * across frames, so anchoring on `✻` alone misses
+/// most captured frames — the spec §C fix), and the `running...` / `reading N
+/// files` verbs.
+static ACTIVE_BANK: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)(esc to interrupt|esc t…|running\.\.\.|reading \d+ file|[✻✶✳✢✽✺❋⚹∗·*][^\n]*…)",
+    )
+    .unwrap()
+});
 
 /// WAITING markers: a selector / confirmation / approval prompt.
 static WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
@@ -402,10 +537,18 @@ static WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
-/// IDLE markers: a completed spinner, status bar, or bare shell/agent prompt.
-static IDLE_BANK: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?im)(✻.* for \d|⏵⏵|bypass permissions|plan mode|❯\s*$|\$ $|gpt-\S+ · ~)").unwrap()
-});
+/// IDLE markers: a COMPLETED spinner or a bare shell/agent prompt.
+///
+/// The persistent status-bar / mode indicators `⏵⏵`, `bypass permissions`, and
+/// `plan mode` were REMOVED (spec §D — the primary smoking gun): those are shown
+/// the WHOLE time a session is open (a mode the user picked), NOT idle signals,
+/// so a busy session whose spinner frame happened not to match read "done". The
+/// bottom status bar ALONE must never yield Idle. What remains are genuine
+/// end-of-turn / at-rest markers: a completed spinner (`✻ … for 1m 8s`), a bare
+/// agent prompt (`❯` with nothing after it), a bare shell prompt (`$ ` at end of
+/// line), or an idle codex shell prompt (`gpt-… · ~/path`).
+static IDLE_BANK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?im)(✻.* for \d|❯\s*$|\$ $|gpt-\S+ · ~)").unwrap());
 
 #[cfg(test)]
 mod tests {
@@ -421,7 +564,14 @@ mod tests {
     /// the regex bank to be the decider (a held prior status would otherwise mask
     /// a non-matching input and give a false pass).
     fn fresh(cap: &str) -> Status {
-        StatusDetector::new().detect(cap, neutral_pty(), None)
+        StatusDetector::new().detect(cap, neutral_pty(), TurnState::default())
+    }
+
+    /// A `TurnState` whose only hook is `event`, fired `ago` in the past.
+    fn turn_with(event: HookEvent, ago: Duration) -> TurnState {
+        let mut t = TurnState::default();
+        t.apply(Instant::now() - ago, event);
+        t
     }
 
     #[test]
@@ -440,8 +590,13 @@ mod tests {
     #[test]
     fn non_active_lookalikes_do_not_match() {
         // Guards against the fallback-masking bug: these lack a real marker, so a
-        // fresh detector must NOT read Active (ellipsis ≠ "...", wrong star glyph).
-        for cap in ["Running…", "✶ Thinking… esc t"] {
+        // fresh detector must NOT read Active. `Running…` uses an ellipsis (not the
+        // literal `...` the verb pattern wants) and has no spinner glyph; the bare
+        // word has no glyph + ellipsis pair either. (Note: a spinner GLYPH followed
+        // by an ellipsis — e.g. `✶ Thinking…` — is now legitimately Active per the
+        // broadened glyph-class bank, so it is NOT a lookalike; see
+        // `cycling_spinner_glyph_frames_are_active`.)
+        for cap in ["Running…", "no spinner here at all"] {
             assert_eq!(fresh(cap), Status::Unknown, "{cap:?} must not match a bank");
         }
     }
@@ -462,9 +617,6 @@ mod tests {
     fn idle_markers_classify_idle() {
         for cap in [
             "✻ Brewed for 1m 8s",
-            "⏵⏵ accept edits on (shift+tab to cycle)",
-            "bypass permissions",
-            "plan mode",
             "user@host project %\n❯ ",
             "sander@mac supermux $ ",
             "gpt-5-codex · ~/code",
@@ -474,10 +626,26 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_mode_indicators_are_not_idle() {
+        // spec §D (primary smoking gun): the persistent bottom status-bar mode
+        // indicators are shown the WHOLE time a session is open — they are the
+        // user's chosen mode, NOT an idle signal. With no other marker a fresh
+        // detector must NOT read Idle off them (it stays Unknown here); when a
+        // spinner co-occurs the session reads Active (see the thinking tests).
+        for cap in [
+            "⏵⏵ accept edits on (shift+tab to cycle)",
+            "bypass permissions",
+            "plan mode",
+        ] {
+            assert_eq!(fresh(cap), Status::Unknown, "{cap:?} must NOT be Idle");
+        }
+    }
+
+    #[test]
     fn pty_heartbeat_recent_bytes_are_active() {
         let mut d = StatusDetector::new();
-        // No regex markers; bytes flowed just now → Active.
-        assert_eq!(d.detect("", Instant::now(), None), Status::Active);
+        // No regex markers, no hooks; bytes flowed just now → Active.
+        assert_eq!(d.detect("", Instant::now(), TurnState::default()), Status::Active);
     }
 
     #[test]
@@ -486,7 +654,7 @@ mod tests {
         // Establish a known status first (so the cold-start guard is satisfied).
         d.force(Status::Active);
         let silent = Instant::now() - Duration::from_secs(45);
-        assert_eq!(d.detect("", silent, None), Status::Idle);
+        assert_eq!(d.detect("", silent, TurnState::default()), Status::Idle);
     }
 
     #[test]
@@ -494,7 +662,7 @@ mod tests {
         let mut d = StatusDetector::new();
         let cold = Instant::now() - COLD_START_IDLE;
         // Empty capture + cold heartbeat + never-classified → Unknown, NOT Idle.
-        assert_eq!(d.detect("", cold, None), Status::Unknown);
+        assert_eq!(d.detect("", cold, TurnState::default()), Status::Unknown);
     }
 
     #[test]
@@ -503,53 +671,145 @@ mod tests {
         // completed-spinner idle marker could co-occur in scrollback.
         let mut d = StatusDetector::new();
         let cap = "✻ Brewed for 1m\n✻ Beaming… (esc to interrupt)";
-        assert_eq!(d.detect(cap, neutral_pty(), None), Status::Active);
+        assert_eq!(d.detect(cap, neutral_pty(), TurnState::default()), Status::Active);
     }
 
     #[test]
     fn fresh_hook_outranks_regex_and_heartbeat() {
-        // M5b multi-signal apex (§3.6 acceptance: "a fresh hook event outranks the
-        // regex bank and the pty heartbeat"). Each capture below carries an ACTIVE
-        // marker AND a just-now heartbeat, yet the fresh hook decides the status.
+        // Multi-signal apex (§3.6 acceptance: "a fresh hook event outranks the
+        // regex bank and the pty heartbeat"). Each capture below carries a marker
+        // AND a just-now heartbeat, yet the fresh turn-state hook decides — the
+        // <3s fast-path is now a strict subset of the turn state machine.
         let mut d = StatusDetector::new();
         d.force(Status::Idle);
-        let notif = Some((Instant::now(), HookEvent::Notification));
+        let notif = turn_with(HookEvent::Notification, Duration::ZERO);
         assert_eq!(d.detect("esc to interrupt", Instant::now(), notif), Status::Waiting);
 
-        let pre = Some((Instant::now(), HookEvent::PreToolUse));
+        let pre = turn_with(HookEvent::PreToolUse, Duration::ZERO);
         assert_eq!(StatusDetector::new().detect("", neutral_pty(), pre), Status::Active);
 
         let mut d2 = StatusDetector::new();
         d2.force(Status::Active);
-        let stop = Some((Instant::now(), HookEvent::Stop));
+        let stop = turn_with(HookEvent::Stop, Duration::ZERO);
         assert_eq!(d2.detect("esc to interrupt", Instant::now(), stop), Status::Idle);
     }
 
     #[test]
-    fn post_tool_hook_is_non_decisive_and_falls_through() {
-        // PostToolUse must NOT pin a status — the capture (a waiting prompt here)
-        // decides instead (§3.6: "no override; fall through to other signals").
+    fn user_prompt_submit_then_silent_think_is_active() {
+        // The headline fix (spec §B): a UserPromptSubmit with NO subsequent tool
+        // call and NO PTY bytes (the model is thinking silently) must read Active.
+        // Empty capture + neutral heartbeat would otherwise hold/idle.
         let mut d = StatusDetector::new();
-        let post = Some((Instant::now(), HookEvent::PostToolUse));
+        let turn = turn_with(HookEvent::UserPromptSubmit, Duration::from_secs(20));
+        assert_eq!(d.detect("", neutral_pty(), turn), Status::Active);
+    }
+
+    #[test]
+    fn pre_tool_then_long_silent_think_stays_active() {
+        // A PreToolUse followed by a 40s silent think (no PostToolUse/Stop, no
+        // bytes) — the old 3s fast-path expired here and the detector wrongly read
+        // the status bar as Idle. The turn state machine keeps it Active.
+        let mut d = StatusDetector::new();
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(40));
         assert_eq!(
-            d.detect("Do you want to proceed?\n❯ 1. Yes", neutral_pty(), post),
-            Status::Waiting
+            d.detect("⏵⏵ accept edits on (shift+tab to cycle)", neutral_pty(), turn),
+            Status::Active
         );
     }
 
     #[test]
-    fn stale_hook_is_ignored_and_falls_through() {
-        // A hook older than the 3s freshness window no longer outranks; the regex
-        // bank takes over (here an ACTIVE marker).
+    fn stop_ends_the_turn_to_idle() {
+        // turn_end ≥ turn_start ⇒ Idle, even with a stale earlier PreToolUse and a
+        // status-bar capture present.
         let mut d = StatusDetector::new();
-        let stale = Some((Instant::now() - Duration::from_secs(5), HookEvent::Notification));
-        assert_eq!(d.detect("esc to interrupt", neutral_pty(), stale), Status::Active);
+        d.force(Status::Active);
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(30), HookEvent::PreToolUse);
+        turn.apply(Instant::now() - Duration::from_secs(2), HookEvent::Stop);
+        assert_eq!(d.detect("plan mode", neutral_pty(), turn), Status::Idle);
+    }
+
+    #[test]
+    fn notification_mid_turn_is_waiting() {
+        // A Notification arriving as the NEWEST turn hook ⇒ Waiting (blocked on
+        // the user), outranking an earlier PreToolUse.
+        let mut d = StatusDetector::new();
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::PreToolUse);
+        turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::Notification);
+        assert_eq!(d.detect("", neutral_pty(), turn), Status::Waiting);
+    }
+
+    #[test]
+    fn superseded_notification_does_not_pin_waiting() {
+        // A Notification followed by a newer PreToolUse ⇒ the turn resumed ⇒
+        // Active, NOT a pinned Waiting (notif is decisive only when newest).
+        let mut d = StatusDetector::new();
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::Notification);
+        turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::PreToolUse);
+        assert_eq!(d.detect("", neutral_pty(), turn), Status::Active);
+    }
+
+    #[test]
+    fn missed_stop_after_safety_bound_falls_through() {
+        // The safety valve (spec §B): a turn_start older than TURN_SAFETY with no
+        // Stop (the Stop curl was lost) must NOT pin Active forever — it falls
+        // through to the content bank + heartbeat. Here the capture is empty and
+        // the heartbeat is long-silent, so a previously-known session reads Idle.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let turn = turn_with(HookEvent::PreToolUse, TURN_SAFETY + Duration::from_secs(5));
+        let silent = Instant::now() - Duration::from_secs(45);
+        assert_eq!(d.detect("", silent, turn), Status::Idle);
+    }
+
+    #[test]
+    fn missed_stop_then_content_marker_decides() {
+        // Same stale-turn fall-through, but a live ACTIVE capture marker is present
+        // (the content safety net) → Active off the bank, not the stale turn hook.
+        let mut d = StatusDetector::new();
+        let turn = turn_with(HookEvent::PreToolUse, TURN_SAFETY + Duration::from_secs(5));
+        assert_eq!(d.detect("esc to interrupt", neutral_pty(), turn), Status::Active);
+    }
+
+    #[test]
+    fn cycling_spinner_glyph_frames_are_active() {
+        // spec §C: Claude cycles the spinner glyph across frames, so every frame
+        // (not just ✻) + an ellipsis must read Active — even while the persistent
+        // status bar (which used to win as Idle) is on screen.
+        for glyph in ['✻', '✶', '✳', '✢', '✽', '✺', '·', '*'] {
+            let cap = format!(
+                "{glyph} Thinking…\n⏵⏵ accept edits on (shift+tab to cycle)"
+            );
+            assert_eq!(fresh(&cap), Status::Active, "glyph {glyph:?}");
+        }
+    }
+
+    #[test]
+    fn token_count_interrupt_line_is_active() {
+        // The modern interrupt line with the elapsed-time + token-count tail must
+        // read Active via the `esc to interrupt` anchor, regardless of glyph frame
+        // or the mode shown in the status bar below it.
+        for mode in [
+            "⏵⏵ accept edits on (shift+tab to cycle)",
+            "plan mode",
+            "bypass permissions",
+        ] {
+            let cap = format!(
+                "✻ Thinking… (esc to interrupt · 12s · ↑ 2.1k tokens)\n{mode}"
+            );
+            assert_eq!(fresh(&cap), Status::Active, "mode {mode:?}");
+        }
     }
 
     #[test]
     fn hook_event_parsing_covers_all_kinds() {
         use HookEvent::*;
         for (s, want) in [
+            ("user_prompt", UserPromptSubmit),
+            ("user_prompt_submit", UserPromptSubmit),
+            ("UserPromptSubmit", UserPromptSubmit),
             ("pre_tool", PreToolUse),
             ("post_tool", PostToolUse),
             ("notification", Notification),
@@ -561,6 +821,23 @@ mod tests {
             assert_eq!(HookEvent::from_event_str(s), Some(want), "{s:?}");
         }
         assert_eq!(HookEvent::from_event_str("garbage"), None);
+    }
+
+    #[test]
+    fn turn_state_apply_is_monotonic_per_type() {
+        // An out-of-order (older) delivery for a type must NOT move its slot back.
+        let mut t = TurnState::default();
+        let newer = Instant::now();
+        let older = newer - Duration::from_secs(5);
+        t.apply(newer, HookEvent::PreToolUse);
+        t.apply(older, HookEvent::PreToolUse);
+        assert_eq!(t.pre_tool, Some(newer));
+    }
+
+    #[test]
+    fn empty_turn_state_is_non_decisive() {
+        // No hooks at all → the turn machine abstains so the bank/heartbeat decide.
+        assert_eq!(TurnState::default().classify(), None);
     }
 
     #[test]
@@ -670,7 +947,7 @@ mod tests {
         let mut d = StatusDetector::new();
         d.force(Status::Starting);
         // Active marker beats a held `Starting` (classifier reads the bank).
-        assert_eq!(d.detect("esc to interrupt", neutral_pty(), None), Status::Active);
+        assert_eq!(d.detect("esc to interrupt", neutral_pty(), TurnState::default()), Status::Active);
     }
 
     #[test]

@@ -7,7 +7,6 @@
 //!   * an unknown session / missing token → 401.
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
-use supermux_server::sessions::status::HookEvent;
 use supermux_server::state::AppState;
 use supermux_server::{db, http};
 
@@ -81,9 +80,9 @@ async fn correct_token_is_accepted_and_records_event() {
     let (state, app, dir) = setup().await;
     let st = post_hook(&app, "alpha", "notification", Some(TOK_A), None).await;
     assert_eq!(st, StatusCode::OK);
-    // The event is recorded for the detector's fusion rule.
-    let recorded = state.last_hook_event("alpha");
-    assert!(matches!(recorded, Some((_, HookEvent::Notification))), "got {recorded:?}");
+    // The event is folded into the session's turn state for the detector.
+    let turn = state.turn_state("alpha");
+    assert!(turn.notification.is_some(), "notification must be recorded: {turn:?}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -122,6 +121,15 @@ async fn unknown_event_kind_is_ignored_not_rejected() {
     // Authenticated but unrecognised event → 200 no-op (never trips a tool call).
     let st = post_hook(&app, "alpha", "some_future_event", Some(TOK_A), None).await;
     assert_eq!(st, StatusCode::OK);
-    assert!(state.last_hook_event("alpha").is_none(), "unknown event must not record");
+    let turn = state.turn_state("alpha");
+    assert!(
+        turn.user_prompt.is_none()
+            && turn.pre_tool.is_none()
+            && turn.post_tool.is_none()
+            && turn.stop.is_none()
+            && turn.subagent_stop.is_none()
+            && turn.notification.is_none(),
+        "unknown event must not record: {turn:?}"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }

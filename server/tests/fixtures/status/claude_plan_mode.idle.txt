@@ -1,3 +1,5 @@
 ● Here is the plan.
 
+  ? for shortcuts
+❯
 ⏸ plan mode on (shift+tab to cycle)
