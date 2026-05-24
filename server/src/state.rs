@@ -278,8 +278,19 @@ impl AppState {
     pub async fn pty_for(&self, name: &str) -> anyhow::Result<Arc<PtyStream>> {
         let stream = self.pty.for_session(name);
         let tmux = Tmux::new(name);
+        // Hand the reader BOTH the heartbeat map (so it stamps freshness on every
+        // byte batch) AND this session's detector wake (so a silent→active edge in
+        // the byte flow re-ticks the detector immediately — STATLAT). The wake is
+        // the SAME `Notify` the detector loop parks on, so a byte burst after an
+        // idle/waiting lull surfaces `Active` within ~1s regardless of provider or
+        // whether Claude hooks are wired, instead of waiting out the 4s/5s tier.
         stream
-            .ensure_started(&tmux, &self.pool, self.pty_heartbeat.clone())
+            .ensure_started(
+                &tmux,
+                &self.pool,
+                self.pty_heartbeat.clone(),
+                self.detector_wake_for(name),
+            )
             .await?;
         Ok(stream)
     }

@@ -37,7 +37,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
-use tokio::sync::{broadcast, OnceCell};
+use tokio::sync::{broadcast, Notify, OnceCell};
 
 use super::status::Status;
 use super::tmux::Tmux;
@@ -53,6 +53,19 @@ const REPLAY_CAP: usize = 512 * 1024;
 
 /// Per-FIFO read chunk size.
 const READ_CHUNK: usize = 8192;
+
+/// STATLAT — silent→active edge threshold for the detector-wake (see
+/// [`reader_loop`]). A byte batch is treated as a "resume" edge (and wakes the
+/// detector loop to re-tick within ~1s) only when the previous batch was at least
+/// this long ago — i.e. the pane had genuinely gone quiet. Matched to the
+/// detector's `PTY_ACTIVE_WINDOW` (1.5s, the window within which fresh bytes
+/// already read `Active`): below it the detector would classify `Active` on its
+/// own next tick anyway, so an extra wake would be redundant; at/above it the
+/// session has slowed to the 2s/4s/5s tiers, so the wake is what restores the
+/// sub-second resume. Keeping it equal to the detector window means we never wake
+/// for output the detector already counts as live (no wake storm on a chatty
+/// pane).
+const PTY_RESUME_EDGE: Duration = Duration::from_millis(1500);
 
 type Replay = RwLock<VecDeque<Bytes>>;
 
@@ -148,14 +161,27 @@ impl PtyStream {
     /// forever and the regex bank is the detector's only decisive signal — a
     /// session whose prompt the bank doesn't recognise stays stuck at its
     /// boot-time status, producing the "always grey" overview bug.
+    ///
+    /// `detector_wake` is this session's detector loop wake handle (the SAME
+    /// `Notify` the loop parks on). The reader fires it ONCE on a silent→active
+    /// EDGE — when a byte batch arrives after the heartbeat had gone stale (the
+    /// pane was quiet) — so an idle/waiting session that resumes output re-ticks
+    /// the detector immediately and flips to `Active` within ~1s, instead of
+    /// waiting out the 4s/5s low-activity tier (STATLAT). It is NOT fired on every
+    /// batch: a continuously streaming pane keeps its heartbeat fresh, so the edge
+    /// condition is false and no wake storm occurs — the loop is already on the 1s
+    /// hot tier handling it. This makes the sub-second resume universal (every
+    /// provider + every input path: REST `/send`, the WS terminal, an agent's own
+    /// resumed output), not just the Claude-hook path.
     pub async fn ensure_started(
         &self,
         tmux: &Tmux<'_>,
         pool: &SqlitePool,
         pty_heartbeat: Arc<DashMap<String, Instant>>,
+        detector_wake: Arc<Notify>,
     ) -> Result<()> {
         self.started
-            .get_or_try_init(|| self.spawn_reader(tmux, pool, pty_heartbeat))
+            .get_or_try_init(|| self.spawn_reader(tmux, pool, pty_heartbeat, detector_wake))
             .await
             .map(|_| ())
     }
@@ -168,6 +194,7 @@ impl PtyStream {
         tmux: &Tmux<'_>,
         pool: &SqlitePool,
         pty_heartbeat: Arc<DashMap<String, Instant>>,
+        detector_wake: Arc<Notify>,
     ) -> Result<()> {
         if !tmux.exists().await.unwrap_or(false) {
             bail!("session '{}' is not running", self.name);
@@ -224,7 +251,15 @@ impl PtyStream {
         tokio::spawn(async move {
             // Hold the write fd open for the lifetime of the reader.
             let _keep_writer = keep_writer;
-            reader_loop(async_fd, &name, &replay, &broadcast, &pty_heartbeat).await;
+            reader_loop(
+                async_fd,
+                &name,
+                &replay,
+                &broadcast,
+                &pty_heartbeat,
+                &detector_wake,
+            )
+            .await;
             alive.store(false, Ordering::Release);
             tracing::debug!(session = %name, "pty reader exited (stream-dead)");
             // Stream-dead means the tmux pane is gone (or unreadable) — propagate
@@ -257,6 +292,7 @@ async fn reader_loop(
     replay: &Replay,
     broadcast: &broadcast::Sender<Bytes>,
     pty_heartbeat: &DashMap<String, Instant>,
+    detector_wake: &Notify,
 ) {
     let tmux = Tmux::new(name);
     let mut buf = [0u8; READ_CHUNK];
@@ -295,7 +331,22 @@ async fn reader_loop(
                         // M5a heartbeat (§3.6 fusion rule #3): stamp on every
                         // batch so the detector sees "bytes flowing right now"
                         // and reads Active without needing a regex match.
-                        pty_heartbeat.insert(name.to_string(), Instant::now());
+                        let now = Instant::now();
+                        let prev = pty_heartbeat.insert(name.to_string(), now);
+                        // STATLAT — silent→active EDGE wake. If the pane had been
+                        // quiet (no byte within the detector's active window, or
+                        // never seen), this batch is the resume edge: re-tick the
+                        // detector NOW so an idle/waiting session flips to `Active`
+                        // within ~1s instead of waiting out its 4s/5s low-activity
+                        // tier sleep. We only wake on the EDGE — a continuously
+                        // streaming pane keeps `prev` fresh, so the condition is
+                        // false and there is no wake storm (the loop is already on
+                        // the 1s hot tier draining it). `notify_one` parks a permit
+                        // if the loop isn't currently waiting, so the wake is never
+                        // lost to the gap between ticks.
+                        if is_resume_edge(prev, now) {
+                            detector_wake.notify_one();
+                        }
                         // Keep readiness set to drain any remaining buffered bytes.
                     }
                     Ok(Err(e)) => {
@@ -345,4 +396,60 @@ fn read_lock(lock: &Replay) -> std::sync::RwLockReadGuard<'_, VecDeque<Bytes>> {
 
 fn write_lock(lock: &Replay) -> std::sync::RwLockWriteGuard<'_, VecDeque<Bytes>> {
     lock.write().unwrap_or_else(|p| p.into_inner())
+}
+
+/// STATLAT — is this byte batch a silent→active RESUME edge? (pure; testable)
+///
+/// `prev` is the previous heartbeat instant (`None` = never seen any byte for
+/// this session — the first batch is always an edge), `now` is this batch's
+/// instant. An edge is when the pane had been quiet for at least
+/// [`PTY_RESUME_EDGE`] — i.e. the detector would NOT already be counting the
+/// session `Active` off a fresh heartbeat — so the detector loop should be woken
+/// to re-tick immediately. Continuous streaming keeps `prev` fresh, so this is
+/// `false` on the bulk of batches (no wake storm).
+fn is_resume_edge(prev: Option<Instant>, now: Instant) -> bool {
+    match prev {
+        None => true,
+        Some(p) => now.duration_since(p) >= PTY_RESUME_EDGE,
+    }
+}
+
+#[cfg(test)]
+mod resume_edge_tests {
+    use super::*;
+
+    #[test]
+    fn first_ever_batch_is_an_edge() {
+        // No prior heartbeat (cold session whose reader just produced its first
+        // byte) → always wake so the very first output flips Unknown/Idle → Active.
+        assert!(is_resume_edge(None, Instant::now()));
+    }
+
+    #[test]
+    fn batch_after_a_long_quiet_is_an_edge() {
+        // The pane was quiet well past the active window (an idle/waiting session
+        // resuming) → wake the detector now (the STATLAT fix).
+        let now = Instant::now();
+        let prev = now - (PTY_RESUME_EDGE + Duration::from_millis(500));
+        assert!(is_resume_edge(Some(prev), now));
+    }
+
+    #[test]
+    fn edge_at_exact_threshold() {
+        // Boundary: a gap of exactly PTY_RESUME_EDGE counts as an edge (≥), so a
+        // session that slowed to the tier boundary still gets the prompt re-tick.
+        let now = Instant::now();
+        let prev = now - PTY_RESUME_EDGE;
+        assert!(is_resume_edge(Some(prev), now));
+    }
+
+    #[test]
+    fn continuous_stream_is_not_an_edge() {
+        // Bytes flowing within the active window (a chatty, already-Active pane) →
+        // NOT an edge, so no wake storm: the detector already reads it Active off
+        // the fresh heartbeat and is on the 1s hot tier draining it.
+        let now = Instant::now();
+        let prev = now - (PTY_RESUME_EDGE / 2);
+        assert!(!is_resume_edge(Some(prev), now));
+    }
 }
