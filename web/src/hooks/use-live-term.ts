@@ -371,7 +371,12 @@ export function useLiveTerm(
       theme: themeFromCss(),
       allowTransparency: false,
       cursorBlink: true,
-      scrollback: 5000,
+      // Large scrollback so the client never truncates the history the server
+      // replays on connect (replay ring is ≤512 KB ≈ several thousand lines) or
+      // that tmux retains (history-limit = 50000). Kept at/above the tmux limit
+      // so scroll-up reaches as far back as the session actually has. xterm.js
+      // stores lines compactly; 50k lines is a modest memory cost per terminal.
+      scrollback: 50000,
       disableStdin: readOnly,
     })
     const fit = new FitAddon()

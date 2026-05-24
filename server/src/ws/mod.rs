@@ -9,7 +9,7 @@
 //!   2. **First-frame auth** within 2s — missing/invalid → close 1008.
 //!   3. `{"type":"auth_ok"}`, then per-session subscriber cap → 33rd closes 1013
 //!      (recoverable: the client silently reconnects on next visibility).
-//!   4. Replay snapshot (≤64 KB) as binary frames, then live fan-out.
+//!   4. Replay snapshot (≤512 KB, bounded ring) as binary frames, then live fan-out.
 //!   5. Slow subscriber (`broadcast` Lagged) → close 1013 (never blocks fan-out).
 //!   6. Server PING every 20s; no inbound traffic for 30s → close.
 

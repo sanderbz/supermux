@@ -42,8 +42,14 @@ use tokio::sync::{broadcast, OnceCell};
 use super::status::Status;
 use super::tmux::Tmux;
 
-/// Replay buffer hard cap (§3.2.7: "last 64 KB").
-const REPLAY_CAP: usize = 64 * 1024;
+/// Replay buffer hard cap. Bounded ring buffer per session: the reader evicts
+/// from the front to stay under this size, so steady-state memory is capped at
+/// ~`REPLAY_CAP` per live session regardless of how much output a long-running
+/// pane produces. Raised from the original 64 KB to 512 KB so a freshly-attached
+/// client can scroll back through substantially more history. Because the replay
+/// is a ONE-TIME send on connect (not part of steady-state fan-out), a larger
+/// cap only affects the initial attach cost, not per-byte streaming overhead.
+const REPLAY_CAP: usize = 512 * 1024;
 
 /// Per-FIFO read chunk size.
 const READ_CHUNK: usize = 8192;
@@ -58,7 +64,7 @@ pub struct PtyStream {
     pub fifo: PathBuf,
     /// `<data_dir>/logs/<name>.log` — durable on-disk capture (tee target).
     pub log: PathBuf,
-    /// Bounded replay snapshot (≤64 KB), pushed by the reader, read on subscribe.
+    /// Bounded replay snapshot (≤`REPLAY_CAP`), pushed by the reader, read on subscribe.
     pub replay: Arc<Replay>,
     /// Fan-out sender. Capacity is `config.ws.broadcast_capacity` (default 1024);
     /// a `send` with zero subscribers returns `Err` and is intentionally dropped.
@@ -310,8 +316,8 @@ async fn reader_loop(
     }
 }
 
-/// Append `chunk` to the replay buffer (evicting from the front to stay ≤64 KB)
-/// and fan it out — both under the replay write lock so it is atomic against
+/// Append `chunk` to the replay buffer (evicting from the front to stay
+/// ≤`REPLAY_CAP`) and fan it out — both under the replay write lock so it is atomic against
 /// [`PtyStream::subscribe`]'s snapshot+subscribe (exactly-once handoff). The
 /// `broadcast.send` returns `Err` when there are no subscribers — an intentional
 /// drop; new subscribers get the replay snapshot.
