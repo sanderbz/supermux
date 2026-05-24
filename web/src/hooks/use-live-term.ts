@@ -18,6 +18,7 @@
 import * as React from 'react'
 import { Terminal } from '@xterm/xterm'
 import { CanvasAddon } from '@xterm/addon-canvas'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 
@@ -403,7 +404,10 @@ export function useLiveTerm(
       lineHeight: 1.2,
       theme: themeFromCss(),
       allowTransparency: false,
-      cursorBlink: true,
+      // Steady (non-blinking) block cursor: a blink forces a periodic renderer
+      // wake even when idle (mobile battery + needless idle repaints). A solid
+      // cursor reads as more native/snappy (Termius / iTerm default-feel).
+      cursorBlink: false,
       // Large scrollback so the client never truncates the history the server
       // replays on connect (replay ring is ≤512 KB ≈ several thousand lines) or
       // that tmux retains (history-limit = 50000). Kept at/above the tmux limit
@@ -438,12 +442,32 @@ export function useLiveTerm(
       helper.setAttribute('enterkeyhint', 'send')
     }
 
-    // CanvasAddon needs the renderer's char dimensions to exist, which only
-    // happens once the container has a real layout box. Loading it eagerly on a
+    // A GPU/canvas renderer needs the renderer's char dimensions to exist, which
+    // only happens once the container has a real layout box. Loading eagerly on a
     // zero-size container (or one that resizes before first paint) throws
     // "Cannot read properties of undefined (reading 'dimensions')". So we defer:
     // wait a frame, perform the FIRST fit (now the box is laid out), THEN attach
-    // the canvas renderer. xterm's DOM renderer covers the gap before this runs.
+    // the renderer. xterm's DOM renderer covers the gap before this runs.
+    //
+    // RENDERER STRATEGY (typing-speed win #3). Try the WebGL renderer FIRST —
+    // it gives materially faster glyph render / lower paint latency and smoother
+    // scroll on desktop + modern mobile. WebGL can fail to construct (no GL
+    // context: iOS WKWebView quirks, headless, blocklisted GPUs) OR lose its
+    // context later (backgrounded mobile tab, GPU reset). In EITHER case we fall
+    // back to the Canvas renderer, which is itself robust and was the previous
+    // default. The DOM renderer (xterm built-in) is the final safety net if even
+    // Canvas can't construct.
+    const loadCanvasFallback = () => {
+      if (disposedRef.current) return
+      const t = termRef.current
+      if (!t || t.cols <= 0 || t.rows <= 0) return
+      try {
+        t.loadAddon(new CanvasAddon())
+      } catch {
+        // Canvas may be unavailable in some headless/WKWebView contexts; the DOM
+        // renderer (xterm default) is a safe fallback. Non-fatal.
+      }
+    }
     const raf = window.requestAnimationFrame(() => {
       if (disposedRef.current) return
       try {
@@ -451,13 +475,24 @@ export function useLiveTerm(
       } catch {
         /* container still 0-size — the ResizeObserver fit covers it */
       }
+      if (term.cols <= 0 || term.rows <= 0) return
       try {
-        if (term.cols > 0 && term.rows > 0) {
-          term.loadAddon(new CanvasAddon())
-        }
+        const webgl = new WebglAddon()
+        // Context loss (backgrounded tab, GPU reset): dispose the dead WebGL
+        // addon and swap to Canvas so we never leave a frozen/blank canvas.
+        webgl.onContextLoss(() => {
+          try {
+            webgl.dispose()
+          } catch {
+            /* already disposed — harmless */
+          }
+          loadCanvasFallback()
+        })
+        term.loadAddon(webgl)
       } catch {
-        // Canvas may be unavailable in some headless/WKWebView contexts; the DOM
-        // renderer (xterm default) is a safe fallback. Non-fatal.
+        // WebGL unavailable (no GL context / blocklisted GPU / WKWebView): fall
+        // back to the Canvas renderer (the previous default — robust).
+        loadCanvasFallback()
       }
     })
 
