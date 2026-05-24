@@ -16,6 +16,7 @@
 //! (start/stop/send/keys/paste/peek/archive/wake/clone) onto [`tmux`]; their
 //! handlers are merged into [`router_for`] alongside the M2 CRUD routes.
 
+pub mod activity;
 pub mod auto_actions;
 pub mod lifecycle;
 pub mod pty;
@@ -43,7 +44,7 @@ use serde_json::json;
 use crate::db;
 use crate::db::sessions::{NewSession, Session, SessionRuntime};
 use crate::error::AppError;
-use crate::state::AppState;
+use crate::state::{AppState, SessionActivity};
 
 /// Build the sessions sub-router (no auth layer — applied by `http::router`).
 pub fn router_for(state: AppState) -> Router {
@@ -135,11 +136,42 @@ pub struct SessionView {
     /// tile preview source (overview tile preview feature). Empty until the
     /// first capture; the client falls back to `preview_lines` when so.
     pub preview_ansi: Vec<String>,
+    /// Live "current activity" line derived from the latest `PreToolUse` hook
+    /// (hooks-10x): a short, emoji-prefixed label like `✎ tile.tsx` / `⚡ npm
+    /// test`. In-memory only (never persisted); `None` when the agent isn't
+    /// mid-tool (cleared on `Stop`/`SessionEnd`). The UI shows it under the
+    /// status dot while the session is working, falling back to the spinner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    /// The machine-readable activity class for [`activity`](Self::activity)
+    /// (`bash`/`edit`/`read`/`search`/`web`/`task`/`mcp`/`tool`) so the UI can
+    /// style without re-parsing the emoji. `None` whenever `activity` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_kind: Option<String>,
+    /// The latest unrecovered agent error from a `StopFailure` hook (hooks-10x):
+    /// `{type, message}` (e.g. `rate_limit` / `billing_error`). In-memory only;
+    /// cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
+    /// error badge on the card.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorInfo>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-fn view(s: &Session, rt: Option<&SessionRuntime>) -> SessionView {
+/// The `SessionView.error` shape (hooks-10x): a `StopFailure`-derived error class
+/// plus a human message. Both are size-capped and secret-conscious upstream (see
+/// [`activity::error_info`]); in-memory only, never persisted.
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorInfo {
+    /// The error class (`rate_limit`, `billing_error`, `authentication_failed`,
+    /// …), defaulting to `"error"` when Claude omitted `error_type`.
+    #[serde(rename = "type")]
+    pub error_type: String,
+    /// The human-readable error message (may be empty).
+    pub message: String,
+}
+
+fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) -> SessionView {
     let last_status = rt.map(|r| r.last_status.as_str()).unwrap_or("unknown");
     let last_capture = rt.map(|r| r.last_capture.as_str()).unwrap_or("");
     let last_capture_ansi = rt.map(|r| r.last_capture_ansi.as_str()).unwrap_or("");
@@ -161,6 +193,12 @@ fn view(s: &Session, rt: Option<&SessionRuntime>) -> SessionView {
         creator: s.creator.clone(),
         preview_lines: preview_lines(last_capture),
         preview_ansi: last_n_lines(last_capture_ansi, 20),
+        activity: act.as_ref().and_then(|a| a.activity.clone()),
+        activity_kind: act.as_ref().and_then(|a| a.activity_kind.clone()),
+        error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
+            error_type,
+            message,
+        })),
         created_at: to_rfc3339(s.created_at),
         updated_at: to_rfc3339(updated_ts),
     }
@@ -254,7 +292,7 @@ pub async fn list(state: &AppState) -> Result<Vec<SessionView>, AppError> {
         .collect();
     Ok(sessions
         .iter()
-        .map(|s| view(s, rt_map.get(&s.name)))
+        .map(|s| view(s, rt_map.get(&s.name), state.session_activity(&s.name)))
         .collect())
 }
 
@@ -263,7 +301,7 @@ pub async fn get(state: &AppState, name: &str) -> Result<SessionView, AppError> 
         .await?
         .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
     let rt = db::sessions::runtime(&state.pool, name).await?;
-    Ok(view(&s, rt.as_ref()))
+    Ok(view(&s, rt.as_ref(), state.session_activity(name)))
 }
 
 /// List archived (soft-deleted) sessions — the Archived sheet's data source.
@@ -279,7 +317,7 @@ pub async fn list_archived(state: &AppState) -> Result<Vec<SessionView>, AppErro
         .collect();
     Ok(sessions
         .iter()
-        .map(|s| view(s, rt_map.get(&s.name)))
+        .map(|s| view(s, rt_map.get(&s.name), state.session_activity(&s.name)))
         .collect())
 }
 

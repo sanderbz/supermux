@@ -31,6 +31,34 @@ const COLD_START_PTY_IDLE: Duration = Duration::from_secs(300);
 /// detector loop. The `String` status is one of the `last_status` CHECK values.
 pub type StatusUpdate = (String, u64);
 
+/// A per-session live "current activity" + last-error snapshot derived from
+/// Claude hook PAYLOADS (hooks-10x TRACK 1). Held ONLY in memory — payloads are
+/// NEVER written to disk/DB (spec §SECURITY) — and surfaced on `SessionView`.
+///
+/// * `activity` / `activity_kind` — the latest `PreToolUse`-derived label
+///   (`✎ tile.tsx`) + its class (`edit`); cleared on `Stop`/`SessionEnd`. A
+///   `PostToolUseFailure` sets a transient `✗ {tool} failed` (kind `failed`).
+/// * `error` — the latest `StopFailure` `(type, message)`; cleared on the next
+///   `UserPromptSubmit`/`SessionStart`.
+#[derive(Debug, Clone, Default)]
+pub struct SessionActivity {
+    /// The display label, e.g. `⚡ npm test` / `✎ tile.tsx`. `None` = no activity.
+    pub activity: Option<String>,
+    /// The activity class (`bash`/`edit`/`read`/`search`/`web`/`task`/`mcp`/
+    /// `tool`/`failed`) paired with `activity`; `None` whenever `activity` is.
+    pub activity_kind: Option<String>,
+    /// The latest unrecovered error `(type, message)` from a `StopFailure` hook.
+    pub error: Option<(String, String)>,
+}
+
+impl SessionActivity {
+    /// Is this snapshot entirely empty (nothing to surface)? Used to prune the
+    /// map entry after a clear so an idle session leaks no entry.
+    fn is_empty(&self) -> bool {
+        self.activity.is_none() && self.activity_kind.is_none() && self.error.is_none()
+    }
+}
+
 /// One server-sent event: `{ type, payload }` per §3.4.
 ///
 /// The full producer set (sessions/board/schedules/alerts/status/ping) lands in
@@ -168,6 +196,19 @@ pub struct AppState {
     /// stopped — otherwise a still-running loop's `or_insert_with` re-creates the
     /// very `DashMap` entries `forget_session` removed (R1-2).
     pub session_tasks: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    /// Per-session live "current activity" + last-error snapshot derived from
+    /// Claude hook PAYLOADS (hooks-10x TRACK 1). IN-MEMORY ONLY (payloads are
+    /// never persisted — spec §SECURITY); read by `SessionView`. Written by
+    /// `/api/_internal/hook` as `PreToolUse`/`StopFailure`/… land; pruned to
+    /// empty on `Stop`/`SessionEnd` and dropped on session delete/rename.
+    pub session_activity: Arc<DashMap<String, SessionActivity>>,
+    /// Per-session LIFECYCLE-forced status override (hooks-10x). A `SessionEnd`
+    /// hook forces `Stopped`; the detector loop reads this each tick and
+    /// `force`s it into its classifier (then clears it), so the lifecycle signal
+    /// — which the capture classifier cannot infer — sticks instead of being
+    /// re-derived to `active` on the next tick. `SessionStart` clears any pending
+    /// override so the detector re-evaluates freely.
+    pub forced_status: Arc<DashMap<String, Status>>,
 }
 
 impl AppState {
@@ -192,6 +233,8 @@ impl AppState {
             sse_tx,
             pty,
             session_tasks: Arc::new(DashMap::new()),
+            session_activity: Arc::new(DashMap::new()),
+            forced_status: Arc::new(DashMap::new()),
         }
     }
 
@@ -260,6 +303,92 @@ impl AppState {
     /// the empty default (non-decisive, so the bank/heartbeat decide).
     pub fn turn_state(&self, name: &str) -> TurnState {
         self.last_hook.get(name).map(|e| *e.value()).unwrap_or_default()
+    }
+
+    // ── hooks-10x: live activity + error (IN-MEMORY ONLY) ─────────────────────
+
+    /// The current in-memory [`SessionActivity`] for `name` (hooks-10x), or
+    /// `None` when the session has no activity/error to surface. Read by
+    /// `SessionView`. Cheap clone of a tiny struct.
+    pub fn session_activity(&self, name: &str) -> Option<SessionActivity> {
+        self.session_activity.get(name).map(|e| e.value().clone())
+    }
+
+    /// Mutate `name`'s activity snapshot with `f`, then prune the entry if it is
+    /// empty. Returns `true` IFF the snapshot actually changed — the endpoint
+    /// broadcasts a `sessions` delta only on a real change (spec §4: "keep it
+    /// cheap, only on change"). The whole op is a single short critical section.
+    fn mutate_activity(&self, name: &str, f: impl FnOnce(&mut SessionActivity)) -> bool {
+        let mut entry = self
+            .session_activity
+            .entry(name.to_string())
+            .or_default();
+        let before = entry.value().clone();
+        f(entry.value_mut());
+        let changed =
+            entry.activity != before.activity || entry.activity_kind != before.activity_kind
+                || entry.error != before.error;
+        let empty = entry.is_empty();
+        drop(entry);
+        if empty {
+            self.session_activity.remove(name);
+        }
+        changed
+    }
+
+    /// Set `name`'s live activity label + kind (from a `PreToolUse` payload).
+    /// Returns whether it changed (for the change-only SSE broadcast).
+    pub fn set_activity(&self, name: &str, label: String, kind: String) -> bool {
+        self.mutate_activity(name, |a| {
+            a.activity = Some(label);
+            a.activity_kind = Some(kind);
+        })
+    }
+
+    /// Clear `name`'s live activity (on `Stop`/`SessionEnd`). The error (if any)
+    /// is left untouched. Returns whether it changed.
+    pub fn clear_activity(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.activity = None;
+            a.activity_kind = None;
+        })
+    }
+
+    /// Set `name`'s last error `(type, message)` (from a `StopFailure` payload).
+    /// Returns whether it changed.
+    pub fn set_error(&self, name: &str, error_type: String, message: String) -> bool {
+        self.mutate_activity(name, |a| {
+            a.error = Some((error_type, message));
+        })
+    }
+
+    /// Clear `name`'s last error (on the next `UserPromptSubmit`/`SessionStart`).
+    /// Returns whether it changed.
+    pub fn clear_error(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.error = None;
+        })
+    }
+
+    /// Force `name`'s status via the lifecycle override (hooks-10x): the detector
+    /// loop reads + applies this on its next tick (then clears it), so a
+    /// `SessionEnd`-driven `Stopped` sticks instead of being re-derived. Wakes
+    /// the loop so the change surfaces within ~1s, not at the next tier edge.
+    pub fn set_forced_status(&self, name: &str, status: Status) {
+        self.forced_status.insert(name.to_string(), status);
+        self.wake_detector(name);
+    }
+
+    /// Take (consume) any pending lifecycle-forced status for `name`. Called by
+    /// the detector loop each tick; `None` when nothing is pending.
+    pub fn take_forced_status(&self, name: &str) -> Option<Status> {
+        self.forced_status.remove(name).map(|(_, s)| s)
+    }
+
+    /// Clear any pending lifecycle-forced status (e.g. on `SessionStart`, so a
+    /// stale `Stopped` doesn't override the re-evaluating detector).
+    pub fn clear_forced_status(&self, name: &str) {
+        self.forced_status.remove(name);
     }
 
     /// Record `name`'s current status for the adaptive-cadence hot-set
@@ -353,6 +482,8 @@ impl AppState {
         self.detector_wake.remove(name);
         self.pty_heartbeat.remove(name);
         self.session_tasks.remove(name);
+        self.session_activity.remove(name);
+        self.forced_status.remove(name);
         self.cadence_recency
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -383,6 +514,12 @@ impl AppState {
         }
         if let Some((_, v)) = self.session_tasks.remove(old) {
             self.session_tasks.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.session_activity.remove(old) {
+            self.session_activity.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.forced_status.remove(old) {
+            self.forced_status.insert(new.to_string(), v);
         }
         {
             let mut rec = self.cadence_recency.lock().unwrap_or_else(|e| e.into_inner());

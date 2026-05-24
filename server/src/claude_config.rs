@@ -40,13 +40,20 @@ const MARKER: &str = "supermux-hook";
 /// before any tool call — so the turn state machine in
 /// [`crate::sessions::status`] can mark the session `Active` for the whole turn,
 /// not just while a tool is running (the "busy while thinking" fix).
-const EVENTS: [(&str, &str); 6] = [
+/// `SessionStart`/`SessionEnd`/`StopFailure` (hooks-10x TRACK 1) extend the set
+/// for the lifecycle + error-badge features: `SessionStart` clears a stale
+/// stopped/error, `SessionEnd` forces `Stopped` + clears activity, `StopFailure`
+/// records the agent error (`rate_limit`/`billing_error`/…).
+const EVENTS: [(&str, &str); 9] = [
     ("UserPromptSubmit", "user_prompt"),
     ("PreToolUse", "pre_tool"),
     ("PostToolUse", "post_tool"),
     ("Notification", "notification"),
     ("Stop", "stop"),
     ("SubagentStop", "subagent_stop"),
+    ("SessionStart", "session_start"),
+    ("SessionEnd", "session_end"),
+    ("StopFailure", "stop_failure"),
 ];
 
 /// Install (or idempotently refresh) supermux's Claude hooks for a session.
@@ -161,16 +168,35 @@ fn supermux_entry(event_token: &str) -> Value {
     })
 }
 
-/// The shell command Claude runs for an event. The leading `: supermux-hook;` is a
-/// no-op that embeds the [`MARKER`] for idempotent detection without affecting
-/// execution. Uses `$SUPERMUX_HOOK_TOKEN` (the per-session secret, NOT the dashboard
-/// `$SUPERMUX_TOKEN`) and `$SUPERMUX_URL` (so a reconfigured bind doesn't break hooks).
+/// The shell command Claude runs for an event (hooks-10x v2). The leading
+/// `: supermux-hook;` is a no-op that embeds the [`MARKER`] for idempotent
+/// detection without affecting execution.
+///
+/// **What's forwarded.** Claude delivers the event's rich JSON on the hook's
+/// STDIN. We slurp a SIZE-CAPPED slice (`head -c 16384` — 16KB easily covers
+/// `tool_name`/`tool_input.command`/`description`/`file_path`/`pattern`/`message`/
+/// `error_type`; the only big field, Edit/Write `content`, is unneeded and may be
+/// truncated) and splice it in as the `payload` of the POST body. If STDIN was
+/// empty we substitute `{}` so the body stays valid JSON
+/// (`{"session":…,"event":…,"payload":{}}`). A truncation can leave `$D`
+/// syntactically invalid JSON — the server parses `payload` LENIENTLY (every
+/// field optional; a parse failure is a no-op), so a clipped tail never trips a
+/// tool call.
+///
+/// **Robustness.** `--max-time 1` + `|| true` (and `blocking:false` upstream)
+/// guarantee a down/slow supermux-server never stalls a Claude tool call.
+///
+/// **Security (§6.5).** Uses `$SUPERMUX_HOOK_TOKEN` (the per-session secret, NOT
+/// the dashboard `$SUPERMUX_TOKEN`) and `$SUPERMUX_URL` (so a reconfigured bind
+/// doesn't break hooks). The payload is held in-memory only server-side and is
+/// never persisted.
 fn hook_command(event_token: &str) -> String {
     format!(
-        ": {MARKER}; curl -fsS --max-time 1 -X POST \
+        ": {MARKER}; D=$(head -c 16384); [ -z \"$D\" ] && D='{{}}'; \
+         curl -fsS --max-time 1 -X POST \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
          \"$SUPERMUX_URL/api/_internal/hook\" \
-         -d \"{{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"{event_token}\\\"}}\" || true"
+         -d \"{{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"{event_token}\\\",\\\"payload\\\":$D}}\" || true"
     )
 }
 
@@ -220,6 +246,11 @@ mod tests {
             assert!(cmd.contains("--max-time 1"), "{event} must bound curl");
             assert!(cmd.contains("|| true"), "{event} must never fail the tool call");
             assert!(cmd.contains(&format!("\\\"event\\\":\\\"{token}\\\"")), "{event} token");
+            // hooks-10x v2: forward Claude's STDIN JSON as `payload`, size-capped,
+            // defaulting to `{}` when empty so the body stays valid JSON.
+            assert!(cmd.contains("head -c 16384"), "{event} must size-cap the payload");
+            assert!(cmd.contains("D='{}'"), "{event} must default empty stdin to {{}}");
+            assert!(cmd.contains("\\\"payload\\\":$D"), "{event} must splice the payload");
             assert_eq!(arr[0]["hooks"][0]["blocking"], json!(false));
         }
     }
