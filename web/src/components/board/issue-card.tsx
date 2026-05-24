@@ -52,6 +52,24 @@ function dueLabel(due: string): { text: string; overdue: boolean } {
   return { text, overdue: diffDays < 0 }
 }
 
+/** The card's heading, now that title is optional. Prefer the trimmed title; if
+ *  it's empty, fall back to the start of the description (its first non-empty
+ *  line, trimmed) — which reads AS the title (same styling). If BOTH are empty,
+ *  fall back to the issue id, styled muted. The `line-clamp-3` on the span does
+ *  the truncation, so we don't slice here. */
+function displayHeading(issue: BoardIssue): { text: string; muted: boolean } {
+  const title = issue.title.trim()
+  if (title) return { text: title, muted: false }
+
+  const descLine = issue.desc
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0)
+  if (descLine) return { text: descLine, muted: false }
+
+  return { text: issue.id, muted: true }
+}
+
 /** Compact acceptance progress glyph — "▣▣▢ 2/3" (§C.4.6). Renders one filled
  *  square per done item, one hollow square per remaining, then the count. Caps
  *  the drawn squares at a small ceiling so a long checklist stays a glance, not
@@ -295,6 +313,12 @@ export function IssueCard({
   const hasMetaRow =
     !!issue.session || issue.tags.length > 0 || !!due
 
+  // The card heading. Title is now optional: prefer the title, else fall back to
+  // the start of the description (first non-empty line, trimmed), else a muted
+  // placeholder of the issue id. The description fallback reads AS the title (same
+  // class); only the id fallback is styled muted.
+  const heading = displayHeading(issue)
+
   // A calm PR/commit indicator for terminal cards (review/done) that shipped
   // something — a glance, not an action. Tapping the card opens the sheet where
   // the full links section lives.
@@ -314,7 +338,7 @@ export function IssueCard({
       {...dragListeners}
       role="button"
       tabIndex={0}
-      aria-label={issue.title}
+      aria-label={heading.text}
       layout={!reduce}
       layoutId={reduce ? undefined : `issue-${issue.id}`}
       transition={springs.smooth}
@@ -353,8 +377,13 @@ export function IssueCard({
               : 'text-muted-foreground',
           )}
         />
-        <span className="line-clamp-3 flex-1 text-sm font-medium leading-snug">
-          {issue.title}
+        <span
+          className={cn(
+            'line-clamp-3 flex-1 text-sm font-medium leading-snug',
+            heading.muted && 'font-mono text-muted-foreground',
+          )}
+        >
+          {heading.text}
         </span>
 
         {/* Top-right cluster — state-aware. The hover/coarse-pointer action set

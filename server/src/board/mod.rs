@@ -350,9 +350,13 @@ async fn create_handler(
     State(state): State<AppState>,
     Json(input): Json<CreateInput>,
 ) -> Result<impl IntoResponse, AppError> {
+    // An issue needs a title OR a non-empty description — reject only when BOTH
+    // are empty. An empty title is stored as the empty string (never NULL); the
+    // card surfaces the description (or the id) as its heading instead.
     let title = input.title.trim().to_string();
-    if title.is_empty() {
-        return Err(AppError::BadRequest("title is required".into()));
+    let desc = input.desc.clone().unwrap_or_default();
+    if title.is_empty() && desc.trim().is_empty() {
+        return Err(AppError::BadRequest("add a title or a description".into()));
     }
     let status = input.status.unwrap_or_else(|| "todo".into());
     if !valid_status(&state, &status).await? {
@@ -390,7 +394,7 @@ async fn create_handler(
     let new = NewIssue {
         id: id.clone(),
         title,
-        desc: input.desc.unwrap_or_default(),
+        desc,
         status,
         session,
         creator: input.creator.unwrap_or_default(),

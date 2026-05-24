@@ -167,9 +167,12 @@ function IssueDetailForm({
   }
 
   async function save() {
+    // Title is optional — block save only when BOTH title and description are
+    // empty (an issue must carry at least one of them). An empty title is saved
+    // as `''`; the card then surfaces the description (or the id) as its heading.
     const trimmed = title.trim()
-    if (!trimmed) {
-      setError('A title is required.')
+    if (!trimmed && !desc.trim()) {
+      setError('Add a title or description.')
       return
     }
     setBusy(true)
@@ -320,16 +323,21 @@ function IssueDetailForm({
           </div>
         )}
 
-        <Field label="Title">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-
         <Field label="Description">
           <textarea
             value={desc}
+            placeholder="What needs doing?"
             onChange={(e) => setDesc(e.target.value)}
             rows={4}
             className="flex w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          />
+        </Field>
+
+        <Field label="Title (optional)">
+          <Input
+            value={title}
+            placeholder="Short summary"
+            onChange={(e) => setTitle(e.target.value)}
           />
         </Field>
 

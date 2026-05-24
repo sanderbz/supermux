@@ -93,18 +93,24 @@ function NewIssueForm({
     setTagInput('')
   }
 
+  // Title is optional — an issue needs a title OR a description. We block submit
+  // only when BOTH are empty; an empty title is sent as `''` (the card then
+  // surfaces the description, or the id, as its heading).
+  const trimmedTitle = title.trim()
+  const trimmedDesc = desc.trim()
+  const canSubmit = Boolean(trimmedTitle || trimmedDesc)
+
   async function submit() {
-    const trimmed = title.trim()
-    if (!trimmed) {
-      setError('A title is required.')
+    if (!canSubmit) {
+      setError('Add a title or description.')
       return
     }
     setSaving(true)
     setError(null)
     try {
       await onCreate({
-        title: trimmed,
-        desc: desc.trim() || undefined,
+        title: trimmedTitle,
+        desc: trimmedDesc || undefined,
         status,
         session: session || null,
         due: due || null,
@@ -127,25 +133,28 @@ function NewIssueForm({
       </DialogHeader>
 
       <div className="flex flex-col gap-4">
-        <Field label="Title">
-          <Input
+        <Field label="Description">
+          <textarea
             autoFocus
-            value={title}
+            value={desc}
             placeholder="What needs doing?"
+            onChange={(e) => setDesc(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit()
+            }}
+            rows={3}
+            className="flex w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          />
+        </Field>
+
+        <Field label="Title (optional)">
+          <Input
+            value={title}
+            placeholder="Short summary"
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit()
             }}
-          />
-        </Field>
-
-        <Field label="Description">
-          <textarea
-            value={desc}
-            placeholder="Add detail (optional)"
-            onChange={(e) => setDesc(e.target.value)}
-            rows={3}
-            className="flex w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           />
         </Field>
 
@@ -237,7 +246,7 @@ function NewIssueForm({
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={() => void submit()} disabled={saving}>
+        <Button onClick={() => void submit()} disabled={saving || !canSubmit}>
           {saving ? 'Adding…' : 'Add issue'}
         </Button>
       </DialogFooter>
