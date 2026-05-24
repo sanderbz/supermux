@@ -44,6 +44,12 @@ export type SessionStatus =
   | 'stopped'
   | 'error'
 
+/** The Claude Code permission MODE (mode-shift). Parsed from the persistent
+ *  status bar server-side and surfaced as `ApiSession.mode`. Three are runtime-
+ *  cyclable (Shift+Tab: `normal → accept_edits → plan`); `bypass` is launch-only
+ *  and requires a clean relaunch. Matches the backend `Mode` snake_case wire. */
+export type SessionMode = 'normal' | 'accept_edits' | 'plan' | 'bypass'
+
 /** Per-tile summary. SSE `sessions` events use this same shape (deltas). §3.4 */
 export interface SessionSummary {
   name: string
@@ -56,6 +62,9 @@ export interface SessionSummary {
    *  preview source. Empty until the first capture; the UI falls back to
    *  `preview_lines` (plain text) when absent. */
   preview_ansi?: string[]
+  /** Claude permission mode parsed from the status bar (mode-shift). Absent until
+   *  the first capture; the ⋯ menu defaults the live-checked radio to `normal`. */
+  mode?: SessionMode
   updated_at: string
 }
 
@@ -191,6 +200,11 @@ export interface ApiSession {
    *  preview source. Empty until the first capture; the UI falls back to
    *  `preview_lines` (plain) when absent. */
   preview_ansi?: string[]
+  /** Claude permission mode parsed from the persistent status bar (mode-shift):
+   *  `normal` / `accept_edits` / `plan` / `bypass`. Absent until the first
+   *  capture. Arrives on both the `GET /api/sessions` list and the `sessions`
+   *  SSE delta (the ⋯ mode menu live-checks the matching radio). */
+  mode?: SessionMode
   updated_at?: string
   /** Claude Code chat title / auto-summary (falls back to `name` in the UI). */
   task_summary?: string
@@ -245,6 +259,18 @@ export interface ResumableConversation {
   updated_at: string
   /** Count of user + assistant messages (non-sidechain). */
   message_count: number
+}
+
+/** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode
+ *  ACTUALLY in effect after the op (the UI reflects truth, never an optimistic
+ *  guess). `converged` is false when the Shift+Tab cycle couldn't reach the
+ *  requested target within the retry cap; `relaunched` is true for the bypass
+ *  enter/leave path (so the UI can confirm the session restarted). */
+export interface SetModeResult {
+  name: string
+  mode: SessionMode
+  converged: boolean
+  relaunched: boolean
 }
 
 /** Body for `POST /api/sessions` (§5.1). `command` carries the initial prompt
@@ -403,6 +429,18 @@ export const sessionsApi = {
     sessReq(`/api/sessions/${encodeURIComponent(name)}/resume`, {
       method: 'POST',
       body: JSON.stringify({ id }),
+    }),
+
+  /** `POST /api/sessions/{name}/mode {mode}` — switch the Claude permission mode
+   *  (mode-shift). `normal`/`accept_edits`/`plan` cycle in place via targeted
+   *  Shift+Tab (the server re-reads the capture, capped retries); `bypass` does a
+   *  clean relaunch (stop → add flag → resume). Resolves to the mode ACTUALLY in
+   *  effect after the op so the UI reflects truth even if the cycle didn't
+   *  converge. */
+  setMode: (name: string, mode: SessionMode): Promise<SetModeResult> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
     }),
 
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab

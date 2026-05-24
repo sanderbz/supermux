@@ -270,6 +270,7 @@ export function MobileFocus() {
             status={current.status}
             activity={current.activity}
             error={current.error}
+            mode={current.mode}
             onBack={goOverviewMorph}
             // Submit Enter (`\r`) to the focused terminal from the top bar —
             // routes through the SAME imperative handle every key path uses

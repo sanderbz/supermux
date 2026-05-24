@@ -135,6 +135,13 @@ export const CONFIRM = {
     confirm: 'Overwrite',
     cancel: 'Cancel',
   },
+  // mode-shift: bypass is launch-only, so switching to it RESTARTS the session.
+  switchToBypass: {
+    title: 'Switch to Bypass permissions?',
+    body: 'Bypass mode is launch-only, so the session restarts cleanly — it resumes the same conversation. While bypassed, the agent skips every permission prompt.',
+    confirm: 'Restart in Bypass',
+    cancel: 'Cancel',
+  },
 } satisfies Record<string, ConfirmCopy>
 
 // ── Connection / status banner ────────────────────────────────────────────────

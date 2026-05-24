@@ -413,6 +413,14 @@ pub async fn tick(
                 "preview_ansi".into(),
                 Value::Array(tail_ansi.iter().cloned().map(Value::String).collect()),
             );
+            // mode-shift: the permission mode is parsed from the SAME capture, so
+            // carry it on the delta whenever the tail changes — the ⋯ menu's
+            // live-checked radio then tracks the TRUE mode (e.g. when the user
+            // cycles via Shift+Tab in the terminal directly) with no extra capture.
+            item.insert(
+                "mode".into(),
+                Value::String(status::parse_mode(&capture).as_str().to_string()),
+            );
             *last_tail = Some(tail);
         }
         broadcast(state, "sessions", json!({ "delta": [Value::Object(item)] }));

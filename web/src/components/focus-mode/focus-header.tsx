@@ -20,8 +20,10 @@ import {
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import type { SessionStatus } from '@/lib/api'
+import type { SessionStatus, SessionMode } from '@/lib/api'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
+import { ModeMenu } from '@/components/focus-mode/mode-menu'
+import { modeChipLabel } from '@/components/focus-mode/mode-labels'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import {
   ActivityLine,
@@ -36,6 +38,31 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+
+// ── ModeChip (mode-shift) ─────────────────────────────────────────────────────
+//
+// A small glanceable pill next to the title showing the current permission mode
+// (zero-click state visibility — the no-extra-clicks principle). Only rendered
+// for the non-default modes (Normal needs no chip). Bypass uses the calm
+// status-error orange (matches <ErrorBadge>); plan/accept-edits use a quiet
+// secondary tint so they read as informational, not alarming.
+
+function ModeChip({ mode }: { mode: SessionMode }) {
+  const isBypass = mode === 'bypass'
+  return (
+    <span
+      className={cn(
+        'inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none',
+        isBypass
+          ? 'bg-status-error/15 text-status-error'
+          : 'bg-secondary text-muted-foreground',
+      )}
+      title={`Permission mode: ${modeChipLabel(mode)}`}
+    >
+      {modeChipLabel(mode)}
+    </span>
+  )
+}
 
 // ── DesktopFocusHeader (M14, TECH_PLAN §4.4 desktop) ──────────────────────────
 //
@@ -57,6 +84,9 @@ export interface DesktopFocusHeaderProps {
   activity?: string
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
+  /** Live Claude permission mode (mode-shift) — drives the ⋯ menu's checked radio
+   *  and the glanceable title chip. Defaults to `normal` when unknown. */
+  mode?: SessionMode
   /** Detach (⌘D): return to overview WITHOUT stopping the session (§4.4). */
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave (§4.4.3). */
@@ -69,6 +99,7 @@ export function DesktopFocusHeader({
   status,
   activity,
   error,
+  mode,
   onDetach,
   onStop,
 }: DesktopFocusHeaderProps) {
@@ -92,6 +123,9 @@ export function DesktopFocusHeader({
         <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
           {title || name}
         </span>
+        {/* Glanceable mode chip (mode-shift) — zero-click state visibility next to
+            the title. Only shown for the non-default modes so Normal stays clean. */}
+        {mode && mode !== 'normal' && <ModeChip mode={mode} />}
         {error && <ErrorBadge error={error} />}
         {/* While the agent is working with a live activity label, show the
             activity line in place of the static status word (the live "what is
@@ -111,6 +145,10 @@ export function DesktopFocusHeader({
       </span>
 
       <div className="flex shrink-0 items-center gap-1">
+        {/* ⋯ permission-mode menu (mode-shift) — live-checked radios from `mode`;
+            cycle modes via Shift+Tab, Bypass confirms + relaunches. */}
+        <ModeMenu name={name} mode={mode} />
+
         <Tooltip>
           <TooltipTrigger asChild>
             <motion.button
@@ -176,6 +214,8 @@ export interface FocusHeaderProps {
   activity?: string
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
+  /** Live Claude permission mode (mode-shift) — drives the ⋯ menu + the chip. */
+  mode?: SessionMode
   onBack: () => void
   /** Send Enter (`\r`) to the focused terminal (mobile-only). The header button
    *  lets you submit a prompt WITHOUT the soft keyboard's return key — handy when
@@ -198,6 +238,7 @@ export function FocusHeader({
   status,
   activity,
   error,
+  mode,
   onBack,
   onEnter,
   className,
@@ -263,6 +304,8 @@ export function FocusHeader({
           >
             {truncateName(name)}
           </h1>
+          {/* Glanceable mode chip (mode-shift) — non-default modes only. */}
+          {mode && mode !== 'normal' && <ModeChip mode={mode} />}
           {error && <ErrorBadge error={error} />}
         </div>
         {/* Live activity sub-line (hooks-10x) — sits under the name while the
@@ -301,6 +344,11 @@ export function FocusHeader({
             <CornerDownLeft className="size-5" />
           </motion.button>
         )}
+
+        {/* ⋯ permission-mode menu (mode-shift) — live-checked radios; cycle modes
+            via Shift+Tab, Bypass confirms + relaunches. Sits left of Claude tools
+            so the title's right cluster stays a single tap-row (≥44pt each). */}
+        <ModeMenu name={name} mode={mode} className="size-11" />
 
         {/* R5 removed the redundant "···" overflow (it duplicated the session
             pill). This slot carries the Claude tools manager icon. */}
