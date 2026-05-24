@@ -78,13 +78,15 @@ export interface TileLiveTerminalProps {
  *  falls back to the original connect path — the polish-pass crossfade covers
  *  that case.
  *
- *  SCROLL-ON-OPEN FIX. The hover live-peek reuses the SAME <LiveTerminal>, so it
- *  inherits the cover-until-bottom reveal: <LiveTerminal>'s xterm container
- *  stays opacity-0 until the hook has pinned the viewport to the bottom (on the
- *  server's `replay_done`, or right after the single-rAF prewarm hydrate, or a
- *  short fallback). The peek therefore appears already-at-bottom — never showing
- *  the replay snapshot scroll down. The opacity gate composes cleanly with this
- *  tile's outer crossfade-over-static-preview (two independent fades). */
+ *  SCROLL-ON-OPEN FIX (cached-tail crossfade). The hover live-peek reuses the
+ *  SAME <LiveTerminal>, which inherits the cover-until-bottom reveal: its xterm
+ *  stays opacity-0 until the hook pins the viewport to the bottom (`ready`).
+ *  This tile ALREADY owns a static→live crossfade — its <TailPreview> sits
+ *  behind the live <LivePeekLayer>, which fades in on `onFirstFrame`. So we pass
+ *  `suppressCachedTail` to tell <LiveTerminal> NOT to render its own cached-tail
+ *  overlay (that would stack TWO covers). With it suppressed the peek's xterm
+ *  reveals as soon as it has content — the tile's single static→live crossfade
+ *  is the one coherent transition (no inner blank, no double cover). */
 export function TileLiveTerminal({ name, onFirstFrame, onReady }: TileLiveTerminalProps) {
   return (
     <div
@@ -97,6 +99,7 @@ export function TileLiveTerminal({ name, onFirstFrame, onReady }: TileLiveTermin
         allowProgrammaticInput
         fontSize={ZOOM_FONT_SIZE}
         prewarmSeed
+        suppressCachedTail
         className="rounded-none"
         onFirstFrame={onFirstFrame}
         onReady={onReady}
