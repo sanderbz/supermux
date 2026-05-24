@@ -500,13 +500,17 @@ function BoardColumn({
           <Plus className="size-4" />
         </button>
       </header>
-      {/* `touch-action: pan-y` (Tailwind `touch-pan-y`) makes the browser's
-          intent explicit: vertical drags scroll this list natively, while the
-          TouchSensor's long-press still claims a deliberate press-and-hold for a
-          card drag. This is the standard mobile drag-vs-scroll pairing. */}
+      {/* `touch-action: pan-x pan-y` (Tailwind `touch-pan-x touch-pan-y`) permits
+          BOTH native scroll axes on this list: a vertical swipe scrolls the
+          column (`overflow-y-auto`), and a horizontal swipe — which this list
+          can't consume — bubbles up to the board's outer `overflow-x-auto` so
+          columns scroll sideways on mobile (the regression: `pan-y` alone
+          trapped horizontal swipes that started on a column). The TouchSensor's
+          250ms long-press still claims a deliberate press-and-hold for a card
+          drag, so drag-vs-scroll from 7bf3e7f stays intact. */}
       <div
         ref={setNodeRef}
-        className="flex flex-1 touch-pan-y flex-col gap-2 overflow-y-auto px-2 pb-2 [scrollbar-width:thin]"
+        className="flex flex-1 touch-pan-x touch-pan-y flex-col gap-2 overflow-y-auto px-2 pb-2 [scrollbar-width:thin]"
       >
         {list.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-2 py-6 text-center text-xs text-muted-foreground/60">
