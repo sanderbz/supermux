@@ -102,6 +102,12 @@ export interface BoardIssue {
    *  card with `session !== null` but `session_live === false` shows
    *  "session archived — reassign?" instead of a confidently-wrong live dot. */
   session_live: boolean
+  /** BM1 (§4): the latest "needs your input" question the agent posted via the
+   *  `needs-input` hook — surfaced on the amber Doing card so the human sees what
+   *  the agent is asking without opening the session. `null`/absent when the card
+   *  isn't awaiting input or the backend hasn't shipped the field yet (the card
+   *  then falls back to the most recent agent comment). */
+  awaiting_question?: string | null
 }
 
 /** The claim response (S3): the full issue PLUS the dispatch outcome. When
@@ -132,19 +138,27 @@ export interface BoardStatus {
   is_builtin: number
 }
 
-/** Fields a NewIssueDialog can set. `session: null` = unassigned. */
+/** Fields the description-first composer can set (BM2 §2.1 / §4). `description`
+ *  is the only required field; everything else lives behind "More". `owner_type`
+ *  is gone — the server always treats cards as agent tasks now (§4). `acceptance`
+ *  is one criterion per line (the server splits + creates the checklist items).
+ *  `session: null`/omitted = unassigned (a new session is spawned on Start). */
 export interface NewBoardIssue {
-  title: string
-  desc?: string
+  /** The required, description-first field. */
+  description: string
+  title?: string
   status?: string
   session?: string | null
   due?: string | null
   due_time?: string | null
-  owner_type?: 'human' | 'agent'
   tags?: string[]
+  /** Acceptance criteria, one per line (the server creates the checklist). */
+  acceptance?: string[]
 }
 
-/** A partial patch. Only the keys present are written (M6 PATCH semantics). */
+/** A partial patch. Only the keys present are written (M6 PATCH semantics).
+ *  `owner_type` is intentionally absent — BM2 drops the human/agent distinction
+ *  (every card is an agent task). */
 export interface BoardIssuePatch {
   title?: string
   desc?: string
@@ -152,7 +166,6 @@ export interface BoardIssuePatch {
   session?: string | null
   due?: string | null
   due_time?: string | null
-  owner_type?: 'human' | 'agent'
   pinned?: boolean
   pos?: number
   tags?: string[]
@@ -212,7 +225,10 @@ export const boardApi = {
   /** `GET /api/board/statuses` — the column config, in display order. */
   statuses: (): Promise<BoardStatus[]> => boardRequest('/api/board/statuses'),
 
-  /** `POST /api/board` — create an issue. */
+  /** `POST /api/board` — create an issue (BM2 §4: description-first, no
+   *  `owner_type`; the server always treats it as an agent task). The body maps
+   *  the composer fields straight to the frozen contract
+   *  `{ description, title?, session?, tags?, acceptance?, due? }`. */
   create: (input: NewBoardIssue): Promise<BoardIssue> =>
     boardRequest('/api/board', {
       method: 'POST',
@@ -262,6 +278,32 @@ export const boardApi = {
     boardRequest(`/api/board/${encodeURIComponent(id)}/start`, {
       method: 'POST',
       body: JSON.stringify(opts),
+    }),
+
+  /** `POST /api/board/{id}/reply` — THE headline UX (BM2 §2.4 / §4). Delivers
+   *  `text` straight into the card's linked session (`send_text` + Enter,
+   *  auto-waking a stopped session). Clears the card's `awaiting_input` state so
+   *  the amber "Needs your input" badge resolves. 400 when the card has no linked
+   *  live session. Returns `{ ok: true }`. */
+  reply: (id: string, text: string): Promise<{ ok: boolean }> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+
+  /** `POST /api/board/{id}/discard` — soft-archive a card (BM2 §2.6 / §4). Data
+   *  is preserved; the board list excludes discarded cards by default. Pair with
+   *  {@link boardApi.restore} for the undo toast. Returns ok. */
+  discard: (id: string): Promise<{ ok: boolean }> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/discard`, {
+      method: 'POST',
+    }),
+
+  /** `POST /api/board/{id}/restore` — un-discard a card (BM2 §2.6). Powers the
+   *  "Undo" on the discard toast, bringing the card back to the board. */
+  restore: (id: string): Promise<{ ok: boolean }> =>
+    boardRequest(`/api/board/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
     }),
 
   /** Undo a just-claimed auto-send: retract the enqueued steer before the agent

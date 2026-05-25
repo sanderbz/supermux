@@ -1,0 +1,649 @@
+import * as React from 'react'
+import {
+  Calendar,
+  Check,
+  CornerDownLeft,
+  GitPullRequest,
+  Loader2,
+  Maximize2,
+  MoreHorizontal,
+  Play,
+  Send,
+  Trash2,
+} from 'lucide-react'
+import { AnimatePresence, motion, useMotionValue, useReducedMotion, useTransform } from 'framer-motion'
+import type {
+  DraggableAttributes,
+  DraggableSyntheticListeners,
+} from '@dnd-kit/core'
+
+import { cn } from '@/lib/utils'
+import { springs } from '@/lib/springs'
+import { type BoardIssue } from '@/lib/api'
+import { useLiveSession } from '@/hooks/use-board'
+import { useMediaQuery } from '@/hooks/use-media-query'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
+import { TailPreview } from '@/components/session-tile/tail-preview'
+
+/** A human-readable, short due-date label ("May 24", "Today", "Overdue"). */
+function dueLabel(due: string): { text: string; overdue: boolean } {
+  const parts = due.split('-').map(Number)
+  if (parts.length !== 3 || parts.some(Number.isNaN)) {
+    return { text: due, overdue: false }
+  }
+  const [y, m, d] = parts
+  const target = new Date(y, m - 1, d)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const diffDays = Math.round((target.getTime() - today.getTime()) / 86_400_000)
+  const text =
+    diffDays === 0
+      ? 'Today'
+      : diffDays === 1
+        ? 'Tomorrow'
+        : target.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return { text, overdue: diffDays < 0 }
+}
+
+/** The card heading: prefer the trimmed title; else the first non-empty line of
+ *  the description (reads AS a title); else a muted id placeholder. */
+function displayHeading(issue: BoardIssue): { text: string; muted: boolean } {
+  const title = issue.title.trim()
+  if (title) return { text: title, muted: false }
+  const descLine = issue.desc
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0)
+  if (descLine) return { text: descLine, muted: false }
+  return { text: issue.id, muted: true }
+}
+
+/** Compact acceptance progress pill — "▣▣▢ 2/3" (§6 BM2). */
+function AcceptancePill({ acceptance }: { acceptance: BoardIssue['acceptance'] }) {
+  const total = acceptance.length
+  const done = acceptance.reduce((n, a) => n + (a.done ? 1 : 0), 0)
+  const allDone = done === total && total > 0
+  const MAX_SQUARES = 6
+  const squares = total <= MAX_SQUARES ? acceptance.map((a) => !!a.done) : null
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums',
+        allDone
+          ? 'bg-status-ready/15 text-status-ready'
+          : 'bg-muted text-muted-foreground',
+      )}
+      title={`${done} of ${total} acceptance items done`}
+    >
+      {squares && (
+        <span aria-hidden className="font-mono leading-none tracking-tight">
+          {squares.map((d) => (d ? '▣' : '▢')).join('')}
+        </span>
+      )}
+      <span>
+        {done}/{total}
+      </span>
+    </span>
+  )
+}
+
+/** The latest "needs your input" question. Prefers the dedicated payload field
+ *  (BM1 §4 `awaiting_question`); falls back to the most-recent agent comment so
+ *  the question still shows before the backend ships the field. */
+function awaitingQuestion(issue: BoardIssue): string | null {
+  if (issue.awaiting_question && issue.awaiting_question.trim()) {
+    return issue.awaiting_question.trim()
+  }
+  for (let i = issue.comments.length - 1; i >= 0; i--) {
+    const c = issue.comments[i]
+    if (c.author.startsWith('agent:') && c.body.trim()) return c.body.trim()
+  }
+  return null
+}
+
+export interface BoardCardProps {
+  issue: BoardIssue
+  /** The lane this card lives in (drives the affordances). */
+  lane: 'todo' | 'doing' | 'done'
+  /** Open the editor sheet/popover (To do cards). */
+  onOpen: (issue: BoardIssue) => void
+  /** Morph to the focus terminal for the linked session (Doing cards). */
+  onFocus: (issue: BoardIssue) => void
+  /** ▶ Start the agent on a To do card (spawn-by-default). */
+  onStart: (issue: BoardIssue) => void
+  /** Send an inline reply into the agent (Doing cards). Rejects on failure. */
+  onReply: (issue: BoardIssue, text: string) => Promise<void>
+  /** Discard the card (swipe-left / ⋯). The route shows the undo toast. */
+  onDiscard: (issue: BoardIssue) => void
+  /** True while this card is the drag source (dims the placeholder slot). */
+  isDragging?: boolean
+  /** Disable swipe-to-discard while a drag is armed (avoids gesture conflict). */
+  draggable?: boolean
+  dragAttributes?: DraggableAttributes
+  dragListeners?: DraggableSyntheticListeners
+}
+
+const SWIPE_THRESHOLD = 96
+
+/**
+ * A board card, redesigned for BM2 (§1, §2). It is ALWAYS an agent task — the
+ * affordances are chosen by the LANE:
+ *
+ *   - **To do** → ▶ Start (spawn-by-default); tap opens the editor.
+ *   - **Doing** → the agent's live face: status dot, tail-peek, acceptance pill,
+ *     attention states ("Needs your input" amber / "Review?" softer), and the
+ *     headline inline reply composer (auto-revealed on needs-input). Open morphs
+ *     to the focus terminal for deep work.
+ *   - **Done** → calm: a check + any PR/commit link.
+ *
+ * Swipe-left → discard (with an undo toast, no confirm). A ⋯ menu mirrors
+ * Discard + Open for desktop/discoverability.
+ *
+ * iOS-native finish: 10px continuous-corner radius, ≥44pt tap targets, spring
+ * press feedback (no `transition: all`), sentence-case copy, reduced-motion safe.
+ */
+export function BoardCard({
+  issue,
+  lane,
+  onOpen,
+  onFocus,
+  onStart,
+  onReply,
+  onDiscard,
+  isDragging,
+  draggable = true,
+  dragAttributes,
+  dragListeners,
+}: BoardCardProps) {
+  const reduce = useReducedMotion()
+  const fine = useMediaQuery('(pointer: fine)')
+
+  const due = issue.due ? dueLabel(issue.due) : null
+  const heading = displayHeading(issue)
+
+  const isTodo = lane === 'todo'
+  const isDoing = lane === 'doing'
+  const isDone = lane === 'done'
+
+  // Live status + tail of the linked session (shared ['sessions'] cache).
+  const live = useLiveSession(issue.session)
+  const linkLive = !!issue.session && issue.session_live
+  const liveStatus = linkLive ? live?.status : undefined
+  const staleLink = !!issue.session && !issue.session_live
+
+  const [hovered, setHovered] = React.useState(false)
+
+  // Attention states (Doing). "Needs your input" is amber + auto-reveals the
+  // reply; "Review?" is softer (agent idle without reporting). Otherwise calm.
+  const needsInput = isDoing && issue.awaiting_input
+  const needsReview = isDoing && issue.needs_review && !issue.awaiting_input
+  const question = needsInput ? awaitingQuestion(issue) : null
+
+  const tailLines = linkLive ? (live?.preview_lines ?? []) : []
+  const showTail = hovered && fine && linkLive && tailLines.length > 0
+
+  // Reply composer: auto-open on needs-input; otherwise reachable via a chip.
+  const [replyOpen, setReplyOpen] = React.useState(false)
+  const replyExpanded = isDoing && (replyOpen || needsInput)
+
+  const linkCount = issue.links.length
+
+  // ── Swipe-to-discard (touch) ───────────────────────────────────────────────
+  // A horizontal drag past the threshold flicks the card off to the left and
+  // calls onDiscard. The route shows an undo toast (no confirm dialog). Disabled
+  // on a fine pointer (desktop uses the ⋯ menu) and while a card-drag is armed.
+  const x = useMotionValue(0)
+  const swipeBg = useTransform(x, [-SWIPE_THRESHOLD, 0], [1, 0])
+  const swipeEnabled = !fine && draggable
+  const [swipedOut, setSwipedOut] = React.useState(false)
+
+  const cardBody = (
+    <motion.div
+      role="button"
+      tabIndex={0}
+      aria-label={heading.text}
+      layout={!reduce}
+      layoutId={reduce ? undefined : `issue-${issue.id}`}
+      transition={springs.smooth}
+      whileTap={reduce || swipeEnabled ? undefined : { scale: 0.98 }}
+      data-issue-id={issue.id}
+      {...(swipeEnabled
+        ? {
+            drag: 'x' as const,
+            dragDirectionLock: true,
+            dragConstraints: { left: 0, right: 0 },
+            dragElastic: { left: 0.7, right: 0 },
+            style: { x },
+            onDragEnd: (_e: unknown, info: { offset: { x: number } }) => {
+              if (info.offset.x < -SWIPE_THRESHOLD) {
+                setSwipedOut(true)
+                onDiscard(issue)
+              }
+            },
+          }
+        : {})}
+      onClick={() => {
+        // Tap → open the editor (To do) or focus terminal (Doing). Done cards
+        // open the editor too (read calm details / restore acceptance).
+        if (isDoing) onFocus(issue)
+        else onOpen(issue)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          if (isDoing) onFocus(issue)
+          else onOpen(issue)
+        }
+      }}
+      onHoverStart={() => setHovered(true)}
+      onHoverEnd={() => setHovered(false)}
+      className={cn(
+        'group relative flex min-h-[44px] w-full cursor-pointer select-none flex-col gap-2 rounded-[10px] border bg-background/80 p-3 text-left shadow-sm',
+        'transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        needsInput
+          ? 'border-status-waiting/60'
+          : needsReview
+            ? 'border-status-ready/50'
+            : 'border-border',
+        isDragging && 'opacity-40',
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <span
+          className={cn(
+            'line-clamp-3 flex-1 text-sm font-medium leading-snug',
+            heading.muted && 'font-mono text-muted-foreground',
+            isDone && 'text-muted-foreground',
+          )}
+        >
+          {heading.text}
+        </span>
+
+        {/* Top-right cluster — lane-aware. */}
+        <div
+          className="-mr-1 -mt-1 flex shrink-0 items-center gap-0.5"
+          // Inner controls must not start a card drag or swipe.
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {/* To do → ▶ Start (always visible on coarse; hover on fine). */}
+          {isTodo && (hovered || !fine) && (
+            <CardIconButton
+              label="Start agent"
+              title="Start agent"
+              onClick={() => onStart(issue)}
+              tone="primary"
+            >
+              <Play aria-hidden />
+            </CardIconButton>
+          )}
+
+          {/* Doing → Open (morph to focus terminal). */}
+          {isDoing && issue.session && (hovered || !fine) && (
+            <CardIconButton
+              label={`Open session ${issue.session}`}
+              title={`Open ${issue.session}`}
+              onClick={() => onFocus(issue)}
+            >
+              <Maximize2 aria-hidden />
+            </CardIconButton>
+          )}
+
+          {/* Resting live status dot (Doing) — shows whenever the cluster's
+              hover actions aren't covering it. */}
+          {isDoing && liveStatus && !(hovered && fine) && (
+            <span className="mt-0.5 shrink-0" title={STATUS_LABEL[liveStatus]}>
+              <StatusDot status={liveStatus} />
+            </span>
+          )}
+
+          {/* Done → calm check + PR/commit hint. */}
+          {isDone && (
+            <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-status-ready">
+              {linkCount > 0 && (
+                <span
+                  className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground"
+                  title={`${linkCount} ${linkCount === 1 ? 'link' : 'links'}`}
+                >
+                  <GitPullRequest aria-hidden className="size-3.5" />
+                  {linkCount > 1 && <span className="tabular-nums">{linkCount}</span>}
+                </span>
+              )}
+              <Check aria-hidden className="size-4" strokeWidth={2.5} />
+            </span>
+          )}
+
+          {/* ⋯ menu — Open + Discard (discoverability / desktop). */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Card actions"
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  'grid size-11 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4',
+                  // On a fine pointer keep it discreet until hover; always show
+                  // on coarse where there's no hover.
+                  fine && !hovered && 'opacity-0',
+                )}
+              >
+                <MoreHorizontal aria-hidden />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              {isTodo && (
+                <DropdownMenuItem onClick={() => onOpen(issue)}>
+                  Edit
+                </DropdownMenuItem>
+              )}
+              {isDoing && issue.session && (
+                <DropdownMenuItem onClick={() => onFocus(issue)}>
+                  <Maximize2 className="size-4" />
+                  Open terminal
+                </DropdownMenuItem>
+              )}
+              {isDone && (
+                <DropdownMenuItem onClick={() => onOpen(issue)}>
+                  Details
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                onClick={() => onDiscard(issue)}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="size-4" />
+                Discard
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      {/* Attention badges (Doing) + stale-link prompt. */}
+      {(needsInput || needsReview || staleLink) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {needsInput && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-status-waiting/15 px-2 py-0.5 text-[11px] font-semibold text-status-waiting">
+              <span className="size-1.5 shrink-0 rounded-full bg-status-waiting" />
+              Needs your input
+            </span>
+          )}
+          {needsReview && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-status-ready/15 px-2 py-0.5 text-[11px] font-medium text-status-ready">
+              <span className="size-1.5 shrink-0 rounded-full bg-status-ready" />
+              Review?
+            </span>
+          )}
+          {staleLink && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              Session ended
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* The agent's question (needs-input) — shown verbatim so the human can
+          answer without opening the terminal. */}
+      {question && (
+        <p className="rounded-lg bg-status-waiting/10 px-2.5 py-1.5 text-[13px] leading-snug text-foreground">
+          {question}
+        </p>
+      )}
+
+      {/* Meta row — session chip, tags, due. */}
+      {(issue.session || issue.tags.length > 0 || due) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {issue.session && (
+            <span
+              className={cn(
+                'inline-flex max-w-[160px] items-center gap-1 truncate rounded-full px-2 py-0.5 text-[11px] font-medium',
+                staleLink
+                  ? 'bg-muted text-muted-foreground line-through'
+                  : 'bg-primary/15 text-primary',
+              )}
+            >
+              {liveStatus ? (
+                <StatusDot status={liveStatus} className="!size-1.5" />
+              ) : (
+                <span
+                  className={cn(
+                    'size-1.5 shrink-0 rounded-full',
+                    staleLink ? 'bg-muted-foreground' : 'bg-primary',
+                  )}
+                />
+              )}
+              <span className="truncate">{issue.session}</span>
+            </span>
+          )}
+          {issue.tags.map((tag) => (
+            <span
+              key={tag}
+              className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+            >
+              {tag}
+            </span>
+          ))}
+          {due && (
+            <span
+              className={cn(
+                'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                due.overdue
+                  ? 'bg-destructive/15 text-destructive'
+                  : 'bg-muted text-muted-foreground',
+              )}
+            >
+              <Calendar aria-hidden className="size-3" />
+              {due.text}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Acceptance progress pill. */}
+      {issue.acceptance.length > 0 && (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <AcceptancePill acceptance={issue.acceptance} />
+        </div>
+      )}
+
+      {/* Hover tail-peek (desktop) — last lines of the live session. */}
+      <AnimatePresence initial={false}>
+        {showTail && (
+          <motion.div
+            key="tail-peek"
+            initial={reduce ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={reduce ? undefined : { opacity: 0 }}
+            transition={reduce ? { duration: 0 } : springs.snappy}
+            className="-mx-3 mt-1 overflow-hidden border-t border-border/60 bg-muted/30"
+          >
+            <TailPreview
+              lines={tailLines}
+              ansiLines={linkLive ? live?.preview_ansi : undefined}
+              visibleLines={3}
+              className="py-2"
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Inline reply composer (Doing) — THE headline UX ─────────────────── */}
+      {isDoing && (
+        <ReplyComposer
+          issue={issue}
+          expanded={replyExpanded}
+          emphasized={needsInput}
+          onRequestOpen={() => setReplyOpen(true)}
+          onReply={onReply}
+        />
+      )}
+    </motion.div>
+  )
+
+  // Swipe wrapper: a destructive backdrop reveals as the card slides left.
+  if (!swipeEnabled) {
+    return (
+      <div {...dragAttributes} {...dragListeners}>
+        {cardBody}
+      </div>
+    )
+  }
+  return (
+    <div className="relative" {...dragAttributes} {...dragListeners}>
+      <motion.div
+        aria-hidden
+        style={{ opacity: swipeBg }}
+        className="pointer-events-none absolute inset-0 flex items-center justify-end rounded-[10px] bg-destructive/90 pr-5 text-destructive-foreground"
+      >
+        <Trash2 className="size-5" />
+      </motion.div>
+      <AnimatePresence>
+        {!swipedOut && cardBody}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+/** A 44pt icon button used in the card's top-right cluster. */
+function CardIconButton({
+  label,
+  title,
+  onClick,
+  tone,
+  children,
+}: {
+  label: string
+  title: string
+  onClick: () => void
+  tone?: 'primary'
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick()
+      }}
+      className={cn(
+        'grid size-11 place-items-center rounded-md text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4',
+        tone === 'primary'
+          ? 'hover:bg-primary/10 hover:text-primary'
+          : 'hover:bg-muted hover:text-foreground',
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** The compact inline reply field on a Doing card. Collapsed to a single
+ *  "Reply" chip until tapped (or auto-expanded on needs-input). Type → Send →
+ *  delivers straight into the agent's session via the board /reply endpoint;
+ *  sending clears the needs-input state (handled by the mutation). */
+function ReplyComposer({
+  issue,
+  expanded,
+  emphasized,
+  onRequestOpen,
+  onReply,
+}: {
+  issue: BoardIssue
+  expanded: boolean
+  emphasized: boolean
+  onRequestOpen: () => void
+  onReply: (issue: BoardIssue, text: string) => Promise<void>
+}) {
+  const reduce = useReducedMotion()
+  const fine = useMediaQuery('(pointer: fine)')
+  const [text, setText] = React.useState('')
+  const [sending, setSending] = React.useState(false)
+  const inputRef = React.useRef<HTMLTextAreaElement | null>(null)
+
+  // Autofocus when it expands on a needs-input card (desktop only — avoid
+  // forcing the mobile keyboard open until the human taps in).
+  React.useEffect(() => {
+    if (expanded && emphasized && fine) inputRef.current?.focus()
+  }, [expanded, emphasized, fine])
+
+  async function send() {
+    const t = text.trim()
+    if (!t || sending) return
+    setSending(true)
+    try {
+      await onReply(issue, t)
+      setText('')
+    } catch {
+      /* the route surfaces a toast; keep the text so it can be retried */
+    } finally {
+      setSending(false)
+    }
+  }
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onRequestOpen()
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="inline-flex h-11 items-center gap-1.5 self-start rounded-md px-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <Send className="size-3.5" />
+        Reply to agent
+      </button>
+    )
+  }
+
+  return (
+    <motion.div
+      initial={reduce ? false : { opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduce ? { duration: 0 } : springs.snappy}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      className="flex items-end gap-1.5"
+    >
+      <textarea
+        ref={inputRef}
+        value={text}
+        rows={1}
+        placeholder={emphasized ? 'Answer the agent…' : 'Reply to the agent…'}
+        aria-label="Reply to the agent"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            void send()
+          }
+        }}
+        className={cn(
+          'min-h-[36px] flex-1 resize-none rounded-md border bg-background px-2.5 py-2 text-[13px] leading-snug shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          emphasized ? 'border-status-waiting/50' : 'border-input',
+        )}
+      />
+      <button
+        type="button"
+        aria-label="Send reply"
+        disabled={!text.trim() || sending}
+        onClick={() => void send()}
+        className="grid size-11 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 [&_svg]:size-4"
+      >
+        {sending ? (
+          <Loader2 className="animate-spin" />
+        ) : (
+          <CornerDownLeft aria-hidden />
+        )}
+      </button>
+    </motion.div>
+  )
+}
