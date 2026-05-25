@@ -26,6 +26,9 @@ import { DesktopDock } from './dock'
 import { TerminalCaptureIndicator } from './terminal-capture-indicator'
 import { useKeyboardCapture } from './use-keyboard-capture'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
+import { Dropzone } from '@/components/files/dropzone'
+import { AttachmentRow } from './attachment-chip'
+import { useAttachmentUpload } from './use-attachment-upload'
 
 export interface DesktopSplitProps {
   /** Focused session name (route param). */
@@ -72,6 +75,52 @@ export function DesktopSplit({
   // M18 snippet panel — the dock's "+" button opens it; desktop has no separate
   // text composer, so both tap-insert and long-press-run send straight to xterm.
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
+
+  // Attach a file/screenshot into the session: upload bytes → data-dir uploads/
+  // → inject the quoted absolute path (no trailing Enter). Shared engine with
+  // mobile. Fed by the dock's 📎 button, drag-drop onto the terminal pane, and
+  // image clipboard-paste. After inject we re-focus xterm so the user keeps the
+  // cursor in the prompt to add context.
+  const sendToTerm = React.useCallback(
+    (text: string) => termRef.current?.send(text),
+    [],
+  )
+  const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
+  const attach = useAttachmentUpload(sendToTerm, focusTerm)
+
+  // Clipboard image paste — handled BEFORE xterm. xterm only forwards TEXT paste
+  // (the textarea paste → `term.onData`), so reading `clipboardData.files` /
+  // `items[].getAsFile()` here for images doesn't conflict. We ONLY
+  // preventDefault when an image is present, so a normal TEXT paste still reaches
+  // the terminal untouched.
+  const onPaste = React.useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const dt = e.clipboardData
+      if (!dt) return
+      const images: File[] = []
+      // `files` covers the screenshot-paste case; `items[].getAsFile()` is the
+      // broader path (some browsers populate only one). De-dupe by identity.
+      for (const f of Array.from(dt.files)) {
+        if (f.type.startsWith('image/')) images.push(f)
+      }
+      if (images.length === 0) {
+        for (const item of Array.from(dt.items)) {
+          if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const f = item.getAsFile()
+            if (f) images.push(f)
+          }
+        }
+      }
+      if (images.length > 0) {
+        // An image is on the clipboard → take it, and stop it from also reaching
+        // xterm's textarea (which would paste garbled bytes). Text paste (no
+        // image) falls through untouched.
+        e.preventDefault()
+        attach.handleFiles(images)
+      }
+    },
+    [attach],
+  )
 
   // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes go
   // to the terminal IMMEDIATELY — no second click. The flag is armed on mount
@@ -210,20 +259,38 @@ export function DesktopSplit({
             itself in the top-right corner of the terminal pane WITHOUT
             overlaying the terminal viewport — a small chrome element, not an
             overlay over content. The pane ref is the focus boundary used to
-            detect when xterm has DOM focus (focusin/focusout listener). */}
-        <div ref={termPaneRef} className="relative min-h-0 flex-1">
-          {/* A `stopped` session's tmux pty is gone — opening the live WS would
-              just 101-upgrade then get closed in a loop. Detect it up front from
-              the session row and render the calm StoppedSession surface instead.
-              When it transitions back to running, this swaps to LiveTerminal. */}
-          {status === 'stopped' ? (
-            <StoppedSession name={name} />
-          ) : (
-            /* M13 LiveTerminal — reused verbatim. The keydown capture deliberately
-               does NOT preventDefault on ordinary keys, so Ctrl-C / arrows / Tab /
-               Shift+Tab / Esc / text all reach xterm's onData → the M4 pty WS. */
-            <LiveTerminal name={name} onReady={handleTermReady} />
-          )}
+            detect when xterm has DOM focus (focusin/focusout listener).
+
+            onPaste — image clipboard-paste into the session (before xterm; only
+            preventDefaults when an image is present, so text paste still flows to
+            the terminal). The Dropzone (whose overlay stays pointer-events-none,
+            so xterm mouse selection is NOT regressed) reveals a drop affordance
+            and hands dropped files to the same upload+inject engine. */}
+        <div
+          ref={termPaneRef}
+          className="relative min-h-0 flex-1"
+          onPaste={onPaste}
+        >
+          <Dropzone
+            onFiles={attach.handleFiles}
+            disabled={status === 'stopped'}
+            className="h-full w-full"
+          >
+            {/* A `stopped` session's tmux pty is gone — opening the live WS would
+                just 101-upgrade then get closed in a loop. Detect it up front
+                from the session row and render the calm StoppedSession surface
+                instead. When it transitions back to running, this swaps to
+                LiveTerminal. */}
+            {status === 'stopped' ? (
+              <StoppedSession name={name} />
+            ) : (
+              /* M13 LiveTerminal — reused verbatim. The keydown capture
+                 deliberately does NOT preventDefault on ordinary keys, so
+                 Ctrl-C / arrows / Tab / Shift+Tab / Esc / text all reach xterm's
+                 onData → the M4 pty WS. */
+              <LiveTerminal name={name} onReady={handleTermReady} />
+            )}
+          </Dropzone>
           {/* Subtle "Capturing input" pill — only visible while xterm holds DOM
               focus. Click outside (header / dock / strip) releases. Esc is NOT
               the release because Esc must reach the terminal (vim, REPLs). */}
@@ -232,6 +299,19 @@ export function DesktopSplit({
           />
         </div>
 
+        {/* Attachment feedback — in-flight / ready file chips (uploading spinner
+            → thumbnail/name, dismissible), shown between the terminal and the
+            dock the moment a file is dropped/pasted/picked. Renders nothing when
+            empty. */}
+        {attach.attachments.length > 0 && (
+          <div className="shrink-0 border-t border-border bg-card px-6 py-2">
+            <AttachmentRow
+              attachments={attach.attachments}
+              onDismiss={attach.dismiss}
+            />
+          </div>
+        )}
+
         <DesktopDock
           onSendKey={(label) => termRef.current?.sendKey(label)}
           onRunSlash={(cmd) => termRef.current?.send(cmd + '\r')}
@@ -239,6 +319,7 @@ export function DesktopSplit({
             onSnippets?.()
             setSnippetsOpen(true)
           }}
+          onAttach={attach.handleFiles}
           onDetach={onDetach}
           onStop={onStop}
         />

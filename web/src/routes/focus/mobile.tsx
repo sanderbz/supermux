@@ -50,6 +50,7 @@ import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
+import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
 
@@ -208,9 +209,21 @@ export function MobileFocus() {
     [],
   )
 
+  // Stream literal text into the pty — the one send path the dock, snippets,
+  // dictation, and the compose sheet all funnel through.
+  const sendToTerm = React.useCallback(
+    (text: string) => termRef.current?.send(text),
+    [],
+  )
+
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
+  // The on-demand native compose sheet (typed prompt + staged attachments). The
+  // session pill is its trigger; it morphs the pill → sheet via a shared
+  // `layoutId`. Live-type + the accessory strip remain the default for
+  // interactive TUIs — this sheet is additive.
+  const [composeOpen, setComposeOpen] = React.useState(false)
   // DOCK — the slash panel was removed: slash commands now run from the Claude
   // Tools sheet's Commands tab (tap a command → it runs in the focused terminal).
   // M17 — joystick on/off. The M16 accessory bar's "Gesture" toggle flips this
@@ -355,8 +368,10 @@ export function MobileFocus() {
             onOpenPicker={() => setPickerOpen(true)}
             onOpenSpecials={() => setSpecialsOpen(true)}
             onOpenSnippets={() => setSnippetsOpen(true)}
+            onOpenCompose={() => setComposeOpen(true)}
+            composeOpen={composeOpen}
             onSwitchSession={goSession}
-            onSend={(text) => termRef.current?.send(text)}
+            onSend={sendToTerm}
             onSendKey={(key) => termRef.current?.sendKey(key)}
             onFocusTerm={focusTerm}
             onBlurTerm={blurTerm}
@@ -391,6 +406,16 @@ export function MobileFocus() {
         onOpenChange={setSnippetsOpen}
         onInsert={(body) => composerInsert.current?.(body)}
         onRun={(body) => termRef.current?.send(body + '\r')}
+      />
+
+      {/* The on-demand native compose sheet — morphs from the session pill via a
+          shared `layoutId`. On Send it composes the typed text + the staged
+          attachment sentence + a trailing Enter and streams it into the pty as
+          one prompt; the live terminal shows the echo. */}
+      <MobileComposeSheet
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        onSend={sendToTerm}
       />
     </>
   )
