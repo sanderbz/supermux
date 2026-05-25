@@ -529,8 +529,15 @@ READ_WRITE_PATHS="$(printf '%s' "$READ_WRITE_PATHS_RAW" | tr ':' ' ')"
 # between modes — every other sandbox directive stays on in both.
 if [ "${SUPERMUX_HARDENED:-0}" = "1" ]; then
   MEMORY_DENY_WRITE_EXECUTE=yes
+  # Hardened profile assumes NO long-lived agents across restarts, so a private
+  # /tmp is acceptable. (See the unit comment on PrivateTmp.)
+  PRIVATE_TMP=yes
 else
   MEMORY_DENY_WRITE_EXECUTE=no
+  # Default: PrivateTmp OFF. supermux's long-lived tmux server + Claude agents
+  # write to /tmp (/tmp/claude-<uid>); a private /tmp is destroyed on every
+  # restart, breaking the surviving agents (ENOENT) + blanking fresh panes.
+  PRIVATE_TMP=no
 fi
 
 # ── 0d. host preflight: Tailscale auto-detect ───────────────────────────────

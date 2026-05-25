@@ -117,8 +117,18 @@ ReadWritePaths=__READ_WRITE_PATHS__
 # tmux keeps its server socket under $XDG_RUNTIME_DIR (/run/user/<uid>); the
 # service must be able to create/connect to it to drive sessions.
 RuntimeDirectory=supermux
-# Private /tmp and /var/tmp namespace — no cross-service tmp snooping.
-PrivateTmp=true
+# Private /tmp + /var/tmp namespace. DEFAULT OFF (__PRIVATE_TMP__, from
+# SUPERMUX_HARDENED) and that is load-bearing, not a nicety: supermux runs a
+# LONG-LIVED tmux server plus Claude Code agents, and the agent harness writes
+# its per-tool working state under /tmp (/tmp/claude-<uid>/.../tasks). systemd
+# tears down a PrivateTmp namespace on every service (re)start — so with it ON,
+# each restart/deploy yanks /tmp out from under the SURVIVING tmux server and its
+# agents: the agents can no longer mkdir in /tmp (every tool call fails ENOENT)
+# and freshly-created panes never paint a TUI. Anchoring TMUX_TMPDIR in the data
+# dir fixes the tmux socket but NOT the agents' /tmp. So PrivateTmp must stay off
+# wherever sessions are meant to survive a restart; only the hardened profile
+# (which assumes no long-lived agents across restarts) turns it on.
+PrivateTmp=__PRIVATE_TMP__
 # Block writes to kernel tunables, kernel module load, and cgroup hierarchy.
 ProtectKernelTunables=true
 ProtectKernelModules=true
