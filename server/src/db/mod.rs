@@ -15,6 +15,7 @@ use crate::config::Config;
 
 pub mod audit;
 pub mod board;
+pub mod boards;
 pub mod prefs;
 pub mod push;
 pub mod runtime_state;
@@ -107,9 +108,70 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 13,
-            "expected thirteen applied migrations (0001-0005, 0007-0014)"
+            applied, 14,
+            "expected fourteen applied migrations (0001-0005, 0007-0015)"
         );
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn migration_0015_seeds_main_board_and_backfills_existing_cards() {
+        let (pool, dir) = test_pool().await;
+
+        // The fixed main board is seeded (id 'main', kind 'main', name "Main").
+        let boards = boards::list(&pool).await.unwrap();
+        assert_eq!(boards.len(), 1, "exactly the main board after a fresh migrate");
+        let main = &boards[0];
+        assert_eq!(main.id, boards::MAIN_BOARD_ID);
+        assert_eq!(main.kind, "main");
+        assert_eq!(main.name, "Main");
+        assert!(main.team_name.is_none());
+
+        // A card inserted via the legacy column set (no board_id) backfills onto
+        // 'main' via the migration's DEFAULT — no card is orphaned off a board.
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO issues (id, title, desc, status, creator, created, updated,
+                                 owner_type, pinned, pos, notified)
+             VALUES ('LEGACY-1', 't', '', 'todo', '', ?, ?, 'agent', 0, 0, 0)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let board_id: String =
+            sqlx::query_scalar("SELECT board_id FROM issues WHERE id = 'LEGACY-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(board_id, boards::MAIN_BOARD_ID, "legacy card backfilled to main");
+
+        // Deleting a TEAM board CASCADE-deletes its cards (FK ON DELETE CASCADE),
+        // and the main board is the upsert/register target for a team lookup.
+        boards::insert(&pool, "team-alpha", "alpha", "team", Some("alpha"), 1.0)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO issues (id, title, desc, status, creator, created, updated,
+                                 owner_type, pinned, pos, notified, board_id)
+             VALUES ('TEAM-1', 't', '', 'todo', '', ?, ?, 'agent', 0, 0, 0, 'team-alpha')",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(boards::get_by_team(&pool, "alpha").await.unwrap().is_some());
+        assert!(boards::delete(&pool, "team-alpha").await.unwrap());
+        let team_card: Option<String> =
+            sqlx::query_scalar("SELECT id FROM issues WHERE id = 'TEAM-1'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(team_card.is_none(), "team board delete cascades its cards");
 
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

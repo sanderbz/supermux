@@ -27,16 +27,27 @@ import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import { useBoard, sortIssues } from '@/hooks/use-board'
+import {
+  useBoard,
+  useBoards,
+  useSelectedBoard,
+  sortIssues,
+} from '@/hooks/use-board'
 import { useStartAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
 import { useToast } from '@/components/ui/use-toast'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
-import { type BoardIssue, type NewBoardIssue } from '@/lib/api'
+import {
+  ALL_BOARD_ID,
+  MAIN_BOARD_ID,
+  type BoardIssue,
+  type NewBoardIssue,
+} from '@/lib/api'
 import { BoardCard } from '@/components/board/board-card'
 import { BoardComposer } from '@/components/board/board-composer'
 import { BoardCardEditor } from '@/components/board/board-card-editor'
 import { BoardDetailPane } from '@/components/board/board-detail-pane'
 import { BoardSkeleton } from '@/components/board/board-skeleton'
+import { BoardSwitcher } from '@/components/board/board-switcher'
 import { midpointPos } from '@/components/board/pos'
 import { useMediaQuery } from '@/hooks/use-media-query'
 
@@ -58,7 +69,20 @@ interface DropSlot {
 }
 
 export function Board() {
-  const board = useBoard()
+  // ── multi-board selection (AT-C, plan §5.5) ─────────────────────────────────
+  const { boards } = useBoards()
+  const [selectedBoard, setSelectedBoard] = useSelectedBoard()
+  // A persisted selection can point at a board that was since deleted (e.g. a
+  // team board). Fall back to Main so the view never shows an empty/404 board.
+  // `'all'` is always valid (it's synthetic, not a row).
+  const boardExists =
+    selectedBoard === ALL_BOARD_ID ||
+    boards.length === 0 || // boards still loading — trust the selection for now
+    boards.some((b) => b.id === selectedBoard)
+  const activeBoardId = boardExists ? selectedBoard : MAIN_BOARD_ID
+  const isAll = activeBoardId === ALL_BOARD_ID
+
+  const board = useBoard(activeBoardId)
   const reduce = useReducedMotion()
   const { startAgent } = useStartAgent()
   const { toast } = useToast()
@@ -99,6 +123,14 @@ export function Board() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [selectedId])
+
+  // AT-C "All" overview: a board id → name map for the grouped sub-headers.
+  const boardNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const b of boards) m.set(b.id, b.name)
+    if (!m.has(MAIN_BOARD_ID)) m.set(MAIN_BOARD_ID, 'Main')
+    return m
+  }, [boards])
 
   // Group issues into the three lanes. Anything in an unexpected/legacy column
   // (a leftover custom column the backend hasn't folded yet) is shown under
@@ -238,18 +270,25 @@ export function Board() {
   )
 
   // ── Create handlers (description-first composer) ─────────────────────────────
+  // A new card lands on the board currently in view. On the "All" aggregate
+  // (which isn't a real board) new cards default to Main.
+  const createBoardId = isAll ? MAIN_BOARD_ID : activeBoardId
   const onAdd = useCallback(
     async (input: NewBoardIssue) => {
-      await board.createIssue({ ...input, status: 'todo' })
+      await board.createIssue({ ...input, status: 'todo', board_id: createBoardId })
     },
-    [board],
+    [board, createBoardId],
   )
   const onAddAndStart = useCallback(
     async (input: NewBoardIssue, opts: { provider: string }) => {
-      const created = await board.createIssue({ ...input, status: 'todo' })
+      const created = await board.createIssue({
+        ...input,
+        status: 'todo',
+        board_id: createBoardId,
+      })
       await startIssue(created, opts.provider)
     },
-    [board, startIssue],
+    [board, startIssue, createBoardId],
   )
 
   // ── Drag → move / drag-to-Doing starts the agent ────────────────────────────
@@ -319,17 +358,27 @@ export function Board() {
     [board.issues, handleDrop, resolveDropSlot],
   )
 
+  // The board-switcher next to the title (plan §5.5). Persisted selection; live
+  // boards list via SSE. Shown in every render state so it's always reachable.
+  const switcher = (
+    <BoardSwitcher
+      boards={boards}
+      selected={activeBoardId}
+      onSelect={setSelectedBoard}
+    />
+  )
+
   // ── render ──────────────────────────────────────────────────────────────────
   if (board.isLoading) {
     return (
-      <BoardPage>
+      <BoardPage switcher={switcher}>
         <BoardSkeleton />
       </BoardPage>
     )
   }
   if (board.isError) {
     return (
-      <BoardPage>
+      <BoardPage switcher={switcher}>
         <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
           <p className="max-w-xs text-sm text-muted-foreground">
             Can’t reach supermux-server. Retrying…
@@ -344,7 +393,7 @@ export function Board() {
 
   return (
     <>
-      <BoardPage>
+      <BoardPage switcher={switcher}>
         <DndContext
           sensors={sensors}
           collisionDetection={boardCollision}
@@ -377,7 +426,9 @@ export function Board() {
                   onShowAllDone={() => setShowAllDone(true)}
                   onDeselect={() => setSelectedId(null)}
                   composer={
-                    lane.id === 'todo' ? (
+                    // The "All" overview is read-through — the composer would
+                    // create on Main (ambiguous), so hide it there.
+                    lane.id === 'todo' && !isAll ? (
                       <BoardComposer onAdd={onAdd} onAddAndStart={onAddAndStart} />
                     ) : null
                   }
@@ -386,6 +437,7 @@ export function Board() {
                   onStart={(i) => void startIssue(i)}
                   onReply={replyIssue}
                   onDiscard={discardIssue}
+                  boardNameById={isAll ? boardNameById : undefined}
                 />
               ))}
             </div>
@@ -467,6 +519,7 @@ function LaneColumn({
   onStart,
   onReply,
   onDiscard,
+  boardNameById,
 }: {
   lane: Lane
   label: string
@@ -484,6 +537,10 @@ function LaneColumn({
   onStart: (issue: BoardIssue) => void
   onReply: (issue: BoardIssue, text: string) => Promise<void>
   onDiscard: (issue: BoardIssue) => void
+  /** AT-C "All" aggregate: a board id → name map. When present, the lane groups
+   *  cards by board under a muted sub-header (read-through overview). When
+   *  undefined, the lane renders a flat single-board list (the normal case). */
+  boardNameById?: Map<string, string>
 }) {
   const { setNodeRef } = useDroppable({ id: lane })
   const isDropCol = dropTarget?.lane === lane
@@ -492,6 +549,26 @@ function LaneColumn({
   const condensed = lane === 'done' && !showAllDone && list.length > DONE_PREVIEW
   const visible = condensed ? list.slice(0, DONE_PREVIEW) : list
   const itemIds = useMemo(() => visible.map((i) => i.id), [visible])
+
+  // "All" aggregate: group the visible cards by board, preserving lane order.
+  const grouped = useMemo(() => {
+    if (!boardNameById) return null
+    const order: string[] = []
+    const byBoard = new Map<string, BoardIssue[]>()
+    for (const issue of visible) {
+      const bid = issue.board_id ?? 'main'
+      if (!byBoard.has(bid)) {
+        byBoard.set(bid, [])
+        order.push(bid)
+      }
+      byBoard.get(bid)!.push(issue)
+    }
+    return order.map((bid) => ({
+      boardId: bid,
+      name: boardNameById.get(bid) ?? bid,
+      items: byBoard.get(bid)!,
+    }))
+  }, [boardNameById, visible])
 
   return (
     <section
@@ -533,6 +610,32 @@ function LaneColumn({
                   ? 'Start a task to put an agent on it'
                   : 'Finished work lands here'}
           </div>
+        ) : grouped ? (
+          // "All" overview: cards grouped by board under a muted sub-header. A
+          // read-through overview, so cards aren't draggable here (cross-board
+          // drag-to-start is ambiguous — switch to the team's own board to act).
+          grouped.map((g) => (
+            <div key={g.boardId} className="flex flex-col gap-2">
+              <div className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                <span className="truncate">{g.name}</span>
+                <span className="tabular-nums opacity-70">{g.items.length}</span>
+              </div>
+              {g.items.map((issue) => (
+                <BoardCard
+                  key={issue.id}
+                  issue={issue}
+                  lane={lane}
+                  draggable={false}
+                  onOpen={onOpen}
+                  onFocus={onFocus}
+                  onStart={onStart}
+                  onReply={onReply}
+                  onDiscard={onDiscard}
+                  isSelected={issue.id === selectedId}
+                />
+              ))}
+            </div>
+          ))
         ) : (
           <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
             {visible.map((issue, idx) => (
@@ -627,13 +730,26 @@ function SortableCard({
   )
 }
 
-/** Page chrome: title row. The board fills the full height so lanes scroll
- *  inside the viewport. No "Columns" gear — the 3 lanes are fixed (BM2 §1). */
-function BoardPage({ children }: { children: React.ReactNode }) {
+/** Page chrome: title row + the board-switcher (AT-C). The board fills the full
+ *  height so lanes scroll inside the viewport. No "Columns" gear — the 3 lanes
+ *  are fixed (BM2 §1).
+ *
+ *  The switcher sits next to the title (plan §5.5): on desktop, inline after
+ *  "Board"; on mobile, the same compact pill stays in the header (it forks to a
+ *  Vaul half-sheet internally), reachable without clutter. */
+function BoardPage({
+  children,
+  switcher,
+}: {
+  children: React.ReactNode
+  switcher?: React.ReactNode
+}) {
   return (
     <div className="mx-auto flex h-full w-full max-w-none flex-col px-4 py-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:px-6 sm:pt-6">
-      <div className="mb-3 flex items-center gap-2">
-        <h1 className="flex-1 text-2xl font-semibold tracking-tight">Board</h1>
+      <div className="mb-3 flex items-center gap-2.5">
+        <h1 className="text-2xl font-semibold tracking-tight">Board</h1>
+        {switcher}
+        <div className="flex-1" />
       </div>
       <div className="min-h-0 flex-1">{children}</div>
     </div>

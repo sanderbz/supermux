@@ -1126,6 +1126,7 @@ mod link_liveness_tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await

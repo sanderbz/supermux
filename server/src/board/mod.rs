@@ -11,6 +11,7 @@
 //! poll (anti-vision: WebSocket/SSE only). `delete` and `claim` also append an
 //! `audit_log` row (§6.4 / M6 prompt).
 
+pub mod boards;
 pub mod claim;
 pub mod dispatch;
 pub mod hook;
@@ -79,7 +80,9 @@ pub fn router_for(state: AppState) -> Router {
         // board list but their rows + history are preserved.
         .route("/api/board/{id}/discard", post(discard_handler))
         .route("/api/board/{id}/restore", post(restore_handler))
-        .with_state(state)
+        .with_state(state.clone())
+        // AT-C — multi-board entity CRUD + per-board cards + team-board register.
+        .merge(boards::router_for(state))
 }
 
 /// Build the agent→board hook sub-router (AB1). Re-export of [`hook::router_for`]
@@ -99,12 +102,12 @@ pub fn public_router_for(state: AppState) -> Router {
 // ── HTTP envelope ────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct Envelope<T> {
+pub(crate) struct Envelope<T> {
     ok: bool,
     data: T,
 }
 
-fn ok<T: Serialize>(data: T) -> Json<Envelope<T>> {
+pub(crate) fn ok<T: Serialize>(data: T) -> Json<Envelope<T>> {
     Json(Envelope { ok: true, data })
 }
 
@@ -158,6 +161,9 @@ pub struct IssueView {
     /// the most recent `needs-input` comment (author [`NEEDS_INPUT_AUTHOR`]), or
     /// `null` when none. The card displays this above the inline reply composer.
     pub latest_question: Option<String>,
+    /// Which board this card lives on (migration 0015, AT-C). The "All" aggregate
+    /// groups cards by this; a scoped board view filters on it server-side.
+    pub board_id: String,
 }
 
 /// Comment author tag for an agent `needs-input` question, so the latest one can
@@ -204,6 +210,7 @@ impl IssueView {
             session_status,
             archived: issue.archived != 0,
             latest_question,
+            board_id: issue.board_id,
         }
     }
 }
@@ -256,11 +263,33 @@ async fn session_live_status(
     }
 }
 
-/// Load the full board (used by `GET /api/board` and the SSE re-publish). The
-/// 0010 relations are batch-loaded in three grouped queries keyed by `issue_id`
-/// (not one query per issue) so a big board stays O(1) round-trips per relation.
+/// Load the full board ACROSS ALL boards (used by `GET /api/board`, the SSE
+/// re-publish, and the AT-C "All" aggregate). The 0010 relations are batch-loaded
+/// in three grouped queries keyed by `issue_id` (not one query per issue) so a
+/// big board stays O(1) round-trips per relation.
 async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>, AppError> {
     let issues = db::board::list_issues(&state.pool, done_limit).await?;
+    views_for_issues(state, issues).await
+}
+
+/// Load ONE board's cards (AT-C, plan §5.5) — same view-assembly as [`load_board`]
+/// but scoped to `board_id`. Powers the board-switcher's per-board view.
+pub(crate) async fn load_board_scoped(
+    state: &AppState,
+    board_id: &str,
+    done_limit: i64,
+) -> Result<Vec<IssueView>, AppError> {
+    let issues = db::board::list_issues_for_board(&state.pool, board_id, done_limit).await?;
+    views_for_issues(state, issues).await
+}
+
+/// Assemble [`IssueView`]s for a set of issue rows: batch-load the 0010 relations
+/// + the live session-status map, then build each view. Shared by the all-boards
+/// and per-board loaders so the (perf-sensitive) batching lives in one place.
+async fn views_for_issues(
+    state: &AppState,
+    issues: Vec<db::board::Issue>,
+) -> Result<Vec<IssueView>, AppError> {
     let ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
 
     let mut comments = db::board::comments_for_issues(&state.pool, &ids).await?;
@@ -410,6 +439,11 @@ struct CreateInput {
     acceptance: Option<Vec<String>>,
     #[serde(default)]
     pos: Option<f64>,
+    /// Which board the card lands on (migration 0015, AT-C). Omitted → the fixed
+    /// `main` board. AT-D/AT-F3 pass a team board's id to populate it from the
+    /// team's on-disk task files.
+    #[serde(default)]
+    board_id: Option<String>,
     // NB: `owner_type` is intentionally NOT accepted anymore (§4). Every card is
     // an agent task; a client that still sends the key is ignored, not rejected.
 }
@@ -452,15 +486,31 @@ async fn create_handler(
         }
     };
 
+    // Scope the card to a board (migration 0015, AT-C). Default to the fixed
+    // `main` board; a provided board_id must exist (the FK would reject it
+    // otherwise — fail with a clean 400 instead of a 500).
+    let board_id = match input.board_id.as_deref().map(str::trim) {
+        Some("") | None => db::boards::MAIN_BOARD_ID.to_string(),
+        Some(b) => {
+            if !db::boards::exists(&state.pool, b).await? {
+                return Err(AppError::BadRequest(format!("unknown board '{b}'")));
+            }
+            b.to_string()
+        }
+    };
+
     let new_prefix = prefix::prefix_from_session(session.as_deref());
     let id = prefix::next_id(&state.pool, &new_prefix)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    // New cards sit at the top of their column: min(pos) - 1024 (§2.4).
+    // New cards sit at the top of their column within their own board: min(pos) of
+    // the (board, status) - 1024 (§2.4, board-scoped per 0015).
     let pos = match input.pos {
         Some(p) => p,
-        None => db::board::min_pos_in_status(&state.pool, &status).await? - 1024.0,
+        None => {
+            db::board::min_pos_in_board_status(&state.pool, &board_id, &status).await? - 1024.0
+        }
     };
 
     let new = NewIssue {
@@ -475,6 +525,7 @@ async fn create_handler(
         owner_type,
         pos,
         notified: 0,
+        board_id,
     };
     db::board::insert_issue(&state.pool, &new).await?;
     if let Some(tags) = input.tags {
@@ -1492,6 +1543,7 @@ mod tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await
@@ -1560,6 +1612,7 @@ mod tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await
@@ -1781,6 +1834,7 @@ mod tests {
                 owner_type: "human".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await
@@ -1833,6 +1887,7 @@ mod tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await
@@ -1969,6 +2024,7 @@ mod tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await
