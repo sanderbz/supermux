@@ -507,23 +507,6 @@ impl<'a> Tmux<'a> {
         Ok(out.lines().next().and_then(|l| l.trim().parse::<u32>().ok()))
     }
 
-    /// Every pane id (`%id`) live in this SESSION's window (Agent Teams §3.2).
-    /// Uses `list-panes -a`-free, session-scoped form (`-t supermux-<name>`) so a
-    /// lead's teammate split-windows are all enumerated. Used to VALIDATE that a
-    /// teammate `%id` from `config.json` still exists before streaming it — tmux
-    /// pane ids are a reused server-global counter, so a stale `%id` could resolve
-    /// to an unrelated pane. Call on a `Session` handle for the lead.
-    pub async fn list_pane_ids(&self) -> Result<Vec<String>> {
-        let out = self
-            .run(&["list-panes", "-t", &self.target(), "-F", "#{pane_id}"])
-            .await?;
-        Ok(out
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect())
-    }
 }
 
 /// Does pane `pane_id` (`%id`) currently exist in the lead session's window
