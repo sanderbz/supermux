@@ -98,11 +98,11 @@ const REPLAY_DONE_FALLBACK_MS = 400
 // route's keyboard-open state; below this, iOS jitter (URL-bar collapse,
 // rubber-band) must not flip us into the kick path.
 const KEYBOARD_OPEN_THRESHOLD = 80
-// SD-2: how many rows above the live bottom the viewport must sit before the
-// "jump to bottom" affordance appears. A small slack so a 1-row rubber-band or
-// being pinned to the bottom never flickers the button on; scrolling up "a bit"
-// (a few rows) does.
-const SCROLL_TO_BOTTOM_THRESHOLD_ROWS = 3
+// SD-2: how many pixels above the live bottom the viewport must sit before the
+// "jump to bottom" affordance appears. A small slack so sub-pixel rounding at the
+// bottom (or a 1-notch rubber-band) never flickers the button on; scrolling up
+// "a bit" (~a row or two) does. Measured on `.xterm-viewport.scrollTop`.
+const SCROLL_TO_BOTTOM_SLACK_PX = 24
 
 // Close codes with explicit v2 semantics (§4.5).
 const CLOSE_AUTH = 1008 // auth/origin reject — permanent
@@ -482,23 +482,27 @@ export function useLiveTerm(
     fitRef.current = fit
 
     // SD-2: track whether the viewport is scrolled up so the wrapper can show a
-    // "jump to bottom" button. xterm fires `onScroll` with the new top line
-    // (ydisp); we're "scrolled up" when it sits more than a few rows above
-    // `baseY` (the bottom-pinned position). When the user follows the bottom,
-    // appended output advances ydisp in lockstep with baseY so the gap stays 0
-    // and the button never shows; scrolling back up opens the gap. Start fresh
-    // each (re)subscribe so a prior session's state never leaks to a new one.
+    // "jump to bottom" button. We read the REAL scroll position off the
+    // `.xterm-viewport` element's native scroll event — xterm's public `onScroll`
+    // only reports buffer GROWTH (output advancing ybase), not the user navigating
+    // back through existing scrollback, which is exactly the gesture we must catch.
+    // "At the bottom" = within a row or two of the max scroll; output that follows
+    // the bottom keeps scrollTop pinned there (no button), scrolling up opens the
+    // gap. Start fresh each (re)subscribe so a prior session's state never leaks.
     scrolledUpRef.current = false
     setScrolledUp(false)
+    const viewportEl = container.querySelector<HTMLElement>('.xterm-viewport')
     const syncScrolledUp = () => {
-      const buf = term.buffer.active
-      const up = buf.baseY - buf.viewportY > SCROLL_TO_BOTTOM_THRESHOLD_ROWS
+      if (!viewportEl) return
+      const distFromBottom =
+        viewportEl.scrollHeight - viewportEl.clientHeight - viewportEl.scrollTop
+      const up = distFromBottom > SCROLL_TO_BOTTOM_SLACK_PX
       if (up !== scrolledUpRef.current) {
         scrolledUpRef.current = up
         setScrolledUp(up)
       }
     }
-    const scrollDisp = term.onScroll(syncScrolledUp)
+    viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
 
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
@@ -1245,7 +1249,7 @@ export function useLiveTerm(
         }
         wsRef.current = null
       }
-      scrollDisp.dispose()
+      viewportEl?.removeEventListener('scroll', syncScrolledUp)
       term.dispose()
       termRef.current = null
       fitRef.current = null
