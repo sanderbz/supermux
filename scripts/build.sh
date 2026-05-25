@@ -24,6 +24,14 @@ echo "[build] frontend: bun install + bun run build"
 
 echo "[build] embedding web/dist -> server/static"
 rm -rf server/static && cp -r web/dist server/static
+# Force the embed to refresh. rust-embed reads `static/` at the compile time of
+# static_assets.rs, but cargo does NOT track that directory as an input to that
+# module — build.rs's `rerun-if-changed=static` only re-runs the build script, it
+# does NOT recompile static_assets.rs. So a FRONTEND-ONLY change (no .rs edit)
+# would silently keep the previously-embedded bundle: the binary serves stale UI
+# even though web/dist is fresh. Touching the source guarantees cargo recompiles
+# it and re-reads the new static/ — the one reliable way to never ship stale UI.
+touch server/src/static_assets.rs
 
 echo "[build] backend: cargo build --release"
 ( cd server && cargo build --release )
