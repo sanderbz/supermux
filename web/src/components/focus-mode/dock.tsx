@@ -29,6 +29,7 @@ import {
   Keyboard,
   Ellipsis,
   Mic,
+  Paperclip,
   ArrowLeft,
   ArrowUp,
   ArrowDown,
@@ -40,6 +41,9 @@ import { springs } from '@/lib/springs'
 import type { ApiSession } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useDictation } from '@/components/focus-mode/use-dictation'
+import { UploadActionSheet } from '@/components/focus-mode/upload-action-sheet'
+import { AttachmentRow } from '@/components/focus-mode/attachment-chip'
+import type { Attachment } from '@/components/focus-mode/use-attachment-upload'
 import {
   Tooltip,
   TooltipContent,
@@ -70,6 +74,9 @@ export interface DesktopDockProps {
   onSendKey: (label: string) => void
   /** "+" snippet-drawer toggle — opens the M18 snippet side-sheet. */
   onSnippets?: () => void
+  /** 📎 attach — picked files go to the upload+inject flow (parent's
+   *  `useAttachmentUpload.handleFiles`). Drives the desktop file picker. */
+  onAttach?: (files: File[]) => void
   /** DEPRECATED (DOCK): the "/" slash button was removed — slash commands now
    *  run from the Claude Tools sheet's Commands tab. Kept optional + unused so
    *  DesktopSplit's existing call site still type-checks; safe to drop later. */
@@ -149,9 +156,21 @@ function SendChip({
 export function DesktopDock({
   onSendKey,
   onSnippets,
+  onAttach,
   onDetach,
   onStop,
 }: DesktopDockProps) {
+  // Hidden picker for the 📎 button — accepts any file; the desktop drag-drop +
+  // clipboard-paste paths feed the SAME `onAttach` (in DesktopSplit).
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+  const onPicked = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const picked = Array.from(e.target.files ?? [])
+      e.target.value = '' // reset so re-picking the same file fires `change`
+      if (picked.length) onAttach?.(picked)
+    },
+    [onAttach],
+  )
   // The send-row is "editable via gear icon": clicking the gear cycles to an
   // editable state where each chip is a text input. Persistent storage is the
   // M16 `/api/kbd-groups` table — here we keep an in-memory edit (single source
@@ -185,6 +204,23 @@ export function DesktopDock({
       <div className="flex shrink-0 items-center gap-1">
         <IconButton icon={Command} label="Command palette (⌘K)" onClick={triggerPalette} />
         <IconButton icon={Plus} label="Snippets" onClick={onSnippets} />
+        {onAttach && (
+          <IconButton
+            icon={Paperclip}
+            label="Attach a file"
+            onClick={() => fileInputRef.current?.click()}
+          />
+        )}
+        {/* Hidden picker for the 📎 button. Drag-drop onto the terminal + image
+            clipboard-paste (DesktopSplit) feed the same `onAttach`. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="*"
+          multiple
+          className="hidden"
+          onChange={onPicked}
+        />
       </div>
 
       <span className="h-6 w-px shrink-0 bg-border" aria-hidden />
@@ -329,6 +365,15 @@ export interface MobileDockProps {
   keyboardOpen?: boolean
   /** Open the M18 snippet panel (in-place slide-up). */
   onOpenSnippets?: () => void
+  /** 📎 attach — picked files (camera / library / files) go to the upload+inject
+   *  flow (parent's `useAttachmentUpload.handleFiles`). When omitted, the 📎 chip
+   *  is hidden. */
+  onAttach?: (files: File[]) => void
+  /** The in-flight / ready attachment chips to render above the dock row
+   *  (uploading spinner → thumbnail/name, dismissible). */
+  attachments?: Attachment[]
+  /** Dismiss one attachment chip. */
+  onDismissAttachment?: (id: string) => void
   /** Registration hook the parent calls with this dock's imperative
    *  `insert(text)` once mounted, so the route-level M18 snippet panel can drop
    *  a snippet body straight into the terminal (tap-to-insert sends it live). */
@@ -349,9 +394,18 @@ export function MobileDock({
   onBlurTerm,
   keyboardOpen = false,
   onOpenSnippets,
+  onAttach,
+  attachments,
+  onDismissAttachment,
   registerInsert,
   className,
 }: MobileDockProps) {
+  // ── attach (📎) ──────────────────────────────────────────────────────────────
+  // The 📎 chip opens a native-feeling action sheet (Camera / Photo library /
+  // Files). The sheet is owned here since it's tightly coupled to the chip; the
+  // picked files flow to the parent's upload+inject engine via `onAttach`.
+  const [uploadOpen, setUploadOpen] = React.useState(false)
+
   // ── dictation ──────────────────────────────────────────────────────────────
   // The "/" slash affordance was removed (DOCK): slash commands now run from the
   // Claude Tools sheet's Commands tab (tap a command → it runs in the focused
@@ -469,6 +523,17 @@ export function MobileDock({
         className,
       )}
     >
+      {/* Attachment feedback — the in-flight / ready file chips (uploading
+          spinner → thumbnail/name, dismissible), shown the moment a file is
+          picked so the user sees what's attached BEFORE the path lands in the
+          terminal. Sits above the accessory strip + dock row. */}
+      {attachments && attachments.length > 0 && (
+        <AttachmentRow
+          attachments={attachments}
+          onDismiss={(id) => onDismissAttachment?.(id)}
+        />
+      )}
+
       {/* Accessory key strip — iOS QuickType-style, shown while the keyboard is
           open (the route pins the whole dock above the keyboard via
           `keyboardInset`). Each chip drives `sendKey` — the keys a soft keyboard
@@ -480,6 +545,15 @@ export function MobileDock({
               {label}
             </AccessoryChip>
           ))}
+          {/* 📎 attach — immediately after Ctrl-C (Ctrl-C kept). Opens the native
+              action sheet (Camera / Photo library / Files). Uses the SAME
+              focus-preserving AccessoryChip so the tap never drops the soft
+              keyboard / steals focus from xterm. */}
+          {onAttach && (
+            <AccessoryChip label="Attach a file" onTap={() => setUploadOpen(true)}>
+              <Paperclip className="size-[18px]" strokeWidth={1.75} aria-hidden />
+            </AccessoryChip>
+          )}
           <span className="h-5 w-px shrink-0 bg-border/50" aria-hidden />
           {ARROW_KEYS.map(({ key, Glyph }) => (
             <AccessoryChip
@@ -528,6 +602,12 @@ export function MobileDock({
           </DockIcon>
         )}
 
+        {onAttach && (
+          <DockIcon label="Attach a file" onClick={() => setUploadOpen(true)}>
+            <Paperclip className="size-5" strokeWidth={1.75} />
+          </DockIcon>
+        )}
+
         {dictation.supported && (
           <DockIcon
             label={dictation.listening ? 'Stop dictation' : 'Dictate'}
@@ -548,6 +628,17 @@ export function MobileDock({
             primary-tinted as the dock's one affirmative action. */}
         <EnterButton onSend={() => onSendKey('Enter')} />
       </div>
+
+      {/* The 📎 action sheet — Camera / Photo library / Files. Owned here since
+          it's tightly coupled to the dock's 📎 chip; picked files flow to the
+          parent's upload+inject engine via `onAttach`. */}
+      {onAttach && (
+        <UploadActionSheet
+          open={uploadOpen}
+          onOpenChange={setUploadOpen}
+          onFiles={onAttach}
+        />
+      )}
     </div>
   )
 }

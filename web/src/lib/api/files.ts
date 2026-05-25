@@ -159,6 +159,80 @@ export const filesApi = {
   },
 }
 
+// ── Prompt-attachment upload ("send a file/screenshot into the session") ───────
+//
+// The dedicated upload path for dropping a file/screenshot into a Claude Code
+// session: bytes go to the DATA DIR's `uploads/` (never the session cwd) via the
+// base64 `POST /api/upload` endpoint, which returns the ABSOLUTE saved path. That
+// path is then injected (quoted) into the terminal prompt so an absolute path +
+// a verb reliably triggers Claude's Read/vision tool — the one thing that works
+// for images over a remote pty.
+
+/** Server response for a single `POST /api/upload`. */
+export interface UploadResult {
+  /** Absolute on-disk path under `<data_dir>/uploads/` (injected, quoted). */
+  path: string
+  /** Sanitized display name (original filename, path-safed). */
+  name: string
+  /** Authenticated `/api/uploads/<id>` URL (unused by the prompt flow). */
+  url: string
+}
+
+/** ~5 MB — Claude's per-image cap. The client guards images here so the user
+ *  gets a friendly error instead of a model-side failure after upload. */
+export const IMAGE_PROMPT_MAX = 5 * 1024 * 1024
+
+/** Read a File as a base64 string (no `data:` prefix — the server accepts both,
+ *  but a bare payload keeps the request smaller). */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new FsError('Couldn’t read the file.', 0))
+    reader.onload = () => {
+      const result = String(reader.result)
+      // `data:<mime>;base64,<payload>` → keep only the payload.
+      const comma = result.indexOf(',')
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+/** Upload ONE file for prompt-injection. Guards images at ~5 MB client-side
+ *  (Claude's cap) with a friendly message; the server enforces the 20 MB hard
+ *  cap + path-safety + magic-byte validation for images. Resolves to the
+ *  absolute saved path. */
+export async function uploadForPrompt(file: File): Promise<UploadResult> {
+  if (file.type.startsWith('image/') && file.size > IMAGE_PROMPT_MAX) {
+    throw new FsError(
+      `“${file.name}” is over 5 MB — too large for Claude to view.`,
+      400,
+    )
+  }
+  const data = await fileToBase64(file)
+  return fsRequest<UploadResult>('/api/upload', {
+    method: 'POST',
+    body: JSON.stringify({ name: file.name, data }),
+  })
+}
+
+/** Upload SEVERAL files in parallel; resolves to each saved result in order. */
+export function uploadAllForPrompt(files: File[]): Promise<UploadResult[]> {
+  return Promise.all(files.map((f) => uploadForPrompt(f)))
+}
+
+/** Build the no-trailing-Enter prompt text injected after upload: one sentence
+ *  that quotes every absolute path so Claude's Read/vision tool fires. A
+ *  trailing space lets the user keep typing context before they hit Enter. */
+export function buildAttachmentPrompt(paths: string[]): string {
+  if (paths.length === 0) return ''
+  const quoted = paths.map((p) => `"${p}"`)
+  if (quoted.length === 1) {
+    return `Please look at this file: ${quoted[0]} `
+  }
+  return `Please look at these files: ${quoted.join(', ')} `
+}
+
 /** Resolve a session's working dir for the `/files/:name` root scope. Hits the
  *  M2/M3 sessions endpoint directly (the typed `api.getSession` is filled in by
  *  M12); returns null if it can't be resolved, so Files falls back to $HOME. */

@@ -11,7 +11,7 @@
 //! | GET    | `/api/file/raw`            | byte stream w/ Range + ETag          |
 //! | POST   | `/api/fs/upload`           | multipart upload (200 MB cap)        |
 //! | DELETE | `/api/fs/delete`           | delete a file or directory           |
-//! | POST   | `/api/upload`              | base64 single-file upload (20 MB)    |
+//! | POST   | `/api/upload`              | base64 single-file upload (20 MB) — images AND arbitrary files; returns the absolute path |
 //! | GET    | `/api/uploads/{filename}`  | serve a previously uploaded file     |
 //! | GET    | `/api/autocomplete/dir`    | dir typeahead                        |
 //!
@@ -418,6 +418,15 @@ async fn fs_delete(
 }
 
 /// `POST /api/upload` — base64 single-file upload to `<data_dir>/uploads/`.
+///
+/// Accepts BOTH images (screenshots) AND arbitrary files: when the filename
+/// claims an image extension the bytes are magic-byte validated (a `.png` must
+/// really be a PNG); any other extension is written as-is. The dedicated
+/// "send a file/screenshot into the Claude Code session" flow uses this — the
+/// returned absolute `path` is injected (quoted) into the terminal prompt so
+/// Claude's Read/vision tool picks it up. Files land in the DATA DIR's
+/// `uploads/` (never the session cwd), are purged after 24h, and are capped at
+/// 20 MB; the client additionally guards images at ~5 MB (Claude's image cap).
 async fn upload(
     State(state): State<AppState>,
     Json(body): Json<UploadBody>,
@@ -436,7 +445,9 @@ async fn upload(
 
     let safe_name = sanitize_filename(&body.name);
     let ext = extension_lower(Path::new(&safe_name));
-    // Magic-byte validation rejects fake images (a .png that is not a PNG).
+    // Magic-byte validation rejects fake images (a .png that is not a PNG) but
+    // ONLY when the filename claims an image type — arbitrary files (logs, PDFs,
+    // archives, …) are accepted as-is.
     if IMAGE_EXTS.contains(&ext.as_str()) && !looks_like_image(&bytes) {
         return Err(AppError::BadRequest("file is not a valid image".into()));
     }

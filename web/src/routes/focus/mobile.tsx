@@ -52,6 +52,7 @@ import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
+import { useAttachmentUpload } from '@/components/focus-mode/use-attachment-upload'
 
 /** Synthesize a minimal session from the route param so the terminal mounts even
  *  before the (M12) sessions query has delivered this row. */
@@ -208,6 +209,16 @@ export function MobileFocus() {
     [],
   )
 
+  // Attach a file/screenshot into the session: upload bytes → data-dir uploads/
+  // → inject the quoted absolute path (no trailing Enter) so the user can add
+  // context and send. After a successful inject we focus the terminal so the
+  // soft keyboard stays/comes up to keep typing. The chips render in the dock.
+  const sendToTerm = React.useCallback(
+    (text: string) => termRef.current?.send(text),
+    [],
+  )
+  const attach = useAttachmentUpload(sendToTerm, focusTerm)
+
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
@@ -361,6 +372,9 @@ export function MobileFocus() {
             onFocusTerm={focusTerm}
             onBlurTerm={blurTerm}
             keyboardOpen={keyboardOpen}
+            onAttach={attach.handleFiles}
+            attachments={attach.attachments}
+            onDismissAttachment={attach.dismiss}
             registerInsert={registerInsert}
           />
         </MobileSheet>
