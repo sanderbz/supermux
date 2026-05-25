@@ -14,3 +14,5 @@ playwright-report/
 .gstack/
 # Local deploy config (see .env.example)
 .env
+# Deploy artifact written by deploy.sh / deploy-self.sh (records the live SHA)
+DEPLOYED_SHA
