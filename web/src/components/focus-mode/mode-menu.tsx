@@ -13,7 +13,7 @@
 // ≥44pt trigger, reduced-motion honoured by the primitive's data-state classes.
 
 import * as React from 'react'
-import { MoreHorizontal, ShieldAlert } from 'lucide-react'
+import { ChevronDown, ShieldAlert } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
@@ -22,11 +22,6 @@ import { CONFIRM } from '@/brand/copy'
 import { sessionsApi, type SessionMode } from '@/lib/api'
 import { modeChipLabel } from '@/components/focus-mode/mode-labels'
 import { useToast } from '@/components/ui/use-toast'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -57,6 +52,7 @@ export interface ModeMenuProps {
 
 export function ModeMenu({ name, mode, className }: ModeMenuProps) {
   const current: SessionMode = mode ?? 'normal'
+  const isBypass = current === 'bypass'
   const { toast } = useToast()
   // Disable the whole menu while a switch is in flight so a double-tap can't
   // stack two relaunches / cycles. The live `session.mode` updates over SSE,
@@ -97,26 +93,37 @@ export function ModeMenu({ name, mode, className }: ModeMenuProps) {
 
   return (
     <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <motion.button
-              type="button"
-              disabled={busy}
-              whileTap={{ scale: 0.96 }}
-              transition={springs.buttonPress}
-              aria-label={`Permission mode: ${modeChipLabel(current)}`}
-              className={cn(
-                'flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary disabled:opacity-50 data-[state=open]:bg-secondary',
-                className,
-              )}
-            >
-              <MoreHorizontal className="size-4" />
-            </motion.button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent>Permission mode</TooltipContent>
-      </Tooltip>
+      {/* The trigger IS the mode badge: one element that shows the live mode
+          (color-coded) AND opens the switcher — no separate display chip + ⋯
+          button. The caret signals it's actionable; Bypass carries the calm
+          amber + shield so the consequential mode reads at a glance. Always
+          shown (it's the control), but Normal stays a quiet secondary pill so
+          the default doesn't shout. ≥44pt hit target via the `className` the
+          mobile header passes (h-11); desktop sits at h-8 inside the 44px bar. */}
+      <DropdownMenuTrigger asChild>
+        <motion.button
+          type="button"
+          disabled={busy}
+          whileTap={{ scale: 0.97 }}
+          transition={springs.buttonPress}
+          aria-label={`Permission mode: ${modeChipLabel(current)} — change`}
+          className={cn(
+            'group inline-flex h-8 shrink-0 items-center gap-1 rounded-full pl-2.5 pr-1.5',
+            'text-[12px] font-semibold leading-none transition-colors disabled:opacity-50',
+            isBypass
+              ? 'bg-status-error/15 text-status-error active:bg-status-error/25 data-[state=open]:bg-status-error/25'
+              : 'bg-secondary text-muted-foreground hover:text-foreground active:bg-secondary/70 data-[state=open]:bg-secondary data-[state=open]:text-foreground',
+            className,
+          )}
+        >
+          {isBypass && <ShieldAlert className="size-3.5 shrink-0" aria-hidden />}
+          <span className="whitespace-nowrap">{modeChipLabel(current)}</span>
+          <ChevronDown
+            className="size-3.5 shrink-0 opacity-50 transition-transform group-data-[state=open]:rotate-180"
+            aria-hidden
+          />
+        </motion.button>
+      </DropdownMenuTrigger>
 
       <DropdownMenuContent align="end" className="min-w-52">
         <DropdownMenuLabel className="text-muted-foreground">
