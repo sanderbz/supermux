@@ -255,7 +255,7 @@ export function BoardComposer({ onAdd, onAddAndStart }: BoardComposerProps) {
           aria-expanded={moreOpen}
           aria-controls={moreId}
           onClick={() => setMoreOpen((v) => !v)}
-          className="inline-flex h-9 items-center gap-1 self-start rounded-md px-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          className="-my-1 inline-flex h-11 items-center gap-1 self-start rounded-md px-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
         >
           <motion.span
             animate={{ rotate: moreOpen ? 180 : 0 }}

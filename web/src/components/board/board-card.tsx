@@ -252,9 +252,9 @@ export function BoardCard({
         'group relative flex min-h-[44px] w-full cursor-pointer select-none flex-col gap-2 rounded-[10px] border bg-background/80 p-3 text-left shadow-sm',
         'transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         needsInput
-          ? 'border-status-waiting/60'
+          ? 'border-warning/60'
           : needsReview
-            ? 'border-status-ready/50'
+            ? 'border-warning/35'
             : 'border-border',
         isDragging && 'opacity-40',
       )}
@@ -373,14 +373,14 @@ export function BoardCard({
       {(needsInput || needsReview || staleLink) && (
         <div className="flex flex-wrap items-center gap-1.5">
           {needsInput && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-status-waiting/15 px-2 py-0.5 text-[11px] font-semibold text-status-waiting">
-              <span className="size-1.5 shrink-0 rounded-full bg-status-waiting" />
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-semibold text-warning">
+              <span className="size-1.5 shrink-0 rounded-full bg-warning" />
               Needs your input
             </span>
           )}
           {needsReview && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-status-ready/15 px-2 py-0.5 text-[11px] font-medium text-status-ready">
-              <span className="size-1.5 shrink-0 rounded-full bg-status-ready" />
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning/80">
+              <span className="size-1.5 shrink-0 rounded-full bg-warning/70" />
               Review?
             </span>
           )}
@@ -395,7 +395,7 @@ export function BoardCard({
       {/* The agent's question (needs-input) — shown verbatim so the human can
           answer without opening the terminal. */}
       {question && (
-        <p className="rounded-lg bg-status-waiting/10 px-2.5 py-1.5 text-[13px] leading-snug text-foreground">
+        <p className="rounded-lg bg-warning/10 px-2.5 py-1.5 text-[13px] leading-snug text-foreground">
           {question}
         </p>
       )}
@@ -633,7 +633,7 @@ function ReplyComposer({
         }}
         className={cn(
           'min-h-[36px] flex-1 resize-none rounded-md border bg-background px-2.5 py-2 text-[13px] leading-snug shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          emphasized ? 'border-status-waiting/50' : 'border-input',
+          emphasized ? 'border-warning/50' : 'border-input',
         )}
       />
       <button
