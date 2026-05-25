@@ -393,10 +393,16 @@ function CopyableMono({
   )
 
   const copy = () => {
-    void navigator.clipboard?.writeText(value)
-    setCopied(true)
-    if (timer.current) clearTimeout(timer.current)
-    timer.current = setTimeout(() => setCopied(false), 1500)
+    // Only flash "Copied" on a real success — writeText rejects under denied
+    // permission / an insecure context, and a false ✓ would mislead.
+    void navigator.clipboard
+      ?.writeText(value)
+      .then(() => {
+        setCopied(true)
+        if (timer.current) clearTimeout(timer.current)
+        timer.current = setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {})
   }
 
   return (
