@@ -292,6 +292,17 @@ pub async fn start(
 
     let freshly_spawned = !tmux.exists().await?;
     if freshly_spawned {
+        // A genuinely new tmux pane is about to exist for this name. Drop any
+        // cached live pty stream first: it is bound to a PRIOR (now-dead) pane,
+        // and because the new session reuses the same name the stream's liveness
+        // poll would never invalidate it on its own. `stop` already does this on
+        // the restart path; this also covers a start that follows an external
+        // pane death (auto-wake, a crash the reader hasn't noticed yet) so the
+        // first WS attach after start always rebuilds against the NEW pane.
+        // A SERVER restart starts with an empty registry and never hits this
+        // `freshly_spawned` branch (it re-attaches to the surviving session), so
+        // session-survival is untouched.
+        state.pty_invalidate(name);
         tmux.new_session(&dir, &env, &shell).await?;
     }
 
@@ -434,6 +445,18 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     if let Err(e) = tmux.kill_session().await {
         emit_alert(state, name, "error", &format!("stop teardown failed: {e}"));
     }
+
+    // 4b. Invalidate the cached live pty stream. The tmux pane this stream's
+    // FIFO/`pipe-pane` was bound to is now dead. A subsequent `start` recreates
+    // the SAME tmux session name, so the reader's `tmux has-session` liveness
+    // poll would NOT trip — without this the streamer keeps reusing the stale
+    // stream, every WS (even a fresh one) replays the OLD pane's last frame, and
+    // the new pane's output never appears (the restart-reattach bug). Dropping +
+    // shutting it down here means the next attach rebuilds a fresh stream against
+    // the NEW pane and any already-open WS reconnects onto it. A SERVER restart
+    // never reaches this code path, so session-survival is unaffected.
+    state.pty_invalidate(name);
+
     db::sessions::set_last_status(&state.pool, name, "stopped").await?;
     // R2: stopping the agent doesn't archive the row (the link stays live), but
     // the board card mirrors the linked session's state — re-publish so a linked
