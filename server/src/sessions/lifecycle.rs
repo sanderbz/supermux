@@ -154,6 +154,22 @@ fn at_resume_picker(capture: &str) -> bool {
     c.contains("resume a conversation") || c.contains("select a session") || c.contains("conversation to resume")
 }
 
+/// Heuristic: is Claude blocking on its first-run "Do you trust the files in
+/// this folder?" workspace-trust dialog? This appears the FIRST time Claude is
+/// launched in a directory it has never seen (its path is absent from
+/// `~/.claude.json`'s `projects`). It is a SEPARATE gate from permission prompts
+/// — `--dangerously-skip-permissions` does NOT skip it — so a freshly-cloned
+/// project dir (e.g. developing supermux on the server) would otherwise hang
+/// here forever, never reaching the `❯` prompt, and the panel shows "claude
+/// won't render". We detect it and auto-accept (Enter on the default "Yes, I
+/// trust this folder"), which also records the dir as trusted so it never
+/// reappears for that path.
+fn at_trust_dialog(capture: &str) -> bool {
+    let c = capture.to_lowercase();
+    (c.contains("trust the files") || c.contains("trust this folder") || c.contains("do you trust"))
+        || (c.contains("safety check") && c.contains("trust"))
+}
+
 /// Confirm the pane shell is live (and let it print a prompt).
 async fn settle_shell(tmux: &Tmux<'_>) -> bool {
     for _ in 0..10 {
@@ -167,14 +183,26 @@ async fn settle_shell(tmux: &Tmux<'_>) -> bool {
 }
 
 /// Poll `capture-pane` for up to 10s for the agent UI; one resume-picker escape
-/// fallback (Escape Escape C-c + clear cc ids) per feature-extract §1.5.
+/// fallback (Escape Escape C-c + clear cc ids) per feature-extract §1.5, and one
+/// trust-dialog auto-accept (Enter on the default "Yes, I trust this folder") so
+/// a first-launch in a never-seen project dir does not hang forever.
 async fn wait_for_agent_ready(tmux: &Tmux<'_>, state: &AppState, name: &str) -> bool {
     let mut escaped = false;
+    let mut trusted = false;
     for _ in 0..10 {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if let Ok(cap) = tmux.capture_pane(40).await {
             if agent_ui_visible(&cap) {
                 return true;
+            }
+            // The trust dialog defaults to "1. Yes, I trust this folder"; a bare
+            // Enter accepts it (and persists the trust so it never reappears).
+            // Do this BEFORE the resume-picker check: the trust gate precedes
+            // every other screen, including the picker.
+            if !trusted && at_trust_dialog(&cap) {
+                let _ = tmux.send_key("Enter").await;
+                trusted = true;
+                continue;
             }
             if !escaped && at_resume_picker(&cap) {
                 let _ = tmux.send_key("Escape").await;
@@ -902,6 +930,43 @@ static KEY_ALLOWLIST: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     }
     s
 });
+
+#[cfg(test)]
+mod agent_ready_heuristics_tests {
+    //! The capture-scan heuristics that drive `wait_for_agent_ready` are pure
+    //! string predicates, so the trust-dialog / resume-picker / UI-visible
+    //! detection is unit-tested directly (no real tmux needed).
+    use super::*;
+
+    #[test]
+    fn detects_claude_trust_dialog() {
+        // Verbatim shape of Claude's first-run workspace-trust prompt.
+        let cap = "Accessing workspace:\n /opt/projects/supermux\n Quick safety check: \
+                   Is this a project you created or one you trust?\n \
+                   ❯ 1. Yes, I trust this folder\n   2. No, exit";
+        assert!(at_trust_dialog(cap), "must catch the trust dialog");
+        // The trust dialog is NOT the agent UI — the ❯ here is the menu cursor,
+        // but the dialog text must take precedence so we accept it, not treat
+        // the session as ready.
+        assert!(at_trust_dialog(cap));
+    }
+
+    #[test]
+    fn trust_dialog_does_not_false_positive_on_normal_ui() {
+        let normal = "❯ Try \"fix type check errors\"\n  ⏵⏵ bypass permissions on";
+        assert!(!at_trust_dialog(normal));
+        assert!(agent_ui_visible(normal));
+        // Resume picker is distinct from the trust dialog.
+        assert!(!at_trust_dialog("Resume a conversation"));
+    }
+
+    #[test]
+    fn detects_resume_picker_and_ui() {
+        assert!(at_resume_picker("Select a session to resume"));
+        assert!(agent_ui_visible("? for shortcuts"));
+        assert!(!at_resume_picker("Yes, I trust this folder"));
+    }
+}
 
 #[cfg(test)]
 mod mode_cycle_tests {
