@@ -41,6 +41,12 @@ export function QuickPeekModal({
   const qc = useQueryClient()
   const { toast } = useToast()
   const [busy, setBusy] = React.useState(false)
+  // Bumped after a Restart completes to force the live pane to REMOUNT. A stop
+  // closes the terminal WS with a terminal (no-retry) code, and nothing else
+  // re-subscribes the already-mounted <LiveTerminal> — so without this the pane
+  // stays frozen on "Session stopped" after Restart. Keying the terminal on this
+  // nonce tears it down and opens a fresh WS to the NEW pty once start resolves.
+  const [restartNonce, setRestartNonce] = React.useState(0)
   const isStopped = session.status === 'stopped'
 
   const refresh = React.useCallback(
@@ -69,10 +75,12 @@ export function QuickPeekModal({
     setBusy(true)
     try {
       // Restart = stop (no-op/ignored if already stopped) then start; the server
-      // resumes the same conversation. The live terminal reconnects on its own.
+      // resumes the same conversation. Bump the nonce so the live pane remounts
+      // onto the freshly-started pty (its old WS was closed terminally by stop).
       await focusApi.stopSession(session.name).catch(() => {})
       await focusApi.startSession(session.name)
       refresh()
+      setRestartNonce((n) => n + 1)
       toast({ message: 'Session restarting', tone: 'active' })
     } catch (e) {
       toast({ message: e instanceof Error ? e.message : 'Restart failed.', tone: 'error' })
@@ -134,6 +142,9 @@ export function QuickPeekModal({
             ) : (
               <div className="absolute inset-0">
                 <LiveTerminal
+                  // Remount across a Restart so a fresh WS connects to the new
+                  // pty (the old one was closed terminally — it never retries).
+                  key={`${session.name}:${restartNonce}`}
                   name={session.name}
                   readOnly
                   className="rounded-none"
@@ -154,8 +165,9 @@ export function QuickPeekModal({
   )
 }
 
-/** A compact peek action chip — icon + label, ≥44pt hit area, soft iOS fill.
- *  `destructive` tints it red for Stop. */
+/** A compact peek action chip — icon + label. The tappable box is h-11 (44pt,
+ *  the iOS HIG minimum) while `-my-1` keeps the visual chip ~36pt so the header
+ *  stays tight. `destructive` tints it red for Stop. */
 function PeekAction({
   label,
   icon: Icon,
@@ -176,7 +188,7 @@ function PeekAction({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'flex h-9 shrink-0 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium disabled:opacity-40',
+        '-my-1 flex h-11 shrink-0 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium disabled:opacity-40',
         tone === 'destructive'
           ? 'text-destructive active:bg-destructive/10'
           : 'text-foreground/80 active:bg-secondary',
