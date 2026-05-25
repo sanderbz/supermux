@@ -252,7 +252,7 @@ function EditorForm({
 
 // ── Acceptance checklist (human edits/reorders; agent ticks live over SSE) ────
 
-function AcceptanceChecklist({
+export function AcceptanceChecklist({
   issueId,
   items,
 }: {

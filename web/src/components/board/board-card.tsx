@@ -123,6 +123,10 @@ export interface BoardCardProps {
   onDiscard: (issue: BoardIssue) => void
   /** True while this card is the drag source (dims the placeholder slot). */
   isDragging?: boolean
+  /** True when this card is the one open in the desktop detail pane (lg+). Draws
+   *  a calm primary ring so the selection reads at a glance. Meaningless on
+   *  mobile (the pane is hidden), so it's only ever set on a fine pointer. */
+  isSelected?: boolean
   /** Disable swipe-to-discard while a drag is armed (avoids gesture conflict). */
   draggable?: boolean
   dragAttributes?: DraggableAttributes
@@ -157,6 +161,7 @@ export function BoardCard({
   onReply,
   onDiscard,
   isDragging,
+  isSelected,
   draggable = true,
   dragAttributes,
   dragListeners,
@@ -229,9 +234,13 @@ export function BoardCard({
           }
         : {})}
       onClick={() => {
-        // Tap → open the editor (To do) or focus terminal (Doing). Done cards
-        // open the editor too (read calm details / restore acceptance).
-        if (isDoing) onFocus(issue)
+        // Tap routing. On a COARSE pointer (mobile) a Doing card morphs straight
+        // to the focus terminal (unchanged); To do / Done open the editor sheet.
+        // On a FINE pointer (desktop) EVERY card opens via `onOpen` — the route
+        // sends that to the mission-control detail pane (which itself has an
+        // "Open terminal" affordance), so a Doing click reads + watches + replies
+        // in-context instead of leaving the board.
+        if (isDoing && !fine) onFocus(issue)
         else onOpen(issue)
       }}
       onKeyDown={(e) => {
@@ -242,7 +251,7 @@ export function BoardCard({
         if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          if (isDoing) onFocus(issue)
+          if (isDoing && !fine) onFocus(issue)
           else onOpen(issue)
         }
       }}
@@ -256,6 +265,10 @@ export function BoardCard({
           : needsReview
             ? 'border-warning/35'
             : 'border-border',
+        // Selected in the desktop detail pane (lg+) — a calm primary ring. Drawn
+        // last so it wins over the resting border; harmless on mobile (the pane
+        // is hidden, so `isSelected` is never set there).
+        isSelected && 'border-primary/50 ring-2 ring-primary/50',
         isDragging && 'opacity-40',
       )}
     >
@@ -552,8 +565,9 @@ function CardIconButton({
 /** The compact inline reply field on a Doing card. Collapsed to a single
  *  "Reply" chip until tapped (or auto-expanded on needs-input). Type → Send →
  *  delivers straight into the agent's session via the board /reply endpoint;
- *  sending clears the needs-input state (handled by the mutation). */
-function ReplyComposer({
+ *  sending clears the needs-input state (handled by the mutation). Exported so
+ *  the desktop detail pane reuses the exact same drag-safe composer. */
+export function ReplyComposer({
   issue,
   expanded,
   emphasized,

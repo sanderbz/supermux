@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   closestCorners,
@@ -35,8 +35,10 @@ import { type BoardIssue, type NewBoardIssue } from '@/lib/api'
 import { BoardCard } from '@/components/board/board-card'
 import { BoardComposer } from '@/components/board/board-composer'
 import { BoardCardEditor } from '@/components/board/board-card-editor'
+import { BoardDetailPane } from '@/components/board/board-detail-pane'
 import { BoardSkeleton } from '@/components/board/board-skeleton'
 import { midpointPos } from '@/components/board/pos'
+import { useMediaQuery } from '@/hooks/use-media-query'
 
 /** The three fixed lanes (BM2 §1). No add/rename/delete column UI — these are
  *  the whole board. Lane ids map to the backend column ids {todo,doing,done}. */
@@ -63,7 +65,14 @@ export function Board() {
   const navigateMorph = useNavigateMorph()
 
   const [editId, setEditId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showAllDone, setShowAllDone] = useState(false)
+
+  // A fine pointer (desktop trackpad/mouse) → the master–detail pane is shown
+  // (lg+ in the layout); a coarse pointer (touch) → the existing edit sheet.
+  // Drives the card-tap fork below at the ROUTE level so the card click handlers
+  // stay untouched.
+  const fine = useMediaQuery('(pointer: fine)')
 
   // The live card behind the open editor — re-derived from the cache so SSE
   // pushes (acceptance ticks, links) flow into the open sheet in place.
@@ -71,6 +80,25 @@ export function Board() {
     () => board.issues.find((i) => i.id === editId) ?? null,
     [board.issues, editId],
   )
+
+  // The live card open in the desktop detail pane — re-derived from the cache
+  // the same way, so live agent deltas (status, comments, acceptance, the live
+  // tail) flow into the open pane in place. If the selected card disappears from
+  // the cache this returns null and the pane empties gracefully.
+  const selectedIssue = useMemo(
+    () => board.issues.find((i) => i.id === selectedId) ?? null,
+    [board.issues, selectedId],
+  )
+
+  // Esc clears the desktop selection (only meaningful when the pane is open).
+  useEffect(() => {
+    if (!selectedId) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedId(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectedId])
 
   // Group issues into the three lanes. Anything in an unexpected/legacy column
   // (a leftover custom column the backend hasn't folded yet) is shown under
@@ -325,30 +353,52 @@ export function Board() {
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
-          <div className="flex h-full gap-3 overflow-x-auto pb-2 [scrollbar-width:thin]">
-            {LANES.map((lane) => (
-              <LaneColumn
-                key={lane.id}
-                lane={lane.id}
-                label={lane.label}
-                list={laneList(lane.id)}
-                count={byLane[lane.id].length}
-                dropTarget={dropTarget}
-                activeId={activeId}
-                showAllDone={showAllDone}
-                onShowAllDone={() => setShowAllDone(true)}
-                composer={
-                  lane.id === 'todo' ? (
-                    <BoardComposer onAdd={onAdd} onAddAndStart={onAddAndStart} />
-                  ) : null
-                }
-                onOpen={(i) => setEditId(i.id)}
-                onFocus={openFocus}
-                onStart={(i) => void startIssue(i)}
-                onReply={replyIssue}
-                onDiscard={discardIssue}
-              />
-            ))}
+          <div className="flex h-full min-h-0 gap-4">
+            <div
+              className="flex h-full min-w-0 flex-1 gap-3 overflow-x-auto pb-2 [scrollbar-width:thin] lg:max-w-[1100px]"
+              // Clicking the lane-row background (not a card) clears the desktop
+              // selection. Cards stopPropagation on their own pointer/click, so
+              // only true empty-space clicks reach here.
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setSelectedId(null)
+              }}
+            >
+              {LANES.map((lane) => (
+                <LaneColumn
+                  key={lane.id}
+                  lane={lane.id}
+                  label={lane.label}
+                  list={laneList(lane.id)}
+                  count={byLane[lane.id].length}
+                  dropTarget={dropTarget}
+                  activeId={activeId}
+                  selectedId={selectedId}
+                  showAllDone={showAllDone}
+                  onShowAllDone={() => setShowAllDone(true)}
+                  onDeselect={() => setSelectedId(null)}
+                  composer={
+                    lane.id === 'todo' ? (
+                      <BoardComposer onAdd={onAdd} onAddAndStart={onAddAndStart} />
+                    ) : null
+                  }
+                  onOpen={(i) => (fine ? setSelectedId(i.id) : setEditId(i.id))}
+                  onFocus={openFocus}
+                  onStart={(i) => void startIssue(i)}
+                  onReply={replyIssue}
+                  onDiscard={discardIssue}
+                />
+              ))}
+            </div>
+
+            <BoardDetailPane
+              className="hidden shrink-0 lg:flex lg:w-[460px] xl:w-[540px]"
+              issue={selectedIssue}
+              onClose={() => setSelectedId(null)}
+              onEdit={(i) => setEditId(i.id)}
+              onFocus={openFocus}
+              onReply={replyIssue}
+              onDiscard={discardIssue}
+            />
           </div>
 
           <DragOverlay dropAnimation={null}>
@@ -407,8 +457,10 @@ function LaneColumn({
   count,
   dropTarget,
   activeId,
+  selectedId,
   showAllDone,
   onShowAllDone,
+  onDeselect,
   composer,
   onOpen,
   onFocus,
@@ -422,8 +474,10 @@ function LaneColumn({
   count: number
   dropTarget: DropSlot | null
   activeId: string | null
+  selectedId: string | null
   showAllDone: boolean
   onShowAllDone: () => void
+  onDeselect: () => void
   composer: React.ReactNode
   onOpen: (issue: BoardIssue) => void
   onFocus: (issue: BoardIssue) => void
@@ -444,6 +498,10 @@ function LaneColumn({
       data-column-id={lane}
       className={cn(
         'flex w-[300px] shrink-0 flex-col rounded-xl border bg-card/40 transition-colors',
+        // Desktop (lg+): drop the fixed 300px for a comfortable fluid 300–360px
+        // within the bounded left region, so 3 lanes spread across the width
+        // instead of clustering with a dead right gutter. Mobile keeps w-[300px].
+        'lg:w-auto lg:min-w-[300px] lg:max-w-[360px] lg:flex-1',
         isDropCol ? 'border-primary/60 bg-primary/5' : 'border-border',
       )}
     >
@@ -457,6 +515,11 @@ function LaneColumn({
       <div
         ref={setNodeRef}
         className="flex flex-1 touch-pan-x touch-pan-y flex-col gap-2 overflow-y-auto px-2 pb-2 [scrollbar-width:thin]"
+        // Clicking the column's empty background clears the desktop selection.
+        // Cards/controls stopPropagation, so only true empty-space taps reach here.
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onDeselect()
+        }}
       >
         {composer && <div className="px-0.5 pt-0.5">{composer}</div>}
 
@@ -479,6 +542,7 @@ function LaneColumn({
                   issue={issue}
                   lane={lane}
                   activeId={activeId}
+                  isSelected={issue.id === selectedId}
                   onOpen={onOpen}
                   onFocus={onFocus}
                   onStart={onStart}
@@ -513,6 +577,7 @@ function SortableCard({
   issue,
   lane,
   activeId,
+  isSelected,
   onOpen,
   onFocus,
   onStart,
@@ -522,6 +587,7 @@ function SortableCard({
   issue: BoardIssue
   lane: Lane
   activeId: string | null
+  isSelected: boolean
   onOpen: (issue: BoardIssue) => void
   onFocus: (issue: BoardIssue) => void
   onStart: (issue: BoardIssue) => void
@@ -555,6 +621,7 @@ function SortableCard({
         onReply={onReply}
         onDiscard={onDiscard}
         isDragging={isDragging || activeId === issue.id}
+        isSelected={isSelected}
       />
     </div>
   )
