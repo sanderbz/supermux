@@ -6,7 +6,7 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
   TouchSensor,
   useDroppable,
   useSensor,
@@ -99,16 +99,19 @@ export function Board() {
   }, [board.issues, board.statuses])
 
   // ── @dnd-kit drag controller (matches the overview's sensor setup) ──────────
-  // Standard, library-blessed drag-vs-scroll: the TouchSensor only arms a drag
-  // after a 250ms press-and-hold (within a 5px tolerance), so a quick vertical
-  // swipe falls through to the column's native `overflow-y-auto` scroll instead
-  // of being captured as a drag — the bug the old custom pointer controller
-  // caused. Desktop is a PointerSensor with a small distance constraint so a
-  // press-move drags exactly as it did before (the old DRAG_THRESHOLD = 6px).
+  // MOUSE + TOUCH, never PointerSensor. On iOS Safari a single finger fires BOTH
+  // `pointerdown` AND `touchstart`; a registered PointerSensor (no delay, small
+  // distance) claims that pointer first, then `touch-action` lets the browser
+  // begin native scrolling and fire `pointercancel` — aborting the would-be drag
+  // before the TouchSensor's long-press can ever arm. Net: touch drag never
+  // started on iOS. Splitting into a MouseSensor (mouse events only — ignores
+  // touch entirely) + TouchSensor (touch events only) lets the long-press own
+  // touch cleanly, exactly as the working overview route does. Desktop keeps a
+  // small distance constraint so a click/tap-to-open never accidentally drags.
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      // 6px activation distance == the old DRAG_THRESHOLD, so a click/tap on the
-      // card (which opens the sheet) never accidentally starts a drag.
+    useSensor(MouseSensor, {
+      // 6px activation distance == the old DRAG_THRESHOLD, so a click on the card
+      // (which opens the sheet) never accidentally starts a drag.
       activationConstraint: { distance: 6 },
     }),
     useSensor(TouchSensor, {
