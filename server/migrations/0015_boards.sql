@@ -45,11 +45,18 @@ VALUES ('main', 'Main', 'main', NULL, CAST(strftime('%s','now') AS INTEGER), 0);
 
 -- 3. add `board_id` to issues and backfill every existing card onto 'main'.
 --    `DEFAULT 'main'` covers the backfill in one ALTER (every existing row reads
---    'main'); new inserts that omit board_id also land on 'main'. The FK keeps a
---    card's board valid and CASCADE-cleans a deleted team board's cards.
+--    'main'); new inserts that omit board_id also land on 'main'.
+--
+--    NB: the column is added WITHOUT an inline `REFERENCES boards(id)`. SQLite
+--    REFUSES `ALTER TABLE ... ADD COLUMN ... REFERENCES ... DEFAULT '<non-null>'`
+--    when `PRAGMA foreign_keys=ON` (the runtime connection sets it — db/mod.rs):
+--    "Cannot add a REFERENCES column with non-NULL default value". A declared FK
+--    here would only matter for ON DELETE CASCADE of a deleted team board's cards,
+--    which we instead provide via the trigger below — same behaviour, and legal to
+--    apply on the live DB. Referential validity of board_id is enforced by the API
+--    (board_id is always a validated existing board).
 ALTER TABLE issues
-    ADD COLUMN board_id TEXT NOT NULL DEFAULT 'main'
-    REFERENCES boards(id) ON DELETE CASCADE;
+    ADD COLUMN board_id TEXT NOT NULL DEFAULT 'main';
 
 -- Explicit backfill belt-and-braces: any row whose board_id somehow isn't 'main'
 -- (it can't be, given the DEFAULT, but this guards a re-applied/odd state) is
@@ -59,3 +66,13 @@ UPDATE issues SET board_id = 'main' WHERE board_id IS NULL OR board_id = '';
 -- Index the new scoping column: the board list query filters by board_id, so the
 -- per-board load stays indexed (mirrors idx_issues_status / idx_issues_session).
 CREATE INDEX idx_issues_board ON issues(board_id, status, deleted, pos);
+
+-- Cascade a deleted board's cards (replaces the inline FK ON DELETE CASCADE that
+-- SQLite won't let us declare via ADD COLUMN under foreign_keys=ON). Deleting a
+-- team board (the Main board is API-protected from deletion) removes its cards,
+-- exactly as AT-C's board-delete + AT-G's team deregister expect.
+CREATE TRIGGER trg_board_delete_cascade_issues
+AFTER DELETE ON boards
+BEGIN
+    DELETE FROM issues WHERE board_id = OLD.id;
+END;
