@@ -11,7 +11,7 @@ import { listBoardSessions, type BoardSession, type NewBoardIssue } from '@/lib/
 
 /** The agent providers a spawned session can run (mirrors the new-session sheet
  *  + the server's session providers). */
-const PROVIDERS = ['claude', 'codex', 'shell'] as const
+const PROVIDERS = ['claude', 'shell'] as const
 type Provider = (typeof PROVIDERS)[number]
 
 /** SD-3: remember the last-picked agent across cards (and reloads) so the next

@@ -307,7 +307,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
               <fieldset className="flex flex-col gap-2">
                 <legend className="mb-1 text-sm font-medium">Provider</legend>
                 <div className="flex gap-2">
-                  {(['claude', 'codex', 'shell'] as const).map((p) => (
+                  {(['claude', 'shell'] as const).map((p) => (
                     <button
                       key={p}
                       type="button"

@@ -292,7 +292,7 @@ export interface SetModeResult {
 export interface NewSession {
   name: string
   dir: string
-  provider?: 'claude' | 'codex' | 'shell'
+  provider?: 'claude' | 'shell'
   desc?: string
   worktree?: boolean
   command?: string
