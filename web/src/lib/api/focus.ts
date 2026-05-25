@@ -17,4 +17,11 @@ export const focusApi = {
     settingsRequest(`/api/sessions/${encodeURIComponent(name)}/stop`, {
       method: 'POST',
     }),
+
+  /** POST `/api/sessions/:name/start` — (re)launch a stopped session (resumes the
+   *  same conversation when one exists). Pairs with `stopSession` for "restart". */
+  startSession: (name: string): Promise<void> =>
+    settingsRequest(`/api/sessions/${encodeURIComponent(name)}/start`, {
+      method: 'POST',
+    }),
 }

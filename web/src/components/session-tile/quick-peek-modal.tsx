@@ -1,6 +1,14 @@
+import * as React from 'react'
 import { Drawer } from 'vaul'
-import { X } from 'lucide-react'
+import { X, Square, RotateCcw } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 
+import { cn } from '@/lib/utils'
+import { CONFIRM } from '@/brand/copy'
+import { focusApi } from '@/lib/api/focus'
+import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import { useToast } from '@/components/ui/use-toast'
+import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StatusDot } from './status-dot'
 import { TailPreview } from './tail-preview'
 import type { TileSession } from './types'
@@ -11,20 +19,68 @@ export interface QuickPeekModalProps {
   onOpenChange: (open: boolean) => void
 }
 
-/** Mobile long-press quick-peek (§4.3). A Vaul half-sheet over the overview,
- *  current session, no input. Close = X or backdrop tap. Glass material
- *  (`bg-card/85 backdrop-blur-xl`) per Termius `.regularMaterial`.
+/** Mobile long-press quick-peek (§4.3). A Vaul half-sheet over the overview —
+ *  the ONLY surface this renders on (touch/coarse-pointer press-hold of a tile;
+ *  the desktop hover-peek is a separate path, `TileLiveTerminal`, untouched).
  *
- *  v1 (M11): renders an expanded static tail of the session. The half-sheet,
- *  header, glass, and teardown wiring are final — when M13 lands, swap the
- *  `<TailPreview fill>` below for a read-only `<LiveTerminal name={session.name} />`
- *  (disable `term.onData`); it establishes a real WS sub and tears down on close
- *  because this subtree only mounts while `open`. */
+ *  Shows the session's REAL terminal in colour: a running session mounts a
+ *  read-only `<LiveTerminal>` (full ANSI palette + live content + scrollback) —
+ *  the same renderer the desktop peek uses — so the peek is no longer a flat,
+ *  colourless text tail. A stopped session has no live pane, so it falls back to
+ *  the static `<TailPreview>` (its last captured tail). The WS opens only while
+ *  the sheet is mounted and tears down on close (this subtree unmounts).
+ *
+ *  Carries the two session actions that aren't reachable elsewhere on mobile:
+ *  Restart (stop→start, resumes the same chat) and Stop (confirms first). Both
+ *  refresh the shared `['sessions']` cache so the overview reflects the change. */
 export function QuickPeekModal({
   session,
   open,
   onOpenChange,
 }: QuickPeekModalProps) {
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  const [busy, setBusy] = React.useState(false)
+  const isStopped = session.status === 'stopped'
+
+  const refresh = React.useCallback(
+    () => void qc.invalidateQueries({ queryKey: SESSIONS_KEY }),
+    [qc],
+  )
+
+  const doStop = React.useCallback(async () => {
+    if (busy) return
+    const c = CONFIRM.killSession
+    if (!window.confirm(`${c.title}\n\n${c.body}`)) return
+    setBusy(true)
+    try {
+      await focusApi.stopSession(session.name)
+      refresh()
+      toast({ message: 'Session stopped', tone: 'waiting' })
+    } catch (e) {
+      toast({ message: e instanceof Error ? e.message : 'Stop failed.', tone: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, session.name, refresh, toast])
+
+  const doRestart = React.useCallback(async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      // Restart = stop (no-op/ignored if already stopped) then start; the server
+      // resumes the same conversation. The live terminal reconnects on its own.
+      await focusApi.stopSession(session.name).catch(() => {})
+      await focusApi.startSession(session.name)
+      refresh()
+      toast({ message: 'Session restarting', tone: 'active' })
+    } catch (e) {
+      toast({ message: e instanceof Error ? e.message : 'Restart failed.', tone: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, session.name, refresh, toast])
+
   return (
     <Drawer.Root open={open} onOpenChange={onOpenChange}>
       <Drawer.Portal>
@@ -38,6 +94,24 @@ export function QuickPeekModal({
             <Drawer.Title className="min-w-0 flex-1 truncate text-sm font-medium">
               {session.task_summary || session.name}
             </Drawer.Title>
+
+            {/* Session actions — Restart + Stop (the two controls with no other
+                mobile home). Small, iOS-native; Stop is destructive + disabled
+                once already stopped. */}
+            <PeekAction
+              label="Restart"
+              icon={RotateCcw}
+              onClick={doRestart}
+              disabled={busy}
+            />
+            <PeekAction
+              label="Stop"
+              icon={Square}
+              onClick={doStop}
+              disabled={busy || isStopped}
+              tone="destructive"
+            />
+
             <button
               type="button"
               aria-label="Close peek"
@@ -52,13 +126,64 @@ export function QuickPeekModal({
           </Drawer.Description>
 
           <div
-            className="mx-3 mb-3 min-h-0 flex-1 overflow-hidden rounded-xl"
+            className="relative mx-3 mb-3 min-h-0 flex-1 overflow-hidden rounded-xl"
             style={{ backgroundColor: 'var(--terminal-bg)' }}
           >
-            <TailPreview lines={session.preview_lines} fill className="py-2" />
+            {isStopped ? (
+              <TailPreview lines={session.preview_lines} fill className="py-2" />
+            ) : (
+              <div className="absolute inset-0">
+                <LiveTerminal
+                  name={session.name}
+                  readOnly
+                  className="rounded-none"
+                  // Seed the instant cached-screen overlay with the tile's OWN
+                  // last capture (SGR-coloured `preview_ansi`, plain
+                  // `preview_lines` fallback) so the peek shows the real coloured
+                  // screen the moment it opens — no blank-black flash while the
+                  // WS connects, then it crossfades to live once pinned.
+                  previewAnsi={session.preview_ansi}
+                  previewLines={session.preview_lines}
+                />
+              </div>
+            )}
           </div>
         </Drawer.Content>
       </Drawer.Portal>
     </Drawer.Root>
+  )
+}
+
+/** A compact peek action chip — icon + label, ≥44pt hit area, soft iOS fill.
+ *  `destructive` tints it red for Stop. */
+function PeekAction({
+  label,
+  icon: Icon,
+  onClick,
+  disabled,
+  tone = 'default',
+}: {
+  label: string
+  icon: typeof Square
+  onClick: () => void
+  disabled?: boolean
+  tone?: 'default' | 'destructive'
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={`${label} session`}
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'flex h-9 shrink-0 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium disabled:opacity-40',
+        tone === 'destructive'
+          ? 'text-destructive active:bg-destructive/10'
+          : 'text-foreground/80 active:bg-secondary',
+      )}
+    >
+      <Icon className="size-4" />
+      {label}
+    </button>
   )
 }
