@@ -235,6 +235,11 @@ export function BoardCard({
         else onOpen(issue)
       }}
       onKeyDown={(e) => {
+        // Only the card ITSELF responds to Enter/Space. A keydown bubbling up
+        // from a child control (the inline reply textarea, the action buttons)
+        // must not trigger card-open — otherwise typing Enter or a space while
+        // replying to the agent navigates away to the terminal.
+        if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           if (isDoing) onFocus(issue)
