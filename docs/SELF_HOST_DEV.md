@@ -10,22 +10,36 @@ restart.
 
 - **No bricking.** `scripts/deploy-self.sh` builds *first*. If the build fails,
   the running service is never touched and keeps serving the old binary. The
-  privileged install+restart step backs up the current binary, installs the new
-  one, restarts, then verifies `systemctl is-active` **and** the loopback
-  `/api/health`. If the new build fails to come up, it **rolls back** to the
-  backed-up binary and restarts — prod cannot be left down.
+  root runner then backs up the current binary, installs the new one, restarts,
+  then verifies `systemctl is-active` **and** the loopback `/api/health`. If the
+  new build fails to come up, it **rolls back** to the backed-up binary and
+  restarts — prod cannot be left down. The runner streams its progress to a log
+  file in the data dir, which `deploy-self.sh` tails so you watch
+  backup/install/restart/rollback live.
 - **Session survival.** The supermux unit uses `KillMode=process` and anchors
   `TMUX_TMPDIR` in the persistent data dir (`~/.supermux/tmux`). A
   `systemctl restart supermux` therefore leaves the tmux server (and every
   session, including the one running the deploy) alive. The new server process
   reattaches to them on boot (`reconcile_on_boot`).
-- **Least privilege.** The service user has no general sudo. The only privileged
-  action it can take is one fixed, root-owned helper
-  (`/usr/local/sbin/supermux-deploy-self`), granted by a scoped sudoers rule.
-  The helper hardcodes the install destination and the unit name, so the grant
-  cannot be repurposed.
+- **No sudo (it can't work anyway), no escalation.** The supermux unit is
+  hardened with `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, an empty
+  `CapabilityBoundingSet`, and a `SystemCallFilter` that drops `@privileged` —
+  **each** of which independently neuters setuid/`sudo`. Every child of the
+  service (including the agent's tmux session) inherits this, so `sudo` can
+  **never** run as root from inside supermux. Instead, `deploy-self.sh` writes a
+  small request file (zero privilege) into `$SUPERMUX_DATA_DIR/deploy/request`;
+  a root-side systemd **`.path`** unit (`supermux-deploy.path`) watches it and
+  starts a root oneshot (`supermux-deploy.service`) that runs
+  `/usr/local/sbin/supermux-deploy-runner` **outside** the sandbox. The runner
+  hardcodes the install destination + unit name, only replaces the
+  *unprivileged* service binary, and only restarts the *unprivileged* unit — so
+  it grants the agent **no** privilege it lacks. It just bridges "the agent
+  wrote a file" → "root installs + restarts". The hardening is never relaxed.
 
 ## One-time setup on the host
+
+Step 2 (the runner + the two systemd units) is now wired **automatically** by a
+normal `scripts/deploy.sh` run — there is nothing to install by hand.
 
 1. **Clone the repo** into a project dir the service can read+write (one inside
    the unit's `ReadWritePaths`, e.g. `/opt/projects`), as the service user:
@@ -35,20 +49,15 @@ restart.
      /opt/projects/supermux
    ```
 
-2. **Install the privileged helper + sudoers rule** (run once, as root, from the
-   clone):
-
-   ```
-   cd /opt/projects/supermux
-   sudo install -m 0755 -o root -g root etc/supermux-deploy-self \
-        /usr/local/sbin/supermux-deploy-self
-   sudo install -m 0440 -o root -g root etc/sudoers.d/supermux-deploy-self \
-        /etc/sudoers.d/supermux-deploy-self
-   sudo visudo -cf /etc/sudoers.d/supermux-deploy-self   # validate
-   ```
-
-   The helper **must** be root-owned and not group/world-writable (`0755
-   root:root`) — otherwise the NOPASSWD grant would be a root escalation.
+2. **Self-deploy wiring is automatic.** A normal deploy from your workstation
+   (`scripts/deploy.sh`) renders + installs the root runner
+   (`/usr/local/sbin/supermux-deploy-runner`, `0755 root:root`) and the two
+   systemd units (`supermux-deploy.path` + `supermux-deploy.service`), enables
+   the `.path` watcher, provisions `$SUPERMUX_DATA_DIR/deploy/` (service-user
+   writable), and removes any stale `etc/sudoers.d/supermux-deploy-self` +
+   `/usr/local/sbin/supermux-deploy-self` from the old sudo approach. The runner
+   **must** stay root-owned and not group/world-writable (`0755 root:root`),
+   which `deploy.sh` enforces via `install -m 0755 -o root -g root`.
 
 3. **Verify the dev toolchain** is present for the service user (`bun`, `cargo`,
    `node`, `git`, `gh`, `claude`, `tmux`). `scripts/deploy-self.sh` sources
@@ -64,15 +73,23 @@ cd /opt/projects/supermux
 scripts/deploy-self.sh
 ```
 
-It will (optionally) `git pull --ff-only`, build, then install+restart+verify
-via the helper. The service blips for a moment and comes back; your terminal is
-still attached.
+It will (optionally) `git pull --ff-only`, build, then write a deploy request
+that the root `.path` unit picks up to install+restart+verify+rollback. The
+service blips for a moment and comes back; your terminal is still attached
+(`KillMode=process` + persistent `TMUX_TMPDIR`), and the script tails the
+runner's log so you see the result live. If anything stalls, inspect:
+
+```
+journalctl -u supermux-deploy -n 50 --no-pager
+systemctl status supermux-deploy.path --no-pager
+```
 
 ### Knobs
 
 - `SUPERMUX_SELF_NO_PULL=1` — skip the `git pull` (deploy exactly local HEAD).
-- `SUPERMUX_SELF_HELPER=/path` — override the helper path (default
-  `/usr/local/sbin/supermux-deploy-self`).
+- `SUPERMUX_DATA_DIR=/path` — data dir holding `deploy/request` + the runner's
+  log/status (default `$HOME/.supermux`; the systemd unit exports this into the
+  agent's environment, so you normally don't set it).
 
 ## Troubleshooting: "Claude won't render in the dev session"
 
