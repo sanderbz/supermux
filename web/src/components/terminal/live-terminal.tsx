@@ -15,7 +15,7 @@
 
 import * as React from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Loader2, WifiOff } from 'lucide-react'
+import { ChevronDown, Loader2, WifiOff } from 'lucide-react'
 
 import '@xterm/xterm/css/xterm.css'
 
@@ -115,7 +115,8 @@ export function LiveTerminal({
     prewarmSeed,
     onSettled,
   })
-  const { containerRef, state, hasFirstFrame, ready, retry } = term
+  const { containerRef, state, hasFirstFrame, ready, retry, scrolledUp, scrollToBottom } =
+    term
 
   // Resolve the cached tail. Callers that already hold the session row (mobile
   // focus route, the overview peek) pass it explicitly. The desktop focus route
@@ -238,6 +239,17 @@ export function LiveTerminal({
         </div>
       )}
 
+      {/* Jump-to-bottom button (SD-2) — appears once the user scrolls up from the
+          live bottom and pins back on tap. Focus terminal only (`!readOnly`): the
+          read-only embeds are the tiny hover-peek tiles + quick-peek modal, where
+          a floating control would just be clutter. Gated on `showTerm` so it never
+          peeks out from under the on-open cached-tail cover. */}
+      <AnimatePresence>
+        {!readOnly && showTerm && scrolledUp && (
+          <ScrollToBottomButton onClick={scrollToBottom} />
+        )}
+      </AnimatePresence>
+
       {/* In-terminal connection pill — kept ONLY for read-only embeds (e.g. the
           quick-peek modal), which do NOT register with the global connection
           store and so have no other surface. A normal focus terminal registers
@@ -246,6 +258,38 @@ export function LiveTerminal({
           second pill here would be redundant (Steve-Jobs bar: one surface). */}
       {readOnly && <ConnectionPill state={state} onRetry={retry} />}
     </div>
+  )
+}
+
+// ── Jump-to-bottom button (SD-2) ──────────────────────────────────────────────
+
+// A subtle, glass-material circular control that fades+rises in at the bottom
+// centre when the user has scrolled up, mirroring the top-centre <ConnectionPill>
+// for visual symmetry. Tap pins the viewport back to the live bottom.
+function ScrollToBottomButton({ onClick }: { onClick: () => void }) {
+  return (
+    <motion.div
+      key="scroll-bottom"
+      initial={{ y: 12, opacity: 0, scale: 0.9 }}
+      animate={{ y: 0, opacity: 1, scale: 1 }}
+      exit={{ y: 12, opacity: 0, scale: 0.9 }}
+      transition={springs.snappy}
+      className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center pb-safe"
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label="Scroll to bottom"
+        className={cn(
+          'glass pointer-events-auto mb-3 grid size-9 place-items-center rounded-full',
+          'border border-border/60 text-muted-foreground shadow-sm',
+          'transition-colors hover:text-foreground',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        )}
+      >
+        <ChevronDown className="size-4" aria-hidden />
+      </button>
+    </motion.div>
   )
 }
 
