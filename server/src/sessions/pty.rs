@@ -82,8 +82,20 @@ pub struct PtyStream {
     /// Fan-out sender. Capacity is `config.ws.broadcast_capacity` (default 1024);
     /// a `send` with zero subscribers returns `Err` and is intentionally dropped.
     pub broadcast: broadcast::Sender<Bytes>,
-    /// `false` once the reader task has exited (tmux gone / fatal read error).
+    /// `false` once the reader task has exited (tmux gone / fatal read error) OR
+    /// the stream was explicitly [`shutdown`](Self::shutdown) on a session
+    /// restart. The streamer rebuilds a not-alive stream on the next attach.
     alive: Arc<AtomicBool>,
+    /// Explicit shutdown signal for the reader loop. Fired by
+    /// [`shutdown`](Self::shutdown) when a *session* stop/restart kills the old
+    /// tmux pane: it makes the reader exit NOW (closing its broadcast so any
+    /// already-open WS's `rx.recv()` returns `Closed` and the client reconnects)
+    /// instead of waiting out the ≤3s liveness poll — and that poll wouldn't even
+    /// fire here, because a restart recreates the SAME tmux session name, so
+    /// `tmux has-session` keeps reporting `true` while the reader's `pipe-pane`
+    /// stays bound to the now-dead ORIGINAL pane. The same `Notify` the reader
+    /// loop parks on.
+    shutdown: Arc<Notify>,
     /// Spawn-once gate for `ensure_started`.
     started: OnceCell<()>,
 }
@@ -102,13 +114,33 @@ impl PtyStream {
             replay: Arc::new(RwLock::new(VecDeque::new())),
             broadcast: tx,
             alive: Arc::new(AtomicBool::new(true)),
+            shutdown: Arc::new(Notify::new()),
             started: OnceCell::new(),
         }
     }
 
-    /// True until the reader task exits. The streamer rebuilds dead streams.
+    /// True until the reader task exits OR the stream is [`shutdown`](Self::shutdown).
+    /// The streamer rebuilds dead streams.
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Acquire)
+    }
+
+    /// Mark this stream dead NOW and tell its reader loop to exit. Called when a
+    /// *session* stop/restart kills the underlying tmux pane so the next
+    /// [`PtyStreamer::for_session`] rebuilds a fresh stream bound to the NEW pane
+    /// (fresh FIFO + `pipe-pane` + replay seed), rather than reusing this one —
+    /// which is still pointed at the OLD, now-dead pane and would replay its stale
+    /// last frame forever. Flipping `alive` first makes a racing `for_session`
+    /// rebuild immediately; waking `shutdown` makes the reader return so its
+    /// broadcast closes and any already-open WS reconnects to the new pane.
+    ///
+    /// This is the SESSION-restart path only. A SERVER restart never calls this:
+    /// the new process starts with an empty stream registry and rebuilds on the
+    /// first attach against the surviving tmux session — so session-survival is
+    /// untouched.
+    pub fn shutdown(&self) {
+        self.alive.store(false, Ordering::Release);
+        self.shutdown.notify_waiters();
     }
 
     /// Active WS subscriber count = live `broadcast::Receiver`s.
@@ -278,32 +310,43 @@ impl PtyStream {
         let replay = self.replay.clone();
         let broadcast = self.broadcast.clone();
         let alive = self.alive.clone();
+        let shutdown = self.shutdown.clone();
         let pool = pool.clone();
         tokio::spawn(async move {
             // Hold the write fd open for the lifetime of the reader.
             let _keep_writer = keep_writer;
-            reader_loop(
+            let reason = reader_loop(
                 async_fd,
                 &name,
                 &replay,
                 &broadcast,
                 &pty_heartbeat,
                 &detector_wake,
+                &shutdown,
             )
             .await;
             alive.store(false, Ordering::Release);
-            tracing::debug!(session = %name, "pty reader exited (stream-dead)");
-            // Stream-dead means the tmux pane is gone (or unreadable) — propagate
-            // that to the session's persisted status so the overview flips it to
-            // `stopped` instead of leaving it stuck `active`/`idle`. The 2s
-            // detector loop won't fight this: its tick leaves the status
+            tracing::debug!(session = %name, ?reason, "pty reader exited");
+            // On a genuine stream-dead (the tmux pane is gone / unreadable),
+            // propagate that to the session's persisted status so the overview
+            // flips it to `stopped` instead of leaving it stuck `active`/`idle`.
+            // The 2s detector loop won't fight this: its tick leaves the status
             // untouched when `tmux has-session` fails, so a dead session stays
             // `stopped`. A re-`start` rotates a fresh pty stream and the detector
             // re-classifies it live from there.
-            if let Err(e) =
-                crate::db::sessions::set_last_status(&pool, &name, Status::Stopped.as_str()).await
-            {
-                tracing::warn!(session = %name, error = %e, "pty stream-dead: set_last_status failed");
+            //
+            // But on an explicit `shutdown` (a SESSION restart rotated this stream
+            // because the pane was killed and re-created), we MUST NOT write
+            // `stopped`: `lifecycle::start` is concurrently bringing the session
+            // up and has its own `starting`→`active` status writes. A racing
+            // `stopped` from this exiting reader could clobber `start`'s `active`
+            // and leave the freshly-restarted session falsely showing `stopped`.
+            if matches!(reason, ExitReason::StreamDead) {
+                if let Err(e) =
+                    crate::db::sessions::set_last_status(&pool, &name, Status::Stopped.as_str()).await
+                {
+                    tracing::warn!(session = %name, error = %e, "pty stream-dead: set_last_status failed");
+                }
             }
         });
         Ok(())
@@ -324,7 +367,8 @@ async fn reader_loop(
     broadcast: &broadcast::Sender<Bytes>,
     pty_heartbeat: &DashMap<String, Instant>,
     detector_wake: &Notify,
-) {
+    shutdown: &Notify,
+) -> ExitReason {
     let tmux = Tmux::new(name);
     let mut buf = [0u8; READ_CHUNK];
 
@@ -337,12 +381,20 @@ async fn reader_loop(
 
     loop {
         tokio::select! {
+            // Explicit shutdown (a SESSION restart rotated this stream). Return
+            // the dedicated reason so the spawn body does NOT clobber start()'s
+            // status, and so the broadcast drops on return — closing any
+            // already-open WS so it reconnects to the fresh stream/new pane.
+            _ = shutdown.notified() => {
+                tracing::debug!(session = %name, "pty reader shutdown (session restart)");
+                return ExitReason::Shutdown;
+            }
             readable = async_fd.readable() => {
                 let mut guard = match readable {
                     Ok(g) => g,
                     Err(e) => {
                         tracing::warn!(session = %name, error = ?e, "asyncfd readable failed");
-                        break;
+                        return ExitReason::StreamDead;
                     }
                 };
                 match guard.try_io(|inner| inner.get_ref().read(&mut buf)) {
@@ -350,7 +402,7 @@ async fn reader_loop(
                         // True EOF (rare given the keep-alive writer). Confirm the
                         // session is gone before tearing down.
                         if !tmux.exists().await.unwrap_or(false) {
-                            break;
+                            return ExitReason::StreamDead;
                         }
                         guard.clear_ready();
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -382,7 +434,7 @@ async fn reader_loop(
                     }
                     Ok(Err(e)) => {
                         tracing::warn!(session = %name, error = ?e, "fifo read error");
-                        break;
+                        return ExitReason::StreamDead;
                     }
                     // try_io cleared readiness on WouldBlock; loop and re-poll.
                     Err(_would_block) => {}
@@ -391,11 +443,23 @@ async fn reader_loop(
             _ = liveness.tick() => {
                 if !tmux.exists().await.unwrap_or(false) {
                     tracing::warn!(session = %name, "tmux session gone, stream-dead");
-                    break;
+                    return ExitReason::StreamDead;
                 }
             }
         }
     }
+}
+
+/// Why a [`reader_loop`] returned — distinguishes a genuine pane death (write
+/// `stopped`) from an explicit session-restart rotation (leave status to the
+/// concurrent [`crate::sessions::lifecycle::start`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitReason {
+    /// The tmux pane is gone / unreadable — propagate `stopped` to the DB.
+    StreamDead,
+    /// [`PtyStream::shutdown`] was called (a session stop/restart). Do NOT touch
+    /// the persisted status; `start` owns it.
+    Shutdown,
 }
 
 /// Append `chunk` to the replay buffer (evicting from the front to stay
@@ -482,5 +546,55 @@ mod resume_edge_tests {
         let now = Instant::now();
         let prev = now - (PTY_RESUME_EDGE / 2);
         assert!(!is_resume_edge(Some(prev), now));
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    //! Restart-reattach (the `shutdown` invalidation path). A fresh `PtyStream`
+    //! reports `is_alive() == true` so `PtyStreamer::for_session` reuses it;
+    //! after `shutdown` it reports `false`, which is exactly the signal
+    //! `for_session` keys on to REBUILD a fresh stream bound to the new pane on
+    //! the next attach. (The reader half is exercised end-to-end by the manual
+    //! integration check; this pins the alive→dead state transition that drives
+    //! the registry's rebuild decision.)
+
+    use super::*;
+
+    fn dummy_stream() -> PtyStream {
+        PtyStream::new(
+            "shutdown-test".to_string(),
+            PathBuf::from("/tmp/supermux-shutdown-test.fifo"),
+            PathBuf::from("/tmp/supermux-shutdown-test.log"),
+            16,
+        )
+    }
+
+    #[test]
+    fn fresh_stream_is_alive_so_for_session_reuses_it() {
+        // A just-built (un-started) stream must read alive — otherwise every
+        // attach would needlessly rebuild.
+        assert!(dummy_stream().is_alive());
+    }
+
+    #[test]
+    fn shutdown_marks_stream_dead_so_for_session_rebuilds() {
+        // The restart invalidation contract: after shutdown the stream is no
+        // longer alive, so `for_session` builds a fresh one (new pane) instead of
+        // replaying the dead pane's stale frame.
+        let s = dummy_stream();
+        assert!(s.is_alive());
+        s.shutdown();
+        assert!(!s.is_alive());
+    }
+
+    #[test]
+    fn shutdown_is_idempotent() {
+        // Both stop() and a freshly_spawned start() may invalidate; a double
+        // shutdown must stay safely dead, never panic.
+        let s = dummy_stream();
+        s.shutdown();
+        s.shutdown();
+        assert!(!s.is_alive());
     }
 }

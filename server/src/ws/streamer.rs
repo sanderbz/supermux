@@ -71,6 +71,30 @@ impl PtyStreamer {
         self.streams.remove(name);
     }
 
+    /// Invalidate the cached stream for `name` because its underlying tmux pane
+    /// was destroyed (a SESSION stop/restart). Removes it from the registry AND
+    /// shuts its reader down, so:
+    ///   1. the next [`for_session`](Self::for_session) builds a FRESH stream
+    ///      (fresh FIFO + `pipe-pane` + replay seed) bound to the NEW pane, and
+    ///   2. any already-open WebSocket — which is parked on the OLD stream's
+    ///      broadcast — gets a `Closed` and reconnects (the frontend remounts on
+    ///      restart), landing on the rebuilt stream.
+    ///
+    /// Without this, `for_session` keeps reusing the cached stream as long as
+    /// `is_alive()` holds — and a restart recreates the SAME tmux session name,
+    /// so the reader's `tmux has-session` liveness poll never trips, leaving the
+    /// stream bound to the dead ORIGINAL pane and replaying its stale last frame
+    /// forever (the restart-reattach bug).
+    ///
+    /// This is the SESSION-restart path only; a SERVER restart starts with an
+    /// empty registry and rebuilds on first attach, so session-survival is
+    /// untouched.
+    pub fn invalidate(&self, name: &str) {
+        if let Some((_, stream)) = self.streams.remove(name) {
+            stream.shutdown();
+        }
+    }
+
     /// Carry a cached stream across a session rename.
     pub fn rename(&self, old: &str, new: &str) {
         if let Some((_, v)) = self.streams.remove(old) {

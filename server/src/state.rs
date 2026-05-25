@@ -307,6 +307,16 @@ impl AppState {
         Ok(stream)
     }
 
+    /// Invalidate the cached live pty stream for `name` because its tmux pane was
+    /// destroyed by a SESSION stop/restart. The next [`pty_for`](Self::pty_for)
+    /// (a fresh WS attach) rebuilds the stream against the NEW pane, and any
+    /// already-open WS reconnects onto it. A SERVER restart never calls this — it
+    /// boots with an empty stream registry and rebuilds on first attach — so
+    /// session-survival is untouched. See [`PtyStreamer::invalidate`].
+    pub fn pty_invalidate(&self, name: &str) {
+        self.pty.invalidate(name);
+    }
+
     /// The instant this session's PTY last produced a byte, or the cold-start
     /// sentinel (`now − 5min`) when the reader (M4) has recorded nothing yet
     /// (§3.2.8). The status detector feeds this into `StatusDetector::detect`.
