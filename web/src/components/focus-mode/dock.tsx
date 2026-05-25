@@ -23,7 +23,6 @@ import {
   Minimize2,
   Square,
   Settings2,
-  ChevronRight,
   ChevronDown,
   CornerDownLeft,
   Keyboard,
@@ -296,12 +295,17 @@ export default DesktopDock
 //   ┌ accessory key strip — rides the keyboard top ──────────────────────────┐
 //   │ [Esc] [Tab] [^C] [←][↑][↓][→] [⌨ hide]                                  │
 //   ├ dock row ───────────────────────────────────────────────────────────────┤
-//   │ [session ▾]  [⌨]  [···]  [＋]  [🎙]              [↵ Enter]               │
+//   │ [📎 Message…]  [⌨]  [···]  [＋]  [🎙]            [↵ Enter]               │
 //   └───────────────────────────────────────────────────────────────────────┘
 //
-//   • Session pill   — status dot + name (truncated ~8ch) + chevron; tap →
-//     SessionPickerSheet; horizontal swipe → prev/next session (peek-of-next),
-//     unchanged. Truncating the name frees the horizontal room the dock needs.
+//   • Compose field  — a faux text input: a 📎 paperclip + a muted "Message…"
+//     placeholder, styled to read as a TAPPABLE field ("tap to write a message &
+//     attach a file"). Tap → opens the on-demand compose sheet (`onOpenCompose`),
+//     morphing the field's surface into the sheet via the shared
+//     `COMPOSE_LAYOUT_ID`; horizontal swipe → prev/next session (peek-of-next),
+//     unchanged. The status dot + session name now live ONLY in the top focus-
+//     header title — they were removed here so the affordance reads as "compose",
+//     not a status label. Same width as the old pill (`maxWidth: '40%'`).
 //   • ⌨ toggle       — focuses/blurs the TERMINAL (summons/dismisses keyboard).
 //   • Specials (···) — opens the QuickKeysSheet (curated tap-to-send chips).
 //   • ＋ snippets     — opens the snippet panel; snippet run → term.send.
@@ -544,11 +548,12 @@ export function MobileDock({
         </div>
       )}
 
-      {/* Dock row — session-pill + accessory dock icons + Enter. NO text
-          composer. The icon cluster is one balanced group; Enter is pushed to
-          the right edge (the room the name-truncation frees). */}
+      {/* Dock row — compose field + accessory dock icons + Enter. NO inline text
+          composer here (composing happens in the on-demand sheet the field opens).
+          The icon cluster is one balanced group; Enter is pushed to the right edge
+          (the room the compact field + name-removal frees). */}
       <div className="flex items-center gap-1">
-        <SessionPill
+        <ComposeField
           current={current}
           prevSession={prevSession}
           nextSession={nextSession}
@@ -673,19 +678,29 @@ function AccessoryChip({
   )
 }
 
-// ── Session pill with swipe-to-switch + peek-of-next ──────────────────────────
+// ── Compose field (faux input) with swipe-to-switch + peek-of-next ────────────
 
-/** Truncate the bottom-left switcher's session name to ~8 chars + a trailing
- *  ellipsis so the pill stays compact — this frees the horizontal room the dock
- *  row (icon cluster + Enter) needs. The FULL name is always kept as the
- *  accessible `title`/`aria-label` on the pill, so nothing is lost. (This is the
- *  bottom switcher ONLY — the top header truncation lives in focus-header.tsx.) */
+/** Truncate the swiped-in peek-of-next session name to ~8 chars + a trailing
+ *  ellipsis so the peek preview stays compact (matches the field's width). The
+ *  current session's status dot + name now live ONLY in the top focus-header
+ *  title — they were removed from this field so it reads as a compose affordance,
+ *  not a status label. (Top header truncation lives in focus-header.tsx.) */
 const PILL_NAME_MAX = 8
 function truncatePillName(name: string): string {
   return name.length > PILL_NAME_MAX ? `${name.slice(0, PILL_NAME_MAX)}…` : name
 }
 
-function SessionPill({
+/** The bottom-left COMPOSE AFFORDANCE — a faux text input (📎 paperclip + a muted
+ *  "Message…" placeholder) styled to read as a TAPPABLE field: "tap to write a
+ *  message & attach a file." Replaces the old status-pill content (dot + name +
+ *  chevron), which read like a label and hid the tap-to-compose action; that
+ *  status now lives only in the top focus-header title.
+ *
+ *  Behaviour is unchanged from the pill: a genuine TAP opens the on-demand
+ *  compose sheet (`onCompose`) — the field's background surface is the morph
+ *  origin (it carries `COMPOSE_LAYOUT_ID`); a horizontal SWIPE switches sessions
+ *  (peek-of-next beneath). Same width as before (`maxWidth: '40%'`, h-11). */
+function ComposeField({
   current,
   prevSession,
   nextSession,
@@ -701,12 +716,12 @@ function SessionPill({
   onTap: () => void
   onSwitch: (name: string) => void
   /** Tap → open the on-demand compose sheet. When set, a genuine tap opens
-   *  compose (the pill is the morph origin); a horizontal swipe still switches
+   *  compose (this field is the morph origin); a horizontal swipe still switches
    *  sessions. When absent, a tap falls back to `onTap` (the picker). */
   onCompose?: () => void
-  /** True while the compose sheet is open — the pill drops its shared-element
+  /** True while the compose sheet is open — the field drops its shared-element
    *  `layoutId` surface so framer tweens that id into the sheet (one holder at a
-   *  time), and the morph reads the pill's exact last rect as the origin. */
+   *  time), and the morph reads the field's exact last rect as the origin. */
   composeOpen?: boolean
 }) {
   const reduceMotion = useReducedMotion()
@@ -775,34 +790,40 @@ function SessionPill({
   }
 
   const swipeable = Boolean(prevSession || nextSession)
-  const tapLabel = onCompose ? 'compose a message' : 'switch session'
+  const tapLabel = onCompose
+    ? 'Write a message or attach a file'
+    : 'Switch session'
 
   return (
     <div ref={ref} className="relative h-11 shrink-0" style={{ maxWidth: '40%' }}>
-      {/* Shared-element morph surface — the pill's rounded-full background. It
-          carries COMPOSE_LAYOUT_ID so framer tweens THIS rect into the compose
-          sheet's surface (and back). Dropped while the sheet is open so only ONE
-          node holds the id at a time (the sheet's), which is what makes the
-          pill→sheet tween fire. A plain (id-less) fill takes its place meanwhile
-          so the pill keeps its look. Reduced motion: no layoutId (crossfade in
+      {/* Shared-element morph surface — the faux input's background. It carries
+          COMPOSE_LAYOUT_ID so framer tweens THIS rect into the compose sheet's
+          surface (and back). Dropped while the sheet is open so only ONE node
+          holds the id at a time (the sheet's), which is what makes the
+          field→sheet tween fire. A plain (id-less) fill takes its place meanwhile
+          so the field keeps its look. Reduced motion: no layoutId (crossfade in
           the sheet instead). Sits BEHIND the draggable content; its width tracks
-          the pill exactly (inset-0), so the morph origin is same-width by
-          construction. */}
+          the field exactly (inset-0), so the morph origin is same-width by
+          construction. Input-like surface — soft `bg-muted/40` fill + a subtle
+          `border-input` hairline + 10px radius — so it reads as a TAPPABLE text
+          field rather than a status label or an action pill. */}
       {composeOpen || reduceMotion ? (
-        <div className="pointer-events-none absolute inset-0 rounded-full bg-secondary" />
+        <div className="pointer-events-none absolute inset-0 rounded-[10px] border border-input bg-muted/40" />
       ) : (
         <motion.div
           layoutId={COMPOSE_LAYOUT_ID}
-          className="pointer-events-none absolute inset-0 rounded-full bg-secondary"
+          className="pointer-events-none absolute inset-0 rounded-[10px] border border-input bg-muted/40"
           transition={springs.sheetDetent}
         />
       )}
 
-      {/* Peek-of-next, revealed beneath the dragging pill. */}
+      {/* Peek-of-next, revealed beneath the dragging field — keeps the dot+name
+          here (it's a momentary SWITCH preview, where the status IS the point),
+          unlike the resting field which is a compose affordance. */}
       <motion.div
         aria-hidden
         style={{ opacity: peekOpacity }}
-        className="pointer-events-none absolute inset-0 flex items-center gap-1.5 rounded-full bg-secondary/60 px-3"
+        className="pointer-events-none absolute inset-0 flex items-center gap-1.5 rounded-[10px] bg-secondary/60 px-3"
       >
         {peekSession && (
           <>
@@ -828,39 +849,43 @@ function SessionPill({
         onDragEnd={onDragEnd}
         onPointerDown={onPillPointerDown}
         onPointerUp={onPillPointerUp}
-        // FULL name stays the accessible label so the truncated display never
-        // hides which session you're on.
+        // Accessible label spells out the action (the field is icon + placeholder
+        // only, no session name — that lives in the top header). The current
+        // session name stays as the `title` so screen-reader/hover context isn't
+        // lost.
         title={current.name}
-        aria-label={`Session ${current.name} — ${tapLabel}`}
-        // Transparent fill: the rounded-full background is the morph surface
+        aria-label={tapLabel}
+        // Transparent fill: the input-like background is the morph surface
         // (sibling above); this button only carries the swipe transform + content
         // so `drag` and `layout` never live on the same node (framer warns when
         // they do).
         className={cn(
-          'relative flex h-11 w-full items-center gap-1.5 rounded-full bg-transparent px-3.5',
+          'relative flex h-11 w-full items-center gap-2 rounded-[10px] bg-transparent px-3',
           'text-[14px] font-medium',
-          // Fade the pill content out while compose is open so its old text/dot
+          // Fade the field content out while compose is open so the 📎/placeholder
           // doesn't linger faintly behind the translucent sheet during the morph
-          // (the rounded-fill morph surface is the sibling above; only this
-          // content needs to cross-fade). A short opacity tween reads as part of
-          // the morph; under reduced motion it's a gentle fade (no transform), so
-          // it doesn't reintroduce motion. Hidden from AT/Tab while masked.
+          // (the input-fill morph surface is the sibling above; only this content
+          // needs to cross-fade). A short opacity tween reads as part of the
+          // morph; under reduced motion it's a gentle fade (no transform), so it
+          // doesn't reintroduce motion. Hidden from AT/Tab while masked.
           'transition-opacity duration-300',
           composeOpen && 'pointer-events-none opacity-0',
         )}
         aria-hidden={composeOpen || undefined}
         tabIndex={composeOpen ? -1 : undefined}
       >
-        <StatusDot status={current.status} />
-        {/* Display name truncated to ~8ch + ellipsis (frees dock room); the full
-            name lives in title/aria-label above. */}
-        <span className="min-w-0 flex-1 truncate text-left">
-          {truncatePillName(current.name)}
-        </span>
-        <ChevronRight
-          className="size-4 shrink-0 text-muted-foreground"
+        {/* 📎 the visual cue: this field both writes a message AND attaches a
+            file (the compose sheet it opens has its own 📎 attach inside). */}
+        <Paperclip
+          className="size-[18px] shrink-0 text-muted-foreground"
           strokeWidth={1.75}
+          aria-hidden
         />
+        {/* Muted "Message…" placeholder — reads as an empty text field's prompt,
+            so "tap to write" is obvious (sentence case, iOS-native). */}
+        <span className="min-w-0 flex-1 truncate text-left text-muted-foreground">
+          Message…
+        </span>
       </motion.button>
     </div>
   )

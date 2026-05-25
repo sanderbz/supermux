@@ -164,9 +164,9 @@ export const filesApi = {
 // The dedicated upload path for dropping a file/screenshot into a Claude Code
 // session: bytes go to the DATA DIR's `uploads/` (never the session cwd) via the
 // base64 `POST /api/upload` endpoint, which returns the ABSOLUTE saved path. That
-// path is then injected (quoted) into the terminal prompt so an absolute path +
-// a verb reliably triggers Claude's Read/vision tool — the one thing that works
-// for images over a remote pty.
+// path is then injected (quoted, prose-free) into the terminal prompt — an
+// absolute path is what reliably lets Claude's Read/vision tool locate the file
+// over a remote pty; the user writes their own wording around it.
 
 /** Server response for a single `POST /api/upload`. */
 export interface UploadResult {
@@ -216,16 +216,15 @@ export async function uploadForPrompt(file: File): Promise<UploadResult> {
   })
 }
 
-/** Build the no-trailing-Enter prompt text injected after upload: one sentence
- *  that quotes every absolute path so Claude's Read/vision tool fires. A
- *  trailing space lets the user keep typing context before they hit Enter. */
+/** Build the no-trailing-Enter prompt text injected after upload: JUST the
+ *  quoted absolute path(s) — no prose, no verb. The user writes their own
+ *  wording around it; the absolute path is what Claude needs to locate the file
+ *  in the data dir's `uploads/`. A trailing space separates the path(s) from
+ *  whatever the user types next before they hit Enter. */
 export function buildAttachmentPrompt(paths: string[]): string {
   if (paths.length === 0) return ''
   const quoted = paths.map((p) => `"${p}"`)
-  if (quoted.length === 1) {
-    return `Please look at this file: ${quoted[0]} `
-  }
-  return `Please look at these files: ${quoted.join(', ')} `
+  return `${quoted.join(' ')} `
 }
 
 /** Resolve a session's working dir for the `/files/:name` root scope. Hits the

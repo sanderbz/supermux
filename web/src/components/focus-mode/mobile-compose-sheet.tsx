@@ -237,14 +237,14 @@ function ComposeBody({
     sentRef.current = true
     setSent(true)
 
-    // Compose the final prompt: typed body FIRST, then the attachment sentence
-    // (so "fix this <my words>" reads naturally before the file reference), then
-    // a single trailing Enter (`\r`) to submit it as ONE prompt. Multi-line
-    // textarea content keeps its embedded `\n`s — the pty receives them verbatim
-    // (Claude Code treats a bare LF inside a prompt as a soft newline; only the
-    // final CR submits).
-    const attachmentSentence = buildAttachmentPrompt(paths).trimEnd()
-    const parts = [body, attachmentSentence].filter((p) => p.length > 0)
+    // Compose the final prompt: typed body FIRST, then the quoted attachment
+    // path(s) (so "fix this <my words>" reads naturally before the file
+    // reference), then a single trailing Enter (`\r`) to submit it as ONE prompt.
+    // Multi-line textarea content keeps its embedded `\n`s — the pty receives
+    // them verbatim (Claude Code treats a bare LF inside a prompt as a soft
+    // newline; only the final CR submits).
+    const attachmentPaths = buildAttachmentPrompt(paths).trimEnd()
+    const parts = [body, attachmentPaths].filter((p) => p.length > 0)
     onSend(parts.join('\n') + '\r')
 
     // Done — drop the staged chips (revokes previews) and morph back. The live
