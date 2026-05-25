@@ -26,10 +26,12 @@
 
 import * as React from 'react'
 import { useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 
-import { focusApi } from '@/lib/api'
+import { focusApi, type ApiSession } from '@/lib/api'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { CONFIRM } from '@/brand/copy'
+import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { DesktopSplit } from '@/components/focus-mode/desktop-split'
 import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
 import type { TileSession } from '@/components/session-tile/types'
@@ -46,6 +48,7 @@ export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
   // focus→focus cross-fades the main pane. Falls back to a plain navigate where
   // the API is unsupported / reduced-motion is set.
   const navigate = useNavigateMorph()
+  const qc = useQueryClient()
   const { sessions, current } = useFocusSessions(name, mockSessions)
 
   const onSelect = React.useCallback(
@@ -57,8 +60,15 @@ export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
   const onDetach = React.useCallback(() => navigate('/'), [navigate])
 
   // Stop (⌘W): confirm + POST /stop + leave (§4.4.3). The stop fetch is
-  // best-effort before M12 wires the full sessions client — failures are
-  // surfaced via the browser, never crash the route.
+  // best-effort — failures are surfaced via the browser, never crash the route.
+  //
+  // SUPERMUX-38: flip the cached row to `stopped` OPTIMISTICALLY the instant Stop
+  // is pressed, so the overview we navigate back to shows the session stopped
+  // immediately — the user never perceives the (now-brief) server-side teardown
+  // as "it didn't work". The backend also broadcasts `stopped` over SSE on the
+  // real teardown, so this optimistic write is only the head-start; `invalidate`
+  // backfills the authoritative row. Mirrors the quick-peek-modal stop path —
+  // one shared `['sessions']` cache, no new transport.
   const onStop = React.useCallback(() => {
     if (!name) return
     if (
@@ -66,11 +76,21 @@ export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
     ) {
       return
     }
+    qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
+      (prev ?? []).map((s) =>
+        s.name === name ? { ...s, status: 'stopped' as const } : s,
+      ),
+    )
     void focusApi
       .stopSession(name)
       .catch((e) => console.warn('stopSession failed', e))
-      .finally(() => navigate('/'))
-  }, [name, navigate])
+      .finally(() => {
+        // Reconcile against the server's authoritative state (the SSE `stopped`
+        // delta may have already landed; this covers the case it hasn't).
+        void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+        navigate('/')
+      })
+  }, [name, navigate, qc])
 
   return (
     <DesktopSplit

@@ -257,6 +257,48 @@ fn emit_alert(state: &AppState, name: &str, level: &str, detail: &str) {
     });
 }
 
+/// Publish a `name → status` transition ourselves: bump the per-session status
+/// watch (so a late-subscribing `wait` reads the latest), and broadcast BOTH the
+/// `status` and `sessions` SSE deltas so every connected client flips the dot
+/// inside ~16ms — well before the 2s detector tick would otherwise carry it.
+///
+/// `start()` open-codes this exact triplet for `starting`/`active`; `stop()` did
+/// NOT, so a stopped session's `stopped` row only reached the client on the next
+/// detector tick (or a full refetch) — making Stop feel laggy even after tmux is
+/// already gone. Centralising the triplet keeps the two paths consistent (DRY).
+fn broadcast_status(state: &AppState, name: &str, status: &str) {
+    let version = {
+        let tx = state.status_watch_for(name);
+        let next = tx.borrow().1.wrapping_add(1);
+        tx.send_replace((status.to_string(), next));
+        next
+    };
+    let _ = state.sse_tx.send(SseEvent {
+        event: "status".to_string(),
+        payload: json!({ "name": name, "status": status, "version": version }),
+    });
+    let _ = state.sse_tx.send(SseEvent {
+        event: "sessions".to_string(),
+        payload: json!({ "delta": [{ "name": name, "status": status }] }),
+    });
+}
+
+/// Stop's graceful-exit window. After nudging the agent to exit (`C-c` + `/exit`)
+/// we poll on this TIGHT cadence for the pane to die, capping the total wait at
+/// [`STOP_GRACE_CAP`]. The cap is deliberately short: tmux teardown
+/// (`kill_session`) ALWAYS runs afterward and is definitive, so a long grace only
+/// delays a teardown that happens anyway — the very lag that made Stop feel
+/// broken (the session lingered in `tmux ls` + the overview for up to 15s).
+///
+/// Why these values are still safe for `--resume`: Claude persists its session
+/// transcript to disk CONTINUOUSLY (every turn), not on exit, so the resume file
+/// already exists the moment Stop is pressed. The nudge + brief grace only let an
+/// in-flight write flush cleanly; ~1.5s comfortably covers that. If the pane is
+/// still alive at the cap we hard-kill the PID (SIGTERM→SIGKILL) before the
+/// definitive `kill_session`, so a wedged agent never blocks teardown either.
+const STOP_GRACE_POLL: Duration = Duration::from_millis(50);
+const STOP_GRACE_CAP: Duration = Duration::from_millis(1_500);
+
 async fn require_session(state: &AppState, name: &str) -> Result<Session, AppError> {
     db::sessions::get(&state.pool, name)
         .await?
@@ -399,25 +441,9 @@ pub async fn start(
     // first observed tick has `new_status == prev` and emits nothing. Without
     // this explicit broadcast the client cache stays wedged on `starting`
     // until a full `GET /api/sessions` refresh (focus, reconnect, hard reload)
-    // pulls the up-to-date row. Mirrors the `starting` triplet ~30 lines above.
-    let active_version = {
-        let tx = state.status_watch_for(name);
-        let next = tx.borrow().1.wrapping_add(1);
-        tx.send_replace(("active".to_string(), next));
-        next
-    };
-    let _ = state.sse_tx.send(SseEvent {
-        event: "status".to_string(),
-        payload: json!({
-            "name": name,
-            "status": "active",
-            "version": active_version,
-        }),
-    });
-    let _ = state.sse_tx.send(SseEvent {
-        event: "sessions".to_string(),
-        payload: json!({ "delta": [{ "name": name, "status": "active" }] }),
-    });
+    // pulls the up-to-date row. Mirrors the `starting` triplet ~30 lines above
+    // (shared with `stop`'s `stopped` broadcast via `broadcast_status`).
+    broadcast_status(state, name, "active");
     // Wake the detector so the BOOTING → real-status transition is broadcast
     // sub-second rather than at the next 2s tick (the tile dot otherwise sits
     // in the booting affordance for up to 2s after the agent UI is ready).
@@ -439,8 +465,16 @@ pub async fn start(
     })
 }
 
-/// Graceful stop (provider exit) → 15s grace → hard kill → tmux teardown.
+/// Graceful stop (provider exit) → BRIEF grace → hard kill → tmux teardown.
 /// Returns once the session is `stopped`; the caller answers 202.
+///
+/// SUPERMUX-38: Stop felt broken because the old grace polled up to 15s before
+/// the (always-definitive) `kill_session`, so the tmux session lingered in
+/// `tmux ls` + the overview for that whole window. We now nudge the agent, give
+/// it only the SHORT [`STOP_GRACE_CAP`] to persist + exit, then tear tmux down
+/// promptly — and broadcast `stopped` over SSE immediately so the UI reflects it
+/// sub-second. The hard-PID-kill fallback + the definitive `kill_session` safety
+/// net are unchanged, so Stop is fast AND never leaves a session half-killed.
 pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
@@ -450,11 +484,16 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
 
     if !tmux.exists().await? {
         db::sessions::set_last_status(&state.pool, name, "stopped").await?;
+        broadcast_status(state, name, "stopped");
         emit_board_if_linked(state, name).await;
         return Ok(());
     }
 
-    // 1. Graceful: ask the program to exit.
+    // 1. Graceful nudge: ask the program to exit. This is NOT removed (resume
+    //    relies on Claude's normal-exit flush) — only the wait that follows is
+    //    shortened. The 300ms between `C-c` and `/exit` lets the interrupt land
+    //    before the slash command, so `/exit` reaches Claude's prompt, not a
+    //    mid-stream buffer.
     match s.provider.as_str() {
         "shell" => {
             let _ = tmux.send_text("exit").await;
@@ -468,17 +507,22 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
         }
     }
 
-    // 2. Wait up to 15s for the pane program to exit (session gone or pane dead).
+    // 2. Wait a BRIEF, capped window for the pane program to exit (session gone
+    //    or pane dead), polling on a tight cadence so a clean exit is observed
+    //    near-instantly rather than on a coarse 500ms tick. Caps at
+    //    `STOP_GRACE_CAP` — teardown happens regardless, so there is no value in
+    //    waiting longer (SUPERMUX-38).
     let mut graceful = false;
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+    let deadline = tokio::time::Instant::now() + STOP_GRACE_CAP;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(STOP_GRACE_POLL).await;
         if !tmux.exists().await.unwrap_or(true) || tmux.pane_dead().await.unwrap_or(false) {
             graceful = true;
             break;
         }
     }
 
-    // 3. Hard kill if the grace window elapsed.
+    // 3. Hard kill if the grace window elapsed (the agent didn't exit on its own).
     if !graceful {
         if let Ok(Some(pid)) = tmux.pane_pid().await {
             hard_kill(pid).await;
@@ -502,6 +546,14 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     state.pty_invalidate(name);
 
     db::sessions::set_last_status(&state.pool, name, "stopped").await?;
+    // SUPERMUX-38: publish `stopped` ourselves (status watch + SSE). The detector
+    // can't be relied on for this edge — it reseeds `prev` from the row we just
+    // wrote, so its next tick sees `new == prev` and emits nothing, leaving the
+    // tile's dot stuck on the pre-stop status until a full refetch. Broadcasting
+    // here flips every connected client to `stopped` sub-second, so Stop looks
+    // instant even if any residual teardown I/O is still settling. Mirrors the
+    // `start()` `starting`/`active` broadcasts (now shared via `broadcast_status`).
+    broadcast_status(state, name, "stopped");
     // R2: stopping the agent doesn't archive the row (the link stays live), but
     // the board card mirrors the linked session's state — re-publish so a linked
     // card reflects the now-stopped session rather than a stale running dot.
@@ -1071,6 +1123,56 @@ mod mode_cycle_tests {
         assert_eq!(cycle_steps(Normal, Bypass), None);
         assert_eq!(cycle_steps(Bypass, Normal), None);
         assert_eq!(cycle_steps(Bypass, Plan), None);
+    }
+}
+
+#[cfg(test)]
+mod stop_grace_tests {
+    //! SUPERMUX-38: the stop grace must stay SHORT (tmux is torn down regardless,
+    //! so a long grace only delays a teardown that happens anyway and makes Stop
+    //! feel broken) yet poll on a TIGHT cadence (so a clean exit is observed
+    //! near-instantly). These invariants are config-only, so they're pinned here
+    //! without driving real tmux — a future edit can't silently regress to the
+    //! old 15s grace or a coarse poll.
+    use super::{STOP_GRACE_CAP, STOP_GRACE_POLL};
+    use std::time::Duration;
+
+    /// The OLD grace polled 30×500ms = 15s before teardown — the lag the user
+    /// reported. The cap must stay an order of magnitude below that.
+    const OLD_GRACE: Duration = Duration::from_secs(15);
+
+    #[test]
+    fn grace_cap_is_short_and_well_under_the_old_15s() {
+        assert!(
+            STOP_GRACE_CAP <= Duration::from_secs(2),
+            "stop grace must stay brief (≤2s) so tmux clears promptly",
+        );
+        assert!(
+            STOP_GRACE_CAP * 5 <= OLD_GRACE,
+            "the new cap must be far below the old 15s grace that caused SUPERMUX-38",
+        );
+    }
+
+    #[test]
+    fn poll_cadence_is_tight_and_bounds_the_worst_case_overshoot() {
+        // A tight poll means a clean exit is seen within one cadence of happening,
+        // not on a coarse half-second tick.
+        assert!(
+            STOP_GRACE_POLL <= Duration::from_millis(100),
+            "poll cadence must be tight so a clean exit is observed near-instantly",
+        );
+        // The cap must be a whole number of polls so the loop neither overshoots
+        // nor stops a fraction short of the intended window.
+        assert!(
+            STOP_GRACE_CAP.as_millis() % STOP_GRACE_POLL.as_millis() == 0,
+            "the grace cap should be an exact multiple of the poll cadence",
+        );
+        // Sanity: the window admits several poll iterations (a single-shot poll
+        // would be too racy to ever observe a graceful exit).
+        assert!(
+            STOP_GRACE_CAP.as_millis() / STOP_GRACE_POLL.as_millis() >= 10,
+            "the grace window must allow enough poll iterations to catch a clean exit",
+        );
     }
 }
 

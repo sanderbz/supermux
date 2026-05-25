@@ -123,6 +123,10 @@ export const api = {
     notImplemented('deleteSession', name),
   startSession: (name: string): Promise<Session> =>
     notImplemented('startSession', name),
+  // NOTE: start/stop are LIVE in `focusApi` (./focus). These M0 stubs are dead
+  // (no consumer imports this `api` object) and kept only so the frozen public
+  // surface stays byte-for-byte identical — use `focusApi.stopSession` /
+  // `focusApi.startSession` for the real control-plane calls.
   stopSession: (name: string): Promise<void> =>
     notImplemented('stopSession', name),
   sendText: (name: string, text: string): Promise<void> =>

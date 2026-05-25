@@ -11,8 +11,13 @@
 import { settingsRequest } from './client'
 
 export const focusApi = {
-  /** POST `/api/sessions/:name/stop` — stop the session (⌘W). Keeps the tmux
-   *  pane per §3.4; the overview reflects it via the next SSE `sessions` delta. */
+  /** POST `/api/sessions/:name/stop` — stop the session (⌘W). The backend nudges
+   *  the agent to exit, then TEARS THE TMUX SESSION DOWN promptly (it does NOT
+   *  keep the pane) — so the session disappears from `tmux ls` quickly. The DB
+   *  row stays as a `stopped`, resumable card by design (Archive clears it). The
+   *  server broadcasts the `stopped` status over SSE on teardown, and callers
+   *  optimistically flip the cached row so the overview reflects it instantly
+   *  (SUPERMUX-38). Returns 202 (async-shaped) once the row is `stopped`. */
   stopSession: (name: string): Promise<void> =>
     settingsRequest(`/api/sessions/${encodeURIComponent(name)}/stop`, {
       method: 'POST',
