@@ -37,19 +37,19 @@ test.describe('board composer: inline agent picker (SD-3)', () => {
     await page.screenshot({ path: 'test-results/sd-3-picker-inline.png' })
 
     // Pick a different agent; it persists across a full reload (localStorage).
-    await picker.selectOption('codex')
-    await expect(picker).toHaveValue('codex')
+    await picker.selectOption('shell')
+    await expect(picker).toHaveValue('shell')
 
     await page.reload()
     const pickerAfter = page.getByRole('combobox', { name: 'Which agent to start' })
     await expect(pickerAfter).toBeVisible({ timeout: 15_000 })
-    await expect(pickerAfter).toHaveValue('codex')
+    await expect(pickerAfter).toHaveValue('shell')
     await page.screenshot({ path: 'test-results/sd-3-picker-remembered.png' })
 
     // Belt-and-suspenders: the value the composer remembers is in localStorage.
     const stored = await page.evaluate(() =>
       localStorage.getItem('supermux:board:last-provider'),
     )
-    expect(stored).toBe('codex')
+    expect(stored).toBe('shell')
   })
 })

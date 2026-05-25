@@ -99,21 +99,10 @@ fn build_env(config: &crate::config::Config, name: &str, hook_token: &str) -> Ha
 /// → fresh `--name`.
 fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
     let agent = match s.provider.as_str() {
-        "codex" => {
-            let mut parts = vec!["codex".to_string()];
-            let defaults = config.provider_defaults.codex_flags.trim();
-            if !defaults.is_empty() {
-                parts.push(defaults.to_string());
-            }
-            if !s.flags.trim().is_empty() {
-                parts.push(s.flags.trim().to_string());
-            }
-            if !s.codex_session_id.is_empty() {
-                parts.push("resume".to_string());
-                parts.push(s.codex_session_id.clone());
-            }
-            parts.join(" ")
-        }
+        // Codex is no longer an OFFERED provider (Claude-only). The validator
+        // still ACCEPTS `provider="codex"` (accept-but-never-offer) so existing
+        // scheduled jobs don't 400; such sessions launch via the claude default
+        // below, same as any non-shell provider.
         // default to claude
         _ => {
             let mut parts = vec!["claude".to_string()];

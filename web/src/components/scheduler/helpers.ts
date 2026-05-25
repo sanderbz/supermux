@@ -76,7 +76,7 @@ export function recipesFromCommands(
     .slice(0, RECIPE_LIMIT)
 }
 
-export const PROVIDERS = ['claude', 'codex'] as const
+export const PROVIDERS = ['claude'] as const
 export const DONE_ACTIONS = ['disable', 'notify'] as const
 
 // ── recurrence composer + English humanizer (frontend-only; the server parser
