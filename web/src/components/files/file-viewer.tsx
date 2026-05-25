@@ -77,7 +77,11 @@ export function FileViewer({
           state hides the files toolbar (which used to carry the safe-area inset),
           so this viewer header owns the top inset via `pt-safe` (reset at `sm`
           once the desktop SideNav owns the chrome) to clear the notch. */}
-      <header className="glass flex h-14 shrink-0 items-center gap-1 border-b border-border px-2 pt-safe sm:pt-0">
+      {/* SD-6: min-h (not h) so the notch inset (pt-safe) ADDS to the bar height
+          rather than eating into a fixed 56px — otherwise the back button, filename
+          and actions are squished under the Dynamic Island in the iOS standalone
+          PWA. Desktop resets pt-safe (sm:pt-0), where min-h-14 == h-14. */}
+      <header className="glass flex min-h-14 shrink-0 items-center gap-1 border-b border-border px-2 pt-safe sm:pt-0">
         <button
           type="button"
           onClick={onBack}

@@ -65,4 +65,27 @@ test.describe('iOS PWA chrome (SD-6)', () => {
 
     await page.screenshot({ path: 'test-results/sd-6-board-top.png' })
   })
+
+  test('settings header grows for the notch (title not squished under it)', async ({
+    page,
+  }) => {
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(`${backend.baseUrl}/settings`)
+    // Simulate the notch inset the fixed-height header used to eat into.
+    await page.addStyleTag({ content: '.pt-safe{padding-top:44px !important}' })
+
+    const header = page.locator('header').first()
+    await expect(header).toBeVisible({ timeout: 10_000 })
+    // min-h-12 (fix) lets the 44px inset ADD to the 48px bar → it grows past 48.
+    // A fixed h-12 (bug) would stay 48px and squeeze the title under the notch.
+    await expect(async () => {
+      const h = await header.evaluate((el) => el.getBoundingClientRect().height)
+      expect(h, 'header grew to fit the notch inset').toBeGreaterThan(52)
+    }).toPass({ timeout: 5_000 })
+    // And the title clears the simulated 44px notch rather than sitting under it.
+    const title = header.getByText('Settings', { exact: true })
+    const top = await title.evaluate((el) => el.getBoundingClientRect().top)
+    expect(top, 'title sits below the notch inset').toBeGreaterThanOrEqual(40)
+    await page.screenshot({ path: 'test-results/sd-6-settings-header.png' })
+  })
 })
