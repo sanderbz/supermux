@@ -5,11 +5,17 @@
 // row carrying a provenance badge (incl. read-only cloud / plugin / managed
 // sources). Affordances per the plan:
 //   • MCP — remove (its file), disable/enable (project .mcp.json trust), add
-//     (guided form + raw JSON), and an OPT-IN per-row health "Check" (the probe
-//     spawns servers, so it never auto-runs on list open). Rows expand to show
-//     transport + command/url + env/header KEY names with MASKED values
-//     ('••• set') — raw secrets never leave the server.
-//   • Skills — read-only listing: name · scope · provenance · path.
+//     (guided form + raw JSON), an OPT-IN per-row health "Check" (the probe
+//     spawns servers, so it never auto-runs on list open), and "Reconnect" which
+//     opens Claude's own `/mcp` panel in the focused terminal (the only native
+//     reconnect/authenticate path — the CLI can't reconnect a single server, and
+//     it can't enumerate a server's tools either, so the panel is where you go to
+//     see + (re)connect them). Rows expand to show transport + command/url +
+//     env/header KEY names with MASKED values ('••• set') — raw secrets never
+//     leave the server.
+//   • Skills — tap-to-ACTIVATE (DOCK): a row is a button that runs `/<name>` in
+//     the focused session's terminal (skills are slash-invokable), then closes
+//     the sheet. Read-only metadata (scope · provenance · path) still shows.
 //   • Commands — tap-to-RUN (DOCK): a row is now a button that runs the command
 //     in the focused session's terminal (POST /api/sessions/:name/send with
 //     `/<cmd>\r`), then closes the sheet. This replaces the old dock slash menu.
@@ -152,6 +158,39 @@ function ClaudeToolsBody({
     [sessionName, onClose, toast],
   )
 
+  // Reconnect / authenticate an MCP server — the ONE native path Claude exposes.
+  // The `claude` CLI can't reconnect a single server, but Claude's own `/mcp`
+  // panel can (reconnect, OAuth-authenticate, inspect tools). So we send `/mcp\r`
+  // to the focused terminal and close the sheet, landing the user on the panel
+  // with a hint to pick THIS server. Mirrors `runCommand`'s send-and-close flow.
+  const reconnectMcp = React.useCallback(
+    (name: string) => {
+      if (!sessionName) {
+        toast({
+          message: 'Open a session first — reconnecting happens in Claude’s /mcp panel.',
+          tone: 'error',
+        })
+        return
+      }
+      onClose()
+      void settingsRequest(
+        `/api/sessions/${encodeURIComponent(sessionName)}/send`,
+        { method: 'POST', body: JSON.stringify({ text: '/mcp\r' }) },
+      )
+        .then(() =>
+          toast({
+            message: `Opened Claude’s MCP panel — pick “${name}” to reconnect or authenticate.`,
+            duration: 5000,
+          }),
+        )
+        .catch((e) => {
+          console.warn('claude-tools: open /mcp failed', e)
+          toast({ message: 'Couldn’t open the MCP panel.', tone: 'error' })
+        })
+    },
+    [sessionName, onClose, toast],
+  )
+
   const restartNote = React.useCallback(() => {
     toast({
       message: 'Restart the affected session to apply this change.',
@@ -195,6 +234,8 @@ function ClaudeToolsBody({
                 onRetry={registry.refetch}
                 onAdd={() => setAdding(true)}
                 restartNote={restartNote}
+                onReconnect={reconnectMcp}
+                runnable={Boolean(sessionName)}
               />
             </TabsContent>
             <TabsContent value="skills" className="mt-0">
@@ -203,6 +244,8 @@ function ClaudeToolsBody({
                 loading={registry.isLoading}
                 error={registry.isError}
                 onRetry={registry.refetch}
+                onRun={runCommand}
+                runnable={Boolean(sessionName)}
               />
             </TabsContent>
             <TabsContent value="commands" className="mt-0">
@@ -332,6 +375,8 @@ function McpTab({
   onRetry,
   onAdd,
   restartNote,
+  onReconnect,
+  runnable,
 }: {
   entries: McpEntry[]
   cwd?: string
@@ -340,6 +385,10 @@ function McpTab({
   onRetry: () => void
   onAdd: () => void
   restartNote: () => void
+  /** Open Claude's `/mcp` panel in the focused terminal to reconnect/authenticate. */
+  onReconnect: (name: string) => void
+  /** True when there is a focused session to reconnect within. */
+  runnable: boolean
 }) {
   if (error) return <ErrorState onRetry={onRetry} />
   if (loading && entries.length === 0) return <LoadingRows />
@@ -374,28 +423,28 @@ function McpTab({
           {cwd && removableLocal.length > 0 && (
             <ScopeGroup label="This project · private">
               {removableLocal.map((e) => (
-                <McpRow key={`local-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} />
+                <McpRow key={`local-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} onReconnect={onReconnect} runnable={runnable} />
               ))}
             </ScopeGroup>
           )}
           {removableUser.length > 0 && (
             <ScopeGroup label="Global">
               {removableUser.map((e) => (
-                <McpRow key={`user-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} />
+                <McpRow key={`user-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} onReconnect={onReconnect} runnable={runnable} />
               ))}
             </ScopeGroup>
           )}
           {project.length > 0 && (
             <ScopeGroup label="This project · committed (.mcp.json)">
               {project.map((e) => (
-                <McpRow key={`project-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} />
+                <McpRow key={`project-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} onReconnect={onReconnect} runnable={runnable} />
               ))}
             </ScopeGroup>
           )}
           {readonly.length > 0 && (
             <ScopeGroup label="Read-only">
               {readonly.map((e) => (
-                <McpRow key={`ro-${e.scope}-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} />
+                <McpRow key={`ro-${e.scope}-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} onReconnect={onReconnect} runnable={runnable} />
               ))}
             </ScopeGroup>
           )}
@@ -454,10 +503,14 @@ function McpRow({
   entry,
   cwd,
   restartNote,
+  onReconnect,
+  runnable,
 }: {
   entry: McpEntry
   cwd?: string
   restartNote: () => void
+  onReconnect: (name: string) => void
+  runnable: boolean
 }) {
   const reduce = useReducedMotion()
   const { toast } = useToast()
@@ -470,6 +523,12 @@ function McpRow({
 
   const isProject = entry.scope === 'project'
   const busy = remove.isPending || toggle.isPending
+  // A check that came back not-connected → highlight Reconnect as the next step.
+  const needsAttention =
+    !!health &&
+    (health.status === 'needs_auth' ||
+      health.status === 'failed' ||
+      health.status === 'timeout')
 
   const onRemove = () => {
     setConfirming(false)
@@ -626,6 +685,20 @@ function McpRow({
                   {check.isPending ? 'Checking…' : 'Check'}
                 </RowAction>
 
+                {/* reconnect / authenticate — opens Claude's own /mcp panel in the
+                    focused terminal (the only native reconnect path; the CLI can't
+                    do it). Highlighted when a check flagged a problem. Hidden with
+                    no focused session (nothing to open the panel in). */}
+                {runnable && (
+                  <RowAction
+                    onClick={() => onReconnect(entry.name)}
+                    icon={RefreshCw}
+                    tone={needsAttention ? 'accent' : 'default'}
+                  >
+                    Reconnect
+                  </RowAction>
+                )}
+
                 {/* project trust toggle (tri-state) */}
                 {isProject && cwd && (
                   entry.enabled === true ? (
@@ -733,11 +806,17 @@ function SkillsTab({
   loading,
   error,
   onRetry,
+  onRun,
+  runnable,
 }: {
   entries: SkillEntry[]
   loading: boolean
   error: boolean
   onRetry: () => void
+  /** Activate a skill (`/<name>\r`) in the focused session's terminal. */
+  onRun: (name: string) => void
+  /** True when there is a focused session to activate the skill in. */
+  runnable: boolean
 }) {
   if (error) return <ErrorState onRetry={onRetry} />
   if (loading && entries.length === 0) return <LoadingRows />
@@ -751,24 +830,29 @@ function SkillsTab({
 
   return (
     <div className="pt-1">
+      {!runnable && (
+        <p className="px-3 pb-2 text-[12px] text-muted-foreground">
+          Open a session to activate a skill in its terminal.
+        </p>
+      )}
       {project.length > 0 && (
         <ScopeGroup label="This project">
           {project.map((e) => (
-            <SkillRow key={`p-${e.name}`} entry={e} />
+            <SkillRow key={`p-${e.name}`} entry={e} onRun={onRun} />
           ))}
         </ScopeGroup>
       )}
       {global.length > 0 && (
         <ScopeGroup label="Global">
           {global.map((e) => (
-            <SkillRow key={`g-${e.name}`} entry={e} />
+            <SkillRow key={`g-${e.name}`} entry={e} onRun={onRun} />
           ))}
         </ScopeGroup>
       )}
       {plugin.length > 0 && (
         <ScopeGroup label="Read-only">
           {plugin.map((e) => (
-            <SkillRow key={`pl-${e.name}`} entry={e} />
+            <SkillRow key={`pl-${e.name}`} entry={e} onRun={onRun} />
           ))}
         </ScopeGroup>
       )}
@@ -776,33 +860,53 @@ function SkillsTab({
   )
 }
 
-function SkillRow({ entry }: { entry: SkillEntry }) {
+/** One tap-to-activate skill row. Tapping sends `/<name>\r` to the focused
+ *  terminal (skills are slash-invokable in Claude) and closes the sheet — the
+ *  same DOCK pattern the Commands tab uses, so a skill reads + behaves as a
+ *  primary action. */
+function SkillRow({
+  entry,
+  onRun,
+}: {
+  entry: SkillEntry
+  onRun: (name: string) => void
+}) {
   return (
-    <li className="flex items-start gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5">
-      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
-        <Sparkles aria-hidden />
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex flex-wrap items-center gap-1">
-          <span className="truncate font-mono text-[14px] font-medium text-foreground">
-            {entry.name}
+    <motion.li layout={false} className="list-none">
+      <motion.button
+        type="button"
+        onClick={() => onRun(entry.name)}
+        whileTap={{ scale: 0.98 }}
+        transition={springs.buttonPress}
+        aria-label={`Activate /${entry.name} in the focused terminal`}
+        className="flex w-full items-start gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:bg-accent/40"
+      >
+        <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
+          <Sparkles aria-hidden />
+        </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex flex-wrap items-center gap-1">
+            <span className="truncate font-mono text-[14px] font-medium text-foreground">
+              {entry.name}
+            </span>
+            {entry.scope === 'plugin' && <Badge tone="muted" icon={Puzzle}>plugin</Badge>}
+            {entry.linked && <Badge tone="muted">linked</Badge>}
+            {!entry.removable && entry.scope !== 'plugin' && (
+              <Badge tone="warn" icon={Lock}>read-only</Badge>
+            )}
           </span>
-          {entry.scope === 'plugin' && <Badge tone="muted" icon={Puzzle}>plugin</Badge>}
-          {entry.linked && <Badge tone="muted">linked</Badge>}
-          {!entry.removable && entry.scope !== 'plugin' && (
-            <Badge tone="warn" icon={Lock}>read-only</Badge>
+          {entry.description && (
+            <span className="line-clamp-2 text-[12px] leading-snug text-muted-foreground">
+              {entry.description}
+            </span>
           )}
-        </span>
-        {entry.description && (
-          <span className="line-clamp-2 text-[12px] leading-snug text-muted-foreground">
-            {entry.description}
+          <span className="truncate font-mono text-[11px] text-muted-foreground/80">
+            {entry.linked && entry.link_target ? `${entry.path} → ${entry.link_target}` : entry.path}
           </span>
-        )}
-        <span className="truncate font-mono text-[11px] text-muted-foreground/80">
-          {entry.linked && entry.link_target ? `${entry.path} → ${entry.link_target}` : entry.path}
-        </span>
-      </div>
-    </li>
+        </div>
+        <Play className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
+      </motion.button>
+    </motion.li>
   )
 }
 

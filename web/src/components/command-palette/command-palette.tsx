@@ -3,15 +3,21 @@
 // Mounted ONCE in the root <Layout> so the shortcut works on EVERY route — the
 // previous implementation (a stubbed `console.info` inside the focus route) was
 // the bug. A single document-level keydown listener with `preventDefault` opens
-// a Radix Dialog containing a fuzzy filter input + two sections:
+// a Radix Dialog containing a fuzzy filter input + these sections:
 //
 //   • Sessions   — `useSessions()`, sorted by recency. Pick → navigate to
 //                  `/focus/{name}`.
-//   • Commands   — `useSlashCommands()` (M9 `/api/slash-commands`). Pick →
-//                  navigate to the most-recently-active session's focus route AND
-//                  POST `/api/sessions/{name}/send` `{ text: "/cmd\r" }` so the
-//                  command runs in that session. If no sessions exist the row is
-//                  visible but inert (with a hint to boot one first).
+//   • MCP        — servers from the Claude registry (`useClaudeRegistry`, scoped
+//                  to the freshest session's project). Pick → open the Claude
+//                  tools manager (MCP tab) where check/reconnect/add/remove live.
+//   • Skills     — `~/.claude/skills/*` + project + plugin skills (sources the
+//                  slash-command list does NOT cover). Pick → activate `/<name>`
+//                  in the freshest session, like a command.
+//   • Commands   — `useSlashCommands()` (M9 `/api/slash-commands`) MERGED with the
+//                  registry's file commands. Pick → navigate to the most-recently-
+//                  active session's focus route AND POST `/api/sessions/{name}/send`
+//                  `{ text: "/cmd\r" }` so the command runs in that session. If no
+//                  sessions exist the row is visible but inert.
 //
 // Keyboard contract:
 //   * ⌘K / Ctrl+K           — toggle open. Always preventDefault (some browsers
@@ -36,7 +42,9 @@ import {
   MessageSquare,
   Play,
   Send,
+  ServerCog,
   SlidersHorizontal,
+  Sparkles,
   TerminalSquare,
   User,
 } from 'lucide-react'
@@ -49,11 +57,19 @@ import {
 } from '@/components/ui/dialog'
 import { useSessions } from '@/hooks/use-sessions'
 import { useSlashCommands } from '@/hooks/use-commands'
+import { useClaudeRegistry } from '@/hooks/use-claude-tools'
 import { useBoard } from '@/hooks/use-board'
 import { useStartAgent, useSendToAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
 import { useToast } from '@/components/ui/use-toast'
 import { settingsRequest } from '@/lib/api/client'
-import { boardApi, type ApiSession, type BoardIssue, type SlashCommand } from '@/lib/api'
+import {
+  boardApi,
+  type ApiSession,
+  type BoardIssue,
+  type McpEntry,
+  type SkillEntry,
+  type SlashCommand,
+} from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
@@ -72,6 +88,23 @@ interface CommandRow {
   kind: 'command'
   id: string // `command:${cmd}`
   cmd: SlashCommand
+}
+
+/** A skill from the Claude registry (`~/.claude/skills/*`, project, plugin —
+ *  sources the slash-command list does NOT cover). Picking activates `/<name>` in
+ *  the freshest session's terminal, exactly like a command. */
+interface SkillRow {
+  kind: 'skill'
+  id: string // `skill:${name}`
+  skill: SkillEntry
+}
+
+/** An MCP server from the Claude registry. Picking opens the Claude tools manager
+ *  (scoped to the freshest session) on the MCP tab — MCP is managed, not "run". */
+interface McpRow {
+  kind: 'mcp'
+  id: string // `mcp:${scope}:${name}`
+  mcp: McpEntry
 }
 
 /** An in-app action (not a session, not a slash command) — e.g. "View archived
@@ -94,7 +127,7 @@ interface IssueRow {
   issue: BoardIssue
 }
 
-type PaletteRow = SessionRow | CommandRow | ActionRow | IssueRow
+type PaletteRow = SessionRow | CommandRow | SkillRow | McpRow | ActionRow | IssueRow
 
 /** Board ⌘K verbs run as small step-machines inside the palette so the keyboard
  *  flow matches the overview's jump-session muscle memory (no new surface):
@@ -157,6 +190,25 @@ function matchesCommand(c: SlashCommand, q: string): boolean {
   return false
 }
 
+function matchesSkill(s: SkillEntry, q: string): boolean {
+  if (!q) return true
+  const needle = q.toLowerCase()
+  return (
+    s.name.toLowerCase().includes(needle) ||
+    s.description.toLowerCase().includes(needle)
+  )
+}
+
+function matchesMcp(m: McpEntry, q: string): boolean {
+  if (!q) return true
+  const needle = q.toLowerCase()
+  return (
+    m.name.toLowerCase().includes(needle) ||
+    m.transport.toLowerCase().includes(needle) ||
+    m.provenance.toLowerCase().includes(needle)
+  )
+}
+
 function matchesAction(a: ActionRow, q: string): boolean {
   if (!q) return true
   const needle = q.toLowerCase()
@@ -183,6 +235,18 @@ export function CommandPalette() {
   const location = useLocation()
   const { sessions } = useSessions()
   const { data: commands = [] } = useSlashCommands()
+  // Scope the Claude registry to the freshest session's project (when any), so ⌘K
+  // surfaces project skills/MCP too — not just global ones. Resolved once here and
+  // reused for both the registry read and command/skill picks (run in this same
+  // session). Only fetched while the palette is open (opt-in, no always-on read).
+  const freshest = React.useMemo(() => pickFreshestSession(sessions), [sessions])
+  const registry = useClaudeRegistry(freshest?.dir?.trim() || undefined, open)
+  // Stable identities so the row/command memos don't re-run every render (the
+  // `?? []` fallback would otherwise allocate a fresh array each time).
+  const regData = registry.data
+  const regSkills = React.useMemo(() => regData?.skills ?? [], [regData])
+  const regMcp = React.useMemo(() => regData?.mcp ?? [], [regData])
+  const regCommands = React.useMemo(() => regData?.commands ?? [], [regData])
   const openArchived = useArchivedSheet((s) => s.openSheet)
   const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
   const board = useBoard()
@@ -327,10 +391,33 @@ export function CommandPalette() {
     [board.issues],
   )
 
+  // Merge the slash-command list (built-ins + supermux skills) with the registry's
+  // file commands (e.g. ~/.claude/commands/*.md, project commands) — deduped by
+  // name, built-ins skipped (already in the slash list). This is what makes ⌘K
+  // complete: a `/command` that lives only as a file now shows up too.
+  const mergedCommands = React.useMemo<SlashCommand[]>(() => {
+    const byName = new Map<string, SlashCommand>()
+    for (const c of commands) byName.set(c.cmd.replace(/^\//, ''), c)
+    for (const c of regCommands) {
+      if (c.scope === 'builtin') continue
+      if (!byName.has(c.name)) {
+        byName.set(c.name, { cmd: `/${c.name}`, desc: c.description })
+      }
+    }
+    return [...byName.values()]
+  }, [commands, regCommands])
+
+  // Skill names already shown as commands (rare, but a DB skill + a same-named
+  // file skill could collide) — skip those so a `/name` never appears twice.
+  const commandNames = React.useMemo(
+    () => new Set(mergedCommands.map((c) => c.cmd.replace(/^\//, ''))),
+    [mergedCommands],
+  )
+
   // Build the flat row list. In a board sub-flow the list is the step's pick
   // targets (issues / sessions); otherwise it's the normal palette — sessions
-  // first (when query is not slash-prefixed), then in-app actions, then commands.
-  // Memoized so arrow-key state stays stable across renders.
+  // first (when query is not slash-prefixed), then in-app actions, then MCP
+  // servers, then skills, then commands. Memoized so arrow-key state stays stable.
   const rows: PaletteRow[] = React.useMemo(() => {
     if (mode.step === 'send-pick-issue' || mode.step === 'comment-pick-issue') {
       const pool = mode.step === 'send-pick-issue' ? sendableIssues : openIssues
@@ -377,15 +464,29 @@ export function CommandPalette() {
     const actionRows: PaletteRow[] = slashMode
       ? []
       : actions.filter((a) => matchesAction(a, query))
-    const commandRows: PaletteRow[] = commands
+    // MCP servers — not slash commands, so hidden in slash ("/") mode.
+    const mcpRows: PaletteRow[] = slashMode
+      ? []
+      : regMcp
+          .filter((m) => matchesMcp(m, query))
+          .map<McpRow>((m) => ({ kind: 'mcp', id: `mcp:${m.scope}:${m.name}`, mcp: m }))
+    // Skills — slash-invokable (`/<name>`), so they filter on the command query
+    // and show in slash mode too; skip any already listed as a command.
+    const skillRows: PaletteRow[] = regSkills
+      .filter((s) => !commandNames.has(s.name) && matchesSkill(s, cmdQ))
+      .map<SkillRow>((s) => ({ kind: 'skill', id: `skill:${s.name}`, skill: s }))
+    const commandRows: PaletteRow[] = mergedCommands
       .filter((c) => matchesCommand(c, cmdQ))
       .map<CommandRow>((c) => ({ kind: 'command', id: `command:${c.cmd}`, cmd: c }))
-    return [...sessionRows, ...actionRows, ...commandRows]
+    return [...sessionRows, ...actionRows, ...mcpRows, ...skillRows, ...commandRows]
   }, [
     mode,
     sessions,
     actions,
-    commands,
+    mergedCommands,
+    commandNames,
+    regMcp,
+    regSkills,
     query,
     sendableIssues,
     openIssues,
@@ -474,11 +575,33 @@ export function CommandPalette() {
     }
   }, [mode, comment, busy, setOpen, toast])
 
-  // Pick + dismiss. Session picks navigate; command picks navigate to the most
+  // Run a slash command / skill in the freshest session: navigate to it, then
+  // POST the text + carriage return to its send endpoint so the agent runs it.
+  // No session → close (the overview empty-state teaches booting one). Shared by
+  // command AND skill picks (skills are `/<name>` slash-invokable). Fire-and-
+  // forget; `settingsRequest` reads the bearer off env.ts.
+  const runSlash = React.useCallback(
+    (text: string) => {
+      const target = pickFreshestSession(sessions)
+      if (!target) {
+        setOpen(false)
+        return
+      }
+      setOpen(false)
+      navigate(`/focus/${encodeURIComponent(target.name)}`)
+      void settingsRequest(`/api/sessions/${encodeURIComponent(target.name)}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      }).catch((e) => console.warn('command-palette: send failed', e))
+    },
+    [sessions, navigate, setOpen],
+  )
+
+  // Pick + dismiss. Session picks navigate; command/skill picks run in the most
   // recently active session (so the slash command actually runs against a real
-  // pty) and POST it to the session's send endpoint. If no session exists, the
-  // command row shows a hint and is a no-op (the palette closes). Inside a board
-  // sub-flow, an issue/session pick advances the step machine or runs the verb.
+  // pty); MCP picks open the Claude tools manager. If no session exists, a
+  // command/skill row is a no-op (the palette closes). Inside a board sub-flow,
+  // an issue/session pick advances the step machine or runs the verb.
   const pickRow = React.useCallback(
     (row: PaletteRow | undefined) => {
       if (!row) return
@@ -526,34 +649,32 @@ export function CommandPalette() {
         row.run()
         return
       }
-      // Command row — pick the freshest session by `last_activity` (falling back
-      // to the first row), navigate to it, then send the command + carriage
-      // return so the agent actually runs it.
-      const target = pickFreshestSession(sessions)
-      if (!target) {
-        // No session to run against — just close, the empty-state CTA on the
-        // overview teaches the user to boot one.
+      if (row.kind === 'mcp') {
+        // MCP isn't "run" — open the Claude tools manager (MCP tab) scoped to the
+        // freshest session's project, where check / reconnect / add / remove live.
         setOpen(false)
+        openClaudeTools(freshest?.name ?? null)
         return
       }
-      setOpen(false)
-      navigate(`/focus/${encodeURIComponent(target.name)}`)
-      // Fire-and-forget. The shared `settingsRequest` helper picks up the auth
-      // token from `window._SUPERMUX_AUTH_TOKEN` (env.ts).
-      void settingsRequest(`/api/sessions/${encodeURIComponent(target.name)}/send`, {
-        method: 'POST',
-        body: JSON.stringify({ text: `${row.cmd.cmd}\r` }),
-      }).catch((e) => console.warn('command-palette: send failed', e))
+      if (row.kind === 'skill') {
+        // Skills are slash-invokable — activate `/<name>` in the freshest session.
+        runSlash(`/${row.skill.name}\r`)
+        return
+      }
+      // Command row — run it in the freshest session.
+      runSlash(`${row.cmd.cmd}\r`)
     },
     [
       navigate,
-      sessions,
       setOpen,
       mode,
       enterMode,
       markIssueDone,
       sendIssueToSession,
       startAgentOnIssue,
+      runSlash,
+      openClaudeTools,
+      freshest,
     ],
   )
 
@@ -852,6 +973,26 @@ function PaletteRowView({
           />
           <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
             {row.label}
+          </span>
+        </>
+      ) : row.kind === 'mcp' ? (
+        <>
+          <ServerCog className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
+            {row.mcp.name}
+          </span>
+          <span className="shrink-0 text-[11px] text-muted-foreground">
+            {row.mcp.provenance === 'cloud' ? 'cloud · manage' : 'MCP · manage'}
+          </span>
+        </>
+      ) : row.kind === 'skill' ? (
+        <>
+          <Sparkles className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="shrink-0 font-mono text-[14px] font-semibold text-foreground">
+            /{row.skill.name}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+            {row.skill.description || 'skill'}
           </span>
         </>
       ) : (
