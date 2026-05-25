@@ -82,12 +82,12 @@ export interface UseBoardResult {
    *  `boardApi.unsend` for the Undo toast. */
   startIssue: (args: StartArgs) => Promise<ClaimResult>
   deleteIssue: (id: string) => Promise<void>
-
-  // Column (status) management.
-  createStatus: (label: string) => Promise<BoardStatus>
-  renameStatus: (id: string, label: string) => Promise<void>
-  deleteStatus: (id: string) => Promise<void>
-  reorderStatuses: (order: string[]) => Promise<void>
+  /** BM2 §2.4: deliver `text` into the card's linked agent + clear awaiting. */
+  replyIssue: (id: string, text: string) => Promise<void>
+  /** BM2 §2.6: soft-archive the card (optimistic removal). */
+  discardIssue: (id: string) => Promise<void>
+  /** BM2 §2.6: un-discard (undo). */
+  restoreIssue: (id: string) => Promise<void>
 }
 
 /** Sort a column's issues for display: pinned first, then ascending `pos`. The
@@ -283,8 +283,8 @@ export function useBoard(): UseBoardResult {
       markPending(optimisticId)
       const optimistic: BoardIssue = {
         id: optimisticId,
-        title: input.title,
-        desc: input.desc ?? '',
+        title: input.title ?? '',
+        desc: input.description,
         status: input.status ?? 'todo',
         session: input.session ?? null,
         creator: '',
@@ -292,12 +292,14 @@ export function useBoard(): UseBoardResult {
         due_time: input.due_time ?? null,
         created: Math.floor(Date.now() / 1000),
         updated: Math.floor(Date.now() / 1000),
-        owner_type: input.owner_type ?? 'human',
+        // BM2: every card is an agent task — owner_type is fixed server-side.
+        owner_type: 'agent',
         pinned: 0,
         // New cards sit at the top of their column (negative pos).
         pos: Math.min(0, ...prev.map((i) => i.pos)) - 1024,
         tags: input.tags ?? [],
         // A brand-new card has no relations yet (S1/S2: always-present arrays).
+        // Acceptance lines are created server-side; they arrive on the refetch.
         comments: [],
         acceptance: [],
         links: [],
@@ -307,6 +309,7 @@ export function useBoard(): UseBoardResult {
         needs_review: false,
         awaiting_input: false,
         session_live: input.session != null,
+        awaiting_question: null,
       }
       patchCache(qc, (p) => [optimistic, ...p])
       return { prev, optimisticId }
@@ -434,41 +437,59 @@ export function useBoard(): UseBoardResult {
     },
   })
 
-  // ── column management (invalidate statuses on settle) ──────────────────────
-  const invalidateStatuses = () =>
-    qc.invalidateQueries({ queryKey: [...STATUSES_KEY] })
-  const createStatus = useMutation({
-    mutationFn: (label: string) => boardApi.createStatus(label),
-    onSettled: invalidateStatuses,
-  })
-  const renameStatus = useMutation({
-    mutationFn: ({ id, label }: { id: string; label: string }) =>
-      boardApi.renameStatus(id, label),
-    onSettled: invalidateStatuses,
-  })
-  const deleteStatus = useMutation({
-    mutationFn: (id: string) => boardApi.deleteStatus(id),
-    onSettled: invalidateStatuses,
-  })
-  const reorderStatuses = useMutation({
-    mutationFn: (order: string[]) => boardApi.reorderStatuses(order),
-    onMutate: async (order) => {
-      await qc.cancelQueries({ queryKey: [...STATUSES_KEY] })
-      const prev = qc.getQueryData<BoardStatus[]>([...STATUSES_KEY]) ?? []
-      const byId = new Map(prev.map((s) => [s.id, s]))
-      const next = order
-        .map((id, idx) => {
-          const s = byId.get(id)
-          return s ? { ...s, position: idx } : null
-        })
-        .filter((s): s is BoardStatus => s !== null)
-      if (next.length) qc.setQueryData([...STATUSES_KEY], next)
+  // ── reply (deliver text into the linked agent; clear awaiting_input) ────────
+  // BM2 §2.4: the inline board reply. Optimistically clears the card's
+  // `awaiting_input` + `awaiting_question` so the amber "Needs your input" state
+  // resolves the moment the human hits Send; the SSE `board` push reconciles the
+  // real state once the agent receives the text. Rolls back on error.
+  const reply = useMutation({
+    mutationFn: ({ id, text }: { id: string; text: string }) =>
+      boardApi.reply(id, text),
+    onMutate: async ({ id }) => {
+      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
+      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      markPending(id)
+      patchCache(qc, (p) =>
+        p.map((i) =>
+          i.id === id
+            ? { ...i, awaiting_input: false, awaiting_question: null }
+            : i,
+        ),
+      )
       return { prev }
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData([...STATUSES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
     },
-    onSettled: invalidateStatuses,
+    onSettled: (_d, _e, { id }) => {
+      clearPending(id)
+      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    },
+  })
+
+  // ── discard (optimistic removal from the board; undo via restore) ──────────
+  const discard = useMutation({
+    mutationFn: (id: string) => boardApi.discard(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
+      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      markPending(id)
+      patchCache(qc, (p) => p.filter((i) => i.id !== id))
+      return { prev }
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+    },
+    onSettled: (_d, _e, id) => {
+      clearPending(id)
+      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    },
+  })
+
+  // ── restore (un-discard — powers the discard toast's Undo) ─────────────────
+  const restore = useMutation({
+    mutationFn: (id: string) => boardApi.restore(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
   })
 
   const error = (issuesQuery.error ?? statusesQuery.error) as Error | null
@@ -489,12 +510,10 @@ export function useBoard(): UseBoardResult {
       claimIssue: (args) => claim.mutateAsync(args),
       startIssue: (args) => start.mutateAsync(args),
       deleteIssue: (id) => remove.mutateAsync(id).then(() => undefined),
-      createStatus: (label) => createStatus.mutateAsync(label),
-      renameStatus: (id, label) =>
-        renameStatus.mutateAsync({ id, label }).then(() => undefined),
-      deleteStatus: (id) => deleteStatus.mutateAsync(id).then(() => undefined),
-      reorderStatuses: (order) =>
-        reorderStatuses.mutateAsync(order).then(() => undefined),
+      replyIssue: (id, text) =>
+        reply.mutateAsync({ id, text }).then(() => undefined),
+      discardIssue: (id) => discard.mutateAsync(id).then(() => undefined),
+      restoreIssue: (id) => restore.mutateAsync(id).then(() => undefined),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
