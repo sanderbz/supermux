@@ -25,7 +25,7 @@ fn neutral_pty() -> Instant {
 fn classify(capture: &str) -> &'static str {
     let prepared = prepare_capture(capture);
     let mut detector = StatusDetector::new();
-    detector.detect(&prepared, neutral_pty(), TurnState::default()).as_str()
+    detector.detect(&prepared, neutral_pty(), TurnState::default(), false).as_str()
 }
 
 fn fixtures_dir() -> std::path::PathBuf {

@@ -158,6 +158,16 @@ pub struct AppState {
     /// window of the last hook. Each timestamp is the server-side receive
     /// `Instant`, so freshness is judged locally (clock-skew safe).
     pub last_hook: Arc<DashMap<String, TurnState>>,
+    /// Per-session "hooks are LIVE" flag. Set the moment ANY authenticated hook
+    /// POST arrives from the session (`/api/_internal/hook`), so it goes true
+    /// within the boot window — the `SessionStart` hook fires when Claude
+    /// launches, before the user can submit (or even type) their first prompt.
+    /// Read by the status detector: a hooked session is AUTHORITATIVE off the
+    /// turn state machine + content bank, so the raw PTY-heartbeat "bytes ⇒
+    /// Active" fallback is suppressed for it — typing at the prompt echoes bytes
+    /// but must NOT read as "the agent is working" (the core fragility this fixes).
+    /// `()` value = a presence set; cleared on session delete/rename.
+    pub hooks_live: Arc<DashMap<String, ()>>,
     /// Per-session detector wake (§3.6 — "within 1s of a real Claude
     /// notification"). The hook endpoint `notify_one`s this so the affected
     /// session's 2s detector loop re-ticks immediately instead of waiting out the
@@ -236,6 +246,7 @@ impl AppState {
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),
             last_hook: Arc::new(DashMap::new()),
+            hooks_live: Arc::new(DashMap::new()),
             detector_wake: Arc::new(DashMap::new()),
             pty_heartbeat: Arc::new(DashMap::new()),
             cadence_recency: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -324,6 +335,24 @@ impl AppState {
     /// the empty default (non-decisive, so the bank/heartbeat decide).
     pub fn turn_state(&self, name: &str) -> TurnState {
         self.last_hook.get(name).map(|e| *e.value()).unwrap_or_default()
+    }
+
+    /// Mark `name`'s Claude hooks as LIVE — called by `/api/_internal/hook` on
+    /// EVERY authenticated POST (any event kind, incl. `SessionStart`). Once set,
+    /// the detector treats the turn state machine + content bank as authoritative
+    /// and suppresses the raw PTY-heartbeat `Active` fallback for the session (so
+    /// typing at the prompt can't flip the card to busy).
+    pub fn mark_hooks_live(&self, name: &str) {
+        self.hooks_live.entry(name.to_string()).or_insert(());
+    }
+
+    /// Does `name` have LIVE Claude hooks (we have seen ≥1 hook POST from it)?
+    /// Read by the status detector to decide whether the heartbeat `Active`
+    /// fallback applies. A never-hooked session (shell / codex / claude whose
+    /// hooks failed to install or have not fired yet) returns `false` and keeps
+    /// the heartbeat heuristic as its liveness fallback.
+    pub fn has_hooks(&self, name: &str) -> bool {
+        self.hooks_live.contains_key(name)
     }
 
     // ── hooks-10x: live activity + error (IN-MEMORY ONLY) ─────────────────────
@@ -515,6 +544,7 @@ impl AppState {
         self.status_watch.remove(name);
         self.hook_tokens.remove(name);
         self.last_hook.remove(name);
+        self.hooks_live.remove(name);
         self.detector_wake.remove(name);
         self.pty_heartbeat.remove(name);
         self.session_tasks.remove(name);
@@ -541,6 +571,9 @@ impl AppState {
         }
         if let Some((_, v)) = self.last_hook.remove(old) {
             self.last_hook.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.hooks_live.remove(old) {
+            self.hooks_live.insert(new.to_string(), v);
         }
         if let Some((_, v)) = self.detector_wake.remove(old) {
             self.detector_wake.insert(new.to_string(), v);

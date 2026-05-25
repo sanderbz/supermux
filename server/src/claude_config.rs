@@ -191,9 +191,17 @@ fn supermux_entry(event_token: &str) -> Value {
 /// doesn't break hooks). The payload is held in-memory only server-side and is
 /// never persisted.
 fn hook_command(event_token: &str) -> String {
+    // `Content-Type: application/json` is REQUIRED: curl's `-d` defaults to
+    // `application/x-www-form-urlencoded`, which axum's `Json` extractor rejects
+    // with 415 — so without this header EVERY hook POST silently fails (the
+    // `|| true` swallows it) and the turn state machine, the detector's
+    // authoritative signal, never receives a single event. That dead-hooks state
+    // is what made the heartbeat the de-facto only signal and let typing-echo
+    // flip a session to busy. Sending the header makes the hooks actually land.
     format!(
         ": {MARKER}; D=$(head -c 16384); [ -z \"$D\" ] && D='{{}}'; \
          curl -fsS --max-time 1 -X POST \
+         -H \"Content-Type: application/json\" \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
          \"$SUPERMUX_URL/api/_internal/hook\" \
          -d \"{{\\\"session\\\":\\\"$SUPERMUX_SESSION\\\",\\\"event\\\":\\\"{event_token}\\\",\\\"payload\\\":$D}}\" || true"
@@ -245,6 +253,13 @@ mod tests {
             assert!(!cmd.contains("$SUPERMUX_TOKEN"), "{event} must NOT leak the dashboard bearer");
             assert!(cmd.contains("--max-time 1"), "{event} must bound curl");
             assert!(cmd.contains("|| true"), "{event} must never fail the tool call");
+            // Content-Type is REQUIRED — axum's Json extractor 415s a curl `-d`
+            // POST (default form-urlencoded) without it, silently killing every
+            // hook (the regression that left the turn state machine dead).
+            assert!(
+                cmd.contains("Content-Type: application/json"),
+                "{event} must send Content-Type: application/json or the Json extractor 415s it"
+            );
             assert!(cmd.contains(&format!("\\\"event\\\":\\\"{token}\\\"")), "{event} token");
             // hooks-10x v2: forward Claude's STDIN JSON as `payload`, size-capped,
             // defaulting to `{}` when empty so the body stays valid JSON.
