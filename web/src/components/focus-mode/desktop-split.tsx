@@ -29,6 +29,7 @@ import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { Dropzone } from '@/components/files/dropzone'
 import { AttachmentRow } from './attachment-chip'
 import { useAttachmentUpload } from './use-attachment-upload'
+import { SessionInfoPanel } from './session-info-panel'
 
 export interface DesktopSplitProps {
   /** Focused session name (route param). */
@@ -87,6 +88,11 @@ export function DesktopSplit({
   )
   const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
   const attach = useAttachmentUpload(sendToTerm, focusTerm)
+
+  // feat-session-info — the title-click info panel. `titleRef` is the Popover's
+  // anchor (the title <button> in the header); the panel only mounts while open.
+  const [infoOpen, setInfoOpen] = React.useState(false)
+  const titleRef = React.useRef<HTMLButtonElement>(null)
 
   // Clipboard image paste — handled BEFORE xterm. xterm only forwards TEXT paste
   // (the textarea paste → `term.onData`), so reading `clipboardData.files` /
@@ -253,6 +259,10 @@ export function DesktopSplit({
           provider={current?.provider}
           onDetach={onDetach}
           onStop={onStop}
+          // Open only — Radix closes the popover on outside-click / Escape, so a
+          // toggle here would race its onOpenChange(false) and re-open it.
+          onTitleClick={() => setInfoOpen(true)}
+          titleRef={titleRef}
         />
 
         {/* `relative` so the capture indicator (polish-pass #4) can position
@@ -332,6 +342,17 @@ export function DesktopSplit({
         onOpenChange={setSnippetsOpen}
         onInsert={(body) => termRef.current?.send(body)}
         onRun={(body) => termRef.current?.send(body + '\r')}
+      />
+
+      {/* feat-session-info — the title-click info panel (Popover on desktop). The
+          body only mounts while open (PopoverContent portals on open). Cloning an
+          agent navigates to its focus route via the route's select handler. */}
+      <SessionInfoPanel
+        name={name}
+        open={infoOpen}
+        onOpenChange={setInfoOpen}
+        triggerRef={titleRef}
+        onNavigate={onSelect}
       />
     </div>
   )

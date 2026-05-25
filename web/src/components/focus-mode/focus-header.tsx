@@ -9,6 +9,7 @@
 // M14 and M15 each authored a component named FocusHeader with INCOMPATIBLE
 // props; the merge keeps both by giving the desktop one a distinct name.
 
+import * as React from 'react'
 import { motion } from 'framer-motion'
 import {
   ChevronLeft,
@@ -67,6 +68,13 @@ export interface DesktopFocusHeaderProps {
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave (§4.4.3). */
   onStop: () => void
+  /** Open the session info panel (feat-session-info). When set, the title becomes
+   *  a bare button (pixel-identical to the span — no padding/border/extra height,
+   *  so NO resting space is added). The route owns the panel + its anchor ref. */
+  onTitleClick?: () => void
+  /** Ref to the title <button> — the route passes it to the info panel's Popover
+   *  `virtualRef` so the popover anchors to the title. */
+  titleRef?: React.Ref<HTMLButtonElement>
 }
 
 export function DesktopFocusHeader({
@@ -79,6 +87,8 @@ export function DesktopFocusHeader({
   provider,
   onDetach,
   onStop,
+  onTitleClick,
+  titleRef,
 }: DesktopFocusHeaderProps) {
   // Entry point 1 (skills-mcp-manager plan §C.1): the Claude tools manager,
   // pre-scoped to THIS session's project so .mcp.json / .claude/* resolve.
@@ -97,9 +107,28 @@ export function DesktopFocusHeader({
     >
       <StatusDot status={status} className="shrink-0" />
       <span className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
-          {title || name}
-        </span>
+        {onTitleClick ? (
+          // The title becomes a bare button (feat-session-info). It carries the
+          // IDENTICAL typography classes (text-sm font-semibold tracking-tight,
+          // truncate, flex-1) with NO padding/border/background/extra height, so
+          // it is pixel-identical to the span at rest — zero resting space added.
+          // `text-left` keeps the truncated text aligned exactly as the span did.
+          <button
+            ref={titleRef}
+            type="button"
+            onClick={onTitleClick}
+            title={title || name}
+            aria-label={`Session info — ${title || name}`}
+            aria-haspopup="dialog"
+            className="min-w-0 flex-1 truncate text-left text-sm font-semibold tracking-tight outline-none focus-visible:underline focus-visible:decoration-dotted focus-visible:underline-offset-4"
+          >
+            {title || name}
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
+            {title || name}
+          </span>
+        )}
         {error && <ErrorBadge error={error} />}
         {/* While the agent is working with a live activity label, show the
             activity line in place of the static status word (the live "what is
@@ -195,6 +224,11 @@ export interface FocusHeaderProps {
    *  modes are a Claude-only concept; a shell/codex pane has none). */
   provider?: string
   onBack: () => void
+  /** Open the session info panel (feat-session-info). When set, the title becomes
+   *  a bare button (pixel-identical to the <h1> — no padding/border/extra height,
+   *  so NO resting space is added). Mobile anchors the panel to the viewport
+   *  bottom (a Sheet), so no anchor ref is needed here. */
+  onTitleClick?: () => void
   className?: string
 }
 
@@ -206,6 +240,7 @@ export function FocusHeader({
   mode,
   provider,
   onBack,
+  onTitleClick,
   className,
 }: FocusHeaderProps) {
   const showActivity =
@@ -261,13 +296,30 @@ export function FocusHeader({
               the full name stays the accessible label (title + aria-label).
               (The hard ~8-char truncation lives on the bottom DOCK session
               switcher, where horizontal room is tight — not here.) */}
-          <h1
-            title={name}
-            aria-label={name}
-            className="min-w-0 truncate text-[15px] font-semibold tracking-tight"
-          >
-            {name}
-          </h1>
+          {onTitleClick ? (
+            // The title becomes a bare button (feat-session-info) with the
+            // IDENTICAL typography (text-[15px] font-semibold tracking-tight,
+            // truncate) and NO padding/border/background/extra height, so it is
+            // pixel-identical to the <h1> at rest — zero resting space added.
+            <button
+              type="button"
+              onClick={onTitleClick}
+              title={name}
+              aria-label={`Session info — ${name}`}
+              aria-haspopup="dialog"
+              className="min-w-0 truncate text-[15px] font-semibold tracking-tight outline-none focus-visible:underline focus-visible:decoration-dotted focus-visible:underline-offset-4"
+            >
+              {name}
+            </button>
+          ) : (
+            <h1
+              title={name}
+              aria-label={name}
+              className="min-w-0 truncate text-[15px] font-semibold tracking-tight"
+            >
+              {name}
+            </h1>
+          )}
           {error && <ErrorBadge error={error} />}
         </div>
         {/* Live activity sub-line (hooks-10x) — sits under the name while the

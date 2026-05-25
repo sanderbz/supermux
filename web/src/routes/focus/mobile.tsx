@@ -51,6 +51,7 @@ import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
+import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
 
@@ -224,6 +225,8 @@ export function MobileFocus() {
   // `layoutId`. Live-type + the accessory strip remain the default for
   // interactive TUIs — this sheet is additive.
   const [composeOpen, setComposeOpen] = React.useState(false)
+  // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
+  const [infoOpen, setInfoOpen] = React.useState(false)
   // DOCK — the slash panel was removed: slash commands now run from the Claude
   // Tools sheet's Commands tab (tap a command → it runs in the focused terminal).
   // M17 — joystick on/off. The M16 accessory bar's "Gesture" toggle flips this
@@ -286,6 +289,7 @@ export function MobileFocus() {
             mode={current.mode}
             provider={current.provider}
             onBack={goOverviewMorph}
+            onTitleClick={() => setInfoOpen(true)}
           />
 
           {/* M17 — the LiveTerminal with the joystick + 2-finger gesture
@@ -416,6 +420,16 @@ export function MobileFocus() {
         open={composeOpen}
         onOpenChange={setComposeOpen}
         onSend={sendToTerm}
+      />
+
+      {/* feat-session-info — the title-click info panel (bottom Sheet on mobile).
+          Cloning an agent navigates to its focus route via `goSession`. The
+          panel's content only mounts while open (Vaul unmounts when closed). */}
+      <SessionInfoPanel
+        name={name}
+        open={infoOpen}
+        onOpenChange={setInfoOpen}
+        onNavigate={goSession}
       />
     </>
   )
