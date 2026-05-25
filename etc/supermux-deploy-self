@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# supermux-deploy-self — the ONLY privileged step of `scripts/deploy-self.sh`.
+#
+# Installed to /usr/local/sbin/supermux-deploy-self (root-owned, mode 0755) and
+# invoked by the unprivileged supermux service user through a tightly-scoped
+# sudoers rule (see etc/sudoers.d/supermux-deploy-self):
+#
+#     supermux ALL=(root) NOPASSWD: /usr/local/sbin/supermux-deploy-self
+#
+# It does exactly four root-only things and NOTHING else:
+#   1. back up the currently-installed /usr/local/bin/supermux-server,
+#   2. install the freshly-built binary the caller points at,
+#   3. `systemctl restart supermux`,
+#   4. verify the service is active + healthy; ROLL BACK to the backup and
+#      restart if it is not — so a bad build can never leave prod down.
+#
+# WHY A FIXED HELPER (not raw `systemctl`/`install` in sudoers): the privileged
+# surface is one audited, root-owned file with hardcoded destination + unit
+# name. The caller cannot install to an arbitrary path or restart an arbitrary
+# unit. The only caller-supplied inputs are the SOURCE binary path (validated:
+# must be a regular ELF file) and an opaque SHA string (recorded only).
+#
+# ── ONE-TIME ROOT SETUP (run once, as root, from the clone) ───────────────────
+#   sudo install -m 0755 -o root -g root etc/supermux-deploy-self \
+#        /usr/local/sbin/supermux-deploy-self
+#   sudo install -m 0440 -o root -g root etc/sudoers.d/supermux-deploy-self \
+#        /etc/sudoers.d/supermux-deploy-self
+#   sudo visudo -cf /etc/sudoers.d/supermux-deploy-self   # validate syntax
+# After that, the service user runs `scripts/deploy-self.sh` with no root.
+set -euo pipefail
+
+# ── fixed, NON-negotiable targets (not caller-controllable) ───────────────────
+UNIT="supermux"
+DEST="/usr/local/bin/supermux-server"
+BACKUP="/usr/local/bin/supermux-server.prev"
+DATA_DIR="/home/supermux/.supermux"
+CONFIG="$DATA_DIR/config.toml"
+DEPLOYED_SHA_FILE="/opt/projects/supermux/DEPLOYED_SHA"   # informational
+
+log() { printf '[deploy-self/root] %s\n' "$*"; }
+die() { printf '[deploy-self/root] error: %s\n' "$*" >&2; exit 1; }
+
+# ── args ──────────────────────────────────────────────────────────────────────
+SRC=""
+SHA=""
+MODE="deploy"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --binary) SRC="${2:-}"; shift 2 ;;
+    --sha)    SHA="${2:-}"; shift 2 ;;
+    --check)  MODE="check"; shift ;;     # used by deploy-self.sh to verify the sudo grant
+    *) die "unknown arg: $1" ;;
+  esac
+done
+
+# --check: prove the grant works without doing anything destructive.
+if [ "$MODE" = "check" ]; then
+  echo "supermux-deploy-self: OK (root, helper present)"
+  exit 0
+fi
+
+[ -n "$SRC" ] || die "missing --binary <path>"
+[ -f "$SRC" ] || die "source binary does not exist: $SRC"
+# Validate it is actually an ELF executable, not some arbitrary file.
+if ! head -c 4 "$SRC" | grep -q $'\x7fELF'; then
+  die "source is not an ELF binary: $SRC"
+fi
+
+# ── resolve the internal health port from config.toml (bind = "127.0.0.1:PORT")
+PORT="$(sed -n 's/^[[:space:]]*bind[[:space:]]*=[[:space:]]*"127\.0\.0\.1:\([0-9]\+\)".*/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+PORT="${PORT:-8824}"
+
+health_ok() {
+  curl -sf -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/api/health"
+}
+
+# ── 1. back up the current binary (if any) so we can roll back ────────────────
+if [ -f "$DEST" ]; then
+  install -m 0755 -o root -g root "$DEST" "$BACKUP"
+  log "backed up current binary -> $BACKUP"
+else
+  rm -f "$BACKUP"
+  log "no existing $DEST to back up (first install)"
+fi
+
+# ── 2. install the freshly-built binary (atomic via install(1)) ───────────────
+install -m 0755 -o root -g root "$SRC" "$DEST"
+log "installed new binary -> $DEST ($(du -h "$DEST" | cut -f1))"
+
+# Record the deployed commit (best-effort; never fails the deploy).
+if [ -n "$SHA" ]; then
+  printf '%s\n' "$SHA" > "$DEPLOYED_SHA_FILE" 2>/dev/null || true
+fi
+
+# ── 3. restart the service ────────────────────────────────────────────────────
+log "systemctl restart $UNIT"
+systemctl restart "$UNIT"
+
+# ── 4. verify is-active + health; roll back on failure ────────────────────────
+rollback() {
+  log "!! new build failed to come up — ROLLING BACK"
+  if [ -f "$BACKUP" ]; then
+    install -m 0755 -o root -g root "$BACKUP" "$DEST"
+    log "restored previous binary from $BACKUP"
+  else
+    log "no backup to restore (was a first install) — leaving binary in place"
+  fi
+  systemctl restart "$UNIT" || true
+  sleep 2
+  if systemctl is-active --quiet "$UNIT" && health_ok; then
+    log "rolled back: service is active + healthy again on :$PORT"
+  else
+    log "CRITICAL: rollback restart did not recover the service — investigate:"
+    log "  journalctl -u $UNIT -n 100 --no-pager"
+  fi
+}
+
+# Give it a few seconds to bind + reconcile sessions, polling health.
+ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if systemctl is-active --quiet "$UNIT" && health_ok; then ok=1; break; fi
+  sleep 1
+done
+
+if [ "$ok" != "1" ]; then
+  log "service not active+healthy after restart:"
+  systemctl is-active "$UNIT" || true
+  systemctl status "$UNIT" --no-pager 2>&1 | tail -20 || true
+  rollback
+  die "deploy-self failed; previous binary restored (no bricking)."
+fi
+
+log "OK: $UNIT is active and healthy on 127.0.0.1:$PORT (commit ${SHA:0:12})"
+exit 0

@@ -1,0 +1,24 @@
+# /etc/sudoers.d/supermux-deploy-self
+#
+# Least-privilege grant for "deploy supermux to itself" (scripts/deploy-self.sh).
+#
+# The supermux service user is otherwise UNPRIVILEGED (no general sudo). This
+# rule lets it run ONE fixed, root-owned helper — and nothing else — without a
+# password. The helper (/usr/local/sbin/supermux-deploy-self) hardcodes the
+# install destination (/usr/local/bin/supermux-server) and the unit it restarts
+# (supermux), so the grant cannot be repurposed to install arbitrary files or
+# restart arbitrary services.
+#
+# SECURITY NOTE: the helper MUST be root-owned and NOT group/world-writable
+# (install it with -o root -g root -m 0755). If the supermux user could edit the
+# helper, this NOPASSWD grant would be a full root escalation. The one-time
+# setup installs it 0755 root:root precisely so that invariant holds.
+#
+# INSTALL (run once as root, from the clone):
+#   sudo install -m 0440 -o root -g root etc/sudoers.d/supermux-deploy-self \
+#        /etc/sudoers.d/supermux-deploy-self
+#   sudo visudo -cf /etc/sudoers.d/supermux-deploy-self    # validate
+#
+# If your service user is not literally "supermux", change the user below.
+
+supermux ALL=(root) NOPASSWD: /usr/local/sbin/supermux-deploy-self
