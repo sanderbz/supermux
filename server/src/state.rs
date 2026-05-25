@@ -16,7 +16,6 @@ use tokio::sync::{broadcast, watch, Mutex, Notify};
 use crate::config::Config;
 use crate::sessions::pty::PtyStream;
 use crate::sessions::status::{HookEvent, Status, TurnState};
-use crate::sessions::tmux::Tmux;
 use crate::ws::streamer::PtyStreamer;
 
 /// Cold-start PTY sentinel (§3.2.8): until M4's reader records a real byte for a
@@ -289,19 +288,41 @@ impl AppState {
     /// FIFO reader is running. Errors if the session's tmux pane is not live.
     pub async fn pty_for(&self, name: &str) -> anyhow::Result<Arc<PtyStream>> {
         let stream = self.pty.for_session(name);
-        let tmux = Tmux::new(name);
         // Hand the reader BOTH the heartbeat map (so it stamps freshness on every
         // byte batch) AND this session's detector wake (so a silent→active edge in
         // the byte flow re-ticks the detector immediately — STATLAT). The wake is
         // the SAME `Notify` the detector loop parks on, so a byte burst after an
         // idle/waiting lull surfaces `Active` within ~1s regardless of provider or
         // whether Claude hooks are wired, instead of waiting out the 4s/5s tier.
+        // The reader derives its tmux target (session vs pane) from the stream
+        // itself (Agent Teams §3.5), so no `Tmux` is passed in.
         stream
             .ensure_started(
-                &tmux,
                 &self.pool,
                 self.pty_heartbeat.clone(),
                 self.detector_wake_for(name),
+            )
+            .await?;
+        Ok(stream)
+    }
+
+    /// Get (creating on first use) the live pty stream for a teammate PANE (Agent
+    /// Teams §3.5) and ensure its FIFO reader is running. `stream_key` is a
+    /// pane-unique id (`%id` or `{lead}/{member}`) — it keys the registry AND the
+    /// FIFO/log basenames so the teammate never clobbers the lead's. `pane_id` is
+    /// the tmux `%id` the reader pipes. The caller MUST have already validated the
+    /// pane still lives in the lead's window (pane ids are reused).
+    pub async fn pty_for_pane(
+        &self,
+        stream_key: &str,
+        pane_id: &str,
+    ) -> anyhow::Result<Arc<PtyStream>> {
+        let stream = self.pty.for_pane(stream_key, pane_id);
+        stream
+            .ensure_started(
+                &self.pool,
+                self.pty_heartbeat.clone(),
+                self.detector_wake_for(stream_key),
             )
             .await?;
         Ok(stream)

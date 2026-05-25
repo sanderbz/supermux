@@ -23,6 +23,7 @@ pub mod pty;
 pub mod resumable;
 pub mod status;
 pub mod steering;
+pub mod teams;
 pub mod tmux;
 
 use std::collections::HashMap;
