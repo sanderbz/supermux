@@ -116,6 +116,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Regression for the 0015 prod crash: the runtime opens the DB with
+    /// `foreign_keys=ON` (see [`init`]), and SQLite REFUSES
+    /// `ALTER TABLE ... ADD COLUMN ... REFERENCES ... DEFAULT '<non-null>'` under
+    /// FK enforcement ("Cannot add a REFERENCES column with non-NULL default
+    /// value"). Run the FULL migration chain on a connection with `foreign_keys`
+    /// explicitly enforced so any future migration that trips this fails the test
+    /// suite, not a live deploy.
+    #[tokio::test]
+    async fn migrations_apply_under_foreign_keys_enforced() {
+        use sqlx::{sqlite::SqliteConnection, Connection};
+        let dir =
+            std::env::temp_dir().join(format!("supermux-fkmig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.db");
+        let mut conn = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true)
+                .foreign_keys(true),
+        )
+        .await
+        .expect("connect with foreign_keys=ON");
+        let fk: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys must be ON to faithfully mirror prod");
+        sqlx::migrate!("./migrations")
+            .run(&mut conn)
+            .await
+            .expect("all migrations must apply under foreign_keys=ON");
+        conn.close().await.ok();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn migration_0015_seeds_main_board_and_backfills_existing_cards() {
         let (pool, dir) = test_pool().await;
