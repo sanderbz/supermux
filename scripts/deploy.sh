@@ -788,6 +788,7 @@ sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__PROTECT_HOME__|$PROTECT_HOME|g" \
     -e "s|__READ_WRITE_PATHS__|$READ_WRITE_PATHS|g" \
     -e "s|__MEMORY_DENY_WRITE_EXECUTE__|$MEMORY_DENY_WRITE_EXECUTE|g" \
+    -e "s|__PRIVATE_TMP__|$PRIVATE_TMP|g" \
     etc/systemd/supermux.service > "$UNIT_TMP"
 # __BIND_PATHS__ is its own line in the template: substitute it with the
 # BindPaths directive (non-root), or delete the line entirely (root → empty).
