@@ -17,26 +17,4 @@ export const focusApi = {
     settingsRequest(`/api/sessions/${encodeURIComponent(name)}/stop`, {
       method: 'POST',
     }),
-
-  /** POST `/api/sessions/:name/start` — boot tmux + (re)launch the agent. The
-   *  server's launch builder resumes the SAME conversation when the session has a
-   *  `cc_conversation_id`, so this cleanly relaunches the session in place. The
-   *  status SSE delta flips the tile to `starting`/`active` and the live terminal
-   *  reconnects on its own (no manual refresh). Body is `{}` (no initial prompt). */
-  startSession: (name: string): Promise<void> =>
-    settingsRequest(`/api/sessions/${encodeURIComponent(name)}/start`, {
-      method: 'POST',
-      body: '{}',
-    }),
-
-  /** Restart = graceful stop, then start. The mobile focus control bar uses this
-   *  to relaunch a session without leaving the focus view: the WS close on stop
-   *  drops the live terminal to its `stopped` surface, and the start flips it back
-   *  to running so the terminal reconnects to the fresh pty (same session, same
-   *  conversation). Serialised (stop awaited before start) so the new tmux session
-   *  is never spawned while the old teardown is still mid-flight. */
-  restartSession: async (name: string): Promise<void> => {
-    await focusApi.stopSession(name)
-    await focusApi.startSession(name)
-  },
 }

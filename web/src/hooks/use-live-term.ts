@@ -145,19 +145,10 @@ function themeFromCss(): import('@xterm/xterm').ITheme {
     // Block-cursor fg: punch through to the surface so the glyph under the
     // cursor stays legible against the cursor fill.
     cursorAccent: bg,
-    // Selection (press-&-hold-to-select on mobile, drag-select on desktop). The
-    // long-press in xterm IS a text selection — but the previous 0.35α brand-blue
-    // wash read as "nothing happened" on the near-black terminal surface, so the
-    // gesture had no feedback. We lift it to a SATURATED, on-brand systemBlue with
-    // high opacity so the highlight is unmistakable the instant a long-press lands
-    // (it reads as an intentional iOS-native text selection, like Notes/Safari),
-    // and PIN the selected glyphs to white via `selectionForeground` so text stays
-    // legible against the strong fill regardless of the cell's own colour. xterm's
-    // WebGL/Canvas renderers paint this selection layer, so it shows under the
-    // live agent output too. `inactive` (terminal blurred) stays a calmer wash.
-    selectionBackground: 'rgba(10, 132, 255, 0.55)', // systemBlue, clearly visible
-    selectionForeground: '#ffffff',
-    selectionInactiveBackground: 'rgba(10, 132, 255, 0.30)',
+    // Selection: translucent brand-blue so highlights stay readable on both
+    // light + dark surfaces (xterm composites this over cell bg).
+    selectionBackground: 'rgba(91, 157, 255, 0.35)',
+    selectionInactiveBackground: 'rgba(91, 157, 255, 0.20)',
     ...ANSI_PALETTE,
   }
 }
