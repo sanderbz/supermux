@@ -464,7 +464,11 @@ export function Settings() {
           so the big `<h1>` title block below it also clears the notch. */}
       <motion.header
         style={{ opacity: navOpacity }}
-        className="pointer-events-none sticky top-0 z-20 flex h-12 items-center justify-center border-b border-border/60 bg-background/70 pt-safe backdrop-blur-xl sm:pt-0"
+        // SD-6: min-h (not h) so the notch inset (pt-safe) ADDS to the bar height
+        // instead of eating into a fixed 48px — otherwise the title is squished
+        // under the Dynamic Island in the iOS standalone PWA. Desktop resets
+        // pt-safe (sm:pt-0), where min-h-12 renders identically to h-12.
+        className="pointer-events-none sticky top-0 z-20 flex min-h-12 items-center justify-center border-b border-border/60 bg-background/70 pt-safe backdrop-blur-xl sm:pt-0"
       >
         <span className="text-[17px] font-semibold tracking-tight">Settings</span>
       </motion.header>

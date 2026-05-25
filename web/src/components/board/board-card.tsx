@@ -632,7 +632,10 @@ function ReplyComposer({
           }
         }}
         className={cn(
-          'min-h-[36px] flex-1 resize-none rounded-md border bg-background px-2.5 py-2 text-[13px] leading-snug shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          // text-[16px] on mobile keeps iOS Safari from auto-zooming on focus
+          // (it zooms any focused field under 16px); md:text-[13px] restores the
+          // compact desktop sizing where there is no focus-zoom behaviour.
+          'min-h-[36px] flex-1 resize-none rounded-md border bg-background px-2.5 py-2 text-[16px] leading-snug shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-[13px]',
           emphasized ? 'border-warning/50' : 'border-input',
         )}
       />

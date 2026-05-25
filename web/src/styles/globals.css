@@ -264,9 +264,16 @@
     -moz-osx-font-smoothing: grayscale;
     /* Prevent overscroll bounce revealing white behind the app shell. */
     overscroll-behavior: none;
-    /* Safe-area support for PWA / Capacitor (§4.8). */
-    padding: env(safe-area-inset-top) env(safe-area-inset-right)
-      env(safe-area-inset-bottom) env(safe-area-inset-left);
+    /* Safe-area support (§4.8) — HORIZONTAL ONLY (SD-6). Every route, nav, sheet
+       and the focus header already owns its OWN top/bottom inset (pt-safe /
+       pb-safe), so insetting top/bottom HERE too stacked a second band on top of
+       theirs (and with the reconnect-banner row, a third at the top) — a big
+       empty gap above and below, glaring in the iOS standalone PWA where the
+       notch + home-indicator insets are always non-zero. Left/right stay because
+       nothing else owns the landscape-notch inset. Desktop env()=0, so the normal
+       web version is unchanged. */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 }
 

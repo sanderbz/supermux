@@ -25,6 +25,25 @@ export default defineConfig({
   use: {
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    // Chrome's own sandbox + multiprocess zygote can't initialize on a hardened
+    // host (NoNewPrivileges + restricted namespaces/seccomp — e.g. running inside
+    // the supermux systemd service): child processes die with
+    // `credentials.cc Operation not permitted` and the GPU process crash-loops.
+    // Opt into a single-process, no-sandbox, no-GPU launch via env for those
+    // runners (the self-host box, a CI container). Default keeps the full sandbox
+    // ON for normal dev/CI where it works.
+    launchOptions: process.env.SUPERMUX_E2E_NO_SANDBOX
+      ? {
+          args: [
+            '--no-sandbox',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--no-zygote',
+            '--single-process',
+            '--disable-dev-shm-usage',
+          ],
+        }
+      : {},
   },
   projects: [
     {

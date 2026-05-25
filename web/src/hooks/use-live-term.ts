@@ -71,6 +71,13 @@ export interface UseLiveTermResult {
    *  keyboard" affordance / tap-away). No-op on desktop where there is no
    *  on-screen keyboard to dismiss. */
   blur(): void
+  /** True when the user has scrolled the viewport up from the live bottom by
+   *  more than a few rows — drives the in-terminal "jump to bottom" button.
+   *  False while pinned to the bottom (the normal follow-output state). */
+  scrolledUp: boolean
+  /** Pin the viewport back to the live bottom (resume following output) and
+   *  re-focus the input. Wired to the "jump to bottom" button (SD-2). */
+  scrollToBottom(): void
 }
 
 // ── Tunables (TECH_PLAN §4.5) ─────────────────────────────────────────────────
@@ -91,6 +98,11 @@ const REPLAY_DONE_FALLBACK_MS = 400
 // route's keyboard-open state; below this, iOS jitter (URL-bar collapse,
 // rubber-band) must not flip us into the kick path.
 const KEYBOARD_OPEN_THRESHOLD = 80
+// SD-2: how many pixels above the live bottom the viewport must sit before the
+// "jump to bottom" affordance appears. A small slack so sub-pixel rounding at the
+// bottom (or a 1-notch rubber-band) never flickers the button on; scrolling up
+// "a bit" (~a row or two) does. Measured on `.xterm-viewport.scrollTop`.
+const SCROLL_TO_BOTTOM_SLACK_PX = 24
 
 // Close codes with explicit v2 semantics (§4.5).
 const CLOSE_AUTH = 1008 // auth/origin reject — permanent
@@ -305,6 +317,12 @@ export function useLiveTerm(
     setState(s)
   }, [])
 
+  // SD-2: whether the viewport is scrolled up from the live bottom. The ref is
+  // the hot-path latch the per-scroll handler compares against (no setState on
+  // an unchanged value); the state drives the React render of the button.
+  const [scrolledUp, setScrolledUp] = React.useState(false)
+  const scrolledUpRef = React.useRef(false)
+
   // Flips true the first time the WS delivers REAL pty bytes — distinct from
   // `state==='live'` (which only proves auth_ok arrived). A `stopped` session
   // can auth-ok then immediately close with zero bytes, so the overview
@@ -405,6 +423,26 @@ export function useLiveTerm(
     if (active instanceof HTMLElement) active.blur()
   }, [])
 
+  /** SD-2: pin the viewport back to the live bottom and resume following output.
+   *  The button's onClick. We flip `scrolledUp` off eagerly (the `onScroll` the
+   *  scroll triggers would do it too, but eagerly hides the button on the same
+   *  frame as the tap) and re-focus the input so typing resumes for a read-write
+   *  terminal. */
+  const scrollToBottom = React.useCallback(() => {
+    const term = termRef.current
+    if (!term) return
+    term.scrollToBottom()
+    scrolledUpRef.current = false
+    setScrolledUp(false)
+    if (!readOnly) {
+      try {
+        term.focus()
+      } catch {
+        /* disposed mid-tap — harmless */
+      }
+    }
+  }, [readOnly])
+
   // ── Single mount effect: owns the terminal + WS lifecycle ───────────────────
   React.useEffect(() => {
     disposedRef.current = false
@@ -442,6 +480,29 @@ export function useLiveTerm(
     term.open(container)
     termRef.current = term
     fitRef.current = fit
+
+    // SD-2: track whether the viewport is scrolled up so the wrapper can show a
+    // "jump to bottom" button. We read the REAL scroll position off the
+    // `.xterm-viewport` element's native scroll event — xterm's public `onScroll`
+    // only reports buffer GROWTH (output advancing ybase), not the user navigating
+    // back through existing scrollback, which is exactly the gesture we must catch.
+    // "At the bottom" = within a row or two of the max scroll; output that follows
+    // the bottom keeps scrollTop pinned there (no button), scrolling up opens the
+    // gap. Start fresh each (re)subscribe so a prior session's state never leaks.
+    scrolledUpRef.current = false
+    setScrolledUp(false)
+    const viewportEl = container.querySelector<HTMLElement>('.xterm-viewport')
+    const syncScrolledUp = () => {
+      if (!viewportEl) return
+      const distFromBottom =
+        viewportEl.scrollHeight - viewportEl.clientHeight - viewportEl.scrollTop
+      const up = distFromBottom > SCROLL_TO_BOTTOM_SLACK_PX
+      if (up !== scrolledUpRef.current) {
+        scrolledUpRef.current = up
+        setScrolledUp(up)
+      }
+    }
+    viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
 
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
@@ -1188,6 +1249,7 @@ export function useLiveTerm(
         }
         wsRef.current = null
       }
+      viewportEl?.removeEventListener('scroll', syncScrolledUp)
       term.dispose()
       termRef.current = null
       fitRef.current = null
@@ -1212,5 +1274,7 @@ export function useLiveTerm(
     retry,
     focus,
     blur,
+    scrolledUp,
+    scrollToBottom,
   }
 }
