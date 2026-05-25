@@ -29,7 +29,6 @@ import {
   Files,
   GitBranch,
   Loader2,
-  Pencil,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -42,16 +41,14 @@ import {
 } from '@/components/ui/popover'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { useToast } from '@/components/ui/use-toast'
-import { useSession, useSessionGit } from '@/hooks/use-sessions'
+import { useSession } from '@/hooks/use-sessions'
 import { useSchedules } from '@/hooks/use-scheduler'
 import {
   describeSchedule,
   formatRunTime,
 } from '@/components/scheduler/helpers'
-import { SessionError } from '@/lib/api'
 import type { ApiSession, SessionMode, ScheduleRow } from '@/lib/api'
 import { useCloneSession } from './use-clone-session'
-import { useRenameSession, toSlug } from './use-rename-session'
 
 /** Sentence-case label for each Claude permission mode (mirrors mode-menu.tsx). */
 const MODE_LABEL: Record<SessionMode, string> = {
@@ -154,6 +151,7 @@ function PanelBody({
   const { toast } = useToast()
 
   const dir = session?.dir?.trim() || ''
+  const branch = session?.branch?.trim() || ''
 
   const doClone = async () => {
     if (clone.pending) return
@@ -173,12 +171,6 @@ function PanelBody({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Name — the slug IS the displayed title (the backend sends no separate
-          summary), so renaming it here is the "edit title" affordance. */}
-      <PaneSection label="Name">
-        <NameEditor name={name} onNavigate={onNavigate} onClose={onClose} />
-      </PaneSection>
-
       {/* Working dir */}
       <PaneSection label="Working dir">
         {dir ? (
@@ -198,10 +190,16 @@ function PanelBody({
         <SchedulesList name={name} />
       </PaneSection>
 
-      {/* Git — live status of the working dir (real branch / dirty / ahead-behind),
-          read on open so it never shows a stale stored label. */}
+      {/* Git */}
       <PaneSection label="Git">
-        <GitRow name={name} />
+        <div className="flex items-center gap-1.5 text-sm text-foreground">
+          <GitBranch className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          {branch ? (
+            <span className="truncate font-mono text-[13px]">{branch}</span>
+          ) : (
+            <span className="text-muted-foreground">No branch recorded.</span>
+          )}
+        </div>
       </PaneSection>
 
       {/* Footer — Clone */}
@@ -299,167 +297,6 @@ function InfoRow({
     <div className="flex items-baseline justify-between gap-3">
       <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-right">{children}</dd>
-    </div>
-  )
-}
-
-// ── name editor (edit-title) ────────────────────────────────────────────────
-
-/** Inline rename of the session — the slug IS the displayed title. Tap the name
- *  → an input (free typing, live-slugged: spaces become "-"); Enter / blur
- *  commits, Esc cancels. On success the panel closes and the caller navigates to
- *  the new name (the rename changes the session's identity everywhere). */
-function NameEditor({
-  name,
-  onNavigate,
-  onClose,
-}: {
-  name: string
-  onNavigate: (name: string) => void
-  onClose: () => void
-}) {
-  const rename = useRenameSession()
-  const { toast } = useToast()
-  const [editing, setEditing] = React.useState(false)
-  const [draft, setDraft] = React.useState(name)
-  const inputRef = React.useRef<HTMLInputElement | null>(null)
-  // Enter fires commit AND then blurs the input (→ a second commit); this guard
-  // makes the run-once. Reset on each enter-edit.
-  const committedRef = React.useRef(false)
-
-  const startEdit = () => {
-    setDraft(name)
-    committedRef.current = false
-    setEditing(true)
-  }
-
-  React.useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus()
-      inputRef.current?.select()
-    }
-  }, [editing])
-
-  const commit = async () => {
-    if (committedRef.current) return
-    committedRef.current = true
-    const target = toSlug(draft)
-    setEditing(false)
-    // No-op for an empty draft or an unchanged name — just close the editor.
-    if (!target || target === name) return
-    try {
-      const newName = await rename.run(name, target)
-      toast({ message: `Renamed to ${newName}`, tone: 'active' })
-      onClose()
-      onNavigate(newName)
-    } catch (e) {
-      const msg =
-        e instanceof SessionError && e.status === 409
-          ? `“${target}” already exists — pick another name.`
-          : `Rename failed — ${(e as Error).message}`
-      toast({ message: msg, tone: 'error', duration: 4000 })
-    }
-  }
-
-  const cancel = () => {
-    committedRef.current = true
-    setEditing(false)
-  }
-
-  if (editing) {
-    return (
-      <div className="flex flex-col gap-1">
-        <input
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => setDraft(toSlug(e.target.value))}
-          onBlur={() => void commit()}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              void commit()
-            } else if (e.key === 'Escape') {
-              e.preventDefault()
-              cancel()
-            }
-          }}
-          disabled={rename.pending}
-          aria-label="Session name"
-          className="w-full rounded-[10px] border border-input bg-transparent px-2.5 py-1.5 text-sm font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-        />
-        <span className="text-[11px] text-muted-foreground">
-          Enter to save, Esc to cancel · letters, numbers,{' '}
-          <code className="font-mono">. _ -</code> (spaces become “-”).
-        </span>
-      </div>
-    )
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={startEdit}
-      aria-label={`Rename session ${name}`}
-      title="Rename"
-      className={cn(
-        'group flex min-h-11 w-full items-center justify-between gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-left',
-        'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-      )}
-    >
-      <span className="min-w-0 truncate text-sm font-medium tracking-tight text-foreground">
-        {name}
-      </span>
-      <Pencil
-        className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
-        aria-hidden
-      />
-    </button>
-  )
-}
-
-// ── git ──────────────────────────────────────────────────────────────────────
-
-/** Live git status for the session's working dir. The PanelBody only mounts
- *  while open, so `enabled` is constant `true` here — the query never runs at
- *  rest. Calm, monochrome treatment (no alarmist color) per the brand. */
-function GitRow({ name }: { name: string }) {
-  const { data, isLoading } = useSessionGit(name, true)
-
-  if (isLoading && !data) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" aria-hidden />
-        Loading…
-      </div>
-    )
-  }
-
-  if (!data?.repo) {
-    return <p className="text-sm text-muted-foreground">Not a git repository.</p>
-  }
-
-  const label = data.branch || (data.detached ? 'detached' : '—')
-  const hasAheadBehind = data.ahead > 0 || data.behind > 0
-
-  return (
-    <div className="flex items-center gap-1.5 text-sm text-foreground">
-      <GitBranch className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-      <span className="min-w-0 truncate font-mono text-[13px]">{label}</span>
-      {data.dirty && (
-        <span
-          className="shrink-0 text-[11px] text-muted-foreground"
-          title="Uncommitted changes in the working tree"
-        >
-          · uncommitted
-        </span>
-      )}
-      {hasAheadBehind && (
-        <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
-          {data.ahead > 0 ? `↑${data.ahead}` : ''}
-          {data.ahead > 0 && data.behind > 0 ? ' ' : ''}
-          {data.behind > 0 ? `↓${data.behind}` : ''}
-        </span>
-      )}
     </div>
   )
 }

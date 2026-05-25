@@ -82,9 +82,6 @@ pub fn router_for(state: AppState) -> Router {
             get(resumable_handler),
         )
         .route("/api/sessions/{name}/resume", post(resume_handler))
-        // feat-session-info: live git status for the session's working dir (real
-        // branch / dirty / ahead-behind) — read lazily when the info panel opens.
-        .route("/api/sessions/{name}/git", get(git_handler))
         // feat-edit-in-native-editor: the dashboard "Done"/"Cancel" of the native
         // editor sheet resolves the session's in-flight edit. Bearer-gated (a
         // dashboard→server call); the bridge-side open/result are hook-token-authed
@@ -597,27 +594,9 @@ pub async fn config_patch(
                     "session '{target}' already exists"
                 )));
             }
-            // Complete the rename across all three layers so a RUNNING session
-            // survives it. The live tmux session is named `supermux-<name>`, so
-            // without renaming it the renamed row would point at a tmux target
-            // that no longer exists and the terminal would go dark. Order: rename
-            // tmux FIRST (the only fallible external step) so a failure aborts
-            // before the DB drifts; the window/pane (and its pipe-pane capture)
-            // survive the rename untouched.
-            let tmux = tmux::Tmux::new(&current);
-            let live = tmux.exists().await.unwrap_or(false);
-            if live {
-                tmux.rename_session(target).await?;
-            }
             db::sessions::rename(&state.pool, &current, target).await?;
             // Carry the per-session in-memory maps (lock/watch/hook token) over.
             state.rename_session(&current, target);
-            // The carried pty stream still polls the OLD tmux name for liveness;
-            // drop it so the next attach rebuilds fresh against `supermux-<new>`
-            // (same pattern as a restart). No-op for a stopped session.
-            if live {
-                state.pty_invalidate(target);
-            }
             current = target.to_string();
         }
         changed = true;
@@ -656,79 +635,6 @@ pub async fn config_patch(
         return Err(AppError::BadRequest("no recognized config field".into()));
     }
     get(state, &current).await
-}
-
-// ── git status (feat-session-info) ─────────────────────────────────────────────
-
-/// Live git status for a session's working dir, surfaced by
-/// `GET /api/sessions/{name}/git`. The stored `branch` label is set once at
-/// create time and goes stale; this reads the REAL state on demand so the info
-/// panel never lies. Every field defaults to "not a repo" so a non-git dir (or a
-/// missing `git` binary) degrades cleanly — the panel just hides the section.
-#[derive(Debug, Default, Serialize)]
-pub struct GitInfo {
-    /// True when `dir` is inside a git work tree.
-    pub repo: bool,
-    /// Current branch name; the short commit SHA when HEAD is detached; empty
-    /// when not a repo.
-    pub branch: String,
-    /// True when HEAD is detached (then `branch` holds the short SHA).
-    pub detached: bool,
-    /// True when the work tree has uncommitted changes (tracked or untracked).
-    pub dirty: bool,
-    /// Commits ahead of the upstream (0 when there is no upstream / not a repo).
-    pub ahead: u32,
-    /// Commits behind the upstream (0 when there is no upstream / not a repo).
-    pub behind: u32,
-}
-
-/// Read the live git status of `dir` in a single `git status --porcelain=v2
-/// --branch` (branch head, ahead/behind, and per-file change lines in one shot).
-/// Never errors: anything other than a clean exit (not a repo, `git` absent, dir
-/// gone) yields the default `GitInfo { repo: false, .. }`.
-async fn git_info(dir: &str) -> GitInfo {
-    let mut info = GitInfo::default();
-    let out = match tokio::process::Command::new("git")
-        .args(["-C", dir, "status", "--porcelain=v2", "--branch"])
-        .output()
-        .await
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return info,
-    };
-    info.repo = true;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut oid = String::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("# branch.") {
-            if let Some(v) = rest.strip_prefix("oid ") {
-                oid = v.trim().to_string();
-            } else if let Some(v) = rest.strip_prefix("head ") {
-                let v = v.trim();
-                if v == "(detached)" {
-                    info.detached = true;
-                } else {
-                    info.branch = v.to_string();
-                }
-            } else if let Some(v) = rest.strip_prefix("ab ") {
-                // "+<ahead> -<behind>"
-                for tok in v.split_whitespace() {
-                    if let Some(n) = tok.strip_prefix('+') {
-                        info.ahead = n.parse().unwrap_or(0);
-                    } else if let Some(n) = tok.strip_prefix('-') {
-                        info.behind = n.parse().unwrap_or(0);
-                    }
-                }
-            }
-        } else if !line.starts_with('#') && !line.is_empty() {
-            // Any 1/2/u/? entry line means the work tree is dirty.
-            info.dirty = true;
-        }
-    }
-    if info.detached {
-        info.branch = oid.chars().take(12).collect();
-    }
-    info
 }
 
 // ── handlers ─────────────────────────────────────────────────────────────────
@@ -788,19 +694,6 @@ async fn duplicate_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let v = duplicate(&state, &name, &input.new_name).await?;
     Ok((StatusCode::CREATED, ok(v)))
-}
-
-async fn git_handler(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let s = db::sessions::get(&state.pool, &name)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
-    // An explicit on-open fetch — `git_info` runs `git` as an async child, so a
-    // large work tree's stat cost never blocks the runtime.
-    let info = git_info(&s.dir).await;
-    Ok(Json(json!({ "ok": true, "data": info })))
 }
 
 async fn config_handler(

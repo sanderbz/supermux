@@ -108,13 +108,11 @@ export function DesktopFocusHeader({
       <StatusDot status={status} className="shrink-0" />
       <span className="flex min-w-0 flex-1 items-center gap-2">
         {onTitleClick ? (
-          // The title is a bare button (feat-session-info). It keeps the span's
-          // typography (text-sm font-semibold tracking-tight, truncate, flex-1)
-          // and stays pixel-aligned at rest: the px-1.5 is cancelled by an equal
-          // -mx-1.5, so the text sits exactly where the span did — but on hover a
-          // subtle rounded `bg-secondary` reveals that the title is interactive
-          // (iOS/macOS hover affordance, matching the header's other buttons).
-          // `text-left` keeps the truncated text aligned as the span was.
+          // The title becomes a bare button (feat-session-info). It carries the
+          // IDENTICAL typography classes (text-sm font-semibold tracking-tight,
+          // truncate, flex-1) with NO padding/border/background/extra height, so
+          // it is pixel-identical to the span at rest — zero resting space added.
+          // `text-left` keeps the truncated text aligned exactly as the span did.
           <button
             ref={titleRef}
             type="button"
@@ -122,7 +120,7 @@ export function DesktopFocusHeader({
             title={title || name}
             aria-label={`Session info — ${title || name}`}
             aria-haspopup="true"
-            className="-mx-1.5 min-w-0 flex-1 truncate rounded-md px-1.5 text-left text-sm font-semibold tracking-tight outline-none transition-colors hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring"
+            className="min-w-0 flex-1 truncate text-left text-sm font-semibold tracking-tight outline-none focus-visible:underline focus-visible:decoration-dotted focus-visible:underline-offset-4"
           >
             {title || name}
           </button>
@@ -344,10 +342,7 @@ export function FocusHeader({
             via Shift+Tab, Bypass confirms + relaunches. Sits left of Claude tools
             so the title's right cluster stays a single tap-row (≥44pt each). */}
         {provider === 'claude' && (
-          // h-9 (not h-11): the pill sat edge-to-edge in the min-h-11 row and
-          // read as cramped — a slightly shorter pill drops neatly into the
-          // title row while staying comfortably tappable.
-          <ModeMenu name={name} mode={mode} className="h-9" />
+          <ModeMenu name={name} mode={mode} className="h-11" />
         )}
 
         {/* R5 removed the redundant "···" overflow (it duplicated the session

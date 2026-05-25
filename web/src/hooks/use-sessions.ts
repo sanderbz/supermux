@@ -16,7 +16,6 @@ import {
   sessionsApi,
   SessionError,
   type ApiSession,
-  type GitInfo,
   type NewSession,
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
@@ -277,19 +276,4 @@ export function useSession(name: string): UseSessionResult {
     [sessions, name],
   )
   return { session, isLoading, isError, error }
-}
-
-/** Live git status for a session's working dir (feat-session-info). Fetched
- *  ON DEMAND — `enabled` gates it to when the info panel is open, so a closed
- *  panel never shells out to `git`. Short `staleTime` keeps a re-open snappy
- *  without re-running git on every render; not part of the SSE stream (git state
- *  isn't pushed), so window-focus refetch stays off to avoid surprise spawns. */
-export function useSessionGit(name: string, enabled: boolean) {
-  return useQuery<GitInfo>({
-    queryKey: ['session-git', name],
-    queryFn: () => sessionsApi.git(name),
-    enabled: enabled && !!name,
-    staleTime: 10_000,
-    refetchOnWindowFocus: false,
-  })
 }
