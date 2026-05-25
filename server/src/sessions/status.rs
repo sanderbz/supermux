@@ -750,7 +750,7 @@ mod tests {
         let cap = "\
 ╭───────────────────────────────────────────────╮
 │  Opus 4.7 (1M context) · Claude Max ·  `/usage` now shows a p… │
-│  sander@example.com's Organization     `/diff` detail view ca… │
+│  user@example.com's Organization     `/diff` detail view ca… │
 ╰───────────────────────────────────────────────╯
 
 ────────────────────────────────────────── idletest ──
@@ -779,7 +779,7 @@ mod tests {
         for cap in [
             "✻ Brewed for 1m 8s",
             "user@host project %\n❯ ",
-            "sander@mac supermux $ ",
+            "user@host supermux $ ",
             "gpt-5-codex · ~/code",
         ] {
             assert_eq!(fresh(cap), Status::Idle, "{cap:?}");

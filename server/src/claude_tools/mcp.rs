@@ -567,7 +567,7 @@ mod tests {
         assert!(!valid_mcp_name("."));
         assert!(!valid_mcp_name(".."));
         assert!(valid_mcp_name("chrome-devtools"));
-        assert!(valid_mcp_name("dataforseo_1.0"));
+        assert!(valid_mcp_name("my-server_1.0"));
     }
 
     #[test]

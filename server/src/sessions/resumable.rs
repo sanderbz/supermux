@@ -19,8 +19,8 @@
 //! leading `-`. Examples confirmed on this machine:
 //!   `/private/tmp/nltest`
 //!     → `-private-tmp-nltest`
-//!   `/private/var/www/ipc-astro/.claude/worktrees/menu-pages-quality`
-//!     → `-private-var-www-ipc-astro--claude-worktrees-menu-pages-quality`
+//!   `/private/var/www/my-app/.claude/worktrees/feature-x`
+//!     → `-private-var-www-my-app--claude-worktrees-feature-x`
 //!       (note the `--`: the `/` before `.claude` → `-`, the `.` → `-`).
 //! The cwd is symlink-resolved first (macOS `/tmp` → `/private/tmp`), so we
 //! `canonicalize()` before encoding and fall back to the raw dir if that fails
@@ -314,8 +314,8 @@ mod tests {
         );
         // The `.claude` dot AND the slash before it both → `-` (the `--`).
         assert_eq!(
-            encode_project_dir("/private/var/www/ipc-astro/.claude/worktrees/menu-pages-quality"),
-            "-private-var-www-ipc-astro--claude-worktrees-menu-pages-quality"
+            encode_project_dir("/private/var/www/my-app/.claude/worktrees/feature-x"),
+            "-private-var-www-my-app--claude-worktrees-feature-x"
         );
         // Literal dashes in components survive unchanged.
         assert_eq!(

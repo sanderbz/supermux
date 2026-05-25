@@ -129,6 +129,10 @@ async fn read_mcp(cwd: Option<&str>) -> Vec<McpEntry> {
         }
     }
 
+    // cloud: account-global claude.ai remote connectors. Always returned (no cwd
+    // needed) — see `cloud_entries`.
+    out.extend(cloud_entries(&claude_json));
+
     if let Some(cwd) = cwd {
         // local scope: projects[<resolved cwd>].mcpServers. Claude keys the
         // projects map by the resolved absolute path; try the canonicalized form
@@ -182,6 +186,36 @@ fn mk_entry(
         enabled,
         config: mask_mcp_secrets(cfg, MASKED),
     }
+}
+
+/// Account-global claude.ai REMOTE connectors (SUPERMUX-37). These are hosted
+/// claude.ai integrations authenticated server-side via the user's Claude account
+/// — NOT local processes — so they live in `~/.claude.json` under the
+/// `claudeAiMcpEverConnected` array (a list of connector display names), never in
+/// any `mcpServers` map, and they are available in EVERY project. The registry
+/// previously scanned only the three `mcpServers` sources, so a session could
+/// actually USE such a connector while the manager UI never listed it. We read
+/// the array generically (whatever names the account has) and surface each as a
+/// read-only `cloud`-provenance row
+/// (no local file to edit → `removable=false`, `enabled=None` like user/local).
+/// Pure over the parsed config so it's unit-testable.
+fn cloud_entries(claude_json: &Value) -> Vec<McpEntry> {
+    let mut out = Vec::new();
+    if let Some(Value::Array(connectors)) = claude_json.get("claudeAiMcpEverConnected") {
+        for c in connectors {
+            if let Some(name) = c.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                out.push(mk_entry(
+                    name,
+                    &json!({ "type": "cloud", "remote": true }),
+                    Scope::User,
+                    "cloud",
+                    false,
+                    None,
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// Look up `projects[<cwd>]` trying the canonicalized path first (Claude stores
@@ -443,6 +477,25 @@ mod tests {
         assert_eq!(resolve_enabled("a", &en, &dis), Some(true));
         assert_eq!(resolve_enabled("b", &en, &dis), Some(false));
         assert_eq!(resolve_enabled("c", &en, &dis), None); // pending
+    }
+
+    #[test]
+    fn cloud_connectors_listed_readonly() {
+        // claude.ai remote connectors come from `claudeAiMcpEverConnected`, are
+        // read-only, and surface as `cloud` provenance (SUPERMUX-37).
+        let cj = json!({
+            "claudeAiMcpEverConnected": ["claude.ai Example", "   ", "Other"]
+        });
+        let e = cloud_entries(&cj);
+        assert_eq!(e.len(), 2, "blank entries are skipped");
+        assert_eq!(e[0].name, "claude.ai Example");
+        assert_eq!(e[0].provenance, "cloud");
+        assert_eq!(e[0].transport, "cloud");
+        assert_eq!(e[0].scope, Scope::User);
+        assert!(!e[0].removable);
+        assert_eq!(e[0].enabled, None);
+        // No key → nothing (the common case for accounts with no connectors).
+        assert!(cloud_entries(&json!({})).is_empty());
     }
 
     #[test]

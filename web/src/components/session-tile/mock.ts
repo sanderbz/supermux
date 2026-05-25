@@ -66,10 +66,10 @@ const shellTailAnsi = (cmd: string): string[] => [
 
 export const MOCK_TILES: TileSession[] = [
   {
-    name: 'gel-astro',
+    name: 'web-app',
     task_summary: 'Wire the SSE delta merge into the sessions cache',
     status: 'active',
-    dir: '/opt/projects/gel',
+    dir: '/opt/projects/web-app',
     provider: 'claude',
     tokens: 48200,
     branch: 'feat/sse-merge',
@@ -78,10 +78,10 @@ export const MOCK_TILES: TileSession[] = [
     updated_at: new Date().toISOString(),
   },
   {
-    name: 'ipc-astro',
+    name: 'api-server',
     task_summary: 'Add Range support to the file streaming endpoint',
     status: 'waiting',
-    dir: '/opt/projects/ipc',
+    dir: '/opt/projects/api-server',
     provider: 'claude',
     tokens: 12300,
     branch: 'fix/range-headers',

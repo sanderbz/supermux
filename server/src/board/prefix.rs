@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn multi_word_takes_initials_capped_at_five() {
         assert_eq!(prefix_from_session(Some("my-cool-thing")), "MCT");
-        assert_eq!(prefix_from_session(Some("gel-astro")), "GA");
+        assert_eq!(prefix_from_session(Some("web-app")), "WA");
         assert_eq!(prefix_from_session(Some("a_b_c_d_e_f_g")), "ABCDE");
     }
 
