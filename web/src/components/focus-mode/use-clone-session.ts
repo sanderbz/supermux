@@ -21,8 +21,8 @@ function suffix(): string {
 }
 
 /** Stem from the source name, stripping any existing `-xxxx` clone suffix so
- *  re-cloning a clone doesn't pile up suffixes. Falls back to the dir basename
- *  shape is unnecessary here — the source name is always present + valid. */
+ *  re-cloning a clone doesn't pile up suffixes. The source name is always
+ *  present + valid, so no dir-basename fallback is needed. */
 function stemOf(source: string): string {
   return source.replace(/-[a-z0-9]{4}$/i, '') || source
 }

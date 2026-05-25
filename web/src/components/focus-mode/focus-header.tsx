@@ -119,7 +119,7 @@ export function DesktopFocusHeader({
             onClick={onTitleClick}
             title={title || name}
             aria-label={`Session info — ${title || name}`}
-            aria-haspopup="dialog"
+            aria-haspopup="true"
             className="min-w-0 flex-1 truncate text-left text-sm font-semibold tracking-tight outline-none focus-visible:underline focus-visible:decoration-dotted focus-visible:underline-offset-4"
           >
             {title || name}
