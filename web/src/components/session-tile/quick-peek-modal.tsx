@@ -1,12 +1,14 @@
 import * as React from 'react'
 import { Drawer } from 'vaul'
-import { X, Square, RotateCcw } from 'lucide-react'
+import { X, Square, RotateCcw, Archive } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { cn } from '@/lib/utils'
 import { CONFIRM } from '@/brand/copy'
 import { focusApi } from '@/lib/api/focus'
+import { sessionsApi, type ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
 import { useToast } from '@/components/ui/use-toast'
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StatusDot } from './status-dot'
@@ -30,9 +32,12 @@ export interface QuickPeekModalProps {
  *  the static `<TailPreview>` (its last captured tail). The WS opens only while
  *  the sheet is mounted and tears down on close (this subtree unmounts).
  *
- *  Carries the two session actions that aren't reachable elsewhere on mobile:
- *  Restart (stop→start, resumes the same chat) and Stop (confirms first). Both
- *  refresh the shared `['sessions']` cache so the overview reflects the change. */
+ *  Carries the session actions that aren't reachable elsewhere on mobile:
+ *  Restart (stop→start, resumes the same chat) and a state-dependent secondary —
+ *  Stop (confirms first) while running, or Archive once already stopped (the
+ *  desktop reaches archive via the stopped tile's hover-peek; this is the mobile
+ *  home for it). All refresh the shared `['sessions']` cache so the overview
+ *  reflects the change. */
 export function QuickPeekModal({
   session,
   open,
@@ -70,6 +75,40 @@ export function QuickPeekModal({
     }
   }, [busy, session.name, refresh, toast])
 
+  // Archive replaces the (dead) Stop button once a session is already stopped —
+  // the one archive affordance with no other mobile home (the desktop reaches it
+  // via the stopped tile's hover-peek). Reuses the SAME server call the desktop
+  // peek + header icon use (`sessionsApi.archive`), so there is ONE archive path,
+  // not a mobile-only copy. No confirm: archive is reversible from the Archived
+  // sheet (`unarchive`), so unlike Stop (which `window.confirm`s) it just needs a
+  // tap. Mirrors doStop's robustness — busy guard, success/error toasts. On
+  // success we optimistically drop the row from the overview cache (same as the
+  // desktop peek), refresh the Archived sheet count, and close the sheet.
+  const doArchive = React.useCallback(async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await sessionsApi.archive(session.name)
+      // Optimistically drop the archived row from the live overview list so the
+      // overview reflects the change immediately (the next SSE/refetch backfills
+      // authoritatively — archived rows are filtered out server-side).
+      qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
+        (prev ?? []).filter((s) => s.name !== session.name),
+      )
+      // Keep the Archived sheet's count/list in sync without a manual reopen.
+      void qc.invalidateQueries({ queryKey: ARCHIVED_SESSIONS_KEY })
+      toast({ message: 'Session archived', tone: 'waiting' })
+      onOpenChange(false)
+    } catch (e) {
+      toast({
+        message: e instanceof Error ? e.message : 'Archive failed.',
+        tone: 'error',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, qc, session.name, toast, onOpenChange])
+
   const doRestart = React.useCallback(async () => {
     if (busy) return
     setBusy(true)
@@ -103,22 +142,35 @@ export function QuickPeekModal({
               {session.task_summary || session.name}
             </Drawer.Title>
 
-            {/* Session actions — Restart + Stop (the two controls with no other
-                mobile home). Small, iOS-native; Stop is destructive + disabled
-                once already stopped. */}
+            {/* Session actions — Restart + a state-dependent secondary (the two
+                controls with no other mobile home). Small, iOS-native. While the
+                session is running the secondary is Stop (destructive); once it's
+                already stopped, Stop has nothing to do, so it becomes Archive —
+                the same archive the desktop reaches via the stopped tile's
+                hover-peek (no confirm: archive is reversible from the Archived
+                sheet). */}
             <PeekAction
               label="Restart"
               icon={RotateCcw}
               onClick={doRestart}
               disabled={busy}
             />
-            <PeekAction
-              label="Stop"
-              icon={Square}
-              onClick={doStop}
-              disabled={busy || isStopped}
-              tone="destructive"
-            />
+            {isStopped ? (
+              <PeekAction
+                label="Archive"
+                icon={Archive}
+                onClick={doArchive}
+                disabled={busy}
+              />
+            ) : (
+              <PeekAction
+                label="Stop"
+                icon={Square}
+                onClick={doStop}
+                disabled={busy}
+                tone="destructive"
+              />
+            )}
 
             <button
               type="button"
