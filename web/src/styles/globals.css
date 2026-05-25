@@ -322,3 +322,20 @@
     animation: none !important;
   }
 }
+
+/* ── Status loading spinner (APPENDED) ────────────────────────────────────────
+   The overview card's loading indicator MUST always rotate whenever it is shown —
+   a frozen spinner reads as "stuck/broken". It is FUNCTIONAL feedback (it tells
+   you the agent is working), not a decorative flourish, so — like Apple's own
+   activity indicators — it keeps spinning even under Reduce Motion. Pure CSS
+   (compositor-driven) so it is immune to framer-motion's reduced-motion handling
+   and to JS jank, and there is no `*`-scoped reduced-motion reset that would kill
+   it. Defined at the file tail so parallel token-block edits never conflict. */
+@keyframes sm-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.sm-status-spinner {
+  animation: sm-status-spin 0.9s linear infinite;
+}

@@ -1,5 +1,3 @@
-import { motion, useReducedMotion } from 'framer-motion'
-
 import { cn } from '@/lib/utils'
 import type { SessionStatus } from '@/lib/api'
 
@@ -73,8 +71,9 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
  *  • everything else (`stopped`, `error`) — static disc, no motion.
  *
  *  Footprint stays ≤ 14px (8px dot + a 2px spinner ring) so it never
- *  dominates the tile. Reduced-motion users get the static disc + a thin
- *  outline so the loading affordance still differentiates. The dot is
+ *  dominates the tile. The loading spinner ALWAYS rotates while shown — even
+ *  under Reduce Motion — because it is functional feedback ("the agent is
+ *  working"), not decoration; freezing it would read as "stuck". The dot is
  *  decorative + non-interactive, so the 44pt tap-target rule does not apply. */
 export function StatusDot({
   status,
@@ -83,49 +82,26 @@ export function StatusDot({
   status: SessionStatus
   className?: string
 }) {
-  const reduce = useReducedMotion()
-
   // ── Loading spinner (starting + active) — a PURE function of status ────────
   //
-  // Slightly bigger than the resting dot, with the brand amber as the visible
-  // sweep and transparent as the tail — the "loading" semantic without
-  // wrestling SVG. The SAME spinner renders for `starting` and `active`: both
-  // are "busy, hang on", so the loader never depends on which of the two the
-  // synced status holds. Reduced-motion: a static ringed dot (foreground stays
-  // amber, the ring tells the user "doing work" without the rotation).
+  // A 12px ring whose top arc is amber and the rest transparent; the CSS
+  // `sm-status-spinner` keyframe rotates the whole element so the amber arc
+  // sweeps — the canonical "tiny spinner" without an SVG dep, ≤ 14px footprint.
+  // The SAME spinner renders for `starting` and `active` (both are "busy, hang
+  // on"), so the loader never depends on which of the two the synced status
+  // holds. It uses a pure CSS animation (NOT framer) so it ALWAYS rotates while
+  // shown — including under Reduce Motion: a loading indicator is functional
+  // feedback (it says "the agent is working"), not a decorative flourish, so it
+  // must never freeze, the way Apple keeps its activity indicators spinning.
   if (LOADING_STATUSES.has(status)) {
-    if (reduce) {
-      return (
-        <span
-          role="img"
-          aria-label={STATUS_LABEL[status]}
-          className={cn(
-            'inline-block size-3 shrink-0 rounded-full bg-status-active ring-2 ring-status-active/30',
-            className,
-          )}
-        />
-      )
-    }
-    // Border-trick spinner: a 12px ring whose top arc is amber and the rest is
-    // transparent. Rotating the whole element makes the amber arc sweep —
-    // canonical "tiny spinner" without an SVG dep, ≤ 14px footprint. A STABLE
-    // `key` keeps it the same element across a `starting`→`active` transition so
-    // the rotation animation continues seamlessly (never restarts/stalls when
-    // the status flips between the two loading sub-states).
     return (
-      <motion.span
-        key="loading-spinner"
+      <span
         role="img"
         aria-label={STATUS_LABEL[status]}
         className={cn(
-          // Top border carries the active color; left + right + bottom stay
-          // transparent so we read an arc, not a full ring. Brand status token
-          // drives the visible sweep.
-          'inline-block size-3 shrink-0 rounded-full border-2 border-transparent border-t-status-active',
+          'sm-status-spinner inline-block size-3 shrink-0 rounded-full border-2 border-transparent border-t-status-active',
           className,
         )}
-        animate={{ rotate: 360 }}
-        transition={{ repeat: Infinity, duration: 0.9, ease: 'linear' }}
       />
     )
   }
