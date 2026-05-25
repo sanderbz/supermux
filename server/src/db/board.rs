@@ -39,6 +39,11 @@ pub struct Issue {
     /// existing cards were backfilled to the fixed `main` board; new cards default
     /// to `main` unless created on a team board.
     pub board_id: String,
+    /// Stable backlink to the on-disk team task this card mirrors (migration
+    /// 0016, AT-G). `None` for an ordinary card; `Some(task_id)` for a team card,
+    /// unique within its board so the read-through mirror upserts (never
+    /// duplicates) across detect ticks.
+    pub team_task_id: Option<String>,
 }
 
 /// A row of the `statuses` table (board columns).
@@ -214,6 +219,54 @@ pub async fn list_issues_for_board(
     Ok(issues)
 }
 
+/// Every non-deleted card on `board_id` that mirrors an on-disk team task
+/// (`team_task_id IS NOT NULL`), keyed for the AT-G read-through reconcile. The
+/// watcher diffs this set against the team's current task files each tick:
+/// upsert the survivors, hard-delete the cards whose task vanished. Archived
+/// cards are INCLUDED (a reconcile may need to revive or finally remove one).
+pub async fn team_cards_for_board(
+    pool: &SqlitePool,
+    board_id: &str,
+) -> sqlx::Result<Vec<Issue>> {
+    sqlx::query_as::<_, Issue>(
+        "SELECT * FROM issues
+         WHERE board_id = ? AND team_task_id IS NOT NULL AND deleted IS NULL",
+    )
+    .bind(board_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Fetch the card on `board_id` mirroring on-disk task `team_task_id`, if any.
+/// The upsert lookup for the read-through mirror (unique by `(board_id,
+/// team_task_id)`, migration 0016). Returns archived rows too.
+pub async fn get_team_card(
+    pool: &SqlitePool,
+    board_id: &str,
+    team_task_id: &str,
+) -> sqlx::Result<Option<Issue>> {
+    sqlx::query_as::<_, Issue>(
+        "SELECT * FROM issues
+         WHERE board_id = ? AND team_task_id = ? AND deleted IS NULL",
+    )
+    .bind(board_id)
+    .bind(team_task_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Hard-delete a card by id (its comments/acceptance/links/tags CASCADE). Used by
+/// the AT-G reconcile to remove a team card whose on-disk task disappeared — a
+/// soft delete would leave a dangling `team_task_id` row that re-collides on the
+/// unique index if the task id is ever reused. Returns false if not found.
+pub async fn hard_delete(pool: &SqlitePool, id: &str) -> sqlx::Result<bool> {
+    let res = sqlx::query("DELETE FROM issues WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Fetch one non-deleted issue by id.
 pub async fn get_issue(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Issue>> {
     sqlx::query_as::<_, Issue>("SELECT * FROM issues WHERE id = ? AND deleted IS NULL")
@@ -297,6 +350,10 @@ pub struct NewIssue {
     /// Which board the new card lands on (migration 0015, AT-C). Defaults to
     /// `main` at the API layer when the client doesn't scope a board.
     pub board_id: String,
+    /// Stable backlink to the on-disk team task this card mirrors (migration
+    /// 0016, AT-G). `None` for an ordinary card; the team watcher sets it so the
+    /// read-through mirror can upsert on `(board_id, team_task_id)`.
+    pub team_task_id: Option<String>,
 }
 
 /// Insert a new issue row. `created`/`updated` are set to now.
@@ -305,8 +362,9 @@ pub async fn insert_issue(pool: &SqlitePool, i: &NewIssue) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO issues
             (id, title, desc, status, session, creator, due, due_time,
-             created, updated, owner_type, pinned, pos, notified, board_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+             created, updated, owner_type, pinned, pos, notified, board_id,
+             team_task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
     )
     .bind(&i.id)
     .bind(&i.title)
@@ -322,6 +380,7 @@ pub async fn insert_issue(pool: &SqlitePool, i: &NewIssue) -> sqlx::Result<()> {
     .bind(i.pos)
     .bind(i.notified)
     .bind(&i.board_id)
+    .bind(&i.team_task_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -382,6 +441,9 @@ pub enum IssueField {
     /// Move a card to a different board (migration 0015, AT-C). The board must
     /// exist (FK); the API guards this.
     BoardId(String),
+    /// Set/clear the on-disk team-task backlink (migration 0016, AT-G). `None`
+    /// detaches the card from its mirror; `Some(id)` links it (unique per board).
+    TeamTaskId(Option<String>),
 }
 
 /// Apply a set of field updates to one issue, bumping `updated`. Done in a single
@@ -415,6 +477,9 @@ pub async fn patch_issue(
             }
             IssueField::Archived(v) => bind_set_i64(&mut tx, "archived", *v, id).await?,
             IssueField::BoardId(v) => bind_set(&mut tx, "board_id", v, id).await?,
+            IssueField::TeamTaskId(v) => {
+                bind_set_opt(&mut tx, "team_task_id", v.as_deref(), id).await?
+            }
             IssueField::Pos(v) => {
                 sqlx::query("UPDATE issues SET pos = ? WHERE id = ? AND deleted IS NULL")
                     .bind(*v)
@@ -917,6 +982,7 @@ mod tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await

@@ -526,6 +526,9 @@ async fn create_handler(
         pos,
         notified: 0,
         board_id,
+        // Ordinary (user/agent-created) cards have no on-disk team task to mirror;
+        // only the AT-G team-board watcher sets `team_task_id`.
+        team_task_id: None,
     };
     db::board::insert_issue(&state.pool, &new).await?;
     if let Some(tags) = input.tags {
@@ -1544,6 +1547,7 @@ mod tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await
@@ -1613,6 +1617,7 @@ mod tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await
@@ -1835,6 +1840,7 @@ mod tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await
@@ -1888,6 +1894,7 @@ mod tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await
@@ -2025,6 +2032,7 @@ mod tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await

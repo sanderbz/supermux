@@ -16,6 +16,7 @@
 //!     re-validation each tick, lead→supermux mapping, SSE broadcast.
 //!   * [`router_for`] — `GET /api/teams` for the initial load.
 
+pub mod board_sync;
 pub mod model;
 pub mod scan;
 pub mod start;

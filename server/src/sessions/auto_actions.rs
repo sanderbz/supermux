@@ -703,6 +703,7 @@ mod board_reaction_tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await
@@ -808,6 +809,7 @@ mod board_reaction_tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: "main".into(),
+                team_task_id: None,
             },
         )
         .await
