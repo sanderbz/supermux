@@ -94,11 +94,11 @@ function AcceptancePill({ acceptance }: { acceptance: BoardIssue['acceptance'] }
 }
 
 /** The latest "needs your input" question. Prefers the dedicated payload field
- *  (BM1 §4 `awaiting_question`); falls back to the most-recent agent comment so
+ *  (BM1 §4 `latest_question`); falls back to the most-recent agent comment so
  *  the question still shows before the backend ships the field. */
 function awaitingQuestion(issue: BoardIssue): string | null {
-  if (issue.awaiting_question && issue.awaiting_question.trim()) {
-    return issue.awaiting_question.trim()
+  if (issue.latest_question && issue.latest_question.trim()) {
+    return issue.latest_question.trim()
   }
   for (let i = issue.comments.length - 1; i >= 0; i--) {
     const c = issue.comments[i]

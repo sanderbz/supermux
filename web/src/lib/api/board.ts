@@ -107,7 +107,7 @@ export interface BoardIssue {
    *  the agent is asking without opening the session. `null`/absent when the card
    *  isn't awaiting input or the backend hasn't shipped the field yet (the card
    *  then falls back to the most recent agent comment). */
-  awaiting_question?: string | null
+  latest_question?: string | null
 }
 
 /** The claim response (S3): the full issue PLUS the dispatch outcome. When

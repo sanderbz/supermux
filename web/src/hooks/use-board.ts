@@ -309,7 +309,7 @@ export function useBoard(): UseBoardResult {
         needs_review: false,
         awaiting_input: false,
         session_live: input.session != null,
-        awaiting_question: null,
+        latest_question: null,
       }
       patchCache(qc, (p) => [optimistic, ...p])
       return { prev, optimisticId }
@@ -439,7 +439,7 @@ export function useBoard(): UseBoardResult {
 
   // ── reply (deliver text into the linked agent; clear awaiting_input) ────────
   // BM2 §2.4: the inline board reply. Optimistically clears the card's
-  // `awaiting_input` + `awaiting_question` so the amber "Needs your input" state
+  // `awaiting_input` + `latest_question` so the amber "Needs your input" state
   // resolves the moment the human hits Send; the SSE `board` push reconciles the
   // real state once the agent receives the text. Rolls back on error.
   const reply = useMutation({
