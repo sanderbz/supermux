@@ -192,14 +192,23 @@ async fn wait_for_agent_ready(tmux: &Tmux<'_>, state: &AppState, name: &str) -> 
     for _ in 0..10 {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if let Ok(cap) = tmux.capture_pane(40).await {
-            if agent_ui_visible(&cap) {
-                return true;
-            }
-            // The trust dialog defaults to "1. Yes, I trust this folder"; a bare
-            // Enter accepts it (and persists the trust so it never reappears).
-            // Do this BEFORE the resume-picker check: the trust gate precedes
-            // every other screen, including the picker.
+            // Dismiss the first-run BOOT GATES *before* the ready-check. Both the
+            // trust dialog and the resume picker draw a numbered menu whose cursor
+            // is `❯` — the exact glyph `agent_ui_visible` keys on — so a ready-check
+            // first would declare the session "ready" with a modal still up. Two
+            // costs we actually hit in prod (SD-1):
+            //   1. the steering deliver then sends the dispatched task INTO the modal
+            //      (a bare Enter just picks "Yes, I trust" / a stale conversation),
+            //      so the agent "never got the message"; and
+            //   2. the status detector captures the `❯ 1.` menu, matches the WAITING
+            //      bank, and flips the card to "needs your input" the instant it is
+            //      claimed — before the agent has done anything.
+            // Order is trust → resume → ready, and we `continue` after handling a
+            // gate so we never fall through to the ready-check on the SAME capture
+            // that still shows the menu (the escape/accept has not rendered yet).
             if !trusted && at_trust_dialog(&cap) {
+                // Default option is "1. Yes, I trust this folder"; a bare Enter
+                // accepts it (and persists the trust so it never reappears).
                 let _ = tmux.send_key("Enter").await;
                 trusted = true;
                 continue;
@@ -210,6 +219,10 @@ async fn wait_for_agent_ready(tmux: &Tmux<'_>, state: &AppState, name: &str) -> 
                 let _ = tmux.send_key("C-c").await;
                 let _ = db::sessions::clear_cc(&state.pool, name).await;
                 escaped = true;
+                continue;
+            }
+            if agent_ui_visible(&cap) {
+                return true;
             }
         }
     }
@@ -968,10 +981,17 @@ mod agent_ready_heuristics_tests {
                    Is this a project you created or one you trust?\n \
                    ❯ 1. Yes, I trust this folder\n   2. No, exit";
         assert!(at_trust_dialog(cap), "must catch the trust dialog");
-        // The trust dialog is NOT the agent UI — the ❯ here is the menu cursor,
-        // but the dialog text must take precedence so we accept it, not treat
-        // the session as ready.
-        assert!(at_trust_dialog(cap));
+        // The trust dialog is NOT the agent UI — yet the `❯` menu cursor means a
+        // naive `agent_ui_visible` ready-check ALSO fires on this very capture.
+        // That collision is exactly why `wait_for_agent_ready` must check the trust
+        // gate BEFORE readiness: otherwise the session is declared ready with the
+        // modal up, the dispatched task is sent into it, and the detector reads the
+        // `❯ 1.` menu as WAITING (SD-1). Pin both predicates so a future edit can't
+        // silently reintroduce the ordering hazard.
+        assert!(
+            agent_ui_visible(cap),
+            "the ❯ menu cursor trips agent_ui_visible — trust MUST be handled first",
+        );
     }
 
     #[test]
