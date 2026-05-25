@@ -18,7 +18,7 @@ pub mod watch;
 
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Json, Router};
@@ -156,6 +156,9 @@ pub fn router_for(state: AppState) -> Router {
         // Static segments are registered alongside the `{id}` capture; axum's
         // router prioritizes static segments, so order is unambiguous.
         .route("/api/schedules/preview", post(preview_handler)) // M21
+        // Real installed agent commands for the recipe / command picker (skills +
+        // user/managed commands + claude.ai MCP connectors — never built-ins).
+        .route("/api/schedules/commands", get(commands_handler))
         .route("/api/schedules/runs", get(all_runs_handler))
         .route(
             "/api/schedules/{id}",
@@ -185,6 +188,10 @@ pub struct CreateScheduleInput {
     pub title: String,
     #[serde(default)]
     pub command: String,
+    /// Optional free-text prompt sent right AFTER the command (a job may carry a
+    /// command and/or a prompt — at least one must be non-empty).
+    #[serde(default)]
+    pub prompt: String,
     #[serde(default)]
     pub session: Option<String>,
     #[serde(default)]
@@ -227,8 +234,17 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
     if !["tmux", "shell", "boot"].contains(&kind.as_str()) {
         return Err(AppError::BadRequest(format!("invalid kind '{kind}'")));
     }
-    if input.command.trim().is_empty() {
-        return Err(AppError::BadRequest("command required".into()));
+    let has_command = !input.command.trim().is_empty();
+    let has_prompt = !input.prompt.trim().is_empty();
+    // `shell` runs the command literally via bash — a prompt has no meaning there,
+    // so it still requires a command. `tmux`/`boot` deliver a command and/or a
+    // prompt to an agent session; at least one is required.
+    if kind == "shell" {
+        if !has_command {
+            return Err(AppError::BadRequest("command required".into()));
+        }
+    } else if !has_command && !has_prompt {
+        return Err(AppError::BadRequest("command or prompt required".into()));
     }
     let session = input.session.unwrap_or_default();
     if kind == "tmux" && session.trim().is_empty() {
@@ -262,6 +278,7 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
         title: title.to_string(),
         session,
         command: input.command.trim().to_string(),
+        prompt: input.prompt.trim().to_string(),
         kind,
         boot_dir,
         boot_provider: input.boot_provider.unwrap_or_else(|| "claude".into()),
@@ -326,6 +343,7 @@ struct PatchInput {
     title: Option<String>,
     session: Option<String>,
     command: Option<String>,
+    prompt: Option<String>,
     kind: Option<String>,
     enabled: Option<bool>,
     watch: Option<bool>,
@@ -419,6 +437,27 @@ async fn preview_handler(
 #[derive(Debug, Deserialize)]
 struct PreviewInput {
     expression: String,
+}
+
+/// `GET /api/schedules/commands?cwd=<dir>` — the REAL installed agent commands the
+/// recipe / command picker offers: the user's skills + user/managed commands +
+/// claude.ai MCP connectors. Built-in Claude slash commands are deliberately
+/// excluded (a scheduled job wants a skill/MCP, not `/clear`). Backed by the same
+/// filesystem read the Claude-tools registry uses — one source of truth.
+async fn commands_handler(
+    State(state): State<AppState>,
+    Query(q): Query<CommandsQuery>,
+) -> Result<Json<Envelope<Vec<crate::claude_tools::registry::InstalledCommand>>>, AppError> {
+    let cwd = q.cwd.as_deref().filter(|s| !s.is_empty());
+    Ok(ok(crate::claude_tools::registry::installed_commands(&state, cwd).await?))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CommandsQuery {
+    /// Optional focused session dir; when present, project-scoped skills/commands
+    /// are included alongside the global ones.
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 /// Compute the next `count` fire times for `expr` relative to now (no DB I/O).
@@ -526,6 +565,7 @@ async fn patch_handler(
         title: input.title,
         session: input.session,
         command: input.command,
+        prompt: input.prompt,
         kind: input.kind,
         enabled: input.enabled,
         watch: input.watch,

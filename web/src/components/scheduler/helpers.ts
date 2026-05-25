@@ -2,7 +2,7 @@
 // helper patterns. Pure functions only, no React — so both the route and the
 // dialog/sheet import without circular deps.
 
-import type { ScheduleCreateInput, ScheduleKind } from '@/lib/api'
+import type { RecipeCommand, ScheduleKind } from '@/lib/api'
 
 /** Relative + absolute formatting for a next/last-run timestamp (RFC3339). */
 export function formatRunTime(iso: string | null | undefined): string {
@@ -59,53 +59,22 @@ export const KIND_LABEL: Record<ScheduleKind, string> = {
   shell: 'Shell job',
 }
 
-/** A preset boot recipe: one tap prefills the whole form. */
-export interface PresetRecipe {
-  id: string
-  label: string
-  blurb: string
-  fill: Partial<ScheduleCreateInput> & { kind: ScheduleKind }
-}
+/** How many recipe cards to surface (one tap prefills a boot job from the REAL
+ *  installed command). Kept small so the create sheet stays scannable. */
+const RECIPE_LIMIT = 6
 
-/** The three CEO-amplification preset cards (§10 M21). */
-export const PRESETS: PresetRecipe[] = [
-  {
-    id: 'cso-monday',
-    label: '/cso every Monday 9am',
-    blurb: 'Boot a security review at the start of the week.',
-    fill: {
-      kind: 'boot',
-      title: 'Weekly /cso review',
-      command: '/cso',
-      schedule_expr: 'weekly on mon at 9am',
-      boot_provider: 'claude',
-    },
-  },
-  {
-    id: 'design-friday',
-    label: '/design-shotgun Friday 4pm',
-    blurb: 'Boot a design explore before the weekend.',
-    fill: {
-      kind: 'boot',
-      title: 'Friday /design-shotgun',
-      command: '/design-shotgun',
-      schedule_expr: 'weekly on fri at 4pm',
-      boot_provider: 'claude',
-    },
-  },
-  {
-    id: 'qa-daily',
-    label: '/qa daily at 6pm',
-    blurb: 'Boot an end-of-day QA pass every evening.',
-    fill: {
-      kind: 'boot',
-      title: 'Daily /qa pass',
-      command: '/qa',
-      schedule_expr: 'daily at 6pm',
-      boot_provider: 'claude',
-    },
-  },
-]
+/** Build the "start from a command" recipe cards from the user's REAL installed
+ *  commands (skills + user/managed commands + MCP connectors — see
+ *  `GET /api/schedules/commands`). MCP connectors aren't sendable slash commands,
+ *  so they're excluded from the one-tap recipe cards; the picker still lists them.
+ *  No fabricated/standard commands — if nothing is installed, no cards show. */
+export function recipesFromCommands(
+  commands: ReadonlyArray<RecipeCommand>,
+): RecipeCommand[] {
+  return commands
+    .filter((c) => c.source === 'skill' || c.source === 'command')
+    .slice(0, RECIPE_LIMIT)
+}
 
 export const PROVIDERS = ['claude', 'codex'] as const
 export const DONE_ACTIONS = ['disable', 'notify'] as const

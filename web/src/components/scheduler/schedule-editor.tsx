@@ -14,8 +14,12 @@ import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { TOAST } from '@/brand/copy'
-import type { ScheduleRow } from '@/lib/api'
-import { useCreateSchedule, usePatchSchedule } from '@/hooks/use-scheduler'
+import type { RecipeCommand, ScheduleRow } from '@/lib/api'
+import {
+  useCreateSchedule,
+  usePatchSchedule,
+  useSchedulerCommands,
+} from '@/hooks/use-scheduler'
 import {
   EMPTY_FORM,
   isFormValid,
@@ -24,7 +28,7 @@ import {
   type ScheduleFormValue,
 } from './schedule-form'
 import { FireLog } from './fire-log'
-import { PRESETS } from './helpers'
+import { recipesFromCommands } from './helpers'
 
 /** Map an existing row back into the editable form shape (edit mode seed). */
 export function rowToForm(s: ScheduleRow): ScheduleFormValue {
@@ -32,6 +36,7 @@ export function rowToForm(s: ScheduleRow): ScheduleFormValue {
     title: s.title,
     kind: s.kind,
     command: s.command,
+    prompt: s.prompt ?? '',
     schedule_expr: s.schedule_expr ?? '',
     session: s.session,
     boot_dir: s.boot_dir,
@@ -66,14 +71,26 @@ export function ScheduleEditor({
   const patch = usePatchSchedule()
   const { toast } = useToast()
   const reduce = useReducedMotion()
+  // Recipes are built from the user's REAL installed commands (skills + MCP) —
+  // tapping one prefills a sensible boot job. No fabricated/standard commands.
+  const commands = useSchedulerCommands()
+  const recipes = React.useMemo(
+    () => recipesFromCommands(commands.data ?? []),
+    [commands.data],
+  )
 
   const valid = isFormValid(form)
   const pending = create.isPending || patch.isPending
 
-  const applyPreset = (id: string) => {
-    const preset = PRESETS.find((p) => p.id === id)
-    if (!preset) return
-    setForm({ ...EMPTY_FORM, ...preset.fill })
+  const applyRecipe = (r: RecipeCommand) => {
+    setForm({
+      ...EMPTY_FORM,
+      kind: 'boot',
+      title: `${r.cmd} run`,
+      command: r.cmd,
+      schedule_expr: 'daily at 9am',
+      boot_provider: 'claude',
+    })
   }
 
   const submit = () => {
@@ -86,6 +103,7 @@ export function ScheduleEditor({
             title: input.title,
             kind: input.kind,
             command: input.command,
+            prompt: input.prompt,
             schedule_expr: input.schedule_expr,
             session: input.session,
             watch: input.watch,
@@ -122,27 +140,31 @@ export function ScheduleEditor({
 
   return (
     <div className="flex flex-col gap-6">
-      {mode === 'create' && (
+      {mode === 'create' && recipes.length > 0 && (
         <div>
           <p className="mb-2 text-xs font-medium text-muted-foreground">
-            Start from a recipe
+            Start from one of your commands
           </p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {PRESETS.map((p, i) => (
+            {recipes.map((r, i) => (
               <motion.button
-                key={p.id}
+                key={`${r.source}:${r.cmd}`}
                 type="button"
-                onClick={() => applyPreset(p.id)}
+                onClick={() => applyRecipe(r)}
                 initial={reduce ? false : { opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ ...springs.cardExpand, delay: reduce ? 0 : i * 0.04 }}
                 whileTap={reduce ? undefined : { scale: 0.97 }}
                 className="flex min-h-11 flex-col gap-1 rounded-lg border border-border p-3 text-left transition-colors hover:bg-accent"
               >
-                <span className="text-sm font-medium text-foreground">
-                  {p.label}
+                <span className="font-mono text-sm font-medium text-foreground">
+                  {r.cmd}
                 </span>
-                <span className="text-xs text-muted-foreground">{p.blurb}</span>
+                {r.desc && (
+                  <span className="line-clamp-2 text-xs text-muted-foreground">
+                    {r.desc}
+                  </span>
+                )}
               </motion.button>
             ))}
           </div>

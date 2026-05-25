@@ -20,6 +20,9 @@ pub struct Schedule {
     pub title: String,
     pub session: String,
     pub command: String,
+    /// Optional free-text prompt sent right AFTER `command` (0014). A job may carry
+    /// a command and/or a prompt; at least one is non-empty (handler-enforced).
+    pub prompt: String,
     pub kind: String,
     pub boot_dir: String,
     pub boot_provider: String,
@@ -99,16 +102,17 @@ pub async fn enabled_with_next(pool: &SqlitePool) -> sqlx::Result<Vec<Schedule>>
 pub async fn insert(pool: &SqlitePool, s: &Schedule) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO schedules
-            (id, title, session, command, kind, boot_dir, boot_provider, boot_worktree,
+            (id, title, session, command, prompt, kind, boot_dir, boot_provider, boot_worktree,
              sched_type, recurrence, run_at, next_run, last_run, enabled, run_count,
              schedule_expr, watch, watch_timeout, done_pattern, done_action,
              created, updated, deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.title)
     .bind(&s.session)
     .bind(&s.command)
+    .bind(&s.prompt)
     .bind(&s.kind)
     .bind(&s.boot_dir)
     .bind(&s.boot_provider)
@@ -229,6 +233,7 @@ pub struct SchedulePatch {
     pub title: Option<String>,
     pub session: Option<String>,
     pub command: Option<String>,
+    pub prompt: Option<String>,
     pub kind: Option<String>,
     pub enabled: Option<bool>,
     pub watch: Option<bool>,
@@ -252,6 +257,9 @@ pub async fn patch(pool: &SqlitePool, id: &str, p: &SchedulePatch) -> sqlx::Resu
     }
     if p.command.is_some() {
         sets.push("command = ?");
+    }
+    if p.prompt.is_some() {
+        sets.push("prompt = ?");
     }
     if p.kind.is_some() {
         sets.push("kind = ?");
@@ -291,6 +299,9 @@ pub async fn patch(pool: &SqlitePool, id: &str, p: &SchedulePatch) -> sqlx::Resu
         q = q.bind(v);
     }
     if let Some(v) = &p.command {
+        q = q.bind(v);
+    }
+    if let Some(v) = &p.prompt {
         q = q.bind(v);
     }
     if let Some(v) = &p.kind {

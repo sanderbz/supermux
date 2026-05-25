@@ -27,12 +27,11 @@ import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/use-toast'
 import {
   schedulerApi,
+  type RecipeCommand,
   type ScheduleCreateInput,
   type ScheduleKind,
-  type SlashCommand,
 } from '@/lib/api'
-import { useTestFire } from '@/hooks/use-scheduler'
-import { useSlashCommands } from '@/hooks/use-commands'
+import { useSchedulerCommands, useTestFire } from '@/hooks/use-scheduler'
 import {
   DONE_ACTIONS,
   describeSchedule,
@@ -53,6 +52,8 @@ export interface ScheduleFormValue {
   title: string
   kind: ScheduleKind
   command: string
+  /** Free-text prompt sent after the command (boot/tmux only). */
+  prompt: string
   schedule_expr: string
   session: string
   boot_dir: string
@@ -67,6 +68,7 @@ export const EMPTY_FORM: ScheduleFormValue = {
   title: '',
   kind: 'boot',
   command: '',
+  prompt: '',
   schedule_expr: '',
   session: '',
   boot_dir: '',
@@ -85,7 +87,9 @@ const KIND_ICON: Record<ScheduleKind, React.ReactNode> = {
 
 const KINDS: ScheduleKind[] = ['boot', 'tmux', 'shell']
 
-/** Build the API payload from form state (only the fields the kind needs). */
+/** Build the API payload from form state (only the fields the kind needs). The
+ *  free-text `prompt` rides alongside the slash `command` for boot/tmux; shell
+ *  jobs run the command literally so a prompt has no meaning there. */
 export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
   const base: ScheduleCreateInput = {
     title: v.title.trim(),
@@ -96,19 +100,27 @@ export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
     done_pattern: v.watch ? v.done_pattern.trim() || undefined : undefined,
     done_action: v.watch ? v.done_action : undefined,
   }
-  if (v.kind === 'tmux') base.session = v.session.trim()
+  if (v.kind === 'tmux') {
+    base.session = v.session.trim()
+    base.prompt = v.prompt.trim()
+  }
   if (v.kind === 'boot') {
     base.boot_dir = v.boot_dir.trim()
     base.boot_provider = v.boot_provider
     base.boot_worktree = v.boot_worktree
+    base.prompt = v.prompt.trim()
   }
   return base
 }
 
 /** Client-side validity gate (mirrors the M8 server checks) — drives the
- *  Save + Test-fire enabled states. */
+ *  Save + Test-fire enabled states. A shell job requires a command; boot/tmux
+ *  accept a command and/or a prompt (at least one). */
 export function isFormValid(v: ScheduleFormValue): boolean {
-  if (!v.title.trim() || !v.command.trim() || !v.schedule_expr.trim()) {
+  if (!v.title.trim() || !v.schedule_expr.trim()) return false
+  if (v.kind === 'shell') {
+    if (!v.command.trim()) return false
+  } else if (!v.command.trim() && !v.prompt.trim()) {
     return false
   }
   if (v.kind === 'tmux' && !v.session.trim()) return false
@@ -139,7 +151,7 @@ export function ScheduleForm({
   const preview = useExpressionPreview(value.schedule_expr)
   const testFire = useTestFire()
   const { toast } = useToast()
-  const slash = useSlashCommands()
+  const commands = useSchedulerCommands()
   const valid = isFormValid(value)
 
   const runTestFire = () => {
@@ -247,9 +259,16 @@ export function ScheduleForm({
             <CommandPicker
               value={value.command}
               onChange={(v) => set('command', v)}
-              commands={slash.data ?? []}
-              loading={slash.isLoading}
+              commands={commands.data ?? []}
+              loading={commands.isLoading}
               placeholder="/cso"
+            />
+          </Field>
+          <Field label="Prompt (optional)">
+            <PromptArea
+              value={value.prompt}
+              onChange={(v) => set('prompt', v)}
+              placeholder="Anything to say after the command — or leave the command blank and just send this."
             />
           </Field>
         </>
@@ -264,13 +283,20 @@ export function ScheduleForm({
               sessions={sessions}
             />
           </Field>
-          <Field label="Text to send">
+          <Field label="Command (optional)">
             <CommandPicker
               value={value.command}
               onChange={(v) => set('command', v)}
-              commands={slash.data ?? []}
-              loading={slash.isLoading}
+              commands={commands.data ?? []}
+              loading={commands.isLoading}
               placeholder="/status"
+            />
+          </Field>
+          <Field label="Prompt (optional)">
+            <PromptArea
+              value={value.prompt}
+              onChange={(v) => set('prompt', v)}
+              placeholder="Free-text to send after the command — or on its own."
             />
           </Field>
         </>
@@ -611,7 +637,19 @@ function DayPicker({
   )
 }
 
-// ── command picker (combobox over /api/slash-commands) ──────────────────────────
+// ── command picker (combobox over the REAL installed commands) ──────────────────
+//
+// Source is `GET /api/schedules/commands` — the user's actual installed skills +
+// user/managed commands + claude.ai MCP connectors, never the built-in Claude
+// slash commands. The field still accepts any typed text (a command not in the
+// list is sent as-is), so it degrades gracefully.
+
+/** Sentence-case label for each command source (no UPPERCASE literals). */
+const SOURCE_LABEL: Record<RecipeCommand['source'], string> = {
+  skill: 'Skill',
+  command: 'Command',
+  mcp: 'MCP connector',
+}
 
 function CommandPicker({
   value,
@@ -622,7 +660,7 @@ function CommandPicker({
 }: {
   value: string
   onChange: (v: string) => void
-  commands: SlashCommand[]
+  commands: RecipeCommand[]
   loading: boolean
   placeholder: string
 }) {
@@ -684,18 +722,20 @@ function CommandPicker({
           >
             {loading ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">
-                Loading commands…
+                Loading installed commands…
               </p>
             ) : !filtered.length ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">
-                No matching command — type any text to send it as-is.
+                {commands.length
+                  ? 'No matching command — type any text to send it as-is.'
+                  : 'No installed skills or commands — type any text to send it as-is.'}
               </p>
             ) : (
               filtered.map((c) => {
                 const selected = c.cmd === value.trim()
                 return (
                   <button
-                    key={c.cmd}
+                    key={`${c.source}:${c.cmd}`}
                     type="button"
                     onClick={() => {
                       onChange(c.cmd)
@@ -712,12 +752,17 @@ function CommandPicker({
                         selected ? 'text-primary' : 'text-transparent',
                       )}
                     />
-                    <span className="min-w-0">
-                      <span className="block font-mono text-xs text-foreground">
-                        {c.cmd}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="font-mono text-xs text-foreground">
+                          {c.cmd}
+                        </span>
+                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {SOURCE_LABEL[c.source]}
+                        </span>
                       </span>
                       {c.desc && (
-                        <span className="block truncate text-xs text-muted-foreground">
+                        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                           {c.desc}
                         </span>
                       )}
@@ -730,6 +775,29 @@ function CommandPicker({
         )}
       </AnimatePresence>
     </div>
+  )
+}
+
+// ── prompt textarea (free-text sent after the command) ──────────────────────────
+
+function PromptArea({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+}) {
+  return (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      rows={3}
+      aria-label="Prompt"
+      className="min-h-11 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    />
   )
 }
 

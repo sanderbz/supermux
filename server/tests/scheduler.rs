@@ -250,6 +250,113 @@ async fn preview_returns_next_runs_without_persisting() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The recipe / command picker source: `/api/schedules/commands` returns the REAL
+/// installed agent commands (skills + user/managed commands + claude.ai MCP
+/// connectors) and NEVER the built-in Claude slash commands like `/clear`/`/init`.
+#[tokio::test]
+async fn commands_endpoint_excludes_builtins_and_requires_auth() {
+    let (state, dir) = new_state().await;
+    let app = http::router(state.clone());
+
+    // Bearer required (it rides the protected router).
+    let unauth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/schedules/commands")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    // Authed: an array of {cmd, desc, source}; NO built-in slash commands.
+    let (status, body) = send(&app, Method::GET, "/api/schedules/commands", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["data"].as_array().expect("data is an array");
+    for it in items {
+        let cmd = it["cmd"].as_str().unwrap_or("");
+        let source = it["source"].as_str().unwrap_or("");
+        assert!(
+            matches!(source, "skill" | "command" | "mcp"),
+            "every entry carries a real source, got {source:?}"
+        );
+        // None of the built-in Claude commands leak into the recipe picker.
+        for builtin in ["/clear", "/init", "/compact", "/mcp", "/help"] {
+            assert_ne!(cmd, builtin, "built-in {builtin} must be excluded");
+        }
+    }
+
+    state.pool.close().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A scheduled job may carry a command AND/OR a free-text prompt. A `tmux` job
+/// with only a prompt (no command) is valid and round-trips; one with NEITHER is
+/// rejected.
+#[tokio::test]
+async fn job_accepts_command_or_prompt_and_rejects_neither() {
+    let (state, dir) = new_state().await;
+    let app = http::router(state.clone());
+
+    // Prompt-only tmux job → created.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/schedules",
+        Some(json!({
+            "title": "prompt only",
+            "prompt": "summarise the board",
+            "session": "alpha",
+            "kind": "tmux",
+            "schedule_expr": "every 1h",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["data"]["command"], "");
+    assert_eq!(body["data"]["prompt"], "summarise the board");
+
+    // Command + prompt together → both persisted.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/schedules",
+        Some(json!({
+            "title": "command and prompt",
+            "command": "/supermux-task",
+            "prompt": "post a status update",
+            "session": "alpha",
+            "kind": "tmux",
+            "schedule_expr": "every 1h",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["data"]["command"], "/supermux-task");
+    assert_eq!(body["data"]["prompt"], "post a status update");
+
+    // Neither command nor prompt → 400.
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/api/schedules",
+        Some(json!({
+            "title": "empty",
+            "session": "alpha",
+            "kind": "tmux",
+            "schedule_expr": "every 1h",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    state.pool.close().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// M21 test-fire: `_test_fire:true` runs once immediately, returns the result,
 /// and leaves NO live schedule behind.
 #[tokio::test]

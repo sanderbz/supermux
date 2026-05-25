@@ -177,8 +177,11 @@ async fn execute_shell(sched: &Schedule) -> JobOutcome {
     }
 }
 
-/// `kind='tmux'` — send `command` to the target session (auto-wakes). Captures
-/// pre-send output first when watch-mode is on, for delta detection.
+/// `kind='tmux'` — send the optional `command` then the optional free-text
+/// `prompt` to the target session (auto-wakes). At least one is non-empty (the
+/// create handler guarantees it). Each is a separate submitted line, so a job can
+/// run `/supermux-task` and follow it with a prompt, or send just one of the two.
+/// Captures pre-send output first when watch-mode is on, for delta detection.
 async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
     if sched.session.trim().is_empty() {
         return JobOutcome {
@@ -192,18 +195,36 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
     } else {
         None
     };
-    match sessions::lifecycle::send_text(state, &sched.session, &sched.command).await {
-        Ok(()) => JobOutcome {
-            status: "ok",
-            note: format!("sent to {}", sched.session),
-            pre_output,
-        },
-        Err(e) => JobOutcome {
-            status: "error",
-            note: truncate(&format!("send failed: {e}")),
-            pre_output: None,
-        },
+    for line in delivery_lines(sched) {
+        if let Err(e) = sessions::lifecycle::send_text(state, &sched.session, line).await {
+            return JobOutcome {
+                status: "error",
+                note: truncate(&format!("send failed: {e}")),
+                pre_output: None,
+            };
+        }
     }
+    JobOutcome {
+        status: "ok",
+        note: format!("sent to {}", sched.session),
+        pre_output,
+    }
+}
+
+/// The ordered, non-empty lines a `tmux`/`boot` job delivers: the slash `command`
+/// first (when set), then the free-text `prompt` (when set). Each is submitted as
+/// its own line. At least one is present (create-handler invariant).
+fn delivery_lines(sched: &Schedule) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let cmd = sched.command.trim();
+    if !cmd.is_empty() {
+        lines.push(cmd);
+    }
+    let prompt = sched.prompt.trim();
+    if !prompt.is_empty() {
+        lines.push(prompt);
+    }
+    lines
 }
 
 /// `kind='boot'` — spawn a NEW session in `boot_dir` and send `command` as its
@@ -250,17 +271,32 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
             pre_output: None,
         };
     }
-    match sessions::lifecycle::start(state, &name, Some(&sched.command)).await {
-        Ok(_) => JobOutcome {
-            status: "ok",
-            note: format!("booted session {name}"),
-            pre_output: None,
-        },
-        Err(e) => JobOutcome {
+    // Start with the FIRST delivery line as the agent's opening prompt (the slash
+    // command when set, else the free-text prompt), then send any remaining line
+    // as a follow-up. This lets a boot job run e.g. `/cso` and then a prompt — or
+    // boot straight into a free-text prompt with no command.
+    let lines = delivery_lines(sched);
+    let first = lines.first().copied();
+    if let Err(e) = sessions::lifecycle::start(state, &name, first).await {
+        return JobOutcome {
             status: "error",
             note: truncate(&format!("boot start failed: {e}")),
             pre_output: None,
-        },
+        };
+    }
+    for follow in lines.iter().skip(1) {
+        if let Err(e) = sessions::lifecycle::send_text(state, &name, follow).await {
+            return JobOutcome {
+                status: "error",
+                note: truncate(&format!("boot follow-up send failed: {e}")),
+                pre_output: None,
+            };
+        }
+    }
+    JobOutcome {
+        status: "ok",
+        note: format!("booted session {name}"),
+        pre_output: None,
     }
 }
 
@@ -305,5 +341,66 @@ fn truncate(s: &str) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..500])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bare Schedule with just the two delivery fields set — the rest is unused
+    /// by [`delivery_lines`], so defaults keep the fixture small.
+    fn sched_with(command: &str, prompt: &str) -> Schedule {
+        Schedule {
+            id: "SCHED-test".into(),
+            title: "t".into(),
+            session: "s".into(),
+            command: command.into(),
+            prompt: prompt.into(),
+            kind: "tmux".into(),
+            boot_dir: String::new(),
+            boot_provider: "claude".into(),
+            boot_worktree: 0,
+            sched_type: "recurring".into(),
+            recurrence: None,
+            run_at: None,
+            next_run: None,
+            last_run: None,
+            enabled: 1,
+            run_count: 0,
+            schedule_expr: Some("every 1m".into()),
+            watch: 0,
+            watch_timeout: 120,
+            done_pattern: None,
+            done_action: "disable".into(),
+            created: 0,
+            updated: 0,
+            deleted: None,
+        }
+    }
+
+    #[test]
+    fn delivery_lines_command_then_prompt() {
+        let s = sched_with("/supermux-task", "summarise the board");
+        assert_eq!(delivery_lines(&s), vec!["/supermux-task", "summarise the board"]);
+    }
+
+    #[test]
+    fn delivery_lines_command_only() {
+        let s = sched_with("/cso", "");
+        assert_eq!(delivery_lines(&s), vec!["/cso"]);
+    }
+
+    #[test]
+    fn delivery_lines_prompt_only() {
+        let s = sched_with("", "check the deploy");
+        assert_eq!(delivery_lines(&s), vec!["check the deploy"]);
+    }
+
+    #[test]
+    fn delivery_lines_trims_and_drops_blank() {
+        let s = sched_with("  ", "  do it  ");
+        // whitespace-only command is dropped; prompt is trimmed.
+        assert_eq!(delivery_lines(&s), vec!["do it"]);
     }
 }
