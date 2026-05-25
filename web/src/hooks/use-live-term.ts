@@ -773,16 +773,28 @@ export function useLiveTerm(
       // during IME composition (`isComposing` / keyCode 229) so a CJK
       // candidate-commit Enter still reaches the composer normally.
       term.attachCustomKeyEventHandler((e) => {
-        if (
-          e.type === 'keydown' &&
+        const isNewlineEnter =
           e.key === 'Enter' &&
           (e.shiftKey || e.altKey) &&
           !e.ctrlKey &&
           !e.metaKey &&
           !e.isComposing &&
           e.keyCode !== 229
-        ) {
-          sendRaw('\x0a')
+        if (isNewlineEnter) {
+          // Send LF ONCE (Claude Code's `chat:newline`) on the keydown, and
+          // swallow the event so xterm doesn't ALSO emit its `\r`. Critically we
+          // must swallow BOTH the keydown AND the matching keypress: the browser
+          // still fires a `keypress` for Enter (charCode 13) after a swallowed
+          // keydown, and xterm's keypress path turns that into `\r` — which
+          // submits. That stray `\r` (LF then CR) is exactly why desktop
+          // Shift+Enter was submitting instead of inserting a newline (the mobile
+          // "Newline" chip is a button, has no keypress, and so was unaffected).
+          // preventDefault on the keydown stops the keypress from being generated
+          // at all; returning false + the keypress guard are belt-and-suspenders.
+          if (e.type === 'keydown') {
+            sendRaw('\x0a')
+            e.preventDefault()
+          }
           return false
         }
         return true
