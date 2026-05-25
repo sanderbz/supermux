@@ -73,3 +73,42 @@ still attached.
 - `SUPERMUX_SELF_NO_PULL=1` — skip the `git pull` (deploy exactly local HEAD).
 - `SUPERMUX_SELF_HELPER=/path` — override the helper path (default
   `/usr/local/sbin/supermux-deploy-self`).
+
+## Troubleshooting: "Claude won't render in the dev session"
+
+Two distinct failure modes can leave the dev session showing only the shell
+prompt (no Claude UI). They look identical in the panel but have different
+causes and fixes.
+
+### 1. First-launch workspace-trust dialog (FIXED in code)
+
+The **first** time Claude is launched in a directory it has never seen, it
+shows a blocking *"Do you trust the files in this folder?"* prompt. This is a
+SEPARATE gate from permission prompts — `--dangerously-skip-permissions` does
+**not** skip it. A freshly-cloned project dir (like the supermux source on the
+box) hits this on its very first session and hangs there forever, never
+reaching the `❯` prompt.
+
+`wait_for_agent_ready` (server/src/sessions/lifecycle.rs) now detects this
+dialog and auto-accepts it (Enter on the default "Yes, I trust this folder"),
+which also records the dir as trusted in `~/.claude.json` so it never reappears.
+You can also pre-trust a dir without launching by adding it to
+`~/.claude.json`'s `projects` map with `"hasTrustDialogAccepted": true`.
+
+### 2. A degraded long-lived tmux server
+
+Independently, a tmux **server** process that has been running for a very long
+time can reach a state where it can no longer spawn panes that render a native
+TUI like Claude's (plain stdout still works, but Claude's full-screen UI paints
+nothing). This is a property of the specific tmux *server* instance, not the
+directory, the user, the seccomp sandbox, or Claude itself — verified by
+launching the identical `claude` binary, as the same service user, in the same
+dir, under the same systemd `SystemCallFilter`: a **fresh** tmux server renders
+perfectly while the old one does not.
+
+`systemctl restart supermux` does NOT cure this — `KillMode=process` keeps the
+tmux server (and all sessions) alive across the restart by design. Recreating
+the tmux server is what fixes it, which happens on the next machine reboot (or
+by deliberately killing the tmux server, which also ends every running
+session — only do that when those sessions are expendable). New tmux servers
+spawn rendering panes correctly.
