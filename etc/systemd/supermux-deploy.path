@@ -1,0 +1,30 @@
+# supermux-deploy.path — TEMPLATE.
+#
+# This is a template, not a ready-to-install unit. `scripts/deploy.sh`
+# substitutes __DEPLOY_REQUEST__ (the absolute path of the request file the
+# unprivileged agent writes) and installs the result to
+# /etc/systemd/system/supermux-deploy.path on the host.
+#
+# WHY A PATH UNIT (the whole point):
+#   The supermux service is hardened with NoNewPrivileges=true,
+#   RestrictSUIDSGID=true, an empty CapabilityBoundingSet, and a
+#   SystemCallFilter that drops @privileged — EACH of which independently
+#   neuters setuid/sudo. Every child of the service (including the agent's tmux
+#   session) inherits that, so `sudo` can NEVER work from inside supermux. The
+#   in-service dev agent therefore cannot use the old sudoers-based helper.
+#
+#   Writing a FILE needs zero privilege. This .path unit, owned by root and
+#   running OUTSIDE the supermux sandbox, watches that file; when the agent
+#   writes a deploy request, systemd starts supermux-deploy.service (root,
+#   oneshot) which does the install + restart + verify + rollback. The agent
+#   never escalates — it just drops a request and root reacts.
+[Unit]
+Description=Watch for a supermux self-deploy request
+[Path]
+# PathChanged fires when the watched file is closed-after-write or replaced via
+# rename(2). deploy-self.sh writes request.tmp then `mv`s it into place, so the
+# rename reliably triggers exactly one run per request.
+PathChanged=__DEPLOY_REQUEST__
+Unit=supermux-deploy.service
+[Install]
+WantedBy=multi-user.target

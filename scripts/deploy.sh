@@ -813,12 +813,63 @@ if grep -q '__[A-Z_]\+__' "$UNIT_TMP"; then
   exit 1
 fi
 
+# ── 3b. render the self-deploy path-unit + runner (no-sudo self-deploy) ──────
+# The in-service dev agent CANNOT use sudo (the supermux unit's NoNewPrivileges
+# / RestrictSUIDSGID / empty CapabilityBoundingSet / SystemCallFilter all neuter
+# it). Instead it writes a request file; a root-side .path unit watches it and
+# starts a root oneshot that runs supermux-deploy-runner (install + restart +
+# verify + rollback) OUTSIDE the sandbox. Render the two units + the runner from
+# their templates with the same sed style + leak check.
+#
+# The request file lives under the data dir's deploy/ subdir, which the install
+# step below provisions service-user-writable.
+DEPLOY_REQUEST="$DATA_DIR/deploy/request"
+# The agents' project dir(s) are an allowlist prefix the runner checks the
+# source binary against. PROJECT_DIRS is colon-separated; the runner only needs
+# one prefix, so use the FIRST entry (the primary project dir).
+PRIMARY_PROJECT_DIR="$(printf '%s' "$PROJECT_DIRS" | cut -d: -f1)"
+
+DEPLOY_PATH_TMP="$(mktemp)"
+DEPLOY_SVC_TMP="$(mktemp)"
+DEPLOY_RUNNER_TMP="$(mktemp)"
+trap 'rm -f "$UNIT_TMP" "$DEPLOY_PATH_TMP" "$DEPLOY_SVC_TMP" "$DEPLOY_RUNNER_TMP"' EXIT
+
+# supermux-deploy.path — watches the request file.
+sed -e "s|__DEPLOY_REQUEST__|$DEPLOY_REQUEST|g" \
+    etc/systemd/supermux-deploy.path > "$DEPLOY_PATH_TMP"
+
+# supermux-deploy.service — root oneshot (no placeholders today, but render +
+# leak-check it through the same pipeline for consistency).
+sed -e "s|__DEPLOY_REQUEST__|$DEPLOY_REQUEST|g" \
+    etc/systemd/supermux-deploy.service > "$DEPLOY_SVC_TMP"
+
+# supermux-deploy-runner — the root install+restart+verify+rollback logic.
+sed -e "s|__DEPLOY_REQUEST__|$DEPLOY_REQUEST|g" \
+    -e "s|__PROJECTS_DIR__|$PRIMARY_PROJECT_DIR|g" \
+    -e "s|__USER_HOME__|$USER_HOME|g" \
+    -e "s|__UNIT__|supermux|g" \
+    -e "s|__DATA_DIR__|$DATA_DIR|g" \
+    -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
+    -e "s|__INTERNAL_PORT__|$INTERNAL_PORT|g" \
+    etc/supermux-deploy-runner > "$DEPLOY_RUNNER_TMP"
+
+for rendered in "$DEPLOY_PATH_TMP" "$DEPLOY_SVC_TMP" "$DEPLOY_RUNNER_TMP"; do
+  if grep -q '__[A-Z_]\+__' "$rendered"; then
+    echo "[deploy] error: rendered self-deploy file still contains unsubstituted placeholders:" >&2
+    grep -nE '__[A-Z_]+__' "$rendered" >&2
+    exit 1
+  fi
+done
+
 # ── 4. install binary + systemd unit + config (atomic) ──────────────────────
 # Runs under sudo: the build runs as the unprivileged deploy account, but
 # installing into /usr/local/bin + /etc/systemd needs root. The service itself
 # runs unprivileged (see etc/systemd/supermux.service).
 echo "[deploy] installing binary, systemd unit and config on $HOST"
 scp "$UNIT_TMP" "$HOST:/tmp/supermux.service.rendered"
+scp "$DEPLOY_PATH_TMP" "$HOST:/tmp/supermux-deploy.path.rendered"
+scp "$DEPLOY_SVC_TMP" "$HOST:/tmp/supermux-deploy.service.rendered"
+scp "$DEPLOY_RUNNER_TMP" "$HOST:/tmp/supermux-deploy-runner.rendered"
 ssh "$HOST" "sudo bash -s" <<REMOTE_INSTALL
 set -euo pipefail
 
@@ -833,6 +884,12 @@ if [ ! -f '$DATA_DIR/config.toml' ]; then
   echo '[host] wrote $DATA_DIR/config.toml (bind 127.0.0.1:$INTERNAL_PORT)'
 fi
 
+# Self-deploy request dir — service-user-writable (the agent writes the request
+# file here with zero privilege) AND root-writable (the runner truncates the log
+# + writes the status here). 0775 owned by the service user satisfies both: the
+# agent (owner) and root.
+install -d -o '$SERVICE_USER' -g '$SERVICE_USER' -m 0775 '$DATA_DIR/deploy'
+
 # binary
 install -m 0755 -o root -g root \
   '$REMOTE_DIR/server/target/release/supermux-server' /usr/local/bin/supermux-server
@@ -841,13 +898,37 @@ install -m 0755 -o root -g root \
 printf '%s\n' '$GIT_SHA' > '$REMOTE_DIR/DEPLOYED_SHA'
 echo '[host] deployed commit: $GIT_SHA_SHORT ($GIT_SHA)'
 
+# self-deploy root runner (root-owned, 0755) — the privileged install logic the
+# in-service agent triggers via the path unit. MUST be root:root + not
+# group/world-writable: the .service runs it as root, so a writable runner would
+# be a root escalation. install(1) sets owner+mode atomically.
+install -m 0755 -o root -g root \
+  /tmp/supermux-deploy-runner.rendered /usr/local/sbin/supermux-deploy-runner
+rm -f /tmp/supermux-deploy-runner.rendered
+
 # systemd unit (rendered from the template by deploy.sh)
 install -m 0644 -o root -g root \
   /tmp/supermux.service.rendered /etc/systemd/system/supermux.service
 rm -f /tmp/supermux.service.rendered
+
+# self-deploy path + service units (rendered by deploy.sh)
+install -m 0644 -o root -g root \
+  /tmp/supermux-deploy.path.rendered /etc/systemd/system/supermux-deploy.path
+install -m 0644 -o root -g root \
+  /tmp/supermux-deploy.service.rendered /etc/systemd/system/supermux-deploy.service
+rm -f /tmp/supermux-deploy.path.rendered /tmp/supermux-deploy.service.rendered
+
+# Clean up the OLD sudo-based self-deploy approach if a previous deploy left it
+# behind. The path-unit trigger replaces it; a stale NOPASSWD sudoers rule +
+# setuid-reachable helper is needless attack surface.
+rm -f /etc/sudoers.d/supermux-deploy-self /usr/local/sbin/supermux-deploy-self
+
 systemctl daemon-reload
 systemctl enable supermux
 systemctl restart supermux
+# Enable + start the self-deploy watcher (idempotent). --now starts the .path so
+# it begins watching immediately; the .service is started BY the path on demand.
+systemctl enable --now supermux-deploy.path
 sleep 2
 if ! systemctl is-active --quiet supermux; then
   echo '[host] error: supermux failed to start — see logs:' >&2

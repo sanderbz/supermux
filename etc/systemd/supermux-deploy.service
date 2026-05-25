@@ -1,0 +1,22 @@
+# supermux-deploy.service — TEMPLATE.
+#
+# This is a template, not a ready-to-install unit. `scripts/deploy.sh` installs
+# the result to /etc/systemd/system/supermux-deploy.service on the host. It has
+# no placeholders today, but is rendered through the same sed + leak-check
+# pipeline as the other units for consistency (and so future placeholders are
+# caught).
+#
+# Triggered by supermux-deploy.path when the in-service agent writes a deploy
+# request file. Runs as ROOT (no User= line) and therefore OUTSIDE the
+# supermux.service sandbox — so it CAN install a new binary and restart the
+# service even though the agent that requested it cannot. This is NOT a
+# privilege escalation: the runner only replaces the UNPRIVILEGED service
+# binary and restarts the UNPRIVILEGED service — exactly what the agent's own
+# uid already controls. It just bridges "the agent wrote a file" → "root
+# installs + restarts". See etc/supermux-deploy-runner for the actual logic
+# (backup → install → restart → verify → rollback).
+[Unit]
+Description=supermux self-deploy (install + restart + verify + rollback)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/supermux-deploy-runner

@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# supermux-deploy-runner — root side of "deploy supermux to itself".
+#
+# This is a TEMPLATE. `scripts/deploy.sh` substitutes the placeholders
+# (__DEPLOY_REQUEST__, __PROJECTS_DIR__, __USER_HOME__, __UNIT__, __DATA_DIR__,
+# __SERVICE_USER__, __INTERNAL_PORT__) from the deploy environment and installs
+# the result to /usr/local/sbin/supermux-deploy-runner (root-owned, mode 0755).
+#
+# HOW IT IS INVOKED (no sudo anywhere):
+#   The in-service dev agent runs scripts/deploy-self.sh, which builds the
+#   binary and then atomically writes a tiny request FILE (__DEPLOY_REQUEST__)
+#   — an operation that needs ZERO privilege. A root-side systemd .path unit
+#   (supermux-deploy.path) watches that file and, on change, starts a root
+#   oneshot (supermux-deploy.service) whose ExecStart is THIS script. So this
+#   runs as ROOT, OUTSIDE the supermux.service sandbox — which is why it can
+#   install + restart even though the hardened service (NoNewPrivileges, empty
+#   CapabilityBoundingSet, SystemCallFilter ~@privileged) makes sudo impossible
+#   from inside supermux.
+#
+# WHY THIS IS NOT AN ESCALATION:
+#   The runner only ever (a) replaces the UNPRIVILEGED service binary
+#   (/usr/local/bin/supermux-server) and (b) restarts the UNPRIVILEGED
+#   supermux unit — both of which the agent's own uid already governs in effect.
+#   Caller-supplied inputs are limited to a SOURCE binary path (validated:
+#   regular file, ELF magic, realpath under an allowlisted prefix) and an opaque
+#   SHA (recorded only). The destination, unit name, data dir, and config are
+#   all HARDCODED (rendered) here — the request cannot redirect the install to
+#   an arbitrary path or restart an arbitrary unit.
+#
+# WHAT IT DOES (same guarantees as the old sudo helper):
+#   1. read + validate the request file,
+#   2. back up the currently-installed binary,
+#   3. install the freshly-built binary (atomic),
+#   4. systemctl restart the unit,
+#   5. verify is-active + loopback /api/health; ROLL BACK to the backup and
+#      restart if it does not come up — a bad build can never leave prod down.
+#   All output is teed to __DATA_DIR__/deploy/log and a final DEPLOY_RESULT=
+#   line + a status file are written (chowned to the service user) so the
+#   unprivileged agent can read the outcome after the restart blip.
+set -uo pipefail
+
+# ── fixed, NON-caller-controllable targets (rendered by deploy.sh) ────────────
+REQUEST="__DEPLOY_REQUEST__"
+PROJECTS_DIR="__PROJECTS_DIR__"
+USER_HOME="__USER_HOME__"
+UNIT="__UNIT__"
+DEST="/usr/local/bin/supermux-server"
+BACKUP="/usr/local/bin/supermux-server.prev"
+DATA_DIR="__DATA_DIR__"
+CONFIG="$DATA_DIR/config.toml"
+DEPLOYED_SHA_FILE="$DATA_DIR/DEPLOYED_SHA"   # informational
+SERVICE_USER="__SERVICE_USER__"
+DEFAULT_PORT="__INTERNAL_PORT__"
+
+REQ_DIR="$DATA_DIR/deploy"
+LOG="$REQ_DIR/log"
+STATUS="$REQ_DIR/status"
+LOCK="$REQ_DIR/.lock"
+
+# ── single-flight: never let two triggers overlap an install ──────────────────
+# Re-exec ourselves under flock so the whole run holds the lock. The guard env
+# var prevents infinite re-exec.
+mkdir -p "$REQ_DIR" 2>/dev/null || true
+if [ "${SUPERMUX_DEPLOY_LOCKED:-0}" != "1" ]; then
+  exec env SUPERMUX_DEPLOY_LOCKED=1 flock -w 300 "$LOCK" "$0" "$@"
+fi
+
+# ── logging: truncate the log, tee everything, finalize status at the end ─────
+: > "$LOG" 2>/dev/null || true
+# Send all stdout+stderr to the log AND the journal (the .service captures it).
+exec > >(tee -a "$LOG") 2>&1
+
+log() { printf '[deploy-runner] %s\n' "$*"; }
+
+RESULT="failed"
+finalize() {
+  # Final machine-readable line in the log + a one-word status file. chown both
+  # so the unprivileged agent (which wrote the request) can read them back.
+  printf 'DEPLOY_RESULT=%s\n' "$RESULT"
+  printf '%s\n' "$RESULT" > "$STATUS" 2>/dev/null || true
+  chown "$SERVICE_USER:$SERVICE_USER" "$LOG" "$STATUS" 2>/dev/null || true
+  # Flush the tee subshell so the agent's tail sees the final line.
+  sync 2>/dev/null || true
+}
+trap finalize EXIT
+
+fail() { log "error: $*"; RESULT="failed"; exit 1; }
+
+# ── 0. read + validate the request file ───────────────────────────────────────
+[ -f "$REQUEST" ] || fail "no request file at $REQUEST"
+
+SRC=""; SHA=""; NONCE=""
+while IFS='=' read -r k v; do
+  case "$k" in
+    binary) SRC="$v" ;;
+    sha)    SHA="$v" ;;
+    nonce)  NONCE="$v" ;;
+  esac
+done < "$REQUEST"
+
+log "request: binary=$SRC sha=${SHA:0:12} nonce=$NONCE"
+
+[ -n "$SRC" ] || fail "request missing 'binary='"
+[ -f "$SRC" ] || fail "source binary does not exist: $SRC"
+
+# Must be a regular ELF executable, not some arbitrary file.
+if ! head -c 4 "$SRC" 2>/dev/null | grep -q $'\x7fELF'; then
+  fail "source is not an ELF binary: $SRC"
+fi
+
+# Defense-in-depth: the binary's realpath must live under an allowlisted prefix
+# (the agents' project dir or the service user's home). Even though the .path
+# trigger and request file are inside the service-user-writable data dir, this
+# guards against a request pointing DEST at, say, /bin/sh.
+REAL_SRC="$(readlink -f "$SRC" 2>/dev/null || true)"
+[ -n "$REAL_SRC" ] || fail "cannot resolve realpath of $SRC"
+case "$REAL_SRC/" in
+  "$PROJECTS_DIR"/*|"$USER_HOME"/*) : ;;
+  *) fail "source binary $REAL_SRC is outside the allowlist ($PROJECTS_DIR/, $USER_HOME/)" ;;
+esac
+SRC="$REAL_SRC"
+
+# ── resolve the internal health port from config.toml (bind = "127.0.0.1:PORT")
+PORT="$(sed -n 's/^[[:space:]]*bind[[:space:]]*=[[:space:]]*"127\.0\.0\.1:\([0-9]\+\)".*/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+PORT="${PORT:-$DEFAULT_PORT}"
+
+health_ok() {
+  curl -sf -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/api/health"
+}
+
+# ── 1. back up the current binary (if any) so we can roll back ────────────────
+if [ -f "$DEST" ]; then
+  install -m 0755 -o root -g root "$DEST" "$BACKUP"
+  log "backed up current binary -> $BACKUP"
+else
+  rm -f "$BACKUP"
+  log "no existing $DEST to back up (first install)"
+fi
+
+# ── 2. install the freshly-built binary (atomic via install(1)) ───────────────
+install -m 0755 -o root -g root "$SRC" "$DEST" || fail "install of new binary failed"
+log "installed new binary -> $DEST ($(du -h "$DEST" | cut -f1))"
+
+# Record the deployed commit (best-effort; never fails the deploy).
+if [ -n "$SHA" ]; then
+  printf '%s\n' "$SHA" > "$DEPLOYED_SHA_FILE" 2>/dev/null || true
+  chown "$SERVICE_USER:$SERVICE_USER" "$DEPLOYED_SHA_FILE" 2>/dev/null || true
+fi
+
+# ── 3. restart the service ────────────────────────────────────────────────────
+log "systemctl restart $UNIT"
+systemctl restart "$UNIT"
+
+# ── 4. verify is-active + health; roll back on failure ────────────────────────
+rollback() {
+  log "!! new build failed to come up — ROLLING BACK"
+  if [ -f "$BACKUP" ]; then
+    install -m 0755 -o root -g root "$BACKUP" "$DEST"
+    log "restored previous binary from $BACKUP"
+  else
+    log "no backup to restore (was a first install) — leaving binary in place"
+  fi
+  systemctl restart "$UNIT" || true
+  sleep 2
+  if systemctl is-active --quiet "$UNIT" && health_ok; then
+    log "rolled back: service is active + healthy again on :$PORT"
+  else
+    log "CRITICAL: rollback restart did not recover the service — investigate:"
+    log "  journalctl -u $UNIT -n 100 --no-pager"
+  fi
+}
+
+# Give it a few seconds to bind + reconcile sessions, polling health.
+ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if systemctl is-active --quiet "$UNIT" && health_ok; then ok=1; break; fi
+  sleep 1
+done
+
+if [ "$ok" != "1" ]; then
+  log "service not active+healthy after restart:"
+  systemctl is-active "$UNIT" || true
+  systemctl status "$UNIT" --no-pager 2>&1 | tail -20 || true
+  rollback
+  fail "deploy failed; previous binary restored (no bricking)."
+fi
+
+log "OK: $UNIT is active and healthy on 127.0.0.1:$PORT (commit ${SHA:0:12})"
+RESULT="ok"
+exit 0

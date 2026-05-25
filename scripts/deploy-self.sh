@@ -8,74 +8,70 @@
 # running service rebuilds from the clone and restarts — coming back online by
 # itself, with the tmux session that ran it surviving the restart.
 #
+# WHY NO SUDO (the bug this design fixes):
+#   The supermux systemd unit is hardened with NoNewPrivileges=true,
+#   RestrictSUIDSGID=true, an empty CapabilityBoundingSet, and a
+#   SystemCallFilter that drops @privileged — EACH of which independently
+#   neuters setuid/sudo. Every child of the service (including THIS tmux
+#   session) inherits that, so `sudo` can NEVER run as root from inside
+#   supermux ("the 'no new privileges' flag is set"). Relaxing the hardening to
+#   allow sudo would gut the sandbox, so instead we use a systemd PATH-UNIT
+#   TRIGGER:
+#     - this script BUILDS, then atomically WRITES a small request file
+#       ($DATA_DIR/deploy/request) — an operation that needs ZERO privilege;
+#     - a root-side .path unit (supermux-deploy.path) watches that file and, on
+#       change, starts a root oneshot (supermux-deploy.service) that runs
+#       /usr/local/sbin/supermux-deploy-runner — which does the privileged
+#       backup → install → restart → verify → rollback OUTSIDE the sandbox.
+#   This adds NO privilege the agent lacks: the runner only replaces the
+#   UNPRIVILEGED service binary and restarts the UNPRIVILEGED unit (both already
+#   under the agent's uid in effect); it just bridges "write file" → "root
+#   installs + restarts".
+#
 # WHY IT IS SAFE (no bricking):
 #   - We build FIRST (scripts/build.sh). If the build fails, nothing is touched
 #     and the running service keeps running the OLD binary.
-#   - The privileged install+restart is done by a SINGLE root-owned helper
-#     (/usr/local/sbin/supermux-deploy-self) invoked via a tightly-scoped
-#     sudoers rule. That helper:
-#       * backs up the current /usr/local/bin/supermux-server,
-#       * installs the freshly-built binary,
-#       * `systemctl restart supermux`,
-#       * verifies `systemctl is-active` + the loopback /api/health,
-#       * and ROLLS BACK to the backed-up binary (and restarts) if the new one
-#         fails to come up — so a bad build can never leave prod down.
+#   - The root runner backs up the current binary, installs the new one,
+#     restarts, verifies `systemctl is-active` + the loopback /api/health, and
+#     ROLLS BACK to the backup (and restarts) if the new one fails to come up —
+#     so a bad build can never leave prod down.
 #   - The supermux service uses KillMode=process + a persistent TMUX_TMPDIR in
 #     its data dir, so the tmux sessions (including THIS one) survive the
-#     restart. You run deploy-self, the service blips, and your terminal is
-#     still here.
+#     restart. You run deploy-self, the service blips mid-run, and your terminal
+#     is still here. The runner's log file also persists across the restart, so
+#     this script can still read the final result afterwards.
 #
-# PRIVILEGE MODEL (least privilege):
-#   The service user has NO general sudo. The ONLY thing it may run as root is
-#   the fixed helper path, granted by /etc/sudoers.d/supermux-deploy-self:
-#     supermux ALL=(root) NOPASSWD: /usr/local/sbin/supermux-deploy-self
-#   The helper hardcodes its source (this clone's release binary) and
-#   destination, so the grant cannot be repurposed to install arbitrary files
-#   or restart arbitrary units. See etc/supermux-deploy-self and
-#   etc/sudoers.d/supermux-deploy-self (install instructions in the header
-#   there). A one-time root setup wires these; after that this script is
-#   self-contained.
+# ONE-TIME ROOT SETUP IS AUTOMATIC: scripts/deploy.sh installs the runner + the
+# two systemd units and enables supermux-deploy.path as part of a normal deploy.
+# There is nothing to wire by hand on the host.
 #
 # USAGE:   cd /opt/projects/supermux && scripts/deploy-self.sh
 #   Env:
-#     SUPERMUX_SELF_HELPER   path to the privileged helper
-#                            (default: /usr/local/sbin/supermux-deploy-self)
+#     SUPERMUX_DATA_DIR      supermux data dir (default: $HOME/.supermux; the
+#                            unit exports this into the agent's environment).
 #     SUPERMUX_SELF_NO_PULL  set 1 to skip the `git pull` (default: pull --ff-only)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-HELPER="${SUPERMUX_SELF_HELPER:-/usr/local/sbin/supermux-deploy-self}"
 BIN_REL="server/target/release/supermux-server"
+DATA_DIR="${SUPERMUX_DATA_DIR:-$HOME/.supermux}"
+REQ_DIR="$DATA_DIR/deploy"
 
 log() { printf '[deploy-self] %s\n' "$*"; }
 die() { printf '[deploy-self] error: %s\n' "$*" >&2; exit 1; }
 
-# ── 0. sanity: we are in a real clone, the helper exists, sudo is wired ───────
+# ── 0. sanity: we are in a real clone ─────────────────────────────────────────
 [ -d .git ] || die "must run from a git CLONE of supermux (no .git here: $ROOT).
   Clone it into a project dir the service can read+write, e.g.:
     git clone https://github.com/sanderbz/supermux.git /opt/projects/supermux"
-
-[ -x "$HELPER" ] || die "privileged helper not found/executable: $HELPER
-  One-time root setup is required (see etc/supermux-deploy-self header):
-    sudo install -m 0755 -o root -g root etc/supermux-deploy-self $HELPER
-    sudo install -m 0440 -o root -g root etc/sudoers.d/supermux-deploy-self \\
-         /etc/sudoers.d/supermux-deploy-self"
-
-# Confirm the NOPASSWD grant is live BEFORE we spend minutes building.
-if ! sudo -n "$HELPER" --check >/dev/null 2>&1; then
-  die "cannot run '$HELPER' via passwordless sudo.
-  The sudoers rule is missing or wrong. As root:
-    sudo install -m 0440 -o root -g root etc/sudoers.d/supermux-deploy-self \\
-         /etc/sudoers.d/supermux-deploy-self
-    sudo visudo -cf /etc/sudoers.d/supermux-deploy-self   # validate"
-fi
 
 GIT_SHA="$(git rev-parse HEAD)"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 log "clone : $ROOT"
 log "branch: $GIT_BRANCH @ ${GIT_SHA:0:12}"
+log "data  : $DATA_DIR"
 
 # ── 1. (optional) fast-forward pull so 'deploy what's on the remote' is easy ──
 if [ "${SUPERMUX_SELF_NO_PULL:-0}" != "1" ]; then
@@ -99,11 +95,87 @@ bash scripts/build.sh
 [ -f "$BIN_REL" ] || die "build reported success but '$BIN_REL' is missing"
 log "built binary: $BIN_REL ($(du -h "$BIN_REL" | cut -f1))"
 
-# ── 3. privileged install + restart + verify + rollback (root helper) ─────────
-# Everything that needs root is INSIDE the helper. We pass the absolute path of
-# the freshly-built binary and the deployed SHA; the helper validates them.
-log "installing + restarting via $HELPER (sudo, scoped)"
-sudo -n "$HELPER" --binary "$ROOT/$BIN_REL" --sha "$GIT_SHA"
+# ── 3. write the deploy request (zero privilege) → triggers the root runner ───
+# The root-side supermux-deploy.path unit watches $REQ_DIR/request; the mv below
+# (a rename) fires PathChanged and starts the root oneshot that installs +
+# restarts + verifies + rolls back. deploy.sh provisioned $REQ_DIR owned by the
+# service user (mode 0775) so this write needs no privilege.
+mkdir -p "$REQ_DIR" 2>/dev/null || die "cannot create request dir: $REQ_DIR
+  This should have been provisioned by scripts/deploy.sh (install -d ... $REQ_DIR).
+  Re-run a full deploy from your workstation, or create+chown it as root."
 
-log "done — supermux redeployed from this clone at ${GIT_SHA:0:12} and is active."
-log "this tmux session survived the restart (KillMode=process + persistent TMUX_TMPDIR)."
+# Clear the previous run's status/log so we don't read a stale result while
+# waiting (best-effort; the runner truncates+recreates them at start anyway).
+: > "$REQ_DIR/status" 2>/dev/null || true
+: > "$REQ_DIR/log" 2>/dev/null || true
+
+NONCE="$(date +%s%N)"
+log "writing deploy request -> $REQ_DIR/request (triggers root runner via supermux-deploy.path)"
+printf 'binary=%s\nsha=%s\nnonce=%s\n' "$ROOT/$BIN_REL" "$GIT_SHA" "$NONCE" \
+  > "$REQ_DIR/request.tmp" \
+  && mv "$REQ_DIR/request.tmp" "$REQ_DIR/request" \
+  || die "failed to write deploy request into $REQ_DIR (not writable?)"
+
+# ── 4. wait for + STREAM the runner's progress, then read the final result ────
+# The runner truncates $REQ_DIR/log at start and writes a final machine-readable
+# `DEPLOY_RESULT=ok|failed` line (plus a one-word $REQ_DIR/status file). We tail
+# the log so the user watches backup/install/restart/rollback live, and poll for
+# the terminal line. NOTE: supermux restarts mid-run; this script + the tmux
+# session survive (KillMode=process + persistent TMUX_TMPDIR), and the log file
+# lives in the persistent data dir, so the final result is still readable after.
+LOG="$REQ_DIR/log"
+STATUS="$REQ_DIR/status"
+DEADLINE=$(( $(date +%s) + 180 ))
+
+log "waiting for the root runner (streaming $LOG; up to 180s) …"
+
+# Wait for the runner to (re)create the log after it starts.
+while [ ! -s "$LOG" ]; do
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    die "timed out waiting for the deploy runner to start (no $LOG after 180s).
+  Is supermux-deploy.path enabled on this host? Check:
+    journalctl -u supermux-deploy -n 50 --no-pager
+    systemctl status supermux-deploy.path --no-pager"
+  fi
+  sleep 1
+done
+
+# Stream the log live in the background; stop it once we have a verdict.
+tail -n +1 -f "$LOG" 2>/dev/null &
+TAIL_PID=$!
+cleanup_tail() { kill "$TAIL_PID" 2>/dev/null || true; wait "$TAIL_PID" 2>/dev/null || true; }
+trap cleanup_tail EXIT
+
+RESULT=""
+while [ -z "$RESULT" ]; do
+  # Prefer the explicit final line in the log; fall back to the status file.
+  if grep -q '^DEPLOY_RESULT=' "$LOG" 2>/dev/null; then
+    RESULT="$(grep '^DEPLOY_RESULT=' "$LOG" 2>/dev/null | tail -1 | cut -d= -f2)"
+  elif [ -s "$STATUS" ]; then
+    RESULT="$(tr -d '[:space:]' < "$STATUS" 2>/dev/null)"
+  fi
+  [ -n "$RESULT" ] && break
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then break; fi
+  sleep 1
+done
+
+cleanup_tail
+trap - EXIT
+
+case "$RESULT" in
+  ok)
+    log "✓ supermux redeployed from this clone at ${GIT_SHA:0:12} and is active + healthy."
+    log "  this tmux session survived the restart (KillMode=process + persistent TMUX_TMPDIR)."
+    exit 0
+    ;;
+  failed)
+    log "✗ deploy FAILED — the runner rolled back to the previous binary (prod not bricked)."
+    log "  inspect: journalctl -u supermux-deploy -n 50 --no-pager   (full log: $LOG)"
+    exit 1
+    ;;
+  *)
+    die "no result from the runner after 180s (last seen log: $LOG).
+  Inspect: journalctl -u supermux-deploy -n 50 --no-pager
+           systemctl status supermux-deploy.service --no-pager"
+    ;;
+esac
