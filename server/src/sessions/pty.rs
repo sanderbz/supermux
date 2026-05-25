@@ -40,7 +40,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::{broadcast, Notify, OnceCell};
 
 use super::status::Status;
-use super::tmux::Tmux;
+use super::tmux::{Tmux, TmuxTarget};
 
 /// Replay buffer hard cap. Bounded ring buffer per session: the reader evicts
 /// from the front to stay under this size, so steady-state memory is capped at
@@ -69,13 +69,27 @@ const PTY_RESUME_EDGE: Duration = Duration::from_millis(1500);
 
 type Replay = RwLock<VecDeque<Bytes>>;
 
-/// One session's live stream: FIFO reader + broadcast fan-out + replay buffer.
+/// One pane's live stream: FIFO reader + broadcast fan-out + replay buffer.
+///
+/// **Stream KEY vs tmux TARGET (Agent Teams §3.5).** `name` is the pane-unique
+/// STREAM KEY: a bare session name for a supermux session, or a pane-unique id
+/// (`%id` / `{lead}/{member}`) for an agent-team teammate pane. It keys the
+/// registry, the FIFO/log filenames, and the heartbeat map. `target` is what tmux
+/// actually addresses — `supermux-<name>` for a session, `%id` for a pane — so a
+/// teammate stream can share the lead's window yet keep its OWN FIFO/log/registry
+/// entry instead of clobbering the lead's.
 pub struct PtyStream {
-    /// Bare session name (NOT `supermux-` prefixed).
+    /// Pane-unique STREAM KEY (NOT necessarily `supermux-` prefixed): a bare
+    /// session name OR a teammate pane id / `{lead}/{member}`.
     pub name: String,
-    /// `/tmp/supermux-pty-<name>.fifo` — the pane→reader FIFO.
+    /// What tmux addresses for this stream (`Session(name)` or `Pane(%id)`). The
+    /// reader rebuilds its [`Tmux`] from this, so a pane stream pipes/captures the
+    /// teammate pane, not `supermux-<name>`.
+    pub target: TmuxTarget,
+    /// FIFO path — pane-unique (derived from `name`) so a teammate never shares
+    /// the lead's FIFO.
     pub fifo: PathBuf,
-    /// `<data_dir>/logs/<name>.log` — durable on-disk capture (tee target).
+    /// Durable on-disk capture (tee target) — pane-unique (derived from `name`).
     pub log: PathBuf,
     /// Bounded replay snapshot (≤`REPLAY_CAP`), pushed by the reader, read on subscribe.
     pub replay: Arc<Replay>,
@@ -101,14 +115,32 @@ pub struct PtyStream {
 }
 
 impl PtyStream {
-    /// Construct an un-started stream (no FIFO/pipe-pane yet — that's
-    /// `ensure_started`). `broadcast_capacity` comes from `config.ws`.
+    /// Construct an un-started SESSION stream (no FIFO/pipe-pane yet — that's
+    /// `ensure_started`). The tmux target defaults to `Session(name)` so existing
+    /// callers keep streaming `supermux-<name>` unchanged. `broadcast_capacity`
+    /// comes from `config.ws`.
     pub fn new(name: String, fifo: PathBuf, log: PathBuf, broadcast_capacity: usize) -> Self {
+        let target = TmuxTarget::Session(name.clone());
+        Self::new_with_target(name, target, fifo, log, broadcast_capacity)
+    }
+
+    /// Construct an un-started stream against an explicit tmux `target` (Agent
+    /// Teams §3.5). For a teammate pane pass `TmuxTarget::Pane("%id")` with a
+    /// pane-unique `name` (the stream key + FIFO/log basename) so the teammate
+    /// stream never clobbers the lead's.
+    pub fn new_with_target(
+        name: String,
+        target: TmuxTarget,
+        fifo: PathBuf,
+        log: PathBuf,
+        broadcast_capacity: usize,
+    ) -> Self {
         // Drop the initial receiver so `receiver_count()` reflects ONLY live WS
         // subscribers (used for the per-session cap check).
         let (tx, _rx) = broadcast::channel(broadcast_capacity.max(1));
         Self {
             name,
+            target,
             fifo,
             log,
             replay: Arc::new(RwLock::new(VecDeque::new())),
@@ -116,6 +148,16 @@ impl PtyStream {
             alive: Arc::new(AtomicBool::new(true)),
             shutdown: Arc::new(Notify::new()),
             started: OnceCell::new(),
+        }
+    }
+
+    /// Build a [`Tmux`] handle for this stream's target (session or pane). The
+    /// reader/seed paths use this instead of `Tmux::new(name)` so a pane stream
+    /// pipes the teammate pane (`%id`), not `supermux-<name>`.
+    fn tmux(&self) -> Tmux<'_> {
+        match &self.target {
+            TmuxTarget::Session(n) => Tmux::new(n),
+            TmuxTarget::Pane(id) => Tmux::for_pane(&self.name, id.clone()),
         }
     }
 
@@ -207,28 +249,33 @@ impl PtyStream {
     /// resumed output), not just the Claude-hook path.
     pub async fn ensure_started(
         &self,
-        tmux: &Tmux<'_>,
         pool: &SqlitePool,
         pty_heartbeat: Arc<DashMap<String, Instant>>,
         detector_wake: Arc<Notify>,
     ) -> Result<()> {
         self.started
-            .get_or_try_init(|| self.spawn_reader(tmux, pool, pty_heartbeat, detector_wake))
+            .get_or_try_init(|| self.spawn_reader(pool, pty_heartbeat, detector_wake))
             .await
             .map(|_| ())
     }
 
-    /// The one-time setup: requires a live session, makes the FIFO, attaches the
-    /// `tee` pipe, opens the non-blocking read fd + keep-alive write fd, and
-    /// launches the reader task.
+    /// The one-time setup: requires a live pane/session, makes the FIFO, attaches
+    /// the `tee` pipe, opens the non-blocking read fd + keep-alive write fd, and
+    /// launches the reader task. The tmux handle is derived from THIS stream's
+    /// target (session OR teammate pane), so a pane stream pipes the `%id` pane —
+    /// never `supermux-<name>` (Agent Teams §3.5).
     async fn spawn_reader(
         &self,
-        tmux: &Tmux<'_>,
         pool: &SqlitePool,
         pty_heartbeat: Arc<DashMap<String, Instant>>,
         detector_wake: Arc<Notify>,
     ) -> Result<()> {
-        if !tmux.exists().await.unwrap_or(false) {
+        let tmux = self.tmux();
+        // Liveness: a SESSION uses `has-session`; a teammate PANE must check pane
+        // membership (a pane `has-session -t %id` is meaningless). The pane case is
+        // pre-validated by the WS handler before it ever calls here, so a present
+        // pipe-pane is the real gate — but guard the session path exactly as before.
+        if !tmux.is_pane() && !tmux.exists().await.unwrap_or(false) {
             bail!("session '{}' is not running", self.name);
         }
 
@@ -307,6 +354,7 @@ impl PtyStream {
         }
 
         let name = self.name.clone();
+        let target = self.target.clone();
         let replay = self.replay.clone();
         let broadcast = self.broadcast.clone();
         let alive = self.alive.clone();
@@ -318,6 +366,7 @@ impl PtyStream {
             let reason = reader_loop(
                 async_fd,
                 &name,
+                &target,
                 &replay,
                 &broadcast,
                 &pty_heartbeat,
@@ -341,7 +390,13 @@ impl PtyStream {
             // up and has its own `starting`→`active` status writes. A racing
             // `stopped` from this exiting reader could clobber `start`'s `active`
             // and leave the freshly-restarted session falsely showing `stopped`.
-            if matches!(reason, ExitReason::StreamDead) {
+            //
+            // A teammate PANE stream (Agent Teams §3.5) is an EPHEMERAL virtual
+            // stream, NOT a `sessions` DB row — its `name` is a pane-unique key
+            // (`%id` / `{lead}/{member}`), so we never write a session status for
+            // it (there is no row; a write would be a silent no-op at best). Only
+            // the SESSION path touches `set_last_status`.
+            if matches!(reason, ExitReason::StreamDead) && !target.is_pane() {
                 if let Err(e) =
                     crate::db::sessions::set_last_status(&pool, &name, Status::Stopped.as_str()).await
                 {
@@ -363,13 +418,20 @@ impl PtyStream {
 async fn reader_loop(
     async_fd: AsyncFd<std::fs::File>,
     name: &str,
+    target: &TmuxTarget,
     replay: &Replay,
     broadcast: &broadcast::Sender<Bytes>,
     pty_heartbeat: &DashMap<String, Instant>,
     detector_wake: &Notify,
     shutdown: &Notify,
 ) -> ExitReason {
-    let tmux = Tmux::new(name);
+    // Rebuild the right tmux handle from the stream's TARGET — a teammate pane
+    // stream must poll PANE liveness (`%id` membership), not `has-session`
+    // (Agent Teams §3.5). `liveness_ok` below abstracts the session/pane split.
+    let tmux = match target {
+        TmuxTarget::Session(n) => Tmux::new(n),
+        TmuxTarget::Pane(id) => Tmux::for_pane(name, id.clone()),
+    };
     let mut buf = [0u8; READ_CHUNK];
 
     // The keep-alive write fd suppresses EOF, so tmux death never surfaces as an
@@ -400,8 +462,8 @@ async fn reader_loop(
                 match guard.try_io(|inner| inner.get_ref().read(&mut buf)) {
                     Ok(Ok(0)) => {
                         // True EOF (rare given the keep-alive writer). Confirm the
-                        // session is gone before tearing down.
-                        if !tmux.exists().await.unwrap_or(false) {
+                        // session/pane is gone before tearing down.
+                        if !tmux.target_alive().await {
                             return ExitReason::StreamDead;
                         }
                         guard.clear_ready();
@@ -441,8 +503,8 @@ async fn reader_loop(
                 }
             }
             _ = liveness.tick() => {
-                if !tmux.exists().await.unwrap_or(false) {
-                    tracing::warn!(session = %name, "tmux session gone, stream-dead");
+                if !tmux.target_alive().await {
+                    tracing::warn!(session = %name, "tmux target gone, stream-dead");
                     return ExitReason::StreamDead;
                 }
             }

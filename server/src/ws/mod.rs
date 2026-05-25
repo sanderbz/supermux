@@ -20,7 +20,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use axum::extract::ws::{close_code, CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap};
 use axum::response::Response;
 use axum::routing::get;
@@ -29,6 +29,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use crate::sessions::teams;
 use crate::sessions::tmux::Tmux;
 use crate::state::AppState;
 
@@ -48,9 +49,20 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 const CLOSE_NOT_RUNNING: u16 = 4404;
 
 /// The WS sub-router. Merged at the top level of `http::router` (no bearer layer).
+///
+/// `/ws/sessions/{name}` is the read/write SESSION terminal (unchanged). The
+/// Agent-Teams routes add READ-ONLY teammate PANE streaming (AT-E §3.5): a
+/// teammate is a tmux split-window pane, not a `sessions` row, so it gets an
+/// ephemeral virtual stream and (for this slice) no client→pane input.
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/ws/sessions/{name}", get(handle_ws))
+        // Resolve `%id` from `~/.claude/teams/{team}/config.json` members[] and
+        // validate it against the lead's window before streaming (AT-E). The
+        // frontend opens this; an optional `?pane_id=%id` query lets a caller that
+        // already has the id (e.g. from the team SSE model) skip config parsing —
+        // validation still runs either way.
+        .route("/ws/teams/{team}/{member}", get(handle_team_ws))
         .with_state(state)
 }
 
@@ -65,6 +77,159 @@ async fn handle_ws(
 ) -> Response {
     let origin_ok = origin_allowed(&state, &headers);
     ws.on_upgrade(move |socket| handle_socket(socket, name, state, origin_ok))
+}
+
+/// Optional query for the teammate-pane WS: `?pane_id=%17`. When present (and
+/// non-empty) the handler skips reading `tmuxPaneId` out of `config.json` and uses
+/// this id — but STILL validates it against the lead's window (the lead name comes
+/// from config either way). Lets AT-F2 pass an id it already has from the team SSE.
+#[derive(Debug, serde::Deserialize, Default)]
+struct PaneQuery {
+    #[serde(default)]
+    pane_id: Option<String>,
+}
+
+/// Upgrade handler for a teammate PANE stream (Agent Teams §3.5, AT-E). Resolves
+/// `(team, member)` → a live `%id` (re-read from config + validated against the
+/// lead's window) and opens a READ-ONLY live terminal of that pane. Read-only is
+/// acceptable for this slice; write/steer can come later.
+async fn handle_team_ws(
+    ws: WebSocketUpgrade,
+    Path((team, member)): Path<(String, String)>,
+    Query(q): Query<PaneQuery>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let origin_ok = origin_allowed(&state, &headers);
+    ws.on_upgrade(move |socket| {
+        handle_team_socket(socket, team, member, q.pane_id, state, origin_ok)
+    })
+}
+
+/// Read-only teammate-pane socket task. Mirrors [`handle_socket`]'s handshake
+/// (origin → first-frame auth → liveness → subscribe → replay → fan-out/ping) but
+/// (1) resolves+validates the pane id instead of taking a session name, and
+/// (2) DROPS all client input (no `input_drain_loop`) — a teammate stream is
+/// view-only for this slice. Inbound frames only refresh the liveness timer.
+async fn handle_team_socket(
+    mut socket: WebSocket,
+    team: String,
+    member: String,
+    pane_override: Option<String>,
+    state: AppState,
+    origin_ok: bool,
+) {
+    if !origin_ok {
+        close(&mut socket, close_code::POLICY, "origin not allowed").await;
+        return;
+    }
+
+    // 1. First-frame auth — identical contract to the session terminal.
+    let authed = match tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await {
+        Ok(Some(Ok(Message::Text(t)))) => verify_auth_frame(&state, t.as_str()),
+        _ => false,
+    };
+    if !authed {
+        close(&mut socket, close_code::POLICY, "auth required").await;
+        return;
+    }
+    if socket
+        .send(Message::Text(Utf8Bytes::from_static(r#"{"type":"auth_ok"}"#)))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    // 2. Resolve + VALIDATE the pane (re-read config fresh; refuse a stale id).
+    //    A resolution failure (no team / no pane / stale id) is the teammate
+    //    analogue of "session not running" → terminal 4404 so the client stops
+    //    hammering rather than backing off forever.
+    let resolved = match teams::resolve_member_pane(&team, &member, pane_override.as_deref()).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(team = %team, member = %member, error = %e, "ws team: pane unresolved");
+            close(&mut socket, CLOSE_NOT_RUNNING, "teammate pane not available").await;
+            return;
+        }
+    };
+    let stream_key = resolved.stream_key(&member);
+
+    // 3. Ensure the per-pane reader is running + enforce the subscriber cap. The
+    //    stream is keyed by `{lead}/{member}` with its own FIFO/log, so it never
+    //    clobbers the lead's session stream.
+    let stream = match state.pty_for_pane(&stream_key, &resolved.pane_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(team = %team, member = %member, error = %e, "team pty stream unavailable");
+            close(&mut socket, close_code::ERROR, "stream unavailable").await;
+            return;
+        }
+    };
+    if stream.subscriber_count() >= state.config.ws.subscribers_per_session {
+        close(&mut socket, close_code::AGAIN, "subscriber limit").await;
+        return;
+    }
+
+    // 4. Replay snapshot, then the replay-done boundary (same client contract).
+    let (replay, mut rx) = stream.subscribe();
+    for chunk in replay {
+        if socket.send(Message::Binary(chunk)).await.is_err() {
+            return;
+        }
+    }
+    if socket
+        .send(Message::Text(Utf8Bytes::from_static(
+            r#"{"type":"replay_done"}"#,
+        )))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    // 5. Read-only fan-out + ping loop. No input task: inbound frames are
+    //    ignored except to refresh the liveness timer (and Close ends the loop).
+    let mut last_inbound = Instant::now();
+    let mut ping = tokio::time::interval(PING_EVERY);
+    ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    ping.tick().await;
+
+    loop {
+        tokio::select! {
+            inbound = socket.recv() => {
+                match inbound {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    // Any other inbound frame (incl. a stray Input) just refreshes
+                    // the liveness timer — read-only means we never apply it.
+                    Some(Ok(_)) => { last_inbound = Instant::now(); }
+                }
+            }
+            outbound = rx.recv() => {
+                match outbound {
+                    Ok(chunk) => {
+                        if socket.send(Message::Binary(chunk)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        close(&mut socket, close_code::AGAIN, "too slow").await;
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = ping.tick() => {
+                if last_inbound.elapsed() > PONG_DEADLINE {
+                    close(&mut socket, close_code::AWAY, "ping timeout").await;
+                    break;
+                }
+                if socket.send(Message::Ping(Bytes::new())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, origin_ok: bool) {

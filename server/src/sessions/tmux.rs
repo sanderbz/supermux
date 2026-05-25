@@ -38,21 +38,81 @@ fn tmux_bin() -> Result<&'static Path> {
         .ok_or_else(|| anyhow!("tmux not found on PATH (install tmux)"))
 }
 
-/// A handle to one session's tmux conventions. Cheap to construct (borrows the
-/// bare session name; the `supermux-` prefix is applied internally).
+/// What a [`Tmux`] handle addresses (Agent Teams, AT-E §3.5). A supermux session
+/// is one tmux SESSION (`supermux-<name>`); a Claude agent-team **teammate** is a
+/// split-window PANE inside the lead's window, addressed by its tmux pane id
+/// (`%id`). Generalizing the target lets `capture_pane*` / `pipe_pane_to_fifo` /
+/// `send_*` / list-panes / resize all operate on EITHER without touching the
+/// session happy-path: a `Session` target still emits `-t supermux-<name>`
+/// byte-for-byte, a `Pane` target emits `-t %id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TmuxTarget {
+    /// A supermux session, addressed as `supermux-<name>`. Holds the BARE name.
+    Session(String),
+    /// A specific tmux pane, addressed by its raw pane id (e.g. `%17`). Used for
+    /// agent-team teammate panes (split-windows inside the lead's window).
+    Pane(String),
+}
+
+impl TmuxTarget {
+    /// The `-t` argument tmux receives: `supermux-<name>` for a session, the raw
+    /// `%id` for a pane. This is the ONE place the `supermux-` prefix is applied,
+    /// so session-targeting stays identical to the pre-AT-E behaviour.
+    pub fn arg(&self) -> String {
+        match self {
+            TmuxTarget::Session(name) => format!("supermux-{name}"),
+            TmuxTarget::Pane(id) => id.clone(),
+        }
+    }
+
+    /// True for a teammate pane target — callers use this to pick pane-scoped
+    /// behaviour (e.g. `resize-pane` vs `resize-window`).
+    pub fn is_pane(&self) -> bool {
+        matches!(self, TmuxTarget::Pane(_))
+    }
+}
+
+/// A handle to one tmux [`TmuxTarget`] (a session OR a pane). Cheap to construct.
+///
+/// Backwards-compatible: [`Tmux::new`] still takes a bare session name and the
+/// `supermux-` prefix is applied internally exactly as before. [`Tmux::for_pane`]
+/// builds a pane-targeted handle for agent-team teammate streaming.
 pub struct Tmux<'a> {
+    /// Bare session name for a `Session` handle; the pane id for a `Pane` handle.
+    /// Retained for log lines / paste-buffer naming.
     name: &'a str,
+    target: TmuxTarget,
 }
 
 impl<'a> Tmux<'a> {
-    /// Wrap the bare session `name` (NOT the `supermux-` prefixed form).
+    /// Wrap the bare session `name` (NOT the `supermux-` prefixed form). The
+    /// resulting handle targets `supermux-<name>`.
     pub fn new(name: &'a str) -> Self {
-        Self { name }
+        Self {
+            name,
+            target: TmuxTarget::Session(name.to_string()),
+        }
     }
 
-    /// The tmux session/target name: `supermux-<name>`.
+    /// Wrap a tmux pane id (`%id`) — a teammate split-window inside a lead's
+    /// window (Agent Teams). All commands target `-t %id`. `name` is used only for
+    /// diagnostics / buffer naming; pass the pane id (or a `{lead}/{member}` key).
+    pub fn for_pane(name: &'a str, pane_id: impl Into<String>) -> Self {
+        Self {
+            name,
+            target: TmuxTarget::Pane(pane_id.into()),
+        }
+    }
+
+    /// The tmux `-t` argument for this handle: `supermux-<name>` for a session,
+    /// the raw `%id` for a pane.
     pub fn target(&self) -> String {
-        format!("supermux-{}", self.name)
+        self.target.arg()
+    }
+
+    /// True when this handle targets a teammate pane (`%id`) rather than a session.
+    pub fn is_pane(&self) -> bool {
+        self.target.is_pane()
     }
 
     // ── command helpers ──────────────────────────────────────────────────────
@@ -202,6 +262,34 @@ impl<'a> Tmux<'a> {
         Ok(ok)
     }
 
+    /// Is the addressed PANE still alive (Agent Teams §3.5)? `list-panes -t %id`
+    /// succeeds (exit 0, ≥1 line) only while the pane exists; once the teammate
+    /// pane is killed tmux exits non-zero. This is the pane analogue of
+    /// [`exists`](Self::exists) (which is `has-session`, meaningless for a `%id`),
+    /// so the pty reader's liveness poll tears a teammate stream down the instant
+    /// its pane is gone — never streaming a stale/reused id. Best-effort: any tmux
+    /// fault reads as "gone" (false) so the stream errs toward teardown.
+    pub async fn pane_alive(&self) -> bool {
+        match self
+            .run(&["list-panes", "-t", &self.target(), "-F", "#{pane_id}"])
+            .await
+        {
+            Ok(out) => out.lines().any(|l| !l.trim().is_empty()),
+            Err(_) => false,
+        }
+    }
+
+    /// Unified liveness for either target kind: a SESSION uses `has-session`, a
+    /// teammate PANE uses [`pane_alive`](Self::pane_alive). The pty reader polls
+    /// this so a pane stream and a session stream share one teardown rule.
+    pub async fn target_alive(&self) -> bool {
+        if self.is_pane() {
+            self.pane_alive().await
+        } else {
+            self.exists().await.unwrap_or(false)
+        }
+    }
+
     /// True when the pane's program has exited but the session is held open by
     /// `remain-on-exit` (`#{pane_dead}` == 1).
     pub async fn pane_dead(&self) -> Result<bool> {
@@ -325,10 +413,34 @@ impl<'a> Tmux<'a> {
     }
 
     /// `tmux resize-window -x <cols> -y <rows>`. Bounds enforced by callers.
+    /// Window-scoped — the supermux-session happy path. For a teammate PANE use
+    /// [`resize_pane`](Self::resize_pane) instead (Agent Teams §3.5).
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let (c, r) = (cols.to_string(), rows.to_string());
         self.run(&[
             "resize-window",
+            "-t",
+            &self.target(),
+            "-x",
+            &c,
+            "-y",
+            &r,
+        ])
+        .await
+        .map(|_| ())
+    }
+
+    /// `tmux resize-pane -t <target> -x <cols> -y <rows>` — resize a SINGLE pane
+    /// (Agent Teams §3.5), distinct from [`resize`](Self::resize)'s
+    /// whole-window `resize-window`. Provided for completeness; teammate streaming
+    /// is read-only by default precisely because tmux splits SHARE the window's
+    /// geometry — resizing one teammate reflows its siblings — so callers should
+    /// prefer streaming at tmux's given size and reserve this for explicit
+    /// resize intent. `cols`/`rows` bounds enforced by callers.
+    pub async fn resize_pane(&self, cols: u16, rows: u16) -> Result<()> {
+        let (c, r) = (cols.to_string(), rows.to_string());
+        self.run(&[
+            "resize-pane",
             "-t",
             &self.target(),
             "-x",
@@ -374,5 +486,68 @@ impl<'a> Tmux<'a> {
             .run(&["list-panes", "-t", &self.target(), "-F", "#{pane_pid}"])
             .await?;
         Ok(out.lines().next().and_then(|l| l.trim().parse::<u32>().ok()))
+    }
+
+    /// Every pane id (`%id`) live in this SESSION's window (Agent Teams §3.2).
+    /// Uses `list-panes -a`-free, session-scoped form (`-t supermux-<name>`) so a
+    /// lead's teammate split-windows are all enumerated. Used to VALIDATE that a
+    /// teammate `%id` from `config.json` still exists before streaming it — tmux
+    /// pane ids are a reused server-global counter, so a stale `%id` could resolve
+    /// to an unrelated pane. Call on a `Session` handle for the lead.
+    pub async fn list_pane_ids(&self) -> Result<Vec<String>> {
+        let out = self
+            .run(&["list-panes", "-t", &self.target(), "-F", "#{pane_id}"])
+            .await?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+}
+
+/// Does pane `pane_id` (`%id`) currently exist in the lead session's window
+/// (Agent Teams §3.2)? Free function (takes the LEAD's bare session name + the
+/// candidate pane id) because the validation crosses targets: we list the LEAD
+/// session's panes and check membership. Returns `Ok(false)` when the session is
+/// gone or the id is absent — NEVER errors on "not found", only on a tmux fault.
+pub async fn pane_in_session(lead_session: &str, pane_id: &str) -> Result<bool> {
+    let lead = Tmux::new(lead_session);
+    if !lead.exists().await.unwrap_or(false) {
+        return Ok(false);
+    }
+    Ok(lead.list_pane_ids().await?.iter().any(|p| p == pane_id))
+}
+
+#[cfg(test)]
+mod target_tests {
+    //! Target-string formatting (Agent Teams §3.5). Pins that a `Session` target
+    //! keeps emitting `-t supermux-<name>` byte-for-byte (NO regression) while a
+    //! `Pane` target emits the raw `%id`, so threading the target through every
+    //! tmux verb can't silently change the session happy-path argument.
+
+    use super::*;
+
+    #[test]
+    fn session_target_keeps_the_supermux_prefix() {
+        // The pre-AT-E behaviour, unchanged: a bare name → `supermux-<name>`.
+        assert_eq!(TmuxTarget::Session("myproj".into()).arg(), "supermux-myproj");
+        assert_eq!(Tmux::new("myproj").target(), "supermux-myproj");
+    }
+
+    #[test]
+    fn pane_target_is_the_raw_pane_id() {
+        // A teammate pane is addressed by its raw `%id` with NO prefix.
+        assert_eq!(TmuxTarget::Pane("%17".into()).arg(), "%17");
+        assert_eq!(Tmux::for_pane("teamA/worker-1", "%17").target(), "%17");
+    }
+
+    #[test]
+    fn is_pane_distinguishes_the_two() {
+        assert!(!Tmux::new("s").is_pane());
+        assert!(Tmux::for_pane("s", "%3").is_pane());
+        assert!(!TmuxTarget::Session("s".into()).is_pane());
+        assert!(TmuxTarget::Pane("%3".into()).is_pane());
     }
 }
