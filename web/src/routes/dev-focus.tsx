@@ -10,7 +10,7 @@
 // server); against a running supermux-server with a session named in the route it
 // streams live, and the keyboard-capture echo can be filmed.
 //
-// Usage: /dev/focus/gel-astro
+// Usage: /dev/focus/web-app
 
 import { useParams } from 'react-router-dom'
 
