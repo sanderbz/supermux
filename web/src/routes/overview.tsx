@@ -589,6 +589,24 @@ export function Overview() {
           </span>
         </Button>
 
+        {/* Mobile new-session trigger — replaces the old floating FAB. Sits in
+            the toolbar immediately right of Archived and borrows the icon-button
+            geometry of the mobile density toggle / sort trigger (size-9 +
+            rounded-lg + bg-muted) so the cluster reads as one button group.
+            Desktop keeps its dedicated "New session" button below, so this is
+            `sm:hidden`. Same `openSheet` handler the FAB used. */}
+        <motion.button
+          type="button"
+          onClick={openSheet}
+          aria-label="New session"
+          title="New session"
+          whileTap={reduce ? undefined : { scale: 0.9 }}
+          transition={springs.snappy}
+          className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground sm:hidden"
+        >
+          <Plus className="size-4" />
+        </motion.button>
+
         <Button onClick={openSheet} className="hidden sm:inline-flex">
           <Plus />
           New session
@@ -812,25 +830,6 @@ export function Overview() {
           </div>
         )}
       </div>
-
-      {/* ── FAB (mobile only — desktop has the header button) ─────────────── */}
-      <AnimatePresence>
-        {!sheetOpen && (
-          <motion.button
-            type="button"
-            onClick={openSheet}
-            aria-label="New session"
-            initial={reduce ? false : { scale: 0, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={reduce ? undefined : { scale: 0, opacity: 0 }}
-            whileTap={reduce ? undefined : { scale: 0.92 }}
-            transition={springs.cardExpand}
-            className="fixed bottom-[calc(env(safe-area-inset-bottom)+5rem)] right-4 z-40 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg sm:hidden"
-          >
-            <Plus className="size-6" />
-          </motion.button>
-        )}
-      </AnimatePresence>
 
       <NewSessionSheet
         open={sheetOpen}
