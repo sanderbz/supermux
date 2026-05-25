@@ -200,6 +200,26 @@
   padding-right: env(safe-area-inset-right);
 }
 
+/* ── Top route-header inset (ios-pwa) — drift-proof convention ────────────────
+   Under black-translucent + viewport-fit=cover, every TOP-LEVEL route header
+   must reserve the status-bar / Dynamic Island region ADDITIVELY: the inset has
+   to GROW the header box, never eat into a fixed height. Tailwind is border-box,
+   so `h-14 pt-safe` lets env(safe-area-inset-top) (~47–59px) shrink the 56px
+   content box and squish the title under the notch. The fix is `min-h-*` (a
+   floor) + `pt-safe` (additive) — the focus header proved this with `min-h-11`.
+
+   `safe-header` packages that contract in one class so a new route can't forget
+   it (and can't accidentally double-inset): min-height 3.5rem (56px) keeps the
+   ≥44pt hit-target floor, padding-top adds the device inset on top. Desktop
+   env()=0 so it renders as a plain 56px bar; pair with `sm:pt-0` only if the
+   route also resets other mobile-only padding. Apply to the route's glass
+   header bar; body-padding routes (overview/board) fold the same inset into
+   their top padding via calc(env(safe-area-inset-top)+…) instead. */
+@utility safe-header {
+  min-height: 3.5rem; /* 56px — matches the legacy h-14 bar; ≥44pt floor */
+  padding-top: env(safe-area-inset-top);
+}
+
 /* ── Terminal touch-scroll (Fix 2 — scroll vs Vaul drag-to-close) ───────────
    xterm renders its scrollback into `.xterm-viewport`. Inside the Vaul focus
    sheet, Vaul injects `touch-action: none` on its whole subtree, which kills
@@ -244,8 +264,17 @@
     border-color: var(--color-border);
   }
 
+  /* iOS PWA full-screen fill (ios-pwa). Under the black-translucent status bar
+     (index.html) + viewport-fit=cover, `height: 100%` resolves SHORT of the
+     physical screen on iOS standalone — leaving a black band BELOW the bottom
+     nav (the home-indicator region the app should paint through). The dynamic
+     viewport unit `100dvh` is the full screen incl. safe areas in standalone,
+     so the flex shell reaches the physical bottom and BottomNav's `pb-safe`
+     covers the home indicator. `100%` is declared FIRST as the graceful
+     fallback for engines without dvh; supporting engines take the dvh line. */
   html {
     height: 100%;
+    height: 100dvh;
     color-scheme: dark;
     background: var(--color-background);
   }
@@ -253,6 +282,7 @@
   body,
   #root {
     height: 100%;
+    height: 100dvh;
   }
 
   body {

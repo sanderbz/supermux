@@ -70,10 +70,12 @@ function SchedulerInner() {
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col">
       {/* R5: the shared mobile top bar was removed, so this glass header owns
-          the safe-area top inset on mobile (≤md) via `pt-safe`, restored to
-          normal at `sm` once the desktop SideNav owns the chrome. Otherwise the
-          header would tuck under the notch / Dynamic Island. */}
-      <header className="glass flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4 pt-safe sm:px-6 sm:pt-0">
+          the safe-area top inset on mobile (≤md). ios-pwa: use the shared
+          `safe-header` utility (min-h 56px + additive padding-top:env(top)) so
+          the inset GROWS the box instead of eating into a fixed h-14 and tucking
+          the title under the notch / Dynamic Island; `sm:pt-0` resets the inset
+          once the desktop SideNav owns the chrome (env()=0 there anyway). */}
+      <header className="glass safe-header flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 sm:px-6 sm:pt-0">
         <h1 className="text-xl font-semibold tracking-tight">Scheduler</h1>
         <Button
           size="sm"

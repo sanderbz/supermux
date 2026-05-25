@@ -135,12 +135,15 @@ export function Files() {
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Toolbar — breadcrumb + controls. Hidden on mobile while a file is open.
           R5: the shared mobile top bar was removed, so this header owns the
-          safe-area top inset on mobile (≤md) via `pt-safe` (reset at `sm` once
-          the desktop SideNav owns the chrome). When a file is open the header is
+          safe-area top inset on mobile (≤md). ios-pwa: use the shared
+          `safe-header` utility (min-h 56px + additive padding-top:env(top)) so
+          the inset GROWS the box instead of eating into a fixed h-14 and tucking
+          the toolbar under the notch / Dynamic Island; `sm:pt-0` resets it once
+          the desktop SideNav owns the chrome. When a file is open the header is
           hidden on mobile and the viewer below carries the inset instead. */}
       <header
         className={cn(
-          'glass h-14 shrink-0 items-center gap-1 border-b border-border px-2 pt-safe sm:pt-0',
+          'glass safe-header shrink-0 items-center gap-1 border-b border-border px-2 sm:pt-0',
           selected ? 'hidden md:flex' : 'flex',
         )}
       >
