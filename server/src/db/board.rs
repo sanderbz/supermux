@@ -31,6 +31,10 @@ pub struct Issue {
     /// Set by the auto_actions sustained-`waiting` side-effect when the owning
     /// agent is blocked on the user (migration 0011, R1). 0/1.
     pub awaiting_input: i64,
+    /// Soft discard (migration 0013). 1 = archived: the card is hidden from the
+    /// default board list but its row + history are preserved (restorable).
+    /// Distinct from `deleted` (hard delete).
+    pub archived: i64,
 }
 
 /// A row of the `statuses` table (board columns).
@@ -127,27 +131,31 @@ pub async fn reorder_statuses(pool: &SqlitePool, order: &[String]) -> sqlx::Resu
 
 // ── issues ───────────────────────────────────────────────────────────────────
 
-/// List non-deleted issues, with `done`-column items capped at `done_limit`
-/// (feature-extract §2.1; 0 = unlimited). Sort: pinned-desc, then reordered
-/// (`pos != 0`) ascending, then unreordered by `updated`-desc (§2.2).
+/// List non-deleted, non-archived issues, with `done`-column items capped at
+/// `done_limit` (feature-extract §2.1; 0 = unlimited). Sort: pinned-desc, then
+/// reordered (`pos != 0`) ascending, then unreordered by `updated`-desc (§2.2).
+/// Archived (soft-discarded) cards are excluded from the default board (§4).
 pub async fn list_issues(pool: &SqlitePool, done_limit: i64) -> sqlx::Result<Vec<Issue>> {
     // Stable composite sort matching v2's `_load_board`.
     let order = "ORDER BY pinned DESC, (pos = 0) ASC, pos ASC, updated DESC";
     let mut issues = sqlx::query_as::<_, Issue>(&format!(
-        "SELECT * FROM issues WHERE deleted IS NULL AND status != 'done' {order}"
+        "SELECT * FROM issues
+         WHERE deleted IS NULL AND archived = 0 AND status != 'done' {order}"
     ))
     .fetch_all(pool)
     .await?;
 
     let mut done = if done_limit == 0 {
         sqlx::query_as::<_, Issue>(&format!(
-            "SELECT * FROM issues WHERE deleted IS NULL AND status = 'done' {order}"
+            "SELECT * FROM issues
+             WHERE deleted IS NULL AND archived = 0 AND status = 'done' {order}"
         ))
         .fetch_all(pool)
         .await?
     } else {
         sqlx::query_as::<_, Issue>(&format!(
-            "SELECT * FROM issues WHERE deleted IS NULL AND status = 'done' {order} LIMIT ?"
+            "SELECT * FROM issues
+             WHERE deleted IS NULL AND archived = 0 AND status = 'done' {order} LIMIT ?"
         ))
         .bind(done_limit)
         .fetch_all(pool)
@@ -181,13 +189,24 @@ pub async fn doing_issue_for_session(
 ) -> sqlx::Result<Option<Issue>> {
     sqlx::query_as::<_, Issue>(
         "SELECT * FROM issues
-         WHERE session = ? AND status = 'doing' AND deleted IS NULL
+         WHERE session = ? AND status = 'doing' AND deleted IS NULL AND archived = 0
          ORDER BY updated DESC, id ASC
          LIMIT 1",
     )
     .bind(session)
     .fetch_optional(pool)
     .await
+}
+
+/// Fetch one issue by id INCLUDING archived (but not hard-deleted) rows. Used by
+/// the restore path, which must find a discarded card that `get_issue` (which is
+/// list-scoped and would still return archived rows) also returns — kept as a
+/// distinct, explicit name so callers signal intent. Returns None for a
+/// hard-deleted or unknown id.
+pub async fn get_issue_any(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Issue>> {
+    // `get_issue` already returns archived rows (it only filters `deleted`), so
+    // this is an alias for clarity at the call site.
+    get_issue(pool, id).await
 }
 
 /// Every non-deleted issue linked to a session (any status). Used by the
@@ -285,6 +304,8 @@ pub enum IssueField {
     NeedsReview(i64),
     /// "awaiting input" flag (R1 sustained-waiting side-effect). 0/1.
     AwaitingInput(i64),
+    /// Soft discard flag (migration 0013). 1 = archived/hidden, 0 = restored.
+    Archived(i64),
 }
 
 /// Apply a set of field updates to one issue, bumping `updated`. Done in a single
@@ -316,6 +337,7 @@ pub async fn patch_issue(
             IssueField::AwaitingInput(v) => {
                 bind_set_i64(&mut tx, "awaiting_input", *v, id).await?
             }
+            IssueField::Archived(v) => bind_set_i64(&mut tx, "archived", *v, id).await?,
             IssueField::Pos(v) => {
                 sqlx::query("UPDATE issues SET pos = ? WHERE id = ? AND deleted IS NULL")
                     .bind(*v)
@@ -918,6 +940,122 @@ mod tests {
         assert!(comments_for(&pool, "T-1").await.unwrap().is_empty());
         assert!(acceptance_for(&pool, "T-1").await.unwrap().is_empty());
         assert!(links_for(&pool, "T-1").await.unwrap().is_empty());
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn migration_0013_relocations_preserve_every_card() {
+        // BM1 acceptance #2: the 0013 relocation rules leave only todo/doing/done,
+        // relocate backlog/review/discarded per §5, and never lose a card row.
+        //
+        // A fresh test DB has already run 0013, so legacy columns are gone. We
+        // simulate a PRE-0013 seeded DB by inserting raw rows in the legacy
+        // columns (the issues table has no status CHECK), then apply the SAME
+        // relocation statements 0013 runs and assert the outcome — proving the
+        // migration's SQL logic against seeded data.
+        let (pool, dir) = test_pool().await;
+
+        // Seed one card in each legacy + custom column, plus a survivor, via raw
+        // SQL so we can use the removed status ids. Mark a couple of fields we can
+        // assert survived (owner_type=human → agent; review → needs_review=1).
+        let now = chrono::Utc::now().timestamp();
+        for (id, status, owner) in [
+            ("L-backlog", "backlog", "human"),
+            ("L-review", "review", "agent"),
+            ("L-discarded", "discarded", "human"),
+            ("L-custom", "my-custom-col", "agent"),
+            ("L-todo", "todo", "human"),
+            ("L-done", "done", "agent"),
+        ] {
+            sqlx::query(
+                "INSERT INTO issues (id, title, desc, status, creator, created, updated,
+                                     owner_type, pinned, pos, notified, needs_review,
+                                     awaiting_input, archived)
+                 VALUES (?, ?, '', ?, '', ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+            )
+            .bind(id)
+            .bind(format!("issue {id}"))
+            .bind(status)
+            .bind(now)
+            .bind(now)
+            .bind(owner)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM issues")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        // Apply the 0013 relocation statements verbatim.
+        sqlx::query("UPDATE issues SET status = 'todo' WHERE status = 'backlog'")
+            .execute(&pool).await.unwrap();
+        sqlx::query("UPDATE issues SET status = 'doing', needs_review = 1 WHERE status = 'review'")
+            .execute(&pool).await.unwrap();
+        sqlx::query("UPDATE issues SET archived = 1, status = 'todo' WHERE status = 'discarded'")
+            .execute(&pool).await.unwrap();
+        sqlx::query("UPDATE issues SET status = 'todo' WHERE status NOT IN ('todo','doing','done')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("UPDATE issues SET owner_type = 'agent' WHERE owner_type = 'human'")
+            .execute(&pool).await.unwrap();
+
+        // No row lost.
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM issues")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before, after, "no card row deleted by the relocation");
+
+        let by_id = |id: &str| {
+            let pool = pool.clone();
+            let id = id.to_string();
+            async move {
+                sqlx::query_as::<_, Issue>("SELECT * FROM issues WHERE id = ?")
+                    .bind(&id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // backlog → todo.
+        assert_eq!(by_id("L-backlog").await.status, "todo");
+        // review → doing + needs_review = 1.
+        let rev = by_id("L-review").await;
+        assert_eq!(rev.status, "doing");
+        assert_eq!(rev.needs_review, 1);
+        // discarded → archived + parked in todo (row preserved).
+        let disc = by_id("L-discarded").await;
+        assert_eq!(disc.archived, 1, "discarded becomes archived, not deleted");
+        assert_eq!(disc.status, "todo");
+        // custom column → folded into todo.
+        assert_eq!(by_id("L-custom").await.status, "todo");
+        // survivors keep their lane.
+        assert_eq!(by_id("L-todo").await.status, "todo");
+        assert_eq!(by_id("L-done").await.status, "done");
+        // every human row became agent.
+        let humans: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM issues WHERE owner_type = 'human'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(humans, 0, "no human-owned card remains");
+
+        // Only the three lanes have cards now.
+        let lanes: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT status FROM issues ORDER BY status")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for lane in &lanes {
+            assert!(
+                ["todo", "doing", "done"].contains(&lane.as_str()),
+                "unexpected lane after relocation: {lane}"
+            );
+        }
 
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

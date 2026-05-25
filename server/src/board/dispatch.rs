@@ -77,25 +77,35 @@ pub async fn build_payload(
 /// The self-describing "how to report back" footer. Uses the per-session
 /// `$SUPERMUX_HOOK_TOKEN` / `$SUPERMUX_SESSION` / `$SUPERMUX_URL` already in the
 /// pane env (lifecycle.rs), so the curls are copy-pasteable as-is. The endpoints
-/// are the AB1 hook router (`/api/hook/board/*`), which scope every write to the
-/// authenticated session's own issue.
+/// are the agent→board hook router (`/api/hook/board/*`), which scope every write
+/// to the authenticated session's own issue.
+///
+/// It LEADS with the two terminal actions and the explicit decision rule
+/// (board-redesign §3): when you stop you are in exactly one of two situations —
+/// `done` or `needs-input`. There is no `review` column and no arbitrary status.
 fn footer(id: &str) -> String {
     format!(
-        "When you finish, report progress onto this card with:\n\
+        "When you STOP, you are in exactly ONE of two situations — always report it:\n\
          \n\
-         # add a comment\n\
-         curl -fsS -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \\\n\
-         \x20 \"$SUPERMUX_URL/api/hook/board/comment\" \\\n\
-         \x20 -d '{{\"session\":\"'$SUPERMUX_SESSION'\",\"body\":\"<your update>\"}}'\n\
-         \n\
-         # move the card (e.g. review or done) — you have full status authority\n\
+         1) The task is DONE and its acceptance criteria pass → mark it done\n\
+         \x20  (this moves the card to Done):\n\
          curl -fsS -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \\\n\
          \x20 \"$SUPERMUX_URL/api/hook/board/status\" \\\n\
          \x20 -d '{{\"session\":\"'$SUPERMUX_SESSION'\",\"status\":\"done\"}}'\n\
          \n\
-         # tick an acceptance item, or attach a PR/commit link:\n\
-         #   /api/hook/board/check  -d '{{\"session\":..., \"item_id\":N, \"done\":true}}'\n\
-         #   /api/hook/board/link   -d '{{\"session\":..., \"kind\":\"pr\", \"ref\":\"<url>\"}}'\n\
+         2) You are BLOCKED / need a human decision → ask (do NOT guess, do NOT\n\
+         \x20  mark done). The card stays in Doing, shows your question, and the\n\
+         \x20  human is notified:\n\
+         curl -fsS -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \\\n\
+         \x20 \"$SUPERMUX_URL/api/hook/board/needs-input\" \\\n\
+         \x20 -d '{{\"session\":\"'$SUPERMUX_SESSION'\",\"question\":\"<your question>\"}}'\n\
+         \n\
+         Never end your turn silently — always report one of the two above.\n\
+         \n\
+         While working, you may also (optional):\n\
+         #   comment: /api/hook/board/comment -d '{{\"session\":..., \"body\":\"<update>\"}}'\n\
+         #   tick an acceptance item: /api/hook/board/check -d '{{\"session\":..., \"item_id\":N, \"done\":true}}'\n\
+         #   attach a PR/commit: /api/hook/board/link -d '{{\"session\":..., \"kind\":\"pr\", \"ref\":\"<url>\"}}'\n\
          \n\
          Issue: {id}. Work in this session.\n"
     )

@@ -465,17 +465,28 @@ mod tests {
         }
         // The scoped auth header.
         assert!(md.contains("X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN"));
-        // All four AB1 endpoints are documented.
+        // All five agent→board endpoints are documented (incl. needs-input).
         for ep in [
             "/api/hook/board/comment",
             "/api/hook/board/status",
             "/api/hook/board/check",
             "/api/hook/board/link",
+            "/api/hook/board/needs-input",
         ] {
             assert!(md.contains(ep), "template must wrap {ep}");
         }
-        // The agent's full status authority (it may set done) is documented.
+        // The two terminal actions (board-redesign §3) are both shown.
         assert!(md.contains("\"status\":\"done\""), "must show the done curl");
+        assert!(md.contains("\"question\""), "must show the needs-input curl");
+        // The decision rule leads the doc; no review/arbitrary-status guidance.
+        assert!(
+            md.to_lowercase().contains("exactly one"),
+            "must lead with the two-situation decision rule"
+        );
+        assert!(
+            !md.contains("\"status\":\"review\""),
+            "the removed review column must not be taught"
+        );
     }
 
     #[tokio::test]

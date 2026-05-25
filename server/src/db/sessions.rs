@@ -85,6 +85,28 @@ pub async fn list_archived(pool: &SqlitePool) -> sqlx::Result<Vec<Session>> {
     .await
 }
 
+/// Live (non-archived) session name → last_status, for the board's per-card
+/// status dot (board-redesign §4). One query joins `sessions` (the liveness
+/// filter) with `session_runtime` (the status), so the board loader gets every
+/// card's dot in O(1) round-trips instead of one probe per card. Sessions with
+/// no runtime row default to `unknown`.
+pub async fn live_statuses(
+    pool: &SqlitePool,
+) -> sqlx::Result<std::collections::HashMap<String, String>> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT s.name, r.last_status
+           FROM sessions s
+           LEFT JOIN session_runtime r ON r.name = s.name
+          WHERE s.archived = 0",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, status)| (name, status.unwrap_or_else(|| "unknown".to_string())))
+        .collect())
+}
+
 /// Fetch one session by name.
 pub async fn get(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<Session>> {
     sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE name = ?")
