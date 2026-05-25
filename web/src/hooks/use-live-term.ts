@@ -434,7 +434,15 @@ export function useLiveTerm(
     term.scrollToBottom()
     scrolledUpRef.current = false
     setScrolledUp(false)
-    if (!readOnly) {
+    // Re-focus the input so typing resumes — but ONLY on a fine pointer
+    // (desktop). On touch, focusing xterm's hidden textarea pops the on-screen
+    // keyboard, which is jarring when the user merely tapped "jump to bottom" to
+    // follow output (and made the tap feel like it did the wrong thing). A button
+    // should never steal text-input focus on touch.
+    const finePointer =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(pointer: fine)').matches
+    if (!readOnly && finePointer) {
       try {
         term.focus()
       } catch {
