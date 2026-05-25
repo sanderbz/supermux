@@ -212,6 +212,20 @@ export interface ApiSession {
   tokens?: number
   /** Git branch / worktree for the meta row. */
   branch?: string
+  /** Provider launch flags, verbatim (e.g. `--model opus`). The model lives
+   *  here — there is no separate `model` field. Surfaced verbatim in the
+   *  session info panel's Settings section. Sent by `GET /api/sessions`
+   *  (SessionView.flags). */
+  flags?: string
+  /** MCP config the session was launched with (server `SessionView.mcp`). */
+  mcp?: string
+  /** True when the session runs in an isolated git worktree
+   *  (server `SessionView.worktree`). */
+  worktree?: boolean
+  /** RFC3339 creation timestamp (server `SessionView.created_at`). */
+  created_at?: string
+  /** Who created the session (server `SessionView.creator`). */
+  creator?: string
   /** Free-text description (searchable). */
   desc?: string
   /** Tags (searchable). */
@@ -441,6 +455,18 @@ export const sessionsApi = {
     sessReq(`/api/sessions/${encodeURIComponent(name)}/mode`, {
       method: 'POST',
       body: JSON.stringify({ mode }),
+    }),
+
+  /** `POST /api/sessions/{name}/duplicate {new_name}` — clone the session's
+   *  config (dir / desc / provider / flags / tags / branch / worktree / mcp)
+   *  into a NEW row under `new_name`, in the SAME directory. The new row is a
+   *  real, independently-startable session (fresh runtime + hook token); the
+   *  caller boots it with `start`. Resolves to the created row. 409 if
+   *  `new_name` already exists — the caller regenerates the suffix and retries. */
+  duplicate: (name: string, new_name: string): Promise<ApiSession> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ new_name }),
     }),
 
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
