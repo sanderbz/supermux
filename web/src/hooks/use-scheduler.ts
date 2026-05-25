@@ -18,6 +18,7 @@ import {
 
 import {
   schedulerApi,
+  type RecipeCommand,
   type ScheduleCreateInput,
   type SchedulePatchInput,
   type ScheduleRow,
@@ -26,7 +27,20 @@ import {
 import { useSse, type SseEventType } from '@/hooks/use-sse'
 
 const SCHEDULES_KEY = ['schedules'] as const
+const COMMANDS_KEY = ['schedules', 'commands'] as const
 const runsKey = (id: string) => ['schedules', 'runs', id] as const
+
+/** The REAL installed agent commands (skills + user/managed commands + claude.ai
+ *  MCP connectors) for the recipe / command picker. Cached 60s — the installed
+ *  set rarely changes mid-session, and the source is the user's own config. */
+export function useSchedulerCommands() {
+  return useQuery<RecipeCommand[]>({
+    queryKey: COMMANDS_KEY,
+    queryFn: schedulerApi.commands,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
 
 /** All schedules. SSE invalidates this on every fire — see useSchedulerStream. */
 export function useSchedules() {

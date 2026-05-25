@@ -108,6 +108,96 @@ pub async fn registry(
     })))
 }
 
+// ── installed-command digest (reused by the scheduler recipe picker) ───────────
+//
+// The scheduler "Start from a recipe" / command picker must offer the user's REAL
+// installed agent commands — their skills + user/managed commands + claude.ai MCP
+// connectors — NOT Claude's built-in `/clear`/`/init`/… set (those are noise for a
+// scheduled job) and NOT a hardcoded fake list. This is the SAME filesystem read
+// the manager registry does, projected down to the `{cmd, desc, source}` shape the
+// picker needs. Skills + commands surface as sendable `/<name>` slash commands;
+// MCP connectors surface as labelled hints (no slash — they're tools, not commands)
+// so the user knows the connector is wired up.
+
+/// One entry in the installed-command digest.
+#[derive(Debug, Serialize)]
+pub struct InstalledCommand {
+    /// The literal text to send (e.g. `/cso`); for MCP connectors this is the
+    /// connector display name (no leading slash — informational).
+    pub cmd: String,
+    pub desc: String,
+    /// `skill` | `command` | `mcp` — lets the picker group + label sensibly.
+    pub source: &'static str,
+}
+
+/// Real installed agent commands: skills + user/managed commands + claude.ai MCP
+/// connectors, de-duplicated by `cmd`, sorted by source then name. NO built-ins.
+/// Pure-ish over the filesystem + DB so the scheduler endpoint can reuse it.
+pub async fn installed_commands(
+    state: &AppState,
+    cwd: Option<&str>,
+) -> Result<Vec<InstalledCommand>, AppError> {
+    let mut out: Vec<InstalledCommand> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Skills (global + project + plugin) → `/<name>`.
+    for s in read_skills(cwd).await {
+        let cmd = format!("/{}", s.name);
+        if seen.insert(cmd.clone()) {
+            out.push(InstalledCommand {
+                cmd,
+                desc: clean_desc(&s.description),
+                source: "skill",
+            });
+        }
+    }
+
+    // User + managed commands (NOT built-ins) → `/<name>`.
+    for c in read_commands(state, cwd).await? {
+        if c.scope == "builtin" {
+            continue;
+        }
+        let cmd = format!("/{}", c.name);
+        if seen.insert(cmd.clone()) {
+            out.push(InstalledCommand {
+                cmd,
+                desc: clean_desc(&c.description),
+                source: "command",
+            });
+        }
+    }
+
+    // claude.ai MCP connectors → labelled hints (read-only, no file).
+    for m in read_mcp(cwd).await {
+        if m.provenance != "cloud" {
+            continue;
+        }
+        if seen.insert(m.name.clone()) {
+            out.push(InstalledCommand {
+                cmd: m.name,
+                desc: String::new(),
+                source: "mcp",
+            });
+        }
+    }
+
+    out.sort_by(|a, b| a.source.cmp(b.source).then_with(|| a.cmd.cmp(&b.cmd)));
+    Ok(out)
+}
+
+/// Normalise a frontmatter description for the picker. The shared frontmatter
+/// scanner reads only the value on the `description:` LINE, so a YAML block scalar
+/// (`description: |` / `>` / `|-` / `>-`) yields a bare indicator token rather than
+/// prose — show nothing instead of a stray `|`. (Reading the block body is the
+/// manager-registry parser's job; the picker just needs a clean one-liner.)
+fn clean_desc(raw: &str) -> String {
+    let t = raw.trim();
+    if matches!(t, "" | "|" | ">" | "|-" | ">-" | "|+" | ">+") {
+        return String::new();
+    }
+    t.to_string()
+}
+
 // ── MCP ─────────────────────────────────────────────────────────────────────
 
 /// Scan all three MCP sources, mask secrets, tag scope+provenance. Read failures
@@ -496,6 +586,16 @@ mod tests {
         assert_eq!(e[0].enabled, None);
         // No key → nothing (the common case for accounts with no connectors).
         assert!(cloud_entries(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn clean_desc_drops_block_scalar_indicators() {
+        // A bare YAML block-scalar token is shown as nothing (clean label).
+        for tok in ["|", ">", "|-", ">-", "|+", ">+", "", "  "] {
+            assert_eq!(clean_desc(tok), "");
+        }
+        // Real prose survives, trimmed.
+        assert_eq!(clean_desc("  Security audit mode  "), "Security audit mode");
     }
 
     #[test]

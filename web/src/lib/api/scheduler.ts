@@ -40,6 +40,8 @@ export interface ScheduleRow {
   title: string
   session: string
   command: string
+  /** Optional free-text prompt sent right after `command` (0014). */
+  prompt: string
   kind: ScheduleKind
   boot_dir: string
   boot_provider: string
@@ -74,6 +76,8 @@ export interface ScheduleRunRow {
 export interface ScheduleCreateInput {
   title: string
   command: string
+  /** Optional free-text prompt sent after the command (≥1 of the two required). */
+  prompt?: string
   kind: ScheduleKind
   schedule_expr: string
   session?: string
@@ -91,6 +95,7 @@ export interface SchedulePatchInput {
   title?: string
   session?: string
   command?: string
+  prompt?: string
   kind?: ScheduleKind
   enabled?: boolean
   watch?: boolean
@@ -104,6 +109,15 @@ export interface SchedulePatchInput {
 export interface TestFireResult {
   status: string
   note: string
+}
+
+/** One REAL installed agent command for the recipe / command picker
+ *  (server registry::InstalledCommand). `source` distinguishes the user's skills,
+ *  user/managed commands, and claude.ai MCP connectors. Built-ins are excluded. */
+export interface RecipeCommand {
+  cmd: string
+  desc: string
+  source: 'skill' | 'command' | 'mcp'
 }
 
 /** A scheduler request that failed; carries the HTTP status so callers can
@@ -173,6 +187,11 @@ export const schedulerApi = {
       method: 'POST',
       body: JSON.stringify({ ...input, _test_fire: true }),
     }),
+
+  /** `GET /api/schedules/commands` — the REAL installed agent commands (skills +
+   *  user/managed commands + claude.ai MCP connectors) for the recipe / command
+   *  picker. Built-in Claude slash commands are deliberately excluded. */
+  commands: (): Promise<RecipeCommand[]> => schedRequest('/api/schedules/commands'),
 
   /** `POST /api/schedules/preview` — parse `expression`, get next ≤5 fire times
    *  (no persistence). Powers the next-5-runs live preview. */
