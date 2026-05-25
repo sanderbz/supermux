@@ -41,9 +41,7 @@ import { springs } from '@/lib/springs'
 import type { ApiSession } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useDictation } from '@/components/focus-mode/use-dictation'
-import { UploadActionSheet } from '@/components/focus-mode/upload-action-sheet'
-import { AttachmentRow } from '@/components/focus-mode/attachment-chip'
-import type { Attachment } from '@/components/focus-mode/use-attachment-upload'
+import { COMPOSE_LAYOUT_ID } from '@/components/focus-mode/mobile-compose-sheet'
 import {
   Tooltip,
   TooltipContent,
@@ -365,15 +363,13 @@ export interface MobileDockProps {
   keyboardOpen?: boolean
   /** Open the M18 snippet panel (in-place slide-up). */
   onOpenSnippets?: () => void
-  /** 📎 attach — picked files (camera / library / files) go to the upload+inject
-   *  flow (parent's `useAttachmentUpload.handleFiles`). When omitted, the 📎 chip
-   *  is hidden. */
-  onAttach?: (files: File[]) => void
-  /** The in-flight / ready attachment chips to render above the dock row
-   *  (uploading spinner → thumbnail/name, dismissible). */
-  attachments?: Attachment[]
-  /** Dismiss one attachment chip. */
-  onDismissAttachment?: (id: string) => void
+  /** Open the on-demand native compose sheet — the session pill is its trigger.
+   *  Attach now lives INSIDE that sheet (the standalone dock 📎 was removed). */
+  onOpenCompose?: () => void
+  /** True while the compose sheet is open — the pill drops its shared-element
+   *  morph surface so framer tweens the SAME `layoutId` into the sheet (and the
+   *  pill doesn't double-render the id). */
+  composeOpen?: boolean
   /** Registration hook the parent calls with this dock's imperative
    *  `insert(text)` once mounted, so the route-level M18 snippet panel can drop
    *  a snippet body straight into the terminal (tap-to-insert sends it live). */
@@ -394,18 +390,11 @@ export function MobileDock({
   onBlurTerm,
   keyboardOpen = false,
   onOpenSnippets,
-  onAttach,
-  attachments,
-  onDismissAttachment,
+  onOpenCompose,
+  composeOpen = false,
   registerInsert,
   className,
 }: MobileDockProps) {
-  // ── attach (📎) ──────────────────────────────────────────────────────────────
-  // The 📎 chip opens a native-feeling action sheet (Camera / Photo library /
-  // Files). The sheet is owned here since it's tightly coupled to the chip; the
-  // picked files flow to the parent's upload+inject engine via `onAttach`.
-  const [uploadOpen, setUploadOpen] = React.useState(false)
-
   // ── dictation ──────────────────────────────────────────────────────────────
   // The "/" slash affordance was removed (DOCK): slash commands now run from the
   // Claude Tools sheet's Commands tab (tap a command → it runs in the focused
@@ -523,37 +512,20 @@ export function MobileDock({
         className,
       )}
     >
-      {/* Attachment feedback — the in-flight / ready file chips (uploading
-          spinner → thumbnail/name, dismissible), shown the moment a file is
-          picked so the user sees what's attached BEFORE the path lands in the
-          terminal. Sits above the accessory strip + dock row. */}
-      {attachments && attachments.length > 0 && (
-        <AttachmentRow
-          attachments={attachments}
-          onDismiss={(id) => onDismissAttachment?.(id)}
-        />
-      )}
-
       {/* Accessory key strip — iOS QuickType-style, shown while the keyboard is
           open (the route pins the whole dock above the keyboard via
           `keyboardInset`). Each chip drives `sendKey` — the keys a soft keyboard
           lacks. Soft SF pills, not a terminal keymap. */}
       {keyboardOpen && (
         <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
+          {/* Esc / Tab / Ctrl-C — Ctrl-C (interrupt) is preserved here. The
+              standalone 📎 attach chip was removed: attach now lives in the
+              on-demand compose sheet (opened from the session pill). */}
           {ACCESSORY_KEYS.map((label) => (
             <AccessoryChip key={label} label={label} onTap={() => onSendKey(label)}>
               {label}
             </AccessoryChip>
           ))}
-          {/* 📎 attach — immediately after Ctrl-C (Ctrl-C kept). Opens the native
-              action sheet (Camera / Photo library / Files). Uses the SAME
-              focus-preserving AccessoryChip so the tap never drops the soft
-              keyboard / steals focus from xterm. */}
-          {onAttach && (
-            <AccessoryChip label="Attach a file" onTap={() => setUploadOpen(true)}>
-              <Paperclip className="size-[18px]" strokeWidth={1.75} aria-hidden />
-            </AccessoryChip>
-          )}
           <span className="h-5 w-px shrink-0 bg-border/50" aria-hidden />
           {ARROW_KEYS.map(({ key, Glyph }) => (
             <AccessoryChip
@@ -582,6 +554,8 @@ export function MobileDock({
           nextSession={nextSession}
           onTap={onOpenPicker}
           onSwitch={onSwitchSession}
+          onCompose={onOpenCompose}
+          composeOpen={composeOpen}
         />
 
         <DockIcon
@@ -599,12 +573,6 @@ export function MobileDock({
         {onOpenSnippets && (
           <DockIcon label="Snippets" onClick={onOpenSnippets}>
             <Plus className="size-5" strokeWidth={1.75} />
-          </DockIcon>
-        )}
-
-        {onAttach && (
-          <DockIcon label="Attach a file" onClick={() => setUploadOpen(true)}>
-            <Paperclip className="size-5" strokeWidth={1.75} />
           </DockIcon>
         )}
 
@@ -628,17 +596,6 @@ export function MobileDock({
             primary-tinted as the dock's one affirmative action. */}
         <EnterButton onSend={() => onSendKey('Enter')} />
       </div>
-
-      {/* The 📎 action sheet — Camera / Photo library / Files. Owned here since
-          it's tightly coupled to the dock's 📎 chip; picked files flow to the
-          parent's upload+inject engine via `onAttach`. */}
-      {onAttach && (
-        <UploadActionSheet
-          open={uploadOpen}
-          onOpenChange={setUploadOpen}
-          onFiles={onAttach}
-        />
-      )}
     </div>
   )
 }
@@ -734,12 +691,23 @@ function SessionPill({
   nextSession,
   onTap,
   onSwitch,
+  onCompose,
+  composeOpen = false,
 }: {
   current: ApiSession
   prevSession: ApiSession | null
   nextSession: ApiSession | null
+  /** Fallback tap target (session picker) when there is no compose handler. */
   onTap: () => void
   onSwitch: (name: string) => void
+  /** Tap → open the on-demand compose sheet. When set, a genuine tap opens
+   *  compose (the pill is the morph origin); a horizontal swipe still switches
+   *  sessions. When absent, a tap falls back to `onTap` (the picker). */
+  onCompose?: () => void
+  /** True while the compose sheet is open — the pill drops its shared-element
+   *  `layoutId` surface so framer tweens that id into the sheet (one holder at a
+   *  time), and the morph reads the pill's exact last rect as the origin. */
+  composeOpen?: boolean
 }) {
   const reduceMotion = useReducedMotion()
   const x = useMotionValue(0)
@@ -759,6 +727,42 @@ function SessionPill({
   const [peekSession, setPeekSession] = React.useState<ApiSession | null>(null)
   React.useEffect(() => peek.on('change', setPeekSession), [peek])
 
+  // ── Tap-vs-swipe gate ───────────────────────────────────────────────────────
+  // A TAP opens compose; a horizontal SWIPE switches sessions. Mirrors the
+  // tap-vs-pan gating the terminal body uses (mobile.tsx): a candidate is armed
+  // on pointer-down and only counts as a tap on pointer-up if the finger barely
+  // moved and the press was short. framer's own drag also flips `draggedRef` in
+  // onDragStart, so a committed drag (which fires onDragEnd → onSwitch) can never
+  // ALSO be read as a tap. A second concurrent pointer (multi-touch) invalidates
+  // the candidate.
+  const TAP_SLOP_PX = 10
+  const TAP_MAX_MS = 500
+  const tapRef = React.useRef<{ x: number; y: number; t: number; id: number } | null>(
+    null,
+  )
+  const draggedRef = React.useRef(false)
+
+  const onPillPointerDown = (e: React.PointerEvent) => {
+    if (tapRef.current && tapRef.current.id !== e.pointerId) {
+      tapRef.current = null // multi-touch → not a tap
+      return
+    }
+    draggedRef.current = false
+    tapRef.current = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId }
+  }
+  const onPillPointerUp = (e: React.PointerEvent) => {
+    const cand = tapRef.current
+    tapRef.current = null
+    if (!cand || cand.id !== e.pointerId) return
+    if (draggedRef.current) return // a swipe committed — handled by onDragEnd
+    const dist = Math.hypot(e.clientX - cand.x, e.clientY - cand.y)
+    const elapsed = Date.now() - cand.t
+    if (dist < TAP_SLOP_PX && elapsed < TAP_MAX_MS) {
+      if (onCompose) onCompose()
+      else onTap()
+    }
+  }
+
   const onDragEnd = (_: unknown, info: PanInfo) => {
     const threshold = width * 0.4
     if (info.offset.x <= -threshold && nextSession) {
@@ -771,9 +775,29 @@ function SessionPill({
   }
 
   const swipeable = Boolean(prevSession || nextSession)
+  const tapLabel = onCompose ? 'compose a message' : 'switch session'
 
   return (
     <div ref={ref} className="relative h-11 shrink-0" style={{ maxWidth: '40%' }}>
+      {/* Shared-element morph surface — the pill's rounded-full background. It
+          carries COMPOSE_LAYOUT_ID so framer tweens THIS rect into the compose
+          sheet's surface (and back). Dropped while the sheet is open so only ONE
+          node holds the id at a time (the sheet's), which is what makes the
+          pill→sheet tween fire. A plain (id-less) fill takes its place meanwhile
+          so the pill keeps its look. Reduced motion: no layoutId (crossfade in
+          the sheet instead). Sits BEHIND the draggable content; its width tracks
+          the pill exactly (inset-0), so the morph origin is same-width by
+          construction. */}
+      {composeOpen || reduceMotion ? (
+        <div className="pointer-events-none absolute inset-0 rounded-full bg-secondary" />
+      ) : (
+        <motion.div
+          layoutId={COMPOSE_LAYOUT_ID}
+          className="pointer-events-none absolute inset-0 rounded-full bg-secondary"
+          transition={springs.sheetDetent}
+        />
+      )}
+
       {/* Peek-of-next, revealed beneath the dragging pill. */}
       <motion.div
         aria-hidden
@@ -798,15 +822,23 @@ function SessionPill({
         style={{ x }}
         whileTap={{ scale: 0.97 }}
         transition={reduceMotion ? { duration: 0 } : springs.sheetDetent}
+        onDragStart={() => {
+          draggedRef.current = true
+        }}
         onDragEnd={onDragEnd}
-        onClick={onTap}
+        onPointerDown={onPillPointerDown}
+        onPointerUp={onPillPointerUp}
         // FULL name stays the accessible label so the truncated display never
         // hides which session you're on.
         title={current.name}
-        aria-label={`Session ${current.name} — switch session`}
+        aria-label={`Session ${current.name} — ${tapLabel}`}
+        // Transparent fill: the rounded-full background is the morph surface
+        // (sibling above); this button only carries the swipe transform + content
+        // so `drag` and `layout` never live on the same node (framer warns when
+        // they do).
         className={cn(
-          'relative flex h-11 w-full items-center gap-1.5 rounded-full bg-secondary px-3.5',
-          'text-[14px] font-medium active:bg-secondary/70',
+          'relative flex h-11 w-full items-center gap-1.5 rounded-full bg-transparent px-3.5',
+          'text-[14px] font-medium',
         )}
       >
         <StatusDot status={current.status} />
