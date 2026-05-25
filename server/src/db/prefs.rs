@@ -59,6 +59,29 @@ pub async fn put_pref(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result
     Ok(())
 }
 
+/// The `prefs` key holding the global experimental "Agent Teams" toggle (AT-B).
+/// Stored in the existing `prefs` k/v table so no migration is needed; value is
+/// the literal string `"on"` (any other value, or an absent row, reads OFF).
+/// Default OFF — Agent Teams is experimental AND carries the ~7× token cost of N
+/// real Claude processes, so it must be opted into deliberately.
+pub const AGENT_TEAMS_PREF_KEY: &str = "experimental.agent_teams";
+
+/// Is the experimental Agent Teams feature ON? Reads [`AGENT_TEAMS_PREF_KEY`];
+/// a missing/unparseable/`"off"` row reads OFF (the safe default). A DB error is
+/// swallowed to OFF — the gate must FAIL CLOSED so a transient read failure can
+/// never silently enable a ~7×-cost experimental feature.
+pub async fn agent_teams_enabled(pool: &SqlitePool) -> bool {
+    matches!(
+        get_pref(pool, AGENT_TEAMS_PREF_KEY).await,
+        Ok(Some(ref v)) if v.trim().eq_ignore_ascii_case("on")
+    )
+}
+
+/// Set the experimental Agent Teams toggle. `on` → `"on"`, off → `"off"`.
+pub async fn set_agent_teams_enabled(pool: &SqlitePool, on: bool) -> sqlx::Result<()> {
+    put_pref(pool, AGENT_TEAMS_PREF_KEY, if on { "on" } else { "off" }).await
+}
+
 // ── snippets ─────────────────────────────────────────────────────────────────
 
 /// List all snippets, ordered by `position` then insertion (`id`).
@@ -235,4 +258,53 @@ pub async fn count_kbd_groups(pool: &SqlitePool) -> sqlx::Result<i64> {
         .fetch_one(pool)
         .await?;
     Ok(row.0)
+}
+
+#[cfg(test)]
+mod agent_teams_pref_tests {
+    //! AT-B §3.1: the Agent-Teams gate MUST default OFF and fail closed — the
+    //! whole cost-control guarantee rides on this. Pin the default + the
+    //! round-trip.
+    use super::*;
+    use crate::config::Config;
+
+    async fn test_pool() -> (SqlitePool, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-teams-pref-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (pool, dir)
+    }
+
+    #[tokio::test]
+    async fn defaults_off_and_round_trips() {
+        let (pool, dir) = test_pool().await;
+        // Absent row → OFF (the safe default).
+        assert!(!agent_teams_enabled(&pool).await, "default must be OFF");
+
+        set_agent_teams_enabled(&pool, true).await.unwrap();
+        assert!(agent_teams_enabled(&pool).await, "ON after enable");
+
+        set_agent_teams_enabled(&pool, false).await.unwrap();
+        assert!(!agent_teams_enabled(&pool).await, "OFF after disable");
+
+        // A junk value reads OFF (fail closed).
+        put_pref(&pool, AGENT_TEAMS_PREF_KEY, "maybe").await.unwrap();
+        assert!(!agent_teams_enabled(&pool).await, "junk value reads OFF");
+
+        // Case-insensitive "ON".
+        put_pref(&pool, AGENT_TEAMS_PREF_KEY, "ON").await.unwrap();
+        assert!(agent_teams_enabled(&pool).await, "ON is case-insensitive");
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

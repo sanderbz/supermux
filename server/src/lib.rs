@@ -25,4 +25,5 @@ pub mod sessions;
 pub mod sse;
 pub mod state;
 pub mod static_assets;
+pub mod teams;
 pub mod ws;

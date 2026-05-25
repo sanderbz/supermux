@@ -69,7 +69,21 @@ fn user_shell() -> String {
 }
 
 /// Per-session tmux env (§6.5). Excludes the dashboard bearer by construction.
-fn build_env(config: &crate::config::Config, name: &str, hook_token: &str) -> HashMap<String, String> {
+///
+/// `agent_teams` gates the experimental Claude Code Agent Teams feature (AT-B
+/// §3.1): when ON **and** the provider is `claude`, inject
+/// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` so a lead session can spawn teammate
+/// panes. Default OFF — it carries the ~7× token cost of N real Claude
+/// processes, so it is only injected when the global `experimental.agent_teams`
+/// setting is on (read in [`start`] before this is called). NEVER injected for
+/// codex/shell sessions (they don't read it, and teams is Claude-only).
+fn build_env(
+    config: &crate::config::Config,
+    name: &str,
+    hook_token: &str,
+    provider: &str,
+    agent_teams: bool,
+) -> HashMap<String, String> {
     let scheme = if config.tls.cert_path.is_some() || config.tls.self_signed {
         "https"
     } else {
@@ -80,6 +94,13 @@ fn build_env(config: &crate::config::Config, name: &str, hook_token: &str) -> Ha
     env.insert("TMUX_SESSION_NAME".to_string(), name.to_string());
     env.insert("SUPERMUX_URL".to_string(), format!("{scheme}://{}", config.bind));
     env.insert("SUPERMUX_HOOK_TOKEN".to_string(), hook_token.to_string());
+    // AT-B §3.1: gated, Claude-only opt-in for Agent Teams.
+    if agent_teams && provider == "claude" {
+        env.insert(
+            "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
+            "1".to_string(),
+        );
+    }
     // Tell the shell it's running in a 256-colour xterm-compatible terminal.
     // Without TERM the spawned pane inherits whatever (or nothing) the supermux
     // server saw — often missing or "dumb" — and zsh prompts, `ls --color`,
@@ -278,6 +299,11 @@ pub async fn start(
     db::sessions::ensure_runtime(&state.pool, name, &hook_token).await?;
     state.hook_tokens.insert(name.to_string(), hook_token.clone());
 
+    // AT-B §3.1: the global experimental Agent Teams gate (default OFF). Read
+    // once here; it both injects the env var and writes `teammateMode:"tmux"`.
+    // FAIL CLOSED — a read failure reads OFF inside `agent_teams_enabled`.
+    let agent_teams = db::prefs::agent_teams_enabled(&state.pool).await;
+
     // M5b: install the Claude SettingsHook events so the agent reports real status
     // signals (§3.5). Idempotent + non-destructive; failure is non-fatal — the
     // detector still classifies off the regex bank + pty heartbeat. Only Claude
@@ -286,9 +312,17 @@ pub async fn start(
         if let Err(e) = crate::claude_config::install_hooks(name, &hook_token) {
             tracing::warn!(name = %name, error = %e, "install_hooks failed; status falls back to regex/heartbeat");
         }
+        // AT-B §3.1: when teams is enabled, also force `teammateMode:"tmux"` so a
+        // lead spawns teammates as split-panes on supermux's socket (not the
+        // invisible in-process backend). Gated + Claude-only; non-fatal on error.
+        if agent_teams {
+            if let Err(e) = crate::claude_config::install_agent_teams_setting(name) {
+                tracing::warn!(name = %name, error = %e, "install_agent_teams_setting failed; teams may use the wrong backend");
+            }
+        }
     }
 
-    let env = build_env(&state.config, name, &hook_token);
+    let env = build_env(&state.config, name, &hook_token, &s.provider, agent_teams);
     let dir = PathBuf::from(&s.dir);
     let shell = user_shell();
 
