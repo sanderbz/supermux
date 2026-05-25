@@ -55,11 +55,6 @@ impl<'a> Tmux<'a> {
         format!("supermux-{}", self.name)
     }
 
-    /// `/tmp/supermux-pty-<name>.fifo` — the live-stream FIFO path (filled by M4).
-    pub fn fifo_path(&self) -> PathBuf {
-        PathBuf::from(format!("/tmp/supermux-pty-{}.fifo", self.name))
-    }
-
     // ── command helpers ──────────────────────────────────────────────────────
 
     /// Run `tmux <args>`; return stdout (lossy UTF-8) on success, error on a
@@ -254,6 +249,17 @@ impl<'a> Tmux<'a> {
             &start,
         ])
         .await
+    }
+
+    /// `tmux capture-pane -p -e` — the CURRENT VISIBLE screen only (no `-S`
+    /// scrollback) WITH SGR escapes preserved. Used to seed a fresh reader's
+    /// replay buffer so a subscriber that connects before any new byte flows
+    /// (e.g. an idle session whose live stream was just re-attached after a
+    /// server restart — see session-survival) still sees the current screen
+    /// instead of a black pane. Read-only, no lock.
+    pub async fn capture_screen_ansi(&self) -> Result<String> {
+        self.run(&["capture-pane", "-p", "-e", "-t", &self.target()])
+            .await
     }
 
     /// Capture the entire scrollback (`-S -`), used by `archive`.

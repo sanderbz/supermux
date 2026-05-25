@@ -12,21 +12,32 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::sessions::pty::PtyStream;
-use crate::sessions::tmux::Tmux;
 
 /// Holds the per-session live streams plus the parameters needed to build new
-/// ones (`logs/` directory + broadcast capacity from `config.ws`).
+/// ones (`logs/` + `pty/` directories + broadcast capacity from `config.ws`).
 pub struct PtyStreamer {
     streams: DashMap<String, Arc<PtyStream>>,
     log_dir: PathBuf,
+    /// Directory for the per-session pane→reader FIFOs. MUST live in the
+    /// persistent data dir (NOT `/tmp`): the systemd unit runs with
+    /// `PrivateTmp=true`, so `/tmp` is a fresh namespace on every (re)start.
+    /// The tmux server survives restarts (`TMUX_TMPDIR` is anchored in the data
+    /// dir — see session-survival), so a FIFO under `/tmp` would, after a
+    /// restart, be created by the new server in its private `/tmp` while the
+    /// surviving tmux's `pipe-pane` still writes to the path in the OLD private
+    /// `/tmp` — the two never meet, the reader gets zero bytes, and the terminal
+    /// renders black. Anchoring the FIFO in the data dir (shared, real, in
+    /// `ReadWritePaths`) means both processes resolve the same inode.
+    fifo_dir: PathBuf,
     broadcast_capacity: usize,
 }
 
 impl PtyStreamer {
-    pub fn new(log_dir: PathBuf, broadcast_capacity: usize) -> Self {
+    pub fn new(log_dir: PathBuf, fifo_dir: PathBuf, broadcast_capacity: usize) -> Self {
         Self {
             streams: DashMap::new(),
             log_dir,
+            fifo_dir,
             broadcast_capacity,
         }
     }
@@ -50,7 +61,7 @@ impl PtyStreamer {
     }
 
     fn build(&self, name: &str) -> PtyStream {
-        let fifo = Tmux::new(name).fifo_path();
+        let fifo = self.fifo_dir.join(format!("{name}.fifo"));
         let log = self.log_dir.join(format!("{name}.log"));
         PtyStream::new(name.to_string(), fifo, log, self.broadcast_capacity)
     }

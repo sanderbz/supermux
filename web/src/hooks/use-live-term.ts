@@ -508,12 +508,32 @@ export function useLiveTerm(
     // back to the Canvas renderer, which is itself robust and was the previous
     // default. The DOM renderer (xterm built-in) is the final safety net if even
     // Canvas can't construct.
+    // Force the ACTIVE renderer to repaint the whole viewport from the buffer.
+    // A renderer that is attached (or swapped in) AFTER content already exists
+    // does NOT paint that content on its own — it only draws on the next write.
+    // For an idle session (no further bytes) that leaves a blank canvas. xterm
+    // used to get an incidental repaint from the font-load `clearTextureAtlas()`
+    // refit; that refit is now skipped on the warm-font path, so we repaint
+    // explicitly here instead. Cheap (one frame) and a no-op on an empty buffer.
+    const repaint = () => {
+      const t = termRef.current
+      if (!t || disposedRef.current || t.rows <= 0) return
+      try {
+        t.refresh(0, t.rows - 1)
+      } catch {
+        /* renderer not ready — the next write repaints anyway */
+      }
+    }
     const loadCanvasFallback = () => {
       if (disposedRef.current) return
       const t = termRef.current
       if (!t || t.cols <= 0 || t.rows <= 0) return
       try {
         t.loadAddon(new CanvasAddon())
+        // The freshly-swapped Canvas renderer must repaint the existing buffer;
+        // without this an idle pane (no further bytes) stays blank after the
+        // WebGL→Canvas swap (e.g. GPU context loss, or WebGL unavailable).
+        repaint()
       } catch {
         // Canvas may be unavailable in some headless/WKWebView contexts; the DOM
         // renderer (xterm default) is a safe fallback. Non-fatal.
@@ -555,6 +575,10 @@ export function useLiveTerm(
       //    in THIS same rAF, before paint — no intermediate-cols frame is ever
       //    shown. No-op when the GPU cell width matches the DOM renderer's.
       safeFit()
+      // 4. Repaint so the just-attached renderer draws whatever is already in the
+      //    buffer (the replay snapshot may have arrived before this rAF). Without
+      //    this an idle pane can mount blank until the next live byte.
+      repaint()
     })
 
     // Font-ready refit: xterm caches the renderer's character metrics on

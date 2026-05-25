@@ -203,6 +203,30 @@ impl PtyStream {
         if let Some(parent) = self.log.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
+        if let Some(parent) = self.fifo.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+
+        // Snapshot the CURRENT visible screen BEFORE attaching the pipe, so the
+        // seed's timestamp precedes the first live byte and replay order stays
+        // monotonic (seed → live). This is what lets a subscriber that connects
+        // before any new output flows still see the screen instead of black —
+        // the case session-survival creates: after a server restart the
+        // in-memory replay is empty, and `pipe-pane` only carries NEW output, so
+        // an idle re-attached pane would otherwise stay blank until it next
+        // redraws (and a same-size reconnect never triggers a resize-redraw).
+        // Best-effort: a capture failure just means we fall back to the old
+        // (blank-until-next-output) behaviour, never an error.
+        let seed = match tmux.capture_screen_ansi().await {
+            Ok(s) if !s.trim_end().is_empty() => {
+                // Clear screen + scrollback + home, then the captured rows with
+                // CRLF line ends, so the snapshot renders as a clean screen from
+                // the top. Subsequent live bytes redraw over it as the pane changes.
+                let body = s.trim_end_matches('\n').replace('\n', "\r\n");
+                Some(Bytes::from(format!("\x1b[2J\x1b[3J\x1b[H{body}")))
+            }
+            _ => None,
+        };
 
         // mkfifo (idempotent — ignore EEXIST).
         if let Err(e) = nix::unistd::mkfifo(&self.fifo, Mode::S_IRUSR | Mode::S_IWUSR) {
@@ -242,6 +266,13 @@ impl PtyStream {
         let file = unsafe { std::fs::File::from_raw_fd(rfd) };
         let keep_writer = unsafe { OwnedFd::from_raw_fd(wfd) };
         let async_fd = AsyncFd::new(file).map_err(|e| anyhow!("AsyncFd::new: {e}"))?;
+
+        // Seed the replay with the pre-pipe screen snapshot (if any) BEFORE the
+        // reader task can append a single live byte, so the replay starts with a
+        // coherent screen and a connecting subscriber never sees black.
+        if let Some(seed) = seed {
+            push_and_broadcast(&self.replay, &self.broadcast, seed);
+        }
 
         let name = self.name.clone();
         let replay = self.replay.clone();

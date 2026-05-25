@@ -221,6 +221,7 @@ impl AppState {
         // Build the pty streamer before `config` is moved into the Arc.
         let pty = Arc::new(PtyStreamer::new(
             config.data_dir.join("logs"),
+            config.data_dir.join("pty"),
             config.ws.broadcast_capacity,
         ));
         // Load (or first-run generate) the persisted VAPID keypair for web push
