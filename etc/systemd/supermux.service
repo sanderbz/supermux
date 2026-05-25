@@ -114,6 +114,17 @@ __BIND_PATHS__
 # workflows (e.g. /home/supermux:/opt/projects). Multiple paths are
 # whitespace-separated per systemd's ReadWritePaths= syntax.
 ReadWritePaths=__READ_WRITE_PATHS__
+# /tmp + /var/tmp MUST be writable. With PrivateTmp=no (the default — see below),
+# systemd no longer hands the service a private writable /tmp, and ProtectSystem=
+# strict makes the real /tmp READ-ONLY unless it is listed here. The Claude Code
+# agent harness writes its per-session/per-tool working state under /tmp
+# (/tmp/claude-<uid>/...), so a read-only /tmp means claude launches but can never
+# initialise — it hangs before painting its TUI and every tool call fails. This
+# line restores a normal, persistent, writable /tmp (shared with the host; fine
+# on a single-purpose box) so agents start, paint, and run tools, and that state
+# survives a restart. (Under the hardened profile PrivateTmp=yes supplies its own
+# writable /tmp, so this line is harmless there.)
+ReadWritePaths=/tmp /var/tmp
 # tmux keeps its server socket under $XDG_RUNTIME_DIR (/run/user/<uid>); the
 # service must be able to create/connect to it to drive sessions.
 RuntimeDirectory=supermux
