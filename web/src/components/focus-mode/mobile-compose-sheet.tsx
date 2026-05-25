@@ -39,6 +39,7 @@ import {
 } from 'framer-motion'
 import { Paperclip, CornerDownLeft, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
+import { FocusScope } from '@radix-ui/react-focus-scope'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -73,6 +74,9 @@ export function MobileComposeSheet({
   // sheet uses (a keyboard-top inset off visualViewport). The inset lifts the
   // bottom-0 surface up so its bottom edge lands at the keyboard TOP.
   const { keyboardInset } = useKeyboardViewport()
+  // Lifted to the surface so the FocusScope's onMountAutoFocus can land the caret
+  // in the textarea (ComposeBody still owns it for change/keydown/Send wiring).
+  const textRef = React.useRef<HTMLTextAreaElement | null>(null)
 
   // SSR / first-paint safety: only portal once a document body exists.
   if (typeof document === 'undefined') return null
@@ -120,30 +124,59 @@ export function MobileComposeSheet({
             aria-modal="true"
             aria-label="Compose a message"
           >
-            {/* The morph cross-fades the pill's content into the sheet's; keeping
-                this inner block as a separate (non-layout) child lets framer
-                scale-correct the surface without distorting the controls. */}
-            <motion.div
-              layout={reduce ? false : 'position'}
-              className="flex min-h-0 flex-1 flex-col"
+            {/* FOCUS OWNERSHIP (the "typing lands nowhere" fix). This sheet is
+                portaled to document.body — OUTSIDE the dock's Vaul Drawer subtree.
+                The dock drawer's focus layer treats this out-of-scope textarea as
+                "focus outside" and recaptures focus back into its own content the
+                instant the textarea tries to take it (confirmed in-browser: a
+                direct el.focus() bounced straight to the drawer's content DIV).
+                Wrapping the surface in our OWN trapped FocusScope makes THIS sheet
+                the active focus owner: on mount it pushes onto Radix's focus-scope
+                stack (pausing the dock's layer) and its focusin guard keeps focus
+                inside — so the textarea holds focus, taps don't snap away, and
+                typed text lands. ComposeBody's rAF puts the caret in the textarea;
+                `loop` keeps Tab cycling within the compose controls.
+                The scope wraps a PLAIN div (not the layout-animated motion.div
+                below) because framer's layout projection toggles styles on the
+                element it animates, which during the morph would knock focus off
+                the scope container — so that container must be a static node. */}
+            <FocusScope
+              asChild
+              trapped
+              loop
+              // Don't let FocusScope grab the first tabbable (the close handle) —
+              // ComposeBody's rAF focuses the textarea instead; the trapped scope
+              // then KEEPS focus there.
+              onMountAutoFocus={(e) => e.preventDefault()}
             >
-              {/* Drag indicator — 36×5, 2.5px radius (Apple Maps / Termius #11).
-                  Doubles as a tap-to-dismiss affordance row. */}
-              <button
-                type="button"
-                aria-label="Close compose"
-                onClick={() => onOpenChange(false)}
-                className="mx-auto mt-1.5 flex h-4 w-16 shrink-0 items-center justify-center"
-              >
-                <span className="h-[5px] w-9 rounded-[2.5px] bg-muted-foreground/30" />
-              </button>
-              <ComposeBody
-                key="compose"
-                reduce={!!reduce}
-                onSend={onSend}
-                onClose={() => onOpenChange(false)}
-              />
-            </motion.div>
+              <div className="flex min-h-0 flex-1 flex-col">
+                {/* The morph cross-fades the pill's content into the sheet's;
+                    keeping this inner block as a separate (non-layout) child lets
+                    framer scale-correct the surface without distorting controls. */}
+                <motion.div
+                  layout={reduce ? false : 'position'}
+                  className="flex min-h-0 flex-1 flex-col"
+                >
+                  {/* Drag indicator — 36×5, 2.5px radius (Apple Maps / Termius #11).
+                      Doubles as a tap-to-dismiss affordance row. */}
+                  <button
+                    type="button"
+                    aria-label="Close compose"
+                    onClick={() => onOpenChange(false)}
+                    className="mx-auto mt-1.5 flex h-4 w-16 shrink-0 items-center justify-center"
+                  >
+                    <span className="h-[5px] w-9 rounded-[2.5px] bg-muted-foreground/30" />
+                  </button>
+                  <ComposeBody
+                    key="compose"
+                    reduce={!!reduce}
+                    textRef={textRef}
+                    onSend={onSend}
+                    onClose={() => onOpenChange(false)}
+                  />
+                </motion.div>
+              </div>
+            </FocusScope>
           </motion.div>
         </>
       )}
@@ -156,10 +189,13 @@ export function MobileComposeSheet({
  *  so the textarea + staged attachments always start fresh (COMPOSE-FRESH). */
 function ComposeBody({
   reduce,
+  textRef,
   onSend,
   onClose,
 }: {
   reduce: boolean
+  /** Owned by the surface so the FocusScope's onMountAutoFocus can focus it. */
+  textRef: React.RefObject<HTMLTextAreaElement | null>
   onSend: (text: string) => void
   onClose: () => void
 }) {
@@ -167,7 +203,6 @@ function ComposeBody({
   const [uploadOpen, setUploadOpen] = React.useState(false)
   const [sent, setSent] = React.useState(false)
   const staged = useStagedAttachments()
-  const textRef = React.useRef<HTMLTextAreaElement | null>(null)
   // Single-fire guard: a fast double-tap on Send (or ⌘Enter + tap) must submit
   // exactly once. The ref is the SYNCHRONOUS latch (read/written only inside the
   // event handler — state updates are async and would let a double-tap slip
@@ -176,13 +211,17 @@ function ComposeBody({
   // sheet, which unmounts + re-seeds it, so both reset per open.
   const sentRef = React.useRef(false)
 
-  // Autofocus the textarea on open so the soft keyboard rises WITH the sheet.
-  // A rAF lets the morph/open layout settle first so iOS reliably honours the
-  // focus inside the open gesture.
+  // Autofocus the textarea on open so the soft keyboard rises WITH the sheet and
+  // the caret is ready. The surface's trapped <FocusScope> KEEPS focus here once
+  // it lands (the dock drawer's focus layer used to recapture it); this effect is
+  // what actually puts the caret IN the textarea. A rAF lets the morph/open
+  // layout settle first (iOS honours focus inside the open gesture), and it is
+  // robust to React's StrictMode double-mount: the cleanup cancels the pending
+  // rAF so only the final mount's focus call lands.
   React.useEffect(() => {
     const raf = window.requestAnimationFrame(() => textRef.current?.focus())
     return () => window.cancelAnimationFrame(raf)
-  }, [])
+  }, [textRef])
 
   // Empty send (no text, no ready attachments) is a no-op. Still-uploading
   // attachments don't count toward "can send" until they resolve.

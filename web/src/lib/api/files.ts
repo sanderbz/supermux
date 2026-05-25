@@ -216,11 +216,6 @@ export async function uploadForPrompt(file: File): Promise<UploadResult> {
   })
 }
 
-/** Upload SEVERAL files in parallel; resolves to each saved result in order. */
-export function uploadAllForPrompt(files: File[]): Promise<UploadResult[]> {
-  return Promise.all(files.map((f) => uploadForPrompt(f)))
-}
-
 /** Build the no-trailing-Enter prompt text injected after upload: one sentence
  *  that quotes every absolute path so Claude's Read/vision tool fires. A
  *  trailing space lets the user keep typing context before they hit Enter. */

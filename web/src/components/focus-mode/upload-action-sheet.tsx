@@ -4,7 +4,7 @@
 // down dismiss, focus-trap, safe-area) and offers the three iOS-native pickers:
 //   • Camera        — <input capture="environment" accept="image/*">
 //   • Photo Library — <input accept="image/*" multiple>
-//   • Files         — <input accept="*"        multiple>
+//   • Files         — <input accept="*/*"      multiple>
 //
 // Each row owns a hidden file input; tapping the row clicks it. On selection we
 // hand the files to `onFiles` and close — the upload + prompt-injection is driven
@@ -87,7 +87,7 @@ export function UploadActionSheet({
       <input
         ref={filesRef}
         type="file"
-        accept="*"
+        accept="*/*"
         multiple
         className="hidden"
         onChange={onPicked}

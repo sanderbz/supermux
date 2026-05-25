@@ -214,7 +214,7 @@ export function DesktopDock({
         <input
           ref={fileInputRef}
           type="file"
-          accept="*"
+          accept="*/*"
           multiple
           className="hidden"
           onChange={onPicked}
@@ -839,7 +839,17 @@ function SessionPill({
         className={cn(
           'relative flex h-11 w-full items-center gap-1.5 rounded-full bg-transparent px-3.5',
           'text-[14px] font-medium',
+          // Fade the pill content out while compose is open so its old text/dot
+          // doesn't linger faintly behind the translucent sheet during the morph
+          // (the rounded-fill morph surface is the sibling above; only this
+          // content needs to cross-fade). A short opacity tween reads as part of
+          // the morph; under reduced motion it's a gentle fade (no transform), so
+          // it doesn't reintroduce motion. Hidden from AT/Tab while masked.
+          'transition-opacity duration-300',
+          composeOpen && 'pointer-events-none opacity-0',
         )}
+        aria-hidden={composeOpen || undefined}
+        tabIndex={composeOpen ? -1 : undefined}
       >
         <StatusDot status={current.status} />
         {/* Display name truncated to ~8ch + ellipsis (frees dock room); the full

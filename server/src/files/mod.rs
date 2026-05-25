@@ -49,7 +49,9 @@ const PDF_MAX: u64 = 10 * 1024 * 1024; // 10 MB
 const UPLOAD_MAX: usize = 20 * 1024 * 1024; // base64 single-file cap
 const FS_UPLOAD_MAX: u64 = 200 * 1024 * 1024; // multipart cap
 
-const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"];
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "heic", "heif",
+];
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "webm", "avi", "mkv", "m4v"];
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "ogg", "m4a", "aac", "flac"];
 
@@ -681,6 +683,37 @@ fn looks_like_image(b: &[u8]) -> bool {
         || b.starts_with(&[0x00, 0x00, 0x01, 0x00]) // ICO
         || b.starts_with(b"<svg")
         || b.starts_with(b"<?xml") // SVG
+        || looks_like_heif(b) // HEIC/HEIF (iOS camera/library)
+}
+
+/// HEIC/HEIF magic-byte sniff. These are ISO-BMFF (MP4-family) files whose first
+/// box is an `ftyp` box: a 4-byte big-endian box size, then the literal `ftyp`
+/// at bytes 4..8, then a 4-byte major brand. iOS photos use a `heic`/`heix`/
+/// `mif1`/`msf1`/`heif` brand. We accept the file if the major brand OR any of
+/// the listed compatible brands (which follow, 4 bytes each, from offset 16) is
+/// a known HEIF brand — so a `.heic` Apple photo is treated as image content and
+/// passes validation instead of slipping through as a generic file.
+fn looks_like_heif(b: &[u8]) -> bool {
+    if b.len() < 12 || &b[4..8] != b"ftyp" {
+        return false;
+    }
+    const HEIF_BRANDS: &[&[u8; 4]] = &[
+        b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"heif", b"mif1", b"msf1",
+    ];
+    let is_brand = |brand: &[u8]| HEIF_BRANDS.iter().any(|wanted| brand == &wanted[..]);
+    // Major brand at 8..12, then compatible-brand list from 16 onward (within the
+    // ftyp box). Checking a bounded prefix is enough to recognise Apple's photos.
+    if is_brand(&b[8..12]) {
+        return true;
+    }
+    let mut off = 16;
+    while off + 4 <= b.len() && off < 64 {
+        if is_brand(&b[off..off + 4]) {
+            return true;
+        }
+        off += 4;
+    }
+    false
 }
 
 /// Best-effort: remove uploaded files older than 24h (feature-extract §3.5).

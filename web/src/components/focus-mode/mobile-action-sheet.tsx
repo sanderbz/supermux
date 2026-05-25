@@ -38,13 +38,19 @@ export function MobileActionSheet({
   children,
 }: MobileActionSheetProps) {
   return (
+    // z-[70]: above the compose sheet (surface z-[65] / backdrop z-[64]) so the
+    // in-sheet 📎 picker, launched from inside compose, paints ON TOP and its
+    // Camera/Photo/Files rows are tappable — not occluded. As a modal action
+    // sheet (its own backdrop + drag-dismiss) sitting topmost is correct for
+    // EVERY caller (Quick-keys, Snippets, Session-picker open it standalone over
+    // the focus sheet at z-50, so a higher layer is equally fine there).
     <Drawer.Root open={open} onOpenChange={onOpenChange}>
       <Drawer.Portal>
-        <Drawer.Overlay className="fixed inset-0 z-[60] bg-black/40" />
+        <Drawer.Overlay className="fixed inset-0 z-[70] bg-black/40" />
         <Drawer.Content
           aria-describedby={undefined}
           className={cn(
-            'glass fixed inset-x-0 bottom-0 z-[60] flex max-h-[85vh] flex-col rounded-t-[10px]',
+            'glass fixed inset-x-0 bottom-0 z-[70] flex max-h-[85vh] flex-col rounded-t-[10px]',
             'border-t border-border/60 pb-safe outline-none',
           )}
         >
