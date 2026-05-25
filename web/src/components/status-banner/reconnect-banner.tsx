@@ -196,7 +196,17 @@ export function ReconnectBanner() {
       // vertical space when a banner is visible — pushing the route's own header
       // down — and collapses to zero height when there is none. It is NEVER an
       // overlay, so it can never render on top of route header chrome.
-      className="pointer-events-none z-30 flex shrink-0 justify-center pt-safe"
+      //
+      // SD-6: the `pt-safe` notch inset is applied ONLY when a banner is visible.
+      // Every route already owns its own top safe-area inset, so keeping pt-safe
+      // on this always-present row added the inset a SECOND time — a doubled empty
+      // band at the very top, glaringly visible in the iOS standalone PWA where
+      // the notch inset is always non-zero (desktop env()=0, so no change there).
+      // Gating it on `v` restores the "zero height when there is none" contract.
+      className={cn(
+        'pointer-events-none z-30 flex shrink-0 justify-center',
+        v && 'pt-safe',
+      )}
     >
       <AnimatePresence initial={false}>
         {v && (
