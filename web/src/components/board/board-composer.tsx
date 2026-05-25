@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { ChevronDown, Loader2, Play, Plus, X } from 'lucide-react'
+import { Bot, ChevronDown, Loader2, Play, Plus, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,12 +9,29 @@ import { springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { listBoardSessions, type BoardSession, type NewBoardIssue } from '@/lib/api'
 
+/** The agent providers a spawned session can run (mirrors the new-session sheet
+ *  + the server's session providers). */
+const PROVIDERS = ['claude', 'codex', 'shell'] as const
+type Provider = (typeof PROVIDERS)[number]
+
+/** SD-3: remember the last-picked agent across cards (and reloads) so the next
+ *  task defaults to whatever you started last. */
+const LAST_PROVIDER_KEY = 'supermux:board:last-provider'
+function loadLastProvider(): Provider {
+  if (typeof localStorage === 'undefined') return 'claude'
+  const v = localStorage.getItem(LAST_PROVIDER_KEY)
+  return (PROVIDERS as readonly string[]).includes(v ?? '')
+    ? (v as Provider)
+    : 'claude'
+}
+
 export interface BoardComposerProps {
   /** Create the card (lands in To do). Resolves once created. */
   onAdd: (input: NewBoardIssue) => Promise<void>
   /** Create + start an agent (lands in Doing). The `session` is null unless the
-   *  user linked one via More — the route spawns a fresh session by default. */
-  onAddAndStart: (input: NewBoardIssue) => Promise<void>
+   *  user linked one via More — the route spawns a fresh session by default.
+   *  `provider` is the agent picked inline in the composer (SD-3). */
+  onAddAndStart: (input: NewBoardIssue, opts: { provider: string }) => Promise<void>
 }
 
 /**
@@ -45,7 +62,15 @@ export function BoardComposer({ onAdd, onAddAndStart }: BoardComposerProps) {
   const [tags, setTags] = useState<string[]>([])
   const [tagInput, setTagInput] = useState('')
   const [moreOpen, setMoreOpen] = useState(false)
+  const [provider, setProvider] = useState<Provider>(loadLastProvider)
   const [sessions, setSessions] = useState<BoardSession[]>([])
+
+  // SD-3: persist the agent pick so the next card (and a reload) defaults to it.
+  useEffect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LAST_PROVIDER_KEY, provider)
+    }
+  }, [provider])
   // 'add' | 'start' tracks which action is in flight (distinct spinners).
   const [busy, setBusy] = useState<null | 'add' | 'start'>(null)
   const [error, setError] = useState<string | null>(null)
@@ -102,7 +127,7 @@ export function BoardComposer({ onAdd, onAddAndStart }: BoardComposerProps) {
     try {
       const input = buildInput()
       if (mode === 'add') await onAdd(input)
-      else await onAddAndStart(input)
+      else await onAddAndStart(input, { provider })
       reset()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not create the task.')
@@ -248,24 +273,48 @@ export function BoardComposer({ onAdd, onAddAndStart }: BoardComposerProps) {
       )}
 
       <div className="flex flex-col gap-2">
-        {/* More toggle — subtle, on its own row so the two actions own the full
-            lane width below it (they never clip in a 300px lane). */}
-        <button
-          type="button"
-          aria-expanded={moreOpen}
-          aria-controls={moreId}
-          onClick={() => setMoreOpen((v) => !v)}
-          className="-my-1 inline-flex h-11 items-center gap-1 self-start rounded-md px-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <motion.span
-            animate={{ rotate: moreOpen ? 180 : 0 }}
-            transition={reduce ? { duration: 0 } : springs.snappy}
-            className="inline-flex"
+        {/* More toggle + inline agent picker share one row (SD-3): the agent is
+            visible without expanding More, "just as small" as the More affordance.
+            The two primary actions own the full lane width below (never clip in a
+            ~300px lane). */}
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            aria-expanded={moreOpen}
+            aria-controls={moreId}
+            onClick={() => setMoreOpen((v) => !v)}
+            className="-my-1 inline-flex h-11 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
-            <ChevronDown className="size-3.5" />
-          </motion.span>
-          More
-        </button>
+            <motion.span
+              animate={{ rotate: moreOpen ? 180 : 0 }}
+              transition={reduce ? { duration: 0 } : springs.snappy}
+              className="inline-flex"
+            >
+              <ChevronDown className="size-3.5" />
+            </motion.span>
+            More
+          </button>
+
+          {/* Which agent to start. Borderless + text-xs to match the More toggle's
+              weight; the value is remembered for the next card. Applies to
+              "Add & start" (a plain Add lands in To do with no agent yet). */}
+          <label className="-my-1 inline-flex h-11 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-muted-foreground transition-colors focus-within:text-foreground hover:text-foreground">
+            <Bot className="size-3.5" aria-hidden />
+            <span className="sr-only">Which agent to start</span>
+            <select
+              value={provider}
+              onChange={(e) => setProvider(e.target.value as Provider)}
+              aria-label="Which agent to start"
+              className="cursor-pointer rounded-md bg-transparent py-0 pl-0 pr-1 text-xs font-medium capitalize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p} value={p} className="capitalize">
+                  {p}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
         <div className="flex items-center gap-2">
           <Button

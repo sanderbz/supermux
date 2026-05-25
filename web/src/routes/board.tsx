@@ -137,12 +137,13 @@ export function Board() {
   // it; otherwise the server spawns a fresh session named from the card. The
   // card slides to Doing optimistically.
   const startIssue = useCallback(
-    async (issue: BoardIssue) => {
+    async (issue: BoardIssue, provider?: string) => {
       const hasLive = !!issue.session && issue.session_live
       await startAgent({
         id: issue.id,
         session: hasLive ? (issue.session as string) : undefined,
-        spawn: hasLive ? undefined : {},
+        // Spawn-by-default; honour the composer's agent pick (SD-3) when given.
+        spawn: hasLive ? undefined : provider ? { provider } : {},
         start: (a) => board.startIssue(a),
         sentDuration: 6000,
         sentMessage: (r) =>
@@ -216,9 +217,9 @@ export function Board() {
     [board],
   )
   const onAddAndStart = useCallback(
-    async (input: NewBoardIssue) => {
+    async (input: NewBoardIssue, opts: { provider: string }) => {
       const created = await board.createIssue({ ...input, status: 'todo' })
-      await startIssue(created)
+      await startIssue(created, opts.provider)
     },
     [board, startIssue],
   )
