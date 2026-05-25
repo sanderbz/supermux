@@ -6,13 +6,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { sessionsApi, SessionError, type NewSession } from '@/lib/api'
 import { homeDir } from '@/env'
@@ -117,34 +111,30 @@ export function NewSessionSheet({
   // Fall back to the server's home directory so the working-directory field is
   // always pre-filled — the user can create a session in one click, no typing.
   const initialDir = defaultDir ?? homeDir()
-  // The inner form only mounts while the sheet is open, so it starts fresh from
-  // `defaultDir` each time — no reset effect needed.
+  // The shared iOS bottom-sheet (ResponsiveSheet): Vaul drag-detent sheet on
+  // touch — grab-handle + swipe-down/backdrop-tap dismiss, NO ✕ — and the
+  // right-side dialog on desktop, matching every other sheet in the app
+  // (claude-tools, board card editor, scheduler). The inner form only mounts
+  // while the sheet is open, so it starts fresh from `defaultDir` each time —
+  // no reset effect needed.
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        className="flex w-full flex-col gap-0 overflow-y-auto p-0 sm:max-w-md"
-      >
-        <SheetHeader className="border-b border-border px-6 pt-safe">
-          <div className="pt-6">
-            <SheetTitle>New session</SheetTitle>
-            <SheetDescription>
-              Boot an agent in tmux. It survives restarts.
-            </SheetDescription>
-          </div>
-        </SheetHeader>
-        {open && (
-          <NewSessionForm
-            defaultDir={initialDir}
-            onCancel={() => onOpenChange(false)}
-            onCreated={(name) => {
-              onOpenChange(false)
-              onCreated(name)
-            }}
-          />
-        )}
-      </SheetContent>
-    </Sheet>
+    <ResponsiveSheet
+      open={open}
+      onOpenChange={onOpenChange}
+      title="New session"
+      description="Boot an agent in tmux. It survives restarts."
+    >
+      {open && (
+        <NewSessionForm
+          defaultDir={initialDir}
+          onCancel={() => onOpenChange(false)}
+          onCreated={(name) => {
+            onOpenChange(false)
+            onCreated(name)
+          }}
+        />
+      )}
+    </ResponsiveSheet>
   )
 }
 
