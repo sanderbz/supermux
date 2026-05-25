@@ -116,8 +116,8 @@ export interface IssueCardProps {
    *  card root. Narrow by design — `DraggableAttributes` carries no native
    *  `onDrag`, so it won't collide with framer-motion's own drag gesture typing. */
   dragAttributes?: DraggableAttributes
-  /** @dnd-kit `useSortable` listeners (pointer/touch/keyboard drag activation)
-   *  spread on the card root. The board's sensors (PointerSensor distance +
+  /** @dnd-kit `useSortable` listeners (mouse/touch/keyboard drag activation)
+   *  spread on the card root. The board's sensors (MouseSensor distance +
    *  TouchSensor long-press) decide when a drag actually starts, so a tap still
    *  opens the sheet and a vertical swipe still scrolls the column. */
   dragListeners?: DraggableSyntheticListeners
@@ -328,7 +328,7 @@ export function IssueCard({
   return (
     <motion.div
       // dnd-kit wiring: the spread attributes/listeners arm the drag via the
-      // board's sensors (PointerSensor distance / TouchSensor long-press). They
+      // board's sensors (MouseSensor distance / TouchSensor long-press). They
       // come FIRST so the card's own `onClick` (open sheet), `onKeyDown`, `role`
       // and `tabIndex` below win — keeping tap-to-open and keyboard-open intact
       // (the whole card is the grab target; there's no separate drag handle).
