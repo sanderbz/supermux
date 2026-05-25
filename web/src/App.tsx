@@ -27,6 +27,10 @@ const DevTerm = import.meta.env.DEV
 const DevFocus = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-focus'))
   : null
+// AT-F-FRONT: TEAM CARD / teammate-chip / density-toggle verification harness.
+const DevTeams = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-teams'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts). Defaults per §M10 / §4.1.
@@ -93,6 +97,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevFocus />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevTeams && (
+                <Route
+                  path="/dev/teams"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevTeams />
                     </Suspense>
                   }
                 />

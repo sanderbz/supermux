@@ -58,6 +58,7 @@ export type SseEventType =
   | 'alerts'
   | 'status'
   | 'prefs'
+  | 'teams'
   | 'ping'
 
 export interface SseHandlers {
@@ -243,6 +244,7 @@ function connect() {
     'alerts',
     'status',
     'prefs',
+    'teams',
     'ping',
   ]
   for (const type of NAMED) {

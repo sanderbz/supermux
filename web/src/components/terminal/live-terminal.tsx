@@ -83,6 +83,13 @@ export interface LiveTerminalProps {
    *  plain-text fallback <TailPreview> renders when no SGR-coloured tail is
    *  available. Same fallback-to-`useSessions` behaviour as `previewAnsi`. */
   previewLines?: string[]
+  /** Override the WebSocket path the terminal connects to (default:
+   *  `/ws/sessions/{name}`). The Agent Teams teammate terminal (AT-F2) passes the
+   *  read-only teammate route here; the handshake / replay / close contract is
+   *  identical (AT-E) so the whole WS client is reused. Already query-encoded by
+   *  the caller. When set, `name` is used only for the aria-label + the cached-tail
+   *  fallback lookup (which simply misses for a teammate — harmless). */
+  wsPath?: string
   /** Suppress the internal cached-tail overlay. The overview hover-peek
    *  (<TileLiveTerminal>) ALREADY owns a static→live crossfade — its <TailPreview>
    *  sits behind the live layer which fades in on `onFirstFrame`. Rendering the
@@ -107,6 +114,7 @@ export function LiveTerminal({
   previewAnsi,
   previewLines,
   suppressCachedTail = false,
+  wsPath,
 }: LiveTerminalProps) {
   const term = useLiveTerm(name, {
     readOnly,
@@ -114,6 +122,7 @@ export function LiveTerminal({
     allowProgrammaticInput,
     prewarmSeed,
     onSettled,
+    wsPath,
   })
   const { containerRef, state, hasFirstFrame, ready, retry, scrolledUp, scrollToBottom } =
     term
@@ -125,7 +134,12 @@ export function LiveTerminal({
   // — the SAME source the overview tiles render, so the static screen matches.
   // Skip the lookup entirely when the overlay is suppressed (the peek owns its
   // own crossfade) or when explicit preview props were supplied.
-  const wantFallback = !suppressCachedTail && !previewAnsi && !previewLines
+  // Skip the session-cache fallback entirely when a `wsPath` override is in play
+  // (a teammate terminal — AT-F2): teammates have no `/api/sessions` row, so a
+  // by-name lookup would either miss (wasteful) or, worse, collide with a real
+  // session of the same name. The caller passes explicit preview props instead.
+  const wantFallback =
+    !wsPath && !suppressCachedTail && !previewAnsi && !previewLines
   const fallback = useSession(wantFallback ? name : '').session
   const tailAnsi = previewAnsi ?? fallback?.preview_ansi
   const tailLines = previewLines ?? fallback?.preview_lines
