@@ -238,7 +238,12 @@ fn normalize_team(team: Option<&str>) -> Option<String> {
 /// Insert a board with a deterministic, collision-resistant id. The id is a
 /// slug of the team name / display name (so it's stable across register-team
 /// calls when derived from `team_name`), suffixed if a slug already exists.
-async fn insert_unique(
+///
+/// `pub(crate)` so the AT-G teams watcher can register a team board IN-PROCESS
+/// (never self-HTTP) on each detect tick — the idempotency is handled by the
+/// caller checking [`db::boards::get_by_team`] first (the UNIQUE `team_name`
+/// index is the backstop).
+pub(crate) async fn insert_unique(
     state: &AppState,
     name: &str,
     kind: &str,
@@ -441,6 +446,7 @@ mod tests {
                 pos: 0.0,
                 notified: 0,
                 board_id: board_id.to_string(),
+                team_task_id: None,
             },
         )
         .await
