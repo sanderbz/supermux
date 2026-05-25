@@ -218,6 +218,18 @@ pub struct AppState {
     /// re-derived to `active` on the next tick. `SessionStart` clears any pending
     /// override so the detector re-evaluates freely.
     pub forced_status: Arc<DashMap<String, Status>>,
+    /// Per-session PER-LAUNCH "force Agent Teams ON" flag (AT-D "Start a team").
+    /// AT-B's global `experimental.agent_teams` pref is the app-wide gate; this is
+    /// a NARROWER, explicit per-session opt-in set by the `POST /api/teams/start`
+    /// endpoint when a user spins up a team lead, so that ONE lead session gets
+    /// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode:"tmux"` even while
+    /// the global pref is OFF (explicit opt-in beats the conservative default).
+    /// [`crate::sessions::lifecycle::start`] reads `global_pref OR this.contains`,
+    /// so it never FIGHTS AT-B's gating — it only widens it for a flagged lead.
+    /// `()` value = a presence set; persists across re-starts/wakes of that lead
+    /// (a re-woken team lead should keep teams enabled), carried on rename, dropped
+    /// on `forget_session`.
+    pub force_agent_teams: Arc<DashMap<String, ()>>,
     /// Shared VAPID keypair for web push (PUSH milestone). Computed once at
     /// startup (loaded/generated from the data dir); the public half is served by
     /// `GET /api/push/key`, the private half signs every push. Cheap `Arc` clone.
@@ -255,7 +267,19 @@ impl AppState {
             session_tasks: Arc::new(DashMap::new()),
             session_activity: Arc::new(DashMap::new()),
             forced_status: Arc::new(DashMap::new()),
+            force_agent_teams: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Mark a session as a "Start a team" LEAD: its next (and subsequent) starts
+    /// inject the Agent Teams env even when the global pref is OFF (AT-D). Idempotent.
+    pub fn set_force_agent_teams(&self, name: &str) {
+        self.force_agent_teams.insert(name.to_string(), ());
+    }
+
+    /// Was this session explicitly opted into Agent Teams via "Start a team"?
+    pub fn force_agent_teams(&self, name: &str) -> bool {
+        self.force_agent_teams.contains_key(name)
     }
 
     /// Register the start of a per-session background loop, returning a guard
@@ -581,6 +605,7 @@ impl AppState {
         self.session_tasks.remove(name);
         self.session_activity.remove(name);
         self.forced_status.remove(name);
+        self.force_agent_teams.remove(name);
         self.cadence_recency
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -620,6 +645,9 @@ impl AppState {
         }
         if let Some((_, v)) = self.forced_status.remove(old) {
             self.forced_status.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.force_agent_teams.remove(old) {
+            self.force_agent_teams.insert(new.to_string(), v);
         }
         {
             let mut rec = self.cadence_recency.lock().unwrap_or_else(|e| e.into_inner());

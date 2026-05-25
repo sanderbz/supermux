@@ -18,13 +18,17 @@
 
 pub mod model;
 pub mod scan;
+pub mod start;
 pub mod watcher;
 
 pub use model::{Member, MemberStatus, Team, TeamTask};
+pub use start::{start_team, StartTeamInput, StartTeamResult};
 pub use watcher::{scan_and_enrich, spawn};
 
 use axum::extract::State;
-use axum::routing::get;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
@@ -37,6 +41,10 @@ use crate::state::{AppState, SseEvent};
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/api/teams", get(list_teams))
+        // AT-D "Start a team": create + boot a Claude LEAD with Agent Teams
+        // enabled for it + a seed prompt that forms the team. DISTINCT path from
+        // `GET /api/teams` (AT-B's list) so the two never collide.
+        .route("/api/teams/start", post(start_team_handler))
         // The single global experimental gate (§3.1). GET reads the current
         // value; PUT flips it. Default OFF (experimental + ~7× token cost).
         .route(
@@ -56,6 +64,23 @@ pub fn router_for(state: AppState) -> Router {
 async fn list_teams(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
     let teams = scan_and_enrich(&state).await;
     Ok(Json(json!({ "ok": true, "data": teams })))
+}
+
+/// `POST /api/teams/start` (AT-D) — create + boot a Claude LEAD session with
+/// Agent Teams enabled for it and a seed prompt that instructs the lead to form a
+/// team of N teammates working on the given goal. Returns 201 with the LEAD
+/// `SessionView` so the UI can navigate to `/focus/<name>`; the TEAM CARD then
+/// appears via AT-B detection once the lead has spawned its panes.
+///
+/// Body: `{ task, teammates?, model?, dir?, name? }` (see [`start::StartTeamInput`]).
+/// `task` (the goal) is required; everything else is optional + defensively
+/// clamped/sanitized in [`start::start_team`].
+async fn start_team_handler(
+    State(state): State<AppState>,
+    Json(input): Json<start::StartTeamInput>,
+) -> Result<impl IntoResponse, AppError> {
+    let result = start::start_team(&state, input).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "ok": true, "data": result }))))
 }
 
 /// `PUT /api/settings/experimental/agent-teams` body — `{ "enabled": bool }`.
