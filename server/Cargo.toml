@@ -69,8 +69,9 @@ openssl = { version = "0.10", features = ["vendored"] }
 # web-push uses internally for VAPID, pinned + default-features off (no openssl).
 jwt-simple = { version = "0.12.16", default-features = false, features = ["pure-rust"] }
 # Outbound HTTPS to push endpoints (FCM/Mozilla/Apple), rustls — matches the
-# project's TLS stack. Promoted from a dev-dependency.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# project's TLS stack. Promoted from a dev-dependency. `json` is for the
+# edit-in-native-editor bridge's loopback self-call (open/result JSON bodies).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # ── misc ──
 anyhow = "1.0"

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tokio::sync::{broadcast, watch, Mutex, Notify};
+use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
 
 use crate::config::Config;
 use crate::sessions::pty::PtyStream;
@@ -133,6 +133,47 @@ pub fn is_hot_in(map: &HashMap<String, SessionRecency>, name: &str) -> bool {
     true
 }
 
+/// One in-flight "edit in native editor" handoff (feat-edit-in-native-editor).
+///
+/// When Claude's built-in `chat:externalEditor` (Ctrl+G) spawns the supermux
+/// `$EDITOR` bridge, the bridge POSTs the temp-file buffer to
+/// `/api/_internal/external-edit/open` (per-session hook-token auth) and then
+/// long-polls `/result`. The open handler stores ONE of these per session and
+/// blocks the result long-poll on `rx`; the dashboard's `/external-edit/submit`
+/// (bearer auth) resolves `tx` with the edited text or a cancel. Claude itself
+/// owns the serialize→edit→deserialize contract — supermux only relays the buffer
+/// in and the edited text back, so there is no cell-scraping or keystroke replay.
+///
+/// One in-flight edit per session: Claude is BLOCKED on the child `$EDITOR`
+/// process while editing, so a second legitimate open can't arrive. If one does
+/// (a stale bridge, a racing retry) the prior pending edit is resolved
+/// [`EditResult::Cancelled`] and replaced — the prior bridge then leaves its temp
+/// file unchanged (a no-op), never corrupting Claude's buffer.
+pub struct PendingEdit {
+    /// The uuid minted by the open handler; only a `submit` carrying THIS id
+    /// resolves the edit (a stale dashboard tab submitting an old id is ignored).
+    pub request_id: String,
+    /// The result channel `submit` resolves. `Some` until resolved; taken (→
+    /// `None`) by the first `submit`/replace so it fires exactly once.
+    pub tx: Option<oneshot::Sender<EditResult>>,
+    /// The paired receiver the `/result` long-poll awaits. The open handler
+    /// registers BOTH halves together (the bridge POSTs `open` then long-polls
+    /// `result`, so the receiver must outlive the open call); `/result` `take`s it
+    /// out and awaits it. `None` once taken — a second `/result` for the same id
+    /// (the bridge never makes one) finds nothing to await.
+    pub rx: Option<oneshot::Receiver<EditResult>>,
+}
+
+/// The outcome of an in-flight external edit, sent on [`PendingEdit::tx`].
+#[derive(Debug)]
+pub enum EditResult {
+    /// The user saved — the new buffer text to write back into Claude's input.
+    Text(String),
+    /// The user dismissed the sheet (or the slot was superseded) — Claude's
+    /// buffer is left unchanged (the bridge leaves the temp file as-is).
+    Cancelled,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     /// SQLite connection pool (WAL, FK on).
@@ -219,6 +260,14 @@ pub struct AppState {
     /// re-derived to `active` on the next tick. `SessionStart` clears any pending
     /// override so the detector re-evaluates freely.
     pub forced_status: Arc<DashMap<String, Status>>,
+    /// Per-session in-flight "edit in native editor" handoff
+    /// (feat-edit-in-native-editor). At most one [`PendingEdit`] per session
+    /// (Claude is blocked on the child `$EDITOR` while editing). The
+    /// `/external-edit/open` handler inserts; `/result` awaits the oneshot;
+    /// `/external-edit/submit` resolves + removes it. A `std::sync::Mutex` (not
+    /// the tokio one) because every critical section is a tiny synchronous map
+    /// op — insert/take a sender — never held across an `.await`.
+    pub pending_edits: Arc<std::sync::Mutex<HashMap<String, PendingEdit>>>,
     /// Shared VAPID keypair for web push (PUSH milestone). Computed once at
     /// startup (loaded/generated from the data dir); the public half is served by
     /// `GET /api/push/key`, the private half signs every push. Cheap `Arc` clone.
@@ -256,6 +305,86 @@ impl AppState {
             session_tasks: Arc::new(DashMap::new()),
             session_activity: Arc::new(DashMap::new()),
             forced_status: Arc::new(DashMap::new()),
+            pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    // ── external edit: in-flight native-editor handoff registry ───────────────
+
+    /// Register a fresh [`PendingEdit`] for `session` (feat-edit-in-native-editor).
+    /// Stores BOTH channel halves so the receiver outlives the bridge's `open` call
+    /// (the bridge then long-polls `/result`, which `take`s the receiver). If a
+    /// prior edit is still in flight for this session it is resolved
+    /// [`EditResult::Cancelled`] and replaced (one in-flight edit per session —
+    /// Claude is blocked while editing, so a second open is a stale/racing bridge
+    /// whose temp file we want left unchanged). Poisoned-lock recovery: the registry
+    /// is a best-effort relay, never a correctness invariant, so a poisoned mutex is
+    /// recovered, not panicked.
+    pub fn register_edit(&self, session: &str, request_id: String) {
+        let (tx, rx) = oneshot::channel();
+        let mut map = self.pending_edits.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = map.insert(
+            session.to_string(),
+            PendingEdit {
+                request_id,
+                tx: Some(tx),
+                rx: Some(rx),
+            },
+        ) {
+            // Supersede the prior in-flight edit so its bridge leaves the file as-is.
+            if let Some(prev_tx) = prev.tx {
+                let _ = prev_tx.send(EditResult::Cancelled);
+            }
+        }
+    }
+
+    /// Take the result RECEIVER for `session`'s in-flight edit so the `/result`
+    /// long-poll can await it, IFF `request_id` matches (feat-edit-in-native-editor).
+    /// `None` for no/stale slot or an already-taken receiver (the bridge makes
+    /// exactly one `/result` per `open`, so this is taken at most once) — the caller
+    /// then answers a no-op `{cancelled}`. The slot stays in the map so a pending
+    /// `submit` still finds the sender to resolve.
+    pub fn take_edit_receiver(
+        &self,
+        session: &str,
+        request_id: &str,
+    ) -> Option<oneshot::Receiver<EditResult>> {
+        let mut map = self.pending_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = map.get_mut(session)?;
+        if pending.request_id != request_id {
+            return None;
+        }
+        pending.rx.take()
+    }
+
+    /// Resolve the in-flight edit for `session` IFF its `request_id` matches
+    /// (feat-edit-in-native-editor). Returns `true` when the matching pending edit
+    /// was found + resolved (the slot is removed); `false` for no pending edit or a
+    /// stale `request_id` (a stale dashboard tab submitting an old id) — the caller
+    /// answers 409/410. Sending on the oneshot wakes the `/result` long-poll.
+    pub fn resolve_edit(&self, session: &str, request_id: &str, result: EditResult) -> bool {
+        let mut map = self.pending_edits.lock().unwrap_or_else(|e| e.into_inner());
+        match map.get_mut(session) {
+            Some(pending) if pending.request_id == request_id => {
+                if let Some(tx) = pending.tx.take() {
+                    let _ = tx.send(result);
+                }
+                map.remove(session);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Drop the in-flight edit for `session` IFF its `request_id` still matches
+    /// (feat-edit-in-native-editor). Used by the `/result` long-poll on timeout so a
+    /// later `submit` for the SAME id can't resolve a receiver that has already gone
+    /// away (it would no-op anyway, but clearing keeps the registry tidy). A
+    /// different id means a newer edit superseded this one — leave it intact.
+    pub fn clear_edit_if(&self, session: &str, request_id: &str) {
+        let mut map = self.pending_edits.lock().unwrap_or_else(|e| e.into_inner());
+        if map.get(session).map(|p| p.request_id == request_id).unwrap_or(false) {
+            map.remove(session);
         }
     }
 
@@ -564,6 +693,19 @@ impl AppState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(name);
+        // Resolve + drop any in-flight external edit (feat-edit-in-native-editor)
+        // so its `/result` long-poll wakes (Cancelled) instead of waiting out the
+        // server-side timeout against a forgotten session.
+        if let Some(pending) = self
+            .pending_edits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name)
+        {
+            if let Some(tx) = pending.tx {
+                let _ = tx.send(EditResult::Cancelled);
+            }
+        }
         self.pty.forget(name);
     }
 
@@ -604,6 +746,12 @@ impl AppState {
             let mut rec = self.cadence_recency.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(v) = rec.remove(old) {
                 rec.insert(new.to_string(), v);
+            }
+        }
+        {
+            let mut edits = self.pending_edits.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(v) = edits.remove(old) {
+                edits.insert(new.to_string(), v);
             }
         }
         self.pty.rename(old, new);
@@ -735,5 +883,115 @@ mod hot_set_tests {
     fn unknown_session_is_not_hot() {
         let map = HashMap::new();
         assert!(!is_hot_in(&map, "ghost"));
+    }
+}
+
+#[cfg(test)]
+mod pending_edit_tests {
+    //! feat-edit-in-native-editor: the in-flight native-editor handoff registry.
+    //! `register_edit`/`resolve_edit`/`clear_edit_if` are pure synchronous map ops
+    //! over an in-memory `AppState` (a temp DB only because `new` needs a pool), so
+    //! the request-id matching + one-in-flight-per-session + supersede rules are
+    //! pinned without driving real HTTP or tmux.
+
+    use super::*;
+    use crate::config::Config;
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-edit-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    #[tokio::test]
+    async fn matching_submit_resolves_the_long_poll() {
+        let (state, dir) = test_state().await;
+        state.register_edit("w1", "req-1".into());
+        // The `/result` long-poll takes the receiver to await.
+        let mut rx = state.take_edit_receiver("w1", "req-1").expect("receiver");
+
+        // A matching submit resolves the receiver with the edited text.
+        assert!(state.resolve_edit("w1", "req-1", EditResult::Text("hello".into())));
+        match rx.try_recv() {
+            Ok(EditResult::Text(t)) => assert_eq!(t, "hello"),
+            other => panic!("expected Text(hello), got {other:?}"),
+        }
+        // The slot is gone — a repeat submit is a no-op (stale, → 409 at the route).
+        assert!(!state.resolve_edit("w1", "req-1", EditResult::Cancelled));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn stale_request_id_does_not_resolve() {
+        let (state, dir) = test_state().await;
+        state.register_edit("w1", "req-1".into());
+        let mut rx = state.take_edit_receiver("w1", "req-1").expect("receiver");
+        // A stale id can't take the receiver either.
+        assert!(state.take_edit_receiver("w1", "other-id").is_none());
+
+        // A submit carrying the WRONG id (a stale dashboard tab) is ignored, and the
+        // genuine receiver stays pending (not yet resolved).
+        assert!(!state.resolve_edit("w1", "other-id", EditResult::Text("x".into())));
+        assert!(matches!(rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+
+        // The correct id still resolves it.
+        assert!(state.resolve_edit("w1", "req-1", EditResult::Cancelled));
+        assert!(matches!(rx.try_recv(), Ok(EditResult::Cancelled)));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn second_open_supersedes_the_prior_as_cancelled() {
+        let (state, dir) = test_state().await;
+        state.register_edit("w1", "req-1".into());
+        let mut first = state.take_edit_receiver("w1", "req-1").expect("first receiver");
+        // A second open for the same session supersedes the first (one in-flight
+        // per session): the prior receiver resolves Cancelled, the new one is live.
+        state.register_edit("w1", "req-2".into());
+        let mut second = state.take_edit_receiver("w1", "req-2").expect("second receiver");
+        assert!(matches!(first.try_recv(), Ok(EditResult::Cancelled)));
+
+        // The OLD id can no longer resolve the new edit.
+        assert!(!state.resolve_edit("w1", "req-1", EditResult::Text("late".into())));
+        // The new id does.
+        assert!(state.resolve_edit("w1", "req-2", EditResult::Text("new".into())));
+        match second.try_recv() {
+            Ok(EditResult::Text(t)) => assert_eq!(t, "new"),
+            other => panic!("expected Text(new), got {other:?}"),
+        }
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn clear_edit_if_only_clears_the_matching_id() {
+        let (state, dir) = test_state().await;
+        state.register_edit("w1", "req-1".into());
+        // A timeout for a stale id must NOT clear a newer edit.
+        state.clear_edit_if("w1", "old-id");
+        assert!(state.resolve_edit("w1", "req-1", EditResult::Cancelled));
+
+        // Re-register, then clear with the matching id → the slot is gone.
+        state.register_edit("w1", "req-2".into());
+        state.clear_edit_if("w1", "req-2");
+        assert!(!state.resolve_edit("w1", "req-2", EditResult::Cancelled));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

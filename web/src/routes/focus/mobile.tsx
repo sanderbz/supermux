@@ -51,6 +51,7 @@ import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
+import { useExternalEdit } from '@/components/focus-mode/use-external-edit'
 import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
@@ -220,11 +221,19 @@ export function MobileFocus() {
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
-  // The on-demand native compose sheet (typed prompt + staged attachments). The
-  // session pill is its trigger; it morphs the pill → sheet via a shared
-  // `layoutId`. Live-type + the accessory strip remain the default for
-  // interactive TUIs — this sheet is additive.
-  const [composeOpen, setComposeOpen] = React.useState(false)
+  // The on-demand native EDITOR sheet (feat-edit-in-native-editor). The dock's
+  // bottom-left Edit field is its trigger: tapping it sends Ctrl+G to the pty,
+  // Claude lifts its current `❯` input into the supermux bridge, and the sheet
+  // opens on the `external-edit` SSE event PRE-FILLED with that buffer. Save writes
+  // the edited text back to Claude's buffer (no auto-submit). Live-type + the
+  // accessory strip remain the default for interactive TUIs — this is additive.
+  const edit = useExternalEdit(name)
+  // Tap the Edit field → Ctrl+G (the EDIT trigger). We do NOT open the sheet here;
+  // it opens when Claude's bridge fires the SSE event with the real buffer.
+  const onEdit = React.useCallback(
+    () => termRef.current?.sendKey('Ctrl-G'),
+    [],
+  )
   // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
   const [infoOpen, setInfoOpen] = React.useState(false)
   // DOCK — the slash panel was removed: slash commands now run from the Claude
@@ -372,8 +381,8 @@ export function MobileFocus() {
             onOpenPicker={() => setPickerOpen(true)}
             onOpenSpecials={() => setSpecialsOpen(true)}
             onOpenSnippets={() => setSnippetsOpen(true)}
-            onOpenCompose={() => setComposeOpen(true)}
-            composeOpen={composeOpen}
+            onEdit={onEdit}
+            editOpen={edit.open}
             onSwitchSession={goSession}
             onSend={sendToTerm}
             onSendKey={(key) => termRef.current?.sendKey(key)}
@@ -412,14 +421,17 @@ export function MobileFocus() {
         onRun={(body) => termRef.current?.send(body + '\r')}
       />
 
-      {/* The on-demand native compose sheet — morphs from the session pill via a
-          shared `layoutId`. On Send it composes the typed text + the staged
-          attachment sentence + a trailing Enter and streams it into the pty as
-          one prompt; the live terminal shows the echo. */}
+      {/* The on-demand native EDITOR sheet (feat-edit-in-native-editor) — morphs
+          from the dock Edit field via a shared `layoutId`. It opens PRE-FILLED with
+          Claude's current `❯` input (delivered over the `external-edit` SSE event)
+          and on Save writes the edited text (+ any attachment path) back into
+          Claude's input buffer via the submit endpoint — NO Enter, so the user
+          submits with Enter themselves. A dismiss cancels (buffer left unchanged). */}
       <MobileComposeSheet
-        open={composeOpen}
-        onOpenChange={setComposeOpen}
-        onSend={sendToTerm}
+        open={edit.open}
+        onOpenChange={edit.setOpen}
+        buffer={edit.buffer}
+        onSave={edit.save}
       />
 
       {/* feat-session-info — the title-click info panel (bottom Sheet on mobile).

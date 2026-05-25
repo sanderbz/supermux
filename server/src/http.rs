@@ -19,6 +19,7 @@ use crate::audit;
 use crate::auth;
 use crate::board;
 use crate::claude_tools;
+use crate::external_edit;
 use crate::files;
 use crate::hooks;
 use crate::prefs;
@@ -42,6 +43,11 @@ pub fn router(state: AppState) -> Router {
         // M5b: Claude hook ingestion — NO bearer layer; auth is the per-session
         // `X-Supermux-Hook-Token` validated in the handler (§6.5).
         .merge(hooks::router_for(state.clone()))
+        // feat-edit-in-native-editor: the `$EDITOR` bridge's open/result endpoints
+        // — NO bearer layer; SAME per-session `X-Supermux-Hook-Token` auth as the
+        // status hook (the bridge runs inside the pane, never holds the bearer).
+        // The dashboard-side `submit` is bearer-gated, on the sessions router.
+        .merge(external_edit::router_for(state.clone()))
         // AB1: agent→board hook endpoints — NO bearer layer; SAME per-session
         // `X-Supermux-Hook-Token` auth as the status hook, plus the scope rule
         // (an agent may only mutate its own session's issue).

@@ -29,6 +29,7 @@ import {
   Ellipsis,
   Mic,
   Paperclip,
+  PencilLine,
   ArrowLeft,
   ArrowUp,
   ArrowDown,
@@ -71,6 +72,10 @@ export interface DesktopDockProps {
   onSendKey: (label: string) => void
   /** "+" snippet-drawer toggle — opens the M18 snippet side-sheet. */
   onSnippets?: () => void
+  /** ✎ Edit — lift Claude's current `❯` input into the native editor sheet
+   *  (feat-edit-in-native-editor). The caller sends Ctrl+G; the sheet opens on the
+   *  resulting `external-edit` SSE event, pre-filled. Absent for non-Claude docks. */
+  onEdit?: () => void
   /** 📎 attach — picked files go to the upload+inject flow (parent's
    *  `useAttachmentUpload.handleFiles`). Drives the desktop file picker. */
   onAttach?: (files: File[]) => void
@@ -154,6 +159,7 @@ export function DesktopDock({
   onSendKey,
   onSnippets,
   onAttach,
+  onEdit,
   onDetach,
   onStop,
 }: DesktopDockProps) {
@@ -201,6 +207,10 @@ export function DesktopDock({
       <div className="flex shrink-0 items-center gap-1">
         <IconButton icon={Command} label="Command palette (⌘K)" onClick={triggerPalette} />
         <IconButton icon={Plus} label="Snippets" onClick={onSnippets} />
+        {/* ✎ Edit — lift the current prompt into a native editor (Ctrl+G). */}
+        {onEdit && (
+          <IconButton icon={PencilLine} label="Edit in native editor" onClick={onEdit} />
+        )}
         {onAttach && (
           <IconButton
             icon={Paperclip}
@@ -295,17 +305,18 @@ export default DesktopDock
 //   ┌ accessory key strip — rides the keyboard top ──────────────────────────┐
 //   │ [Esc] [Tab] [^C] [←][↑][↓][→] [⌨ hide]                                  │
 //   ├ dock row ───────────────────────────────────────────────────────────────┤
-//   │ [📎 Message…]  [⌨]  [···]  [＋]  [🎙]            [↵ Enter]               │
+//   │ [✎ Edit]  [⌨]  [···]  [＋]  [🎙]                  [↵ Enter]               │
 //   └───────────────────────────────────────────────────────────────────────┘
 //
-//   • Compose field  — a faux text input: a 📎 paperclip + a muted "Message…"
-//     placeholder, styled to read as a TAPPABLE field ("tap to write a message &
-//     attach a file"). Tap → opens the on-demand compose sheet (`onOpenCompose`),
-//     morphing the field's surface into the sheet via the shared
-//     `COMPOSE_LAYOUT_ID`; horizontal swipe → prev/next session (peek-of-next),
-//     unchanged. The status dot + session name now live ONLY in the top focus-
-//     header title — they were removed here so the affordance reads as "compose",
-//     not a status label. Same width as the old pill (`maxWidth: '40%'`).
+//   • Edit field     — a faux text input: a ✎ pencil + a muted "Edit" label,
+//     styled to read as a TAPPABLE field ("tap to edit what you've typed in a
+//     native editor"). Tap → fires `onEdit` (the caller sends Ctrl+G), Claude
+//     lifts its current `❯` input into the supermux bridge, and the native editor
+//     sheet opens on the resulting `external-edit` SSE event PRE-FILLED — morphing
+//     the field's surface into the sheet via the shared `COMPOSE_LAYOUT_ID`;
+//     horizontal swipe → prev/next session (peek-of-next), unchanged. The status
+//     dot + session name live ONLY in the top focus-header title. Same width as the
+//     old pill (`maxWidth: '40%'`). (feat-edit-in-native-editor)
 //   • ⌨ toggle       — focuses/blurs the TERMINAL (summons/dismisses keyboard).
 //   • Specials (···) — opens the QuickKeysSheet (curated tap-to-send chips).
 //   • ＋ snippets     — opens the snippet panel; snippet run → term.send.
@@ -367,13 +378,16 @@ export interface MobileDockProps {
   keyboardOpen?: boolean
   /** Open the M18 snippet panel (in-place slide-up). */
   onOpenSnippets?: () => void
-  /** Open the on-demand native compose sheet — the session pill is its trigger.
-   *  Attach now lives INSIDE that sheet (the standalone dock 📎 was removed). */
-  onOpenCompose?: () => void
-  /** True while the compose sheet is open — the pill drops its shared-element
-   *  morph surface so framer tweens the SAME `layoutId` into the sheet (and the
-   *  pill doesn't double-render the id). */
-  composeOpen?: boolean
+  /** Tap the bottom-left Edit field → lift Claude's current `❯` input into the
+   *  native editor sheet (feat-edit-in-native-editor). The caller sends Ctrl+G to
+   *  the pty here; the sheet itself opens on the resulting `external-edit` SSE
+   *  event (pre-filled with Claude's actual buffer), NOT on this tap. Attach lives
+   *  INSIDE that sheet (the standalone dock 📎 was removed). */
+  onEdit?: () => void
+  /** True while the native editor sheet is open — the field drops its shared-
+   *  element morph surface so framer tweens the SAME `layoutId` into the sheet (and
+   *  the field doesn't double-render the id). */
+  editOpen?: boolean
   /** Registration hook the parent calls with this dock's imperative
    *  `insert(text)` once mounted, so the route-level M18 snippet panel can drop
    *  a snippet body straight into the terminal (tap-to-insert sends it live). */
@@ -394,8 +408,8 @@ export function MobileDock({
   onBlurTerm,
   keyboardOpen = false,
   onOpenSnippets,
-  onOpenCompose,
-  composeOpen = false,
+  onEdit,
+  editOpen = false,
   registerInsert,
   className,
 }: MobileDockProps) {
@@ -548,10 +562,10 @@ export function MobileDock({
         </div>
       )}
 
-      {/* Dock row — compose field + accessory dock icons + Enter. NO inline text
-          composer here (composing happens in the on-demand sheet the field opens).
-          The icon cluster is one balanced group; Enter is pushed to the right edge
-          (the room the compact field + name-removal frees). */}
+      {/* Dock row — Edit field + accessory dock icons + Enter. The field lifts
+          Claude's current `❯` input into the native editor sheet (tap → Ctrl+G;
+          the sheet opens on the SSE event, pre-filled). The icon cluster is one
+          balanced group; Enter is pushed to the right edge. */}
       <div className="flex items-center gap-1">
         <ComposeField
           current={current}
@@ -559,8 +573,8 @@ export function MobileDock({
           nextSession={nextSession}
           onTap={onOpenPicker}
           onSwitch={onSwitchSession}
-          onCompose={onOpenCompose}
-          composeOpen={composeOpen}
+          onEdit={onEdit}
+          editOpen={editOpen}
         />
 
         <DockIcon
@@ -678,51 +692,51 @@ function AccessoryChip({
   )
 }
 
-// ── Compose field (faux input) with swipe-to-switch + peek-of-next ────────────
+// ── Edit field (faux input) with swipe-to-switch + peek-of-next ───────────────
 
 /** Truncate the swiped-in peek-of-next session name to ~8 chars + a trailing
  *  ellipsis so the peek preview stays compact (matches the field's width). The
- *  current session's status dot + name now live ONLY in the top focus-header
- *  title — they were removed from this field so it reads as a compose affordance,
- *  not a status label. (Top header truncation lives in focus-header.tsx.) */
+ *  current session's status dot + name live ONLY in the top focus-header title —
+ *  they were removed from this field so it reads as an EDIT affordance, not a
+ *  status label. (Top header truncation lives in focus-header.tsx.) */
 const PILL_NAME_MAX = 8
 function truncatePillName(name: string): string {
   return name.length > PILL_NAME_MAX ? `${name.slice(0, PILL_NAME_MAX)}…` : name
 }
 
-/** The bottom-left COMPOSE AFFORDANCE — a faux text input (📎 paperclip + a muted
- *  "Message…" placeholder) styled to read as a TAPPABLE field: "tap to write a
- *  message & attach a file." Replaces the old status-pill content (dot + name +
- *  chevron), which read like a label and hid the tap-to-compose action; that
- *  status now lives only in the top focus-header title.
- *
- *  Behaviour is unchanged from the pill: a genuine TAP opens the on-demand
- *  compose sheet (`onCompose`) — the field's background surface is the morph
- *  origin (it carries `COMPOSE_LAYOUT_ID`); a horizontal SWIPE switches sessions
- *  (peek-of-next beneath). Same width as before (`maxWidth: '40%'`, h-11). */
+/** The bottom-left EDIT AFFORDANCE (feat-edit-in-native-editor) — a faux text
+ *  input (✎ pencil + a muted "Edit" label) styled as a TAPPABLE field: "tap to
+ *  edit what you've typed in a native editor." A genuine TAP fires `onEdit` (the
+ *  caller sends Ctrl+G to the pty); Claude then lifts its current `❯` input into
+ *  the native editor sheet, which opens on the resulting `external-edit` SSE event
+ *  PRE-FILLED — so we do NOT open the sheet on tap, we wait for the real buffer.
+ *  The field's background surface is the morph origin (it carries
+ *  `COMPOSE_LAYOUT_ID`); a horizontal SWIPE switches sessions (peek-of-next
+ *  beneath). Same width as before (`maxWidth: '40%'`, h-11). */
 function ComposeField({
   current,
   prevSession,
   nextSession,
   onTap,
   onSwitch,
-  onCompose,
-  composeOpen = false,
+  onEdit,
+  editOpen = false,
 }: {
   current: ApiSession
   prevSession: ApiSession | null
   nextSession: ApiSession | null
-  /** Fallback tap target (session picker) when there is no compose handler. */
+  /** Fallback tap target (session picker) when there is no edit handler. */
   onTap: () => void
   onSwitch: (name: string) => void
-  /** Tap → open the on-demand compose sheet. When set, a genuine tap opens
-   *  compose (this field is the morph origin); a horizontal swipe still switches
-   *  sessions. When absent, a tap falls back to `onTap` (the picker). */
-  onCompose?: () => void
-  /** True while the compose sheet is open — the field drops its shared-element
-   *  `layoutId` surface so framer tweens that id into the sheet (one holder at a
-   *  time), and the morph reads the field's exact last rect as the origin. */
-  composeOpen?: boolean
+  /** Tap → lift Claude's current input into the native editor (the caller sends
+   *  Ctrl+G). When set, a genuine tap fires this (this field is the morph origin);
+   *  a horizontal swipe still switches sessions. When absent, a tap falls back to
+   *  `onTap` (the picker). */
+  onEdit?: () => void
+  /** True while the native editor sheet is open — the field drops its shared-
+   *  element `layoutId` surface so framer tweens that id into the sheet (one holder
+   *  at a time), and the morph reads the field's exact last rect as the origin. */
+  editOpen?: boolean
 }) {
   const reduceMotion = useReducedMotion()
   const x = useMotionValue(0)
@@ -743,7 +757,7 @@ function ComposeField({
   React.useEffect(() => peek.on('change', setPeekSession), [peek])
 
   // ── Tap-vs-swipe gate ───────────────────────────────────────────────────────
-  // A TAP opens compose; a horizontal SWIPE switches sessions. Mirrors the
+  // A TAP fires onEdit (Ctrl+G); a horizontal SWIPE switches sessions. Mirrors the
   // tap-vs-pan gating the terminal body uses (mobile.tsx): a candidate is armed
   // on pointer-down and only counts as a tap on pointer-up if the finger barely
   // moved and the press was short. framer's own drag also flips `draggedRef` in
@@ -773,7 +787,7 @@ function ComposeField({
     const dist = Math.hypot(e.clientX - cand.x, e.clientY - cand.y)
     const elapsed = Date.now() - cand.t
     if (dist < TAP_SLOP_PX && elapsed < TAP_MAX_MS) {
-      if (onCompose) onCompose()
+      if (onEdit) onEdit()
       else onTap()
     }
   }
@@ -790,14 +804,14 @@ function ComposeField({
   }
 
   const swipeable = Boolean(prevSession || nextSession)
-  const tapLabel = onCompose
-    ? 'Write a message or attach a file'
+  const tapLabel = onEdit
+    ? 'Edit your message in a native editor'
     : 'Switch session'
 
   return (
     <div ref={ref} className="relative h-11 shrink-0" style={{ maxWidth: '40%' }}>
       {/* Shared-element morph surface — the faux input's background. It carries
-          COMPOSE_LAYOUT_ID so framer tweens THIS rect into the compose sheet's
+          COMPOSE_LAYOUT_ID so framer tweens THIS rect into the editor sheet's
           surface (and back). Dropped while the sheet is open so only ONE node
           holds the id at a time (the sheet's), which is what makes the
           field→sheet tween fire. A plain (id-less) fill takes its place meanwhile
@@ -807,7 +821,7 @@ function ComposeField({
           construction. Input-like surface — soft `bg-muted/40` fill + a subtle
           `border-input` hairline + 10px radius — so it reads as a TAPPABLE text
           field rather than a status label or an action pill. */}
-      {composeOpen || reduceMotion ? (
+      {editOpen || reduceMotion ? (
         <div className="pointer-events-none absolute inset-0 rounded-[10px] border border-input bg-muted/40" />
       ) : (
         <motion.div
@@ -819,7 +833,7 @@ function ComposeField({
 
       {/* Peek-of-next, revealed beneath the dragging field — keeps the dot+name
           here (it's a momentary SWITCH preview, where the status IS the point),
-          unlike the resting field which is a compose affordance. */}
+          unlike the resting field which is an edit affordance. */}
       <motion.div
         aria-hidden
         style={{ opacity: peekOpacity }}
@@ -862,29 +876,29 @@ function ComposeField({
         className={cn(
           'relative flex h-11 w-full items-center gap-2 rounded-[10px] bg-transparent px-3',
           'text-[14px] font-medium',
-          // Fade the field content out while compose is open so the 📎/placeholder
+          // Fade the field content out while the editor is open so the ✎/label
           // doesn't linger faintly behind the translucent sheet during the morph
           // (the input-fill morph surface is the sibling above; only this content
           // needs to cross-fade). A short opacity tween reads as part of the
           // morph; under reduced motion it's a gentle fade (no transform), so it
           // doesn't reintroduce motion. Hidden from AT/Tab while masked.
           'transition-opacity duration-300',
-          composeOpen && 'pointer-events-none opacity-0',
+          editOpen && 'pointer-events-none opacity-0',
         )}
-        aria-hidden={composeOpen || undefined}
-        tabIndex={composeOpen ? -1 : undefined}
+        aria-hidden={editOpen || undefined}
+        tabIndex={editOpen ? -1 : undefined}
       >
-        {/* 📎 the visual cue: this field both writes a message AND attaches a
-            file (the compose sheet it opens has its own 📎 attach inside). */}
-        <Paperclip
+        {/* ✎ the visual cue: tap to EDIT what you've already typed in a real
+            native editor (the editor sheet has its own 📎 attach inside). */}
+        <PencilLine
           className="size-[18px] shrink-0 text-muted-foreground"
           strokeWidth={1.75}
           aria-hidden
         />
-        {/* Muted "Message…" placeholder — reads as an empty text field's prompt,
-            so "tap to write" is obvious (sentence case, iOS-native). */}
+        {/* Muted "Edit" label — reads as a tappable affordance to lift your typed
+            text into a native editor (sentence case, iOS-native). */}
         <span className="min-w-0 flex-1 truncate text-left text-muted-foreground">
-          Message…
+          Edit
         </span>
       </motion.button>
     </div>

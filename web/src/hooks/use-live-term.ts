@@ -233,6 +233,12 @@ function keyToBytes(name: string): string {
       return '\x05'
     case 'Ctrl-R':
       return '\x12'
+    case 'Ctrl-G':
+      // BEL (0x07) — the byte Ctrl+G sends. Claude Code binds its built-in
+      // `chat:externalEditor` action to Ctrl+G: it writes the current input
+      // buffer to a temp file, spawns $EDITOR (the supermux bridge), and reads
+      // the result back. The "Edit in native editor" affordance taps this.
+      return '\x07'
     default:
       // Single-char or already-literal text falls through unchanged.
       return name
