@@ -35,6 +35,10 @@ pub struct Issue {
     /// default board list but its row + history are preserved (restorable).
     /// Distinct from `deleted` (hard delete).
     pub archived: i64,
+    /// Which board this card lives on (migration 0015, AT-C). Always set —
+    /// existing cards were backfilled to the fixed `main` board; new cards default
+    /// to `main` unless created on a team board.
+    pub board_id: String,
 }
 
 /// A row of the `statuses` table (board columns).
@@ -131,10 +135,13 @@ pub async fn reorder_statuses(pool: &SqlitePool, order: &[String]) -> sqlx::Resu
 
 // ── issues ───────────────────────────────────────────────────────────────────
 
-/// List non-deleted, non-archived issues, with `done`-column items capped at
-/// `done_limit` (feature-extract §2.1; 0 = unlimited). Sort: pinned-desc, then
-/// reordered (`pos != 0`) ascending, then unreordered by `updated`-desc (§2.2).
-/// Archived (soft-discarded) cards are excluded from the default board (§4).
+/// List non-deleted, non-archived issues ACROSS ALL boards, with `done`-column
+/// items capped at `done_limit` (feature-extract §2.1; 0 = unlimited). Sort:
+/// pinned-desc, then reordered (`pos != 0`) ascending, then unreordered by
+/// `updated`-desc (§2.2). Archived (soft-discarded) cards are excluded.
+///
+/// This is the "All" aggregate (AT-C plan §5.5) — the cross-board overview. Per-
+/// board scoping uses [`list_issues_for_board`].
 pub async fn list_issues(pool: &SqlitePool, done_limit: i64) -> sqlx::Result<Vec<Issue>> {
     // Stable composite sort matching v2's `_load_board`.
     let order = "ORDER BY pinned DESC, (pos = 0) ASC, pos ASC, updated DESC";
@@ -157,6 +164,48 @@ pub async fn list_issues(pool: &SqlitePool, done_limit: i64) -> sqlx::Result<Vec
             "SELECT * FROM issues
              WHERE deleted IS NULL AND archived = 0 AND status = 'done' {order} LIMIT ?"
         ))
+        .bind(done_limit)
+        .fetch_all(pool)
+        .await?
+    };
+    issues.append(&mut done);
+    Ok(issues)
+}
+
+/// List non-deleted, non-archived issues SCOPED to one board (migration 0015,
+/// AT-C plan §5.5). Same sort + `done_limit` semantics as [`list_issues`], just
+/// filtered by `board_id` (indexed by `idx_issues_board`).
+pub async fn list_issues_for_board(
+    pool: &SqlitePool,
+    board_id: &str,
+    done_limit: i64,
+) -> sqlx::Result<Vec<Issue>> {
+    let order = "ORDER BY pinned DESC, (pos = 0) ASC, pos ASC, updated DESC";
+    let mut issues = sqlx::query_as::<_, Issue>(&format!(
+        "SELECT * FROM issues
+         WHERE board_id = ? AND deleted IS NULL AND archived = 0
+           AND status != 'done' {order}"
+    ))
+    .bind(board_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut done = if done_limit == 0 {
+        sqlx::query_as::<_, Issue>(&format!(
+            "SELECT * FROM issues
+             WHERE board_id = ? AND deleted IS NULL AND archived = 0
+               AND status = 'done' {order}"
+        ))
+        .bind(board_id)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, Issue>(&format!(
+            "SELECT * FROM issues
+             WHERE board_id = ? AND deleted IS NULL AND archived = 0
+               AND status = 'done' {order} LIMIT ?"
+        ))
+        .bind(board_id)
         .bind(done_limit)
         .fetch_all(pool)
         .await?
@@ -245,6 +294,9 @@ pub struct NewIssue {
     pub owner_type: String,
     pub pos: f64,
     pub notified: i64,
+    /// Which board the new card lands on (migration 0015, AT-C). Defaults to
+    /// `main` at the API layer when the client doesn't scope a board.
+    pub board_id: String,
 }
 
 /// Insert a new issue row. `created`/`updated` are set to now.
@@ -253,8 +305,8 @@ pub async fn insert_issue(pool: &SqlitePool, i: &NewIssue) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO issues
             (id, title, desc, status, session, creator, due, due_time,
-             created, updated, owner_type, pinned, pos, notified)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+             created, updated, owner_type, pinned, pos, notified, board_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
     )
     .bind(&i.id)
     .bind(&i.title)
@@ -269,6 +321,7 @@ pub async fn insert_issue(pool: &SqlitePool, i: &NewIssue) -> sqlx::Result<()> {
     .bind(&i.owner_type)
     .bind(i.pos)
     .bind(i.notified)
+    .bind(&i.board_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -283,6 +336,26 @@ pub async fn min_pos_in_status(pool: &SqlitePool, status: &str) -> sqlx::Result<
             .fetch_optional(pool)
             .await?
             .flatten();
+    Ok(min.unwrap_or(0.0))
+}
+
+/// The smallest `pos` in `status` SCOPED to one board (migration 0015) — so a new
+/// card lands at the top of its lane within its OWN board, not above another
+/// board's cards. New cards get `min_pos - 1024.0`.
+pub async fn min_pos_in_board_status(
+    pool: &SqlitePool,
+    board_id: &str,
+    status: &str,
+) -> sqlx::Result<f64> {
+    let min: Option<f64> = sqlx::query_scalar(
+        "SELECT MIN(pos) FROM issues
+         WHERE board_id = ? AND status = ? AND deleted IS NULL",
+    )
+    .bind(board_id)
+    .bind(status)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
     Ok(min.unwrap_or(0.0))
 }
 
@@ -306,6 +379,9 @@ pub enum IssueField {
     AwaitingInput(i64),
     /// Soft discard flag (migration 0013). 1 = archived/hidden, 0 = restored.
     Archived(i64),
+    /// Move a card to a different board (migration 0015, AT-C). The board must
+    /// exist (FK); the API guards this.
+    BoardId(String),
 }
 
 /// Apply a set of field updates to one issue, bumping `updated`. Done in a single
@@ -338,6 +414,7 @@ pub async fn patch_issue(
                 bind_set_i64(&mut tx, "awaiting_input", *v, id).await?
             }
             IssueField::Archived(v) => bind_set_i64(&mut tx, "archived", *v, id).await?,
+            IssueField::BoardId(v) => bind_set(&mut tx, "board_id", v, id).await?,
             IssueField::Pos(v) => {
                 sqlx::query("UPDATE issues SET pos = ? WHERE id = ? AND deleted IS NULL")
                     .bind(*v)
@@ -839,6 +916,7 @@ mod tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await

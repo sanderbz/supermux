@@ -108,6 +108,10 @@ export interface BoardIssue {
    *  isn't awaiting input or the backend hasn't shipped the field yet (the card
    *  then falls back to the most recent agent comment). */
   latest_question?: string | null
+  /** AT-C (migration 0015): which board this card lives on. The "All" aggregate
+   *  groups cards by this; a scoped board view is filtered server-side. Defaults
+   *  to `'main'` for older payloads that predate the field. */
+  board_id?: string
 }
 
 /** The claim response (S3): the full issue PLUS the dispatch outcome. When
@@ -154,6 +158,10 @@ export interface NewBoardIssue {
   tags?: string[]
   /** Acceptance criteria, one per line (the server creates the checklist). */
   acceptance?: string[]
+  /** AT-C: which board the new card lands on. Omitted → the fixed `main` board.
+   *  The board view passes the currently-selected board so a card created while
+   *  viewing a team board lands on that team board. */
+  board_id?: string
 }
 
 /** A partial patch. Only the keys present are written (M6 PATCH semantics).

@@ -14,7 +14,14 @@
 // + rollback"). The atomic claim surfaces a 409 visibly via the thrown
 // `BoardError` (§3.2.10).
 
-import { useCallback, useMemo, useRef, type MutableRefObject } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react'
 import {
   useMutation,
   useQuery,
@@ -24,9 +31,13 @@ import {
 
 import {
   boardApi,
+  boardsApi,
   BoardError,
   sessionsApi,
+  ALL_BOARD_ID,
+  MAIN_BOARD_ID,
   type ApiSession,
+  type Board,
   type BoardIssue,
   type BoardIssuePatch,
   type BoardStatus,
@@ -37,7 +48,9 @@ import {
 import { useSse, type SseEventType } from '@/hooks/use-sse'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 
-const ISSUES_KEY = ['board', 'issues'] as const
+// The issues cache is keyed by the selected board (AT-C, plan §5.5) so each
+// board's view is cached independently; `'all'` holds the cross-board aggregate.
+const issuesKey = (boardId: string) => ['board', 'issues', boardId] as const
 const STATUSES_KEY = ['board', 'statuses'] as const
 
 export interface ClaimArgs {
@@ -99,8 +112,12 @@ export function sortIssues(issues: BoardIssue[]): BoardIssue[] {
   })
 }
 
-function patchCache(qc: QueryClient, updater: (prev: BoardIssue[]) => BoardIssue[]) {
-  qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], (prev) => updater(prev ?? []))
+function patchCache(
+  qc: QueryClient,
+  key: readonly unknown[],
+  updater: (prev: BoardIssue[]) => BoardIssue[],
+) {
+  qc.setQueryData<BoardIssue[]>([...key], (prev) => updater(prev ?? []))
 }
 
 /** A live set of issue ids with an IN-FLIGHT optimistic move (patch / claim /
@@ -213,46 +230,71 @@ export function useLiveSession(name: string | null | undefined): LiveSession | n
  *  pop back. We MERGE instead: every card takes the fresh snapshot EXCEPT those
  *  with a pending move, whose optimistic state is preserved until their own
  *  `onSettled` refetch reconciles them. */
-function useBoardSse(qc: QueryClient, pendingRef: MutableRefObject<PendingMoves>) {
+function useBoardSse(
+  qc: QueryClient,
+  boardId: string,
+  issuesK: readonly unknown[],
+  pendingRef: MutableRefObject<PendingMoves>,
+) {
   const onEvent = useCallback(
     (type: SseEventType, payload: unknown) => {
+      // The `boards` event re-publishes the SWITCHER list — invalidate it so the
+      // dropdown reflects a created/renamed/deleted/registered board live.
+      if (type === 'boards') {
+        void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+        return
+      }
       if (type !== 'board') return
-      // The `board` event payload IS the full board (M6 `emit_board`). Prefer the
-      // pushed payload over a refetch round-trip; fall back to invalidation.
+      // The `board` event payload IS the full board ACROSS ALL boards (M6/AT-C
+      // `emit_board`). Prefer the pushed payload over a refetch round-trip; fall
+      // back to invalidation.
       const board = Array.isArray(payload)
         ? (payload as BoardIssue[])
         : Array.isArray((payload as { payload?: unknown })?.payload)
           ? ((payload as { payload: BoardIssue[] }).payload)
           : null
       if (board) {
-        qc.setQueryData<BoardIssue[]>([...ISSUES_KEY], (prev) =>
-          reconcileBoard(prev ?? [], board, pendingRef.current),
+        // Scope the all-boards push to THIS view: a specific board keeps only its
+        // own cards; the `all` aggregate keeps the whole snapshot.
+        const scoped =
+          boardId === ALL_BOARD_ID
+            ? board
+            : board.filter((i) => (i.board_id ?? MAIN_BOARD_ID) === boardId)
+        qc.setQueryData<BoardIssue[]>([...issuesK], (prev) =>
+          reconcileBoard(prev ?? [], scoped, pendingRef.current),
         )
         return
       }
-      void qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      void qc.invalidateQueries({ queryKey: [...issuesK] })
       void qc.invalidateQueries({ queryKey: [...STATUSES_KEY] })
     },
-    [qc, pendingRef],
+    [qc, boardId, issuesK, pendingRef],
   )
   // On a focus/visibility/online resync after a quiet stretch, re-pull the board
   // so a missed delta is reconciled. Still no polling.
   const onResync = useCallback(() => {
-    void qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+    void qc.invalidateQueries({ queryKey: [...issuesK] })
     void qc.invalidateQueries({ queryKey: [...STATUSES_KEY] })
-  }, [qc])
+    void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+  }, [qc, issuesK])
   const handlers = useMemo(() => ({ onEvent, onResync }), [onEvent, onResync])
   useSse(handlers)
 }
 
-export function useBoard(): UseBoardResult {
+/** The boards-list (switcher options) cache key. */
+export const BOARDS_KEY = ['boards'] as const
+
+export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
   const qc = useQueryClient()
+  // The issues cache key for THIS board (AT-C). Each board view caches
+  // independently; `'all'` holds the cross-board aggregate.
+  const issuesK = useMemo(() => issuesKey(boardId), [boardId])
   // Ids of cards with an in-flight optimistic move. The SSE `board` reconciler
   // reads this so a snapshot pushed mid-drag can't clobber the optimistic
   // column/pos of a card the user just dropped (the pop-back race). Stable
   // across renders (a ref) so the SSE subscription never re-runs for it.
   const pendingRef = useRef<PendingMoves>(new Set())
-  useBoardSse(qc, pendingRef)
+  useBoardSse(qc, boardId, issuesK, pendingRef)
   const markPending = useCallback((id: string) => {
     pendingRef.current.add(id)
   }, [])
@@ -261,8 +303,10 @@ export function useBoard(): UseBoardResult {
   }, [])
 
   const issuesQuery = useQuery({
-    queryKey: [...ISSUES_KEY],
-    queryFn: boardApi.list,
+    queryKey: [...issuesK],
+    // Scope the fetch to the selected board: a specific board hits its
+    // `/cards` endpoint; `'all'` hits the cross-board aggregate.
+    queryFn: () => boardsApi.cards(boardId),
     staleTime: 30_000,
   })
   const statusesQuery = useQuery({
@@ -275,8 +319,8 @@ export function useBoard(): UseBoardResult {
   const create = useMutation({
     mutationFn: (input: NewBoardIssue) => boardApi.create(input),
     onMutate: async (input) => {
-      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
-      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      await qc.cancelQueries({ queryKey: [...issuesK] })
+      const prev = qc.getQueryData<BoardIssue[]>([...issuesK]) ?? []
       const optimisticId = `optimistic-${Date.now()}`
       // Guard the not-yet-persisted card so a concurrent `board` snapshot (which
       // can't contain this client-only id) doesn't drop it before it commits.
@@ -310,16 +354,21 @@ export function useBoard(): UseBoardResult {
         awaiting_input: false,
         session_live: input.session != null,
         latest_question: null,
+        // AT-C: the card lands on the board it's created for (the input's
+        // board_id when set; otherwise the board this view is scoped to —
+        // `'all'` falls back to `main`, since the aggregate isn't a real board).
+        board_id:
+          input.board_id ?? (boardId === ALL_BOARD_ID ? MAIN_BOARD_ID : boardId),
       }
-      patchCache(qc, (p) => [optimistic, ...p])
+      patchCache(qc, issuesK, (p) => [optimistic, ...p])
       return { prev, optimisticId }
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...issuesK], ctx.prev)
     },
     onSettled: (_d, _e, _v, ctx) => {
       if (ctx?.optimisticId) clearPending(ctx.optimisticId)
-      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
   })
 
@@ -328,13 +377,13 @@ export function useBoard(): UseBoardResult {
     mutationFn: ({ id, patch }: { id: string; patch: BoardIssuePatch }) =>
       boardApi.patch(id, patch),
     onMutate: async ({ id, patch }) => {
-      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
-      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      await qc.cancelQueries({ queryKey: [...issuesK] })
+      const prev = qc.getQueryData<BoardIssue[]>([...issuesK]) ?? []
       // A move (column / position / session change) must survive a concurrent
       // `board` snapshot that predates this PATCH's persist — otherwise the card
       // pops back to its old column mid-drag. Guard it until settle.
       markPending(id)
-      patchCache(qc, (p) =>
+      patchCache(qc, issuesK, (p) =>
         p.map((i) =>
           i.id === id
             ? {
@@ -351,11 +400,11 @@ export function useBoard(): UseBoardResult {
       return { prev }
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...issuesK], ctx.prev)
     },
     onSettled: (_d, _e, { id }) => {
       clearPending(id)
-      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
   })
 
@@ -364,10 +413,10 @@ export function useBoard(): UseBoardResult {
     mutationFn: ({ id, session, deliver }: ClaimArgs) =>
       boardApi.claim(id, session, deliver ?? true),
     onMutate: async ({ id, session }) => {
-      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
-      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      await qc.cancelQueries({ queryKey: [...issuesK] })
+      const prev = qc.getQueryData<BoardIssue[]>([...issuesK]) ?? []
       markPending(id)
-      patchCache(qc, (p) =>
+      patchCache(qc, issuesK, (p) =>
         p.map((i) =>
           i.id === id ? { ...i, status: 'doing', session } : i,
         ),
@@ -377,11 +426,11 @@ export function useBoard(): UseBoardResult {
     onError: (_e, _v, ctx) => {
       // Lost the race / not claimable → roll the card back to where it was so the
       // user SEES the 409 (the route surfaces the BoardError as a toast).
-      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...issuesK], ctx.prev)
     },
     onSettled: (_d, _e, { id }) => {
       clearPending(id)
-      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
   })
 
@@ -394,10 +443,10 @@ export function useBoard(): UseBoardResult {
     mutationFn: ({ id, session, spawn }: StartArgs) =>
       boardApi.start(id, { session, spawn }),
     onMutate: async ({ id, session }) => {
-      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
-      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      await qc.cancelQueries({ queryKey: [...issuesK] })
+      const prev = qc.getQueryData<BoardIssue[]>([...issuesK]) ?? []
       markPending(id)
-      patchCache(qc, (p) =>
+      patchCache(qc, issuesK, (p) =>
         p.map((i) =>
           i.id === id
             ? { ...i, status: 'doing', session: session ?? i.session }
@@ -407,11 +456,11 @@ export function useBoard(): UseBoardResult {
       return { prev }
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...issuesK], ctx.prev)
     },
     onSettled: (_d, _e, { id }) => {
       clearPending(id)
-      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
   })
 
@@ -419,21 +468,21 @@ export function useBoard(): UseBoardResult {
   const remove = useMutation({
     mutationFn: (id: string) => boardApi.remove(id),
     onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
-      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      await qc.cancelQueries({ queryKey: [...issuesK] })
+      const prev = qc.getQueryData<BoardIssue[]>([...issuesK]) ?? []
       // Guard the optimistic removal: a `board` snapshot loaded before this
       // soft-delete persisted would otherwise re-add the card mid-flight. The
       // reconciler keeps the optimistic (absent) state for a pending id.
       markPending(id)
-      patchCache(qc, (p) => p.filter((i) => i.id !== id))
+      patchCache(qc, issuesK, (p) => p.filter((i) => i.id !== id))
       return { prev }
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...issuesK], ctx.prev)
     },
     onSettled: (_d, _e, id) => {
       clearPending(id)
-      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
   })
 
@@ -446,10 +495,10 @@ export function useBoard(): UseBoardResult {
     mutationFn: ({ id, text }: { id: string; text: string }) =>
       boardApi.reply(id, text),
     onMutate: async ({ id }) => {
-      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
-      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      await qc.cancelQueries({ queryKey: [...issuesK] })
+      const prev = qc.getQueryData<BoardIssue[]>([...issuesK]) ?? []
       markPending(id)
-      patchCache(qc, (p) =>
+      patchCache(qc, issuesK, (p) =>
         p.map((i) =>
           i.id === id
             ? { ...i, awaiting_input: false, awaiting_question: null }
@@ -459,11 +508,11 @@ export function useBoard(): UseBoardResult {
       return { prev }
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...issuesK], ctx.prev)
     },
     onSettled: (_d, _e, { id }) => {
       clearPending(id)
-      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
   })
 
@@ -471,25 +520,25 @@ export function useBoard(): UseBoardResult {
   const discard = useMutation({
     mutationFn: (id: string) => boardApi.discard(id),
     onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: [...ISSUES_KEY] })
-      const prev = qc.getQueryData<BoardIssue[]>([...ISSUES_KEY]) ?? []
+      await qc.cancelQueries({ queryKey: [...issuesK] })
+      const prev = qc.getQueryData<BoardIssue[]>([...issuesK]) ?? []
       markPending(id)
-      patchCache(qc, (p) => p.filter((i) => i.id !== id))
+      patchCache(qc, issuesK, (p) => p.filter((i) => i.id !== id))
       return { prev }
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData([...ISSUES_KEY], ctx.prev)
+      if (ctx?.prev) qc.setQueryData([...issuesK], ctx.prev)
     },
     onSettled: (_d, _e, id) => {
       clearPending(id)
-      return qc.invalidateQueries({ queryKey: [...ISSUES_KEY] })
+      return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
   })
 
   // ── restore (un-discard — powers the discard toast's Undo) ─────────────────
   const restore = useMutation({
     mutationFn: (id: string) => boardApi.restore(id),
-    onSettled: () => qc.invalidateQueries({ queryKey: [...ISSUES_KEY] }),
+    onSettled: () => qc.invalidateQueries({ queryKey: [...issuesK] }),
   })
 
   const error = (issuesQuery.error ?? statusesQuery.error) as Error | null
@@ -526,6 +575,48 @@ export function useBoard(): UseBoardResult {
       error,
     ],
   )
+}
+
+// ── boards (the switcher list) ─────────────────────────────────────────────────
+
+export interface UseBoardsResult {
+  boards: Board[]
+  isLoading: boolean
+  refetch: () => void
+}
+
+/** Fetch the boards list (the switcher options). Live-updated via the SSE
+ *  `boards` event (invalidated by `useBoardSse`); cached app-wide under
+ *  {@link BOARDS_KEY}. The Main board is always first (server order). */
+export function useBoards(): UseBoardsResult {
+  const query = useQuery({
+    queryKey: BOARDS_KEY,
+    queryFn: boardsApi.list,
+    staleTime: 60_000,
+  })
+  return {
+    boards: query.data ?? [],
+    isLoading: query.isLoading,
+    refetch: () => void query.refetch(),
+  }
+}
+
+const SELECTED_BOARD_KEY = 'supermux.board.selected'
+
+/** Persist the last-selected board across reloads (localStorage). Returns the
+ *  selected id + a setter. Defaults to the Main board. If the persisted board no
+ *  longer exists (e.g. a team board was deleted), the caller falls it back to
+ *  Main — keep this hook a pure storage cell so it stays simple. */
+export function useSelectedBoard(): [string, (id: string) => void] {
+  const [selected, setSelected] = useState<string>(() => {
+    if (typeof window === 'undefined') return MAIN_BOARD_ID
+    return window.localStorage.getItem(SELECTED_BOARD_KEY) ?? MAIN_BOARD_ID
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SELECTED_BOARD_KEY, selected)
+  }, [selected])
+  return [selected, setSelected]
 }
 
 export { BoardError }

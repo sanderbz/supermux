@@ -51,6 +51,9 @@ export type SseStatus = 'connecting' | 'open' | 'closed'
 export type SseEventType =
   | 'sessions'
   | 'board'
+  // AT-C: the boards list (switcher options) — re-published when a board is
+  // created / renamed / deleted / registered for a team.
+  | 'boards'
   | 'schedules'
   | 'alerts'
   | 'status'
@@ -235,6 +238,7 @@ function connect() {
   const NAMED: SseEventType[] = [
     'sessions',
     'board',
+    'boards',
     'schedules',
     'alerts',
     'status',

@@ -11,6 +11,7 @@ export { ApiError } from './client'
 
 export * from './sessions'
 export * from './board'
+export * from './boards'
 export * from './scheduler'
 export * from './files'
 export * from './settings'

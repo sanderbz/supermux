@@ -702,6 +702,7 @@ mod board_reaction_tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await
@@ -806,6 +807,7 @@ mod board_reaction_tests {
                 owner_type: "agent".into(),
                 pos: 0.0,
                 notified: 0,
+                board_id: "main".into(),
             },
         )
         .await
