@@ -45,6 +45,7 @@ import { StatusDot } from '@/components/session-tile/status-dot'
 
 import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
 import { FocusHeader } from '@/components/focus-mode/focus-header'
+import { MobileSessionControls } from '@/components/focus-mode/mobile-session-controls'
 import { MobileDock } from '@/components/focus-mode/dock'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
@@ -273,6 +274,14 @@ export function MobileFocus() {
             mode={current.mode}
             onBack={goOverviewMorph}
           />
+
+          {/* Session controls (fix/mobile-session FIX 2) — Restart + Stop, in the
+              slim band of free space the non-full-height terminal leaves above
+              itself. These are the only Stop/Restart affordances on mobile. Stop
+              confirms first (destructive); Restart relaunches the same session in
+              place (the terminal reconnects on its own). Hidden on a stopped
+              session — the <StoppedSession> surface owns Start/Resume there. */}
+          <MobileSessionControls name={current.name} status={current.status} />
 
           {/* M17 — the LiveTerminal with the joystick + 2-finger gesture
               layered on top. `relative` so the joystick's absolute layer scopes
