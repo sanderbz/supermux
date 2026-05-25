@@ -271,6 +271,7 @@ export function MobileFocus() {
             activity={current.activity}
             error={current.error}
             mode={current.mode}
+            provider={current.provider}
             onBack={goOverviewMorph}
           />
 

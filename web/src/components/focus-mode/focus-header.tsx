@@ -57,9 +57,12 @@ export interface DesktopFocusHeaderProps {
   activity?: string
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
-  /** Live Claude permission mode (mode-shift) — drives the ⋯ menu's checked radio
-   *  and the glanceable title chip. Defaults to `normal` when unknown. */
+  /** Live Claude permission mode (mode-shift) — drives the mode pill's checked
+   *  radio + its label. Defaults to `normal` when unknown. */
   mode?: SessionMode
+  /** Session provider — the mode pill is a Claude-only concept (permission modes
+   *  don't exist for a plain shell/codex pane), so it renders only for `claude`. */
+  provider?: string
   /** Detach (⌘D): return to overview WITHOUT stopping the session (§4.4). */
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave (§4.4.3). */
@@ -73,6 +76,7 @@ export function DesktopFocusHeader({
   activity,
   error,
   mode,
+  provider,
   onDetach,
   onStop,
 }: DesktopFocusHeaderProps) {
@@ -115,9 +119,10 @@ export function DesktopFocusHeader({
       </span>
 
       <div className="flex shrink-0 items-center gap-1">
-        {/* ⋯ permission-mode menu (mode-shift) — live-checked radios from `mode`;
-            cycle modes via Shift+Tab, Bypass confirms + relaunches. */}
-        <ModeMenu name={name} mode={mode} />
+        {/* Permission-mode pill (mode-shift) — one element that shows the live
+            mode AND opens the switcher; Claude-only (no permission modes for a
+            plain shell/codex pane). Cycle via Shift+Tab, Bypass confirms+relaunches. */}
+        {provider === 'claude' && <ModeMenu name={name} mode={mode} />}
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -184,8 +189,11 @@ export interface FocusHeaderProps {
   activity?: string
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
-  /** Live Claude permission mode (mode-shift) — drives the ⋯ menu + the chip. */
+  /** Live Claude permission mode (mode-shift) — drives the mode pill. */
   mode?: SessionMode
+  /** Session provider — the mode pill renders only for `claude` (permission
+   *  modes are a Claude-only concept; a shell/codex pane has none). */
+  provider?: string
   onBack: () => void
   className?: string
 }
@@ -196,6 +204,7 @@ export function FocusHeader({
   activity,
   error,
   mode,
+  provider,
   onBack,
   className,
 }: FocusHeaderProps) {
@@ -280,7 +289,9 @@ export function FocusHeader({
         {/* ⋯ permission-mode menu (mode-shift) — live-checked radios; cycle modes
             via Shift+Tab, Bypass confirms + relaunches. Sits left of Claude tools
             so the title's right cluster stays a single tap-row (≥44pt each). */}
-        <ModeMenu name={name} mode={mode} className="h-11" />
+        {provider === 'claude' && (
+          <ModeMenu name={name} mode={mode} className="h-11" />
+        )}
 
         {/* R5 removed the redundant "···" overflow (it duplicated the session
             pill). This slot carries the Claude tools manager icon. */}
