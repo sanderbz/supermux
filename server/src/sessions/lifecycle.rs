@@ -302,7 +302,15 @@ pub async fn start(
     // AT-B §3.1: the global experimental Agent Teams gate (default OFF). Read
     // once here; it both injects the env var and writes `teammateMode:"tmux"`.
     // FAIL CLOSED — a read failure reads OFF inside `agent_teams_enabled`.
-    let agent_teams = db::prefs::agent_teams_enabled(&state.pool).await;
+    //
+    // AT-D ("Start a team"): a session that was explicitly spun up as a team LEAD
+    // carries a per-session override flag — it gets the Agent Teams env even when
+    // the global pref is OFF (an explicit opt-in beats the conservative default).
+    // We OR the two so this NEVER fights AT-B's gating: global ON enables it for
+    // every Claude session as before; the override only WIDENS it for one flagged
+    // lead. The Claude-only guard still lives in `build_env`/the settings install.
+    let agent_teams =
+        db::prefs::agent_teams_enabled(&state.pool).await || state.force_agent_teams(name);
 
     // M5b: install the Claude SettingsHook events so the agent reports real status
     // signals (§3.5). Idempotent + non-destructive; failure is non-fatal — the

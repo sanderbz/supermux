@@ -37,6 +37,7 @@ import {
   Rows3,
   Search,
   TerminalSquare,
+  Users,
   X,
 } from 'lucide-react'
 
@@ -52,6 +53,7 @@ import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
+import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
 import { SortControl } from '@/components/session-tile/sort-control'
 import { GroupHeader } from '@/components/session-tile/group-header'
 import { EmptyStatePlaceholder } from '@/components/empty-state'
@@ -254,6 +256,9 @@ export function Overview() {
   const [rawQuery, setRawQuery] = React.useState('')
   const [query, setQuery] = React.useState('')
   const [sheetOpen, setSheetOpen] = React.useState(false)
+  // AT-D "Start a team": its own sheet (the ResponsiveSheet pattern), separate
+  // from the new-session sheet so each affordance stays focused.
+  const [teamSheetOpen, setTeamSheetOpen] = React.useState(false)
   // M27: one-tap demo agent. `bootingDemo` disables the button + shows a busy
   // label while the `/cso` agent is created so a double-tap can't double-boot.
   const [bootingDemo, setBootingDemo] = React.useState(false)
@@ -459,9 +464,15 @@ export function Overview() {
   const showSkeleton = isLoading && !hasSessions && !isError
 
   const openSheet = () => setSheetOpen(true)
+  const openTeamSheet = () => setTeamSheetOpen(true)
   // The sheet owns create + boot (so it can surface a 409 inline); the route
   // just navigates into the new session's focus view (§5.1).
   const onCreated = (name: string) => {
+    navigate(`/focus/${name}`)
+  }
+  // AT-D: the team sheet owns start + boot of the LEAD; the route navigates into
+  // the lead's focus view, where the TEAM CARD appears once detection picks it up.
+  const onTeamStarted = (name: string) => {
     navigate(`/focus/${name}`)
   }
 
@@ -589,6 +600,23 @@ export function Overview() {
           </span>
         </Button>
 
+        {/* AT-D "Start a team" trigger — mobile icon-button in the same cluster
+            (matches the New-session / density / sort icon-button geometry).
+            Quiet/secondary: a ghost outline, not the primary CTA, so it reads as
+            the heavier-intent sibling of New session (no-extra-clicks: one tap
+            opens the configure sheet). */}
+        <motion.button
+          type="button"
+          onClick={openTeamSheet}
+          aria-label="Start a team"
+          title="Start a team"
+          whileTap={reduce ? undefined : { scale: 0.9 }}
+          transition={springs.snappy}
+          className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground sm:hidden"
+        >
+          <Users className="size-4" />
+        </motion.button>
+
         {/* Mobile new-session trigger — replaces the old floating FAB. Sits in
             the toolbar immediately right of Archived and borrows the icon-button
             geometry of the mobile density toggle / sort trigger (size-9 +
@@ -606,6 +634,17 @@ export function Overview() {
         >
           <Plus className="size-4" />
         </motion.button>
+
+        {/* Desktop: a secondary (outline) "Start a team" beside the primary
+            New-session CTA — distinct intent, calmer weight. */}
+        <Button
+          variant="outline"
+          onClick={openTeamSheet}
+          className="hidden sm:inline-flex"
+        >
+          <Users />
+          Start a team
+        </Button>
 
         <Button onClick={openSheet} className="hidden sm:inline-flex">
           <Plus />
@@ -835,6 +874,12 @@ export function Overview() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         onCreated={onCreated}
+      />
+
+      <StartTeamSheet
+        open={teamSheetOpen}
+        onOpenChange={setTeamSheetOpen}
+        onStarted={onTeamStarted}
       />
     </div>
   )
