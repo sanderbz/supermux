@@ -367,6 +367,25 @@ impl<'a> Tmux<'a> {
             .map(|_| ())
     }
 
+    /// List the tmux pane ids (`%1`, `%2`, …) currently present in this session
+    /// (`supermux-<name>`). Used by the Agent-Teams detector (AT-B §3.2) to
+    /// VALIDATE that a teammate's `tmuxPaneId` from `config.json` still exists in
+    /// the lead's window before trusting its live status — tmux pane ids are a
+    /// server-global REUSED counter, so a freed `%1` can be re-handed to an
+    /// unrelated pane. An error (session gone) yields an empty set, so the caller
+    /// drops every member's live status — fail-closed, never a stale `%id`.
+    pub async fn list_pane_ids(&self) -> Result<Vec<String>> {
+        let out = self
+            .run(&["list-panes", "-t", &self.target(), "-F", "#{pane_id}"])
+            .await?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
     /// The pane's shell PID (`#{pane_pid}`). The agent (claude/codex) runs as a
     /// child of this. `None` if no pane is reported.
     pub async fn pane_pid(&self) -> Result<Option<u32>> {

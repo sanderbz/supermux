@@ -131,6 +131,83 @@ fn install_hooks_at(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Write Claude Code's `teammateMode` setting into the global
+/// `~/.claude/settings.json` so that, when the experimental Agent Teams feature
+/// is enabled (AT-B §3.1), a LEAD session spawns its teammates as **tmux
+/// split-panes in the lead's own window** (`"tmux"`) — landing them on
+/// supermux's process-pinned socket where we can address/stream them — rather
+/// than the `in-process` backend (invisible: no pane to render). Only meaningful
+/// alongside `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` injected into the pane env
+/// (see [`crate::sessions::lifecycle`]).
+///
+/// Same three invariants as [`install_hooks`]: idempotent (it just sets one
+/// top-level key), coexistence-safe (every other key/hook is preserved), and
+/// atomic (temp-sibling → fsync → rename). A present-but-unparseable settings
+/// file is left ALONE (never clobbered).
+///
+/// Non-destructive on disable: passing `enabled = false` does NOT strip the key
+/// (a user may have set `teammateMode` themselves, and the env-gate is the real
+/// switch) — disable is a no-op here so we never trample a manual setting. The
+/// authoritative OFF gate is the absent `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`
+/// env var.
+pub fn install_agent_teams_setting(session_name: &str) -> Result<()> {
+    let dir = claude_config_dir();
+    tracing::debug!(
+        session = %session_name,
+        dir = %dir.display(),
+        "writing teammateMode=tmux for agent teams"
+    );
+    set_top_level_string_at(&dir, "teammateMode", "tmux")
+}
+
+/// Merge-set a single top-level STRING key in `~/.claude/settings.json`,
+/// preserving every other key + the whole `hooks` subtree. Shares the atomic
+/// write discipline of [`install_hooks_at`]. Factored out so it is unit-testable
+/// against a temp dir.
+fn set_top_level_string_at(dir: &Path, key: &str, value: &str) -> Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating claude config dir {}", dir.display()))?;
+    let path = dir.join("settings.json");
+
+    let mut root: Value = if path.exists() {
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if text.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&text).with_context(|| {
+                format!("{} is not valid JSON; refusing to overwrite it", path.display())
+            })?
+        }
+    } else {
+        json!({})
+    };
+
+    if !root.is_object() {
+        anyhow::bail!(
+            "{} is not a JSON object; refusing to overwrite it",
+            path.display()
+        );
+    }
+
+    // Idempotent: only write when the value actually differs.
+    if root.get(key).and_then(Value::as_str) == Some(value) {
+        return Ok(());
+    }
+    root.as_object_mut().unwrap().insert(key.to_string(), json!(value));
+
+    let tmp = dir.join("settings.json.supermux-tmp");
+    let body = serde_json::to_string_pretty(&root)? + "\n";
+    let mut f = std::fs::File::create(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    f.write_all(body.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
 /// Set/replace supermux's marked entry under each `hooks.<Event>` array, preserving
 /// every foreign entry and any other top-level keys.
 fn merge_supermux_hooks(root: &mut Value) {
@@ -313,6 +390,39 @@ mod tests {
         assert_eq!(pre.len(), 2, "foreign user *-hook kept + supermux added");
         assert!(pre.iter().any(|e| e["hooks"][0]["command"] == json!("echo user-pretool")));
         assert_eq!(pre.iter().filter(|e| is_supermux_entry(e)).count(), 1);
+    }
+
+    #[test]
+    fn teammate_mode_sets_top_level_key_and_preserves_hooks() {
+        let dir = temp_dir();
+        // Seed an existing settings file with hooks + a user key.
+        install_hooks_at(&dir).unwrap();
+        let before = read(&dir);
+        let stop_len = before["hooks"]["Stop"].as_array().unwrap().len();
+
+        set_top_level_string_at(&dir, "teammateMode", "tmux").unwrap();
+        let v = read(&dir);
+        assert_eq!(v["teammateMode"], json!("tmux"));
+        // The hooks subtree is untouched.
+        assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), stop_len);
+    }
+
+    #[test]
+    fn teammate_mode_is_idempotent() {
+        let dir = temp_dir();
+        set_top_level_string_at(&dir, "teammateMode", "tmux").unwrap();
+        set_top_level_string_at(&dir, "teammateMode", "tmux").unwrap();
+        let v = read(&dir);
+        assert_eq!(v["teammateMode"], json!("tmux"));
+    }
+
+    #[test]
+    fn teammate_mode_refuses_unparseable_settings() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "not { json").unwrap();
+        assert!(set_top_level_string_at(&dir, "teammateMode", "tmux").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not { json");
     }
 
     #[test]

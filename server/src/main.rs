@@ -6,7 +6,7 @@
 //! session reattach join in later milestones. Module definitions live in
 //! `lib.rs` so the binary and integration tests share them.
 
-use supermux_server::{agents, config, db, http, log_redact, scheduler, sessions, state};
+use supermux_server::{agents, config, db, http, log_redact, scheduler, sessions, state, teams};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -55,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
     sessions::auto_actions::spawn_all(&state).await;
     // M9: resume per-session steering delivery on boot (§3.9 deliver loop).
     sessions::steering::deliver_loop::spawn_all(&state).await;
+    // AT-B (§3.2): file-driven Agent-Teams detector. Watches `~/.claude/teams`
+    // (+ slow safety poll), re-validates teammate `%id`s each tick, broadcasts
+    // the team snapshot over SSE. Cheap no-op while no team files exist.
+    teams::spawn(state.clone());
     // AB3 (board-integration §C.2): auto-install supermux-managed commands (e.g.
     // `/supermux-task`) into the service user's `~/.claude/commands/` so the
     // agent's board-write surface is present with no manual step. Idempotent +
