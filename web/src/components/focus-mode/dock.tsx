@@ -461,7 +461,11 @@ export function MobileDock({
   return (
     <div
       className={cn(
-        'glass relative flex shrink-0 flex-col gap-2 border-t border-border/60 px-2.5 pb-safe pt-2',
+        // pb: at least ~10px of breathing room under the row even when the device
+        // reports no safe-area inset (e.g. iPhone Air in the Vaul sheet), so the
+        // session pill + Enter never sit flush against the viewport bottom; grows
+        // to the home-indicator inset where there is one.
+        'glass relative flex shrink-0 flex-col gap-2 border-t border-border/60 px-2.5 pb-[max(env(safe-area-inset-bottom),0.625rem)] pt-2',
         className,
       )}
     >
@@ -567,13 +571,14 @@ function EnterButton({ onSend }: { onSend: () => void }) {
         if ('vibrate' in navigator) navigator.vibrate(8)
         onSend()
       }}
-      // ≥44pt hit target; primary-tinted soft fill matching the app's affirmative
-      // controls (no hard border — iOS-native). The ↵ glyph mirrors the dock's
-      // single SF-style stroke weight + 20px icon size.
-      className="ml-auto flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-primary/15 px-3.5 font-medium text-primary active:bg-primary/25"
+      // Icon-only square (size-11 = 44pt floor) so it fits narrow iPhone widths
+      // (iPhone Air) without crowding the dock row — the ↵ glyph alone reads as
+      // "send" and the aria-label keeps it accessible. Primary-tinted soft fill
+      // matching the app's affirmative controls (no hard border — iOS-native);
+      // the ↵ glyph mirrors the dock's single SF-style stroke weight + 20px size.
+      className="ml-auto flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/15 font-medium text-primary active:bg-primary/25"
     >
       <CornerDownLeft className="size-5" strokeWidth={1.75} aria-hidden />
-      <span className="text-[15px]">Enter</span>
     </motion.button>
   )
 }
