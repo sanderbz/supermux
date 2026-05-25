@@ -348,11 +348,14 @@ function McpTab({
   const local = entries.filter((e) => e.scope === 'local')
   const user = entries.filter((e) => e.scope === 'user')
   const project = entries.filter((e) => e.scope === 'project')
-  // Read-only = not removable AND not a project-trust row (cloud / plugin).
+  // Read-only = not removable AND not a project-trust row (cloud / plugin / any
+  // non-removable user|local entry). This is the COMPLETE read-only set; an
+  // earlier `readonlyLocalUser` list was an exact duplicate of it (same predicate
+  // over the only non-project scopes), and rendering both spread together drew
+  // each read-only row twice once cloud connectors made the group non-empty.
   const readonly = entries.filter((e) => !e.removable && e.scope !== 'project')
   const removableLocal = local.filter((e) => e.removable)
   const removableUser = user.filter((e) => e.removable)
-  const readonlyLocalUser = [...local, ...user].filter((e) => !e.removable)
 
   return (
     <div>
@@ -389,9 +392,9 @@ function McpTab({
               ))}
             </ScopeGroup>
           )}
-          {(readonly.length > 0 || readonlyLocalUser.length > 0) && (
+          {readonly.length > 0 && (
             <ScopeGroup label="Read-only">
-              {[...readonlyLocalUser, ...readonly].map((e) => (
+              {readonly.map((e) => (
                 <McpRow key={`ro-${e.scope}-${e.name}`} entry={e} cwd={cwd} restartNote={restartNote} />
               ))}
             </ScopeGroup>
