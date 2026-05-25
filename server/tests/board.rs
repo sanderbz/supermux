@@ -93,7 +93,8 @@ async fn create_lists_and_id_prefix() {
     assert_eq!(body["ok"], json!(true));
     assert_eq!(body["data"]["id"], json!("SUPERMUX-1"));
     assert_eq!(body["data"]["status"], json!("todo"));
-    assert_eq!(body["data"]["owner_type"], json!("human"));
+    // §1: every card is an agent task now (owner_type is no longer accepted).
+    assert_eq!(body["data"]["owner_type"], json!("agent"));
 
     // Multi-word session → initials prefix.
     let (status, body) = send(
@@ -157,14 +158,17 @@ async fn create_requires_title_and_known_refs() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let (status, _) = send(
+    // §4: owner_type is no longer accepted/validated — a stray value is IGNORED
+    // (the card is always an agent task), not a 400.
+    let (status, body) = send(
         &app,
         Method::POST,
         "/api/board",
         Some(json!({ "title": "x", "owner_type": "robot" })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["data"]["owner_type"], json!("agent"));
 
     cleanup(dir);
 }
@@ -287,15 +291,25 @@ async fn claim_error_surfaces() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // Human-owned issue → 409.
+    // Non-agent (legacy human-owned) issue → 409. Create always makes a card
+    // agent-owned now, so flip it back to human via PATCH to exercise the
+    // NotAgentTask claim path (the column is retained for one cycle).
     let (_, body) = send(
         &app,
         Method::POST,
         "/api/board",
-        Some(json!({ "title": "human task", "owner_type": "human" })),
+        Some(json!({ "title": "human task" })),
     )
     .await;
     let human_id = body["data"]["id"].as_str().unwrap().to_string();
+    let (status, _) = send(
+        &app,
+        Method::PATCH,
+        &format!("/api/board/{human_id}"),
+        Some(json!({ "owner_type": "human" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     let (status, body) = send(
         &app,
         Method::POST,
@@ -311,7 +325,7 @@ async fn claim_error_surfaces() {
         &app,
         Method::POST,
         "/api/board",
-        Some(json!({ "title": "agent task", "owner_type": "agent", "status": "done" })),
+        Some(json!({ "title": "agent task", "status": "done" })),
     )
     .await;
     let done_id = body["data"]["id"].as_str().unwrap().to_string();
@@ -375,10 +389,10 @@ async fn claim_error_surfaces() {
 async fn statuses_crud_and_builtin_protection() {
     let (app, dir) = test_app().await;
 
-    // Six builtins seeded.
+    // Three builtins after 0013 (todo / doing / done).
     let (status, body) = send(&app, Method::GET, "/api/board/statuses", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"].as_array().unwrap().len(), 6);
+    assert_eq!(body["data"].as_array().unwrap().len(), 3);
 
     // Add a custom column.
     let (status, body) = send(
@@ -403,12 +417,13 @@ async fn statuses_crud_and_builtin_protection() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Reorder (move custom column to the front).
+    // Reorder (move custom column to the front). Only the three surviving lanes
+    // exist now, plus the custom column.
     let (status, _) = send(
         &app,
         Method::PUT,
         "/api/board/statuses/reorder",
-        Some(json!({ "order": [new_id, "backlog", "todo", "doing", "review", "done", "discarded"] })),
+        Some(json!({ "order": [new_id, "todo", "doing", "done"] })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

@@ -72,6 +72,13 @@ pub fn router_for(state: AppState) -> Router {
         // delivers via the SAME steering path as `/claim`. Returns a
         // `ClaimResult` so the frontend Undo (unsend) keeps working unchanged.
         .route("/api/board/{id}/start", post(start_handler))
+        // Board redesign (BM1) — inline reply to a running agent (§4): delivers
+        // text into the card's linked session and clears `awaiting_input`.
+        .route("/api/board/{id}/reply", post(reply_handler))
+        // Soft discard + restore (§4 / §2.6). Discarded cards leave the default
+        // board list but their rows + history are preserved.
+        .route("/api/board/{id}/discard", post(discard_handler))
+        .route("/api/board/{id}/restore", post(restore_handler))
         .with_state(state)
 }
 
@@ -138,7 +145,24 @@ pub struct IssueView {
     /// reassign?" instead of a confidently-wrong live dot. An issue with no
     /// `session` is reported `false` (there is no live link to show).
     pub session_live: bool,
+    /// Live status of the linked session for the card's status dot (§4): one of
+    /// `active`/`idle`/`waiting`/`starting`/`stopped`/`unknown`, or `null` when
+    /// there is no linked (live) session. Read from `session_runtime.last_status`
+    /// at load time — not stored on the issue.
+    pub session_status: Option<String>,
+    /// Soft-discard flag (migration 0013). Archived cards are excluded from the
+    /// default board, so this is `false` on every card the list returns — exposed
+    /// for completeness and the restore path's view.
+    pub archived: bool,
+    /// The latest "needs your input" question the agent asked (§4) — the body of
+    /// the most recent `needs-input` comment (author [`NEEDS_INPUT_AUTHOR`]), or
+    /// `null` when none. The card displays this above the inline reply composer.
+    pub latest_question: Option<String>,
 }
+
+/// Comment author tag for an agent `needs-input` question, so the latest one can
+/// be surfaced on the card distinct from ordinary progress comments.
+pub(crate) const NEEDS_INPUT_AUTHOR: &str = "agent-needs-input";
 
 impl IssueView {
     fn from(
@@ -148,7 +172,14 @@ impl IssueView {
         acceptance: Vec<AcceptanceItem>,
         links: Vec<IssueLink>,
         session_live: bool,
+        session_status: Option<String>,
     ) -> Self {
+        // The newest needs-input question (if any) for the card to display.
+        let latest_question = comments
+            .iter()
+            .rev()
+            .find(|c| c.author == NEEDS_INPUT_AUTHOR)
+            .map(|c| c.body.clone());
         IssueView {
             id: issue.id,
             title: issue.title,
@@ -170,6 +201,9 @@ impl IssueView {
             needs_review: issue.needs_review != 0,
             awaiting_input: issue.awaiting_input != 0,
             session_live,
+            session_status,
+            archived: issue.archived != 0,
+            latest_question,
         }
     }
 }
@@ -196,7 +230,30 @@ async fn view_of(state: &AppState, id: &str) -> Result<IssueView, AppError> {
     let acceptance = db::board::acceptance_for(&state.pool, id).await?;
     let links = db::board::links_for(&state.pool, id).await?;
     let live = session_is_live(state, issue.session.as_deref()).await?;
-    Ok(IssueView::from(issue, tags, comments, acceptance, links, live))
+    // Live status of the linked session for the card dot. Only meaningful when the
+    // link is live; a dangling/archived link reports `None` (no confident dot).
+    let session_status = if live {
+        session_live_status(state, issue.session.as_deref()).await?
+    } else {
+        None
+    };
+    Ok(IssueView::from(
+        issue, tags, comments, acceptance, links, live, session_status,
+    ))
+}
+
+/// The current `last_status` of a (presumed-live) linked session, for the card's
+/// status dot. `None` when there is no session or no runtime row.
+async fn session_live_status(
+    state: &AppState,
+    session: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    match session {
+        Some(name) if !name.is_empty() => Ok(db::sessions::runtime(&state.pool, name)
+            .await?
+            .map(|rt| rt.last_status)),
+        _ => Ok(None),
+    }
 }
 
 /// Load the full board (used by `GET /api/board` and the SSE re-publish). The
@@ -210,13 +267,11 @@ async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>,
     let mut acceptance = db::board::acceptance_for_issues(&state.pool, &ids).await?;
     let mut links = db::board::links_for_issues(&state.pool, &ids).await?;
 
-    // R2 link liveness, batched: one list of the live (non-archived) sessions,
-    // then an O(1) set membership per card — no per-issue session probe.
-    let live_sessions: std::collections::HashSet<String> = db::sessions::list(&state.pool)
-        .await?
-        .into_iter()
-        .map(|s| s.name)
-        .collect();
+    // R2 link liveness + live status dot, batched: one map of live (non-archived)
+    // session name → last_status, then an O(1) lookup per card — no per-issue
+    // session probe. Membership in the map == the link is live (§4 session_live);
+    // the value is the dot's status (§4 session_status).
+    let live_statuses = db::sessions::live_statuses(&state.pool).await?;
 
     let mut out = Vec::with_capacity(issues.len());
     for issue in issues {
@@ -225,11 +280,12 @@ async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>,
         let c = comments.remove(&issue.id).unwrap_or_default();
         let a = acceptance.remove(&issue.id).unwrap_or_default();
         let l = links.remove(&issue.id).unwrap_or_default();
-        let live = issue
+        let status = issue
             .session
             .as_deref()
-            .is_some_and(|s| live_sessions.contains(s));
-        out.push(IssueView::from(issue, tags, c, a, l, live));
+            .and_then(|s| live_statuses.get(s).cloned());
+        let live = status.is_some();
+        out.push(IssueView::from(issue, tags, c, a, l, live, status));
     }
     Ok(out)
 }
@@ -342,12 +398,20 @@ struct CreateInput {
     creator: Option<String>,
     #[serde(default)]
     desc: Option<String>,
+    /// §4 contract alias for `desc` — the description-first composer sends
+    /// `description`. Either key works; `description` wins when both are present.
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     tags: Option<Vec<String>>,
+    /// Acceptance criteria, one item per entry (§2.1 "one per line"). Seeded as
+    /// checklist items on the new card.
     #[serde(default)]
-    owner_type: Option<String>,
+    acceptance: Option<Vec<String>>,
     #[serde(default)]
     pos: Option<f64>,
+    // NB: `owner_type` is intentionally NOT accepted anymore (§4). Every card is
+    // an agent task; a client that still sends the key is ignored, not rejected.
 }
 
 async fn create_handler(
@@ -358,7 +422,13 @@ async fn create_handler(
     // are empty. An empty title is stored as the empty string (never NULL); the
     // card surfaces the description (or the id) as its heading instead.
     let title = input.title.trim().to_string();
-    let desc = input.desc.clone().unwrap_or_default();
+    // §4: `description` is the contract key; `desc` is the legacy alias. Prefer
+    // `description` when present so the new composer and old clients both work.
+    let desc = input
+        .description
+        .clone()
+        .or_else(|| input.desc.clone())
+        .unwrap_or_default();
     if title.is_empty() && desc.trim().is_empty() {
         return Err(AppError::BadRequest("add a title or a description".into()));
     }
@@ -366,12 +436,10 @@ async fn create_handler(
     if !valid_status(&state, &status).await? {
         return Err(AppError::BadRequest(format!("unknown status '{status}'")));
     }
-    let owner_type = input.owner_type.unwrap_or_else(|| "human".into());
-    if !OWNER_TYPES.contains(&owner_type.as_str()) {
-        return Err(AppError::BadRequest(format!(
-            "invalid owner_type '{owner_type}'"
-        )));
-    }
+    // §1: every card is an agent task — owner_type is no longer accepted from the
+    // client. Always 'agent' so the claim/start CAS precondition holds with no
+    // manual toggle.
+    let owner_type = "agent".to_string();
     // Normalise the assignee: empty string → unassigned; otherwise it must exist
     // (the `issues.session` FK rejects unknown names).
     let session = match input.session.as_deref().map(str::trim) {
@@ -411,6 +479,16 @@ async fn create_handler(
     db::board::insert_issue(&state.pool, &new).await?;
     if let Some(tags) = input.tags {
         db::board::set_tags(&state.pool, &id, &tags).await?;
+    }
+    // Seed acceptance criteria (§2.1 "one per line") as checklist items in order,
+    // skipping blank lines.
+    if let Some(items) = input.acceptance {
+        for body in items {
+            let body = body.trim();
+            if !body.is_empty() {
+                db::board::insert_acceptance(&state.pool, &id, body).await?;
+            }
+        }
     }
     maybe_notify_assignee(&state, &id).await?;
     emit_board(&state).await;
@@ -642,7 +720,7 @@ async fn claim_handler(
 // path `/claim` uses. Returns the `ClaimResult` shape so the frontend Undo
 // (unsend) keeps working unchanged.
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct SpawnInput {
     #[serde(default)]
     dir: Option<String>,
@@ -753,7 +831,10 @@ async fn start_handler(
         db::board::patch_issue(&state.pool, &id, &[IssueField::OwnerType("agent".into())]).await?;
     }
 
-    // 3. Resolve the target session: attach an existing one, or spawn a new one.
+    // 3. Resolve the target session: attach an existing one, or SPAWN A NEW ONE
+    //    BY DEFAULT (§2.2). The no-session case no longer 400s for a picker — it
+    //    spawns a fresh session named from the card. A caller can still attach an
+    //    existing session by passing `session`, or tune the spawn via `spawn`.
     let session = match input.session.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => {
             if !session_exists(&state, s).await? {
@@ -762,9 +843,9 @@ async fn start_handler(
             s.to_string()
         }
         _ => {
-            let Some(spawn) = input.spawn else {
-                return Err(AppError::BadRequest("provide a session or spawn".into()));
-            };
+            // Spawn-by-default: use the provided spawn options, or sensible
+            // defaults when none were given (the headline one-tap Start path).
+            let spawn = input.spawn.unwrap_or_default();
             // Create the session (name derived from the issue). Failure → a clean
             // 4xx/5xx; the issue is only owner-flipped at this point (no claim
             // yet), so we never leave a half-claimed issue.
@@ -834,6 +915,97 @@ async fn start_handler(
         delivered: true,
         steer_id: Some(steer_id),
     }))
+}
+
+// ── inline reply to a running agent (BM1, §2.4 + §4) ──────────────────────────
+//
+// The headline steering UX: answer a question / nudge a running agent straight
+// from its card, no terminal navigation. Delivers `text` into the card's linked
+// session via `lifecycle::send_text` (text + Enter, auto-waking a stopped
+// session) and clears the `awaiting_input` "Needs your input" state so the card
+// returns to a calm running state.
+
+#[derive(Debug, Deserialize)]
+struct ReplyInput {
+    text: String,
+}
+
+/// `POST /api/board/{id}/reply` — send `text` into the card's linked session and
+/// clear `awaiting_input`. 400 when the card has no linked LIVE session (there is
+/// nowhere to deliver). Returns `{ ok: true }`.
+async fn reply_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<ReplyInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let issue = require_issue(&state, &id).await?;
+    let text = input.text.trim();
+    if text.is_empty() {
+        return Err(AppError::BadRequest("text is required".into()));
+    }
+    // Resolve the linked session and require it to be live (existing, non-archived)
+    // — there is no point delivering into a dangling/archived link.
+    let session = match issue.session.as_deref() {
+        Some(s) if !s.is_empty() && session_is_live(&state, Some(s)).await? => s.to_string(),
+        _ => {
+            return Err(AppError::BadRequest(
+                "card has no linked live session to reply to".into(),
+            ))
+        }
+    };
+
+    // Deliver text + Enter (auto-wakes a stopped session). This is the SAME path
+    // the focus terminal uses, so the agent sees the reply exactly as typed input.
+    crate::sessions::lifecycle::send_text(&state, &session, text).await?;
+
+    // The user answered → clear the "Needs your input" state (idempotent). The
+    // detector's →active edge would also clear it, but clearing here makes the
+    // card calm down the instant the reply is sent rather than on the next tick.
+    if issue.awaiting_input != 0 {
+        db::board::patch_issue(&state.pool, &id, &[IssueField::AwaitingInput(0)]).await?;
+    }
+    db::audit::log(
+        &state.pool,
+        "user",
+        "issue.reply",
+        &id,
+        json!({ "session": session }),
+    )
+    .await?;
+    emit_board(&state).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+// ── soft discard + restore (BM1, §2.6 + §4) ───────────────────────────────────
+
+/// `POST /api/board/{id}/discard` — soft-archive the card. The row + all its
+/// history are preserved; it just leaves the default board list (the undo toast
+/// in the UI calls `restore`). Idempotent: discarding an already-discarded card
+/// is a clean ok.
+async fn discard_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_issue(&state, &id).await?;
+    db::board::patch_issue(&state.pool, &id, &[IssueField::Archived(1)]).await?;
+    db::audit::log(&state.pool, "user", "issue.discard", &id, json!({})).await?;
+    emit_board(&state).await;
+    Ok(Json(json!({ "ok": true, "discarded": id })))
+}
+
+/// `POST /api/board/{id}/restore` — un-archive a discarded card (the undo path).
+async fn restore_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Use the archived-inclusive fetch so a discarded card can still be found.
+    db::board::get_issue_any(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("issue '{id}'")))?;
+    db::board::patch_issue(&state.pool, &id, &[IssueField::Archived(0)]).await?;
+    db::audit::log(&state.pool, "user", "issue.restore", &id, json!({})).await?;
+    emit_board(&state).await;
+    Ok(Json(json!({ "ok": true, "restored": id })))
 }
 
 // ── human-side comment + acceptance + link CRUD (bearer, AB2) ────────────────
@@ -1639,16 +1811,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_without_session_or_spawn_is_400() {
+    async fn start_without_session_spawns_by_default_name_from_card() {
+        // BM1 §2.2: the no-session path no longer 400s for a picker — it spawns a
+        // new session named from the card. The full spawn shells out to tmux
+        // (`lifecycle::start`), which a unit test can't drive, so we assert the
+        // spawn DECISION instead: a unique, name-safe session name is derived from
+        // the issue (the seed of spawn-by-default). The end-to-end spawn is proven
+        // live by the orchestrator (§7).
         let (state, dir) = test_state().await;
-        seed_issue(&state, "S-1").await;
-        let bad = start_handler(
-            State(state.clone()),
-            Path("S-1".into()),
-            Json(serde_json::from_value(json!({})).unwrap()),
+        db::board::insert_issue(
+            &state.pool,
+            &NewIssue {
+                id: "S-1".into(),
+                title: "Refactor the parser".into(),
+                desc: String::new(),
+                status: "todo".into(),
+                session: None,
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "agent".into(),
+                pos: 0.0,
+                notified: 0,
+            },
         )
-        .await;
-        assert!(matches!(bad, Err(AppError::BadRequest(_))));
+        .await
+        .unwrap();
+        let issue = db::board::get_issue(&state.pool, "S-1").await.unwrap().unwrap();
+        let name = derive_session_name(&state, &issue).await.unwrap();
+        assert!(name.starts_with("Refactor-the-parser"), "name derives from the title: {name}");
+        assert!(crate::sessions::valid_name(&name), "derived name is tmux-safe");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1737,6 +1929,147 @@ mod tests {
         assert_eq!(session_slug("***"), "");
         // Bounded to 60 chars.
         assert!(session_slug(&"a".repeat(200)).len() <= 60);
+    }
+
+    // ── BM1: reply / discard / restore / create ────────────────────────────────
+
+    #[tokio::test]
+    async fn reply_400_when_no_linked_live_session() {
+        // §4: reply 400s when the card has no linked live session — there is
+        // nowhere to deliver. (The happy path delivers via `lifecycle::send_text`,
+        // which shells out to tmux; it is proven live by the orchestrator §7.)
+        let (state, dir) = test_state().await;
+
+        // Unlinked card → 400.
+        seed_issue(&state, "R-1").await;
+        let bad = reply_handler(
+            State(state.clone()),
+            Path("R-1".into()),
+            Json(serde_json::from_value(json!({ "text": "hi" })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::BadRequest(_))), "unlinked → 400");
+
+        // Linked to an ARCHIVED session → still not live → 400.
+        db::sessions::insert_minimal(&state.pool, "dead", "/tmp", "claude")
+            .await
+            .unwrap();
+        db::sessions::set_archived(&state.pool, "dead", true).await.unwrap();
+        db::board::insert_issue(
+            &state.pool,
+            &NewIssue {
+                id: "R-2".into(),
+                title: "linked-archived".into(),
+                desc: String::new(),
+                status: "doing".into(),
+                session: Some("dead".into()),
+                creator: String::new(),
+                due: None,
+                due_time: None,
+                owner_type: "agent".into(),
+                pos: 0.0,
+                notified: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let bad = reply_handler(
+            State(state.clone()),
+            Path("R-2".into()),
+            Json(serde_json::from_value(json!({ "text": "hi" })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::BadRequest(_))), "archived link → 400");
+
+        // Empty text → 400.
+        let bad = reply_handler(
+            State(state.clone()),
+            Path("R-1".into()),
+            Json(serde_json::from_value(json!({ "text": "  " })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::BadRequest(_))), "empty text → 400");
+
+        // Missing issue → 404.
+        let bad = reply_handler(
+            State(state.clone()),
+            Path("nope".into()),
+            Json(serde_json::from_value(json!({ "text": "hi" })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::NotFound(_))), "missing issue → 404");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn discard_hides_card_and_restore_brings_it_back() {
+        // §2.6 / §4: discard soft-archives (row preserved, excluded from list);
+        // restore un-archives.
+        let (state, dir) = test_state().await;
+        seed_issue(&state, "D-1").await;
+        seed_issue(&state, "D-2").await;
+
+        // Both visible at first.
+        let board = load_board(&state, 0).await.unwrap();
+        assert_eq!(board.len(), 2);
+
+        // Discard D-1 → it leaves the default board, row preserved.
+        discard_handler(State(state.clone()), Path("D-1".into())).await.unwrap();
+        let board = load_board(&state, 0).await.unwrap();
+        assert_eq!(board.len(), 1, "discarded card excluded from default list");
+        assert_eq!(board[0].id, "D-2");
+        // The row still exists (not deleted) and is flagged archived.
+        let issue = db::board::get_issue(&state.pool, "D-1").await.unwrap().unwrap();
+        assert_eq!(issue.archived, 1, "row preserved, archived flag set");
+
+        // Discard is idempotent.
+        discard_handler(State(state.clone()), Path("D-1".into())).await.unwrap();
+
+        // Restore D-1 → back on the board.
+        restore_handler(State(state.clone()), Path("D-1".into())).await.unwrap();
+        let board = load_board(&state, 0).await.unwrap();
+        assert_eq!(board.len(), 2, "restored card returns to the board");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn create_ignores_owner_type_and_seeds_acceptance() {
+        // §1/§4: owner_type is no longer accepted — every card is an agent task,
+        // even when the client still sends owner_type=human. Acceptance criteria
+        // sent on create are seeded as checklist items (blank lines skipped).
+        let (state, dir) = test_state().await;
+        let res = create_handler(
+            State(state.clone()),
+            Json(
+                serde_json::from_value(json!({
+                    "description": "Wire up the parser",
+                    "owner_type": "human",
+                    "acceptance": ["compiles", "  ", "tests pass"]
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("create ok")
+        .into_response();
+        assert_eq!(res.status(), StatusCode::CREATED);
+
+        // Exactly one card, agent-owned, with the (blank-filtered) acceptance.
+        let board = load_board(&state, 0).await.unwrap();
+        assert_eq!(board.len(), 1);
+        let card = &board[0];
+        assert_eq!(card.owner_type, "agent", "create always agent-owned");
+        assert_eq!(card.desc, "Wire up the parser", "description key honoured");
+        assert_eq!(card.acceptance.len(), 2, "blank acceptance line skipped");
+        assert_eq!(card.acceptance[0].body, "compiles");
+        assert_eq!(card.acceptance[1].body, "tests pass");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     // ── AB2: human-side comment + acceptance CRUD (bearer) ─────────────────────

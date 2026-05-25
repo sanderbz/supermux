@@ -80,10 +80,25 @@ mod tests {
     async fn migrations_run_and_seed_statuses() {
         let (pool, dir) = test_pool().await;
 
-        // 0002 seeds the six builtin board statuses.
+        // 0002 seeds six builtin statuses; 0013 reduces them to exactly the three
+        // surviving lanes (todo / doing / done) in display order.
         let statuses = board::list_statuses(&pool).await.unwrap();
-        assert_eq!(statuses.len(), 6, "expected six seeded board statuses");
-        assert!(statuses.iter().any(|s| s.id == "todo"));
+        let ids: Vec<&str> = statuses.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["todo", "doing", "done"],
+            "0013 leaves exactly the three lanes in order"
+        );
+        // The legacy columns are gone.
+        for gone in ["backlog", "review", "discarded"] {
+            assert!(!ids.contains(&gone), "{gone} column removed by 0013");
+        }
+        // Relabelled (no UPPERCASE label literals).
+        let by_id: std::collections::HashMap<_, _> =
+            statuses.iter().map(|s| (s.id.as_str(), s)).collect();
+        assert_eq!(by_id["todo"].label, "To do");
+        assert_eq!(by_id["doing"].label, "Doing");
+        assert_eq!(by_id["done"].label, "Done");
 
         // Every migration file should be recorded as applied.
         let applied: i64 = sqlx::query("SELECT COUNT(*) AS n FROM _sqlx_migrations")
@@ -92,8 +107,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 11,
-            "expected eleven applied migrations (0001-0005, 0007, 0008, 0009, 0010, 0011, 0012)"
+            applied, 12,
+            "expected twelve applied migrations (0001-0005, 0007-0013)"
         );
 
         pool.close().await;

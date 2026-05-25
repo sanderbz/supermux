@@ -47,6 +47,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/hook/board/status", post(status_handler))
         .route("/api/hook/board/check", post(check_handler))
         .route("/api/hook/board/link", post(link_handler))
+        .route("/api/hook/board/needs-input", post(needs_input_handler))
         .with_state(state)
 }
 
@@ -166,6 +167,72 @@ async fn status_handler(
     .await?;
     emit_board(&state).await;
     Ok(Json(json!({ "ok": true, "issue": issue.id, "status": status })))
+}
+
+// ── needs-input (the BLOCKED terminal action, §3) ─────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct NeedsInputBody {
+    session: String,
+    question: String,
+}
+
+/// `POST /api/hook/board/needs-input` — the agent is BLOCKED and needs a human
+/// decision (board-redesign §3). This is one of the two terminal actions. It:
+///   * sets the card's `awaiting_input` flag (the "Needs your input" state);
+///   * appends `question` as a comment (author [`NEEDS_INPUT_AUTHOR`]) so the card
+///     can surface the latest question above its reply composer;
+///   * fires a web push to the human (best-effort).
+/// It does NOT move the column — the card stays in `doing`. (Contrast `done`,
+/// which moves the card to the done column via the status hook.)
+async fn needs_input_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<NeedsInputBody>,
+) -> Result<Json<Value>, AppError> {
+    let issue = auth_and_scope(&state, &headers, &req.session).await?;
+    let question = req.question.trim();
+    if question.is_empty() {
+        return Err(AppError::BadRequest("question is required".into()));
+    }
+
+    // Record the question as a distinctly-authored comment so the board can pull
+    // the LATEST needs-input question for the card without confusing it with
+    // ordinary progress comments.
+    let comment_id =
+        db::board::insert_comment(&state.pool, &issue.id, super::NEEDS_INPUT_AUTHOR, question)
+            .await?;
+    // Set the "Needs your input" state (NO column move).
+    db::board::patch_issue(
+        &state.pool,
+        &issue.id,
+        &[IssueField::AwaitingInput(1)],
+    )
+    .await?;
+    db::audit::log(
+        &state.pool,
+        &format!("agent:{}", req.session),
+        "issue.needs_input",
+        &issue.id,
+        json!({ "comment_id": comment_id }),
+    )
+    .await?;
+
+    // Web push to the human — best-effort, spawned so the hook response is not
+    // blocked on the push service; no-ops cheaply when nobody is subscribed.
+    {
+        let state = state.clone();
+        let session = req.session.clone();
+        let question = question.to_string();
+        tokio::spawn(async move {
+            let title = format!("agent {session} needs you");
+            let url = format!("/focus/{session}");
+            let _ = crate::push::send_push(&state, &title, &question, &url).await;
+        });
+    }
+
+    emit_board(&state).await;
+    Ok(Json(json!({ "ok": true, "issue": issue.id, "awaiting_input": true })))
 }
 
 // ── acceptance check ────────────────────────────────────────────────────────
@@ -445,6 +512,93 @@ mod tests {
         assert!(matches!(cross, Err(AppError::NotFound(_))));
         assert_eq!(db::board::acceptance_for(&state.pool, "B-1").await.unwrap()[0].done, 0);
 
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn needs_input_sets_flag_and_comment_no_column_move() {
+        // board-redesign §3 + BM1 acceptance #3: needs-input sets awaiting_input,
+        // appends the question as a comment, and does NOT move the column.
+        let (state, dir) = test_state().await;
+        seed_agent_with_issue(&state, "worker-a", "tok-a", "A-1").await;
+
+        let _ = needs_input_handler(
+            State(state.clone()),
+            token_header("tok-a"),
+            Json(
+                serde_json::from_value(
+                    json!({ "session": "worker-a", "question": "Drop the legacy column?" }),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("needs-input ok");
+
+        let issue = db::board::get_issue(&state.pool, "A-1").await.unwrap().unwrap();
+        assert_eq!(issue.awaiting_input, 1, "awaiting_input set");
+        assert_eq!(issue.status, "doing", "column NOT moved by needs-input");
+        assert_eq!(issue.needs_review, 0, "needs-input does not flag review");
+
+        // The question is recorded as a distinctly-authored comment.
+        let comments = db::board::comments_for(&state.pool, "A-1").await.unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].author, super::super::NEEDS_INPUT_AUTHOR);
+        assert_eq!(comments[0].body, "Drop the legacy column?");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn needs_input_empty_question_is_400() {
+        let (state, dir) = test_state().await;
+        seed_agent_with_issue(&state, "worker-a", "tok-a", "A-1").await;
+        let bad = needs_input_handler(
+            State(state.clone()),
+            token_header("tok-a"),
+            Json(serde_json::from_value(json!({ "session": "worker-a", "question": "  " })).unwrap()),
+        )
+        .await;
+        assert!(matches!(bad, Err(AppError::BadRequest(_))));
+        // Nothing written.
+        assert!(db::board::comments_for(&state.pool, "A-1").await.unwrap().is_empty());
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn needs_input_wrong_token_is_unauthorized() {
+        let (state, dir) = test_state().await;
+        seed_agent_with_issue(&state, "worker-a", "tok-a", "A-1").await;
+        let res = needs_input_handler(
+            State(state.clone()),
+            token_header("WRONG"),
+            Json(serde_json::from_value(json!({ "session": "worker-a", "question": "x" })).unwrap()),
+        )
+        .await;
+        assert!(matches!(res, Err(AppError::Unauthorized)));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn done_status_hook_moves_card_to_done() {
+        // BM1 acceptance #4: the `done` status hook moves the card to the done
+        // column (auto-Done). (Re-stated here next to needs-input for the
+        // done-vs-needs-input contrast.)
+        let (state, dir) = test_state().await;
+        seed_agent_with_issue(&state, "worker-a", "tok-a", "A-1").await;
+        let _ = status_handler(
+            State(state.clone()),
+            token_header("tok-a"),
+            Json(serde_json::from_value(json!({ "session": "worker-a", "status": "done" })).unwrap()),
+        )
+        .await
+        .expect("status done ok");
+        let issue = db::board::get_issue(&state.pool, "A-1").await.unwrap().unwrap();
+        assert_eq!(issue.status, "done", "done hook moves the card to done");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

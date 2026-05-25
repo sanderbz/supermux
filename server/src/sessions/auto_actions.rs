@@ -556,15 +556,19 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
             }
         }
         Status::Active => {
-            // The agent resumed working — clear a stale "needs you" badge so the
-            // board doesn't keep showing `awaiting_input` after the user replied
-            // (the same confidently-wrong-state problem R2 fights for liveness).
-            // `needs_review` is intentionally left for a human to clear.
-            if issue.awaiting_input != 0 {
+            // The agent resumed working — clear BOTH attention flags (spec §3:
+            // "active → clear both"). A running agent is neither blocked
+            // (`awaiting_input`) nor finished-and-awaiting-review (`needs_review`):
+            // it picked the work back up, so both stale badges come down. Only
+            // write + re-publish when at least one flag actually flips off.
+            if issue.awaiting_input != 0 || issue.needs_review != 0 {
                 db::board::patch_issue(
                     &state.pool,
                     &issue.id,
-                    &[db::board::IssueField::AwaitingInput(0)],
+                    &[
+                        db::board::IssueField::AwaitingInput(0),
+                        db::board::IssueField::NeedsReview(0),
+                    ],
                 )
                 .await?;
                 crate::board::emit_board(state).await;

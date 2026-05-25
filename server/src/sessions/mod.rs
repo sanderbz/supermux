@@ -274,7 +274,7 @@ static NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9_.-]+$").unwr
 const PROVIDERS: [&str; 3] = ["claude", "codex", "shell"];
 
 /// Session-name slug rule (§1.2 of feature-extract): `[a-zA-Z0-9_.-]+`, bounded.
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 100 && NAME_RE.is_match(name)
 }
 
