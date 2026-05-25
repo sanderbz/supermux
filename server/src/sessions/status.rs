@@ -26,7 +26,11 @@
 //!    The classic <3s fast-path is a strict subset. A missed `Stop` older than
 //!    the safety bound falls through (never pins `Active` forever).
 //! 2. capture-pane regex bank (broadened spinner-glyph class; golden-tested).
-//! 3. PTY heartbeat: bytes <1.5s → `Active`.
+//! 3. PTY heartbeat: bytes <1.5s → `Active` — **only for sessions WITHOUT live
+//!    hooks**. A hooked session is authoritative off (1)+(2); the heartbeat
+//!    cannot distinguish the agent's output from the echo of the user TYPING at
+//!    the prompt, so for hooked sessions it is suppressed (typing must not flip
+//!    the card to busy — the core fragility this fix removes).
 //! 4. Idle timeout: silent ≥30s → `Idle` (only downgrades an already-known
 //!    status; a never-seen session stays `Unknown` — cold-start safety).
 
@@ -356,7 +360,15 @@ impl TurnState {
 
     /// Classify purely from the turn timestamps, when the newest is within
     /// [`TURN_SAFETY`] (spec §B):
-    /// * `Notification` newest ⇒ `Waiting` (blocked on the user);
+    /// * `Notification` newest AND a turn is IN PROGRESS ⇒ `Waiting` (a genuine
+    ///   permission/question prompt — Claude paused mid-turn to ask the user);
+    /// * `Notification` newest but the turn already ENDED (a `Stop`/`SubagentStop`
+    ///   is newer than the turn start) ⇒ `Idle`. This is the key nuance: Claude
+    ///   Code ALSO fires a `Notification` ~60s after a turn finishes ("Claude is
+    ///   waiting for your input") while it sits at an idle prompt. That post-turn
+    ///   idle notification must NOT read `Waiting`/"needs input" — the agent
+    ///   finished and is simply idle, not blocked on a specific question. Only a
+    ///   notification *within* an active turn means the agent is truly blocked.
     /// * else `turn_start > turn_end` ⇒ `Active` (a turn is in progress — this is
     ///   what covers a silent think between/after tool calls);
     /// * else (`turn_end ≥ turn_start`, turn ended) ⇒ `Idle`.
@@ -369,14 +381,30 @@ impl TurnState {
         if newest.elapsed() >= TURN_SAFETY {
             return None;
         }
-        // Notification is decisive only when it is itself the newest signal — a
-        // mid-turn notification that has since been superseded by a PreToolUse /
-        // Stop must not pin Waiting.
-        if self.notification == Some(newest) {
-            return Some(Status::Waiting);
-        }
         let start = self.turn_start();
         let end = self.turn_end();
+        // Notification is decisive only when it is itself the newest signal — a
+        // mid-turn notification superseded by a later PreToolUse/Stop must not pin
+        // Waiting. AND it means "blocked on the user" only when it arrived WITHIN
+        // an active turn: a turn has started (`start` exists) and has NOT since
+        // ended (`end` is None or older than `start`). A notification that arrives
+        // after the turn's `Stop` is Claude's idle-prompt notification → fall
+        // through to the turn-boundary logic below, which yields `Idle`.
+        if self.notification == Some(newest) {
+            // The ONLY non-Waiting notification is Claude's post-turn idle
+            // notification: a `Stop`/`SubagentStop` ended the turn (`end` exists
+            // and is at least as recent as the turn start) and THEN a notification
+            // arrived while idling at the prompt. Every other notification — one
+            // within an active turn, or a lone notification with no completed turn
+            // — means the agent is blocked on the user ⇒ Waiting (conservative:
+            // when unsure, surface "needs input" rather than hide it).
+            let turn_already_ended = matches!((start, end), (Some(s), Some(e)) if e >= s)
+                || matches!((start, end), (None, Some(_)));
+            if !turn_already_ended {
+                return Some(Status::Waiting);
+            }
+            // else: post-turn idle notification — fall through → Idle below.
+        }
         match (start, end) {
             (Some(s), Some(e)) if s > e => Some(Status::Active),
             (Some(_), None) => Some(Status::Active),
@@ -433,16 +461,31 @@ impl StatusDetector {
     /// * `turn` — the per-session [`TurnState`] (the newest instant of each
     ///   turn-relevant hook). The PRIMARY signal: a turn in progress reads
     ///   `Active` for the whole turn, even during a silent think (spec §B).
+    /// * `has_hooks` — whether this session has LIVE Claude Code hooks (we have
+    ///   received at least one hook POST from it, so the runtime is authoritative
+    ///   about turn boundaries). When `true`, the raw PTY-heartbeat "bytes flowing
+    ///   ⇒ Active" fallback is SUPPRESSED: the user merely TYPING at the prompt
+    ///   echoes bytes back through the pane (which the FIFO reader stamps as a
+    ///   fresh heartbeat), and that must NOT read as "the agent is working". For a
+    ///   hooked session the turn state machine (+ the content regex bank, which
+    ///   only matches glyphs Claude itself prints) already covers every genuine
+    ///   `Active`, so the heartbeat adds only the typing-echo false positive.
     ///
-    /// Deterministic given `(capture, last_pty, turn, self.last_status)` — the
-    /// property the golden-fixture snapshot tests rely on.
-    pub fn detect(&mut self, capture: &str, last_pty: Instant, turn: TurnState) -> Status {
-        let status = self.classify(capture, last_pty, turn);
+    /// Deterministic given `(capture, last_pty, turn, has_hooks, self.last_status)`
+    /// — the property the golden-fixture snapshot tests rely on.
+    pub fn detect(
+        &mut self,
+        capture: &str,
+        last_pty: Instant,
+        turn: TurnState,
+        has_hooks: bool,
+    ) -> Status {
+        let status = self.classify(capture, last_pty, turn, has_hooks);
         self.last_status = status;
         status
     }
 
-    fn classify(&self, capture: &str, last_pty: Instant, turn: TurnState) -> Status {
+    fn classify(&self, capture: &str, last_pty: Instant, turn: TurnState, has_hooks: bool) -> Status {
         // ── 1. hook TURN STATE MACHINE (the multi-signal apex; spec §B) ────────
         // The per-turn hook timestamps come straight from the agent runtime — the
         // most authoritative signal we have — so they OUTRANK the regex bank and
@@ -474,9 +517,19 @@ impl StatusDetector {
             return Status::Idle;
         }
 
-        // ── 3. PTY heartbeat fallback ────────────────────────────────────────
+        // ── 3. PTY heartbeat fallback (NON-HOOK sessions only) ───────────────
+        // Fresh bytes ⇒ Active is a HEURISTIC: it cannot tell the agent's own
+        // output from the echo of the user TYPING at the prompt. For a session
+        // with live Claude hooks the runtime is authoritative about turn
+        // boundaries — a turn in progress already reads Active off the turn state
+        // machine (step 1), and the content bank (step 2) matches the spinner
+        // glyphs Claude itself prints — so the heartbeat would contribute ONLY
+        // the typing-echo false positive ("I typed a character at the idle prompt
+        // and the card flipped to busy"). Suppress it for hooked sessions; keep
+        // it as the genuine liveness fallback for shell / codex / claude with
+        // unwired (or not-yet-fired) hooks.
         let silent = last_pty.elapsed();
-        if silent < PTY_ACTIVE_WINDOW {
+        if !has_hooks && silent < PTY_ACTIVE_WINDOW {
             return Status::Active;
         }
         // ── 4. idle timeout ──────────────────────────────────────────────────
@@ -594,9 +647,22 @@ pub fn prepare_capture_ansi(raw: &str) -> String {
 /// glyph ✻ ✶ ✳ ✢ ✽ ✺ ❋ ⚹ ∗ · * across frames, so anchoring on `✻` alone misses
 /// most captured frames — the spec §C fix), and the `running...` / `reading N
 /// files` verbs.
+///
+/// **Line-start anchor (the boot false-positive fix).** The spinner-glyph branch
+/// is anchored to the START of a line (`(?m)^\s*<glyph>…`). Claude's real spinner
+/// is ALWAYS the first visible character of its status line (`✻ Thinking…`,
+/// `✳ Cogitating…`, …). Two of the glyphs in the class — `·` and `*` — also occur
+/// as ordinary text: `·` is Claude's separator in the welcome box and bottom
+/// status bar (`Opus 4.7 · Claude Max · …`) and as a bullet, `*` in markdown. The
+/// OLD unanchored pattern matched a mid-line `·` followed anywhere later by a `…`
+/// truncation ellipsis (`· Claude Max · │ /usage now shows a p…`), so a freshly
+/// booted, IDLE session whose welcome box contained both glyphs read ACTIVE
+/// forever — masking the bare `❯` idle prompt (the IDLE bank is checked AFTER
+/// ACTIVE). Requiring the glyph at line-start keeps every genuine spinner frame
+/// (all real frames are line-leading) while rejecting separators buried in a box.
 static ACTIVE_BANK: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)(esc to interrupt|esc t…|running\.\.\.|reading \d+ file|[✻✶✳✢✽✺❋⚹∗·*][^\n]*…)",
+        r"(?im)(esc to interrupt|esc t…|running\.\.\.|reading \d+ file|^\s*[✻✶✳✢✽✺❋⚹∗·*][^\n]*…)",
     )
     .unwrap()
 });
@@ -632,9 +698,10 @@ mod tests {
 
     /// Classify with a FRESH detector so the fallback is `Unknown` — this forces
     /// the regex bank to be the decider (a held prior status would otherwise mask
-    /// a non-matching input and give a false pass).
+    /// a non-matching input and give a false pass). `has_hooks = false` so the
+    /// bank/heartbeat path is exercised exactly as the golden fixtures expect.
     fn fresh(cap: &str) -> Status {
-        StatusDetector::new().detect(cap, neutral_pty(), TurnState::default())
+        StatusDetector::new().detect(cap, neutral_pty(), TurnState::default(), false)
     }
 
     /// A `TurnState` whose only hook is `event`, fired `ago` in the past.
@@ -669,6 +736,30 @@ mod tests {
         for cap in ["Running…", "no spinner here at all"] {
             assert_eq!(fresh(cap), Status::Unknown, "{cap:?} must not match a bank");
         }
+    }
+
+    #[test]
+    fn boot_welcome_box_separators_are_not_active() {
+        // Regression (boot false-positive): a freshly-booted, IDLE Claude session
+        // shows a welcome box whose lines contain the `·` separator AND a `…`
+        // truncation ellipsis (`Opus 4.7 · Claude Max · │ /usage now shows a p…`).
+        // The OLD unanchored glyph-class pattern matched that mid-line `·…` pair
+        // and read ACTIVE forever, masking the bare `❯` idle prompt below it. The
+        // line-start anchor rejects mid-line separators, so the bare prompt now
+        // classifies Idle.
+        let cap = "\
+╭───────────────────────────────────────────────╮
+│  Opus 4.7 (1M context) · Claude Max ·  `/usage` now shows a p… │
+│  sander@example.com's Organization     `/diff` detail view ca… │
+╰───────────────────────────────────────────────╯
+
+────────────────────────────────────────── idletest ──
+❯
+────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents";
+        // The bare `❯ ` prompt must win as Idle — the welcome box `·…` no longer
+        // false-matches ACTIVE.
+        assert_eq!(fresh(cap), Status::Idle, "boot welcome box must not read Active");
     }
 
     #[test]
@@ -714,8 +805,24 @@ mod tests {
     #[test]
     fn pty_heartbeat_recent_bytes_are_active() {
         let mut d = StatusDetector::new();
-        // No regex markers, no hooks; bytes flowed just now → Active.
-        assert_eq!(d.detect("", Instant::now(), TurnState::default()), Status::Active);
+        // No regex markers, no hooks; bytes flowed just now → Active (non-hook
+        // session: the heartbeat heuristic is the liveness fallback).
+        assert_eq!(d.detect("", Instant::now(), TurnState::default(), false), Status::Active);
+    }
+
+    #[test]
+    fn pty_heartbeat_suppressed_for_hooked_session() {
+        // The CORE fix: a HOOKED session (has_hooks = true) with fresh bytes (the
+        // echo of the user typing at the prompt) but NO turn in progress and no
+        // content marker must NOT read Active. The held status (Idle, from a prior
+        // Stop) holds — typing at the prompt does not flip the card to busy.
+        let mut d = StatusDetector::new();
+        d.force(Status::Idle);
+        assert_eq!(
+            d.detect("", Instant::now(), TurnState::default(), true),
+            Status::Idle,
+            "fresh bytes (typing echo) must not flip a hooked idle session to Active"
+        );
     }
 
     #[test]
@@ -724,7 +831,7 @@ mod tests {
         // Establish a known status first (so the cold-start guard is satisfied).
         d.force(Status::Active);
         let silent = Instant::now() - Duration::from_secs(45);
-        assert_eq!(d.detect("", silent, TurnState::default()), Status::Idle);
+        assert_eq!(d.detect("", silent, TurnState::default(), false), Status::Idle);
     }
 
     #[test]
@@ -732,7 +839,7 @@ mod tests {
         let mut d = StatusDetector::new();
         let cold = Instant::now() - COLD_START_IDLE;
         // Empty capture + cold heartbeat + never-classified → Unknown, NOT Idle.
-        assert_eq!(d.detect("", cold, TurnState::default()), Status::Unknown);
+        assert_eq!(d.detect("", cold, TurnState::default(), false), Status::Unknown);
     }
 
     #[test]
@@ -741,7 +848,7 @@ mod tests {
         // completed-spinner idle marker could co-occur in scrollback.
         let mut d = StatusDetector::new();
         let cap = "✻ Brewed for 1m\n✻ Beaming… (esc to interrupt)";
-        assert_eq!(d.detect(cap, neutral_pty(), TurnState::default()), Status::Active);
+        assert_eq!(d.detect(cap, neutral_pty(), TurnState::default(), false), Status::Active);
     }
 
     #[test]
@@ -753,15 +860,15 @@ mod tests {
         let mut d = StatusDetector::new();
         d.force(Status::Idle);
         let notif = turn_with(HookEvent::Notification, Duration::ZERO);
-        assert_eq!(d.detect("esc to interrupt", Instant::now(), notif), Status::Waiting);
+        assert_eq!(d.detect("esc to interrupt", Instant::now(), notif, true), Status::Waiting);
 
         let pre = turn_with(HookEvent::PreToolUse, Duration::ZERO);
-        assert_eq!(StatusDetector::new().detect("", neutral_pty(), pre), Status::Active);
+        assert_eq!(StatusDetector::new().detect("", neutral_pty(), pre, true), Status::Active);
 
         let mut d2 = StatusDetector::new();
         d2.force(Status::Active);
         let stop = turn_with(HookEvent::Stop, Duration::ZERO);
-        assert_eq!(d2.detect("esc to interrupt", Instant::now(), stop), Status::Idle);
+        assert_eq!(d2.detect("esc to interrupt", Instant::now(), stop, true), Status::Idle);
     }
 
     #[test]
@@ -771,7 +878,7 @@ mod tests {
         // Empty capture + neutral heartbeat would otherwise hold/idle.
         let mut d = StatusDetector::new();
         let turn = turn_with(HookEvent::UserPromptSubmit, Duration::from_secs(20));
-        assert_eq!(d.detect("", neutral_pty(), turn), Status::Active);
+        assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Active);
     }
 
     #[test]
@@ -782,7 +889,7 @@ mod tests {
         let mut d = StatusDetector::new();
         let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(40));
         assert_eq!(
-            d.detect("⏵⏵ accept edits on (shift+tab to cycle)", neutral_pty(), turn),
+            d.detect("⏵⏵ accept edits on (shift+tab to cycle)", neutral_pty(), turn, true),
             Status::Active
         );
     }
@@ -796,7 +903,7 @@ mod tests {
         let mut turn = TurnState::default();
         turn.apply(Instant::now() - Duration::from_secs(30), HookEvent::PreToolUse);
         turn.apply(Instant::now() - Duration::from_secs(2), HookEvent::Stop);
-        assert_eq!(d.detect("plan mode", neutral_pty(), turn), Status::Idle);
+        assert_eq!(d.detect("plan mode", neutral_pty(), turn, true), Status::Idle);
     }
 
     #[test]
@@ -807,7 +914,28 @@ mod tests {
         let mut turn = TurnState::default();
         turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::PreToolUse);
         turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::Notification);
-        assert_eq!(d.detect("", neutral_pty(), turn), Status::Waiting);
+        assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Waiting);
+    }
+
+    #[test]
+    fn post_turn_idle_notification_is_idle_not_waiting() {
+        // Real Claude behavior: ~60s after a turn ends (Stop), Claude fires a
+        // Notification ("waiting for your input") while sitting idle at the prompt.
+        // Because the turn ALREADY ENDED (Stop is newer than the turn start), that
+        // post-turn notification must read Idle, NOT Waiting — the agent finished
+        // and is merely idle, not blocked on a specific question. (Contrast with a
+        // permission notification that arrives mid-turn → Waiting.)
+        let mut d = StatusDetector::new();
+        d.force(Status::Idle);
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(40), HookEvent::UserPromptSubmit);
+        turn.apply(Instant::now() - Duration::from_secs(38), HookEvent::Stop);
+        turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::Notification);
+        assert_eq!(
+            d.detect("", neutral_pty(), turn, true),
+            Status::Idle,
+            "post-turn idle notification must read Idle, not Waiting"
+        );
     }
 
     #[test]
@@ -818,7 +946,7 @@ mod tests {
         let mut turn = TurnState::default();
         turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::Notification);
         turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::PreToolUse);
-        assert_eq!(d.detect("", neutral_pty(), turn), Status::Active);
+        assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Active);
     }
 
     #[test]
@@ -831,7 +959,10 @@ mod tests {
         d.force(Status::Active);
         let turn = turn_with(HookEvent::PreToolUse, TURN_SAFETY + Duration::from_secs(5));
         let silent = Instant::now() - Duration::from_secs(45);
-        assert_eq!(d.detect("", silent, turn), Status::Idle);
+        // has_hooks = true (a real hooked session whose Stop curl was lost): the
+        // stale turn falls through, the heartbeat is long-silent so the idle
+        // timeout downgrades it — the safety valve still works for hooked sessions.
+        assert_eq!(d.detect("", silent, turn, true), Status::Idle);
     }
 
     #[test]
@@ -840,7 +971,7 @@ mod tests {
         // (the content safety net) → Active off the bank, not the stale turn hook.
         let mut d = StatusDetector::new();
         let turn = turn_with(HookEvent::PreToolUse, TURN_SAFETY + Duration::from_secs(5));
-        assert_eq!(d.detect("esc to interrupt", neutral_pty(), turn), Status::Active);
+        assert_eq!(d.detect("esc to interrupt", neutral_pty(), turn, true), Status::Active);
     }
 
     #[test]
@@ -1017,7 +1148,7 @@ mod tests {
         let mut d = StatusDetector::new();
         d.force(Status::Starting);
         // Active marker beats a held `Starting` (classifier reads the bank).
-        assert_eq!(d.detect("esc to interrupt", neutral_pty(), TurnState::default()), Status::Active);
+        assert_eq!(d.detect("esc to interrupt", neutral_pty(), TurnState::default(), false), Status::Active);
     }
 
     #[test]

@@ -23,6 +23,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use axum::body::Bytes;
+
 use crate::db;
 use crate::error::AppError;
 use crate::sessions::activity::{self, HookPayload};
@@ -58,11 +60,25 @@ struct HookBody {
 
 /// Ingest one hook event. 401 on any auth failure; 200 even for an unknown event
 /// kind (a no-op) so a future Claude event type never trips a tool call.
+///
+/// The body is taken as raw [`Bytes`] and parsed manually rather than via the
+/// `Json` extractor ON PURPOSE: the extractor 415s any request whose
+/// `Content-Type` is not exactly `application/json`, and the hook is a `curl -d`
+/// POST whose default content type is `application/x-www-form-urlencoded`. A 415
+/// here is invisible (the hook `|| true`s it away) yet fatal — it kills the
+/// entire turn state machine. The hook command now sends the correct header, but
+/// parsing leniently makes the endpoint robust to any future client / proxy that
+/// drops or rewrites it, so the detector's authoritative signal can never be
+/// silently severed by a content-type mismatch again.
 async fn hook_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<HookBody>,
+    raw: Bytes,
 ) -> Result<Json<Value>, AppError> {
+    // Parse the JSON body ourselves (Content-Type agnostic). A malformed body is
+    // a 400 — a genuine client bug, distinct from the silent 415 we are avoiding.
+    let body: HookBody =
+        serde_json::from_slice(&raw).map_err(|e| AppError::BadRequest(format!("hook body: {e}")))?;
     // The expected token is the session's own (DB is the source of truth, §6.5;
     // survives restart). A missing session row → 401 (no existence oracle).
     let expected = db::sessions::runtime(&state.pool, &body.session)
@@ -83,7 +99,16 @@ async fn hook_handler(
         return Err(AppError::Unauthorized);
     }
 
-    // Authenticated. Fold the turn-state signal in for the events the detector
+    // Authenticated. The session's Claude hooks are demonstrably LIVE (this POST
+    // reached us), so flag it: the detector now treats the turn state machine +
+    // content bank as authoritative and suppresses the raw PTY-heartbeat `Active`
+    // fallback for this session — typing at the prompt echoes bytes but must not
+    // read as "the agent is working". This fires on EVERY event kind (incl.
+    // `SessionStart`, which lands in the boot window before the first prompt), so
+    // the flag is set well before the user can type.
+    state.mark_hooks_live(&body.session);
+
+    // Fold the turn-state signal in for the events the detector
     // cares about (§3.6 — Notification→Waiting, turn-start→Active, …). Unknown
     // event kinds (e.g. SessionStart/SessionEnd/StopFailure) have NO HookEvent
     // variant and are skipped here — they are handled by the activity/lifecycle

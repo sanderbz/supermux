@@ -9,7 +9,7 @@
 //!   ├─ skip?  pty bytes <2s AND last_status == Active AND preview < tier
 //!   │         → reuse last_capture
 //!   ├─ capture = tmux capture-pane -p -S -30   (ANSI-stripped, last 30 lines)
-//!   ├─ status  = detector.detect(capture, last_pty, turn_state) ← hook turn-state signal
+//!   ├─ status  = detector.detect(capture, last_pty, turn_state, has_hooks) ← hook turn-state signal
 //!   ├─ UPDATE session_runtime SET last_capture = ?               (ALWAYS)
 //!   ├─ if status changed (confirmed stable for 50ms — flap debounce):
 //!   │      UPDATE last_status / last_status_at
@@ -251,11 +251,25 @@ pub async fn tick(
     // `idle` on the first tick the heartbeat reports silence — without this
     // sync the DB would stay frozen at the boot-time `active` value forever
     // (the canonical "always grey / always wrong" overview bug).
+    // The status PERSISTED in the DB right now. Used both for the cold-start seed
+    // below and — critically — as the reconciliation baseline at commit time: the
+    // detector is the authoritative source of truth, so when its settled
+    // classification disagrees with the persisted row we re-commit even if the
+    // detector's own in-memory `prev == new` (no internal transition edge). That
+    // self-heals an EXTERNAL write that clobbered the row out from under the
+    // detector — e.g. `lifecycle::start` unconditionally writes `active` after the
+    // agent UI is ready, but an agent that boots straight to an idle prompt is
+    // `idle`; the detector classified `idle` on its first (pre-`active`) tick, so
+    // its `prev` is already `idle` and a plain edge-only commit would never
+    // correct the clobbered `active`, freezing the card on a false `active`.
+    let persisted = db::sessions::runtime(&state.pool, name)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|rt| parse_status(&rt.last_status));
     if detector.last_status() == Status::Unknown {
-        if let Ok(Some(rt)) = db::sessions::runtime(&state.pool, name).await {
-            if let Some(seed) = parse_status(&rt.last_status) {
-                detector.force(seed);
-            }
+        if let Some(seed) = persisted {
+            detector.force(seed);
         }
     }
 
@@ -332,8 +346,13 @@ pub async fn tick(
     let capture = status::prepare_capture(&raw_ansi);
     let capture_ansi = status::prepare_capture_ansi(&raw_ansi);
 
+    // Whether this session's Claude hooks are live (we have seen ≥1 hook POST).
+    // A hooked session is authoritative off the turn state machine + content bank,
+    // so the detector suppresses the raw heartbeat `Active` fallback for it —
+    // typing at the prompt echoes bytes but must not flip the card to busy.
+    let has_hooks = state.has_hooks(name);
     let prev = detector.last_status();
-    let new_status = detector.detect(&capture, last_pty, turn);
+    let new_status = detector.detect(&capture, last_pty, turn, has_hooks);
 
     // last_capture writeback — ALWAYS (canonical preview source, CEO #1).
     db::sessions::set_last_capture(&state.pool, name, &capture, &capture_ansi).await?;
@@ -343,14 +362,33 @@ pub async fn tick(
     let tail_changed = last_tail.as_ref() != Some(&tail);
 
     // ── status transition: flap-debounce, then commit + broadcast ─────────────
+    // Commit when EITHER the detector's own classification changed this tick
+    // (`new_status != prev`, the normal edge) OR the detector's settled status
+    // disagrees with what is PERSISTED (`new_status != persisted`, the drift case
+    // — an external writer such as `lifecycle::start` clobbered the row). The
+    // detector is authoritative, so a drift must be healed even without an
+    // internal edge, otherwise a clobbered row freezes the card on a wrong status.
+    // `Unknown` is the cold-start non-decision — never a status to persist or
+    // broadcast — so it never counts as a drift (a never-classified session must
+    // not clobber a persisted row with `unknown`).
+    let drifted = new_status != Status::Unknown && Some(new_status) != persisted;
     let mut committed: Option<Status> = None;
-    if new_status != prev {
-        // Re-confirm the transition against fresh fast signals (hook + heartbeat)
-        // after a short settle. A transient flap (e.g. a stale-by-now hook) that
-        // reverts is suppressed; only a status that still holds is broadcast.
+    if new_status != prev || drifted {
+        // Re-confirm against fresh fast signals (hook + heartbeat) after a short
+        // settle. A transient flap (e.g. a stale-by-now hook) that reverts is
+        // suppressed; only a status that still holds is broadcast.
         tokio::time::sleep(FLAP_DEBOUNCE).await;
-        let confirmed = detector.detect(&capture, state.last_pty(name), state.turn_state(name));
-        if confirmed != prev {
+        let confirmed = detector.detect(
+            &capture,
+            state.last_pty(name),
+            state.turn_state(name),
+            state.has_hooks(name),
+        );
+        // Commit when the confirmed status is a real change from the prior
+        // broadcast baseline — either the in-memory `prev` (edge) or the persisted
+        // row (drift heal) — and is a decisive status (never broadcast `Unknown`).
+        let confirmed_drift = confirmed != Status::Unknown && Some(confirmed) != persisted;
+        if confirmed != prev || confirmed_drift {
             // DB first, THEN the watch send — a `wait` handler that subscribed
             // late reads the persisted status as its baseline, so no transition is
             // lost regardless of subscribe timing (Eng P0 #2; see agents::wait).
