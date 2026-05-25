@@ -278,6 +278,16 @@ export function useLiveTerm(
      *  callers can subscribe to "settled" without re-receiving the whole handle.
      *  No delay: it fires as soon as the replay is in — same tick as `ready`. */
     onSettled?: () => void
+    /** Override the WebSocket path the terminal connects to. Defaults to the
+     *  session route `/ws/sessions/{name}`. The Agent Teams teammate terminal
+     *  (AT-F2) passes the read-only teammate route
+     *  `/ws/teams/{team}/{member}[?pane_id=%id]` here — the handshake / replay /
+     *  close-code contract is byte-for-byte identical (AT-E), so the ENTIRE WS
+     *  client machinery (auth-first, replay_done reveal, backoff, 4404 stop,
+     *  1013 backoff) is reused verbatim; only the URL changes. The path must
+     *  already be query-encoded by the caller. When omitted the historical
+     *  session path is used unchanged. */
+    wsPath?: string
   },
 ): UseLiveTermResult {
   const readOnly = opts?.readOnly ?? false
@@ -294,6 +304,10 @@ export function useLiveTerm(
   // by default so the focus terminal + quick-peek modal keep their existing
   // single-WS lifecycle.
   const prewarmSeed = opts?.prewarmSeed ?? false
+  // Optional WS path override (AT-F2 teammate route). Read once into the mount
+  // effect's deps so changing it (e.g. switching teammate inside a strip)
+  // re-subscribes to the new pane, exactly like changing `name`.
+  const wsPath = opts?.wsPath
 
   // Keep the latest `onSettled` in a ref so the single mount effect (which owns
   // the whole WS lifecycle and must NOT re-subscribe on every render) always
@@ -1055,7 +1069,13 @@ export function useLiveTerm(
       resetReady()
 
       const base = wsUrl().replace(/\/$/, '')
-      const url = `${base}/ws/sessions/${encodeURIComponent(name)}`
+      // AT-F2: a `wsPath` override (the read-only teammate route) connects there
+      // instead of the session route — handshake/replay/close contract identical
+      // (AT-E), so everything below is reused verbatim. The override is already
+      // query-encoded by the caller.
+      const url = wsPath
+        ? `${base}${wsPath.startsWith('/') ? '' : '/'}${wsPath}`
+        : `${base}/ws/sessions/${encodeURIComponent(name)}`
       let ws: WebSocket
       try {
         ws = new WebSocket(url)
@@ -1279,8 +1299,10 @@ export function useLiveTerm(
     // belong in deps. `prewarmSeed` is read once at mount (it's a boolean
     // capability, not a per-render input) so it's omitted from the deps to
     // avoid re-subscribing if a parent toggles it on/off.
+    // `wsPath` IS in the deps: changing the target pane (AT-F2 teammate switch)
+    // must re-subscribe just like changing `name`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, readOnly, fontSize])
+  }, [name, readOnly, fontSize, wsPath])
 
   return {
     containerRef,

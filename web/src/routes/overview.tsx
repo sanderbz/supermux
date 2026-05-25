@@ -43,6 +43,8 @@ import {
 import { springs } from '@/lib/springs'
 import { ONBOARDING } from '@/brand/copy'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
+import { useTeams } from '@/hooks/use-teams'
+import { TeamCard } from '@/components/team'
 import { useArchivedSessions } from '@/hooks/use-archived-sessions'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useOverviewLayout } from '@/hooks/use-overview-layout'
@@ -215,7 +217,24 @@ function buildRenderItems(
 }
 
 export function Overview() {
-  const { sessions, isLoading, isError, refetch } = useSessions()
+  const { sessions: allSessions, isLoading, isError, refetch } = useSessions()
+  // Agent Teams (AT-F-FRONT). The TEAM CARD owns its lead + teammates and renders
+  // pinned above the session grid in EVERY sort mode. The lead IS a normal
+  // supermux session, so we must EXCLUDE it from the standalone grid (it renders
+  // as the team card's full tile) to avoid double-rendering; teammates are NOT in
+  // /api/sessions so they never appear in the grid at all.
+  const { teams } = useTeams()
+  const leadSessionNames = React.useMemo(() => {
+    const s = new Set<string>()
+    for (const t of teams) {
+      if (t.lead_supermux_session) s.add(t.lead_supermux_session)
+    }
+    return s
+  }, [teams])
+  const sessions = React.useMemo(
+    () => allSessions.filter((s) => !leadSessionNames.has(s.name)),
+    [allSessions, leadSessionNames],
+  )
   const { layout, setMode, setLayout } = useOverviewLayout()
   const viewMode = useUI((s) => s.viewMode)
   const setViewMode = useUI((s) => s.setViewMode)
@@ -454,9 +473,25 @@ export function Overview() {
     [itemIds, renderItems, writeCustomOrder],
   )
 
+  // Teams that survive the search box (matched by team name or any member name)
+  // — TEAM CARDs render in every mode, so search filters them too.
+  const filteredTeams = React.useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return teams
+    return teams.filter(
+      (t) =>
+        t.team_name.toLowerCase().includes(needle) ||
+        t.members.some((m) => m.name.toLowerCase().includes(needle)) ||
+        (t.lead_supermux_session ?? '').toLowerCase().includes(needle),
+    )
+  }, [teams, query])
+
   const hasSessions = sessions.length > 0
+  // "Any agent at all" = standalone sessions OR a detected team. Used to gate the
+  // first-run empty state so a teams-only workspace doesn't show "No agents yet".
+  const hasAnyAgent = hasSessions || teams.length > 0
   // First load (no cached data yet) with no error → show the skeleton grid.
-  const showSkeleton = isLoading && !hasSessions && !isError
+  const showSkeleton = isLoading && !hasAnyAgent && !isError
 
   const openSheet = () => setSheetOpen(true)
   // The sheet owns create + boot (so it can surface a 409 inline); the route
@@ -615,13 +650,30 @@ export function Overview() {
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
       <div className="min-h-0 flex-1">
+        {/* TEAM CARDs (AT-F-FRONT). Pinned ABOVE the session grid in EVERY sort
+            mode (smart/alpha/custom) — server-formed, not draggable, not part of
+            the dnd-kit sortable context. The lead's own session is excluded from
+            the grid below so it renders only here, as the card's full tile. */}
+        {filteredTeams.length > 0 && !showSkeleton && (
+          <div className="mb-3 flex flex-col gap-3">
+            {filteredTeams.map((team) => (
+              <TeamCard
+                key={team.team_name}
+                team={team}
+                sizeTier={overviewSize}
+                customMode={isCustom}
+              />
+            ))}
+          </div>
+        )}
+
         {showSkeleton ? (
           <div className={tileGridClass}>
             {Array.from({ length: 8 }).map((_, i) => (
               <TileSkeleton key={i} />
             ))}
           </div>
-        ) : isError && !hasSessions ? (
+        ) : isError && !hasAnyAgent ? (
           <div className="flex h-full items-center justify-center">
             <EmptyStatePlaceholder
               icon={<TerminalSquare />}
@@ -629,7 +681,7 @@ export function Overview() {
               cta={{ label: 'Retry now', onClick: () => refetch() }}
             />
           </div>
-        ) : !hasSessions ? (
+        ) : !hasAnyAgent ? (
           <div className="flex h-full items-center justify-center">
             <EmptyStatePlaceholder
               icon={<TerminalSquare />}
@@ -645,7 +697,7 @@ export function Overview() {
               }}
             />
           </div>
-        ) : renderItems.length === 0 ? (
+        ) : renderItems.length === 0 && filteredTeams.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <EmptyStatePlaceholder
               icon={<Search />}
