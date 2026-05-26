@@ -147,9 +147,19 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
             parts.join(" ")
         }
     };
+    // "Edit in native editor" (feat-edit-in-native-editor): point `$EDITOR`/
+    // `$VISUAL` at the supermux bridge wrapper so Claude's built-in Ctrl+G
+    // (`chat:externalEditor`) opens the browser editor sheet instead of a
+    // terminal editor. Exported AFTER the profile sources (a user `~/.zprofile`
+    // could set its own EDITOR, which would otherwise win) and BEFORE `{agent}`
+    // so the launched provider inherits it. Set once OUTSIDE the provider match —
+    // only Claude reads it, but exporting it for codex/shell is harmless (they
+    // ignore it). Single-quoted so a data-dir path with spaces never word-splits.
+    let bridge = config.data_dir.join("bin/supermux-edit");
+    let bridge = bridge.display();
     format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
-         source ~/.profile 2>/dev/null; {agent}"
+         source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; {agent}"
     )
 }
 

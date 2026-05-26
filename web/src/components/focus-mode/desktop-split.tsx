@@ -29,6 +29,8 @@ import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { Dropzone } from '@/components/files/dropzone'
 import { AttachmentRow } from './attachment-chip'
 import { useAttachmentUpload } from './use-attachment-upload'
+import { useExternalEdit } from './use-external-edit'
+import { MobileComposeSheet } from './mobile-compose-sheet'
 import { SessionInfoPanel } from './session-info-panel'
 
 export interface DesktopSplitProps {
@@ -88,6 +90,23 @@ export function DesktopSplit({
   )
   const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
   const attach = useAttachmentUpload(sendToTerm, focusTerm)
+
+  // "Edit in native editor" (feat-edit-in-native-editor). The dock's ✎ Edit button
+  // sends Ctrl+G; Claude lifts its current `❯` input into the supermux bridge, and
+  // this sheet opens on the `external-edit` SSE event PRE-FILLED. Save writes the
+  // edited text back into Claude's input buffer (no auto-submit) via the submit
+  // endpoint; a dismiss cancels (buffer left unchanged). After Save we re-focus
+  // xterm so the user can press Enter to submit.
+  const edit = useExternalEdit(name)
+  const onEdit = React.useCallback(() => termRef.current?.sendKey('Ctrl-G'), [])
+  const onEditSave = React.useCallback(
+    (text: string) => {
+      edit.save(text)
+      // Re-focus xterm so the edited prompt is ready to submit with Enter.
+      window.requestAnimationFrame(() => termRef.current?.focus())
+    },
+    [edit],
+  )
 
   // feat-session-info — the title-click info panel. `titleRef` is the Popover's
   // anchor (the title <button> in the header); the panel only mounts while open.
@@ -330,6 +349,9 @@ export function DesktopSplit({
             setSnippetsOpen(true)
           }}
           onAttach={attach.handleFiles}
+          // "Edit in native editor" relies on Claude's Ctrl+G ($EDITOR bridge),
+          // so it's a no-op on codex/shell panes — hide it for non-Claude sessions.
+          onEdit={current?.provider === 'claude' ? onEdit : undefined}
           onDetach={onDetach}
           onStop={onStop}
         />
@@ -342,6 +364,18 @@ export function DesktopSplit({
         onOpenChange={setSnippetsOpen}
         onInsert={(body) => termRef.current?.send(body)}
         onRun={(body) => termRef.current?.send(body + '\r')}
+      />
+
+      {/* feat-edit-in-native-editor — the native editor sheet. Portaled to
+          document.body so it works on desktop too (the keyboard inset is 0, so it
+          rests at the bottom). Opens PRE-FILLED on the `external-edit` SSE event
+          after the ✎ Edit button sends Ctrl+G; Save writes the edited text back
+          into Claude's input buffer (no Enter). */}
+      <MobileComposeSheet
+        open={edit.open}
+        onOpenChange={edit.setOpen}
+        buffer={edit.buffer}
+        onSave={onEditSave}
       />
 
       {/* feat-session-info — the title-click info panel (Popover on desktop). The

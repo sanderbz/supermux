@@ -13,6 +13,7 @@ pub mod claude_tools;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod external_edit;
 pub mod files;
 pub mod hooks;
 pub mod http;

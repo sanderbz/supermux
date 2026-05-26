@@ -59,6 +59,7 @@ export type SseEventType =
   | 'status'
   | 'prefs'
   | 'teams'
+  | 'external-edit'
   | 'ping'
 
 export interface SseHandlers {
@@ -245,6 +246,7 @@ function connect() {
     'status',
     'prefs',
     'teams',
+    'external-edit',
     'ping',
   ]
   for (const type of NAMED) {

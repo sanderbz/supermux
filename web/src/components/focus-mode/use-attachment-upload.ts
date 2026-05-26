@@ -8,9 +8,9 @@
 //      attached BEFORE anything lands in the terminal.
 //   3. Bytes upload in PARALLEL to `POST /api/upload` (data dir's `uploads/`,
 //      not the cwd) → each returns its ABSOLUTE saved path.
-//   4. Once ALL succeed, we inject ONE no-trailing-Enter sentence quoting every
-//      absolute path via the terminal's text-send (`onSend`), so the user can
-//      add context and hit Enter themselves.
+//   4. Once ALL succeed, we inject the quoted absolute path(s) (no prose, no
+//      trailing Enter) via the terminal's text-send (`onSend`), so the user can
+//      add their own wording and hit Enter themselves.
 //
 // Failures (client 5 MB image guard, network, server reject) surface as a calm
 // toast and the chip flips to an error state the user can dismiss.

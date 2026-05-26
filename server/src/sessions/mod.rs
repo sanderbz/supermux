@@ -83,6 +83,14 @@ pub fn router_for(state: AppState) -> Router {
             get(resumable_handler),
         )
         .route("/api/sessions/{name}/resume", post(resume_handler))
+        // feat-edit-in-native-editor: the dashboard "Done"/"Cancel" of the native
+        // editor sheet resolves the session's in-flight edit. Bearer-gated (a
+        // dashboard→server call); the bridge-side open/result are hook-token-authed
+        // on the `external_edit` router merged at the top level.
+        .route(
+            "/api/sessions/{name}/external-edit/submit",
+            post(external_edit_submit_handler),
+        )
         .route(
             "/api/sessions/{name}/tracked-files",
             get(tracked_list_handler)
@@ -763,6 +771,21 @@ async fn keys_handler(
         .or(input.key)
         .ok_or_else(|| AppError::BadRequest("expected {keys} or {key}".into()))?;
     lifecycle::send_keys(&state, &name, &key).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// `POST /api/sessions/{name}/external-edit/submit` (bearer auth). The dashboard's
+/// native-editor sheet posts the edited text (`{requestId, text}`) on "Done"/"Save"
+/// or `{requestId, cancelled:true}` on dismiss; we resolve the session's in-flight
+/// edit so the `$EDITOR` bridge's `/result` long-poll returns. A stale/missing
+/// `requestId` (edit already resolved, timed out, or superseded) → 409 (the
+/// dashboard just drops the sheet). See `crate::external_edit`.
+async fn external_edit_submit_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<crate::external_edit::SubmitBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    crate::external_edit::submit(&state, &name, body).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

@@ -6,13 +6,30 @@
 //! session reattach join in later milestones. Module definitions live in
 //! `lib.rs` so the binary and integration tests share them.
 
-use supermux_server::{agents, config, db, http, log_redact, scheduler, sessions, state, teams};
+use supermux_server::{
+    agents, config, db, external_edit, http, log_redact, scheduler, sessions, state, teams,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // "Edit in native editor" bridge (feat-edit-in-native-editor). When Claude's
+    // built-in Ctrl+G spawns `$EDITOR`, supermux points `$EDITOR` at THIS binary's
+    // hidden `__edit` subcommand: it relays Claude's input buffer to a browser
+    // editor sheet and writes the edited text back. Checked BEFORE init_tracing /
+    // the server boot so the bridge process stays lean (no DB, no listener) and
+    // exits cleanly. The temp-file path is the last argv after `__edit`.
+    if std::env::args().nth(1).as_deref() == Some("__edit") {
+        return external_edit::run_bridge(std::env::args().nth(2)).await;
+    }
+
     init_tracing();
 
     let config = config::load()?;
+
+    // Install the `$EDITOR` bridge wrapper (`<data_dir>/bin/supermux-edit`) that
+    // `sessions::lifecycle` exports into each pane. Idempotent; a failure here only
+    // disables the edit-in-native-editor affordance (logged), never the server.
+    external_edit::install_bridge_script(&config.data_dir);
 
     // Session survival across restarts/deploys (§3.5). tmux keeps its control
     // socket under $TMUX_TMPDIR (default `/tmp`). Under the systemd hardening

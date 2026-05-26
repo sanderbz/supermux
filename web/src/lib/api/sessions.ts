@@ -473,6 +473,23 @@ export const sessionsApi = {
       body: JSON.stringify({ new_name }),
     }),
 
+  /** `POST /api/sessions/{name}/external-edit/submit` — resolve an in-flight
+   *  "edit in native editor" handoff (feat-edit-in-native-editor). The native
+   *  editor sheet posts the edited `text` on Done/Save, or `cancelled:true` on
+   *  dismiss; the server then wakes the `$EDITOR` bridge's long-poll so Claude's
+   *  input buffer is replaced (or left unchanged on cancel). DOES NOT submit the
+   *  prompt — the edited text sits back at Claude's `❯` for the user to send with
+   *  Enter. A stale `requestId` (edit already resolved/expired) → 409; the caller
+   *  swallows it (the sheet just closes). */
+  externalEditSubmit: (
+    name: string,
+    body: { requestId: string; text?: string; cancelled?: boolean },
+  ): Promise<unknown> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/external-edit/submit`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
    *  (M7). Returns `[]` on any failure so the field degrades to a plain input. */
   autocompleteDir: async (q: string): Promise<string[]> => {
