@@ -593,27 +593,32 @@ export function MobileDock({
         {/* Style-gate (not mount-gate): when the keyboard is down the field is
             fully transparent + unhittable, but stays MOUNTED so an in-flight
             tap (pointerDown landed while keyboardOpen=true) completes its
-            pointerUp even if the keyboard begins dismissing mid-gesture. The
-            `invisible` class drops it from AT/Tab order; `pointer-events-none`
-            blocks fresh taps; `opacity-0` hides it visually; `w-0 overflow-
-            hidden` collapses its layout box so the dock-icon cluster sits
-            flush-left exactly as when keyboardOpen=false used to unmount. The
-            wrapper is a normal block (NOT `display:contents`) so the hide
-            classes actually take effect on a real DOM box. */}
+            pointerUp even if the keyboard begins dismissing mid-gesture.
+            `invisible w-0 overflow-hidden opacity-0 pointer-events-none`
+            collapses + hides the box without unmounting; the browser moves
+            focus off the now-invisible button naturally (no `aria-hidden`
+            needed → no "aria-hidden on a focused descendant" warning).
+            ─
+            VISIBLE-state width fix: ComposeField caps itself at
+            `maxWidth: 40%` (see :862), which is computed against its parent's
+            content box. If we kept this wrapper as a real flex item when
+            visible, that parent is THIS wrapper — sized to its content
+            (ComposeField) — and `40%` becomes 40% of ComposeField, which
+            collapses to ~0. Fix: when keyboard is UP, use `display: contents`
+            (Tailwind `contents`) so the wrapper drops out of the layout tree
+            and ComposeField sees the DOCK as its containing block — `40%`
+            again references the dock's width, restoring the pre-regression
+            sizing. When keyboard is DOWN, the wrapper becomes a real DOM box
+            (`flex`) so `w-0 invisible` actually collapses it. The
+            `data-vr-keyboard-gated` attribute lives on the wrapper either
+            way (DOM-bound attributes work fine with `display: contents`). */}
         <div
           data-vr-keyboard-gated="compose-field"
           data-vr-keyboard-open={keyboardOpen ? 'true' : 'false'}
           className={cn(
-            'flex shrink-0 items-center',
-            // When the keyboard is down: hide visually, drop layout, ignore
-            // pointer events. `visibility:hidden` (via `invisible`) ALREADY
-            // removes the subtree from the accessibility tree — adding an
-            // explicit `aria-hidden` here also caused the "aria-hidden on a
-            // focused descendant" warning when the keyboard dismissed while
-            // the inner ComposeField button still held focus. CSS hides it
-            // from AT; the browser will move focus off the now-invisible
-            // button naturally.
-            !keyboardOpen && 'invisible w-0 overflow-hidden opacity-0 pointer-events-none',
+            keyboardOpen
+              ? 'contents'
+              : 'flex shrink-0 items-center invisible w-0 overflow-hidden opacity-0 pointer-events-none',
           )}
         >
           <ComposeField
