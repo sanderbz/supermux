@@ -279,7 +279,8 @@ DEPLOY_REF="${SUPERMUX_DEPLOY_REF:-HEAD}"
 # unprivileged user. The systemd unit's hardening directives are written for an
 # unprivileged user — `ProtectHome=true` masks /root, so a root-owned data dir
 # under /root/.supermux is unreachable and the unit refuses to start (this is
-# the bug that broke clawd-02 and required a hand-edit of the installed unit).
+# a real bug we've hit in production, requiring a hand-edit of the installed
+# unit to recover).
 # Worse, running the agent stack as root trips Claude Code's hard refusal to use
 # `--dangerously-skip-permissions` as uid 0 — so an "all root" deploy is broken
 # on two fronts. Demand an explicit, loud opt-in to run as root.

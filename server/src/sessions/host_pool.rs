@@ -276,8 +276,15 @@ impl HostPool {
             Err(e) => {
                 state.failures = state.failures.saturating_add(1);
                 let failures = state.failures;
+                // Index = failures - 1 (the Nth failure, 1-indexed, picks
+                // BACKOFFS[N-1]). Use saturating_sub so a future refactor that
+                // doesn't pre-increment can't underflow into a panic at the
+                // indexing arithmetic; clamp the high end to the last slot.
                 let backoff = BACKOFFS
-                    .get((failures as usize).min(BACKOFFS.len()) - 1)
+                    .get(
+                        (failures.saturating_sub(1) as usize)
+                            .min(BACKOFFS.len().saturating_sub(1)),
+                    )
                     .copied()
                     .unwrap_or_else(|| BACKOFFS[BACKOFFS.len() - 1]);
                 warn!(

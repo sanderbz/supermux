@@ -2,8 +2,8 @@
 //
 // Two filled chevron-banner shapes in a vertical blue gradient. Inlined as SVG
 // so it scales crisply at any size and inherits no extra network hop. Master
-// at /Users/sandervm/supermux/.claude/worktrees/agent-ad4ef81b07ca5ffd2/brand/logo-supermux.svg
-// is the single source of truth — see brand/preview/ for the radius critique.
+// at `brand/logo-supermux.svg` (repo root) is the single source of truth —
+// see `brand/preview/` for the radius critique.
 //
 // Usage:
 //   <Logo className="size-8" />                  // square, sized via Tailwind
