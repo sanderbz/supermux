@@ -184,6 +184,16 @@ export function GroupHeader({
           defaultValue={name}
           onBlur={commit}
           onKeyDown={(e) => {
+            // Stop Space / Enter / arrow keys from bubbling to the dnd-kit
+            // KeyboardSensor wired onto the parent header row via
+            // `dragListeners` (see line 163 above) — otherwise Space is
+            // interpreted as "pick up a drag", which steals focus and runs
+            // our onBlur → commit prematurely, making the rename input look
+            // broken. Browser default still inserts the space character.
+            // Product: group names accept spaces (no validator rejects them).
+            if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              e.stopPropagation()
+            }
             if (e.key === 'Enter') {
               e.preventDefault()
               commit()

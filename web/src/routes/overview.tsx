@@ -719,6 +719,18 @@ function AddGroupInput({
         aria-label={hint}
         defaultValue=""
         onKeyDown={(e) => {
+          // Stop Space / Enter / arrow keys from bubbling to the dnd-kit
+          // KeyboardSensor on the parent SortableContext. Otherwise Space
+          // inside this input is interpreted as "pick up a drag", which
+          // shifts focus away from the input and triggers our onBlur →
+          // commit path with whatever the user has typed so far, making
+          // it look like the input "crashed". The browser default still
+          // inserts the space character into the input value.
+          // See: group-grid.tsx KeyboardSensor (~line 509). Product:
+          // spaces in group names are allowed (no validator rejects them).
+          if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            e.stopPropagation()
+          }
           if (e.key === 'Enter') {
             e.preventDefault()
             commit()
