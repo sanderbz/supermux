@@ -58,6 +58,9 @@ export type SseEventType =
   | 'alerts'
   | 'status'
   | 'prefs'
+  // AT-B: experimental settings toggles (e.g. `experimental.agent_teams`) —
+  // payload `{ key, enabled }`, routed by `use-settings.ts`.
+  | 'settings'
   | 'teams'
   | 'external-edit'
   | 'ping'
@@ -245,6 +248,7 @@ function connect() {
     'alerts',
     'status',
     'prefs',
+    'settings',
     'teams',
     'external-edit',
     'ping',

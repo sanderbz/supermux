@@ -130,10 +130,12 @@ export function TeammateChip({
           )
         )}
 
-        {/* Peek glyph — zero-click peek trigger, ≥44pt hit target (size-9 visible,
-            the row is 44pt tall so the vertical target is met; horizontal padding
-            on the parent keeps the tap zone generous). Stops propagation so it
-            never also triggers the row's tap→focus. */}
+        {/* Peek glyph — zero-click peek trigger. The visible glyph stays small
+            (size-9) but the TAP TARGET is bumped to a full 44pt square on a
+            coarse pointer ([@media(pointer:coarse)]:size-11) so touch users get
+            the HIG-grade hit area in BOTH axes (the row's 44pt height alone only
+            covered the vertical). Fine pointers keep the compact 36px aim target.
+            Stops propagation so it never also triggers the row's tap→focus. */}
         <button
           type="button"
           aria-label={`Peek ${member.name}`}
@@ -143,7 +145,7 @@ export function TeammateChip({
             onPeek()
           }}
           onPointerDown={(e) => e.stopPropagation()}
-          className="flex size-9 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex size-9 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:size-11"
         >
           <PeekGlyph />
         </button>

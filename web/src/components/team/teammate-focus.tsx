@@ -87,7 +87,10 @@ export function TeammateFocus({
 
       {/* Thin member strip — switch teammate inside the team without leaving
           full-screen (only when there's more than one + a handler). Horizontal
-          scroll, 44pt chips, active one highlighted. */}
+          scroll, active one highlighted. The pill stays visually compact but its
+          TOUCH TARGET is a full 44pt tall on a coarse pointer
+          ([@media(pointer:coarse)]:h-11) so touch users get the HIG-grade hit
+          area; fine pointers keep the tighter h-9 chip. */}
       {onSelectMember && teammates.length > 1 && (
         <div className="z-10 flex gap-1.5 overflow-x-auto border-b border-border/40 bg-card/60 px-2 py-1.5 backdrop-blur-md [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {teammates.map((m) => {
@@ -99,7 +102,7 @@ export function TeammateFocus({
                 onClick={() => onSelectMember(m.name)}
                 aria-pressed={active}
                 className={
-                  'flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors ' +
+                  'flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11 ' +
                   (active
                     ? 'bg-secondary text-foreground'
                     : 'text-muted-foreground hover:text-foreground')

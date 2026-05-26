@@ -755,6 +755,21 @@ impl AppState {
         self.pty.forget(name);
     }
 
+    /// Evict a teammate PANE stream (Agent Teams §3.5) keyed by its stream key
+    /// (`{lead}/{member}`). Called when a team ends (the watcher's deregister
+    /// path) so the per-pane [`PtyStream`] cached in the streamer DashMap — plus
+    /// its heartbeat entry, which the reader records under the SAME key — does NOT
+    /// linger forever once the team is gone. Without this the registry grows
+    /// unbounded across many team starts (every `{lead}/{member}` slot is created
+    /// on first attach but never removed; the session-cleanup `forget_session`
+    /// only handles bare session keys). Best-effort + idempotent: an unknown key
+    /// is a clean no-op, and this NEVER touches a bare session key.
+    pub fn forget_teammate_stream(&self, stream_key: &str) {
+        self.pty_heartbeat.remove(stream_key);
+        self.detector_wake.remove(stream_key);
+        self.pty.forget(stream_key);
+    }
+
     /// Move every per-session in-memory map entry from `old` to `new` (used by
     /// `config_patch` rename so locks/tokens/watches survive a rename).
     pub fn rename_session(&self, old: &str, new: &str) {

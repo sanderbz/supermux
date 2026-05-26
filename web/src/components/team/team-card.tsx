@@ -26,12 +26,8 @@ import { useTeamDensity, type TeamDensity } from '@/stores/team-density-store'
 import { SessionTile } from '@/components/session-tile'
 import type { TileSession } from '@/components/session-tile'
 import type { OverviewSize } from '@/lib/overview-size'
-import {
-  needsYouCount,
-  taskProgress,
-  type Team,
-  type TeamMember,
-} from '@/lib/api/teams'
+import { type Team, type TeamMember } from '@/lib/api/teams'
+import { TeamRollupBadges } from './team-rollup-badges'
 import { TeammateChip } from './teammate-chip'
 import { TeammateCard } from './teammate-card'
 import { TeammatePeekSheet } from './teammate-peek-sheet'
@@ -79,19 +75,14 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
 
       {/* Lead — a FULL session tile (reused). When the lead session isn't in the
           cache (unmapped this tick) we show a calm placeholder so the card never
-          looks broken. */}
+          looks broken. The "Lead" label lives in the header row (next to the team
+          name) — NOT overlaid on the tile — so it can never collide with the
+          tile's own title / status dot / hover controls at any density tier. */}
       {leadSession ? (
-        <div className="relative">
-          <SessionTile
-            session={leadSession as TileSession}
-            sizeTier={sizeTier}
-          />
-          {/* A tiny "Lead" tag overlaid top-left so the hierarchy reads instantly:
-              this full tile is the lead; the rows below are its crew. */}
-          <span className="pointer-events-none absolute left-2 top-2 z-20 rounded-full bg-card/85 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground shadow-sm backdrop-blur-sm">
-            Lead
-          </span>
-        </div>
+        <SessionTile
+          session={leadSession as TileSession}
+          sizeTier={sizeTier}
+        />
       ) : (
         <div className="flex h-16 items-center justify-center rounded-xl border border-dashed border-border/60 px-3 text-center text-xs text-muted-foreground">
           {team.lead_supermux_session
@@ -131,6 +122,17 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
         </div>
       )}
 
+      {/* Calm note: teammates are split-panes inside the lead's session, so
+          stopping the lead ends the whole team. Surfaced quietly (muted, no
+          colour, no icon) only when there's both a lead and teammates — it sets
+          expectation before the user ever reaches the lead's Stop confirm. */}
+      {leadSession && members.length > 0 && (
+        <p className="px-1 text-[11px] leading-snug text-muted-foreground/60">
+          Stopping the lead ends the whole team — its teammates are panes in the
+          lead’s session.
+        </p>
+      )}
+
       {/* Teammate peek (half-sheet). */}
       {peekMember && (
         <TeammatePeekSheet
@@ -165,6 +167,10 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
 // secondary (`N agents · X/Y tasks`) that drops first on a narrow screen. We do
 // NOT show a "working" number — it's the implicit default (per-member spinners
 // already show it). The density toggle (Chips↔Cards) sits at the trailing edge.
+//
+// The two attention badges (primary token + muted secondary) are the SHARED
+// <TeamRollupBadges> — the SAME markup the focus session-strip header renders —
+// so the roll-up never drifts between the overview and focus views.
 
 function TeamRollup({
   team,
@@ -175,10 +181,6 @@ function TeamRollup({
   density: TeamDensity
   onDensityChange: (d: TeamDensity) => void
 }) {
-  const needs = needsYouCount(team)
-  const { done, total } = taskProgress(team)
-  const agentCount = team.members.length
-
   return (
     <header className="flex items-center gap-2 px-0.5">
       {/* Team name — the stable identity. */}
@@ -186,27 +188,16 @@ function TeamRollup({
         {team.team_name}
       </h2>
 
-      {/* PRIMARY attention token. */}
-      {needs > 0 ? (
-        <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
-          needs you · {needs}
-        </span>
-      ) : (
-        <span className="shrink-0 rounded-full bg-status-ready/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-ready">
-          done
-        </span>
-      )}
-
-      {/* SECONDARY, muted, tabular — drops first on a narrow screen (hidden < sm). */}
-      <span className="ml-auto hidden shrink-0 items-center gap-1 text-[11px] tabular-nums text-muted-foreground/70 sm:flex">
-        {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
-        {total > 0 && (
-          <>
-            <span aria-hidden>·</span>
-            {done}/{total} tasks
-          </>
-        )}
+      {/* "Lead" tag — inline here (not overlaid on the tile) so it labels the
+          hierarchy ("the full tile below is the lead, the rows under it are its
+          crew") without ever covering the tile's own title / status dot. */}
+      <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+        Lead
       </span>
+
+      {/* Shared attention badges (primary token + muted, tabular secondary; the
+          secondary drops first on a narrow screen via the `card` density). */}
+      <TeamRollupBadges team={team} density="card" />
 
       {/* Density toggle — per-team Chips↔Cards (NOT the global controls). On the
           narrow screen the secondary is hidden, so the toggle keeps its own

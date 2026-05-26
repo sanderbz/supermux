@@ -279,6 +279,41 @@ export interface ResumableConversation {
   message_count: number
 }
 
+/** Live git status for a session's working dir (feat-session-info), from
+ *  `GET /api/sessions/{name}/git`. The stored `branch` label goes stale; this is
+ *  read on demand when the info panel opens so it shows the TRUTH. Every field
+ *  defaults to "no repo" server-side, so a non-git dir degrades cleanly (the
+ *  panel hides the section). */
+export interface GitInfo {
+  /** True when the working dir is inside a git work tree. */
+  repo: boolean
+  /** Current branch; the short commit SHA when detached; empty when not a repo. */
+  branch: string
+  /** True when HEAD is detached (then `branch` holds the short SHA). */
+  detached: boolean
+  /** True when the work tree has uncommitted changes (tracked or untracked). */
+  dirty: boolean
+  /** Commits ahead of the upstream (0 when no upstream / not a repo). */
+  ahead: number
+  /** Commits behind the upstream (0 when no upstream / not a repo). */
+  behind: number
+}
+
+/** Body for `PATCH /api/sessions/{name}/config` — the tmux-free fields. Every
+ *  field is optional; send only what changes. A `rename` changes the session's
+ *  IDENTITY (its slug = its displayed title), so the server also renames the live
+ *  tmux session + rebuilds the pty stream — a running session survives it. */
+export interface SessionConfigPatch {
+  rename?: string
+  desc?: string
+  dir?: string
+  branch?: string
+  mcp?: string
+  tags?: string[]
+  toggle_pin?: boolean
+  toggle_auto_continue?: boolean
+}
+
 /** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode
  *  ACTUALLY in effect after the op (the UI reflects truth, never an optimistic
  *  guess). `converged` is false when the Shift+Tab cycle couldn't reach the
@@ -489,6 +524,33 @@ export const sessionsApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  /** `PATCH /api/sessions/{name}/config` — patch the tmux-free fields (rename /
+   *  desc / dir / branch / mcp / tags / pins). Resolves to the updated row. A
+   *  `rename` also renames the live tmux session + rebuilds the pty so a RUNNING
+   *  session survives; 409 if a `rename` target already exists, 400 if the target
+   *  isn't a valid slug. */
+  config: (name: string, patch: SessionConfigPatch): Promise<ApiSession> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/config`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  /** `PATCH .../config { rename }` — rename a session. Its slug IS its displayed
+   *  title, so this is the "edit title" op; it changes the session's identity
+   *  everywhere (URL / tiles / board), so the caller navigates to the new name on
+   *  success. Resolves to the renamed row. */
+  rename: (name: string, target: string): Promise<ApiSession> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/config`, {
+      method: 'PATCH',
+      body: JSON.stringify({ rename: target } satisfies SessionConfigPatch),
+    }),
+
+  /** `GET /api/sessions/{name}/git` — live git status for the working dir (real
+   *  branch / dirty / ahead-behind), read when the info panel opens. */
+  git: (name: string): Promise<GitInfo> =>
+    sessReq<GitInfo>(`/api/sessions/${encodeURIComponent(name)}/git`),
+
 
   /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
    *  (M7). Returns `[]` on any failure so the field degrades to a plain input. */

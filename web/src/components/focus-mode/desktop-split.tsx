@@ -20,7 +20,11 @@ import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import type { TileSession } from '@/components/session-tile/types'
+import type { Team, TeamMember } from '@/lib/api/teams'
 import { CompactTile } from './compact-tile'
+import { TeamStripGroup } from './team-strip-group'
+import { TeammatePane } from './teammate-pane'
+import { buildFocusStrip } from './focus-strip-groups'
 import { DesktopFocusHeader } from './focus-header'
 import { DesktopDock } from './dock'
 import { TerminalCaptureIndicator } from './terminal-capture-indicator'
@@ -40,6 +44,10 @@ export interface DesktopSplitProps {
   sessions: TileSession[]
   /** The focused row (may be null before the store resolves). */
   current: TileSession | null
+  /** Detected Agent Teams (AT-B). The strip groups a team's lead + teammates
+   *  consistently with the overview TEAM CARD; empty array = today's flat list
+   *  (zero regression). */
+  teams?: Team[]
   /** Navigate to another focus route (Cmd+1..9 + compact-tile click). */
   onSelect: (name: string) => void
   /** Detach (⌘D): leave to overview, keep the session alive. */
@@ -55,11 +63,68 @@ export function DesktopSplit({
   name,
   sessions,
   current,
+  teams = [],
   onSelect,
   onDetach,
   onStop,
   onSnippets,
 }: DesktopSplitProps) {
+  // Build the team-aware strip model from the SAME sessions + the shared teams
+  // cache (no second fetch). No teams → every session is one ungrouped row =
+  // today's behaviour exactly.
+  const strip = React.useMemo(
+    () => buildFocusStrip(sessions, teams),
+    [sessions, teams],
+  )
+
+  // Which teammate (if any) is shown in the MAIN pane. Held by team+agent_id so
+  // the selection survives an SSE snapshot replace (member identity changes each
+  // tick). We ALSO stamp the focused-session `name` at selection time: a teammate
+  // is read-only and bound to "the session the user was on when they opened it",
+  // so the moment the route's focused session changes (⌘1..9, back, an external
+  // navigate) the selection is ignored and the session terminal re-takes the
+  // pane — derived in render (no effect, no ref-during-render → linter-clean).
+  const [selected, setSelected] = React.useState<{
+    teamName: string
+    agentId: string
+    forName: string
+  } | null>(null)
+
+  // Honour the selection ONLY while the route is still on the session it was made
+  // from; a route change implicitly drops it.
+  const activeSel = selected && selected.forName === name ? selected : null
+
+  // Resolve the selected teammate live from the current teams snapshot (so its
+  // status / pane id stay fresh). If it vanished from the roster, fall back to
+  // the session pane rather than a dangling selection.
+  const selectedTeam = activeSel
+    ? teams.find((t) => t.team_name === activeSel.teamName) ?? null
+    : null
+  const selectedMember: TeamMember | null = activeSel
+    ? selectedTeam?.members.find((m) => m.agent_id === activeSel.agentId) ?? null
+    : null
+  const teammateActive = !!(selectedTeam && selectedMember)
+
+  const selectTeammate = React.useCallback(
+    (team: Team, member: TeamMember) => {
+      setSelected({
+        teamName: team.team_name,
+        agentId: member.agent_id,
+        forName: name,
+      })
+    },
+    [name],
+  )
+
+  // Selecting a session (lead or normal row) clears any teammate selection and
+  // routes — identical to today's behaviour for a normal row.
+  const selectSession = React.useCallback(
+    (next: string) => {
+      setSelected(null)
+      onSelect(next)
+    },
+    [onSelect],
+  )
   // One imperative LiveTerminal handle, shared by the dock chips + the keyboard
   // shortcuts. Captured via the M13 `onReady` callback — no re-subscribe.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
@@ -219,13 +284,19 @@ export function DesktopSplit({
     }
   }, [])
 
-  // Jump to the N-th (0-indexed) strip row — Cmd+1..9.
+  // Jump to the N-th (0-indexed) ROUTABLE session — Cmd+1..9. Uses the strip's
+  // flattened jump list (each team's mapped lead, then loose sessions) so a
+  // teammate (read-only, not a route) never claims a number. Also clears any
+  // teammate selection so the session terminal re-takes the pane.
   const jump = React.useCallback(
     (index: number) => {
-      const target = sessions[index]
-      if (target && target.name !== name) onSelect(target.name)
+      const target = strip.jumpSessions[index]
+      if (target) {
+        setSelected(null)
+        if (target.name !== name) onSelect(target.name)
+      }
     },
-    [sessions, name, onSelect],
+    [strip.jumpSessions, name, onSelect],
   )
 
   // The single document-level keydown capture (PRINCIPLE). All non-shortcut keys
@@ -249,25 +320,52 @@ export function DesktopSplit({
           Sessions
         </div>
         <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
-          {sessions.length === 0 ? (
+          {sessions.length === 0 && strip.groups.length === 0 ? (
             <p className="px-1 pt-2 text-[13px] text-muted-foreground">
               No other sessions.
             </p>
           ) : (
-            sessions.map((s) => (
-              <CompactTile
-                key={s.name}
-                session={s}
-                current={s.name === name}
-                onSelect={onSelect}
-              />
-            ))
+            <>
+              {/* Detected teams — grouped (header + lead + teammates), mirroring
+                  the overview TEAM CARD. Renders nothing when there are no teams. */}
+              {strip.groups.map((g) => (
+                <TeamStripGroup
+                  key={g.team.team_name}
+                  team={g.team}
+                  lead={g.lead}
+                  members={g.members}
+                  focusedSessionName={name}
+                  selectedTeammateId={
+                    teammateActive ? activeSel!.agentId : null
+                  }
+                  onSelectSession={selectSession}
+                  onSelectTeammate={selectTeammate}
+                />
+              ))}
+
+              {/* Non-team sessions — the flat list, exactly as today. */}
+              {strip.loose.map((s) => (
+                <CompactTile
+                  key={s.name}
+                  session={s}
+                  current={!teammateActive && s.name === name}
+                  onSelect={selectSession}
+                />
+              ))}
+            </>
           )}
         </div>
       </aside>
 
-      {/* Right: main pane — header / terminal / dock. */}
+      {/* Right: main pane. A SELECTED TEAMMATE swaps the whole pane for its
+          read-only terminal (no editable header/dock — the teammate WS is
+          read-only); otherwise the focused SESSION's header / terminal / dock
+          owns the pane exactly as today. */}
       <main className="flex min-w-0 flex-1 flex-col">
+        {teammateActive ? (
+          <TeammatePane team={selectedTeam!} member={selectedMember!} />
+        ) : (
+        <>
         <DesktopFocusHeader
           name={name}
           title={title}
@@ -355,6 +453,8 @@ export function DesktopSplit({
           onDetach={onDetach}
           onStop={onStop}
         />
+        </>
+        )}
       </main>
 
       {/* M18 snippet panel — slides up over the dock; tap-insert and long-press

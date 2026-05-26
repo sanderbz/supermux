@@ -249,6 +249,19 @@ impl<'a> Tmux<'a> {
         Ok(())
     }
 
+    /// `tmux rename-session -t supermux-<name> supermux-<new>` — rename the LIVE
+    /// tmux session so it keeps resolving under the session's NEW name. The
+    /// window/pane (and its `pipe-pane` capture) survive the rename untouched —
+    /// only the session label changes — so the caller must invalidate the cached
+    /// pty stream afterwards (its liveness poll watches the OLD name) to force a
+    /// fresh attach against the new name. Caller verifies the session exists.
+    pub async fn rename_session(&self, new_bare: &str) -> Result<()> {
+        let new_target = format!("supermux-{new_bare}");
+        self.run(&["rename-session", "-t", &self.target(), &new_target])
+            .await?;
+        Ok(())
+    }
+
     /// `tmux has-session -t supermux-<name>` → true on exit 0.
     pub async fn exists(&self) -> Result<bool> {
         let ok = Command::new(tmux_bin()?)
