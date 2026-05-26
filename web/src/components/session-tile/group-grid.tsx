@@ -17,7 +17,12 @@
 //                          floating cursor caption "Drop in <group> —
 //                          sorted by Smart." NO insertion line inside.
 //       Custom-sort dest → short inter-tile insertion line at the precise
-//                          drop slot; the layout reflows via Motion `layout`.
+//                          drop slot; the layout reflows via dnd-kit's
+//                          built-in CSS-transform animation, retimed from
+//                          its ~200ms default to 100ms ease-out (S11). The
+//                          duration source-of-truth is `tweens.reflow` in
+//                          @/lib/springs; sortable.transition is overridden
+//                          per-tile (see SortableTileSlot).
 //   • Group reorder drop indicator → FULL-grid-width 2 px horizontal line
 //     with an 8 px terminal dot on the left margin (Atlassian "line indicator"
 //     spec). Width = 100% of the grid, NOT one column — the visual articulation
@@ -36,7 +41,7 @@
 // It receives the already-filtered session list + the persisted custom order.
 
 import * as React from 'react'
-import { LayoutGroup, motion, useReducedMotion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
 import {
   closestCenter,
   DndContext,
@@ -67,12 +72,14 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { Plus, MoveRight } from 'lucide-react'
 
-import { springs } from '@/lib/springs'
+import { springs, tweens } from '@/lib/springs'
 import {
   defaultGroupSortMode,
   readGroupSortMode,
+  removeGroupSortMode,
   sortSessionsByMode,
   UNGROUPED_GROUP_ID,
+  writeGroupSortMode,
   type GroupSortMode,
   type LayoutItem,
 } from '@/lib/overview-layout'
@@ -283,12 +290,9 @@ function useGroupSortModes(
       next.set(id, mode)
       return next
     })
-    // Persist — best-effort, swallow localStorage failures.
-    try {
-      window.localStorage.setItem(`supermux:overview:group-sort:${id}`, mode)
-    } catch {
-      /* private mode / quota — non-fatal */
-    }
+    // Persist via the shared helper (M4 — consolidate localStorage keying so
+    // every key flows through `groupSortKey()`).
+    writeGroupSortMode(id, mode)
   }, [])
 
   return [modes, set]
@@ -328,8 +332,12 @@ function announcementsFactory(
   }
   return {
     onDragStart({ active }) {
+      // S8 — Copy reflects what's actually wired: dnd-kit's
+      // `sortableKeyboardCoordinates` implements arrows + Space/Enter + Esc.
+      // Tab is NOT wired for choosing a group; the old copy promised a
+      // feature that doesn't exist.
       return announce(
-        `Picked up ${labelFor(active.id)}. Use Tab to choose a group; arrows to position; Enter to drop; Escape to cancel.`,
+        `Picked up ${labelFor(active.id)}. Use arrow keys to move; Enter drops; Escape cancels.`,
       )
     },
     onDragOver({ active, over }) {
@@ -409,8 +417,22 @@ export function GroupGrid({
     string | null
   >(null)
   const snackbarTimerRef = React.useRef<number | null>(null)
+  // S12 — Toast dedupe. Three rapid identical smart-sort moves would stack
+  // three toasts (the global ToastProvider keeps 3 visible × 2.5s). Track
+  // the last fired message + timestamp and skip a repeat within ~500ms.
+  const lastSnackbarRef = React.useRef<{ message: string; at: number }>({
+    message: '',
+    at: 0,
+  })
   const fireSmartSortSnackbar = React.useCallback(
     (message: string) => {
+      const now = Date.now()
+      const last = lastSnackbarRef.current
+      if (last.message === message && now - last.at < 500) {
+        // Same message fired in the last 500ms — skip the duplicate toast.
+        return
+      }
+      lastSnackbarRef.current = { message, at: now }
       toast({ message })
       // VR-hook lifetime mirrors the default toast duration.
       if (snackbarTimerRef.current !== null) {
@@ -651,10 +673,14 @@ export function GroupGrid({
     // understands why their precise drop position didn't stick. Same message
     // for any non-custom destination (Smart / Name / Status / Recent / Age)
     // since the user experience is identical: "you dropped it here, but the
-    // sort kernel just repositioned it." Always references "Smart" per the
-    // spec snackbar copy — that's the canonical case; we don't fragment the
-    // copy by every mode.
-    if (toSec.sortMode !== 'custom') {
+    // sort kernel just repositioned it."
+    //
+    // S5 — Only fire on CROSS-group moves. Dragging a tile WITHIN the same
+    // smart-sort group and releasing without leaving the group is a no-op
+    // from the user's perspective; the sort kernel quietly re-runs but
+    // there's no "moved to <group>" event to announce. Without this guard
+    // the snackbar fires on every within-group drag — noise.
+    if (toSec.sortMode !== 'custom' && fromSec.groupId !== toSec.groupId) {
       fireSmartSortSnackbar(
         `Moved to ${toSec.groupName} — re-sorted by ${GROUP_SORT_LABEL[toSec.sortMode]}.`,
       )
@@ -839,23 +865,46 @@ export function GroupGrid({
         accessibility={{ announcements }}
         // pointerWithin first (more forgiving over container droppables),
         // then closest-center as a fallback for edge hovers.
+        //
+        // M2 — Cross-context collision FILTER. dnd-kit's collision strategy
+        // runs across EVERY droppable in the context. When dragging a GROUP
+        // HEADER, the pointer often lands inside a tile sortable (tile bodies
+        // are much larger than the 40px header row) and `over.id` becomes
+        // `session:<name>` — none of our group-drop branches match and the
+        // drop is silently swallowed. Antipattern: trusting a single global
+        // collision strategy across multiple drag KINDS. Fix: gate on the
+        // dragging item's id prefix and only consider droppables of the
+        // same kind. Sessions can drop on group-bodies + sessions + group
+        // headers (all valid dest types); groups can only drop on other
+        // group headers.
         collisionDetection={(args) => {
-          const pointer = pointerWithin(args)
+          const activeId = String(args.active.id)
+          const filterByKind = <T extends { id: UniqueIdentifier }>(arr: T[]): T[] => {
+            if (activeId.startsWith('group:')) {
+              return arr.filter((c) => String(c.id).startsWith('group:'))
+            }
+            // Session drag — keep everything (group-body, session, group header).
+            return arr
+          }
+          const pointer = filterByKind(pointerWithin(args))
           if (pointer.length > 0) return pointer
-          const intersect = rectIntersection(args)
+          const intersect = filterByKind(rectIntersection(args))
           if (intersect.length > 0) return intersect
-          return closestCenter(args)
+          return filterByKind(closestCenter(args))
         }}
         onDragStart={onDragStart}
         onDragOver={onDragOver}
         onDragCancel={onDragCancel}
         onDragEnd={onDragEnd}
-        // Built-in auto-scroll: 40px viewport edge with an accelerating curve.
-        // dnd-kit's default threshold is ~20%; we tighten to ~0.12 of viewport
-        // height so the user gets auto-scroll only when CLEARLY near the edge.
+        // S13 — Auto-scroll threshold ≈ 40px from the edge. dnd-kit takes a
+        // normalized fraction (0..1) of viewport height, not pixels. We pick
+        // a fixed 0.05 — ≈40px on a 1080p laptop, slightly more aggressive
+        // on shorter phone viewports (which is fine for touch). A
+        // ResizeObserver-driven dynamic value would be more precise but
+        // adds an observer for no perceivable user benefit.
         autoScroll={{
           enabled: true,
-          threshold: { x: 0, y: 0.12 },
+          threshold: { x: 0, y: 0.05 },
           // Acceleration: 10 (default) is a good "feels like Notion" baseline.
           acceleration: 10,
         }}
@@ -864,7 +913,12 @@ export function GroupGrid({
           items={groupSortableIds}
           strategy={verticalListSortingStrategy}
         >
-          <LayoutGroup>
+          {/* S11 — Removed dead `<LayoutGroup>` wrapper. No inner element
+              uses framer-motion `layout`/`layoutId`, so it was a no-op
+              (and the docstring above mis-claimed Motion drove the reflow
+              when in fact dnd-kit's CSS transform does). Reflow timing now
+              comes from `tweens.reflow` (100ms ease-out) via the
+              sortable.transition override — see SortableTileSlot. */}
             <div className="flex flex-col gap-2">
               {/* Hover-gap above the first section. */}
               <GapAddGroup
@@ -872,7 +926,19 @@ export function GroupGrid({
                 onPick={() => onRequestNewGroupAt(0)}
                 reduce={!!reduce}
               />
-              {sections.map((section, sIdx) => {
+              {(() => {
+                // S6 — Pre-compute the first/last REORDERABLE section index
+                // (skipping the implicit Ungrouped bucket) so the kebab's
+                // move-up/down/top/bottom items can be DISABLED at boundaries
+                // instead of being live and silently no-op'ing.
+                let firstReal = -1
+                let lastReal = -1
+                for (let i = 0; i < sections.length; i++) {
+                  if (sections[i].isImplicit) continue
+                  if (firstReal < 0) firstReal = i
+                  lastReal = i
+                }
+                return sections.map((section, sIdx) => {
                 const dragLifted =
                   activeGroup?.groupId === section.groupId && !section.isImplicit
                 const dragOver =
@@ -880,6 +946,8 @@ export function GroupGrid({
                   overGroupId === section.groupId &&
                   !section.isImplicit &&
                   !dragLifted
+                const canMoveUp = !section.isImplicit && sIdx > firstReal
+                const canMoveDown = !section.isImplicit && sIdx < lastReal
                 return (
                   <React.Fragment key={section.groupId}>
                     {/* Full-grid-width drop line for group-to-group reorder.
@@ -907,29 +975,37 @@ export function GroupGrid({
                       onSortModeChange={(mode) =>
                         setGroupMode(section.groupId, mode)
                       }
+                      // S6 — Pass `undefined` at boundaries so GroupHeader's
+                      // `disabled={!onMove*}` actually disables the kebab
+                      // item. The "Move to top" / "Move up" items are
+                      // undefined for the first reorderable section; mirror
+                      // for "Move down" / "Move to bottom" on the last.
                       onMoveUp={
-                        section.isImplicit
-                          ? undefined
-                          : () => moveGroup(section.groupId, 'up')
+                        canMoveUp
+                          ? () => moveGroup(section.groupId, 'up')
+                          : undefined
                       }
                       onMoveDown={
-                        section.isImplicit
-                          ? undefined
-                          : () => moveGroup(section.groupId, 'down')
+                        canMoveDown
+                          ? () => moveGroup(section.groupId, 'down')
+                          : undefined
                       }
                       onMoveTop={
-                        section.isImplicit
-                          ? undefined
-                          : () => moveGroup(section.groupId, 'top')
+                        canMoveUp
+                          ? () => moveGroup(section.groupId, 'top')
+                          : undefined
                       }
                       onMoveBottom={
-                        section.isImplicit
-                          ? undefined
-                          : () => moveGroup(section.groupId, 'bottom')
+                        canMoveDown
+                          ? () => moveGroup(section.groupId, 'bottom')
+                          : undefined
                       }
                       onDelete={() => {
                         // Remove the group header; sessions inside it survive
-                        // (the reconciler floats them into Ungrouped).
+                        // (the reconciler floats them into Ungrouped). Also
+                        // drop the per-group sort-mode localStorage row (M4)
+                        // so dead keys don't accumulate.
+                        removeGroupSortMode(section.groupId)
                         const next = layoutItems.filter(
                           (it) =>
                             !(it.type === 'group' && it.id === section.groupId),
@@ -959,9 +1035,9 @@ export function GroupGrid({
                     />
                   </React.Fragment>
                 )
-              })}
+              })
+              })()}
             </div>
-          </LayoutGroup>
         </SortableContext>
 
         {/* DragOverlay — rendered OUTSIDE the grid container so the floating
@@ -1084,10 +1160,13 @@ function GroupSection({
   const headerSortable = useSortable({
     id: groupDragId(section.groupId),
     disabled: section.isImplicit,
+    // S11 — Match the per-tile 100ms reflow for consistency across the grid.
+    transition: { duration: 100, easing: 'ease-out' },
   })
   const headerStyle: React.CSSProperties = {
     transform: CSS.Transform.toString(headerSortable.transform),
-    transition: headerSortable.transition ?? undefined,
+    // S9 — Honor prefers-reduced-motion: skip dnd-kit's CSS transition entirely.
+    transition: reduce ? undefined : (headerSortable.transition ?? undefined),
   }
 
   // The group body is a Droppable so a tile dragged anywhere over the body —
@@ -1119,8 +1198,11 @@ function GroupSection({
       ref={droppable.setNodeRef}
       // Container indication — a smart-sort dest gets a tinted outline + bg;
       // a custom-sort dest gets a quieter outline (the inter-tile line owns
-      // the precision). 350ms ease per the motion language.
-      className={`relative rounded-lg transition-[background-color,box-shadow,border-color] duration-[350ms] ease-out ${
+      // the precision). Duration + easing source-of-truth is
+      // `tweens.containerIndicate` in @/lib/springs (S10 — Tailwind classes
+      // mirror that token: 350ms ease-out). Under prefers-reduced-motion the
+      // tween is dropped (M3) — the colour swap is instant.
+      className={`relative rounded-lg transition-[background-color,box-shadow,border-color] duration-[350ms] ease-out motion-reduce:transition-none ${
         containerIndicate === 'smart'
           ? 'bg-primary/5 outline outline-2 outline-primary/40'
           : containerIndicate === 'custom'
@@ -1304,10 +1386,15 @@ function SortableTileSlot({
     // here — that would prevent picking the tile up at all. The drop logic
     // discards the precise position when the dest is smart-sort.
     disabled: false,
+    // S11 — Reflow timing comes from `tweens.reflow` (100ms ease-out) instead
+    // of dnd-kit's ~200ms default; matches spec. Reduce-motion handled by
+    // the explicit `transition: reduce ? undefined : ...` at the style level.
+    transition: { duration: 100, easing: 'ease-out' },
   })
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(sortable.transform),
-    transition: sortable.transition ?? undefined,
+    // S9 — Honor prefers-reduced-motion.
+    transition: reduce ? undefined : (sortable.transition ?? undefined),
     opacity: sortable.isDragging ? 0.4 : 1,
     zIndex: sortable.isDragging ? 10 : undefined,
   }
@@ -1356,7 +1443,7 @@ function SortableTileSlot({
           data-vr="drop-flash"
           initial={{ backgroundColor: 'hsl(var(--primary) / 0.18)' }}
           animate={{ backgroundColor: 'hsl(var(--primary) / 0)' }}
-          transition={{ duration: DROP_FLASH_MS / 1000, ease: 'easeOut' }}
+          transition={tweens.dropFlash}
           className="pointer-events-none absolute inset-0 z-10 rounded-xl"
         />
       )}
@@ -1402,10 +1489,15 @@ function SortableRow({
   allSections: ReadonlyArray<Section>
   onMoveToGroup: (destGroupId: string) => void
 }) {
-  const sortable = useSortable({ id: sessionDragId(session.name) })
+  const sortable = useSortable({
+    id: sessionDragId(session.name),
+    // S11 — Match SortableTileSlot's 100ms reflow.
+    transition: { duration: 100, easing: 'ease-out' },
+  })
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(sortable.transform),
-    transition: sortable.transition ?? undefined,
+    // S9 — Honor prefers-reduced-motion.
+    transition: reduce ? undefined : (sortable.transition ?? undefined),
     opacity: sortable.isDragging ? 0.4 : 1,
   }
   const isThisActive = activeSessionName === session.name
@@ -1443,7 +1535,7 @@ function SortableRow({
           data-vr="drop-flash"
           initial={{ backgroundColor: 'hsl(var(--primary) / 0.18)' }}
           animate={{ backgroundColor: 'hsl(var(--primary) / 0)' }}
-          transition={{ duration: DROP_FLASH_MS / 1000, ease: 'easeOut' }}
+          transition={tweens.dropFlash}
           className="pointer-events-none absolute inset-0 z-10 rounded-md"
         />
       )}
@@ -1493,9 +1585,16 @@ function SortableRow({
   )
 }
 
-// Tile wrapper — preserves the existing hover-revealed drag handle pattern
-// while letting the WHOLE CARD CHROME serve as the drag hit target on touch
-// (the spec: "Tile drag uses the whole-card chrome as the hit target.").
+// Tile wrapper — WHOLE-CARD drag hit target (M1).
+//
+// Listeners are spread on the ROOT so any pixel of the tile can initiate a
+// drag — the Trello/Linear/Notion pattern. Click-vs-drag is differentiated
+// by the MouseSensor `activationConstraint: { distance: 5 }` at the
+// DndContext level: a press that moves <5px before release is a click and
+// passes through to the tile's existing focus route; a press that moves ≥5px
+// picks up. A small decorative grip icon in the top-right telegraphs the
+// "draggable" affordance but it is NOT a separate hit target — the whole
+// card is.
 function SessionTileWrapper({
   session,
   sizeTier,
@@ -1518,31 +1617,28 @@ function SessionTileWrapper({
   allSections: ReadonlyArray<Section>
   onMoveToGroup: (destGroupId: string) => void
 }) {
-  // Wrap the tile in a button that owns the drag listeners but pass-through
-  // pointer events (so the tile's own clickable surfaces still work). We
-  // achieve this by overlaying a TINY drag handle in the top-right that
-  // captures the gesture; the tile chrome BELOW handles its own clicks.
-  // (Direct-listeners-on-the-tile-itself is the pure-spec "whole-card chrome"
-  // path; we keep the corner handle because the existing tile owns clickable
-  // inner surfaces — peek, archive — and stealing all pointer events on the
-  // whole card would break those interactions.)
   return (
     <div
       data-vr="group-tile"
       data-tour={tour}
-      className="relative"
+      data-dnd-handle
+      // Whole-card hit target — listeners spread on the root. `touch-none`
+      // so a press-and-hold initiates the drag instead of scrolling. Click
+      // navigation still works because <5px movement = click (distance:5
+      // sensor constraint at the DndContext).
+      {...listeners}
+      className="relative touch-none"
+      style={{ cursor: 'grab' }}
     >
       <SessionTile session={toTileSession(session)} sizeTier={sizeTier} />
-      <button
-        type="button"
-        aria-label={`Drag ${session.name}`}
-        title="Drag to reorder"
-        {...listeners}
-        onClick={(e) => e.stopPropagation()}
-        data-dnd-handle
-        data-vr="tile-drag-handle"
+      {/* Decorative drag affordance — telegraphs "this card is draggable"
+          at a glance. NOT a separate hit target; the whole card is. Placed
+          on the LEFT so it doesn't overlap the Move-to kebab on the right. */}
+      <span
+        aria-hidden
+        data-vr="tile-drag-affordance"
         style={{ opacity: reduce ? 1 : undefined }}
-        className="absolute right-1 top-1 z-20 flex size-9 items-center justify-center rounded-md bg-card/80 text-muted-foreground/60 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:opacity-100 [@media(pointer:fine)]:opacity-0"
+        className="pointer-events-none absolute left-1 top-1 z-10 flex size-7 items-center justify-center rounded-md text-muted-foreground/40 opacity-0 transition-opacity group-hover/tile:opacity-100 [@media(pointer:coarse)]:opacity-60"
       >
         <svg
           viewBox="0 0 16 16"
@@ -1559,14 +1655,12 @@ function SessionTileWrapper({
           <circle cx="6" cy="12" r="0.75" fill="currentColor" />
           <circle cx="10" cy="12" r="0.75" fill="currentColor" />
         </svg>
-      </button>
+      </span>
       {/* Gap 2 — tile-level "Move to ▸" kebab. Mirrors the group-header
           kebab's a11y intent: a non-drag entrypoint that lets keyboard +
           touch users move a tile between groups without ever picking up a
           drag handle. Hover-revealed (fine pointers) / always-shown
-          (coarse pointers) via the kebab component itself. Positioned
-          LEFT of the drag handle so the two affordances form a small
-          icon cluster in the top-right of the tile. */}
+          (coarse pointers) via the kebab component itself. */}
       <TileMoveToKebab
         sessionName={session.name}
         sessionLabel={session.task_summary ?? session.name}
@@ -1644,10 +1738,11 @@ function TileMoveToKebab({
 
   const triggerClassName =
     variant === 'tile'
-      ? // Overlay on the top-right of the tile, just left of the drag handle.
-        // Same hover-reveal pattern as the drag handle: invisible at rest on
+      ? // Overlay on the top-right of the tile (the drag affordance is
+        // decorative-only since M1; the kebab is the only INTERACTIVE button
+        // in the corner). Same hover-reveal pattern: invisible at rest on
         // fine pointers, always visible on coarse. ≥44pt touch target.
-        'absolute right-12 top-1 z-20 flex size-9 items-center justify-center rounded-md bg-card/80 text-muted-foreground/60 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:right-14 [@media(pointer:coarse)]:opacity-100 [@media(pointer:fine)]:opacity-0'
+        'absolute right-1 top-1 z-20 flex size-9 items-center justify-center rounded-md bg-card/80 text-muted-foreground/60 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:opacity-100 [@media(pointer:fine)]:opacity-0'
       : // Inline at the end of the row.
         'flex w-7 items-center justify-center rounded-md text-muted-foreground/40 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring opacity-0 transition-opacity group-hover/tile:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100'
 
@@ -1772,9 +1867,11 @@ function GapAddGroup({
         // (hairline + chip) reveals on hover or focus-within.
         className="group/gap absolute inset-x-0 inset-y-0 flex items-center focus-visible:outline-none"
       >
-        {/* Hairline — full-width 1px, fades in on hover at 120ms in / 80ms
-            out. Under prefers-reduced-motion the colour swaps but no opacity
-            tween (we drop the transition-opacity via the media query). */}
+        {/* Hairline — full-width 1px, fades in on hover. Duration source-of-
+            truth: `tweens.gapReveal` in @/lib/springs (S10 — Tailwind class
+            mirrors that token: 120ms ease-out). Under prefers-reduced-motion
+            the colour swaps but no opacity tween (we drop the
+            transition-opacity via the media query). */}
         <span
           aria-hidden
           className={

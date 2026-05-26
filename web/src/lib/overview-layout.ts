@@ -327,6 +327,19 @@ export function writeGroupSortMode(groupId: string, mode: GroupSortMode): void {
   }
 }
 
+/** Drop the persisted per-group sort mode for a deleted group (M4 fix-up).
+ *  Group ids are random per-creation — without this, heavy users accumulate
+ *  one dead localStorage row per deleted group forever. Best-effort: any
+ *  removal failure is swallowed (the key just sits there, harmless). */
+export function removeGroupSortMode(groupId: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(groupSortKey(groupId))
+  } catch {
+    /* private mode / quota — non-fatal */
+  }
+}
+
 /** Human-readable label for a per-group sort mode (used by the chip + a11y). */
 export const GROUP_SORT_LABEL: Record<GroupSortMode, string> = {
   smart: 'Smart',

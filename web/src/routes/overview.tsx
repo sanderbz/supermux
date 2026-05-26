@@ -313,7 +313,14 @@ export function Overview() {
         // hover gap"; we surface the chord even outside custom mode).
         if (layout.mode !== 'custom') setMode('custom')
         setAddingGroup({ at: Number.MAX_SAFE_INTEGER })
+        return
       }
+      // S7 — Strict CONSECUTIVE chord. Any key other than `g` (the trigger)
+      // or `n` (the completion) resets the chord state — so typing "git n"
+      // (or any other intervening key within 1.2s) does NOT fire the chord.
+      // Without this reset, "g i t <space> n" would open the new-group input
+      // in any non-input context.
+      if (lastGRef.current !== 0) lastGRef.current = 0
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
