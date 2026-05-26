@@ -12,6 +12,7 @@ import {
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
+import { Logo } from '@/components/logo'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
@@ -52,7 +53,7 @@ function SideNav() {
       className="hidden w-16 shrink-0 flex-col items-center border-r border-border bg-card pb-4 pt-safe md:flex"
     >
       <div className="flex h-16 w-full items-center justify-center">
-        <span className="text-lg font-semibold tracking-tight">a</span>
+        <Logo className="h-7 w-auto" />
       </div>
       <div className="flex flex-1 flex-col items-center gap-1">
         {NAV.map((item) => (
