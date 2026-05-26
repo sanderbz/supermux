@@ -49,6 +49,7 @@ async fn spawn_server(ws: WsConfig) -> (AppState, SocketAddr, PathBuf) {
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws,
+        remote_callback_url: None,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);
@@ -150,6 +151,7 @@ async fn make_session(state: &AppState, name: &str) {
             branch: None,
             mcp: None,
             worktree: None,
+            host_id: None,
         },
     )
     .await

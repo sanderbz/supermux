@@ -35,6 +35,7 @@ import { TailPreview } from './tail-preview'
 import { TileLiveTerminal } from './tile-live-terminal'
 import { TileError } from './tile-error'
 import { QuickPeekModal } from './quick-peek-modal'
+import { HostBadge } from './host-badge'
 import {
   StoppedSessionActions,
   type StoppedSessionActionsHandle,
@@ -776,6 +777,16 @@ export function SessionTile({
             <span className="line-clamp-1 flex-1 text-sm font-medium leading-tight">
               {title}
             </span>
+            {/* Remote-host badge (RT9). Globe + truncated host name; only
+                renders when the session has a `host_id` (local = no badge,
+                zero space). Sits BEFORE the error/state pills so the title
+                row's right edge stays calm — the badge is muted on purpose
+                so it never competes with the status dot. Hidden while the
+                archive-confirm pair is showing so the title row never
+                overflows on hover. */}
+            {typeof session.host_id === 'number' && !showArchiveControl && (
+              <HostBadge hostId={session.host_id} className="self-center" />
+            )}
             {/* Dead/blocked agent badge (hooks-10x). Sits before the status pills
                 so a blocked agent reads at a glance; clears automatically when the
                 backend nulls `session.error` on resume. Hidden while the archive
@@ -792,9 +803,25 @@ export function SessionTile({
               // Sentence-case "Stopped" pill — neutral muted treatment, NOT
               // red. Mirrors the needs-input pill geometry so the row stays
               // balanced. Reads at a glance: this tile is OFF.
-              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+              //
+              // ON HOVER: the kebab (⋯) hover-menu lives at the wrapper's
+              // top-right and would otherwise OVERLAP this pill (both occupy
+              // the title row's right edge). We translate the pill leftward
+              // and fade it slightly so the kebab gets clean real-estate —
+              // the dimmed card + grey StatusDot already signal "stopped" at
+              // a glance, so the pill can step aside without losing the cue.
+              // Spring (cardExpand: response 0.32, dampingFraction 0.72) —
+              // never a hard jump, never `transition: all`. Reduce Motion →
+              // instant swap (springs degrade to duration 0).
+              <motion.span
+                animate={
+                  hovered ? { x: -36, opacity: 0 } : { x: 0, opacity: 1 }
+                }
+                transition={reduce ? { duration: 0 } : springs.cardExpand}
+                className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground"
+              >
                 {STATUS_LABEL.stopped}
-              </span>
+              </motion.span>
             )}
             {/* Archive affordance — a single hover-revealed icon, on EVERY tile
                 (no kebab, no extra clicks). Swaps in over the status dot on

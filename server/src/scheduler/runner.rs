@@ -263,6 +263,7 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
         branch: None,
         mcp: None,
         worktree: Some(sched.boot_worktree == 1),
+        host_id: None,
     };
     if let Err(e) = sessions::create(state, input).await {
         return JobOutcome {

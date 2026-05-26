@@ -18,6 +18,7 @@
 
 pub mod activity;
 pub mod auto_actions;
+pub mod host_pool;
 pub mod lifecycle;
 pub mod pty;
 pub mod resumable;
@@ -25,6 +26,10 @@ pub mod status;
 pub mod steering;
 pub mod teams;
 pub mod tmux;
+pub mod transport;
+
+pub use host_pool::{spawn_reaper, HostPool};
+pub use transport::{HostId, Transport, LOCAL as LOCAL_TRANSPORT};
 
 use std::collections::HashMap;
 
@@ -427,6 +432,12 @@ pub struct CreateInput {
     pub mcp: Option<String>,
     #[serde(default)]
     pub worktree: Option<bool>,
+    /// FK into `hosts(id)` for a remote session (`NULL` = local). The web
+    /// `POST /api/sessions {host_id: N}` body lands here; downstream the
+    /// value flows into `NewSession` and the INSERT, so the SSH-transport
+    /// resolver in `pty.rs` / `lifecycle.rs` actually sees a non-NULL row.
+    #[serde(default)]
+    pub host_id: Option<i64>,
 }
 
 pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView, AppError> {
@@ -467,6 +478,7 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         mcp: input.mcp.unwrap_or_default(),
         worktree: input.worktree.unwrap_or(false),
         worktree_repo: String::new(),
+        host_id: input.host_id,
     };
     db::sessions::create(&state.pool, &new).await?;
     let hook_token = gen_hook_token();

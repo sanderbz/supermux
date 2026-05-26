@@ -915,6 +915,7 @@ async fn start_handler(
                 branch: None,
                 mcp: None,
                 worktree: spawn.worktree,
+                host_id: None,
             };
             crate::sessions::create(&state, create_input).await?;
             // Boot it so the steering deliver-loop has a live pane to talk to.
@@ -1526,6 +1527,7 @@ mod tests {
             auth_token: "test-token".to_string(),
             provider_defaults: Default::default(),
             ws: Default::default(),
+            remote_callback_url: None,
         };
         let pool = db::init(&config).await.expect("init pool");
         (AppState::new(pool, config), dir)

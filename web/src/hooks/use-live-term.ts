@@ -1095,9 +1095,27 @@ export function useLiveTerm(
       // Set onopen FIRST so installHandlers' message/close wiring sees a
       // consistent WebSocket. The first frame is the in-band auth (token from
       // window, never the URL).
+      //
+      // Cursor-row-mismatch fix (Option B — client-side suspenders). We BATCH
+      // the auth frame with an initial `resize` carrying our current xterm
+      // geometry, BEFORE waiting for `auth_ok`. The server's `peek_initial_resize`
+      // (ws/mod.rs) reads this resize between `auth_ok` and the seed capture,
+      // so `capture-pane visible` covers OUR rows instead of tmux's default
+      // 80×24 — eliminating the "seed has 24 rows, xterm has 40" geometry
+      // mismatch that left the bottom of the viewport blank and put the CUP
+      // at a row that mapped to mid-grid empty space. Paired with the server's
+      // Option A; together the happy path becomes resize-then-seed in one
+      // round-trip. If the terminal hasn't laid out yet (cols/rows == 0), we
+      // skip the resize and fall back to the post-`auth_ok` resize below; the
+      // server's peek will time out and the seed will use tmux's current size
+      // — same shape as pre-fix, no regression.
       ws.onopen = () => {
         try {
           ws.send(JSON.stringify({ type: 'auth', token: authToken() }))
+          const t = termRef.current
+          if (t && t.cols > 0 && t.rows > 0) {
+            ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }))
+          }
         } catch {
           /* will surface via onclose */
         }

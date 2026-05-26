@@ -16,6 +16,7 @@ pub mod error;
 pub mod external_edit;
 pub mod files;
 pub mod hooks;
+pub mod hosts;
 pub mod http;
 pub mod log_redact;
 pub mod prefs;

@@ -42,6 +42,7 @@ async fn spawn_server() -> (SocketAddr, PathBuf) {
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: WsConfig::default(),
+        remote_callback_url: None,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

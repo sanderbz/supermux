@@ -9,6 +9,7 @@ import {
 import {
   Check,
   ChevronsUpDown,
+  Globe,
   PlayCircle,
   RefreshCw,
   SlidersHorizontal,
@@ -378,6 +379,40 @@ function OnboardingSection() {
   )
 }
 
+/** Settings → Remote hosts (REMOTE_PLAN.md RT9). One-line "manage" link to the
+ *  dedicated /hosts route plus the SSH onboarding hint so users discover the
+ *  reachability / authorized_keys expectations without leaving Settings. */
+function RemoteHostsSection() {
+  const navigate = useNavigate()
+  return (
+    <Section
+      title="Remote hosts"
+      footnote="Remote hosts need a reachable address — Tailscale, a VPN, public DNS, or an SSH reverse tunnel all work. Generate an SSH key on the supermux server and copy the public key into the host’s ~/.ssh/authorized_keys via the Bootstrap button."
+    >
+      <Row
+        label="Manage hosts"
+        hint="Register, recheck, and bootstrap machines you’ll run agents on."
+        control={
+          <Button
+            asChild
+            variant="outline"
+            onClick={() => navigate('/hosts')}
+            className="h-11 gap-1.5"
+          >
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              transition={springs.buttonPress}
+            >
+              <Globe />
+              Open Hosts
+            </motion.button>
+          </Button>
+        }
+      />
+    </Section>
+  )
+}
+
 /** Settings → Claude tools (skills-mcp-manager plan §C.1, entry point 3). Opens
  *  the same manager sheet the ⌘K command + focus title-bar icon open, scoped to
  *  global (no session in this context). */
@@ -596,6 +631,8 @@ export function Settings() {
               control={<ModelPicker />}
             />
           </Section>
+
+          <RemoteHostsSection />
 
           <ClaudeToolsSection />
 

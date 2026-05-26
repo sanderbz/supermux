@@ -24,6 +24,8 @@ use once_cell::sync::Lazy;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use super::transport::{Transport, LOCAL};
+
 /// Payloads larger than this (in bytes) go through `load-buffer`/`paste-buffer`
 /// instead of `send-keys -l`. Bytes (not chars) because the real limit being
 /// dodged is the kernel `ARG_MAX` on the argv that carries the literal text.
@@ -77,30 +79,59 @@ impl TmuxTarget {
 /// Backwards-compatible: [`Tmux::new`] still takes a bare session name and the
 /// `supermux-` prefix is applied internally exactly as before. [`Tmux::for_pane`]
 /// builds a pane-targeted handle for agent-team teammate streaming.
+///
+/// **Transport (REMOTE_PLAN §RT1).** Every shell-out goes through the
+/// `transport: &'a Transport` — `Tmux::new(name)` defaults to a static
+/// `&LOCAL` (zero-cost, no behaviour change for today's callers);
+/// `Tmux::new_on(transport, name)` threads in an SSH transport for remote-host
+/// sessions (wired up by `HostPool` in RT2). Local + remote share the same
+/// argv-building code below; only the spawn step differs.
 pub struct Tmux<'a> {
     /// Bare session name for a `Session` handle; the pane id for a `Pane` handle.
     /// Retained for log lines / paste-buffer naming.
     name: &'a str,
     target: TmuxTarget,
+    /// Where to run tmux: local or via an SSH ControlMaster (RT1).
+    transport: &'a Transport,
 }
 
 impl<'a> Tmux<'a> {
     /// Wrap the bare session `name` (NOT the `supermux-` prefixed form). The
-    /// resulting handle targets `supermux-<name>`.
+    /// resulting handle targets `supermux-<name>` and runs tmux LOCALLY (the
+    /// existing behaviour — every today-caller takes this default path with
+    /// no allocation thanks to the static `&LOCAL`).
     pub fn new(name: &'a str) -> Self {
+        Self::new_on(&LOCAL, name)
+    }
+
+    /// Like [`Tmux::new`] but with an explicit `transport` (for remote-host
+    /// sessions in RT2+).
+    pub fn new_on(transport: &'a Transport, name: &'a str) -> Self {
         Self {
             name,
             target: TmuxTarget::Session(name.to_string()),
+            transport,
         }
     }
 
     /// Wrap a tmux pane id (`%id`) — a teammate split-window inside a lead's
     /// window (Agent Teams). All commands target `-t %id`. `name` is used only for
     /// diagnostics / buffer naming; pass the pane id (or a `{lead}/{member}` key).
+    /// Local transport — see [`Tmux::for_pane_on`] for remote.
     pub fn for_pane(name: &'a str, pane_id: impl Into<String>) -> Self {
+        Self::for_pane_on(&LOCAL, name, pane_id)
+    }
+
+    /// Like [`Tmux::for_pane`] but with an explicit `transport` (RT2+).
+    pub fn for_pane_on(
+        transport: &'a Transport,
+        name: &'a str,
+        pane_id: impl Into<String>,
+    ) -> Self {
         Self {
             name,
             target: TmuxTarget::Pane(pane_id.into()),
+            transport,
         }
     }
 
@@ -117,11 +148,27 @@ impl<'a> Tmux<'a> {
 
     // ── command helpers ──────────────────────────────────────────────────────
 
+    /// The program string to hand to [`Transport::spawn_command`]. LOCAL uses
+    /// the cached absolute path from `which::which("tmux")` (matches the
+    /// pre-RT1 behaviour — one PATH lookup at first use, never re-walked);
+    /// SSH uses the bare `"tmux"` and lets the remote shell resolve it via
+    /// the remote PATH (the remote `tmux` install lives wherever the remote
+    /// user's `which` says — we don't get to cache it from here).
+    fn program_for_transport(&self) -> Result<String> {
+        if self.transport.is_local() {
+            Ok(tmux_bin()?.to_string_lossy().into_owned())
+        } else {
+            Ok("tmux".to_string())
+        }
+    }
+
     /// Run `tmux <args>`; return stdout (lossy UTF-8) on success, error on a
     /// non-zero exit (stderr included).
     async fn run(&self, args: &[&str]) -> Result<String> {
-        let out = Command::new(tmux_bin()?)
-            .args(args)
+        let program = self.program_for_transport()?;
+        let out = self
+            .transport
+            .spawn_command(&program, args)
             .output()
             .await
             .with_context(|| format!("spawning tmux {args:?}"))?;
@@ -139,8 +186,10 @@ impl<'a> Tmux<'a> {
     /// Run `tmux <args>` feeding `stdin_data` to the child's stdin (for
     /// `load-buffer -`). No arg-length limit applies to the streamed bytes.
     async fn run_stdin(&self, args: &[&str], stdin_data: &[u8]) -> Result<()> {
-        let mut child = Command::new(tmux_bin()?)
-            .args(args)
+        let program = self.program_for_transport()?;
+        let mut child = self
+            .transport
+            .spawn_command(&program, args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -264,8 +313,11 @@ impl<'a> Tmux<'a> {
 
     /// `tmux has-session -t supermux-<name>` → true on exit 0.
     pub async fn exists(&self) -> Result<bool> {
-        let ok = Command::new(tmux_bin()?)
-            .args(["has-session", "-t", &self.target()])
+        let program = self.program_for_transport()?;
+        let target = self.target();
+        let ok = self
+            .transport
+            .spawn_command(&program, &["has-session", "-t", &target])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -432,11 +484,26 @@ impl<'a> Tmux<'a> {
     ///        thinks it is, so the user's first keystroke lands in the
     ///        input row of Claude's prompt and not at a stale cell.
     ///
+    /// **Race-B tightening (cursor-row-mismatch fix).** Step 3 issues three
+    /// sequential tmux forks (history capture + visible capture + cursor
+    /// probe), and an interactive TUI can redraw between the FIRST cursor
+    /// probe in step 1 and the visible capture. If we used the step-1 cursor,
+    /// the CUP at the end of the seed would point at a stale cell relative
+    /// to the bytes we just captured. To pin the cursor to the SAME frame
+    /// the visible body shows, we re-issue `display-message` IMMEDIATELY
+    /// after `capture-pane visible` and use that SECOND reading. One extra
+    /// tmux fork (~2 ms) for an order-of-magnitude tighter coupling between
+    /// the cursor position and the bytes it's positioning into. The step-1
+    /// probe is still required to choose primary vs alt-screen mode (the
+    /// branch decision can't be deferred to after the captures).
+    ///
     /// On any tmux failure we fall through to the flat full-capture (still
     /// useful, just with the old "stacked banner" oddity) rather than leaving
     /// the client empty. Read-only, no lock.
     pub async fn capture_history_with_alt_screen_aware_visible(&self) -> Result<String> {
-        // 1. Probe pane mode + cursor.
+        // 1. Probe pane mode (and a provisional cursor, used only as a
+        //    fallback if the second probe in step 3c fails). The branch
+        //    decision below needs `alternate_on`, so this probe stays.
         let info = self
             .run(&[
                 "display-message",
@@ -447,7 +514,7 @@ impl<'a> Tmux<'a> {
             ])
             .await
             .unwrap_or_default();
-        let (alt_on, cursor_x, cursor_y) = parse_pane_info(&info);
+        let (alt_on, provisional_x, provisional_y) = parse_pane_info(&info);
 
         // 2. Primary-screen mode: flat full capture is correct as-is.
         if !alt_on {
@@ -456,6 +523,7 @@ impl<'a> Tmux<'a> {
         }
 
         // 3. Alt-screen mode: split + frame.
+        // 3a. PRIMARY scrollback (everything above the current visible frame).
         let history = self
             .run(&[
                 "capture-pane",
@@ -471,10 +539,27 @@ impl<'a> Tmux<'a> {
             ])
             .await
             .unwrap_or_default();
+        // 3b. Visible alt-screen body (the current TUI frame).
         let visible = self
             .run(&["capture-pane", "-p", "-e", "-t", &self.target()])
             .await
             .unwrap_or_default();
+        // 3c. RE-PROBE the cursor (Race-B tightening). The TUI may have moved
+        //     the cursor between step 1 and step 3b; this reading matches the
+        //     `visible` body we just captured. Fall back to step 1's reading
+        //     on the rare probe failure rather than corrupting the seed.
+        let info2 = self
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.target(),
+                "#{cursor_x},#{cursor_y}",
+            ])
+            .await
+            .unwrap_or_default();
+        let (cursor_x, cursor_y) =
+            parse_cursor_xy(&info2).unwrap_or((provisional_x, provisional_y));
         Ok(frame_alt_screen_seed(&history, &visible, cursor_x, cursor_y))
     }
 
@@ -710,6 +795,18 @@ pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32) {
     (alt_on, cursor_x, cursor_y)
 }
 
+/// Parse tmux's `display-message -p '#{cursor_x},#{cursor_y}'` (the Race-B
+/// re-probe in [`Tmux::capture_history_with_alt_screen_aware_visible`]) into
+/// `(cursor_x, cursor_y)`. Returns `None` on malformed/empty input so the
+/// caller can fall back to the step-1 cursor reading rather than emitting a
+/// CUP at `(0, 0)` and putting the user's first keystroke at the top-left.
+pub(crate) fn parse_cursor_xy(info: &str) -> Option<(u32, u32)> {
+    let mut parts = info.trim().split(',');
+    let cx = parts.next()?.trim().parse::<u32>().ok()?;
+    let cy = parts.next()?.trim().parse::<u32>().ok()?;
+    Some((cx, cy))
+}
+
 /// PRIMARY-mode seed: the flat `capture_full_ansi_joined` dump is correct
 /// as-is (no alt buffer in play), normalised to CRLF + prefixed with
 /// `\x1b[2J\x1b[3J\x1b[H` so it lands at a deterministic origin in the
@@ -774,6 +871,20 @@ mod seed_tests {
         assert_eq!(parse_pane_info("garbage"), (false, 0, 0));
         assert_eq!(parse_pane_info("1,x,y"), (true, 0, 0));
         assert_eq!(parse_pane_info("2,5,21"), (false, 5, 21)); // `2` != `1` → false
+    }
+
+    #[test]
+    fn parse_cursor_xy_happy_and_malformed() {
+        // Race-B re-probe parser: `display-message -p '#{cursor_x},#{cursor_y}'`.
+        // Whitespace + trailing newline tolerated; malformed → None so the
+        // caller can fall back to the step-1 reading instead of CUP-to-(0,0).
+        assert_eq!(parse_cursor_xy("5,21"), Some((5, 21)));
+        assert_eq!(parse_cursor_xy("  5 , 21 \n"), Some((5, 21)));
+        assert_eq!(parse_cursor_xy("0,0"), Some((0, 0)));
+        assert_eq!(parse_cursor_xy(""), None);
+        assert_eq!(parse_cursor_xy("5"), None);
+        assert_eq!(parse_cursor_xy("x,y"), None);
+        assert_eq!(parse_cursor_xy("5,y"), None);
     }
 
     #[test]

@@ -1,18 +1,34 @@
-//! Per-session live pty stream (TECH_PLAN §3.2.7).
+//! Per-session live pty stream (TECH_PLAN §3.2.7, REMOTE_PLAN §RT3).
 //!
-//! Each running session has one [`PtyStream`]. It drives a single FIFO reader
-//! that fans pane output out to every WebSocket subscriber via a
+//! Each running session has one [`PtyStream`]. It drives a single reader that
+//! fans pane output out to every WebSocket subscriber via a
 //! `tokio::sync::broadcast` channel, while keeping a bounded replay buffer so a
 //! freshly-connected (or reconnecting) client can be brought up to date
 //! immediately.
 //!
-//! **FIFO open pattern (Eng P0 #1 + Codex #2).** The naive
-//! `tokio::fs::File::open(fifo)` blocks the kernel `open(2)` until a writer
-//! connects — blocking an entire tokio worker thread. Instead we open the read
-//! end `O_RDONLY | O_NONBLOCK` via [`nix::fcntl::open`], wrap it in
-//! [`tokio::io::unix::AsyncFd`] (epoll readiness, never blocks a worker), and
-//! hold a second `O_WRONLY | O_NONBLOCK` keep-alive write fd so transient
-//! tmux-side writer closes don't surface as spurious EOFs (Linux pipe trick).
+//! **Reader trait (RT3).** The reader half is now a [`PtyReader`] trait with
+//! two implementations:
+//!
+//! * [`LocalPtyReader`] — today's logic verbatim: `mkfifo` on this host, attach
+//!   `pipe-pane`, open the FIFO read end `O_RDONLY | O_NONBLOCK` via
+//!   [`nix::fcntl::open`], wrap it in [`tokio::io::unix::AsyncFd`] (epoll
+//!   readiness, never blocks a worker), and hold a second `O_WRONLY |
+//!   O_NONBLOCK` keep-alive write fd so transient tmux-side writer closes
+//!   don't surface as spurious EOFs (Linux pipe trick).
+//! * [`SshPtyReader`] — the remote-host version: `mkfifo` on the remote via
+//!   the host's SSH ControlMaster, attach `pipe-pane` over the same Transport,
+//!   then spawn TWO long-lived `ssh` children that share the master — a
+//!   `cat <fifo>` reader (whose stdout streams into the same `PtySink`) and a
+//!   `sh -c 'exec 9> <fifo>; while sleep 60; do :; done'` keep-alive writer
+//!   that holds the remote write fd open so the reader never sees a spurious
+//!   EOF when tmux's tee momentarily closes. The same Linux pipe trick — just
+//!   teleported across SSH.
+//!
+//! **Sink invariants.** Both readers feed the SAME [`PtySink`] (the existing
+//! broadcast + replay + wake-on-edge triple), so everything downstream of the
+//! sink — the WS fan-out, the 1013 lag-drop, the 32-subscriber cap, the
+//! status-detector wake — is BYTE-FOR-BYTE identical regardless of where the
+//! pane lives.
 //!
 //! **Spawn-once (Eng concurrency #1).** [`PtyStream::ensure_started`] is
 //! idempotent and race-safe via [`tokio::sync::OnceCell`]: many concurrent
@@ -23,12 +39,14 @@
 use std::collections::VecDeque;
 use std::io::Read;
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use nix::fcntl::OFlag;
@@ -37,10 +55,14 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
+use tokio::io::AsyncReadExt;
+use tokio::process::Child;
 use tokio::sync::{broadcast, Notify, OnceCell};
 
+use super::host_pool::HostPool;
 use super::status::Status;
 use super::tmux::{Tmux, TmuxTarget};
+use super::transport::{HostId, Transport};
 
 /// Replay buffer hard cap. Bounded ring buffer per session: the reader evicts
 /// from the front to stay under this size, so steady-state memory is capped at
@@ -54,22 +76,43 @@ const REPLAY_CAP: usize = 512 * 1024;
 /// Per-FIFO read chunk size.
 const READ_CHUNK: usize = 8192;
 
-/// STATLAT — silent→active edge threshold for the detector-wake (see
-/// [`reader_loop`]). A byte batch is treated as a "resume" edge (and wakes the
-/// detector loop to re-tick within ~1s) only when the previous batch was at least
-/// this long ago — i.e. the pane had genuinely gone quiet. Matched to the
-/// detector's `PTY_ACTIVE_WINDOW` (1.5s, the window within which fresh bytes
-/// already read `Active`): below it the detector would classify `Active` on its
-/// own next tick anyway, so an extra wake would be redundant; at/above it the
-/// session has slowed to the 2s/4s/5s tiers, so the wake is what restores the
-/// sub-second resume. Keeping it equal to the detector window means we never wake
-/// for output the detector already counts as live (no wake storm on a chatty
-/// pane).
+/// STATLAT — silent→active edge threshold for the detector-wake. A byte batch
+/// is treated as a "resume" edge (and wakes the detector loop to re-tick within
+/// ~1s) only when the previous batch was at least this long ago — i.e. the pane
+/// had genuinely gone quiet. Matched to the detector's `PTY_ACTIVE_WINDOW`
+/// (1.5s, the window within which fresh bytes already read `Active`): below it
+/// the detector would classify `Active` on its own next tick anyway, so an
+/// extra wake would be redundant; at/above it the session has slowed to the
+/// 2s/4s/5s tiers, so the wake is what restores the sub-second resume. Keeping
+/// it equal to the detector window means we never wake for output the detector
+/// already counts as live (no wake storm on a chatty pane).
 const PTY_RESUME_EDGE: Duration = Duration::from_millis(1500);
+
+/// SSH reader liveness poll interval. Same cadence as the local reader's
+/// `tmux has-session` poll (every 3s): bounded by the per-call cost (one
+/// sub-ms `ssh -O check` against the warm ControlMaster) and the maximum
+/// stream-death detection latency (3s end-to-end). The local reader can get
+/// away with a kernel pipe EOF wake-up; SSH cannot (the writer half is on
+/// the remote), so we poll on a timer.
+const SSH_LIVENESS_POLL: Duration = Duration::from_secs(3);
+
+/// Maximum wall-clock we wait for the ControlMaster to come back up after the
+/// SSH reader child dies. We poll [`HostPool::transport_for`] (which warms the
+/// master if needed) every [`SSH_RESPAWN_POLL`] within this budget. 30s covers
+/// a master that just needs a re-warm (sub-second on Tailscale) plus headroom
+/// for a real network blip; longer than this we treat the stream as dead so
+/// WS clients reconnect against a fresh attempt.
+const SSH_RESPAWN_BUDGET: Duration = Duration::from_secs(30);
+
+/// How often we re-poll `host_pool.transport_for` while waiting for the
+/// ControlMaster to come back. 250ms keeps the warm path snappy (sub-second
+/// reconnect on a healthy master) without spamming `-O check` during a real
+/// outage.
+const SSH_RESPAWN_POLL: Duration = Duration::from_millis(250);
 
 type Replay = RwLock<VecDeque<Bytes>>;
 
-/// One pane's live stream: FIFO reader + broadcast fan-out + replay buffer.
+/// One pane's live stream: reader + broadcast fan-out + replay buffer.
 ///
 /// **Stream KEY vs tmux TARGET (Agent Teams §3.5).** `name` is the pane-unique
 /// STREAM KEY: a bare session name for a supermux session, or a pane-unique id
@@ -87,9 +130,10 @@ pub struct PtyStream {
     /// teammate pane, not `supermux-<name>`.
     pub target: TmuxTarget,
     /// FIFO path — pane-unique (derived from `name`) so a teammate never shares
-    /// the lead's FIFO.
+    /// the lead's FIFO. On a remote session this path lives on the REMOTE host.
     pub fifo: PathBuf,
     /// Durable on-disk capture (tee target) — pane-unique (derived from `name`).
+    /// On a remote session this path lives on the REMOTE host.
     pub log: PathBuf,
     /// Bounded replay snapshot (≤`REPLAY_CAP`), pushed by the reader, read on subscribe.
     pub replay: Arc<Replay>,
@@ -151,13 +195,14 @@ impl PtyStream {
         }
     }
 
-    /// Build a [`Tmux`] handle for this stream's target (session or pane). The
-    /// reader/seed paths use this instead of `Tmux::new(name)` so a pane stream
-    /// pipes the teammate pane (`%id`), not `supermux-<name>`.
-    fn tmux(&self) -> Tmux<'_> {
+    /// Build a [`Tmux`] handle for this stream's target (session or pane), on
+    /// the given transport. The reader uses this to seed (capture-pane) +
+    /// attach (pipe-pane) + poll liveness (has-session / list-panes) — local
+    /// readers thread `&LOCAL`, the SSH reader threads its own `&Transport::Ssh`.
+    fn tmux_on<'a>(&'a self, transport: &'a Transport) -> Tmux<'a> {
         match &self.target {
-            TmuxTarget::Session(n) => Tmux::new(n),
-            TmuxTarget::Pane(id) => Tmux::for_pane(&self.name, id.clone()),
+            TmuxTarget::Session(n) => Tmux::new_on(transport, n),
+            TmuxTarget::Pane(id) => Tmux::for_pane_on(transport, &self.name, id.clone()),
         }
     }
 
@@ -218,14 +263,28 @@ impl PtyStream {
         lines[start..].to_vec()
     }
 
-    /// Idempotently mkfifo + `pipe-pane` + spawn the reader (exactly once). Errors
+    /// Idempotently set up the reader (exactly once) for this session. Errors
     /// if the tmux session is not running; on error the `OnceCell` stays
     /// uninitialised so a later call retries.
+    ///
+    /// The reader implementation is chosen from the session's `host_id`:
+    ///
+    /// * `host_id = None` (or pane stream) → [`LocalPtyReader`] (today's path,
+    ///   unchanged).
+    /// * `host_id = Some(id)` → [`SshPtyReader`] over the host's ControlMaster
+    ///   (REMOTE_PLAN §RT3). Pane streams are always local — a teammate pane
+    ///   lives in the LEAD's tmux session, which (today) is always local.
     ///
     /// `pool` is handed to the reader task so that when the reader exits because
     /// tmux died (the "stream-dead" path), it can flip the session's persisted
     /// status to `stopped` — a session that dies WHILE the server runs must not
     /// stay stuck `active` in the overview.
+    ///
+    /// `host_pool` is the SSH ControlMaster pool. For LOCAL streams it is
+    /// unused; for SSH streams the reader holds an `Arc<HostPool>` so that on a
+    /// ControlMaster bounce (RT2 auto-recovery) it can call
+    /// `host_pool.transport_for(id)` to re-resolve the warm Transport without
+    /// caring how the master was respawned.
     ///
     /// `pty_heartbeat` is the same `DashMap` the M5a status detector reads via
     /// [`AppState::last_pty`](crate::state::AppState::last_pty). The reader writes
@@ -250,33 +309,265 @@ impl PtyStream {
     pub async fn ensure_started(
         &self,
         pool: &SqlitePool,
+        host_pool: Arc<HostPool>,
         pty_heartbeat: Arc<DashMap<String, Instant>>,
         detector_wake: Arc<Notify>,
     ) -> Result<()> {
         self.started
-            .get_or_try_init(|| self.spawn_reader(pool, pty_heartbeat, detector_wake))
+            .get_or_try_init(|| self.spawn_reader(pool, host_pool, pty_heartbeat, detector_wake))
             .await
             .map(|_| ())
     }
 
-    /// The one-time setup: requires a live pane/session, makes the FIFO, attaches
-    /// the `tee` pipe, opens the non-blocking read fd + keep-alive write fd, and
-    /// launches the reader task. The tmux handle is derived from THIS stream's
-    /// target (session OR teammate pane), so a pane stream pipes the `%id` pane —
-    /// never `supermux-<name>` (Agent Teams §3.5).
+    /// Resolve the session's transport (local or SSH) and dispatch to the right
+    /// [`PtyReader`]. Pane streams (teammates) are always local — their `name`
+    /// is a pane-unique key, not a `sessions` row, so we never look it up.
+    async fn resolve_reader(
+        &self,
+        pool: &SqlitePool,
+        host_pool: &Arc<HostPool>,
+    ) -> Result<Box<dyn PtyReader>> {
+        // Teammate pane streams: always local (lead's tmux is local today).
+        if self.target.is_pane() {
+            return Ok(Box::new(LocalPtyReader::new(self)));
+        }
+        // Look up the session row to find its host_id (RT4: `Option<i64>`,
+        // NULL = local). Missing → caller's bug, but treat as local rather
+        // than failing (the legacy path).
+        let session = match crate::db::sessions::get(pool, &self.name).await {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                tracing::debug!(name = %self.name, "ensure_started: no session row, defaulting to LOCAL transport");
+                return Ok(Box::new(LocalPtyReader::new(self)));
+            }
+            Err(e) => return Err(anyhow!("looking up session '{}': {e}", self.name)),
+        };
+        match session.host_id {
+            None => Ok(Box::new(LocalPtyReader::new(self))),
+            Some(host_id) => Ok(Box::new(SshPtyReader::new(
+                self,
+                host_pool.clone(),
+                HostId(host_id),
+            ))),
+        }
+    }
+
+    /// The one-time setup: resolve reader by transport, build the sink, and
+    /// launch the reader task. Wraps the reader's `run` in a join handler so
+    /// every reader (local or SSH) shares the alive-flag + stream-dead
+    /// persistence semantics.
     async fn spawn_reader(
         &self,
         pool: &SqlitePool,
+        host_pool: Arc<HostPool>,
         pty_heartbeat: Arc<DashMap<String, Instant>>,
         detector_wake: Arc<Notify>,
     ) -> Result<()> {
-        let tmux = self.tmux();
-        // Liveness: a SESSION uses `has-session`; a teammate PANE must check pane
-        // membership (a pane `has-session -t %id` is meaningless). The pane case is
-        // pre-validated by the WS handler before it ever calls here, so a present
-        // pipe-pane is the real gate — but guard the session path exactly as before.
+        let reader = self.resolve_reader(pool, &host_pool).await?;
+
+        // Pre-flight: capture a screen snapshot so the replay isn't black on
+        // first connect (same rationale as today's local path). For SSH this
+        // runs over the ControlMaster; for local it's a fast in-process exec.
+        // Best-effort: failure means we fall back to "blank until next byte".
+        let seed = self.seed_screen(&host_pool, pool).await;
+
+        if let Some(seed) = seed {
+            push_and_broadcast(&self.replay, &self.broadcast, seed);
+        }
+
+        let sink = PtySink {
+            broadcast: self.broadcast.clone(),
+            replay: self.replay.clone(),
+            wake_on_edge: detector_wake.clone(),
+            pty_heartbeat: pty_heartbeat.clone(),
+            shutdown: self.shutdown.clone(),
+            name: self.name.clone(),
+        };
+
+        let alive = self.alive.clone();
+        let pool_clone = pool.clone();
+        let name = self.name.clone();
+        let is_pane = self.target.is_pane();
+        tokio::spawn(async move {
+            let reason = match reader.run(sink).await {
+                Ok(()) => ExitReason::StreamDead,
+                Err(ReaderExit::Shutdown) => ExitReason::Shutdown,
+                Err(ReaderExit::Dead) => ExitReason::StreamDead,
+                Err(ReaderExit::Fatal(e)) => {
+                    tracing::warn!(session = %name, error = %e, "pty reader fatal");
+                    ExitReason::StreamDead
+                }
+            };
+            alive.store(false, Ordering::Release);
+            tracing::debug!(session = %name, ?reason, "pty reader exited");
+            // On a genuine stream-dead, persist `stopped`. On shutdown (a
+            // SESSION restart rotated this stream), `lifecycle::start` owns
+            // the status writes — DO NOT touch them or we'd clobber the
+            // freshly-bumped `active`. Pane streams have no DB row.
+            if matches!(reason, ExitReason::StreamDead) && !is_pane {
+                if let Err(e) =
+                    crate::db::sessions::set_last_status(&pool_clone, &name, Status::Stopped.as_str()).await
+                {
+                    tracing::warn!(session = %name, error = %e, "pty stream-dead: set_last_status failed");
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Best-effort pre-seed of the replay buffer with the current visible
+    /// screen — runs `tmux capture-pane -p -e` over whatever transport the
+    /// session uses. A capture failure (transport down, session just spawned,
+    /// permission error) is treated as "skip the seed" rather than an error
+    /// because the live stream itself will populate the replay as bytes flow.
+    async fn seed_screen(&self, host_pool: &Arc<HostPool>, pool: &SqlitePool) -> Option<Bytes> {
+        // Pick the same transport the reader will use, but ONLY for the
+        // capture — we don't store the Transport on the stream itself, and a
+        // failed transport_for here just falls back to "no seed".
+        let transport_arc: Option<Arc<Transport>> = if self.target.is_pane() {
+            None
+        } else {
+            match crate::db::sessions::get(pool, &self.name).await {
+                Ok(Some(s)) => match s.host_id {
+                    None => None,
+                    Some(h) => host_pool.transport_for(h).await.ok(),
+                },
+                _ => None,
+            }
+        };
+
+        let tmux = match &transport_arc {
+            Some(arc) => self.tmux_on(arc),
+            None => self.tmux_on(&Transport::Local),
+        };
+        match tmux.capture_screen_ansi().await {
+            Ok(s) if !s.trim_end().is_empty() => {
+                let body = s.trim_end_matches('\n').replace('\n', "\r\n");
+                Some(Bytes::from(format!("\x1b[2J\x1b[3J\x1b[H{body}")))
+            }
+            _ => None,
+        }
+    }
+}
+
+// ── PtyReader trait + supporting types ──────────────────────────────────────
+
+/// What the reader writes into. Owned by `PtyStream` and handed to the reader
+/// at `run` time. All downstream invariants (broadcast lag-drop, 32-subscriber
+/// cap, replay ring buffer, status-detector wake) are baked into this struct +
+/// the [`push_and_broadcast`] helper — readers never touch them directly, they
+/// only call `forward_chunk`.
+pub struct PtySink {
+    pub broadcast: broadcast::Sender<Bytes>,
+    pub replay: Arc<Replay>,
+    /// Detector wake for the silent→active resume edge (STATLAT).
+    pub wake_on_edge: Arc<Notify>,
+    /// M5a heartbeat — stamp on every batch so the status detector reads
+    /// `Active` off byte flow.
+    pub pty_heartbeat: Arc<DashMap<String, Instant>>,
+    /// Reader exits when this fires (a SESSION stop/restart). Both reader
+    /// impls park on this in their main loop alongside their I/O.
+    pub shutdown: Arc<Notify>,
+    /// The STREAM KEY (session name OR pane key) — used for the heartbeat map
+    /// + log lines.
+    pub name: String,
+}
+
+impl PtySink {
+    /// Push `chunk` to the replay buffer + broadcast + heartbeat + wake-on-edge,
+    /// preserving every downstream invariant (atomic snapshot vs subscribe,
+    /// bounded ring buffer, lag-drop on slow subscribers, edge-only detector
+    /// wake). Readers call this for every chunk they read.
+    pub fn forward_chunk(&self, chunk: Bytes) {
+        push_and_broadcast(&self.replay, &self.broadcast, chunk);
+        let now = Instant::now();
+        let prev = self.pty_heartbeat.insert(self.name.clone(), now);
+        if is_resume_edge(prev, now) {
+            self.wake_on_edge.notify_one();
+        }
+    }
+}
+
+/// How a [`PtyReader`] terminated. The `Ok(())` path means "the tmux session is
+/// genuinely gone" — the stream is dead, persist `stopped`. The `Err` variants
+/// distinguish a session-restart shutdown (don't clobber start()'s status
+/// writes) from a fatal error (treated like stream-dead).
+#[derive(Debug)]
+pub enum ReaderExit {
+    /// `PtyStream::shutdown` was called — a SESSION stop/restart rotated this
+    /// stream. The reader returns this so the spawn body knows NOT to write
+    /// `stopped` (the concurrent `lifecycle::start` owns the status).
+    Shutdown,
+    /// The stream is dead (tmux pane gone). Persist `stopped`.
+    Dead,
+    /// An unrecoverable error in the reader. Treated like stream-dead.
+    Fatal(anyhow::Error),
+}
+
+/// Reader trait. One implementation per transport — `LocalPtyReader` for local
+/// sessions (today's FIFO + AsyncFd + keep-alive write fd pattern), and
+/// `SshPtyReader` for sessions whose tmux lives on a remote host (REMOTE_PLAN
+/// §RT3).
+///
+/// **Self-healing contract.** `run` must return ONLY when the stream is
+/// genuinely dead (the tmux session is gone, the FIFO is permanently
+/// unreadable, or `PtySink::shutdown` was fired). On recoverable failures
+/// (e.g. an SSH ControlMaster bounce) the implementation MUST internally
+/// retry — never bubble those up.
+#[async_trait]
+pub trait PtyReader: Send + 'static {
+    /// Spawn the reader and run it to completion. Returns `Ok(())` on a clean
+    /// stream-death (tmux gone); returns `Err(ReaderExit::Shutdown)` on an
+    /// explicit `PtyStream::shutdown` (don't write `stopped`); returns
+    /// `Err(ReaderExit::Fatal)` on a genuinely unrecoverable failure.
+    async fn run(self: Box<Self>, sink: PtySink) -> std::result::Result<(), ReaderExit>;
+}
+
+// ── LocalPtyReader (today's logic, moved verbatim) ──────────────────────────
+
+/// The local-FIFO reader. `mkfifo` on this host + `O_RDONLY | O_NONBLOCK`
+/// reader + a keep-alive `O_WRONLY | O_NONBLOCK` write fd that suppresses
+/// spurious EOFs when tmux's tee momentarily closes. The reader loop drains
+/// the FIFO via [`AsyncFd`] and polls `tmux has-session` every 3s to detect
+/// genuine pane death.
+pub struct LocalPtyReader {
+    name: String,
+    target: TmuxTarget,
+    fifo: PathBuf,
+    log: PathBuf,
+}
+
+impl LocalPtyReader {
+    fn new(stream: &PtyStream) -> Self {
+        Self {
+            name: stream.name.clone(),
+            target: stream.target.clone(),
+            fifo: stream.fifo.clone(),
+            log: stream.log.clone(),
+        }
+    }
+
+    fn tmux_local(&self) -> Tmux<'_> {
+        match &self.target {
+            TmuxTarget::Session(n) => Tmux::new(n),
+            TmuxTarget::Pane(id) => Tmux::for_pane(&self.name, id.clone()),
+        }
+    }
+}
+
+#[async_trait]
+impl PtyReader for LocalPtyReader {
+    async fn run(self: Box<Self>, sink: PtySink) -> std::result::Result<(), ReaderExit> {
+        let tmux = self.tmux_local();
+
+        // Liveness: a SESSION uses `has-session`; a teammate PANE must check
+        // pane membership. The pane case is pre-validated by the WS handler
+        // before it ever calls here.
         if !tmux.is_pane() && !tmux.exists().await.unwrap_or(false) {
-            bail!("session '{}' is not running", self.name);
+            return Err(ReaderExit::Fatal(anyhow!(
+                "session '{}' is not running",
+                self.name
+            )));
         }
 
         if let Some(parent) = self.log.parent() {
@@ -286,31 +577,13 @@ impl PtyStream {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
 
-        // Snapshot the CURRENT visible screen BEFORE attaching the pipe, so the
-        // seed's timestamp precedes the first live byte and replay order stays
-        // monotonic (seed → live). This is what lets a subscriber that connects
-        // before any new output flows still see the screen instead of black —
-        // the case session-survival creates: after a server restart the
-        // in-memory replay is empty, and `pipe-pane` only carries NEW output, so
-        // an idle re-attached pane would otherwise stay blank until it next
-        // redraws (and a same-size reconnect never triggers a resize-redraw).
-        // Best-effort: a capture failure just means we fall back to the old
-        // (blank-until-next-output) behaviour, never an error.
-        let seed = match tmux.capture_screen_ansi().await {
-            Ok(s) if !s.trim_end().is_empty() => {
-                // Clear screen + scrollback + home, then the captured rows with
-                // CRLF line ends, so the snapshot renders as a clean screen from
-                // the top. Subsequent live bytes redraw over it as the pane changes.
-                let body = s.trim_end_matches('\n').replace('\n', "\r\n");
-                Some(Bytes::from(format!("\x1b[2J\x1b[3J\x1b[H{body}")))
-            }
-            _ => None,
-        };
-
         // mkfifo (idempotent — ignore EEXIST).
         if let Err(e) = nix::unistd::mkfifo(&self.fifo, Mode::S_IRUSR | Mode::S_IWUSR) {
             if e != nix::errno::Errno::EEXIST {
-                return Err(anyhow!("mkfifo {}: {e}", self.fifo.display()));
+                return Err(ReaderExit::Fatal(anyhow!(
+                    "mkfifo {}: {e}",
+                    self.fifo.display()
+                )));
             }
         }
 
@@ -330,133 +603,64 @@ impl PtyStream {
             }
         }
         if !piped {
-            return Err(last_err.unwrap_or_else(|| anyhow!("pipe-pane failed")));
+            return Err(ReaderExit::Fatal(
+                last_err.unwrap_or_else(|| anyhow!("pipe-pane failed")),
+            ));
         }
 
         // Open the read end NON-BLOCKING (succeeds immediately even with no
         // writer), then a keep-alive writer (succeeds now that a reader exists)
         // to suppress spurious EOFs. nix 0.29's `open` returns a raw fd; take
         // ownership immediately so the fds close on drop.
-        let rfd = nix::fcntl::open(&self.fifo, OFlag::O_RDONLY | OFlag::O_NONBLOCK, Mode::empty())
-            .map_err(|e| anyhow!("open fifo (rd) {}: {e}", self.fifo.display()))?;
-        let wfd = nix::fcntl::open(&self.fifo, OFlag::O_WRONLY | OFlag::O_NONBLOCK, Mode::empty())
-            .map_err(|e| anyhow!("open fifo (wr) {}: {e}", self.fifo.display()))?;
+        let rfd = nix::fcntl::open(
+            &self.fifo,
+            OFlag::O_RDONLY | OFlag::O_NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|e| ReaderExit::Fatal(anyhow!("open fifo (rd) {}: {e}", self.fifo.display())))?;
+        let wfd = nix::fcntl::open(
+            &self.fifo,
+            OFlag::O_WRONLY | OFlag::O_NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|e| ReaderExit::Fatal(anyhow!("open fifo (wr) {}: {e}", self.fifo.display())))?;
         // SAFETY: both fds are freshly returned by `open` and owned by us alone.
         let file = unsafe { std::fs::File::from_raw_fd(rfd) };
-        let keep_writer = unsafe { OwnedFd::from_raw_fd(wfd) };
-        let async_fd = AsyncFd::new(file).map_err(|e| anyhow!("AsyncFd::new: {e}"))?;
+        let _keep_writer = unsafe { OwnedFd::from_raw_fd(wfd) };
+        let async_fd = AsyncFd::new(file)
+            .map_err(|e| ReaderExit::Fatal(anyhow!("AsyncFd::new: {e}")))?;
 
-        // Seed the replay with the pre-pipe screen snapshot (if any) BEFORE the
-        // reader task can append a single live byte, so the replay starts with a
-        // coherent screen and a connecting subscriber never sees black.
-        if let Some(seed) = seed {
-            push_and_broadcast(&self.replay, &self.broadcast, seed);
-        }
-
-        let name = self.name.clone();
-        let target = self.target.clone();
-        let replay = self.replay.clone();
-        let broadcast = self.broadcast.clone();
-        let alive = self.alive.clone();
-        let shutdown = self.shutdown.clone();
-        let pool = pool.clone();
-        tokio::spawn(async move {
-            // Hold the write fd open for the lifetime of the reader.
-            let _keep_writer = keep_writer;
-            let reason = reader_loop(
-                async_fd,
-                &name,
-                &target,
-                &replay,
-                &broadcast,
-                &pty_heartbeat,
-                &detector_wake,
-                &shutdown,
-            )
-            .await;
-            alive.store(false, Ordering::Release);
-            tracing::debug!(session = %name, ?reason, "pty reader exited");
-            // On a genuine stream-dead (the tmux pane is gone / unreadable),
-            // propagate that to the session's persisted status so the overview
-            // flips it to `stopped` instead of leaving it stuck `active`/`idle`.
-            // The 2s detector loop won't fight this: its tick leaves the status
-            // untouched when `tmux has-session` fails, so a dead session stays
-            // `stopped`. A re-`start` rotates a fresh pty stream and the detector
-            // re-classifies it live from there.
-            //
-            // But on an explicit `shutdown` (a SESSION restart rotated this stream
-            // because the pane was killed and re-created), we MUST NOT write
-            // `stopped`: `lifecycle::start` is concurrently bringing the session
-            // up and has its own `starting`→`active` status writes. A racing
-            // `stopped` from this exiting reader could clobber `start`'s `active`
-            // and leave the freshly-restarted session falsely showing `stopped`.
-            //
-            // A teammate PANE stream (Agent Teams §3.5) is an EPHEMERAL virtual
-            // stream, NOT a `sessions` DB row — its `name` is a pane-unique key
-            // (`%id` / `{lead}/{member}`), so we never write a session status for
-            // it (there is no row; a write would be a silent no-op at best). Only
-            // the SESSION path touches `set_last_status`.
-            if matches!(reason, ExitReason::StreamDead) && !target.is_pane() {
-                if let Err(e) =
-                    crate::db::sessions::set_last_status(&pool, &name, Status::Stopped.as_str()).await
-                {
-                    tracing::warn!(session = %name, error = %e, "pty stream-dead: set_last_status failed");
-                }
-            }
-        });
-        Ok(())
+        local_reader_loop(async_fd, &tmux, &sink).await
     }
 }
 
-/// The epoll-driven read loop. Drains the FIFO into the replay buffer + broadcast
-/// and tears down when the tmux session is gone. Also stamps
-/// `pty_heartbeat[name] = Instant::now()` on every byte batch so the M5a status
-/// detector's heartbeat branch (§3.6 fusion rule #3) actually fires — without
-/// this stamp, `AppState::last_pty` stays at the cold-start sentinel forever
-/// and the detector falls through to the regex bank alone, leaving any session
-/// whose prompt the bank doesn't recognise stuck at its boot-time status.
-async fn reader_loop(
+/// The epoll-driven read loop for the LOCAL FIFO. Drains the FIFO into the
+/// sink and polls `tmux target_alive` every 3s to detect a real pane death
+/// (the keep-alive write fd suppresses EOFs, so death never surfaces as an
+/// FD event).
+async fn local_reader_loop(
     async_fd: AsyncFd<std::fs::File>,
-    name: &str,
-    target: &TmuxTarget,
-    replay: &Replay,
-    broadcast: &broadcast::Sender<Bytes>,
-    pty_heartbeat: &DashMap<String, Instant>,
-    detector_wake: &Notify,
-    shutdown: &Notify,
-) -> ExitReason {
-    // Rebuild the right tmux handle from the stream's TARGET — a teammate pane
-    // stream must poll PANE liveness (`%id` membership), not `has-session`
-    // (Agent Teams §3.5). `liveness_ok` below abstracts the session/pane split.
-    let tmux = match target {
-        TmuxTarget::Session(n) => Tmux::new(n),
-        TmuxTarget::Pane(id) => Tmux::for_pane(name, id.clone()),
-    };
+    tmux: &Tmux<'_>,
+    sink: &PtySink,
+) -> std::result::Result<(), ReaderExit> {
     let mut buf = [0u8; READ_CHUNK];
 
-    // The keep-alive write fd suppresses EOF, so tmux death never surfaces as an
-    // FD event — poll liveness on a timer instead (§3.2.7: terminate when the
-    // session is truly gone).
-    let mut liveness = tokio::time::interval(Duration::from_secs(3));
+    let mut liveness = tokio::time::interval(SSH_LIVENESS_POLL);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     liveness.tick().await; // consume the immediate first tick
 
     loop {
         tokio::select! {
-            // Explicit shutdown (a SESSION restart rotated this stream). Return
-            // the dedicated reason so the spawn body does NOT clobber start()'s
-            // status, and so the broadcast drops on return — closing any
-            // already-open WS so it reconnects to the fresh stream/new pane.
-            _ = shutdown.notified() => {
-                tracing::debug!(session = %name, "pty reader shutdown (session restart)");
-                return ExitReason::Shutdown;
+            _ = sink.shutdown.notified() => {
+                tracing::debug!(session = %sink.name, "pty reader shutdown (session restart)");
+                return Err(ReaderExit::Shutdown);
             }
             readable = async_fd.readable() => {
                 let mut guard = match readable {
                     Ok(g) => g,
                     Err(e) => {
-                        tracing::warn!(session = %name, error = ?e, "asyncfd readable failed");
-                        return ExitReason::StreamDead;
+                        tracing::warn!(session = %sink.name, error = ?e, "asyncfd readable failed");
+                        return Err(ReaderExit::Dead);
                     }
                 };
                 match guard.try_io(|inner| inner.get_ref().read(&mut buf)) {
@@ -464,57 +668,600 @@ async fn reader_loop(
                         // True EOF (rare given the keep-alive writer). Confirm the
                         // session/pane is gone before tearing down.
                         if !tmux.target_alive().await {
-                            return ExitReason::StreamDead;
+                            return Ok(());
                         }
                         guard.clear_ready();
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                     Ok(Ok(n)) => {
-                        let chunk = Bytes::copy_from_slice(&buf[..n]);
-                        // Push to replay + broadcast atomically (see `subscribe`).
-                        push_and_broadcast(replay, broadcast, chunk);
-                        // M5a heartbeat (§3.6 fusion rule #3): stamp on every
-                        // batch so the detector sees "bytes flowing right now"
-                        // and reads Active without needing a regex match.
-                        let now = Instant::now();
-                        let prev = pty_heartbeat.insert(name.to_string(), now);
-                        // STATLAT — silent→active EDGE wake. If the pane had been
-                        // quiet (no byte within the detector's active window, or
-                        // never seen), this batch is the resume edge: re-tick the
-                        // detector NOW so an idle/waiting session flips to `Active`
-                        // within ~1s instead of waiting out its 4s/5s low-activity
-                        // tier sleep. We only wake on the EDGE — a continuously
-                        // streaming pane keeps `prev` fresh, so the condition is
-                        // false and there is no wake storm (the loop is already on
-                        // the 1s hot tier draining it). `notify_one` parks a permit
-                        // if the loop isn't currently waiting, so the wake is never
-                        // lost to the gap between ticks.
-                        if is_resume_edge(prev, now) {
-                            detector_wake.notify_one();
-                        }
-                        // Keep readiness set to drain any remaining buffered bytes.
+                        sink.forward_chunk(Bytes::copy_from_slice(&buf[..n]));
                     }
                     Ok(Err(e)) => {
-                        tracing::warn!(session = %name, error = ?e, "fifo read error");
-                        return ExitReason::StreamDead;
+                        tracing::warn!(session = %sink.name, error = ?e, "fifo read error");
+                        return Err(ReaderExit::Dead);
                     }
-                    // try_io cleared readiness on WouldBlock; loop and re-poll.
                     Err(_would_block) => {}
                 }
             }
             _ = liveness.tick() => {
                 if !tmux.target_alive().await {
-                    tracing::warn!(session = %name, "tmux target gone, stream-dead");
-                    return ExitReason::StreamDead;
+                    tracing::warn!(session = %sink.name, "tmux target gone, stream-dead");
+                    return Ok(());
                 }
             }
         }
     }
 }
 
-/// Why a [`reader_loop`] returned — distinguishes a genuine pane death (write
-/// `stopped`) from an explicit session-restart rotation (leave status to the
-/// concurrent [`crate::sessions::lifecycle::start`]).
+// ── SshPtyReader (REMOTE_PLAN §RT3) ─────────────────────────────────────────
+
+/// The SSH-FIFO reader. Spawns a remote `mkfifo`, attaches a remote `pipe-pane`
+/// that writes into the remote FIFO via `tee`, then runs TWO long-lived
+/// `tokio::process::Child` over the host's ControlMaster:
+///
+/// * **READER**: `ssh -o ControlPath=<cp> -- sh -c 'cat -- "$HOME/…fifo"'` —
+///   stdout streams into the sink in 8 KB chunks.
+/// * **KEEP-ALIVE WRITER**: `ssh -o ControlPath=<cp> -- sh -c
+///   'exec 9>"$HOME/…fifo"; while sleep 60; do :; done'` — holds the remote
+///   write fd open so the reader doesn't see EOF when tmux's tee briefly
+///   closes (the SSH analogue of the Linux pipe keep-alive trick).
+///
+/// **Why `$HOME` inside double quotes.** Transport's SSH branch single-quotes
+/// every argv token via `shell_escape::unix::escape`, which suppresses tilde
+/// expansion (`~/…` becomes a literal). We bake the path into an `sh -c`
+/// script body with the `$HOME/…` token inside DOUBLE quotes — single quotes
+/// survive the outer shell-escape, the remote login shell unwraps them, and
+/// the inner `/bin/sh -c` then expands `$HOME` against the REMOTE user's
+/// home. See [`SshPtyReader::remote_paths`] for the full rationale.
+///
+/// **Failure handling.** The reader self-heals across a ControlMaster bounce:
+/// if its `ssh cat` child exits but the remote tmux session is still alive, it
+/// polls `host_pool.transport_for(id)` for up to 30s waiting for the master to
+/// come back, then respawns the cat child. The keep-alive writer is monitored
+/// independently — if it dies it gets respawned too. The replay buffer is NOT
+/// cleared on respawn, so a reconnecting WS client sees the historical bytes
+/// intact (per the RT3 invariant: "stream resumes — replay is intact, new
+/// bytes still flow").
+///
+/// `run` returns `Ok(())` ONLY when the remote tmux session is genuinely gone
+/// (confirmed via `Tmux::exists` over the transport).
+pub struct SshPtyReader {
+    name: String,
+    target: TmuxTarget,
+    fifo: PathBuf,
+    log: PathBuf,
+    host_pool: Arc<HostPool>,
+    host_id: HostId,
+}
+
+impl SshPtyReader {
+    fn new(stream: &PtyStream, host_pool: Arc<HostPool>, host_id: HostId) -> Self {
+        // The LOCAL stream.fifo/.log live under the server's data dir and are
+        // meaningless on the remote. Translate to the REMOTE convention —
+        // `$HOME/.supermux-remote/pty-<name>.fifo` / `.log` — using the
+        // stream key (which is filename-safe via `sanitize_key`, so the
+        // remote path has no shell metacharacters: safe to embed inside the
+        // double-quoted script-body context our SSH wrappers use). The
+        // `$HOME/.supermux-remote/` directory is created on the remote by
+        // RT8's bootstrap, so we don't `mkdir -p` here. See
+        // [`SshPtyReader::remote_paths`] for why `$HOME` (not `~/`).
+        let (fifo, log) = Self::remote_paths(&stream.name);
+        Self {
+            name: stream.name.clone(),
+            target: stream.target.clone(),
+            fifo,
+            log,
+            host_pool,
+            host_id,
+        }
+    }
+
+    /// The remote FIFO + log paths for a stream key. Pure / testable — the
+    /// SSH path's argv tests construct an SshPtyReader without spinning up a
+    /// HostPool by reaching for these directly.
+    ///
+    /// Uses `$HOME/.supermux-remote/pty-<name>.{fifo,log}`. We embed the
+    /// literal token `$HOME/...` (NOT a locally-resolved home) so the REMOTE
+    /// user's `$HOME` is what expands. The token is always embedded inside a
+    /// DOUBLE-quoted shell context within an `sh -c '<body>'` script — the
+    /// outer single quotes survive `shell_escape::unix::escape` (Transport's
+    /// SSH branch single-quotes every argv token), and inside that the inner
+    /// double quotes around `$HOME/...` are preserved literally and let the
+    /// remote `/bin/sh -c` expand `$HOME` at execution time.
+    ///
+    /// Why not literal `~/`: `shell_escape::unix::escape` single-quotes
+    /// anything containing `~` (it's outside the whitelist), and tilde is
+    /// NOT expanded inside single quotes — the remote `cat`/`mkfifo`/etc.
+    /// would see literal `~/...` and fail ENOENT. `$HOME` survives because
+    /// shells expand variables inside DOUBLE quotes, which we ensure via
+    /// the `sh -c "… \"$HOME/…\" …"` wrapper.
+    fn remote_paths(name: &str) -> (PathBuf, PathBuf) {
+        let fifo = PathBuf::from(format!("$HOME/.supermux-remote/pty-{name}.fifo"));
+        let log = PathBuf::from(format!("$HOME/.supermux-remote/pty-{name}.log"));
+        (fifo, log)
+    }
+
+    /// Ensure the remote FIFO exists. Idempotent — any non-zero exit from
+    /// `mkfifo` is treated as "already there" (the common EEXIST), matching
+    /// the local path's behaviour. Errors only when the transport itself
+    /// fails to spawn (e.g. ssh binary missing).
+    ///
+    /// Runs `sh -c 'mkfifo -- "$HOME/…"'` so the `$HOME` token is expanded
+    /// by the remote shell (see [`remote_paths`] for the quoting rationale).
+    async fn ensure_remote_fifo(transport: &Transport, fifo: &Path) -> Result<()> {
+        let fifo_str = fifo.to_string_lossy();
+        let script = format!(r#"mkfifo -- "{fifo_str}""#);
+        let out = transport
+            .spawn_command("sh", &["-c", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .with_context(|| format!("spawning remote mkfifo {fifo:?}"))?;
+        // Non-zero exit = EEXIST or unwritable; the latter we'll discover when
+        // `pipe-pane` fails. Don't fail here just on the exit code.
+        let _ = out;
+        Ok(())
+    }
+
+    /// Build the un-spawned `sh -c 'cat -- "$HOME/…"'` reader Command. Split
+    /// out from [`spawn_cat_child`] so the argv test can inspect the
+    /// configured `Command` (program + args) without actually executing ssh.
+    pub fn build_cat_command(transport: &Transport, fifo: &Path) -> tokio::process::Command {
+        let fifo_str = fifo.to_string_lossy();
+        // Bake the path into the script body inside double quotes — the
+        // remote `/bin/sh -c` expands `$HOME` there. See [`remote_paths`].
+        let script = format!(r#"cat -- "{fifo_str}""#);
+        let mut cmd = transport.spawn_command("sh", &["-c", &script]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    /// Spawn the `ssh ... sh -c 'cat -- "$HOME/…"'` reader child over the
+    /// current Transport's ControlMaster. `Stdin` is set to null so the
+    /// remote `cat` doesn't try to forward our local terminal; `stderr` is
+    /// piped so a meaningful error is captured if the child dies; `stdout`
+    /// is piped — that's the byte stream we drain into the sink.
+    fn spawn_cat_child(transport: &Transport, fifo: &Path) -> Result<Child> {
+        let child = Self::build_cat_command(transport, fifo)
+            .spawn()
+            .with_context(|| format!("spawning ssh cat {fifo:?}"))?;
+        Ok(child)
+    }
+
+    /// Build the un-spawned `sh -c '…'` keep-alive Command. See
+    /// [`build_cat_command`] for the split rationale. The FIFO path is baked
+    /// into the script body inside double quotes so `$HOME` expands at the
+    /// remote shell (see [`remote_paths`]).
+    pub fn build_keepalive_command(
+        transport: &Transport,
+        fifo: &Path,
+    ) -> tokio::process::Command {
+        let fifo_str = fifo.to_string_lossy();
+        // Bake the path into the script body so we have NO positional args
+        // (the previous `"$0"` trick relied on a separate argv element that
+        // Transport's shell_escape would now single-quote, suppressing tilde
+        // expansion — `$HOME` inside double quotes is the durable fix).
+        let script = format!(
+            r#"exec 9>"{fifo_str}"; while sleep 60; do :; done"#
+        );
+        let mut cmd = transport.spawn_command("sh", &["-c", &script]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd
+    }
+
+    /// Build the script body for the keep-alive writer for a given FIFO
+    /// path. Exposed so the argv test can pin the exact body without
+    /// recomputing the format string.
+    pub fn keepalive_script_for(fifo: &Path) -> String {
+        let fifo_str = fifo.to_string_lossy();
+        format!(r#"exec 9>"{fifo_str}"; while sleep 60; do :; done"#)
+    }
+
+    /// Spawn the keep-alive writer child. The remote `sh -c 'exec 9>
+    /// "$HOME/…"; while sleep 60; do :; done'` opens fd 9 onto the FIFO for
+    /// write and parks forever, holding the write end open so the reader's
+    /// `cat` never sees EOF when tmux's tee momentarily closes its write fd.
+    /// We don't read this child's stdout; just hold its `Child` so it stays
+    /// alive as long as we do, and `start_kill` it on drop.
+    fn spawn_keepalive_child(transport: &Transport, fifo: &Path) -> Result<Child> {
+        let child = Self::build_keepalive_command(transport, fifo)
+            .spawn()
+            .with_context(|| format!("spawning ssh keepalive writer for {fifo:?}"))?;
+        Ok(child)
+    }
+
+    /// Attach the remote `pipe-pane` directly via Transport (bypassing
+    /// [`Tmux::pipe_pane_to_fifo`], whose `shell_escape::escape` on the path
+    /// args would single-quote `$HOME` and suppress its expansion).
+    ///
+    /// We build the pipe-pane shell command with the log + fifo paths embedded
+    /// inside DOUBLE quotes: `tee -a "$HOME/…log" > "$HOME/…fifo"`. Transport's
+    /// SSH branch single-quotes the whole command (preserving the inner double
+    /// quotes), the remote login shell unwraps it once and hands tmux the
+    /// literal cmd; tmux runs `/bin/sh -c <cmd>` and the inner double quotes
+    /// let `$HOME` expand at THAT layer.
+    async fn attach_remote_pipe(
+        transport: &Transport,
+        tmux_target: &str,
+        log: &Path,
+        fifo: &Path,
+    ) -> Result<()> {
+        let log_str = log.to_string_lossy();
+        let fifo_str = fifo.to_string_lossy();
+        let pipe_cmd = format!(r#"tee -a "{log_str}" > "{fifo_str}""#);
+        let out = transport
+            .spawn_command(
+                "tmux",
+                &["pipe-pane", "-O", "-t", tmux_target, &pipe_cmd],
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .with_context(|| format!("spawning remote tmux pipe-pane (target={tmux_target})"))?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "remote tmux pipe-pane failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Test accessor: the remote FIFO + log path convention. Exposed so the
+    /// argv tests in `tests/pty_ssh.rs` can compare against the exact paths
+    /// the reader would use.
+    pub fn test_remote_paths(name: &str) -> (PathBuf, PathBuf) {
+        Self::remote_paths(name)
+    }
+
+}
+
+/// Spawn a short-lived task that drains `child.stdout` into a chunks mpsc and
+/// signals EOF/error via a oneshot. Returns the receiver halves. The spawned
+/// task is automatically dropped when its stdout closes — the main loop
+/// observes either the mpsc producing chunks or the oneshot firing.
+///
+/// **Why a spawned task.** Holding a `&mut Child` across awaits inside
+/// `tokio::select!` is incompatible with also assigning a NEW child to the
+/// same slot on respawn (borrow checker complains). Moving the stdout pipe
+/// into a separate task severs that borrow — the main loop only ever holds
+/// the channel halves, while the child handle itself is freely mutable.
+fn spawn_stdout_drain(
+    child: &mut Child,
+) -> (
+    tokio::sync::mpsc::Receiver<Bytes>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    // Small channel — backpressure here is fine; the upstream `cat` will
+    // pause its writes when the kernel pipe buffer fills, and tmux's tee
+    // keeps buffering. The replay buffer is the real backpressure boundary.
+    let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel::<Bytes>(64);
+    let (eof_tx, eof_rx) = tokio::sync::oneshot::channel();
+    let stdout = child.stdout.take();
+    tokio::spawn(async move {
+        let Some(mut stdout) = stdout else {
+            let _ = eof_tx.send(());
+            return;
+        };
+        let mut buf = vec![0u8; READ_CHUNK];
+        loop {
+            match stdout.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if chunks_tx
+                        .send(Bytes::copy_from_slice(&buf[..n]))
+                        .await
+                        .is_err()
+                    {
+                        // Main loop dropped its receiver — give up.
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = eof_tx.send(());
+    });
+    (chunks_rx, eof_rx)
+}
+
+/// `true` iff `keepalive` is `Some(child)` AND that child has exited (so we
+/// should respawn it) OR `None` (so we should try to spawn it). `false` only
+/// when the child exists AND is still running.
+fn keepalive_dead(keepalive: &mut Option<Child>) -> bool {
+    match keepalive {
+        None => true,
+        Some(k) => matches!(k.try_wait(), Ok(Some(_)) | Err(_)),
+    }
+}
+
+#[async_trait]
+impl PtyReader for SshPtyReader {
+    async fn run(self: Box<Self>, sink: PtySink) -> std::result::Result<(), ReaderExit> {
+        // Resolve the transport. If the master isn't up, transport_for warms
+        // it; if the host is unreachable after the full backoff, we return
+        // Fatal (the WS layer surfaces the error to clients).
+        let transport = match self.host_pool.transport_for(self.host_id.0).await {
+            Ok(t) => t,
+            Err(e) => {
+                return Err(ReaderExit::Fatal(
+                    e.context(format!("resolving SSH transport for host {}", self.host_id.0)),
+                ));
+            }
+        };
+
+        // Confirm the remote tmux session exists BEFORE we mkfifo / pipe-pane.
+        // Without this a typo'd session would silently leave us hanging on
+        // `cat <fifo>` forever.
+        let tmux = match &self.target {
+            TmuxTarget::Session(n) => Tmux::new_on(&transport, n),
+            TmuxTarget::Pane(id) => Tmux::for_pane_on(&transport, &self.name, id.clone()),
+        };
+        if !tmux.is_pane() && !tmux.exists().await.unwrap_or(false) {
+            return Err(ReaderExit::Fatal(anyhow!(
+                "remote tmux session '{}' is not running on host {}",
+                self.name,
+                self.host_id.0
+            )));
+        }
+
+        // Ensure the remote FIFO exists (idempotent — EEXIST is fine).
+        if let Err(e) = Self::ensure_remote_fifo(&transport, &self.fifo).await {
+            return Err(ReaderExit::Fatal(e));
+        }
+
+        // Attach the remote pipe (5×100ms backoff for tmux contention, mirrors
+        // the local path). We deliberately bypass `Tmux::pipe_pane_to_fifo` —
+        // it calls `shell_escape::escape` on the path args, which would
+        // single-quote `$HOME` and suppress its expansion at the remote
+        // `/bin/sh -c` layer. `attach_remote_pipe` embeds the paths inside
+        // DOUBLE quotes in the tmux pipe-pane shell command so `$HOME`
+        // expands when tmux runs the cmd. See `remote_paths` for the full
+        // quoting rationale.
+        let tmux_target = tmux.target();
+        let mut last_err = None;
+        let mut piped = false;
+        for _ in 0..5 {
+            match Self::attach_remote_pipe(&transport, &tmux_target, &self.log, &self.fifo).await {
+                Ok(()) => {
+                    piped = true;
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+        if !piped {
+            return Err(ReaderExit::Fatal(
+                last_err.unwrap_or_else(|| anyhow!("remote pipe-pane failed")),
+            ));
+        }
+
+        // Spawn the long-lived keep-alive writer ONCE up front, so the FIFO
+        // has a writer holding it open before we spawn the cat reader. The
+        // keep-alive is monitored alongside the reader and respawned if it
+        // dies.
+        let mut keepalive = match Self::spawn_keepalive_child(&transport, &self.fifo) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!(session = %self.name, error = %e, "keepalive spawn failed (continuing — cat will respawn on EOF)");
+                None
+            }
+        };
+
+        // Spawn the cat reader.
+        let cat = match Self::spawn_cat_child(&transport, &self.fifo) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(mut k) = keepalive.take() {
+                    let _ = k.start_kill();
+                }
+                return Err(ReaderExit::Fatal(e));
+            }
+        };
+
+        // Hand off to the inner loop which OWNS both children. The loop
+        // structure is "drain stdout to a channel via a spawned task, the
+        // main loop selects on channel + shutdown + liveness" so we never
+        // hold concurrent &mut borrows of the children while also assigning
+        // to them.
+        let result = self.run_inner(&sink, cat, keepalive, transport).await;
+
+        // Cleanup of any leftover children is handled inside run_inner's
+        // termination paths (each respawn replaces the previous; the final
+        // values get `start_kill()`'d before run_inner returns).
+        result
+    }
+}
+
+impl SshPtyReader {
+    /// The hot loop after both children are spawned + the remote FIFO is wired
+    /// up. Drains the cat child's stdout into the sink; on EOF/exit it probes
+    /// the remote tmux session via the (possibly stale) Transport — if the
+    /// session is GONE, returns `Ok(())` (stream-dead); if the session is
+    /// ALIVE, waits up to [`SSH_RESPAWN_BUDGET`] for the ControlMaster to be
+    /// responsive (the local HostPool auto-warms it), then respawns the cat
+    /// (and the keep-alive if it also died). Replay buffer is NEVER cleared,
+    /// so reconnecting WS clients see the bounce as a brief pause.
+    ///
+    /// **Structure.** Each cat child's stdout is drained by a SHORT-LIVED
+    /// `tokio::spawn`ed task that forwards chunks to an mpsc channel + signals
+    /// EOF/error via a oneshot. The main loop selects on:
+    ///   * mpsc recv → forward chunk to sink (heartbeat + wake);
+    ///   * oneshot recv → cat child died, decide respawn vs stream-dead;
+    ///   * shutdown.notified() → SESSION restart, return Shutdown;
+    ///   * liveness.tick() → periodic tmux probe (catches a hung cat).
+    /// This decouples ownership of `cat` from the drain future: we always
+    /// own the `Child` value in the outer scope and only the SPAWNED task
+    /// holds the stdout pipe.
+    async fn run_inner(
+        &self,
+        sink: &PtySink,
+        mut cat: Child,
+        mut keepalive: Option<Child>,
+        mut transport: Arc<Transport>,
+    ) -> std::result::Result<(), ReaderExit> {
+        let mut liveness = tokio::time::interval(SSH_LIVENESS_POLL);
+        liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        liveness.tick().await;
+
+        // Spawn the first drainer.
+        let (mut chunks_rx, mut eof_rx) = spawn_stdout_drain(&mut cat);
+
+        loop {
+            tokio::select! {
+                biased;
+
+                _ = sink.shutdown.notified() => {
+                    let _ = cat.start_kill();
+                    if let Some(mut k) = keepalive.take() {
+                        let _ = k.start_kill();
+                    }
+                    return Err(ReaderExit::Shutdown);
+                }
+
+                Some(chunk) = chunks_rx.recv() => {
+                    sink.forward_chunk(chunk);
+                }
+
+                _ = &mut eof_rx => {
+                    // Cat child's stdout closed (EOF or error). Decide whether
+                    // it's a master bounce (respawn) or a stream-dead (return).
+                    let _ = cat.start_kill();
+
+                    // Probe tmux. If the master is wedged, transport_for will
+                    // warm it and we get a fresh transport back.
+                    let alive = self.probe_tmux_alive(&transport).await
+                        || {
+                            // Master might just be cold — re-resolve and try once more.
+                            if let Ok(t) = self.host_pool.transport_for(self.host_id.0).await {
+                                transport = t;
+                                self.probe_tmux_alive(&transport).await
+                            } else { false }
+                        };
+
+                    if !alive {
+                        tracing::warn!(session = %sink.name, "remote tmux gone, stream-dead");
+                        if let Some(mut k) = keepalive.take() {
+                            let _ = k.start_kill();
+                        }
+                        return Ok(());
+                    }
+
+                    // Real bounce — wait for master + respawn.
+                    if let Err(e) = self.wait_for_master(&mut transport).await {
+                        if let Some(mut k) = keepalive.take() {
+                            let _ = k.start_kill();
+                        }
+                        return Err(ReaderExit::Fatal(e));
+                    }
+
+                    // Respawn cat. If the keepalive died too, respawn it.
+                    let mut new_cat = match Self::spawn_cat_child(&transport, &self.fifo) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            if let Some(mut k) = keepalive.take() {
+                                let _ = k.start_kill();
+                            }
+                            return Err(ReaderExit::Fatal(e));
+                        }
+                    };
+                    if keepalive_dead(&mut keepalive) {
+                        keepalive = Self::spawn_keepalive_child(&transport, &self.fifo).ok();
+                    }
+                    let (new_chunks_rx, new_eof_rx) = spawn_stdout_drain(&mut new_cat);
+                    cat = new_cat;
+                    chunks_rx = new_chunks_rx;
+                    eof_rx = new_eof_rx;
+                }
+
+                _ = liveness.tick() => {
+                    // Periodic check — catches a hung cat that never sends EOF.
+                    if !self.probe_tmux_alive(&transport).await {
+                        // Try a fresh transport before declaring death.
+                        let confirmed = match self.host_pool.transport_for(self.host_id.0).await {
+                            Ok(t) => {
+                                transport = t;
+                                !self.probe_tmux_alive(&transport).await
+                            }
+                            Err(_) => true,
+                        };
+                        if confirmed {
+                            tracing::warn!(session = %sink.name, "remote tmux gone (periodic poll), stream-dead");
+                            let _ = cat.start_kill();
+                            if let Some(mut k) = keepalive.take() {
+                                let _ = k.start_kill();
+                            }
+                            return Ok(());
+                        }
+                    }
+                    // Also check keepalive — if it died but cat is fine, respawn it.
+                    if keepalive_dead(&mut keepalive) {
+                        keepalive = Self::spawn_keepalive_child(&transport, &self.fifo).ok();
+                        if keepalive.is_none() {
+                            tracing::warn!(session = %sink.name, "keepalive respawn failed (will retry next tick)");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One-shot tmux liveness probe over `transport`. Mirrors the local
+    /// reader's `target_alive` semantics but lets the caller decide what to
+    /// do on "gone".
+    async fn probe_tmux_alive(&self, transport: &Transport) -> bool {
+        let tmux = match &self.target {
+            TmuxTarget::Session(n) => Tmux::new_on(transport, n),
+            TmuxTarget::Pane(id) => Tmux::for_pane_on(transport, &self.name, id.clone()),
+        };
+        if tmux.is_pane() {
+            tmux.pane_alive().await
+        } else {
+            tmux.exists().await.unwrap_or(false)
+        }
+    }
+
+    /// Wait up to [`SSH_RESPAWN_BUDGET`] for the host's ControlMaster to be
+    /// responsive again. Polls [`HostPool::transport_for`] (which itself warms
+    /// the master if needed) every [`SSH_RESPAWN_POLL`]. On success, swaps the
+    /// caller's transport handle to the (possibly new) Arc. On total failure,
+    /// returns an error so the caller bubbles to ReaderExit::Fatal.
+    async fn wait_for_master(&self, transport: &mut Arc<Transport>) -> Result<()> {
+        let deadline = Instant::now() + SSH_RESPAWN_BUDGET;
+        let mut last_err: Option<anyhow::Error> = None;
+        while Instant::now() < deadline {
+            match self.host_pool.transport_for(self.host_id.0).await {
+                Ok(t) => {
+                    *transport = t;
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(SSH_RESPAWN_POLL).await;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("SSH master never came back within {SSH_RESPAWN_BUDGET:?}")))
+    }
+}
+
+// ── Shared helpers ──────────────────────────────────────────────────────────
+
+/// Why a reader returned — distinguishes a genuine pane death (write `stopped`)
+/// from an explicit session-restart rotation (leave status to the concurrent
+/// [`crate::sessions::lifecycle::start`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExitReason {
     /// The tmux pane is gone / unreadable — propagate `stopped` to the DB.
@@ -525,10 +1272,10 @@ enum ExitReason {
 }
 
 /// Append `chunk` to the replay buffer (evicting from the front to stay
-/// ≤`REPLAY_CAP`) and fan it out — both under the replay write lock so it is atomic against
-/// [`PtyStream::subscribe`]'s snapshot+subscribe (exactly-once handoff). The
-/// `broadcast.send` returns `Err` when there are no subscribers — an intentional
-/// drop; new subscribers get the replay snapshot.
+/// ≤`REPLAY_CAP`) and fan it out — both under the replay write lock so it is
+/// atomic against [`PtyStream::subscribe`]'s snapshot+subscribe (exactly-once
+/// handoff). The `broadcast.send` returns `Err` when there are no subscribers —
+/// an intentional drop; new subscribers get the replay snapshot.
 fn push_and_broadcast(replay: &Replay, broadcast: &broadcast::Sender<Bytes>, chunk: Bytes) {
     let mut q = write_lock(replay);
     q.push_back(chunk.clone());

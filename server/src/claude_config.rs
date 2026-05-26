@@ -1,5 +1,5 @@
 //! Claude Code `~/.claude/settings.json` hook installer (TECH_PLAN §3.5, §3.6,
-//! §6.5; M5b).
+//! §6.5; M5b; REMOTE_PLAN §RT5 — transport-aware).
 //!
 //! supermux drives its multi-signal status detector partly off Claude Code
 //! `SettingsHook` events: on each tool call / notification / turn end, Claude runs
@@ -13,20 +13,28 @@
 //! 2. **Coexistence-safe.** Only entries that are ours (matcher `"*"` AND a
 //!    command containing the marker) are touched — a user's own hooks and any v2
 //!    `supermux`/cmux hooks pass through unchanged.
-//! 3. **Atomic.** We write a sibling temp file, `fsync`, then `rename(2)` over the
-//!    original (atomic on POSIX) — a crash mid-write never leaves a truncated
-//!    settings file.
+//! 3. **Atomic.** We write a sibling temp file, then `rename(2)` over the
+//!    original (atomic on POSIX same-fs; SFTP RENAME is required atomic per
+//!    RFC 5; for SshFileTransport's shell-out `mv` is atomic on the same
+//!    filesystem) — a crash mid-write never leaves a truncated settings file.
+//!
+//! **Transport-aware (RT5).** The merge + atomic-write core funnels through a
+//! [`FileTransport`] so both the local `~/.claude/settings.json` AND a remote
+//! host's `~/.claude/settings.json` (over the [`HostPool`]'s ControlMaster) are
+//! served by the same code path. The invariants above hold for both — both
+//! transports implement `rename` atomically and `write` to a temp sibling first.
 //!
 //! **Security (§6.5).** The per-session token is delivered to the command through
 //! the tmux pane env (`$SUPERMUX_HOOK_TOKEN`), never written into this world-shared
 //! file. The command references `$SUPERMUX_HOOK_TOKEN` / `$SUPERMUX_SESSION` / `$SUPERMUX_URL`,
 //! all resolved at fire time inside the session's own pane.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+
+use crate::files::transport::FileTransport;
 
 /// Identifiability marker injected into every supermux hook command (§3.5). Its
 /// presence is how a re-install finds the entry it owns.
@@ -63,17 +71,40 @@ const EVENTS: [(&str, &str); 9] = [
 /// session that would start firing unauthenticated hooks. The token is
 /// deliberately NOT written into the global settings file (§6.5); it travels via
 /// `$SUPERMUX_HOOK_TOKEN` in the pane env.
-pub fn install_hooks(session_name: &str, hook_token: &str) -> Result<()> {
+///
+/// `transport` is the [`FileTransport`] to use — `LocalFileTransport` for a
+/// local session, a `SshFileTransport` (from the [`HostPool`]) for a remote
+/// session. The atomic-rename + marker-based idempotent merge invariants hold
+/// across both: both impls implement `rename` atomically on the same filesystem
+/// (POSIX `rename(2)` / shell-out `mv -f`).
+///
+/// `settings_path` is an optional explicit path to the settings file. When
+/// `None`, the default is `<claude_config_dir>/settings.json` for the local
+/// transport (`$CLAUDE_CONFIG_DIR` env override else `~/.claude`), and the
+/// relative `.claude/settings.json` (resolved against the SSH session's $HOME)
+/// for a remote transport — both are equivalent to the documented "user-global
+/// settings file" path on Claude Code's docs.
+pub async fn install_hooks(
+    session_name: &str,
+    hook_token: &str,
+    transport: &dyn FileTransport,
+    settings_path: Option<&Path>,
+) -> Result<()> {
     if hook_token.is_empty() {
         anyhow::bail!("refusing to install hooks for '{session_name}': empty hook token");
     }
-    let dir = claude_config_dir();
-    tracing::debug!(session = %session_name, dir = %dir.display(), "installing supermux Claude hooks");
-    install_hooks_at(&dir)
+    let path = resolve_settings_path(transport, settings_path);
+    tracing::debug!(
+        session = %session_name,
+        is_local = transport.is_local(),
+        path = %path.display(),
+        "installing supermux Claude hooks",
+    );
+    install_hooks_at_path(transport, &path).await
 }
 
-/// Resolve Claude's config directory: `$CLAUDE_CONFIG_DIR` (Claude Code's own
-/// override — also what tests target) else `~/.claude`.
+/// Resolve Claude's config directory for the LOCAL host: `$CLAUDE_CONFIG_DIR`
+/// (Claude Code's own override — also what tests target) else `~/.claude`.
 fn claude_config_dir() -> PathBuf {
     if let Ok(d) = std::env::var("CLAUDE_CONFIG_DIR") {
         let d = d.trim();
@@ -86,23 +117,62 @@ fn claude_config_dir() -> PathBuf {
         .join(".claude")
 }
 
-/// The merge + atomic-write core, factored out so tests can target a temp dir
-/// without touching the developer's real `~/.claude`.
-fn install_hooks_at(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating claude config dir {}", dir.display()))?;
-    let path = dir.join("settings.json");
+/// Resolve the settings file path for the given transport. An explicit
+/// `override_path` always wins. Otherwise:
+///
+/// * Local transport → `<claude_config_dir>/settings.json` (env override or
+///   `~/.claude/settings.json`).
+/// * Remote transport → `.claude/settings.json` — a relative path that the
+///   ssh shell-out resolves against the remote login's `$HOME`. This matches
+///   Claude Code's documented "user-global settings" location on the remote.
+fn resolve_settings_path(transport: &dyn FileTransport, override_path: Option<&Path>) -> PathBuf {
+    if let Some(p) = override_path {
+        return p.to_path_buf();
+    }
+    if transport.is_local() {
+        claude_config_dir().join("settings.json")
+    } else {
+        PathBuf::from(".claude/settings.json")
+    }
+}
 
-    // Read + parse the existing file. A present-but-unparseable file is left
-    // ALONE (we never clobber a user's real settings we failed to understand).
-    let mut root: Value = if path.exists() {
-        let text = std::fs::read_to_string(&path)
+/// The atomic-write + idempotent-merge core, factored out so tests + the
+/// `install_agent_teams_setting` path share one code path. Reads `path`
+/// through the transport, merges, writes a sibling temp, renames.
+async fn install_hooks_at_path(transport: &dyn FileTransport, path: &Path) -> Result<()> {
+    let mut root = read_settings_or_empty(transport, path).await?;
+    merge_supermux_hooks(&mut root);
+    atomic_write_settings(transport, path, &root).await
+}
+
+/// Read + parse the settings file at `path` via the transport. Returns an
+/// empty JSON object when the file does not exist or is empty. Returns Err
+/// for a present-but-unparseable file (we NEVER clobber a real user's
+/// settings we failed to understand) or for a top-level non-object root.
+async fn read_settings_or_empty(transport: &dyn FileTransport, path: &Path) -> Result<Value> {
+    // Use `stat` to detect existence — neither transport has an `exists()`
+    // method but `stat` returns an error on ENOENT which we map to "no
+    // pre-existing file → empty object".
+    let exists = transport.stat(path).await.is_ok();
+    let root: Value = if exists {
+        let bytes = transport
+            .read(path)
+            .await
             .with_context(|| format!("reading {}", path.display()))?;
+        let text = String::from_utf8(bytes).with_context(|| {
+            format!(
+                "{} is not valid UTF-8; refusing to overwrite it",
+                path.display()
+            )
+        })?;
         if text.trim().is_empty() {
             json!({})
         } else {
             serde_json::from_str(&text).with_context(|| {
-                format!("{} is not valid JSON; refusing to overwrite it", path.display())
+                format!(
+                    "{} is not valid JSON; refusing to overwrite it",
+                    path.display()
+                )
             })?
         }
     } else {
@@ -115,49 +185,79 @@ fn install_hooks_at(dir: &Path) -> Result<()> {
             path.display()
         );
     }
+    Ok(root)
+}
 
-    merge_supermux_hooks(&mut root);
-
-    // Atomic write: temp sibling → fsync → rename over the original (§3.5).
-    let tmp = dir.join("settings.json.supermux-tmp");
-    let body = serde_json::to_string_pretty(&root)? + "\n";
-    let mut f = std::fs::File::create(&tmp)
-        .with_context(|| format!("creating {}", tmp.display()))?;
-    f.write_all(body.as_bytes())?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, &path)
+/// Atomic write: serialize `root`, write to a temp sibling, then rename over
+/// the original (§3.5 — atomic on POSIX same-fs; SFTP RENAME atomic per
+/// RFC 5; SshFileTransport's shell-out `mv` is atomic on the same fs).
+///
+/// The transport's `write` impls both create parent dirs as needed, so we
+/// don't have to pre-create `~/.claude` ourselves.
+async fn atomic_write_settings(
+    transport: &dyn FileTransport,
+    path: &Path,
+    root: &Value,
+) -> Result<()> {
+    let tmp = sibling_tmp(path);
+    let body = serde_json::to_string_pretty(root)? + "\n";
+    transport
+        .write(&tmp, body.as_bytes())
+        .await
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    transport
+        .rename(&tmp, path)
+        .await
         .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
-/// Write Claude Code's `teammateMode` setting into the global
-/// `~/.claude/settings.json` so that, when the experimental Agent Teams feature
-/// is enabled (AT-B §3.1), a LEAD session spawns its teammates as **tmux
-/// split-panes in the lead's own window** (`"tmux"`) — landing them on
-/// supermux's process-pinned socket where we can address/stream them — rather
-/// than the `in-process` backend (invisible: no pane to render). Only meaningful
-/// alongside `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` injected into the pane env
-/// (see [`crate::sessions::lifecycle`]).
+/// Compute the sibling temp path used by the atomic write — same directory
+/// as `path` so `rename(2)` is same-filesystem (and therefore atomic). The
+/// fixed `.supermux-tmp` suffix is deliberate: it matches the v1 file name
+/// so a crash-recovery cleanup script can still find leftover temps.
+fn sibling_tmp(path: &Path) -> PathBuf {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "settings.json".to_string());
+    dir.join(format!("{name}.supermux-tmp"))
+}
+
+/// Write Claude Code's `teammateMode` setting + the
+/// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env entry into the user's
+/// `~/.claude/settings.json` so that, when the experimental Agent Teams
+/// feature is enabled (AT-B §3.1), a LEAD session spawns its teammates as
+/// **tmux split-panes in the lead's own window** (`"tmux"`) — landing them
+/// on supermux's process-pinned socket where we can address/stream them —
+/// rather than the `in-process` backend (invisible: no pane to render).
+/// Only meaningful alongside `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
+/// injected into the pane env (see [`crate::sessions::lifecycle`]).
 ///
 /// Same three invariants as [`install_hooks`]: idempotent (it just sets one
-/// top-level key), coexistence-safe (every other key/hook is preserved), and
-/// atomic (temp-sibling → fsync → rename). A present-but-unparseable settings
-/// file is left ALONE (never clobbered).
+/// top-level key + one env var), coexistence-safe (every other key/hook is
+/// preserved), and atomic (temp-sibling → rename). A present-but-unparseable
+/// settings file is left ALONE (never clobbered).
 ///
 /// Non-destructive on disable: passing `enabled = false` does NOT strip the key
 /// (a user may have set `teammateMode` themselves, and the env-gate is the real
 /// switch) — disable is a no-op here so we never trample a manual setting. The
 /// authoritative OFF gate is the absent `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`
 /// env var.
-pub fn install_agent_teams_setting(session_name: &str) -> Result<()> {
-    let dir = claude_config_dir();
+pub async fn install_agent_teams_setting(
+    session_name: &str,
+    transport: &dyn FileTransport,
+    settings_path: Option<&Path>,
+) -> Result<()> {
+    let path = resolve_settings_path(transport, settings_path);
     tracing::debug!(
         session = %session_name,
-        dir = %dir.display(),
+        is_local = transport.is_local(),
+        path = %path.display(),
         "writing teammateMode=tmux + env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 for agent teams"
     );
-    set_top_level_string_at(&dir, "teammateMode", "tmux")?;
+    set_top_level_string_at(transport, &path, "teammateMode", "tmux").await?;
     // Belt-and-suspenders: ALSO write the env-gate into settings.json's `env`
     // block. The doc (code.claude.com/docs/en/agent-teams) recommends the
     // settings.json `env` path as the most reliable for headless launches —
@@ -165,38 +265,20 @@ pub fn install_agent_teams_setting(session_name: &str) -> Result<()> {
     // but the settings.json route survives spawn paths that don't inherit the
     // process env perfectly. Without this, the team-formation tools never
     // load and the lead silently falls back to the regular Task tool.
-    set_env_var_at(&dir, "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
+    set_env_var_at(transport, &path, "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1").await
 }
 
-/// Merge-set `env.<key> = <value>` in `~/.claude/settings.json`, creating the
-/// `env` object if absent. Same atomic + idempotent discipline as
-/// [`set_top_level_string_at`]: temp-sibling → fsync → rename, only writes when
-/// the value differs, preserves every other key + the whole `hooks` subtree.
-fn set_env_var_at(dir: &Path, key: &str, value: &str) -> Result<()> {
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating claude config dir {}", dir.display()))?;
-    let path = dir.join("settings.json");
-
-    let mut root: Value = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        if text.trim().is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&text).with_context(|| {
-                format!("{} is not valid JSON; refusing to overwrite it", path.display())
-            })?
-        }
-    } else {
-        json!({})
-    };
-
-    if !root.is_object() {
-        anyhow::bail!(
-            "{} is not a JSON object; refusing to overwrite it",
-            path.display()
-        );
-    }
+/// Merge-set `env.<key> = <value>` in the settings file, creating the `env`
+/// object if absent. Same atomic + idempotent discipline as
+/// [`set_top_level_string_at`]: temp-sibling → rename, only writes when the
+/// value differs, preserves every other key + the whole `hooks` subtree.
+async fn set_env_var_at(
+    transport: &dyn FileTransport,
+    path: &Path,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    let mut root = read_settings_or_empty(transport, path).await?;
 
     let env_entry = root
         .as_object_mut()
@@ -214,64 +296,30 @@ fn set_env_var_at(dir: &Path, key: &str, value: &str) -> Result<()> {
     }
     env_obj.insert(key.to_string(), json!(value));
 
-    let tmp = dir.join("settings.json.supermux-tmp");
-    let body = serde_json::to_string_pretty(&root)? + "\n";
-    let mut f = std::fs::File::create(&tmp)
-        .with_context(|| format!("creating {}", tmp.display()))?;
-    f.write_all(body.as_bytes())?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-    Ok(())
+    atomic_write_settings(transport, path, &root).await
 }
 
-/// Merge-set a single top-level STRING key in `~/.claude/settings.json`,
-/// preserving every other key + the whole `hooks` subtree. Shares the atomic
-/// write discipline of [`install_hooks_at`]. Factored out so it is unit-testable
-/// against a temp dir.
-fn set_top_level_string_at(dir: &Path, key: &str, value: &str) -> Result<()> {
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating claude config dir {}", dir.display()))?;
-    let path = dir.join("settings.json");
-
-    let mut root: Value = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        if text.trim().is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&text).with_context(|| {
-                format!("{} is not valid JSON; refusing to overwrite it", path.display())
-            })?
-        }
-    } else {
-        json!({})
-    };
-
-    if !root.is_object() {
-        anyhow::bail!(
-            "{} is not a JSON object; refusing to overwrite it",
-            path.display()
-        );
-    }
+/// Merge-set a single top-level STRING key in the settings file, preserving
+/// every other key + the whole `hooks` subtree. Shares the atomic write
+/// discipline of [`install_hooks_at_path`]. Factored out so it is
+/// unit-testable against a temp dir + the local transport.
+async fn set_top_level_string_at(
+    transport: &dyn FileTransport,
+    path: &Path,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    let mut root = read_settings_or_empty(transport, path).await?;
 
     // Idempotent: only write when the value actually differs.
     if root.get(key).and_then(Value::as_str) == Some(value) {
         return Ok(());
     }
-    root.as_object_mut().unwrap().insert(key.to_string(), json!(value));
+    root.as_object_mut()
+        .unwrap()
+        .insert(key.to_string(), json!(value));
 
-    let tmp = dir.join("settings.json.supermux-tmp");
-    let body = serde_json::to_string_pretty(&root)? + "\n";
-    let mut f = std::fs::File::create(&tmp)
-        .with_context(|| format!("creating {}", tmp.display()))?;
-    f.write_all(body.as_bytes())?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-    Ok(())
+    atomic_write_settings(transport, path, &root).await
 }
 
 /// Set/replace supermux's marked entry under each `hooks.<Event>` array, preserving
@@ -369,6 +417,7 @@ fn is_supermux_entry(entry: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::files::transport::LocalFileTransport;
 
     fn temp_dir() -> PathBuf {
         let d = std::env::temp_dir().join(format!("supermux-claude-cfg-{}", uuid::Uuid::new_v4()));
@@ -376,16 +425,26 @@ mod tests {
         d
     }
 
-    fn read(dir: &Path) -> Value {
-        let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+    fn read_json(path: &Path) -> Value {
+        let text = std::fs::read_to_string(path).unwrap();
         serde_json::from_str(&text).unwrap()
     }
 
-    #[test]
-    fn fresh_install_writes_all_events() {
+    /// Local-transport convenience wrapper for tests: drive
+    /// [`install_hooks_at_path`] against a temp dir's settings.json with the
+    /// real [`LocalFileTransport`]. Mirrors the v1 `install_hooks_at(dir)`
+    /// helper so the existing golden snapshots stay byte-for-byte stable.
+    async fn install_hooks_at(dir: &Path) -> Result<()> {
+        let path = dir.join("settings.json");
+        let t = LocalFileTransport;
+        install_hooks_at_path(&t, &path).await
+    }
+
+    #[tokio::test]
+    async fn fresh_install_writes_all_events() {
         let dir = temp_dir();
-        install_hooks_at(&dir).unwrap();
-        let v = read(&dir);
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&dir.join("settings.json"));
         let hooks = v["hooks"].as_object().unwrap();
         for (event, token) in EVENTS {
             let arr = hooks[event].as_array().unwrap();
@@ -413,21 +472,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reinstall_is_idempotent() {
+    #[tokio::test]
+    async fn reinstall_is_idempotent() {
         let dir = temp_dir();
-        install_hooks_at(&dir).unwrap();
-        install_hooks_at(&dir).unwrap();
-        install_hooks_at(&dir).unwrap();
-        let v = read(&dir);
+        install_hooks_at(&dir).await.unwrap();
+        install_hooks_at(&dir).await.unwrap();
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&dir.join("settings.json"));
         for (event, _) in EVENTS {
             let arr = v["hooks"][event].as_array().unwrap();
             assert_eq!(arr.len(), 1, "{event}: re-install must not duplicate");
         }
     }
 
-    #[test]
-    fn preserves_foreign_hooks_and_keys() {
+    #[tokio::test]
+    async fn preserves_foreign_hooks_and_keys() {
         let dir = temp_dir();
         // A user's own settings: an unrelated top-level key, a foreign Stop hook,
         // and a foreign PreToolUse matcher supermux must not disturb.
@@ -438,10 +497,14 @@ mod tests {
                 "PreToolUse": [ { "matcher": "*", "hooks": [ { "type":"command", "command":"echo user-pretool" } ] } ]
             }
         });
-        std::fs::write(dir.join("settings.json"), serde_json::to_string_pretty(&seed).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&seed).unwrap(),
+        )
+        .unwrap();
 
-        install_hooks_at(&dir).unwrap();
-        let v = read(&dir);
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&dir.join("settings.json"));
 
         // Unrelated key survives.
         assert_eq!(v["model"], json!("opus"));
@@ -458,47 +521,61 @@ mod tests {
         assert_eq!(pre.iter().filter(|e| is_supermux_entry(e)).count(), 1);
     }
 
-    #[test]
-    fn teammate_mode_sets_top_level_key_and_preserves_hooks() {
+    #[tokio::test]
+    async fn teammate_mode_sets_top_level_key_and_preserves_hooks() {
         let dir = temp_dir();
         // Seed an existing settings file with hooks + a user key.
-        install_hooks_at(&dir).unwrap();
-        let before = read(&dir);
+        install_hooks_at(&dir).await.unwrap();
+        let before = read_json(&dir.join("settings.json"));
         let stop_len = before["hooks"]["Stop"].as_array().unwrap().len();
 
-        set_top_level_string_at(&dir, "teammateMode", "tmux").unwrap();
-        let v = read(&dir);
+        let t = LocalFileTransport;
+        set_top_level_string_at(&t, &dir.join("settings.json"), "teammateMode", "tmux")
+            .await
+            .unwrap();
+        let v = read_json(&dir.join("settings.json"));
         assert_eq!(v["teammateMode"], json!("tmux"));
         // The hooks subtree is untouched.
         assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), stop_len);
     }
 
-    #[test]
-    fn teammate_mode_is_idempotent() {
+    #[tokio::test]
+    async fn teammate_mode_is_idempotent() {
         let dir = temp_dir();
-        set_top_level_string_at(&dir, "teammateMode", "tmux").unwrap();
-        set_top_level_string_at(&dir, "teammateMode", "tmux").unwrap();
-        let v = read(&dir);
+        let t = LocalFileTransport;
+        set_top_level_string_at(&t, &dir.join("settings.json"), "teammateMode", "tmux")
+            .await
+            .unwrap();
+        set_top_level_string_at(&t, &dir.join("settings.json"), "teammateMode", "tmux")
+            .await
+            .unwrap();
+        let v = read_json(&dir.join("settings.json"));
         assert_eq!(v["teammateMode"], json!("tmux"));
     }
 
-    #[test]
-    fn teammate_mode_refuses_unparseable_settings() {
+    #[tokio::test]
+    async fn teammate_mode_refuses_unparseable_settings() {
         let dir = temp_dir();
         let path = dir.join("settings.json");
         std::fs::write(&path, "not { json").unwrap();
-        assert!(set_top_level_string_at(&dir, "teammateMode", "tmux").is_err());
+        let t = LocalFileTransport;
+        assert!(set_top_level_string_at(&t, &path, "teammateMode", "tmux")
+            .await
+            .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not { json");
     }
 
-    #[test]
-    fn refuses_to_clobber_unparseable_settings() {
+    #[tokio::test]
+    async fn refuses_to_clobber_unparseable_settings() {
         let dir = temp_dir();
         let path = dir.join("settings.json");
         std::fs::write(&path, "this is not { valid json").unwrap();
-        let err = install_hooks_at(&dir);
+        let err = install_hooks_at(&dir).await;
         assert!(err.is_err(), "must refuse to overwrite an unparseable file");
         // The original bytes are untouched.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "this is not { valid json");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "this is not { valid json"
+        );
     }
 }

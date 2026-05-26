@@ -527,6 +527,14 @@ READ_WRITE_PATHS="$(printf '%s' "$READ_WRITE_PATHS_RAW" | tr ':' ' ')"
 # makes it inherited). So default to dev-friendly (no); flip to strict (yes) only
 # when the operator explicitly sets SUPERMUX_HARDENED=1. NOTHING else changes
 # between modes — every other sandbox directive stays on in both.
+# MemoryHigh: soft cgroup-v2 memory throttle for the whole supermux tree
+# (server + tmux + agents). Default `infinity` = no cap, so the rendered unit
+# is identical to today's for every operator who hasn't opted in. Operators on
+# small hosts can set e.g. `6G` (for 8 GiB) or `12G` (for 16 GiB) to make the
+# kernel reclaim aggressively past the threshold — it's SOFT (no OOM-kill), so
+# an over-tight value just slows things down, it doesn't break the service.
+MEMORY_HIGH="${SUPERMUX_MEMORY_HIGH:-infinity}"
+
 if [ "${SUPERMUX_HARDENED:-0}" = "1" ]; then
   MEMORY_DENY_WRITE_EXECUTE=yes
   # Hardened profile assumes NO long-lived agents across restarts, so a private
@@ -740,12 +748,28 @@ check_or_install_toolchain() {
 check_or_install_toolchain bun
 check_or_install_toolchain cargo
 
-# ── 1a. install the cargo-guard wrapper (opt-in for small hosts) ────────────
+# ── 1a. install the cargo-guard wrapper (auto-on for small hosts) ──────────
 # Refuses `cargo --release` from agent ad-hoc compile-checks (release builds
 # peak ~2 GB/rustc and have OOM-thrashed our small deploy host); the legit
-# deploy paths set SUPERMUX_RELEASE_OK=1 and pass through. Off by default —
-# enable on hosts with ≲8 GB RAM by setting SUPERMUX_INSTALL_CARGO_GUARD=1.
-if [ "${SUPERMUX_INSTALL_CARGO_GUARD:-0}" = "1" ]; then
+# deploy paths set SUPERMUX_RELEASE_OK=1 and pass through.
+#
+# Default: AUTO-ON when the host has ≤8 GiB RAM (the wedge regime), OFF on
+# bigger hosts. Operator override is preserved: explicitly setting
+# SUPERMUX_INSTALL_CARGO_GUARD=0 disables it even on a small host, and =1
+# enables it on any host.
+INSTALL_CARGO_GUARD="${SUPERMUX_INSTALL_CARGO_GUARD:-}"
+if [ -z "$INSTALL_CARGO_GUARD" ]; then
+  # No explicit operator choice — probe host RAM. 8 GiB = 8*1024*1024 KiB.
+  HOST_RAM_KIB="$(ssh "$HOST" "awk '/^MemTotal:/ {print \$2; exit}' /proc/meminfo" 2>/dev/null || true)"
+  if [ -n "$HOST_RAM_KIB" ] && [ "$HOST_RAM_KIB" -gt 0 ] 2>/dev/null && [ "$HOST_RAM_KIB" -le 8388608 ]; then
+    HOST_RAM_GIB=$(( HOST_RAM_KIB / 1024 / 1024 ))
+    echo "[deploy] host has ${HOST_RAM_GIB} GiB RAM ≤ 8 GiB — enabling cargo-guard wrapper. Set SUPERMUX_INSTALL_CARGO_GUARD=0 to disable."
+    INSTALL_CARGO_GUARD=1
+  else
+    INSTALL_CARGO_GUARD=0
+  fi
+fi
+if [ "$INSTALL_CARGO_GUARD" = "1" ]; then
   echo "[deploy] installing cargo-guard wrapper for service user '$SERVICE_USER'"
   scp "$ROOT/etc/clawd-bin/cargo" "$HOST:/tmp/supermux-cargo-guard"
   ssh "$HOST" "sudo -u '$SERVICE_USER' -H bash -lc '
@@ -814,6 +838,7 @@ sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__READ_WRITE_PATHS__|$READ_WRITE_PATHS|g" \
     -e "s|__MEMORY_DENY_WRITE_EXECUTE__|$MEMORY_DENY_WRITE_EXECUTE|g" \
     -e "s|__PRIVATE_TMP__|$PRIVATE_TMP|g" \
+    -e "s|__MEMORY_HIGH__|$MEMORY_HIGH|g" \
     etc/systemd/supermux.service > "$UNIT_TMP"
 # __BIND_PATHS__ is its own line in the template: substitute it with the
 # BindPaths directive (non-root), or delete the line entirely (root → empty).

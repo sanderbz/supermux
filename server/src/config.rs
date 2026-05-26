@@ -38,6 +38,16 @@ pub struct Config {
     pub provider_defaults: ProviderDefaults,
     /// Live-stream WebSocket tuning (§3.2.7/§3.2.9).
     pub ws: WsConfig,
+    /// REMOTE_PLAN §RT5: URL the REMOTE host's Claude `SettingsHook` curl
+    /// dials back to. `127.0.0.1:8823` is the local-session default and is
+    /// useless for a Claude process running on a different machine — it would
+    /// just hit the REMOTE's own loopback. When unset, the lifecycle resolver
+    /// falls back to `extra_binds` (first non-loopback) and finally `bind`,
+    /// in that order. The env override `SUPERMUX_REMOTE_URL` takes precedence
+    /// over both — used by ad-hoc reverse-tunnel smoke tests
+    /// (`ssh -R 8823:127.0.0.1:8823 host` + `SUPERMUX_REMOTE_URL=http://127.0.0.1:8823`).
+    /// Local sessions are unaffected.
+    pub remote_callback_url: Option<String>,
 }
 
 /// `[ws]` config block (TECH_PLAN §3.2.7). Both knobs raised from v1 per CEO #6:
@@ -103,6 +113,9 @@ struct RawConfig {
     provider_defaults: ProviderDefaults,
     #[serde(default)]
     ws: WsConfig,
+    /// REMOTE_PLAN §RT5 — see [`Config::remote_callback_url`].
+    #[serde(default)]
+    remote_callback_url: Option<String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -157,6 +170,7 @@ pub fn load() -> Result<Config> {
         auth_token,
         provider_defaults: raw.provider_defaults,
         ws: raw.ws,
+        remote_callback_url: raw.remote_callback_url,
     })
 }
 

@@ -32,15 +32,19 @@
 //! (`capture-pane`) and MUST NOT take the per-session `SessionLock`, or a chatty
 //! `send` burst would starve detection.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use crate::db;
+use crate::db::hosts::{Host, HostStatus};
 use crate::state::{AppState, SseEvent};
 
 use super::status::{self, Status, StatusDetector};
 use super::tmux::Tmux;
+use super::transport::{HostId, Transport};
 
 /// Detector cadence floor (§3.6 — "runs every 2s" baseline). The loop no longer
 /// uses a single fixed interval: after each tick it computes an ADAPTIVE delay
@@ -77,6 +81,18 @@ const PREVIEW_LINES: usize = 20;
 /// enum's [`Status::Stopped`]). A session whose tmux pane genuinely exists is
 /// left untouched: the 2s detector loop classifies it live.
 ///
+/// REMOTE_PLAN §RT7: extended to reconcile REMOTE hosts too. Local sessions
+/// (`host_id IS NULL`) keep the existing per-session `has-session` probe path
+/// (byte-for-byte unchanged). Remote sessions are handled per-host: for every
+/// row in `hosts` (non-soft-deleted), we run ONE `tmux ls` over the host's SSH
+/// transport (5s per-host timeout) and reconcile every session with
+/// `host_id = host.id` against that single listing. On per-host timeout or SSH
+/// failure, the host is marked `Unreachable` and its sessions are marked
+/// `unknown` (we can't claim they're stopped — the remote tmux server may still
+/// be alive; we simply don't know). Best-effort per-host: an unreachable host
+/// never blocks boot — at worst it costs ~5s wall-clock before its sessions are
+/// flagged unknown.
+///
 /// Session rows are NEVER deleted here — a stopped session stays in the DB so
 /// the user can resume it.
 pub async fn reconcile_on_boot(state: &AppState) {
@@ -87,7 +103,11 @@ pub async fn reconcile_on_boot(state: &AppState) {
             return;
         }
     };
-    for s in sessions {
+
+    // ── LOCAL pass (host_id IS NULL) — existing behaviour, unchanged ──────────
+    // The remote-aware iteration below explicitly skips local sessions, so the
+    // local loop is the sole writer for the local fleet (no double-write).
+    for s in sessions.iter().filter(|s| s.host_id.is_none()) {
         let tmux = Tmux::new(&s.name);
         // A failed `has-session` probe is treated as "not running" — the pane
         // cannot be served either way, so `stopped` is the safe, correct status.
@@ -102,6 +122,242 @@ pub async fn reconcile_on_boot(state: &AppState) {
             continue;
         }
         tracing::info!(name = %s.name, "status reconcile: tmux pane gone → stopped");
+    }
+
+    // ── REMOTE pass (RT7) — per-host `tmux ls` with a 5s timeout each ─────────
+    // List once outside the per-host loop so a hosts-table read failure short-
+    // circuits with one warning instead of N. An empty hosts table is the
+    // pre-RT4 fleet and skips this pass entirely — boot stays at the local-only
+    // cost (asserted by the empty-hosts test in `reattach_multi_host`).
+    let hosts = match db::hosts::list(&state.pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, "status reconcile: failed to list hosts on boot");
+            return;
+        }
+    };
+    if hosts.is_empty() {
+        return;
+    }
+
+    // Index sessions by host_id once so each per-host pass is O(sessions_on_host)
+    // instead of O(all_sessions). A host with no sessions still gets a single
+    // probe (lets us flip its reachability status on boot — cheap warm-up).
+    let mut by_host: std::collections::HashMap<i64, Vec<&db::sessions::Session>> =
+        std::collections::HashMap::new();
+    for s in sessions.iter().filter(|s| s.host_id.is_some()) {
+        if let Some(hid) = s.host_id {
+            by_host.entry(hid).or_default().push(s);
+        }
+    }
+
+    for host in &hosts {
+        let host_sessions: Vec<&db::sessions::Session> =
+            by_host.get(&host.id).cloned().unwrap_or_default();
+        // Per-host 5s wall-clock cap. A hung SSH (broken master, network
+        // partition) can't stall boot for more than this — total worst-case
+        // boot time is `5s × N_hosts` (the RT7 acceptance bound).
+        let outcome = tokio::time::timeout(
+            HOST_REATTACH_TIMEOUT,
+            reconcile_host(state, host, &host_sessions),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(host = %host.name, error = %e, "status reconcile: host probe failed");
+                mark_host_and_sessions_unknown(state, host, &host_sessions).await;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    host = %host.name,
+                    timeout_secs = HOST_REATTACH_TIMEOUT.as_secs(),
+                    "status reconcile: host probe timed out",
+                );
+                mark_host_and_sessions_unknown(state, host, &host_sessions).await;
+            }
+        }
+    }
+}
+
+/// Per-host reattach budget (RT7 acceptance bullet — "reattach completes within
+/// 5s × N_hosts worst case"). One `tmux ls` over an SSH ControlMaster is sub-ms
+/// once the master is warm; this generous cap exists only for the cold/broken
+/// master and is small enough that an all-down fleet still boots in seconds.
+const HOST_REATTACH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Reconcile every session row on one remote host against ONE `tmux ls` listing.
+///
+/// * Run `tmux ls -F #{session_name}` over an ad-hoc `Transport::Ssh` for this
+///   host. TODO(RT2): replace the ad-hoc transport with `HostPool.transport_for`
+///   so the ControlMaster lifecycle is centrally managed (warm/backoff/etc.).
+///   RT7 ships before RT2 — constructing the transport inline keeps the seam
+///   intact (the spawn_command argv is identical) without leaking RT2's
+///   not-yet-merged pool type into the boot path.
+/// * Parse the output for `supermux-<name>` session names.
+/// * For every session row with `host_id = host.id`:
+///     - DB row exists, tmux session in the listing → leave status as-is (the
+///       detector loop will re-classify it within the first 2s tick).
+///     - DB row exists, tmux session NOT in the listing → write `stopped` (the
+///       same outcome as the local `has-session = false` branch above).
+///     - tmux session in the listing but NO DB row → ignored (RT7 spec — that
+///       is a future "connect-orphan" UX, not a boot-time reattach concern).
+/// * Bumps the host's `status` to `Reachable` on a clean run.
+///
+/// On error (SSH failure, parse error, DB write error) returns `Err` and the
+/// caller (the outer reconcile loop) flips the host to `Unreachable` + flags
+/// every session on it as `unknown`.
+async fn reconcile_host(
+    state: &AppState,
+    host: &Host,
+    host_sessions: &[&db::sessions::Session],
+) -> anyhow::Result<()> {
+    let transport = adhoc_ssh_transport(state, host);
+    // `tmux ls` with a strict format so we don't have to parse the human-
+    // readable columns (which include attach state, window count, etc.).
+    // Match the local-pass safety net: a never-started remote tmux server
+    // exits non-zero on `list-sessions` ("no server running"); treat that
+    // as "no sessions" (Ok empty), not an error, so a host with zero live
+    // tmux sessions still flips to `Reachable`.
+    let alive_names = match list_remote_supermux_sessions(&transport).await {
+        Ok(names) => names,
+        Err(e) => {
+            // Distinguish a TMUX_NO_SERVER from a real SSH failure: the
+            // remote `tmux` exits with stderr containing "no server running"
+            // / "error connecting" when the daemon is simply not up. That's
+            // a healthy host with no sessions, not an unreachable host.
+            let msg = format!("{e:#}");
+            if is_tmux_no_server(&msg) {
+                HashSet::new()
+            } else {
+                return Err(e);
+            }
+        }
+    };
+
+    // Reconcile DB rows for this host.
+    for s in host_sessions {
+        let bare = s.name.as_str();
+        let tmux_name = format!("supermux-{bare}");
+        if alive_names.contains(&tmux_name) {
+            // Live on the remote — detector loop will refine the status on its
+            // first tick. Leave the persisted row alone.
+            continue;
+        }
+        if let Err(e) =
+            db::sessions::set_last_status(&state.pool, bare, Status::Stopped.as_str()).await
+        {
+            tracing::warn!(name = %bare, host = %host.name, error = %e, "status reconcile: set_last_status failed");
+            continue;
+        }
+        tracing::info!(name = %bare, host = %host.name, "status reconcile: remote tmux pane gone → stopped");
+    }
+
+    // Reachable: the probe came back cleanly. Stamping this here also bumps
+    // `last_seen`, so the FE host list shows a fresh "last reachable" right
+    // after a server restart even before the user clicks Check.
+    if !matches!(HostStatus::from_str(&host.status), Some(HostStatus::Reachable)) {
+        if let Err(e) =
+            db::hosts::update_status(&state.pool, host.id, HostStatus::Reachable).await
+        {
+            tracing::debug!(host = %host.name, error = %e, "status reconcile: update_status(Reachable) failed");
+        }
+    } else {
+        // Already reachable — still bump last_seen so the UI clock advances.
+        let _ = db::hosts::update_status(&state.pool, host.id, HostStatus::Reachable).await;
+    }
+    Ok(())
+}
+
+/// Construct an ad-hoc `Transport::Ssh` for one host without HostPool (which
+/// lands in RT2, in a parallel branch that may not be merged when RT7 lands).
+///
+/// TODO(RT2): replace with `state.host_pool.transport_for(host.id)` once
+/// `HostPool` is in tree — this function should disappear. The control_path
+/// convention here (`<data_dir>/ssh-control/cm-<host_id>`) matches the path
+/// HostPool will own, so an existing master (if any) is re-used; if no master
+/// is up yet, ssh opens one on first use under `ControlMaster=auto`.
+fn adhoc_ssh_transport(state: &AppState, host: &Host) -> Transport {
+    let control_path: PathBuf = state
+        .config
+        .data_dir
+        .join("ssh-control")
+        .join(format!("cm-{}", host.id));
+    Transport::Ssh {
+        host_id: HostId(host.id),
+        ssh_target: host.ssh_target.clone(),
+        control_path,
+    }
+}
+
+/// Run `tmux list-sessions -F #{session_name}` over `transport` and return the
+/// set of session names prefixed `supermux-` (every supermux tmux session uses
+/// that prefix — see `tmux.rs` module docs). A non-supermux session on the
+/// remote (e.g. an operator's manual `tmux new-session`) is filtered out so we
+/// never claim it.
+async fn list_remote_supermux_sessions(transport: &Transport) -> anyhow::Result<HashSet<String>> {
+    // `tmux` binary lookup: LOCAL would normally use `which::which`, but the
+    // RT7 reconcile path is only invoked here on REMOTE hosts (the local pass
+    // above uses the existing `Tmux::exists` flow). The bare `"tmux"` lets the
+    // remote shell resolve it via the remote PATH — same convention as
+    // `Tmux::program_for_transport` for `Transport::Ssh`.
+    let out = transport
+        .spawn_command("tmux", &["list-sessions", "-F", "#{session_name}"])
+        // RT7: the outer `tokio::time::timeout` cancels the future on a hung
+        // ssh, but that alone doesn't reap the child. `kill_on_drop` ensures
+        // a stalled ssh subprocess is killed when the future is dropped, so a
+        // partition-induced hang doesn't leak ssh PIDs every boot.
+        .kill_on_drop(true)
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(anyhow::anyhow!(
+            "tmux list-sessions failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim(),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let names = stdout
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with("supermux-"))
+        .map(|l| l.to_string())
+        .collect();
+    Ok(names)
+}
+
+/// True when a tmux error means "the remote tmux daemon is not running" — the
+/// healthy "no sessions" outcome, not a transport failure. Matches the literal
+/// strings tmux emits on `list-sessions` against a cold server.
+fn is_tmux_no_server(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("no server running")
+        || e.contains("error connecting to") // tmux-3.x sock-not-found phrasing
+        || e.contains("failed to connect to server")
+}
+
+/// On a host probe failure (timeout or SSH error): mark the host `Unreachable`
+/// and every session on that host `unknown`. We DO NOT mark them `stopped` —
+/// the remote tmux server may very well still be alive; we just can't tell from
+/// here, so the safe, honest answer is `unknown` (the UI renders this neutrally
+/// and the detector loop will re-classify once connectivity returns).
+async fn mark_host_and_sessions_unknown(
+    state: &AppState,
+    host: &Host,
+    host_sessions: &[&db::sessions::Session],
+) {
+    if let Err(e) =
+        db::hosts::update_status(&state.pool, host.id, HostStatus::Unreachable).await
+    {
+        tracing::debug!(host = %host.name, error = %e, "status reconcile: update_status(Unreachable) failed");
+    }
+    for s in host_sessions {
+        if let Err(e) =
+            db::sessions::set_last_status(&state.pool, &s.name, Status::Unknown.as_str()).await
+        {
+            tracing::warn!(name = %s.name, host = %host.name, error = %e, "status reconcile: set_last_status(unknown) failed");
+        }
     }
 }
 
@@ -678,6 +934,7 @@ mod board_reaction_tests {
             auth_token: "test-token".to_string(),
             provider_defaults: Default::default(),
             ws: Default::default(),
+            remote_callback_url: None,
         };
         let pool = crate::db::init(&config).await.expect("init pool");
         (AppState::new(pool, config), dir)

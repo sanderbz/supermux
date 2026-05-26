@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { sessionsApi, SessionError, type NewSession } from '@/lib/api'
+import { HostPicker } from '@/components/host-picker'
 import {
   WherePicker,
   defaultWhereSelection,
@@ -82,6 +83,10 @@ interface FormState {
   desc: string
   command: string
   worktree: boolean
+  /** Remote host (RT9). `null` = LOCAL, the default for every existing
+   *  session and the most common pick — the picker collapses to just "Local"
+   *  when the user has no remote hosts registered. */
+  hostId: number | null
 }
 
 /** Initial form state. The "where" defaults to the Projects root (or the
@@ -97,6 +102,7 @@ const EMPTY_FORM = (defaultDir: string | undefined): FormState => ({
   desc: '',
   command: '',
   worktree: false,
+  hostId: null,
 })
 
 export interface NewSessionSheetProps {
@@ -207,6 +213,10 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
         desc: form.desc.trim() || undefined,
         worktree: form.worktree,
         command: form.command.trim() || undefined,
+        // RT9: omit when LOCAL so the wire stays clean for the historical
+        // path (server treats missing/null both as LOCAL — no host_id column
+        // update). Only sent when the user picked a remote host.
+        host_id: form.hostId ?? undefined,
       })
       const name = created?.name ?? form.name.trim()
       // Boot tmux + send the initial prompt. Non-fatal — the row exists either
@@ -335,6 +345,24 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
                   ))}
                 </div>
               </fieldset>
+
+              {/* RT9: run-on picker. Defaults to "Local" (the historical
+                  behaviour); registered remote hosts surface as additional
+                  options. The picker shows a muted "No remote hosts yet"
+                  hint when the list is empty, so it stays calm for the
+                  majority of users with zero remote hosts. */}
+              <Field
+                label="Run on"
+                htmlFor="ns-host"
+                hint="Pick a remote host you registered in Hosts, or stay Local."
+              >
+                <HostPicker
+                  id="ns-host"
+                  value={form.hostId}
+                  onChange={(id) => set('hostId', id)}
+                  disabled={submitting}
+                />
+              </Field>
 
               {form.command && (
                 <Field label="Initial prompt" htmlFor="ns-cmd">

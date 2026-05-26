@@ -7,6 +7,7 @@ import { GitBranch } from 'lucide-react'
 import { springs } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { StatusDot, STATUS_LABEL } from './status-dot'
+import { HostBadge } from './host-badge'
 import type { TileSession } from './types'
 
 /** View Transition navigate (mirrors the tile's, kept local so this row is
@@ -93,6 +94,12 @@ export function SessionRow({ session }: SessionRowProps) {
           )}
         </div>
       </div>
+      {/* Remote-host badge (RT9). Small globe + truncated host name; only
+          renders when the session has a `host_id`. Muted on purpose so the
+          row's status dot + waiting pill stay the primary signals. */}
+      {typeof session.host_id === 'number' && (
+        <HostBadge hostId={session.host_id} />
+      )}
       {session.status === 'waiting' && (
         <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
           {MISC.needsInputPill}
