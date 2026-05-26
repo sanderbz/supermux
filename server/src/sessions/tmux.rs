@@ -369,6 +369,33 @@ impl<'a> Tmux<'a> {
             .await
     }
 
+    /// `tmux capture-pane -p -e -J -S - -E -` — the FULL scrollback (entire
+    /// history-limit) PLUS the current visible screen, with SGR escapes preserved
+    /// (`-e`) and lines joined where tmux wrapped them at pane width (`-J`) so
+    /// xterm.js re-wraps at the client's actual viewport.
+    ///
+    /// Used as the WS-attach seed: tmux owns the persistent pane state, so a
+    /// fresh browser tab (or a tab after the web app restarted) gets the same
+    /// scrollback the multiplexer is holding — regardless of how the web app
+    /// came and went. Up to ~10 MB worst-case at the 50000-line history-limit,
+    /// which is fine for an attach event (and the WS layer compresses it heavily).
+    /// Read-only, no lock.
+    pub async fn capture_full_ansi_joined(&self) -> Result<String> {
+        self.run(&[
+            "capture-pane",
+            "-p",
+            "-e",
+            "-J",
+            "-t",
+            &self.target(),
+            "-S",
+            "-",
+            "-E",
+            "-",
+        ])
+        .await
+    }
+
     // ── input ────────────────────────────────────────────────────────────────
 
     /// Inject `text` literally — NO trailing Enter (callers send `Enter`

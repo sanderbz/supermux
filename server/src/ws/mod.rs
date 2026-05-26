@@ -171,20 +171,17 @@ async fn handle_team_socket(
         return;
     }
 
-    // 4. Replay snapshot, then the replay-done boundary (same client contract).
-    let (replay, mut rx) = stream.subscribe();
-    for chunk in replay {
-        if socket.send(Message::Binary(chunk)).await.is_err() {
-            return;
-        }
-    }
-    if socket
-        .send(Message::Text(Utf8Bytes::from_static(
-            r#"{"type":"replay_done"}"#,
-        )))
-        .await
-        .is_err()
-    {
+    // 4. Subscribe FIRST so the broadcast receiver starts queueing live bytes,
+    //    THEN read the full authoritative scrollback from tmux and send it as
+    //    the seed. The fresh capture-pane covers the same ground as the in-memory
+    //    replay buffer PLUS the rest of tmux's history-limit that the bounded
+    //    ring would have evicted on a long-running pane — and tmux owns the
+    //    persistent state, so a fresh tab after a web-app restart sees the same
+    //    history the multiplexer is still holding. The in-memory replay ring is
+    //    discarded for the WS path (still maintained by pty.rs for tail/preview).
+    let (_replay, mut rx) = stream.subscribe();
+    let tmux = Tmux::for_pane(&resolved.lead_session, &resolved.pane_id);
+    if !send_seed_then_done(&mut socket, &tmux).await {
         return;
     }
 
@@ -283,30 +280,17 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         return;
     }
 
-    // 4. Replay snapshot first (so the client is current before any live byte).
-    let (replay, mut rx) = stream.subscribe();
-    for chunk in replay {
-        if socket.send(Message::Binary(chunk)).await.is_err() {
-            return;
-        }
-    }
-
-    // 4b. Replay boundary marker. The replay frames above visibly scroll the
-    //     client viewport as they stream (the snapshot is up to 512 KB / several
-    //     thousand lines); the client wants to APPEAR already at the bottom, not
-    //     watch the history chase down. We send a control text frame the instant
-    //     the (possibly empty) replay batch is flushed and BEFORE the live
-    //     fan-out below — the client keeps its viewport hidden until it sees
-    //     this, then jumps to the bottom + reveals in one paint. Always sent,
-    //     even for an empty replay, so the client always gets the signal (an old
-    //     server that omits it is covered by the client's fallback timeout).
-    if socket
-        .send(Message::Text(Utf8Bytes::from_static(
-            r#"{"type":"replay_done"}"#,
-        )))
-        .await
-        .is_err()
-    {
+    // 4. Subscribe FIRST so the broadcast receiver starts queueing live bytes,
+    //    THEN read the full authoritative scrollback from tmux and send it as
+    //    the seed. tmux owns the persistent pane state (history-limit = 50000
+    //    lines), so a fresh browser tab — or one that comes back after the web
+    //    app restarted — sees the same scrollback the multiplexer is holding,
+    //    not just the in-memory replay ring's last 512 KB (which evicts on a
+    //    busy session). See [`send_seed_then_done`] for the ANSI-coherence
+    //    rationale and the replay_done boundary contract.
+    let (_replay, mut rx) = stream.subscribe();
+    let tmux = Tmux::new(&name);
+    if !send_seed_then_done(&mut socket, &tmux).await {
         return;
     }
 
@@ -402,6 +386,50 @@ enum Apply {
     Text(String),
     /// A single non-`Input` control frame that breaks the batch.
     Ctrl(ClientMsg),
+}
+
+/// Build the attach seed from tmux's authoritative scrollback (`capture-pane
+/// -p -e -J -S - -E -`), send it as a Binary frame, then the `replay_done` Text
+/// boundary the client uses to reveal its viewport. Returns false on a socket-
+/// send failure (the caller should return).
+///
+/// **CALL AFTER `stream.subscribe()`** so the broadcast receiver is already
+/// queueing live bytes — that way the snapshot covers tmux up to ~now and the
+/// queued bytes drain in order BEHIND it. A byte that lands in both (captured
+/// AND broadcast) repaints harmlessly; the snapshot is a complete ANSI state
+/// and the live drain appends whole chunks, so no escape sequence is torn
+/// across the seed boundary.
+///
+/// A capture failure (rare — tmux command contention) degrades to no seed:
+/// the client still attaches and sees live output from this point. The
+/// `replay_done` boundary is ALWAYS sent so the client's "hide viewport until
+/// the snapshot lands, then jump to bottom + reveal in one paint" gate is
+/// released even when nothing seeded (an old server that omits it is covered
+/// by the client's fallback timeout).
+async fn send_seed_then_done(socket: &mut WebSocket, tmux: &Tmux<'_>) -> bool {
+    if let Ok(text) = tmux.capture_full_ansi_joined().await {
+        let trimmed = text.trim_end_matches('\n');
+        if !trimmed.is_empty() {
+            // CRLF on the wire + clear screen+scrollback+home prefix so the
+            // captured content lands at a deterministic origin in the client
+            // buffer (matches the existing pty.rs streamer-attach seed format).
+            let body = trimmed.replace('\n', "\r\n");
+            let frame = format!("\x1b[2J\x1b[3J\x1b[H{body}");
+            if socket
+                .send(Message::Binary(Bytes::from(frame)))
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+    }
+    socket
+        .send(Message::Text(Utf8Bytes::from_static(
+            r#"{"type":"replay_done"}"#,
+        )))
+        .await
+        .is_ok()
 }
 
 /// Pure coalescing planner (typing-latency win #2) — single source of the
