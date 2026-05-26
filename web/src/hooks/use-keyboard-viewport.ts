@@ -56,26 +56,42 @@ export function useKeyboardViewport(): KeyboardViewport {
     let raf = 0
     const measure = () => {
       raf = 0
-      const height = visual.height
+      const measuredHeight = visual.height
       // The keyboard overlaps the bottom of the LAYOUT viewport. innerHeight is
       // the layout-viewport height (unchanged by the keyboard on iOS); the
       // visual viewport shrinks + may offset. Clamp to ≥0 (over-scroll can make
       // the arithmetic momentarily negative).
       const layoutHeight = window.innerHeight
-      const inset = Math.max(0, layoutHeight - height - visual.offsetTop)
+      const inset = Math.max(0, layoutHeight - measuredHeight - visual.offsetTop)
+      const keyboardOpen = inset > KEYBOARD_OPEN_THRESHOLD
+      // KEY INVARIANT (PWA-black-bar fix): only publish a concrete `height` when
+      // the keyboard is actually OPEN. When the keyboard is closed, `null` lets
+      // callers fall back to the CSS `100dvh` layout — which on iOS PWA cold
+      // launch already over-paints into the home-indicator region via the
+      // `min-height: 100vh` belt-and-suspenders in globals.css. Without this
+      // gate, every consumer (MobileSheet, focus route…) would pin `style.height
+      // = visualViewport.height` immediately on mount, and on iOS PWA cold
+      // launch `visualViewport.height` evaluates to physical-screen-minus-home-
+      // indicator → a black bar appears below the app. Once the keyboard
+      // actually opens we DO want to drive layout off visualViewport (that's
+      // the whole reason the hook exists), so the gate flips off then.
+      const publishedHeight = keyboardOpen ? measuredHeight : null
       setVp((prev) => {
-        const keyboardOpen = inset > KEYBOARD_OPEN_THRESHOLD
         // Skip a state write if nothing meaningfully changed (rAF can still fire
         // on a no-op scroll) — sub-pixel churn shouldn't re-render the tree.
+        const heightChanged =
+          (prev.height === null) !== (publishedHeight === null) ||
+          (publishedHeight !== null &&
+            prev.height !== null &&
+            Math.abs(prev.height - publishedHeight) >= 1)
         if (
-          prev.height !== null &&
-          Math.abs(prev.height - height) < 1 &&
+          !heightChanged &&
           Math.abs(prev.keyboardInset - inset) < 1 &&
           prev.keyboardOpen === keyboardOpen
         ) {
           return prev
         }
-        return { height, keyboardInset: inset, keyboardOpen }
+        return { height: publishedHeight, keyboardInset: inset, keyboardOpen }
       })
     }
 

@@ -263,12 +263,16 @@ function StartTeamForm({
             : 'What should the team accomplish?'
         }
       >
+        {/* NO autoFocus — same iOS-PWA Vaul keyboard-during-open race as the
+            board-card-editor. The keyboard popping mid-slide-in makes Vaul
+            cache `initialDrawerHeight` from the still-translated drawer and
+            the sheet ends up half-cropped. The proven-working New Session
+            sheet has no autoFocus either; users tap to focus. */}
         <textarea
           id="st-task"
           value={task}
           onChange={(e) => setTask(e.target.value)}
           rows={4}
-          autoFocus
           placeholder="e.g. Migrate the billing service to the new API and add tests."
           className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />

@@ -147,8 +147,13 @@ function EditorForm({
     >
       <div className="flex flex-1 flex-col gap-4 px-5 py-4">
         <Field label="Description">
+          {/* NO autoFocus — on iOS PWA Vaul's keyboard-handler races the
+              slide-in animation when an input auto-focuses DURING the open
+              transition. Vaul captures the drawer's bounding rect mid-
+              translate, caches it as `initialDrawerHeight`, then positions
+              the drawer at half-height with cropped content. Users tap to
+              focus, matching the proven New Session sheet pattern. */}
           <textarea
-            autoFocus
             value={desc}
             placeholder="Describe a task for an agent…"
             onChange={(e) => setDesc(e.target.value)}
