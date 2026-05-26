@@ -184,37 +184,44 @@ pub async fn run(
 ///
 /// `public_key` is validated upstream — see [`crate::hosts::valid_public_key`]
 /// — so it carries no newlines, no shell meta, and starts with a known
-/// algorithm token. We still pass it as ARGV via positional `--` so the remote
-/// `sh -c` only ever sees it through `"$1"`, never word-split by the remote
-/// shell.
+/// algorithm token.
+///
+/// **Why base64.** OpenSSH's client flattens every argv element after the
+/// target with single spaces (no quoting) and hands the whole thing to the
+/// remote `$SHELL -c "<flattened>"`. The naive `ssh ... -- sh -c <script> sh
+/// <pubkey>` pattern therefore does NOT pass `pubkey` as `"$1"` to an inner
+/// `sh -c` — the remote outer shell word-splits everything. To defeat that
+/// without trusting the remote shell with raw user-controlled bytes we
+/// base64-encode the key here (charset `[A-Za-z0-9+/=]`, no shell metas) and
+/// embed the encoded literal inside a single-quoted shell context. The remote
+/// shell decodes it via `base64 -d` into a real variable that we then quote
+/// normally — so even a comment with spaces or unusual ASCII survives intact.
 async fn append_authorized_key(
     ssh_target: &str,
     ssh_key_path: Option<&str>,
     public_key: &str,
 ) -> Result<bool, String> {
-    // The remote one-liner: ensure ~/.ssh exists with the right modes, then
-    // `grep -Fq` the literal key against authorized_keys; on no-match, append
-    // it. Quoting strategy: the key arrives as `"$1"` (single positional
-    // argument), so even spaces in the key comment are preserved. The script
-    // body itself contains no shell metacharacters that could be misread.
-    let script = r#"
-set -eu
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let key_b64 = STANDARD.encode(public_key.as_bytes());
+    // Single-quoted base64 token: the only `'` in the script body bounds the
+    // literal, and base64's charset cannot contain `'`, so the literal cannot
+    // escape its quotes. Newlines and `;` between statements are preserved
+    // across OpenSSH's argv-flatten.
+    let script = format!(
+        r#"set -eu
+key=$(printf %s '{key_b64}' | base64 -d)
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 touch "$HOME/.ssh/authorized_keys"
 chmod 600 "$HOME/.ssh/authorized_keys"
-if grep -Fq -- "$1" "$HOME/.ssh/authorized_keys"; then
+if grep -Fq -- "$key" "$HOME/.ssh/authorized_keys"; then
   echo dup
 else
-  printf '%s\n' "$1" >> "$HOME/.ssh/authorized_keys"
+  printf '%s\n' "$key" >> "$HOME/.ssh/authorized_keys"
   echo added
 fi
-"#;
-    let out = run_ssh(
-        ssh_target,
-        ssh_key_path,
-        &["sh", "-c", script, "sh", public_key],
-    )
-    .await?;
+"#
+    );
+    let out = run_ssh(ssh_target, ssh_key_path, &[&script]).await?;
     Ok(out.lines().last().unwrap_or("").trim() == "added")
 }
