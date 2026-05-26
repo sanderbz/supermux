@@ -33,6 +33,29 @@ rm -rf server/static && cp -r web/dist server/static
 # it and re-reads the new static/ — the one reliable way to never ship stale UI.
 touch server/src/static_assets.rs
 
+# Small-host RAM guard: cap concurrent rustc to halve peak memory on hosts with
+# <8 GiB RAM. `cargo build --release` spawns up to $(nproc) rustc workers; each
+# peaks ~1 GB during heavy LLVM codegen. On a 4-vCPU / 7.5 GiB box that's ~4 GB
+# of rustc on top of a running supermux + agents → swap exhaustion → load >50 →
+# box unreachable (we hit this in production). Halving the job count roughly
+# halves the peak at ~25–35% wall-time cost and produces a BIT-FOR-BIT identical
+# artefact. Operator override (CARGO_BUILD_JOBS already set) is preserved.
+if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
+  ram_kib=""
+  if [ -r /proc/meminfo ]; then
+    ram_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  elif command -v sysctl >/dev/null 2>&1; then
+    # macOS: hw.memsize is in bytes → /1024 to compare in KiB.
+    ram_bytes="$(sysctl -n hw.memsize 2>/dev/null || true)"
+    [ -n "$ram_bytes" ] && ram_kib=$(( ram_bytes / 1024 ))
+  fi
+  # Threshold: 8 GiB = 8 * 1024 * 1024 KiB = 8388608 KiB.
+  if [ -n "$ram_kib" ] && [ "$ram_kib" -gt 0 ] && [ "$ram_kib" -lt 8388608 ]; then
+    export CARGO_BUILD_JOBS=2
+    echo "[build] small-host RAM guard: ${ram_kib} KiB total (<8 GiB) → CARGO_BUILD_JOBS=2 (halves peak rustc memory)"
+  fi
+fi
+
 echo "[build] backend: cargo build --release"
 # Pass the opt-in env that lets the clawd-bin cargo-guard wrapper allow this
 # `--release` invocation through (the wrapper otherwise refuses on hosts where
