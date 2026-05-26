@@ -86,6 +86,12 @@ pub fn router_for() -> Router<AppState> {
         )
         .route("/api/uploads/{filename}", get(serve_upload))
         .route("/api/autocomplete/dir", get(autocomplete_dir))
+        // FEAT-WHERE-PICKER: list the deploy-configured project dirs' immediate
+        // subdirs with git-repo metadata, so the "Where" picker can render real
+        // project rows with a tiny `git` tag (or a calm warning when a folder
+        // isn't a git repo — teammates each need their own git worktree per the
+        // official Agent Teams doc). Hidden entries are filtered.
+        .route("/api/projects/repos", get(projects_repos))
 }
 
 // ──────────────────────────── query/body shapes ────────────────────────────
@@ -129,6 +135,12 @@ struct UploadBody {
 struct AutocompleteQuery {
     #[serde(default)]
     q: String,
+    /// FEAT-WHERE-PICKER: when `hidden=0`, dotfile subdirs (`.git`, `.cache`,
+    /// `.next`, …) are filtered from the typeahead. Default is unspecified
+    /// (legacy behavior, hidden included) so any existing caller's contract is
+    /// preserved byte-for-byte; the new "Where" picker passes `hidden=0`.
+    #[serde(default)]
+    hidden: Option<String>,
 }
 
 // ──────────────────────────────── handlers ─────────────────────────────────
@@ -498,6 +510,12 @@ async fn serve_upload(
 }
 
 /// `GET /api/autocomplete/dir` — directory typeahead, capped at 10 results.
+///
+/// FEAT-WHERE-PICKER: when `hidden=0` is passed, dotfile subdirs (`.git`, `.cache`)
+/// are filtered out so the "Where" picker's free-text autocomplete never surfaces
+/// noise the user has to scroll past. The default (no query param) preserves the
+/// legacy "include everything" contract so existing consumers are byte-for-byte
+/// unaffected.
 async fn autocomplete_dir(
     State(_state): State<AppState>,
     Query(q): Query<AutocompleteQuery>,
@@ -512,12 +530,25 @@ async fn autocomplete_dir(
             p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         )
     };
+    // `hidden=0` / `false` / `no` opt-in to dotfile filtering. Anything else
+    // (including the default `None`) leaves legacy behaviour intact.
+    let filter_hidden = matches!(
+        q.hidden.as_deref(),
+        Some("0") | Some("false") | Some("no") | Some("off")
+    );
 
     let mut out = Vec::new();
     if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
         while let Ok(Some(entry)) = rd.next_entry().await {
             if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
                 let name = entry.file_name().to_string_lossy().into_owned();
+                // Skip dotfiles when filtering is on AND the user isn't already
+                // typing a leading dot (a typed `.gi` still surfaces `.gitignore`-
+                // like results — the filter is about default noise, not about
+                // hiding what the user is explicitly searching for).
+                if filter_hidden && name.starts_with('.') && !prefix.starts_with('.') {
+                    continue;
+                }
                 if name.starts_with(&prefix) {
                     out.push(entry.path().to_string_lossy().into_owned());
                 }
@@ -527,6 +558,102 @@ async fn autocomplete_dir(
     out.sort();
     out.truncate(10);
     Json(out)
+}
+
+// ── FEAT-WHERE-PICKER: project repos endpoint ─────────────────────────────────
+//
+// The "Where" picker (web/src/components/session-tile/where-picker.tsx) renders
+// the deploy-configured project subdirs as primary candidates. Each row needs:
+//   - the absolute path (what becomes `dir` on session/team create),
+//   - a short display name (the basename),
+//   - whether the folder is a git repo — Agent Teams teammates each get their
+//     own git worktree (per https://code.claude.com/docs/en/agent-teams), so
+//     a non-repo folder would FAIL on `start-a-team`. The UI surfaces this as
+//     a calm amber hint, not a blocker.
+//
+// Source: the FIRST entry in `SUPERMUX_PROJECT_DIRS` (matches the existing
+// `_SUPERMUX_PROJECT_DIR` runtime config the frontend already reads — one source
+// of truth, no schema drift). Hidden subdirs are filtered. Capped at 200 to
+// keep payloads sane on huge project roots.
+
+const PROJECTS_CAP: usize = 200;
+
+#[derive(Debug, serde::Serialize)]
+struct ProjectRepo {
+    /// Absolute path to the subdir — what the picker stores in the dir field.
+    path: String,
+    /// Last path component (the basename) — what the row shows prominently.
+    name: String,
+    /// True when `<path>/.git` exists, either as a DIRECTORY (regular repo) or
+    /// as a FILE (git worktree pointer — the `gitdir:` redirect file). Both
+    /// satisfy "this folder is inside a git work tree", which is what the
+    /// Agent Teams teammate-worktree path requires.
+    is_git_repo: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ProjectRepos {
+    /// The root scanned (the first `SUPERMUX_PROJECT_DIRS` entry). Empty when
+    /// the env var is unset — the picker then hides the Projects section and
+    /// nudges the user to "Use another folder".
+    root: String,
+    /// Truncated repo entries (alphabetical), capped at [`PROJECTS_CAP`].
+    entries: Vec<ProjectRepo>,
+}
+
+/// `GET /api/projects/repos` — list immediate subdirs of the first
+/// `SUPERMUX_PROJECT_DIRS` entry with git-repo metadata. Hidden entries
+/// filtered; alphabetical; capped at [`PROJECTS_CAP`].
+async fn projects_repos(State(_state): State<AppState>) -> Json<ProjectRepos> {
+    let root = std::env::var("SUPERMUX_PROJECT_DIRS")
+        .ok()
+        .and_then(|s| s.split(':').next().map(str::to_string))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+
+    if root.is_empty() {
+        return Json(ProjectRepos {
+            root: String::new(),
+            entries: Vec::new(),
+        });
+    }
+
+    let expanded = shellexpand::tilde(&root).into_owned();
+    let root_path = Path::new(&expanded);
+
+    let mut entries: Vec<ProjectRepo> = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(root_path).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let ft = entry.file_type().await.ok();
+            if !ft.map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let git_marker = path.join(".git");
+            // Git worktrees use a `.git` FILE (containing `gitdir: …`), not a
+            // directory. `try_exists` is true for both, which is what we want —
+            // we just need to know the folder is inside a git work tree.
+            let is_git_repo = tokio::fs::try_exists(&git_marker).await.unwrap_or(false);
+            entries.push(ProjectRepo {
+                path: path.to_string_lossy().into_owned(),
+                name,
+                is_git_repo,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.truncate(PROJECTS_CAP);
+
+    Json(ProjectRepos {
+        root: root_path.to_string_lossy().into_owned(),
+        entries,
+    })
 }
 
 // ──────────────────────────────── helpers ──────────────────────────────────
