@@ -51,6 +51,38 @@ function dueLabel(due: string): { text: string; overdue: boolean } {
   return { text, overdue: diffDays < 0 }
 }
 
+/** Parsed view of a team card's special tags (written by `board_sync.rs`): a
+ *  `team:<assignee>` tag → an assignee pill, a `color:<colour>` tag → the card
+ *  accent. Both are filtered out of `rest` so they never show as raw chips; every
+ *  other tag passes through untouched (ordinary cards stay exactly as today). */
+interface ParsedTeamTags {
+  assignee: string | null
+  color: string | null
+  rest: string[]
+}
+function parseTeamTags(tags: string[]): ParsedTeamTags {
+  let assignee: string | null = null
+  let color: string | null = null
+  const rest: string[] = []
+  for (const tag of tags) {
+    if (tag.startsWith('team:')) {
+      const v = tag.slice('team:'.length).trim()
+      if (v && !assignee) {
+        assignee = v
+        continue
+      }
+    } else if (tag.startsWith('color:')) {
+      const v = tag.slice('color:'.length).trim()
+      if (v && !color) {
+        color = v
+        continue
+      }
+    }
+    rest.push(tag)
+  }
+  return { assignee, color, rest }
+}
+
 /** The card heading: prefer the trimmed title; else the first non-empty line of
  *  the description (reads AS a title); else a muted id placeholder. */
 function displayHeading(issue: BoardIssue): { text: string; muted: boolean } {
@@ -129,6 +161,11 @@ export interface BoardCardProps {
   isSelected?: boolean
   /** Disable swipe-to-discard while a drag is armed (avoids gesture conflict). */
   draggable?: boolean
+  /** Read-through (team) board: the card mirrors the team's on-disk task list,
+   *  re-synced every ~3s, so no write affordance can persist. Suppresses Start,
+   *  the inline reply composer, Discard, and swipe-to-discard — the card stays a
+   *  calm, openable status view. Mirrors how the "All" aggregate reads. */
+  readOnly?: boolean
   dragAttributes?: DraggableAttributes
   dragListeners?: DraggableSyntheticListeners
 }
@@ -163,6 +200,7 @@ export function BoardCard({
   isDragging,
   isSelected,
   draggable = true,
+  readOnly = false,
   dragAttributes,
   dragListeners,
 }: BoardCardProps) {
@@ -171,6 +209,13 @@ export function BoardCard({
 
   const due = issue.due ? dueLabel(issue.due) : null
   const heading = displayHeading(issue)
+  // Team cards carry `team:<assignee>` / `color:<colour>` tags (board_sync.rs).
+  // Render those as an assignee pill + accent dot, NOT raw chips; every other
+  // tag falls through to the generic chip row unchanged.
+  const { assignee, color: accentColor, rest: restTags } = React.useMemo(
+    () => parseTeamTags(issue.tags),
+    [issue.tags],
+  )
 
   const isTodo = lane === 'todo'
   const isDoing = lane === 'doing'
@@ -205,7 +250,7 @@ export function BoardCard({
   // on a fine pointer (desktop uses the ⋯ menu) and while a card-drag is armed.
   const x = useMotionValue(0)
   const swipeBg = useTransform(x, [-SWIPE_THRESHOLD, 0], [1, 0])
-  const swipeEnabled = !fine && draggable
+  const swipeEnabled = !fine && draggable && !readOnly
   const [swipedOut, setSwipedOut] = React.useState(false)
 
   const cardBody = (
@@ -269,9 +314,21 @@ export function BoardCard({
         // last so it wins over the resting border; harmless on mobile (the pane
         // is hidden, so `isSelected` is never set there).
         isSelected && 'border-primary/50 ring-2 ring-primary/50',
+        // A team card with an accent colour clips its left rail to the rounded
+        // corner (the teammate-chip identity-rail pattern).
+        accentColor && 'overflow-hidden',
         isDragging && 'opacity-40',
       )}
     >
+      {/* Team-member identity accent: a 2px left colour rail = the assignee's
+          configured colour (parsed from the `color:<c>` tag). */}
+      {accentColor && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 w-[2px]"
+          style={{ backgroundColor: accentColor }}
+        />
+      )}
       <div className="flex items-start gap-2">
         <span
           className={cn(
@@ -289,8 +346,9 @@ export function BoardCard({
           // Inner controls must not start a card drag or swipe.
           onPointerDown={(e) => e.stopPropagation()}
         >
-          {/* To do → ▶ Start (always visible on coarse; hover on fine). */}
-          {isTodo && (hovered || !fine) && (
+          {/* To do → ▶ Start (always visible on coarse; hover on fine).
+              Suppressed on a read-through team board (can't write back). */}
+          {isTodo && !readOnly && (hovered || !fine) && (
             <CardIconButton
               label="Start agent"
               title="Start agent"
@@ -370,13 +428,15 @@ export function BoardCard({
                   Details
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem
-                onClick={() => onDiscard(issue)}
-                className="text-destructive focus:text-destructive"
-              >
-                <Trash2 className="size-4" />
-                Discard
-              </DropdownMenuItem>
+              {!readOnly && (
+                <DropdownMenuItem
+                  onClick={() => onDiscard(issue)}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="size-4" />
+                  Discard
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -413,9 +473,24 @@ export function BoardCard({
         </p>
       )}
 
-      {/* Meta row — session chip, tags, due. */}
-      {(issue.session || issue.tags.length > 0 || due) && (
+      {/* Meta row — session chip, assignee pill, tags, due. */}
+      {(issue.session || assignee || restTags.length > 0 || due) && (
         <div className="flex flex-wrap items-center gap-1.5">
+          {assignee && (
+            <span
+              className="inline-flex max-w-[160px] items-center gap-1 truncate rounded-full bg-secondary px-2 py-0.5 text-[11px] font-medium text-foreground/80"
+              title={`Assigned to ${assignee}`}
+            >
+              {accentColor && (
+                <span
+                  aria-hidden
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: accentColor }}
+                />
+              )}
+              <span className="truncate">{assignee}</span>
+            </span>
+          )}
           {issue.session && (
             <span
               className={cn(
@@ -438,7 +513,7 @@ export function BoardCard({
               <span className="truncate">{issue.session}</span>
             </span>
           )}
-          {issue.tags.map((tag) => (
+          {restTags.map((tag) => (
             <span
               key={tag}
               className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
@@ -491,7 +566,9 @@ export function BoardCard({
       </AnimatePresence>
 
       {/* ── Inline reply composer (Doing) — THE headline UX ─────────────────── */}
-      {isDoing && (
+      {/* Suppressed on a read-through team board: the card can't deliver into the
+          team's agent from here, so showing it would be a dead control. */}
+      {isDoing && !readOnly && (
         <ReplyComposer
           issue={issue}
           expanded={replyExpanded}
