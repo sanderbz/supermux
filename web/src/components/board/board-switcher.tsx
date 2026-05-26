@@ -19,7 +19,14 @@
 import * as React from 'react'
 import { Drawer } from 'vaul'
 import { motion } from 'framer-motion'
-import { Check, ChevronDown, LayoutGrid, Users, Layers } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  LayoutGrid,
+  Layers,
+  TerminalSquare,
+  Users,
+} from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -35,11 +42,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
-/** A switcher option: a real board, or the synthetic "All" aggregate. */
+/** A switcher option: a real board (main/team), a synthetic per-session filter
+ *  (FEAT-BOARD-SESSION), or the synthetic "All" aggregate. */
 export interface BoardOption {
   id: string
   name: string
-  kind: 'main' | 'team' | 'all'
+  kind: 'main' | 'team' | 'session' | 'all'
 }
 
 export interface BoardSwitcherProps {
@@ -52,14 +60,21 @@ export interface BoardSwitcherProps {
   className?: string
 }
 
-/** Build the ordered option list: Main first, team boards next, then "All". */
+/** Build the ordered option list: Main → team boards → per-session boards
+ *  (FEAT-BOARD-SESSION) → "All". `useBoards` already returns the synthetic
+ *  per-session entries (kind:'session') inline with the real boards in the
+ *  desired order, so a single pass over `boards` preserves that ordering.
+ *  The "All" overview is only relevant when ≥1 OTHER REAL board exists (i.e.
+ *  Main + ≥1 team board); per-session entries are filtered views of Main, so
+ *  showing "All" just for them would duplicate Main itself. */
 function buildOptions(boards: Board[], showAll: boolean): BoardOption[] {
   const opts: BoardOption[] = boards.map((b) => ({
     id: b.id,
     name: b.name,
     kind: b.kind,
   }))
-  if (showAll && boards.length > 1) {
+  const realBoardCount = boards.filter((b) => b.kind !== 'session').length
+  if (showAll && realBoardCount > 1) {
     opts.push({ id: ALL_BOARD_ID, name: 'All boards', kind: 'all' })
   }
   return opts
@@ -70,6 +85,8 @@ function buildOptions(boards: Board[], showAll: boolean): BoardOption[] {
 function boardIcon(kind: BoardOption['kind'], className?: string) {
   if (kind === 'all') return <Layers className={className} aria-hidden />
   if (kind === 'team') return <Users className={className} aria-hidden />
+  if (kind === 'session')
+    return <TerminalSquare className={className} aria-hidden />
   return <LayoutGrid className={className} aria-hidden />
 }
 
@@ -162,8 +179,14 @@ export function BoardSwitcher({
           onValueChange={onSelect}
         >
           {options.map((o, idx) => {
-            // A separator above the "All" aggregate sets it apart as an overview.
-            const sep = o.kind === 'all' && idx > 0
+            // A separator between groups: a `session` row when the previous row
+            // wasn't a session (so the per-session group sits visibly apart from
+            // Main + team boards), and above the `all` aggregate so it reads as
+            // an overview, not just another board.
+            const prev = options[idx - 1]
+            const sep =
+              (o.kind === 'all' && idx > 0) ||
+              (o.kind === 'session' && idx > 0 && prev?.kind !== 'session')
             return (
               <React.Fragment key={o.id}>
                 {sep && <DropdownMenuSeparator />}
@@ -238,6 +261,11 @@ function BoardPickerSheet({
                   {o.kind === 'team' && (
                     <span className="shrink-0 text-[12px] text-muted-foreground">
                       Team
+                    </span>
+                  )}
+                  {o.kind === 'session' && (
+                    <span className="shrink-0 text-[12px] text-muted-foreground">
+                      Session
                     </span>
                   )}
                   {isCurrent && (

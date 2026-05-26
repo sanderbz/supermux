@@ -36,6 +36,8 @@ import {
   sessionsApi,
   ALL_BOARD_ID,
   MAIN_BOARD_ID,
+  decodeBoardId,
+  isSessionBoardId,
   type ApiSession,
   type Board,
   type BoardIssue,
@@ -254,15 +256,40 @@ function useBoardSse(
           ? ((payload as { payload: BoardIssue[] }).payload)
           : null
       if (board) {
-        // Scope the all-boards push to THIS view: a specific board keeps only its
-        // own cards; the `all` aggregate keeps the whole snapshot.
+        // Scope the all-boards push to THIS view. Three shapes:
+        //   • `all`          → keep the whole snapshot.
+        //   • `session:<name>` (FEAT-BOARD-SESSION) → keep Main's cards filtered
+        //     to the named session (per-session boards are a virtual filter on
+        //     Main; team-board cards live under their team board).
+        //   • a real board id → keep only that board's cards.
+        const { fetchBoardId, sessionFilter } = decodeBoardId(boardId)
         const scoped =
           boardId === ALL_BOARD_ID
             ? board
-            : board.filter((i) => (i.board_id ?? MAIN_BOARD_ID) === boardId)
+            : sessionFilter !== null
+              ? board.filter(
+                  (i) =>
+                    (i.board_id ?? MAIN_BOARD_ID) === fetchBoardId &&
+                    i.session === sessionFilter,
+                )
+              : board.filter((i) => (i.board_id ?? MAIN_BOARD_ID) === fetchBoardId)
         qc.setQueryData<BoardIssue[]>([...issuesK], (prev) =>
           reconcileBoard(prev ?? [], scoped, pendingRef.current),
         )
+        // FEAT-BOARD-SESSION: ALSO update the Main-cards cache the switcher reads
+        // to compute per-session entries — so a new card linked to a session
+        // appears in the switcher live, even when the user is currently on a
+        // team / all / per-session view. Skip when THIS view already wrote into
+        // Main's cache (boardId === MAIN_BOARD_ID handled above).
+        if (boardId !== MAIN_BOARD_ID) {
+          const mainScoped = board.filter(
+            (i) => (i.board_id ?? MAIN_BOARD_ID) === MAIN_BOARD_ID,
+          )
+          qc.setQueryData<BoardIssue[]>(
+            [...issuesKey(MAIN_BOARD_ID)],
+            (prev) => reconcileBoard(prev ?? [], mainScoped, pendingRef.current),
+          )
+        }
         return
       }
       void qc.invalidateQueries({ queryKey: [...issuesK] })
@@ -314,8 +341,16 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
     // non-array, so the array guarantee is established here, once, for all of
     // them.
     queryFn: async () => {
-      const data = await boardsApi.cards(boardId)
-      return Array.isArray(data) ? data : []
+      // A `session:<name>` (FEAT-BOARD-SESSION) board is a virtual filter on
+      // Main's cards — fetch Main, filter client-side. Otherwise hit the real
+      // board endpoint (real id or the `all` aggregate, both handled server-side).
+      const { fetchBoardId, sessionFilter } = decodeBoardId(boardId)
+      const data = await boardsApi.cards(fetchBoardId)
+      const arr = Array.isArray(data) ? data : []
+      if (sessionFilter !== null) {
+        return arr.filter((i) => i.session === sessionFilter)
+      }
+      return arr
     },
     staleTime: 30_000,
   })
@@ -367,8 +402,13 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
         // AT-C: the card lands on the board it's created for (the input's
         // board_id when set; otherwise the board this view is scoped to —
         // `'all'` falls back to `main`, since the aggregate isn't a real board).
+        // FEAT-BOARD-SESSION: a `session:<name>` board is a virtual filter on
+        // Main, so cards created from it land on Main too (with `session` set).
         board_id:
-          input.board_id ?? (boardId === ALL_BOARD_ID ? MAIN_BOARD_ID : boardId),
+          input.board_id ??
+          (boardId === ALL_BOARD_ID || isSessionBoardId(boardId)
+            ? MAIN_BOARD_ID
+            : boardId),
       }
       patchCache(qc, issuesK, (p) => [optimistic, ...p])
       return { prev, optimisticId }
@@ -600,18 +640,70 @@ export interface UseBoardsResult {
 
 /** Fetch the boards list (the switcher options). Live-updated via the SSE
  *  `boards` event (invalidated by `useBoardSse`); cached app-wide under
- *  {@link BOARDS_KEY}. The Main board is always first (server order). */
+ *  {@link BOARDS_KEY}. The Main board is always first (server order).
+ *
+ *  FEAT-BOARD-SESSION: appends one synthetic `kind:'session'` board per session
+ *  that currently has ≥1 card on Main. These entries are CLIENT-SIDE virtual
+ *  filters — they share Main's cards (and write back to Main) via `decodeBoardId`
+ *  in `useBoard`/the SSE reconciler. Derived from a lightweight Main-cards query
+ *  (same cache key as `useBoard('main')`, so the data is shared when the user is
+ *  viewing Main and added once when they aren't). Order in the returned list:
+ *  Main → team boards (server order) → per-session boards (sorted by name). */
 export function useBoards(): UseBoardsResult {
   const query = useQuery({
     queryKey: BOARDS_KEY,
     queryFn: boardsApi.list,
     staleTime: 60_000,
   })
+  // A piggyback query keyed identically to `useBoard('main')` — TanStack dedupes
+  // on the key so this DOES NOT double-fetch when the user is on Main; when the
+  // user is on a team / session / all view, one extra fetch on mount keeps the
+  // per-session group accurate. The SSE `board` event reconciles this cache too
+  // (see `useBoardSse`), so the list stays live without polling.
+  const mainCardsQuery = useQuery({
+    queryKey: issuesKey(MAIN_BOARD_ID),
+    queryFn: async () => {
+      const data = await boardsApi.cards(MAIN_BOARD_ID)
+      return Array.isArray(data) ? data : []
+    },
+    staleTime: 30_000,
+  })
+  const boards = useMemo(() => {
+    const real = query.data ?? []
+    const mainCards = mainCardsQuery.data ?? []
+    return [...real, ...synthesizeSessionBoards(mainCards)]
+  }, [query.data, mainCardsQuery.data])
   return {
-    boards: query.data ?? [],
+    boards,
     isLoading: query.isLoading,
-    refetch: () => void query.refetch(),
+    refetch: () => {
+      void query.refetch()
+      void mainCardsQuery.refetch()
+    },
   }
+}
+
+/** Build per-session board options from Main's cards. One entry per distinct
+ *  session that owns ≥1 non-discarded card on Main; cards with no session don't
+ *  produce an entry (the "(no session)" composer option creates them; they live
+ *  under Main itself). Order: alphabetical by session name (stable, predictable).
+ *  An empty result hides the per-session group entirely. */
+function synthesizeSessionBoards(mainCards: BoardIssue[]): Board[] {
+  const names = new Set<string>()
+  for (const card of mainCards) {
+    const s = card.session
+    if (typeof s === 'string' && s.length > 0) names.add(s)
+  }
+  const sorted = Array.from(names).sort((a, b) => a.localeCompare(b))
+  return sorted.map((name, i) => ({
+    id: `session:${name}`,
+    name,
+    kind: 'session' as const,
+    team_name: null,
+    created_at: 0,
+    // After server boards (their `position` is finite); preserve order.
+    position: 1_000_000 + i,
+  }))
 }
 
 const SELECTED_BOARD_KEY = 'supermux.board.selected'
