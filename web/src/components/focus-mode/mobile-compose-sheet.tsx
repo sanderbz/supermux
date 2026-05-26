@@ -25,11 +25,22 @@
 //   • If the bridge reports `cancelled` instead, the sheet closes politely
 //     (no error toast).
 //
-// iOS-NATIVE SURFACE (refit):
+// iOS-NATIVE SURFACE (refit — user-feedback "full-page" pass):
+//   • FULL-PAGE edit surface (NOT a peek sheet). Covers `inset-x-0 top-0` down
+//     to the keyboard top via `bottom: keyboardInset`. No `max-h-[85vh]` cap —
+//     a peek that left 15% of dimmed terminal visible read as "broken/blank".
+//     iOS Notes / iA Writer / Drafts / Mail all use a full-page edit surface,
+//     not a peek; this matches that model and gives the textarea the entire
+//     remaining vertical space (the `flex-1` cap is now the viewport itself).
 //   • OPAQUE surface (no glass blur over the dark terminal — bg-card so the
 //     sheet's dark surface is iOS systemBackground.dark #1c1c1e; light is
-//     #ffffff via the theme tokens). 12px top corner radius (iOS 17+ page-sheet).
-//     The bg-black/40 backdrop dim stays.
+//     #ffffff via the theme tokens). NO top corner radius (a full page has
+//     none — matches iOS Notes' edit page), NO top border (the divider isn't
+//     visible on a full page), `pt-safe` for the top notch + `pb-safe` for the
+//     home indicator when the keyboard is closed.
+//   • NO backdrop overlay (`bg-black/40`) — the surface fully covers, so there
+//     is nothing visible behind to dim; removing it also removes an extra DOM
+//     node + paint.
 //   • System font (NOT mono) for the textarea — this is prose for an LLM, not
 //     code. font-size 16px (iOS no-zoom floor) presented visually at 17pt via
 //     leading-[1.4]. caret + ::selection in systemBlue.
@@ -37,10 +48,10 @@
 //     buttons in systemBlue; Done is semibold. ≥44pt hit boxes.
 //   • Cancel with unsaved changes → an iOS-style "Discard changes?" confirm
 //     sheet (Cancel | Discard) before closing. Unchanged → silent close.
-//   • Grabber: VISUAL only (no click-to-cancel). The grabber's job is the
-//     swipe-dismiss hint; click-as-cancel was too easy to mis-fire with unsaved
-//     edits. We also drop swipe-dismiss entirely on this sheet — the explicit
-//     Cancel + Done buttons are the safe controls (documented call).
+//   • NO grabber. A full-page edit modal isn't drag-to-dismiss — explicit
+//     Cancel is the dismissal. The grabber's swipe-dismiss hint would mislead
+//     on a full-page surface (and was already non-functional — swipe-dismiss
+//     had been disabled to protect unsaved edits).
 //   • Placeholder removed — the buffer IS the value; the nav-bar title tells
 //     the user this is an edit screen.
 //   • Accessory rail pinned ABOVE the keyboard: [📎 Attach] [🎙 Dictate] [⌘↵ Done].
@@ -148,21 +159,14 @@ export function MobileComposeSheet({
     <AnimatePresence>
       {open && (
         <>
-          {/* Backdrop — tap-away dismiss (= cancel with confirm if dirty) +
-              a calm dim over the terminal. */}
-          <motion.div
-            className="fixed inset-0 z-[64] bg-black/40"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={reduce ? { duration: 0 } : springs.smooth}
-            onClick={handleCancel}
-            data-vr="edit-sheet-backdrop"
-            aria-hidden
-          />
+          {/* NO backdrop overlay. The surface is full-coverage above the
+              keyboard (inset-x-0 top-0 bottom: keyboardInset) so there's
+              nothing visible behind to dim — a `bg-black/40` layer would be
+              redundant paint. Tap-away dismiss is gone with it; the explicit
+              [Cancel] nav-bar button is the safe dismissal path. */}
 
           {/* The morphing surface — carries COMPOSE_LAYOUT_ID so framer tweens
-              it FROM the dock Edit field's exact rect into this full-width sheet,
+              it FROM the dock Edit field's exact rect into this full-page sheet,
               and back on close. `layout` keeps it tweening as the keyboard inset
               changes its bottom. Under reduced motion the layout morph is
               dropped for a faster 180ms slide (Apple's Reduce-Motion fallback
@@ -186,13 +190,18 @@ export function MobileComposeSheet({
                 })}
             style={{ bottom: keyboardInset }}
             className={cn(
-              // OPAQUE iOS sheet surface — no glass blur over the dark terminal.
-              // bg-card resolves to #1c1c1e (dark / systemBackground.dark) and
-              // #ffffff (light) via the theme tokens. 12px top corners (iOS 17+
-              // page-sheet radius). `edit-sheet-surface` is the scoped style
-              // hook for caret/selection accent + system font (see globals.css).
-              'edit-sheet-surface fixed inset-x-0 z-[65] flex max-h-[85vh] flex-col',
-              'rounded-t-[12px] border-t border-border/60 bg-card pb-safe outline-none',
+              // OPAQUE FULL-PAGE edit surface — no glass blur over the dark
+              // terminal. bg-card resolves to #1c1c1e (dark / systemBackground.
+              // dark) and #ffffff (light) via the theme tokens. `inset-x-0
+              // top-0` + `style.bottom = keyboardInset` covers the viewport
+              // from the top safe-area down to the keyboard top — full coverage
+              // (no `max-h-[85vh]` cap, no rounded top, no top border): iOS
+              // Notes' edit page model, not a peek. `pt-safe` handles the iOS
+              // notch; `pb-safe` covers the home indicator when the keyboard
+              // is closed. `edit-sheet-surface` is the scoped style hook for
+              // caret/selection accent + system font (see globals.css).
+              'edit-sheet-surface fixed inset-x-0 top-0 z-[65] flex flex-col',
+              'bg-card pt-safe pb-safe outline-none',
             )}
             role="dialog"
             aria-modal="true"
@@ -200,6 +209,7 @@ export function MobileComposeSheet({
             data-vr="edit-sheet-surface"
             data-vr-phase={phase}
             data-vr-reduce-motion={reduce ? 'true' : 'false'}
+            data-vr-surface-mode="full-page"
           >
             {/* FOCUS OWNERSHIP (the "typing lands nowhere" fix). This sheet is
                 portaled to document.body — OUTSIDE the dock's Vaul Drawer subtree.
@@ -220,18 +230,10 @@ export function MobileComposeSheet({
                   layout={reduce ? false : 'position'}
                   className="flex min-h-0 flex-1 flex-col"
                 >
-                  {/* Grabber — VISUAL only (no click handler). On this sheet a
-                      single mis-swipe with unsaved edits would lose work, so we
-                      don't wire swipe/click-to-dismiss; the explicit Cancel +
-                      Done are the safe controls. The grabber stays for the
-                      iOS-native look. 36×5, 2.5px radius. */}
-                  <div
-                    aria-hidden
-                    className="mx-auto mt-1.5 flex h-4 w-16 shrink-0 items-center justify-center"
-                    data-vr="edit-sheet-grabber"
-                  >
-                    <span className="h-[5px] w-9 rounded-[2.5px] bg-muted-foreground/30" />
-                  </div>
+                  {/* NO grabber. A full-page edit modal isn't drag-to-dismiss —
+                      the explicit [Cancel] nav-bar button is the dismissal
+                      path. A grabber would mislead (and swipe-dismiss had
+                      already been disabled here to protect unsaved edits). */}
 
                   {/* iOS nav bar — [Cancel] · "Edit prompt" · [Done]. 44pt
                       total height (the buttons own the hit target; the visual

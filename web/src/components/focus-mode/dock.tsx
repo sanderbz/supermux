@@ -565,17 +565,35 @@ export function MobileDock({
       {/* Dock row — Edit field + accessory dock icons + Enter. The field lifts
           Claude's current `❯` input into the native editor sheet (tap → Ctrl+G;
           the sheet opens on the SSE event, pre-filled). The icon cluster is one
-          balanced group; Enter is pushed to the right edge. */}
+          balanced group; Enter is pushed to the right edge.
+
+          MOBILE KEYBOARD GATING (user-feedback refit): the ✎ Edit pill ONLY
+          appears while the soft keyboard is open — when it's down the user is
+          not in a typing context, so the affordance is just noise. Desktop has
+          no soft keyboard (its Edit IconButton lives in DesktopDock above and
+          is always visible — correct there). Gated at the include site so no
+          empty pill ever renders (no flash, no in/out animation of nothing).
+          A `data-vr-keyboard-gated` attribute on the wrapper lets the visual-
+          regression battery assert the gating: child present = keyboard up;
+          child absent = keyboard down. */}
       <div className="flex items-center gap-1">
-        <ComposeField
-          current={current}
-          prevSession={prevSession}
-          nextSession={nextSession}
-          onTap={onOpenPicker}
-          onSwitch={onSwitchSession}
-          onEdit={onEdit}
-          editOpen={editOpen}
-        />
+        <div
+          data-vr-keyboard-gated="compose-field"
+          data-vr-keyboard-open={keyboardOpen ? 'true' : 'false'}
+          className="contents"
+        >
+          {keyboardOpen && (
+            <ComposeField
+              current={current}
+              prevSession={prevSession}
+              nextSession={nextSession}
+              onTap={onOpenPicker}
+              onSwitch={onSwitchSession}
+              onEdit={onEdit}
+              editOpen={editOpen}
+            />
+          )}
+        </div>
 
         <DockIcon
           label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
