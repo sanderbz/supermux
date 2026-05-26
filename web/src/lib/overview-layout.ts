@@ -180,6 +180,84 @@ export function reconcileCustomLayout(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Layout walk kernels — the shared "LayoutItem[] → sections" primitives the
+// overview group-grid AND the focus session-strip both consume. Single source
+// of truth so the next group feature only has to be applied here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One section produced by the layout walk. The implicit Ungrouped bucket is
+ *  ALWAYS the first element of the returned array (its `sessions` may be empty
+ *  — callers decide whether to render an empty implicit bucket). Generic over
+ *  the session shape so the overview can pass `ApiSession` and the focus strip
+ *  can pass its `TileSession` superset; the walk only reads `.name`. */
+export interface SessionBucket<S extends { name: string } = ApiSession> {
+  /** Empty string for the implicit Ungrouped bucket. */
+  groupId: string
+  /** Empty string for the implicit Ungrouped bucket. */
+  groupName: string
+  /** True when this bucket is the implicit Ungrouped (no group header in the layout). */
+  isImplicit: boolean
+  /** Sessions assigned to this bucket, in layout order. */
+  sessions: S[]
+}
+
+/**
+ * Walk `layoutItems`, bucketing `sessions` into groups. The implicit Ungrouped
+ * bucket is ALWAYS returned at position 0 (its `sessions` may be empty — the
+ * caller decides whether to render an empty implicit bucket). Sessions whose
+ * names are NOT in `sessions` are silently dropped (the layout may reference
+ * archived sessions).
+ *
+ * Single-source of the "LayoutItem[] → buckets" walk used by both
+ * `buildSections` (overview group-grid) and `buildGroupedFocusStrip`
+ * (focus session-strip). The two surfaces filter/enrich the result
+ * differently (overview always renders the implicit bucket if non-empty; strip
+ * drops it when empty + adds team-strip groups on top); the WALK itself is one
+ * function so the next group feature doesn't have to be applied in two places.
+ */
+export function bucketSessionsByLayout<S extends { name: string }>(
+  layoutItems: readonly LayoutItem[],
+  sessions: readonly S[],
+): SessionBucket<S>[] {
+  const byName = new Map(sessions.map((s) => [s.name, s]))
+  const implicit: SessionBucket<S> = {
+    groupId: '',
+    groupName: '',
+    isImplicit: true,
+    sessions: [],
+  }
+  const buckets: SessionBucket<S>[] = [implicit]
+  let current = implicit
+  for (const item of layoutItems) {
+    if (item.type === 'group') {
+      current = {
+        groupId: item.id,
+        groupName: item.name,
+        isImplicit: false,
+        sessions: [],
+      }
+      buckets.push(current)
+      continue
+    }
+    const s = byName.get(item.name)
+    if (s) current.sessions.push(s)
+  }
+  return buckets
+}
+
+/**
+ * True when `layoutItems` has any leading items BEFORE the first group header —
+ * i.e. when an "implicit Ungrouped" section is needed to bucket those sessions.
+ * Single-source of the detection used by `commitNewGroup`, the `<GroupGrid>`
+ * section builder, and `buildGroupedFocusStrip`.
+ */
+export function hasImplicitUngrouped(
+  layoutItems: readonly LayoutItem[],
+): boolean {
+  return layoutItems.length > 0 && layoutItems[0].type !== 'group'
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Sort kernels — all PURE. The Overview consumes them via `sortByMode` to keep
 // the call site small and the tests focused.
 // ─────────────────────────────────────────────────────────────────────────────

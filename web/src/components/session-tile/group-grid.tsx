@@ -74,7 +74,9 @@ import { Plus, MoveRight } from 'lucide-react'
 
 import { springs, tweens } from '@/lib/springs'
 import {
+  bucketSessionsByLayout,
   defaultGroupSortMode,
+  hasImplicitUngrouped,
   readGroupSortMode,
   removeGroupSortMode,
   sortSessionsByMode,
@@ -176,45 +178,41 @@ function buildSections(
   filteredSessions: ReadonlyArray<ApiSession>,
   groupSortModes: ReadonlyMap<string, GroupSortMode>,
 ): Section[] {
-  const byName = new Map(filteredSessions.map((s) => [s.name, s]))
-
-  // Pass 1 — walk the layout, emit sections in order. The implicit Ungrouped
-  // bucket exists if any sessions appear BEFORE the first group header.
-  const sections: Section[] = []
-  let current: Section | null = null
+  // Pass 1 — walk the layout via the shared kernel. `bucketSessionsByLayout`
+  // always returns the implicit Ungrouped bucket at position 0 (we drop it
+  // when empty, matching today's behaviour where the implicit bucket only
+  // exists if a session floated above the first group header). Per-section
+  // enrichment (sortMode + layoutIndex) is overview-specific and stays here.
+  const rawBuckets = bucketSessionsByLayout(layoutItems, filteredSessions)
+  const headerIndex = new Map<string, number>()
   for (let i = 0; i < layoutItems.length; i++) {
-    const item = layoutItems[i]
-    if (item.type === 'group') {
-      current = {
-        groupId: item.id,
-        groupName: item.name,
-        isImplicit: false,
-        layoutIndex: i,
-        sortMode:
-          groupSortModes.get(item.id) ?? defaultGroupSortMode(item.id),
-        sessions: [],
-      }
-      sections.push(current)
-    } else {
-      const session = byName.get(item.name)
-      if (!session) continue
-      if (!current) {
-        // Floating session above the first group header → implicit Ungrouped.
-        current = {
-          groupId: UNGROUPED_GROUP_ID,
-          groupName: 'Ungrouped',
-          isImplicit: true,
-          layoutIndex: -1,
-          sortMode:
-            groupSortModes.get(UNGROUPED_GROUP_ID) ??
-            defaultGroupSortMode(UNGROUPED_GROUP_ID),
-          sessions: [],
-        }
-        sections.unshift(current)
-      }
-      current.sessions.push(session)
-    }
+    const it = layoutItems[i]
+    if (it.type === 'group') headerIndex.set(it.id, i)
   }
+  const sections: Section[] = rawBuckets
+    .filter((b) => !b.isImplicit || b.sessions.length > 0)
+    .map((b) =>
+      b.isImplicit
+        ? {
+            groupId: UNGROUPED_GROUP_ID,
+            groupName: 'Ungrouped',
+            isImplicit: true,
+            layoutIndex: -1,
+            sortMode:
+              groupSortModes.get(UNGROUPED_GROUP_ID) ??
+              defaultGroupSortMode(UNGROUPED_GROUP_ID),
+            sessions: b.sessions,
+          }
+        : {
+            groupId: b.groupId,
+            groupName: b.groupName,
+            isImplicit: false,
+            layoutIndex: headerIndex.get(b.groupId) ?? -1,
+            sortMode:
+              groupSortModes.get(b.groupId) ?? defaultGroupSortMode(b.groupId),
+            sessions: b.sessions,
+          },
+    )
 
   // Pass 2 — apply per-group sort to each section's session list. For Custom
   // mode the order is the pass-1 walk (the LayoutItem ordering already encodes
@@ -468,14 +466,12 @@ export function GroupGrid({
   // sessions float without a group). Stable identity for the sort-mode hook.
   const groupIds = React.useMemo(() => {
     const ids: string[] = []
-    let sawFloating = false
     for (const item of layoutItems) {
       if (item.type === 'group') ids.push(item.id)
-      else if (!sawFloating && ids.length === 0) sawFloating = true
     }
     // Probe the filtered session list — if any floating session survived the
     // filter we need the implicit bucket.
-    if (sawFloating) {
+    if (hasImplicitUngrouped(layoutItems)) {
       // Confirm at least one of the floating sessions matches the filter.
       const filteredNames = new Set(filteredSessions.map((s) => s.name))
       let hasFiltered = false

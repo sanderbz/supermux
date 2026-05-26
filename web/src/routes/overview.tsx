@@ -26,6 +26,7 @@ import { springs } from '@/lib/springs'
 import { ONBOARDING } from '@/brand/copy'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useTeams } from '@/hooks/use-teams'
+import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
 import { TeamCard } from '@/components/team'
 import { useArchivedSessions } from '@/hooks/use-archived-sessions'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
@@ -51,6 +52,7 @@ import {
 } from '@/lib/overview-size'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
+  hasImplicitUngrouped,
   newGroupId,
   reconcileCustomLayout,
   smartSort,
@@ -111,16 +113,9 @@ export function Overview() {
   // as the team card's full tile) to avoid double-rendering; teammates are NOT in
   // /api/sessions so they never appear in the grid at all.
   const { teams } = useTeams()
-  const leadSessionNames = React.useMemo(() => {
-    const s = new Set<string>()
-    for (const t of teams) {
-      if (t.lead_supermux_session) s.add(t.lead_supermux_session)
-    }
-    return s
-  }, [teams])
   const sessions = React.useMemo(
-    () => allSessions.filter((s) => !leadSessionNames.has(s.name)),
-    [allSessions, leadSessionNames],
+    () => splitTeamLeads(allSessions, teams).nonLeadSessions,
+    [allSessions, teams],
   )
   const { layout, setMode, setLayout } = useOverviewLayout()
   const viewMode = useUI((s) => s.viewMode)
@@ -269,7 +264,7 @@ export function Overview() {
       // by section so both shapes are handled correctly.
       let layoutIdx = 0
       let sectionsSkipped = 0
-      const hasImplicit = next.length > 0 && next[0].type !== 'group'
+      const hasImplicit = hasImplicitUngrouped(next)
       if (hasImplicit && atIndex >= 1) {
         // Skip the implicit Ungrouped: ALL leading non-group items.
         while (

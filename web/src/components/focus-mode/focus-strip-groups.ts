@@ -3,18 +3,18 @@
 // Makes the desktop focus session-strip TEAM-AWARE AND GROUP-AWARE, consistent
 // with the overview's TEAM CARD and the overview's USER GROUPS.
 //
-// THE LEGACY HELPER (`buildFocusStrip`) is preserved for completeness; the
-// new `buildGroupedFocusStrip` is what the desktop split actually uses.
+// THE MODEL.
 //
-// THE NEW MODEL.
-//
-//   1. Team detection runs first (same algorithm as before) — a team's lead
-//      session is "claimed" so it doesn't double-render as a normal row.
-//      Teammates are NOT sessions, so they never appear in any other bucket.
+//   1. Team detection runs first — a team's lead session is "claimed" so it
+//      doesn't double-render as a normal row. Teammates are NOT sessions, so
+//      they never appear in any other bucket. The "lead consumed by team"
+//      contract is shared with the overview via `splitTeamLeads`.
 //
 //   2. The remaining ("non-team-lead") sessions are then split into USER
 //      GROUPS using the SAME overview layout the overview reads via
-//      `useOverviewLayout`. The layout walk:
+//      `useOverviewLayout`. The layout walk is the shared
+//      `bucketSessionsByLayout` kernel; the strip's enrichment (per-group
+//      sort + implicit-bucket prune + missing-session top-up) layers on top.
 //        • Emit one section per `LayoutItem.group` (in layout order).
 //        • Sessions appearing BEFORE the first group header go in an implicit
 //          "Ungrouped" bucket at the TOP (mirrors the overview).
@@ -47,16 +47,13 @@
 import type { Team, TeamMember } from '@/lib/api/teams'
 import type { TileSession } from '@/components/session-tile/types'
 import {
+  bucketSessionsByLayout,
   defaultGroupSortMode,
   sortSessionsByMode,
   UNGROUPED_GROUP_ID,
   type GroupSortMode,
   type LayoutItem,
 } from '@/lib/overview-layout'
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Legacy model (kept for back-compat / tests / DEV harness).
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** One row in a team group: the lead (a real session tile) or a teammate. */
 export type TeamGroup = {
@@ -68,56 +65,32 @@ export type TeamGroup = {
   members: TeamMember[]
 }
 
-export interface FocusStripModel {
-  /** Detected team groups (in `teams` order). */
-  groups: TeamGroup[]
-  /** Sessions NOT claimed by a team's lead — the ungrouped tail, as today. */
-  loose: TileSession[]
-  /** Flattened, ⌘1..9-routable SESSION rows in strip order: each group's lead
-   *  (when mapped) followed by the loose sessions. Teammates are excluded (they
-   *  are read-only, not routable sessions). */
-  jumpSessions: TileSession[]
-}
-
-/** Build the FLAT team-aware strip model. This is the original (pre-group)
- *  helper, kept because the legacy `<DesktopSplit>` rendering path still uses
- *  it via the new grouped path's TEAM section (one shared algorithm).
- *
- *  A team only forms a group when its `lead_supermux_session` is present in
- *  the live session list (so we never invent a lead row that the user can't
- *  open); an unmapped-lead team still renders a header + its teammates via
- *  `lead: null`, but contributes no jump target. Sessions consumed as leads
- *  are removed from `loose`. */
-export function buildFocusStrip(
-  sessions: readonly TileSession[],
-  teams: readonly Team[],
-): FocusStripModel {
-  const byName = new Map(sessions.map((s) => [s.name, s]))
-  const claimed = new Set<string>()
-  const groups: TeamGroup[] = []
-
-  for (const team of teams) {
-    const leadName = team.lead_supermux_session
-    const lead = leadName ? byName.get(leadName) ?? null : null
-    if (lead) claimed.add(lead.name)
-    // Skip an utterly empty team (no mapped lead AND no teammates) — there is
-    // nothing to render, and showing a bare header would be noise.
-    if (!lead && team.members.length === 0) continue
-    groups.push({ team, lead, members: team.members })
-  }
-
-  const loose = sessions.filter((s) => !claimed.has(s.name))
-
-  const jumpSessions: TileSession[] = []
-  for (const g of groups) if (g.lead) jumpSessions.push(g.lead)
-  for (const s of loose) jumpSessions.push(s)
-
-  return { groups, loose, jumpSessions }
-}
-
 /** A teammate's stable strip key (survives an SSE snapshot replace). */
 export function teammateKey(team: Team, member: TeamMember): string {
   return `tm:${team.team_name}/${member.agent_id}`
+}
+
+/**
+ * Split sessions into "session is a team lead → consumed by its team group"
+ * vs "session belongs to the regular pool". Single source of the team-pinning
+ * contract used by every surface that renders sessions next to teams (overview
+ * grid, focus strip, and any future surface).
+ *
+ * Generic over the session shape so the overview can pass `ApiSession` and the
+ * focus strip can pass its `TileSession` superset; only `.name` is read.
+ */
+export function splitTeamLeads<S extends { name: string }>(
+  sessions: readonly S[],
+  teams: readonly Team[],
+): { teamLeadNames: Set<string>; nonLeadSessions: S[] } {
+  const teamLeadNames = new Set<string>()
+  for (const t of teams) {
+    if (t.lead_supermux_session) teamLeadNames.add(t.lead_supermux_session)
+  }
+  return {
+    teamLeadNames,
+    nonLeadSessions: sessions.filter((s) => !teamLeadNames.has(s.name)),
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,91 +157,69 @@ export function buildGroupedFocusStrip({
   layoutItems,
   resolveSortMode,
 }: BuildGroupedFocusStripInput): GroupedFocusStripModel {
+  // 1) Detect team groups + split the session pool. The `splitTeamLeads`
+  //    helper is the shared "team lead consumed by team group" contract used
+  //    by the overview too. We separately build the `teamGroups` array (with
+  //    lead row + members + empty-team prune) — that shape is strip-specific.
   const byName = new Map(sessions.map((s) => [s.name, s]))
-
-  // 1) Team groups + claimed-lead set (so leads don't double-render below).
   const teamGroups: TeamGroup[] = []
-  const claimed = new Set<string>()
   for (const team of teams) {
     const leadName = team.lead_supermux_session
     const lead = leadName ? byName.get(leadName) ?? null : null
-    if (lead) claimed.add(lead.name)
     if (!lead && team.members.length === 0) continue
     teamGroups.push({ team, lead, members: team.members })
   }
+  const { nonLeadSessions } = splitTeamLeads(sessions, teams)
 
-  // 2) Remove team-lead sessions from the pool we feed into user groups; they
-  //    already appear inside their team group above.
-  const nonLeadSessions = sessions.filter((s) => !claimed.has(s.name))
-  const liveNames = new Set(nonLeadSessions.map((s) => s.name))
-
-  // 3) Walk the layout, bucket sessions into user groups in layout order.
-  //    Sessions before the first group header land in the implicit Ungrouped
-  //    bucket at the TOP (mirrors overview).
-  const sectionsInOrder: StripUserGroup[] = []
-  let currentBucket: StripUserGroup | null = null
-  const placed = new Set<string>()
-
-  for (const item of layoutItems) {
-    if (item.type === 'group') {
-      currentBucket = {
-        groupId: item.id,
-        groupName: item.name,
-        isImplicit: false,
-        sortMode: resolveSortMode(item.id),
-        sessions: [],
-      }
-      sectionsInOrder.push(currentBucket)
-    } else {
-      if (!liveNames.has(item.name) || placed.has(item.name)) continue
-      const session = byName.get(item.name)
-      if (!session) continue
-      if (!currentBucket) {
-        // Floating session above the first group header → implicit Ungrouped
-        // bucket. Pinned at the TOP of sectionsInOrder (after we finish the
-        // walk, via an unshift below).
-        currentBucket = {
+  // 2) Walk the layout via the shared `bucketSessionsByLayout` kernel — same
+  //    walk the overview's `buildSections` uses. The kernel always returns
+  //    the implicit Ungrouped bucket at position 0 (we filter it later when
+  //    empty); per-group sort + the implicit bucket's strip-specific
+  //    metadata (UNGROUPED_GROUP_ID / "Ungrouped" / sortMode) is enriched
+  //    here so the kernel stays surface-agnostic.
+  const rawBuckets = bucketSessionsByLayout(layoutItems, nonLeadSessions)
+  const sectionsInOrder: StripUserGroup[] = rawBuckets.map((b) =>
+    b.isImplicit
+      ? {
           groupId: UNGROUPED_GROUP_ID,
           groupName: 'Ungrouped',
           isImplicit: true,
           sortMode: resolveSortMode(UNGROUPED_GROUP_ID),
-          sessions: [],
+          sessions: b.sessions,
         }
-        sectionsInOrder.unshift(currentBucket)
-      }
-      currentBucket.sessions.push(session)
-      placed.add(session.name)
-    }
-  }
+      : {
+          groupId: b.groupId,
+          groupName: b.groupName,
+          isImplicit: false,
+          sortMode: resolveSortMode(b.groupId),
+          sessions: b.sessions,
+        },
+  )
 
-  // 4) Any LIVE non-lead session that didn't match a layout entry surfaces in
+  // 3) Any LIVE non-lead session that didn't match a layout entry surfaces in
   //    the implicit Ungrouped bucket — newly-created agents should be findable
   //    even before they've been moved into a group on the overview. Match the
   //    overview's behaviour (`reconcileCustomLayout` prepends missing names).
+  //    In practice reconcile already covers this; the defensive top-up is kept
+  //    so this kernel is correct even if a caller skips reconcile.
+  const placed = new Set<string>()
+  for (const sec of sectionsInOrder) {
+    for (const s of sec.sessions) placed.add(s.name)
+  }
   const missing: TileSession[] = []
   for (const s of nonLeadSessions) {
     if (!placed.has(s.name)) missing.push(s)
   }
   if (missing.length > 0) {
-    let ungrouped = sectionsInOrder.find(
-      (sec) => sec.groupId === UNGROUPED_GROUP_ID,
-    )
-    if (!ungrouped) {
-      ungrouped = {
-        groupId: UNGROUPED_GROUP_ID,
-        groupName: 'Ungrouped',
-        isImplicit: true,
-        sortMode: resolveSortMode(UNGROUPED_GROUP_ID),
-        sessions: [],
-      }
-      sectionsInOrder.unshift(ungrouped)
-    }
-    // Prepend (not append) so freshly-created agents are at the top of the
-    // bucket — same anti-burial rationale the overview applies.
-    ungrouped.sessions = [...missing, ...ungrouped.sessions]
+    // sectionsInOrder[0] is the implicit bucket by construction (the kernel
+    // always returns it at position 0). Prepend the missing sessions so
+    // freshly-created agents are at the TOP of the bucket — same
+    // anti-burial rationale the overview applies.
+    const implicit = sectionsInOrder[0]
+    implicit.sessions = [...missing, ...implicit.sessions]
   }
 
-  // 5) Apply the per-group sort. The session lists were collected in layout
+  // 4) Apply the per-group sort. The session lists were collected in layout
   //    order — that IS the 'custom' sort for that group; every other mode is
   //    a pure function of the sessions' fields. The `TileSession` shape is a
   //    superset of `ApiSession` for sort purposes (sortSessionsByMode reads
@@ -283,18 +234,15 @@ export function buildGroupedFocusStrip({
     return { ...sec, sessions: sorted }
   })
 
-  // 6) Drop empty user groups EXCEPT keep them when the user explicitly
-  //    defined them on the overview (non-implicit). An empty user-defined
-  //    group still appears in the strip so the user can SEE that the group
-  //    exists (and the count chip reads 0) — mirrors the overview, which
-  //    also shows zero-count groups. Implicit Ungrouped IS dropped when
-  //    empty because it's a system bucket and showing a "0" placeholder
-  //    above a non-empty list would be noise.
+  // 5) Drop the implicit Ungrouped bucket when empty (the kernel always
+  //    returns it; the strip is the surface that prunes it). Non-implicit
+  //    (user-defined) groups stay even when empty so the user can SEE the
+  //    group exists with a count chip of 0 — mirrors the overview.
   const finalUserGroups = userGroups.filter(
     (sec) => !sec.isImplicit || sec.sessions.length > 0,
   )
 
-  // 7) Build the jump list (⌘1..9). Teams first (their leads), then each user
+  // 6) Build the jump list (⌘1..9). Teams first (their leads), then each user
   //    group's sessions in render order. Teammates excluded (read-only).
   const jumpSessions: TileSession[] = []
   for (const g of teamGroups) if (g.lead) jumpSessions.push(g.lead)
