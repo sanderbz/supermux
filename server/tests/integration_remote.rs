@@ -66,6 +66,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt; // for `oneshot`
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
+use supermux_server::sessions::lifecycle::effective_remote_callback_url;
 use supermux_server::state::AppState;
 use supermux_server::{db, http};
 
@@ -125,26 +126,51 @@ fn config_round_trips_remote_callback_url() {
 /// `cargo test` and gates the milestone's "no 127.0.0.1 for remote sessions"
 /// invariant even when the e2e is skipped.
 #[test]
-fn remote_callback_url_is_not_loopback_when_configured() {
-    let configured = "https://supermux.tailnet.ts.net:8823";
-    let cfg = Config {
+fn effective_remote_callback_url_resolution_order() {
+    // Drive the actual resolver — NOT a tautological assertion on the field.
+    // The contract has three real branches we want to gate:
+    //   (a) remote_callback_url=Some(x) wins → returns x verbatim
+    //   (b) None + extra_binds containing a non-loopback → returns that bind
+    //   (c) None + only loopback binds → falls back to config.bind (last resort,
+    //       only viable behind an SSH reverse tunnel)
+    // The headline regression — "no 127.0.0.1 sneaks into the remote hook URL
+    // when a real address is available" — falls out of (a) and (b).
+    let base_cfg = |remote: Option<&str>, extra: Vec<&str>| Config {
         data_dir: PathBuf::from("/tmp/rt10-resolver"),
         bind: "127.0.0.1:8823".parse().unwrap(),
-        extra_binds: vec![],
+        extra_binds: extra
+            .into_iter()
+            .map(|s| s.parse().expect("extra_binds parse"))
+            .collect(),
         tls: TlsConfig::default(),
         auth_token: "tok".to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: WsConfig::default(),
-        remote_callback_url: Some(configured.to_string()),
+        remote_callback_url: remote.map(|s| s.to_string()),
     };
-    // Pin the basic invariant: when `remote_callback_url` is set, the field
-    // value is NOT the loopback. (The resolver in
-    // `sessions::lifecycle::effective_remote_callback_url` consumes this
-    // field; the resolver itself is private but its consumption is pinned by
-    // the gated e2e below.)
-    let url = cfg.remote_callback_url.as_deref().unwrap();
-    assert!(!url.contains("127.0.0.1"), "configured URL must not be loopback: {url}");
-    assert!(!url.starts_with("http://localhost"), "configured URL must not be localhost: {url}");
+
+    // (a) explicit remote_callback_url wins
+    let cfg = base_cfg(Some("https://supermux.tailnet.ts.net:8823"), vec![]);
+    let resolved = effective_remote_callback_url(&cfg, "https");
+    assert_eq!(resolved, "https://supermux.tailnet.ts.net:8823");
+    assert!(!resolved.contains("127.0.0.1"));
+
+    // (b) no remote_callback_url but a non-loopback bind exists → uses it
+    let cfg = base_cfg(None, vec!["10.0.0.42:8823", "127.0.0.1:8823"]);
+    let resolved = effective_remote_callback_url(&cfg, "https");
+    assert!(
+        resolved.contains("10.0.0.42"),
+        "resolver should pick the non-loopback extra_bind; got {resolved}"
+    );
+    assert!(!resolved.contains("127.0.0.1"));
+
+    // (c) only loopback → falls back to bind (reverse-tunnel scenario only)
+    let cfg = base_cfg(None, vec![]);
+    let resolved = effective_remote_callback_url(&cfg, "https");
+    assert!(
+        resolved.contains("127.0.0.1"),
+        "fallback should be config.bind when nothing else is configured; got {resolved}"
+    );
 }
 
 // ── Gated e2e fixture ────────────────────────────────────────────────────────
@@ -306,13 +332,20 @@ async fn end_to_end_remote_session() {
 
     let user = local_user();
     let ssh_target = format!("{user}@localhost");
+    // Uuid-suffix host + session names so the test never collides with itself on
+    // re-runs (the tmux session namespace on the remote is global; a leak from
+    // an earlier failed run otherwise poisons subsequent attempts). Matches the
+    // sibling pattern in tests/lifecycle.rs.
+    let run_id = uuid::Uuid::new_v4().simple().to_string();
+    let host_name = format!("rt10-host-{}", &run_id[..8]);
+    let session = format!("rt10-{}", &run_id[..8]);
 
     // ── 1. Register the host. POST /api/hosts → 201, auto-check fires.
     let (status, body) = send(
         &f.app,
         Method::POST,
         "/api/hosts",
-        Some(json!({ "name": "localhost-test", "ssh_target": ssh_target })),
+        Some(json!({ "name": host_name, "ssh_target": ssh_target })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "create host body: {body}");
@@ -334,7 +367,6 @@ async fn end_to_end_remote_session() {
     );
 
     // ── 3. Create a remote shell session.
-    let session = "rt10-test";
     let (status, body) = send(
         &f.app,
         Method::POST,

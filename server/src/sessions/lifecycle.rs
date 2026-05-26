@@ -87,7 +87,7 @@ fn user_shell() -> String {
 ///    can reach the orchestrator's loopback (typical for an SSH
 ///    reverse-tunnel: `ssh -R 8823:127.0.0.1:8823 host`). The remote will
 ///    dial its OWN loopback, which the reverse tunnel forwards back.
-fn effective_remote_callback_url(config: &crate::config::Config, scheme: &str) -> String {
+pub fn effective_remote_callback_url(config: &crate::config::Config, scheme: &str) -> String {
     if let Ok(env) = std::env::var("SUPERMUX_REMOTE_URL") {
         let env = env.trim();
         if !env.is_empty() {
