@@ -16,6 +16,15 @@
 //! a tokio worker on a slow stat (Codex T0 fix). For a brand-new file the
 //! parent — not the path — is canonicalized, so `PUT /api/file` to a path that
 //! does not exist yet no longer 500s (Codex #3).
+//!
+//! ## Transport-aware variant (REMOTE_PLAN §RT6)
+//!
+//! [`resolve_safe_remote`] is the remote-transport companion to
+//! [`resolve_safe`]: it does NOT canonicalize against the local filesystem
+//! (the path lives on a different host), but the blocklist still applies via
+//! a case-insensitive text compare on the EXPANDED path. The blocklist is
+//! the same set of rules that [`resolve_safe`] enforces, so a remote
+//! `/ETC/SHADOW` is refused the same way a local one is.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -164,6 +173,68 @@ async fn canonicalize_allowing_missing(candidate: &Path) -> Result<PathBuf, Path
         }
         cursor = parent;
     }
+}
+
+/// Transport-aware blocklist check for a path that lives on a REMOTE host
+/// (RT6). We cannot canonicalize the path against our local FS — the file
+/// is on a different machine — so this enforces the blocklist via a
+/// case-insensitive prefix/exact compare on the expanded input. The exact
+/// list mirrors what [`resolve_safe`] enforces locally, so a remote
+/// `/ETC/SHADOW` request is refused the same way a local one is.
+///
+/// NOTE: this does NOT resolve symlinks on the remote host. The remote shell
+/// (e.g. `cat <path>`) WILL follow them, so an attacker who can place a
+/// symlink at `/tmp/innocent -> /etc/shadow` on the remote host could bypass
+/// this check. That's a known trade-off of the shell-based transport and is
+/// documented in the RT6 done.json. A protocol-level SFTP rewrite (future
+/// work) would let us LSTAT + REALPATH over SFTP and reject the symlink.
+pub fn resolve_safe_remote(input: &str) -> Result<PathBuf, PathError> {
+    let expanded = shellexpand::tilde(input).into_owned();
+    if expanded.is_empty() || expanded.as_bytes().contains(&0) {
+        return Err(PathError::Invalid);
+    }
+    let candidate = PathBuf::from(&expanded);
+    if !candidate.is_absolute() {
+        return Err(PathError::Invalid);
+    }
+
+    // Refuse any `.`/`..` component so a relative-ish bit can't squeeze in.
+    for comp in candidate.components() {
+        match comp {
+            std::path::Component::CurDir | std::path::Component::ParentDir => {
+                return Err(PathError::Invalid);
+            }
+            _ => {}
+        }
+    }
+
+    let lower = expanded.to_lowercase();
+    if BLOCKED.iter().any(|b| lower == b.to_lowercase()) {
+        return Err(PathError::Blocked);
+    }
+    if BLOCKED_PREFIXES
+        .iter()
+        .any(|b| lower.starts_with(&b.to_lowercase()))
+    {
+        return Err(PathError::Blocked);
+    }
+    // For HOME_BLOCKED we use a heuristic: the remote home is most often
+    // `/root` or `/home/<user>`. If the path matches `<anything>/<home-blocked>`
+    // we treat it as blocked. This over-blocks slightly (any directory named
+    // `.ssh` anywhere) but errs on the side of safety.
+    let lower_path = std::path::Path::new(&lower);
+    for rel in HOME_BLOCKED {
+        let needle = format!("/{}", rel.to_lowercase());
+        // Match `<...>/.ssh` exactly OR `<...>/.ssh/<anything>`.
+        if lower.ends_with(&needle)
+            || lower_path
+                .components()
+                .any(|c| c.as_os_str().to_string_lossy() == *rel)
+        {
+            return Err(PathError::Blocked);
+        }
+    }
+    Ok(candidate)
 }
 
 /// Open `path` read-only with `O_NOFOLLOW` (refuse a final-component symlink).
