@@ -234,6 +234,11 @@ pub struct AppState {
     pub cadence_recency: Arc<std::sync::Mutex<HashMap<String, SessionRecency>>>,
     /// Wakes background consumers when session status may have changed.
     pub status_notify: Arc<Notify>,
+    /// Wakes the teams watcher when something happens that should re-publish
+    /// the team list without waiting for the 30s safety poll — e.g. a lead
+    /// session was archived (`teams_watcher` filters teams whose lead is
+    /// archived, but it only re-runs on this notify or its own tick).
+    pub teams_wake: Arc<Notify>,
     /// Broadcast channel feeding the SSE endpoint.
     pub sse_tx: broadcast::Sender<SseEvent>,
     /// Per-session live pty streams (M4). One FIFO reader + broadcast fan-out per
@@ -311,6 +316,7 @@ impl AppState {
             pty_heartbeat: Arc::new(DashMap::new()),
             cadence_recency: Arc::new(std::sync::Mutex::new(HashMap::new())),
             status_notify: Arc::new(Notify::new()),
+            teams_wake: Arc::new(Notify::new()),
             sse_tx,
             pty,
             session_tasks: Arc::new(DashMap::new()),

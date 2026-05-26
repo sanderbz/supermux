@@ -701,6 +701,13 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     // reflects the change as promptly as the overview tile does.
     emit_board_if_linked(state, name).await;
 
+    // Cascade to the teams watcher so an archived team-lead's TEAM CARD
+    // disappears from the overview RIGHT NOW (without waiting up to 30s for
+    // the next teams poll). The watcher filters teams whose lead is archived
+    // (see scan_and_enrich in teams/watcher.rs). Cheap: the wake is a single
+    // Notify ping; the next tick re-reads the archived list.
+    state.teams_wake.notify_one();
+
     let state = state.clone();
     let name = name.to_string();
     let job = job_id.clone();
@@ -806,6 +813,11 @@ pub async fn unarchive(state: &AppState, name: &str) -> Result<(), AppError> {
     // R2: un-archiving makes a linked card's session live again (`session_live`
     // → true). Re-publish the board so the card recovers its live dot.
     emit_board_if_linked(state, name).await;
+
+    // Mirror the archive cascade: wake the teams watcher so an un-archived
+    // team-lead's TEAM CARD reappears in the overview immediately. The watcher
+    // re-reads the archived list each tick; this wake fires the tick now.
+    state.teams_wake.notify_one();
 
     Ok(())
 }
