@@ -45,8 +45,9 @@ export interface ModeMenuProps {
   name: string
   /** The live mode (from `session.mode`); defaults to `normal` when unknown. */
   mode?: SessionMode
-  /** Trigger size — desktop uses the 44pt header button; mobile matches its
-   *  44pt cluster. Both meet the ≥44pt hit-target floor. */
+  /** Trigger size — desktop leaves the default h-8 inside its 44px bar; mobile
+   *  passes h-9 so the pill drops neatly into the min-h-11 title row (a full
+   *  h-11 read as cramped) while staying comfortably tappable. */
   className?: string
 }
 
@@ -98,8 +99,8 @@ export function ModeMenu({ name, mode, className }: ModeMenuProps) {
           button. The caret signals it's actionable; Bypass carries the calm
           amber + shield so the consequential mode reads at a glance. Always
           shown (it's the control), but Normal stays a quiet secondary pill so
-          the default doesn't shout. ≥44pt hit target via the `className` the
-          mobile header passes (h-11); desktop sits at h-8 inside the 44px bar. */}
+          the default doesn't shout. Mobile passes h-9 via `className` so the pill
+          sits neatly in the title row; desktop sits at h-8 inside the 44px bar. */}
       <DropdownMenuTrigger asChild>
         <motion.button
           type="button"
