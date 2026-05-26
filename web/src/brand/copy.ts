@@ -144,6 +144,27 @@ export const CONFIRM = {
   },
 } satisfies Record<string, ConfirmCopy>
 
+/** Team-lead-aware variant of `killSession`. A team's teammates are tmux
+ *  split-panes INSIDE the lead's `supermux-<lead>` session, so stopping the lead
+ *  already ends the whole team (window + every teammate pane) — there is no
+ *  separate kill. The user just isn't told that, so when the session being
+ *  stopped IS a team lead we extend the confirm copy to say it plainly. Calm,
+ *  factual, never alarmist — same voice as `killSession`, just team-aware.
+ *  `teammateCount` is the number of teammates that go down with the lead. */
+export function killTeamLeadConfirm(teammateCount: number): ConfirmCopy {
+  const crew =
+    teammateCount === 1 ? '1 teammate' : `${teammateCount} teammates`
+  return {
+    title: 'Stop this team’s lead?',
+    body:
+      teammateCount > 0
+        ? `This is a team lead. Stopping it ends the whole team — the agent stops, the tmux session ends, and its ${crew} (split panes in the same window) stop with it. Unsaved work in those panes is lost.`
+        : 'This is a team lead. The agent stops and the tmux session ends, which closes the team. Unsaved work in the pane is lost.',
+    confirm: 'Stop team',
+    cancel: 'Keep running',
+  }
+}
+
 // ── Connection / status banner ────────────────────────────────────────────────
 
 export const CONNECTION = {

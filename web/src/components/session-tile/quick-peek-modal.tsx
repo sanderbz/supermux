@@ -4,11 +4,12 @@ import { X, Square, RotateCcw, Archive } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { cn } from '@/lib/utils'
-import { CONFIRM } from '@/brand/copy'
+import { CONFIRM, killTeamLeadConfirm } from '@/brand/copy'
 import { focusApi } from '@/lib/api/focus'
 import { sessionsApi, type ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
+import { useTeams } from '@/hooks/use-teams'
 import { useToast } from '@/components/ui/use-toast'
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StatusDot } from './status-dot'
@@ -45,6 +46,7 @@ export function QuickPeekModal({
 }: QuickPeekModalProps) {
   const qc = useQueryClient()
   const { toast } = useToast()
+  const { teams } = useTeams()
   const [busy, setBusy] = React.useState(false)
   // Bumped after a Restart completes to force the live pane to REMOUNT. A stop
   // closes the terminal WS with a terminal (no-retry) code, and nothing else
@@ -61,7 +63,12 @@ export function QuickPeekModal({
 
   const doStop = React.useCallback(async () => {
     if (busy) return
-    const c = CONFIRM.killSession
+    // Team-lead awareness: teammates are split-panes INSIDE the lead's session,
+    // so stopping a lead ends the whole team. When this session IS a team lead we
+    // swap in the team-aware confirm copy (spelling out the N teammates that go
+    // down with it); a normal session reads EXACTLY as before.
+    const team = teams.find((t) => t.lead_supermux_session === session.name)
+    const c = team ? killTeamLeadConfirm(team.members.length) : CONFIRM.killSession
     if (!window.confirm(`${c.title}\n\n${c.body}`)) return
     setBusy(true)
     try {
@@ -73,7 +80,7 @@ export function QuickPeekModal({
     } finally {
       setBusy(false)
     }
-  }, [busy, session.name, refresh, toast])
+  }, [busy, session.name, refresh, toast, teams])
 
   // Archive replaces the (dead) Stop button once a session is already stopped —
   // the one archive affordance with no other mobile home (the desktop reaches it

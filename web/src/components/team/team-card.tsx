@@ -79,19 +79,14 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
 
       {/* Lead — a FULL session tile (reused). When the lead session isn't in the
           cache (unmapped this tick) we show a calm placeholder so the card never
-          looks broken. */}
+          looks broken. The "Lead" label lives in the header row (next to the team
+          name) — NOT overlaid on the tile — so it can never collide with the
+          tile's own title / status dot / hover controls at any density tier. */}
       {leadSession ? (
-        <div className="relative">
-          <SessionTile
-            session={leadSession as TileSession}
-            sizeTier={sizeTier}
-          />
-          {/* A tiny "Lead" tag overlaid top-left so the hierarchy reads instantly:
-              this full tile is the lead; the rows below are its crew. */}
-          <span className="pointer-events-none absolute left-2 top-2 z-20 rounded-full bg-card/85 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground shadow-sm backdrop-blur-sm">
-            Lead
-          </span>
-        </div>
+        <SessionTile
+          session={leadSession as TileSession}
+          sizeTier={sizeTier}
+        />
       ) : (
         <div className="flex h-16 items-center justify-center rounded-xl border border-dashed border-border/60 px-3 text-center text-xs text-muted-foreground">
           {team.lead_supermux_session
@@ -129,6 +124,17 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
             />
           ))}
         </div>
+      )}
+
+      {/* Calm note: teammates are split-panes inside the lead's session, so
+          stopping the lead ends the whole team. Surfaced quietly (muted, no
+          colour, no icon) only when there's both a lead and teammates — it sets
+          expectation before the user ever reaches the lead's Stop confirm. */}
+      {leadSession && members.length > 0 && (
+        <p className="px-1 text-[11px] leading-snug text-muted-foreground/60">
+          Stopping the lead ends the whole team — its teammates are panes in the
+          lead’s session.
+        </p>
       )}
 
       {/* Teammate peek (half-sheet). */}
@@ -185,6 +191,13 @@ function TeamRollup({
       <h2 className="min-w-0 shrink truncate text-sm font-semibold tracking-tight">
         {team.team_name}
       </h2>
+
+      {/* "Lead" tag — inline here (not overlaid on the tile) so it labels the
+          hierarchy ("the full tile below is the lead, the rows under it are its
+          crew") without ever covering the tile's own title / status dot. */}
+      <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+        Lead
+      </span>
 
       {/* PRIMARY attention token. */}
       {needs > 0 ? (
