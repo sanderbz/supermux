@@ -29,7 +29,7 @@ import { useParams } from 'react-router-dom'
 
 import { focusApi } from '@/lib/api'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
-import { CONFIRM } from '@/brand/copy'
+import { CONFIRM, killTeamLeadConfirm } from '@/brand/copy'
 import { DesktopSplit } from '@/components/focus-mode/desktop-split'
 import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
 import { useTeams } from '@/hooks/use-teams'
@@ -69,18 +69,24 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   // Stop (⌘W): confirm + POST /stop + leave (§4.4.3). The stop fetch is
   // best-effort before M12 wires the full sessions client — failures are
   // surfaced via the browser, never crash the route.
+  //
+  // Team-lead awareness: teammates are split-panes INSIDE the lead's session, so
+  // stopping a lead ends the whole team. When `name` IS a team lead we swap in
+  // the team-aware confirm copy (which spells out the N teammates that go down
+  // with it) so the user isn't surprised. A normal session reads EXACTLY as
+  // before — only leads get the extended copy.
   const onStop = React.useCallback(() => {
     if (!name) return
-    if (
-      !window.confirm(`${CONFIRM.killSession.title}\n\n${CONFIRM.killSession.body}`)
-    ) {
+    const team = teams.find((t) => t.lead_supermux_session === name)
+    const c = team ? killTeamLeadConfirm(team.members.length) : CONFIRM.killSession
+    if (!window.confirm(`${c.title}\n\n${c.body}`)) {
       return
     }
     void focusApi
       .stopSession(name)
       .catch((e) => console.warn('stopSession failed', e))
       .finally(() => navigate('/'))
-  }, [name, navigate])
+  }, [name, navigate, teams])
 
   return (
     <DesktopSplit

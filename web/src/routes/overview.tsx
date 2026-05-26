@@ -574,8 +574,8 @@ export function Overview() {
             type="search"
             value={rawQuery}
             onChange={(e) => setRawQuery(e.target.value)}
-            placeholder="Search sessions"
-            aria-label="Search sessions"
+            placeholder="Search sessions and teams"
+            aria-label="Search sessions and teams"
             className="h-9 w-full rounded-md border border-input bg-transparent pl-9 pr-9 text-base md:text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           {rawQuery && (
