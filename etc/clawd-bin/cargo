@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# /home/<service-user>/.local/bin/cargo — release-build refuse-wrapper.
+#
+# WHY THIS EXISTS
+#   clawd-02 is a 4 vCPU / 7.5 GiB-RAM / 2 GiB-swap aarch64 box that hosts
+#   the live supermux UI. That's plenty for normal operation (idle ≈1.6 GB
+#   used) but a release build of supermux-server peaks at ~2 GB per rustc;
+#   with cargo's default `-j 2` for a 4-core host that's another ~4 GB on
+#   top of the running supermux + claude agents + tmux + dev tooling, so a
+#   single concurrent `cargo build --release` is enough to push the box
+#   into 2 GiB of swap and from there into OOM-thrash. Once thrashing
+#   starts the load crosses ~50 and EVERY service becomes unreachable
+#   (ping, ssh, https all time out for several minutes). This has wedged
+#   the box twice in one day, both times traced to a Claude agent inside
+#   the on-server supermux-dev session running ad-hoc `cargo build/test
+#   --release` compile-checks during a feature branch merge or test pass.
+#
+# WHAT THIS DOES
+#   Sits AHEAD of the real cargo (~/.cargo/bin/cargo) in PATH. Refuses
+#   any invocation that includes `--release` UNLESS the caller has
+#   explicitly opted in by exporting `SUPERMUX_RELEASE_OK=1`. The legit
+#   release-build paths (scripts/build.sh → scripts/deploy-self.sh) set
+#   that env var; agent ad-hoc calls do not, so they fail loudly with a
+#   clear message pointing at the correct path.
+#
+# WHAT THIS DOES NOT DO
+#   Affects ONLY `--release`. Debug builds (`cargo build`), compile-checks
+#   (`cargo check`), tests (`cargo test`, default debug profile), clippy,
+#   fmt, doc, run, anything else — passes through unchanged. The intent is
+#   to keep the box usable for normal Rust work, only block the one mode
+#   that consistently OOM-thrashes it.
+#
+# INSTALLATION (provisioned by scripts/deploy.sh under
+# SUPERMUX_INSTALL_CARGO_GUARD=1, default 1):
+#   - copy this file to /home/<user>/.local/bin/cargo (mode 0755).
+#   - ensure /home/<user>/.local/bin is in PATH BEFORE ~/.cargo/bin in
+#     the user's .bashrc / .profile so it shadows rustup's cargo for any
+#     shell + every Claude agent spawned by supermux.
+#
+# BYPASS — known and accepted
+#   An absolute call to `~/.cargo/bin/cargo --release` bypasses this
+#   wrapper. That's a deliberate trade-off: the wrapper catches every
+#   realistic threat (every script + every agent uses bare `cargo`),
+#   while leaving the operator a documented escape hatch (a debug-build
+#   layered defense — service cgroup weight + CLAUDE.md hard rule + skill
+#   discipline — covers the rest).
+set -euo pipefail
+
+REAL_CARGO="${HOME}/.cargo/bin/cargo"
+
+if [ ! -x "$REAL_CARGO" ]; then
+  # The real cargo is missing — pass through to whatever PATH-resolved
+  # `cargo` exists after ours (so a CI / fresh-clone environment without
+  # rustup still gets a clear "cargo not found" rather than our wrapper
+  # silently swallowing the command). Skip our own entry in PATH so we
+  # don't recurse.
+  PATH="$(printf '%s\n' "$PATH" | awk -v RS=: -v ORS=: -v me="$(dirname "$0")" '$0 != me' | sed 's/:$//')" \
+    exec cargo "$@"
+fi
+
+# Allow-list pass-through: the opt-in env var (set by scripts/build.sh
+# and scripts/deploy-self.sh) lets the legitimate deploy path through.
+if [ "${SUPERMUX_RELEASE_OK:-0}" = "1" ]; then
+  exec "$REAL_CARGO" "$@"
+fi
+
+# Scan args for `--release` AND a known cargo sub-command that respects it
+# (build/test/run/bench/install). Just grepping for `--release` is fine
+# in practice — every cargo verb that accepts it is one we want to gate.
+for arg in "$@"; do
+  case "$arg" in
+    --release)
+      cat >&2 <<EOF
+[cargo-guard] REFUSED on $(hostname): \`cargo $* \`
+
+Release builds on this box (4 vCPU / 8 GB RAM / 2 GB swap, aarch64)
+push into swap once supermux + agents are live and have wedged this
+server twice. Use one of:
+
+  cargo check            # compile-check only (~10× less memory)
+  cargo build            # debug build (still fast, fits in RAM)
+  cargo test             # debug-mode tests (default profile)
+
+If you actually need to run a release build here (deploy time only), use
+the legitimate path:
+
+  scripts/deploy-self.sh            # full self-deploy from this clone
+  bash scripts/build.sh             # build-only (sets SUPERMUX_RELEASE_OK=1)
+
+Both export SUPERMUX_RELEASE_OK=1 before invoking cargo, which lets this
+wrapper through. Real release builds belong on the user's Mac via
+\`scripts/deploy.sh\` from the local clone — that ships a pre-built
+binary to clawd-02 over SSH.
+EOF
+      exit 99
+      ;;
+  esac
+done
+
+exec "$REAL_CARGO" "$@"

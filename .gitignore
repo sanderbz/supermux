@@ -16,3 +16,5 @@ playwright-report/
 .env
 # Deploy artifact written by deploy.sh / deploy-self.sh (records the live SHA)
 DEPLOYED_SHA
+# Per-session Claude Code state (worktrees, etc.)
+.claude/

@@ -34,7 +34,11 @@ rm -rf server/static && cp -r web/dist server/static
 touch server/src/static_assets.rs
 
 echo "[build] backend: cargo build --release"
-( cd server && cargo build --release )
+# Pass the opt-in env that lets the clawd-bin cargo-guard wrapper allow this
+# `--release` invocation through (the wrapper otherwise refuses on hosts where
+# it's installed — to stop agents from running ad-hoc compile-checks that
+# OOM-thrash the live server). See etc/clawd-bin/cargo for the rationale.
+( cd server && SUPERMUX_RELEASE_OK=1 cargo build --release )
 
 BIN="server/target/release/supermux-server"
 echo "binary: $BIN ($(du -h "$BIN" | cut -f1))"

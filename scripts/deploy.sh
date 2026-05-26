@@ -740,6 +740,45 @@ check_or_install_toolchain() {
 check_or_install_toolchain bun
 check_or_install_toolchain cargo
 
+# ── 1a. install the cargo-guard wrapper for the service user ────────────────
+# Why: the supermux box has been wedged twice by an agent running an ad-hoc
+# `cargo build --release` inside the on-server dev session. Release builds peak
+# ~2 GB / rustc and cargo defaults to `-j 2` on a 4-vCPU host, so a single
+# concurrent `cargo --release` is enough — on top of running supermux + tmux +
+# claude agents — to push the box into 2 GiB of swap and from there into OOM-
+# thrash. The wrapper at etc/clawd-bin/cargo sits AHEAD of rustup's cargo in
+# the service user's PATH and refuses any --release invocation unless the
+# caller explicitly opts in by exporting SUPERMUX_RELEASE_OK=1 (the legit
+# scripts/build.sh + scripts/deploy-self.sh both do; ad-hoc agent calls do
+# not). The supermux systemd unit's PATH is rendered with __USER_HOME__/.local/
+# bin FIRST so every agent inherits the wrapper, login shell or not.
+#
+# Bypass: the wrapper does not block `~/.cargo/bin/cargo` called by absolute
+# path — that's a documented escape hatch for the operator. The systemd unit's
+# OOMScoreAdjust=200 + the CLAUDE.md hard rule + this skill discipline cover
+# the rest.
+echo "[deploy] installing cargo-guard wrapper for service user '$SERVICE_USER'"
+scp "$ROOT/etc/clawd-bin/cargo" "$HOST:/tmp/supermux-cargo-guard"
+ssh "$HOST" "sudo -u '$SERVICE_USER' -H bash -lc '
+  mkdir -p \"\$HOME/.local/bin\" &&
+  install -m 0755 /tmp/supermux-cargo-guard \"\$HOME/.local/bin/cargo\"
+'"
+ssh "$HOST" "rm -f /tmp/supermux-cargo-guard"
+# Make sure interactive shells (the agent's tmux panes) see the wrapper FIRST
+# in PATH even after sourcing ~/.cargo/env (which prepends ~/.cargo/bin).
+# Idempotent — guarded by a stable comment marker so re-running deploy is safe.
+ssh "$HOST" "sudo -u '$SERVICE_USER' -H bash -lc '
+  RC=\"\$HOME/.bashrc\"
+  touch \"\$RC\"
+  if ! grep -q \"# supermux-cargo-guard PATH\" \"\$RC\"; then
+    {
+      echo \"\"
+      echo \"# supermux-cargo-guard PATH (keep ~/.local/bin AHEAD of ~/.cargo/bin)\"
+      echo \"export PATH=\\\"\\\$HOME/.local/bin:\\\$PATH\\\"\"
+    } >> \"\$RC\"
+  fi
+'"
+
 # ── 1. ship a pinned source snapshot to the host ────────────────────────────
 # `git archive` emits exactly the tracked content at $GIT_SHA — no .git, no
 # build artifacts, no uncommitted edits. The host build is thus reproducible

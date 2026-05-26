@@ -76,7 +76,16 @@ Environment=TMUX_TMPDIR=__DATA_DIR__/tmux
 # pre-fill its directory field with the projects root — the autocomplete then
 # immediately surfaces the project repos for a one-click pick.
 Environment=SUPERMUX_PROJECT_DIRS=__PROJECT_DIRS__
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# PATH for every child the service spawns (tmux panes, claude/codex agents,
+# git/cargo/bun helpers). The FIRST entry — __USER_HOME__/.local/bin — is
+# deliberately ahead of any default toolchain dir: deploy.sh installs the
+# `cargo-guard` wrapper there (see etc/clawd-bin/cargo). The wrapper refuses
+# `cargo --release` from agent-spawned shells (the historical wedge cause —
+# release builds peak ~2 GB/rustc × `-j 2` → swap-thrash) while letting the
+# legit deploy path through via SUPERMUX_RELEASE_OK=1. ~/.local/bin first
+# means EVERY child inherits the wrapper regardless of whether it sources a
+# login shell, not just interactive bash that reads .bashrc.
+Environment=PATH=__USER_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/supermux-server
 Restart=always
 RestartSec=2
@@ -93,6 +102,26 @@ RestartSec=2
 # a separate restore-on-boot feature.
 KillMode=process
 LimitNOFILE=65536
+# OOM target preference — make supermux's tree (the service AND every agent it
+# spawns) a PREFERRED OOM-kill target relative to system services like sshd /
+# systemd-journald. The kernel adds OOMScoreAdjust to /proc/self/oom_score
+# when picking a victim. Default is 0; we set +200 (range −1000..+1000) so:
+#   - under genuine memory pressure (e.g. a runaway cargo --release build that
+#     somehow slipped past the cargo-guard wrapper at etc/clawd-bin/cargo, or
+#     a real legitimate-load spike), the kernel reaches into THIS tree first
+#     and kills rustc / claude / a single tmux pane instead of taking down
+#     sshd or journald — so the box stays reachable + recoverable WITHOUT a
+#     reboot. supermux-server itself is restart=always, so even if it's the
+#     victim, systemd brings it back; tmux survives via KillMode=process.
+#   - +200 is moderate (sshd/journald default ≈0, supermux's tree at +200 is
+#     visibly higher-cost without being a guaranteed first-pick); avoids the
+#     +1000 "always-kill-me-first" extreme that would make even normal load
+#     spikes evict supermux pre-emptively.
+# Children inherit this score by default. Combined with the cargo-guard
+# wrapper (PATH=__USER_HOME__/.local/bin first), this gives us belt-and-
+# suspenders: the wrapper PREVENTS the wedge cause; OOMScoreAdjust LIMITS
+# the blast radius if it ever happens anyway (e.g. legit-load corner case).
+OOMScoreAdjust=200
 StandardOutput=journal
 StandardError=journal
 
