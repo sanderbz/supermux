@@ -29,7 +29,7 @@
 // never referenced here; it lives in `window._SUPERMUX_AUTH_TOKEN` (env.ts).
 
 import * as React from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { useNavigateMorph } from '@/components/view-transitions/morph'
@@ -251,6 +251,23 @@ export function MobileFocus() {
   const openTeammate = React.useCallback((team: Team, member: TeamMember) => {
     setTeammateFocus({ teamName: team.team_name, agentId: member.agent_id })
   }, [])
+  // Seed teammateFocus from `/focus/<lead>?teammate=<agent_id>` — the overview
+  // TEAM CARD navigates here for a teammate tap (single teammate-view surface,
+  // no in-overview overlay). Strip the param after consuming so a later
+  // manual dismiss isn't silently undone by a re-mount re-reading it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const teammateParam = searchParams.get('teammate')
+  React.useEffect(() => {
+    if (!teammateParam) return
+    const t = teams.find((x) => x.lead_supermux_session === name)
+    const m = t?.members.find((x) => x.agent_id === teammateParam)
+    if (!t || !m) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTeammateFocus({ teamName: t.team_name, agentId: m.agent_id })
+    const next = new URLSearchParams(searchParams)
+    next.delete('teammate')
+    setSearchParams(next, { replace: true })
+  }, [teammateParam, teams, name, searchParams, setSearchParams])
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
   // The on-demand native EDITOR sheet (feat-edit-in-native-editor). The dock's

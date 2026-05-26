@@ -14,11 +14,16 @@
 //   • Teammates: below the lead — CHIPS (default, mobile) or CARDS (desktop /
 //     toggled) per the density preference.
 //
-// Peek + focus state is owned here: a chip/card opens a teammate peek (half-sheet)
-// or full-screen focus, both read-only (AT-E teammate WS).
+// Tap on a teammate chip/card navigates to the FOCUS page targeted at that
+// teammate (`/focus/<lead>?teammate=<agent_id>`). The focus view (desktop split
+// + mobile route) reads the search param and auto-selects the teammate so its
+// read-only terminal fills the pane. The in-overview peek half-sheet + the
+// in-overview full-screen <TeammateFocus> overlay were both removed — focus is
+// now the single teammate-view surface app-wide, so there is no second copy of
+// terminal state to drift.
 
 import * as React from 'react'
-import { AnimatePresence } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
 
 import { cn } from '@/lib/utils'
 import { useSession } from '@/hooks/use-sessions'
@@ -35,8 +40,6 @@ import { type Team, type TeamMember } from '@/lib/api/teams'
 import { TeamRollupBadges } from './team-rollup-badges'
 import { TeammateChip } from './teammate-chip'
 import { TeammateCard } from './teammate-card'
-import { TeammatePeekSheet } from './teammate-peek-sheet'
-import { TeammateFocus } from './teammate-focus'
 import { TeamWidthToggle } from './team-width-toggle'
 
 export interface TeamCardProps {
@@ -44,13 +47,14 @@ export interface TeamCardProps {
   /** Density tier passed through to the lead's <SessionTile> so the lead matches
    *  the overview's current size. */
   sizeTier?: OverviewSize
-  /** True while the overview is in custom (drag) mode — disables the chip's own
-   *  long-press (the @dnd-kit TouchSensor owns that gesture). The TEAM CARD
-   *  itself is never draggable regardless. */
+  /** Accepted (and ignored) for API compatibility with the overview's render
+   *  pass, which threads custom (drag-reorder) mode through every card. The
+   *  TEAM CARD itself is never draggable, and the chip no longer owns a
+   *  long-press gesture, so there is nothing to gate. */
   customMode?: boolean
 }
 
-export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
+export function TeamCard({ team, sizeTier }: TeamCardProps) {
   const [density, setDensity] = useTeamDensity(team.team_name)
   // Per-team desktop width tier (FEAT-RESIZE). The store defaults to `'full'`
   // so the overview reads identically to today until the user opts in. The
@@ -59,10 +63,7 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
   // accordingly. Mobile (< sm) ignores the value entirely (the wrapper drops
   // the max-width below `sm` so every card is full-width there — see below).
   const [width, setWidth] = useTeamWidth(team.team_name)
-  // Peek (half-sheet) + focus (full-screen) state — by member NAME so it survives
-  // an SSE snapshot replace (the member object identity changes each tick).
-  const [peekName, setPeekName] = React.useState<string | null>(null)
-  const [focusName, setFocusName] = React.useState<string | null>(null)
+  const navigate = useNavigate()
 
   // The lead IS a normal supermux session — read it from the shared sessions
   // cache by `lead_supermux_session`. Null when unmapped this tick or not yet in
@@ -70,14 +71,20 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
   const leadSession = useSession(team.lead_supermux_session ?? '').session
 
   const members = team.members
-  const peekMember = members.find((m) => m.name === peekName) ?? null
-  const focusMember = members.find((m) => m.name === focusName) ?? null
 
-  const openPeek = React.useCallback((name: string) => setPeekName(name), [])
-  const openFocus = React.useCallback((name: string) => {
-    setPeekName(null)
-    setFocusName(name)
-  }, [])
+  // Navigate to the lead's focus route with `?teammate=<agent_id>` so the focus
+  // view auto-selects this teammate. When the lead isn't mapped to a session
+  // this tick we silently no-op (the chip can't reach a non-existent route).
+  const openFocus = React.useCallback(
+    (member: TeamMember) => {
+      const lead = team.lead_supermux_session
+      if (!lead) return
+      navigate(
+        `/focus/${encodeURIComponent(lead)}?teammate=${encodeURIComponent(member.agent_id)}`,
+      )
+    },
+    [navigate, team.lead_supermux_session],
+  )
 
   // Width tier → desktop sizing tokens (FEAT-RESIZE). Applied as inline style
   // so the four tiers are JIT-safe without flooding the Tailwind class list.
@@ -136,7 +143,7 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
               key={m.agent_id}
               team={team}
               member={m}
-              onFocus={() => openFocus(m.name)}
+              onFocus={() => openFocus(m)}
             />
           ))}
         </div>
@@ -147,9 +154,7 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
               key={m.agent_id}
               team={team}
               member={m}
-              customMode={customMode}
-              onFocus={() => openFocus(m.name)}
-              onPeek={() => openPeek(m.name)}
+              onFocus={() => openFocus(m)}
             />
           ))}
         </div>
@@ -166,30 +171,6 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
         </p>
       )}
 
-      {/* Teammate peek (half-sheet). */}
-      {peekMember && (
-        <TeammatePeekSheet
-          team={team}
-          member={peekMember}
-          open={!!peekName}
-          onOpenChange={(o) => {
-            if (!o) setPeekName(null)
-          }}
-          onFocus={() => openFocus(peekMember.name)}
-        />
-      )}
-
-      {/* Teammate full-screen focus (read-only). */}
-      <AnimatePresence>
-        {focusMember && (
-          <TeammateFocus
-            team={team}
-            member={focusMember}
-            onSelectMember={(name) => setFocusName(name)}
-            onClose={() => setFocusName(null)}
-          />
-        )}
-      </AnimatePresence>
     </section>
   )
 }
