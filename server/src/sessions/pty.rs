@@ -780,21 +780,49 @@ impl SshPtyReader {
         Ok(())
     }
 
+    /// Build the un-spawned `cat <fifo>` Command. Split out from
+    /// [`spawn_cat_child`] so the argv test can inspect the configured
+    /// `Command` (program + args) without actually executing ssh.
+    pub fn build_cat_command(transport: &Transport, fifo: &Path) -> tokio::process::Command {
+        let fifo_str = fifo.to_string_lossy().to_string();
+        let mut cmd = transport.spawn_command("cat", &[&fifo_str]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
     /// Spawn the `ssh ... cat <fifo>` reader child over the current Transport's
     /// ControlMaster. `Stdin` is set to null so the remote `cat` doesn't try
     /// to forward our local terminal; `stderr` is piped so a meaningful error
     /// is captured if the child dies; `stdout` is piped — that's the byte
     /// stream we drain into the sink.
     fn spawn_cat_child(transport: &Transport, fifo: &Path) -> Result<Child> {
-        let fifo_str = fifo.to_string_lossy().to_string();
-        let child = transport
-            .spawn_command("cat", &[&fifo_str])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let child = Self::build_cat_command(transport, fifo)
             .spawn()
             .with_context(|| format!("spawning ssh cat {fifo:?}"))?;
         Ok(child)
+    }
+
+    /// The remote keep-alive shell snippet. Exposed so the argv test can
+    /// assert the exact body without copy-pasting.
+    pub const KEEPALIVE_SCRIPT: &'static str =
+        r#"exec 9>"$0"; while sleep 60; do :; done"#;
+
+    /// Build the un-spawned `sh -c '…' <fifo>` keep-alive Command. See
+    /// [`build_cat_command`] for the split rationale.
+    pub fn build_keepalive_command(
+        transport: &Transport,
+        fifo: &Path,
+    ) -> tokio::process::Command {
+        let fifo_str = fifo.to_string_lossy().to_string();
+        // Use $0 trick so the FIFO path is one positional arg — no shell
+        // metacharacter concerns.
+        let mut cmd = transport.spawn_command("sh", &["-c", Self::KEEPALIVE_SCRIPT, &fifo_str]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd
     }
 
     /// Spawn the keep-alive writer child. The remote `sh -c 'exec 9> "$0";
@@ -804,18 +832,17 @@ impl SshPtyReader {
     /// don't read this child's stdout; just hold its `Child` so it stays
     /// alive as long as we do, and `start_kill` it on drop.
     fn spawn_keepalive_child(transport: &Transport, fifo: &Path) -> Result<Child> {
-        let fifo_str = fifo.to_string_lossy().to_string();
-        // Use $0 trick so the FIFO path is one positional arg — no shell
-        // metacharacter concerns.
-        let script = r#"exec 9>"$0"; while sleep 60; do :; done"#;
-        let child = transport
-            .spawn_command("sh", &["-c", script, &fifo_str])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+        let child = Self::build_keepalive_command(transport, fifo)
             .spawn()
             .with_context(|| format!("spawning ssh keepalive writer for {fifo:?}"))?;
         Ok(child)
+    }
+
+    /// Test accessor: the remote FIFO + log path convention. Exposed so the
+    /// argv tests in `tests/pty_ssh.rs` can compare against the exact paths
+    /// the reader would use.
+    pub fn test_remote_paths(name: &str) -> (PathBuf, PathBuf) {
+        Self::remote_paths(name)
     }
 
 }
