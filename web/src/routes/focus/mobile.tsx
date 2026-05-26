@@ -253,12 +253,14 @@ export function MobileFocus() {
   // the edited text back to Claude's buffer (no auto-submit). Live-type + the
   // accessory strip remain the default for interactive TUIs — this is additive.
   const edit = useExternalEdit(name)
-  // Tap the Edit field → Ctrl+G (the EDIT trigger). We do NOT open the sheet here;
-  // it opens when Claude's bridge fires the SSE event with the real buffer.
-  const onEdit = React.useCallback(
-    () => termRef.current?.sendKey('Ctrl-G'),
-    [],
-  )
+  // Stage 1 OPTIMISTIC OPEN — tap the Edit field opens the sheet IMMEDIATELY
+  // (skeleton renders this frame) AND fires Ctrl+G to Claude in parallel. The
+  // sheet flips from skeleton → real textarea when the bridge SSE arrives with
+  // Claude's buffer. This collapses the perceived ~5s wait to ~250ms.
+  const onEdit = React.useCallback(() => {
+    edit.requestOpen()
+    termRef.current?.sendKey('Ctrl-G')
+  }, [edit])
   // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
   const [infoOpen, setInfoOpen] = React.useState(false)
   // DOCK — the slash panel was removed: slash commands now run from the Claude
@@ -459,6 +461,7 @@ export function MobileFocus() {
       <MobileComposeSheet
         open={edit.open}
         onOpenChange={edit.setOpen}
+        phase={edit.phase === 'closed' ? 'pending' : edit.phase}
         buffer={edit.buffer}
         onSave={edit.save}
       />

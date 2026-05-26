@@ -168,7 +168,13 @@ export function DesktopSplit({
   // endpoint; a dismiss cancels (buffer left unchanged). After Save we re-focus
   // xterm so the user can press Enter to submit.
   const edit = useExternalEdit(name)
-  const onEdit = React.useCallback(() => termRef.current?.sendKey('Ctrl-G'), [])
+  // Stage 1 OPTIMISTIC OPEN — opens the sheet immediately (skeleton) while
+  // Ctrl+G goes to the pty; the bridge SSE replaces the skeleton with the real
+  // textarea once Claude delivers the buffer.
+  const onEdit = React.useCallback(() => {
+    edit.requestOpen()
+    termRef.current?.sendKey('Ctrl-G')
+  }, [edit])
   const onEditSave = React.useCallback(
     (text: string) => {
       edit.save(text)
@@ -480,6 +486,7 @@ export function DesktopSplit({
       <MobileComposeSheet
         open={edit.open}
         onOpenChange={edit.setOpen}
+        phase={edit.phase === 'closed' ? 'pending' : edit.phase}
         buffer={edit.buffer}
         onSave={onEditSave}
       />
