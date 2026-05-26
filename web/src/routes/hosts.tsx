@@ -764,8 +764,9 @@ export function SshHint({ className }: { className?: string }) {
         className,
       )}
     >
-      Remote hosts require Tailscale or a reachable hostname. Generate an SSH
-      key on the supermux server and copy the public key into the host&rsquo;s{' '}
+      Remote hosts need a reachable address — Tailscale, a VPN, public DNS,
+      or an SSH reverse tunnel all work. Generate an SSH key on the supermux
+      server and copy the public key into the host&rsquo;s{' '}
       <code className="font-mono">~/.ssh/authorized_keys</code> via the{' '}
       <span className="font-medium">Bootstrap</span> button.
     </div>
