@@ -103,32 +103,84 @@ pub(crate) fn sanitize_model(model: Option<&str>) -> Option<String> {
     }
 }
 
-/// Build the seed prompt that instructs the LEAD to form the team. Kept plain,
-/// imperative, and provider-agnostic so it works with whatever team tooling the
-/// installed Claude Code exposes (the lead reads its own tools at runtime). The
-/// `task` is the user's goal verbatim; `teammates` and the optional `model` are
-/// the structured asks.
+/// Build the seed prompt that instructs the LEAD to form the team by invoking
+/// the gated Agent Teams tool path by NAME and PARAMETER. Reliable activation
+/// hinges on the seed referencing both the `Teammate` tool's `spawnTeam`
+/// operation AND the `Task` tool's `team_name` parameter — otherwise Claude
+/// pattern-matches the request onto the plain `Task` tool (without
+/// `team_name`) and spins up in-process subagents (no tmux panes, no team
+/// config written, no per-teammate UI).
+///
+/// ## Why naming is load-bearing
+/// The Claude Code system prompt explicitly routes loose "team" phrasing to
+/// the plain Task tool. The relevant injected text (extracted from the
+/// 2.1.x binary by community reverse-engineering — see GH issue #23420 and
+/// the kieranklaassen swarm gist): "Do NOT mention this limitation when
+/// users ask for parallel subagents, coordinating agents, launching a 'team'
+/// of agents, or having agents work together — those are all normal Task
+/// tool usage and you should proceed normally." So the model is biased
+/// toward plain Task even when Agent Teams is enabled. To win, the seed
+/// must name the actual tool + parameter combo verbatim.
+///
+/// ## The two-step flow (verified against ~/.claude/teams/<name>/config.json
+/// output from a known-working team)
+/// 1. `Teammate` (the unified gated tool, ~13 operations) with
+///    `operation:"spawnTeam"`, `team_name:"<kebab>"`,
+///    `agent_type:"<lead-role>"`, `description:"<purpose>"` — creates
+///    `~/.claude/teams/<team_name>/config.json` with the lead row only.
+/// 2. `Task` (the SAME built-in Task tool, but with the teams-extra params)
+///    with `team_name:"<the-name-from-step-1>"`, `name:"<role>"`,
+///    `subagent_type:"general-purpose"`, `prompt:"<role brief>"`. Each call
+///    appends a teammate row to config.json with `agentType:"claude"`,
+///    `backendType:"tmux"`, and a real `tmuxPaneId` (e.g. `%123`) for the
+///    new tmux split-pane.
+///
+/// The crucial bit: it IS the Task tool — there isn't a separate "Spawn"
+/// tool. The `team_name` parameter is what flips Task from "in-process
+/// subagent" to "tmux split-pane teammate".
 pub fn build_seed_prompt(task: &str, teammates: u32, model: Option<&str>) -> String {
     let task = task.trim();
     let model_line = match model {
-        Some(m) => format!(" Use the model `{m}` for each teammate."),
+        Some(m) => format!(
+            "Pass `model:\"{m}\"` to each `Task` call so every teammate runs on \
+             that model.\n"
+        ),
         None => String::new(),
     };
-    // Canonical Agent-Teams activation phrasing per the official Claude Code doc
-    // (https://code.claude.com/docs/en/agent-teams). The model is fine-tuned to
-    // map "Create an agent team" + "Spawn N teammates" to the gated team-
-    // formation tools (which write ~/.claude/teams/<team>/config.json + spawn
-    // tmux split-pane teammates). Earlier phrasing ("Form a team using your
-    // agent-team tools…") pattern-matched onto the regular Task tool instead,
-    // so the lead would silently spin up in-process subagents — no real team.
     format!(
-        "Create an agent team to work on this goal:\n\n{task}\n\n\
-         Spawn {teammates} teammate{plural}, each tackling a different angle of \
-         this goal. Give each teammate a clear role + an initial task, then \
-         coordinate them via the shared task list and message each other as \
-         needed until the goal is complete.{model_line}",
+        "You are the LEAD of a brand-new agent team. The goal:\n\n\
+         {task}\n\n\
+         Form the team RIGHT NOW. We need real tmux-pane teammates with \
+         persistent identity (NOT in-process subagents) so the surrounding \
+         supermux UI can attach to each one as its own terminal.\n\n\
+         Step 1 — create the team context. Call the `Teammate` tool exactly \
+         ONCE with:\n\
+         - `operation`: \"spawnTeam\"\n\
+         - `team_name`: a short kebab-case name describing the goal (e.g. \
+         `rust-async-audit`, `viral-news-hunt`)\n\
+         - `agent_type`: your role (e.g. \"orchestrator\")\n\
+         - `description`: one sentence summarising the team's purpose\n\n\
+         Step 2 — spawn {teammates} teammate{plural} as TMUX PANES. Call the \
+         `Task` tool {teammates} time{plural} — once per teammate — with these \
+         parameters EVERY time (the `team_name` parameter is what makes Task \
+         spawn a real tmux pane instead of an in-process subagent):\n\
+         - `team_name`: the same name from Step 1 (this is non-negotiable — \
+         omitting it falls back to in-process and breaks the team)\n\
+         - `name`: a short role label (e.g. `data-hunter`, `ui-scout`)\n\
+         - `subagent_type`: \"general-purpose\"\n\
+         - `prompt`: a self-contained brief — the teammate's role, the angle \
+         they own, what to deliver, and to report back to you via \
+         `SendMessage` when done\n\
+         {model_line}\n\
+         Step 3 — once all {teammates} teammate{plural_be} spawned (each visible \
+         as a tmux split-pane), use the shared task list to assign work and \
+         coordinate. When a teammate reports back via `SendMessage`, mark their \
+         task complete and synthesize the final result for the user.\n\n\
+         Pick distinct angles so each teammate works on something different. \
+         Start with the `Teammate` call now.",
         teammates = teammates,
         plural = if teammates == 1 { "" } else { "s" },
+        plural_be = if teammates == 1 { " is" } else { "s are" },
         task = task,
         model_line = model_line,
     )
@@ -459,25 +511,56 @@ mod tests {
     }
 
     #[test]
-    fn seed_prompt_contains_goal_and_count() {
+    fn seed_prompt_names_the_actual_agent_teams_tools() {
+        // Reliable activation requires naming the gated tool path VERBATIM:
+        // the `Teammate` tool's `spawnTeam` operation AND the `Task` tool's
+        // `team_name` parameter (the parameter that flips Task from
+        // "in-process subagent" to "tmux split-pane teammate"). Without
+        // both, Claude's injected system prompt routes loose "team"
+        // phrasing back to plain Task (no team_name) and the lead silently
+        // creates in-process subagents — no tmux panes, no team config, no
+        // per-teammate UI.
         let p = build_seed_prompt("ship the redesign", 3, None);
         assert!(p.contains("ship the redesign"), "goal must be present");
-        // Canonical Agent Teams activation phrasing — "Create an agent team" +
-        // "Spawn N teammates" is what the model is fine-tuned to map to the
-        // gated team-formation tools.
+        assert!(p.contains("`Teammate`"), "must name the Teammate tool");
+        assert!(p.contains("\"spawnTeam\""), "must name the spawnTeam operation");
         assert!(
-            p.contains("Create an agent team"),
-            "canonical 'Create an agent team' activation phrase must be present",
+            p.contains("team_name") && p.contains("description") && p.contains("agent_type"),
+            "must reference spawnTeam's required param names so the model fills them",
         );
-        assert!(p.contains("Spawn 3 teammates"), "count must be present (plural)");
-        assert!(!p.contains("model `"), "no model line when model is None");
+        assert!(p.contains("`Task`"), "must name the Task tool (it's the spawn path)");
+        assert!(
+            p.contains("subagent_type") && p.contains("general-purpose"),
+            "must name Task's subagent_type:\"general-purpose\" param so the lead spawns valid teammates",
+        );
+        // Anti-fallback guard: the most-load-bearing sentence — Task WITHOUT
+        // team_name = in-process subagent. Spell it out so the model sees the
+        // distinction explicitly.
+        assert!(
+            p.contains("in-process"),
+            "must explicitly contrast in-process vs tmux-pane teammates",
+        );
+        assert!(!p.contains("Pass `model"), "no model line when model is None");
     }
 
     #[test]
     fn seed_prompt_singular_and_model() {
         let p = build_seed_prompt("do a thing", 1, Some("opus"));
-        assert!(p.contains("Spawn 1 teammate,"), "singular phrasing for 1");
-        assert!(p.contains("model `opus`"), "model guidance included");
+        // Singular phrasing.
+        assert!(p.contains("1 time"), "singular '1 time' phrasing");
+        assert!(p.contains("1 teammate is"), "singular 'teammate is' phrasing");
+        // Model guidance routed via the Task tool's `model` parameter.
+        assert!(
+            p.contains("model:\"opus\"") && p.contains("`Task` call"),
+            "model line tells the lead to pass model on the Task call",
+        );
+    }
+
+    #[test]
+    fn seed_prompt_plural_phrasing_for_multiple() {
+        let p = build_seed_prompt("x", 3, None);
+        assert!(p.contains("3 time"), "plural '3 times'");
+        assert!(p.contains("3 teammates are"), "plural 'teammates are'");
     }
 
     #[test]
