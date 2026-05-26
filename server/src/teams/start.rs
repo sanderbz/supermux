@@ -28,17 +28,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::db;
 use crate::error::AppError;
-use crate::sessions::{self, lifecycle, CreateInput, SessionView};
+use crate::sessions::{self, lifecycle, tmux::Tmux, CreateInput, SessionView};
 use crate::state::AppState;
 
 /// Hard bounds on the teammate count so a typo / hostile client can't ask the
 /// lead to fork an absurd number of real Claude processes (each ≈ the ~7× cost
 /// the plan surfaces calmly). The lead itself is the +1.
-const MIN_TEAMMATES: u32 = 1;
-const MAX_TEAMMATES: u32 = 8;
+pub(crate) const MIN_TEAMMATES: u32 = 1;
+pub(crate) const MAX_TEAMMATES: u32 = 8;
 /// Default when the client omits a count (a small, sane crew).
-const DEFAULT_TEAMMATES: u32 = 3;
+pub(crate) const DEFAULT_TEAMMATES: u32 = 3;
 
 /// `POST /api/teams/start` body. All fields but `task` are optional.
 #[derive(Debug, Clone, Deserialize)]
@@ -78,7 +79,7 @@ pub struct StartTeamResult {
 }
 
 /// Clamp + default the requested teammate count.
-fn resolve_teammates(requested: Option<u32>) -> u32 {
+pub(crate) fn resolve_teammates(requested: Option<u32>) -> u32 {
     requested
         .unwrap_or(DEFAULT_TEAMMATES)
         .clamp(MIN_TEAMMATES, MAX_TEAMMATES)
@@ -88,7 +89,7 @@ fn resolve_teammates(requested: Option<u32>) -> u32 {
 /// (model aliases/ids are short — a long value is almost certainly junk and we
 /// never want it spliced into the prompt). Only a conservative char set is kept
 /// so the value can be safely embedded in the seed-prompt text.
-fn sanitize_model(model: Option<&str>) -> Option<String> {
+pub(crate) fn sanitize_model(model: Option<&str>) -> Option<String> {
     let m = model?.trim();
     if m.is_empty() || m.len() > 64 {
         return None;
@@ -149,17 +150,7 @@ pub async fn start_team(
     state: &AppState,
     input: StartTeamInput,
 ) -> Result<StartTeamResult, AppError> {
-    let task = input.task.trim().to_string();
-    if task.is_empty() {
-        return Err(AppError::BadRequest(
-            "a team needs a goal — `task` must not be empty".into(),
-        ));
-    }
-    if task.len() > 8_000 {
-        return Err(AppError::BadRequest(
-            "team goal is too long (max 8000 chars)".into(),
-        ));
-    }
+    let task = validate_task(&input.task)?;
 
     let teammates = resolve_teammates(input.teammates);
     let model = sanitize_model(input.model.as_deref());
@@ -211,9 +202,156 @@ pub async fn start_team(
     })
 }
 
+/// Validate + trim a team goal: non-empty, length-bounded. The bound matches
+/// `start_team` (8000 chars) so a single ruleset governs both create + convert.
+pub(crate) fn validate_task(raw: &str) -> Result<String, AppError> {
+    let task = raw.trim().to_string();
+    if task.is_empty() {
+        return Err(AppError::BadRequest(
+            "a team needs a goal — `task` must not be empty".into(),
+        ));
+    }
+    if task.len() > 8_000 {
+        return Err(AppError::BadRequest(
+            "team goal is too long (max 8000 chars)".into(),
+        ));
+    }
+    Ok(task)
+}
+
+/// `POST /api/teams/start-from-existing` body. The user's session NAME is the
+/// only extra field vs [`StartTeamInput`]; `dir` is intentionally NOT here — the
+/// existing row's `dir` is authoritative (we never move the session).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConvertToTeamInput {
+    /// The existing session's name. Required.
+    pub name: String,
+    /// The team's goal — same rules as `start_team`. Required, non-empty.
+    pub task: String,
+    /// Teammate count (lead is +1). Clamped server-side.
+    #[serde(default)]
+    pub teammates: Option<u32>,
+    /// Optional per-teammate model alias.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Convert an existing session into a team lead: stop it if running, flip the
+/// per-session Agent Teams force flag, then start it again with the seed prompt
+/// that tells the lead to form the team. Reuses the EXISTING session row — same
+/// name, same dir, same tags / pin / branch / mcp / desc-fields — only the desc
+/// is refreshed to read as a team lead and the `team` tag is added (idempotent)
+/// so the row presents itself as a team lead even before AT-B detects it.
+///
+/// Errors:
+///   * 404 — no session with that name.
+///   * 409 — the session is ALREADY a detected team lead (AT-B sees it).
+///   * 422 — the session is archived (archived sessions must be unarchived first).
+///   * 400 — empty / oversize task.
+///
+/// The lifecycle::stop call is BEST-EFFORT: a stop failure short-circuits and
+/// surfaces to the client (we'd rather not boot a half-stopped session that may
+/// fight a still-living agent for the same tmux name). Once the session is
+/// stopped, the rest mirrors `start_team` end-of-flow exactly: set the
+/// force-flag, refresh row metadata, and call `lifecycle::start` with the seed.
+pub async fn convert_to_team(
+    state: &AppState,
+    input: ConvertToTeamInput,
+) -> Result<StartTeamResult, AppError> {
+    let task = validate_task(&input.task)?;
+    let teammates = resolve_teammates(input.teammates);
+    let model = sanitize_model(input.model.as_deref());
+
+    let name = input.name.trim();
+    if name.is_empty() || !sessions::valid_name(name) {
+        return Err(AppError::BadRequest(
+            "invalid session name (allowed: letters, digits, '_', '.', '-')".into(),
+        ));
+    }
+
+    // 1. Look up the row (404 if missing) + refuse archived (422-ish: 409
+    //    Conflict is the closest AppError variant we own; "archived" reads as a
+    //    state conflict the caller must resolve by unarchiving).
+    let row = db::sessions::get(&state.pool, name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("session '{name}'")))?;
+    if row.archived != 0 {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' is archived — unarchive it before making it a team"
+        )));
+    }
+    if row.provider != "claude" {
+        // Agent teams is a Claude-only concept (the env + settings hooks are
+        // read only by Claude Code). Trying to "team" a shell/codex session is
+        // a definitional mismatch — refuse plainly, not silently no-op.
+        return Err(AppError::BadRequest(format!(
+            "session '{name}' uses provider '{}' — only Claude sessions can become teams",
+            row.provider
+        )));
+    }
+
+    // 2. Refuse if AT-B already sees this session as a team lead (no double
+    //    conversion). Cheapest signal: ask the watcher to scan + enrich now and
+    //    look for a team mapped to this supermux session.
+    let teams = crate::teams::scan_and_enrich(state).await;
+    if teams.iter().any(|t| t.lead_supermux_session.as_deref() == Some(name)) {
+        return Err(AppError::Conflict(format!(
+            "session '{name}' is already a team lead"
+        )));
+    }
+
+    // 3. Stop the agent if it's running. The lifecycle::stop is synchronous
+    //    (returns once the session is stopped), so we don't need a separate
+    //    settle-poll — by the time it returns, the next start can race-free
+    //    create a fresh tmux session under the same name.
+    let tmux = Tmux::new(name);
+    if tmux.exists().await.unwrap_or(false) {
+        lifecycle::stop(state, name).await?;
+    }
+
+    // 4. Per-session opt-in flag — same mechanism AT-D uses, so this lead boots
+    //    with the Agent Teams env even if the global pref is OFF. MUST be set
+    //    BEFORE the start() call (start reads it via `force_agent_teams`).
+    state.set_force_agent_teams(name);
+
+    // 5. Refresh the row's identity bits so the existing session presents as a
+    //    team lead BEFORE AT-B detects the on-disk team files. Mirrors what
+    //    `sessions::create` writes for a fresh start_team:
+    //      - desc → "Team lead — <short_desc(task)>"
+    //      - tags → existing ∪ {"team"} (idempotent add, no duplicates)
+    //    Failures here are non-fatal: the row stays as it was; the lead still
+    //    boots and AT-B picks it up once the on-disk files exist.
+    let new_desc = format!("Team lead — {}", short_desc(&task));
+    if let Err(e) = db::sessions::set_desc(&state.pool, name, &new_desc).await {
+        tracing::warn!(name = %name, error = %e, "convert_to_team: failed to refresh desc");
+    }
+    let mut tags: Vec<String> = serde_json::from_str(&row.tags).unwrap_or_default();
+    if !tags.iter().any(|t| t == "team") {
+        tags.push("team".into());
+        let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
+        if let Err(e) = db::sessions::set_tags(&state.pool, name, &tags_json).await {
+            tracing::warn!(name = %name, error = %e, "convert_to_team: failed to add 'team' tag");
+        }
+    }
+
+    // 6. Boot the lead with the seed prompt — same code path as start_team.
+    let seed = build_seed_prompt(&task, teammates, model.as_deref());
+    lifecycle::start(state, name, Some(&seed)).await?;
+
+    // 7. Re-read the post-boot view so the client navigates to the up-to-date
+    //    session (status flipped to `active` by start()).
+    let lead = sessions::get(state, name).await?;
+
+    Ok(StartTeamResult {
+        team: true,
+        teammates,
+        lead,
+    })
+}
+
 /// A short single-line description from the (possibly multi-line) goal for the
 /// session row's `desc`.
-fn short_desc(task: &str) -> String {
+pub(crate) fn short_desc(task: &str) -> String {
     let first = task.lines().next().unwrap_or("").trim();
     if first.chars().count() > 60 {
         let truncated: String = first.chars().take(57).collect();
@@ -285,5 +423,180 @@ mod tests {
         let n = gen_team_name();
         assert!(n.starts_with("team-"));
         assert!(crate::sessions::valid_name(&n), "generated name must be a valid session name");
+    }
+
+    // ── FEAT-CONVERT-TEAM tests ────────────────────────────────────────────────
+
+    use crate::config::Config;
+    use crate::sessions::CreateInput;
+    use crate::state::AppState;
+    use std::path::PathBuf;
+
+    /// Build an in-memory test AppState with a tmp data_dir, mirroring the
+    /// pattern used by `teams::watcher::tests::test_state`.
+    async fn test_state() -> (AppState, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "supermux-convert-team-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    #[tokio::test]
+    async fn convert_404_on_unknown_session() {
+        let (state, _dir) = test_state().await;
+        let err = convert_to_team(
+            &state,
+            ConvertToTeamInput {
+                name: "ghost".into(),
+                task: "do a thing".into(),
+                teammates: None,
+                model: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn convert_rejects_empty_task() {
+        let (state, _dir) = test_state().await;
+        // Create a session first so the empty-task branch is the one tripped.
+        let _ = crate::sessions::create(
+            &state,
+            CreateInput {
+                name: "alpha".into(),
+                dir: None,
+                desc: None,
+                provider: Some("claude".into()),
+                creator: None,
+                flags: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+            },
+        )
+        .await
+        .unwrap();
+        let err = convert_to_team(
+            &state,
+            ConvertToTeamInput {
+                name: "alpha".into(),
+                task: "   ".into(),
+                teammates: None,
+                model: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn convert_rejects_archived_session() {
+        let (state, _dir) = test_state().await;
+        let _ = crate::sessions::create(
+            &state,
+            CreateInput {
+                name: "beta".into(),
+                dir: None,
+                desc: None,
+                provider: Some("claude".into()),
+                creator: None,
+                flags: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::db::sessions::set_archived(&state.pool, "beta", true)
+            .await
+            .unwrap();
+        let err = convert_to_team(
+            &state,
+            ConvertToTeamInput {
+                name: "beta".into(),
+                task: "ship the redesign".into(),
+                teammates: None,
+                model: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        // Conflict carries the human "archived" message.
+        match err {
+            AppError::Conflict(msg) => assert!(msg.contains("archived"), "msg: {msg}"),
+            other => panic!("expected Conflict on archived, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn convert_rejects_non_claude_provider() {
+        let (state, _dir) = test_state().await;
+        let _ = crate::sessions::create(
+            &state,
+            CreateInput {
+                name: "shellone".into(),
+                dir: None,
+                desc: None,
+                provider: Some("shell".into()),
+                creator: None,
+                flags: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+            },
+        )
+        .await
+        .unwrap();
+        let err = convert_to_team(
+            &state,
+            ConvertToTeamInput {
+                name: "shellone".into(),
+                task: "ship the redesign".into(),
+                teammates: None,
+                model: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn convert_rejects_bad_name() {
+        let (state, _dir) = test_state().await;
+        let err = convert_to_team(
+            &state,
+            ConvertToTeamInput {
+                name: "bad name with spaces".into(),
+                task: "ship".into(),
+                teammates: None,
+                model: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
     }
 }

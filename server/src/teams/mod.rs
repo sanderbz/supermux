@@ -23,7 +23,9 @@ pub mod start;
 pub mod watcher;
 
 pub use model::{Member, MemberStatus, Team, TeamTask};
-pub use start::{start_team, StartTeamInput, StartTeamResult};
+pub use start::{
+    convert_to_team, start_team, ConvertToTeamInput, StartTeamInput, StartTeamResult,
+};
 pub use watcher::{scan_and_enrich, spawn};
 
 use axum::extract::State;
@@ -46,6 +48,13 @@ pub fn router_for(state: AppState) -> Router {
         // enabled for it + a seed prompt that forms the team. DISTINCT path from
         // `GET /api/teams` (AT-B's list) so the two never collide.
         .route("/api/teams/start", post(start_team_handler))
+        // FEAT-CONVERT-TEAM: convert an EXISTING session into a team lead in
+        // place. Distinct path from `/api/teams/start` so each endpoint has one
+        // unambiguous contract (start = new lead row; convert = reuse a row).
+        .route(
+            "/api/teams/start-from-existing",
+            post(convert_to_team_handler),
+        )
         // The single global experimental gate (§3.1). GET reads the current
         // value; PUT flips it. Default OFF (experimental + ~7× token cost).
         .route(
@@ -81,6 +90,28 @@ async fn start_team_handler(
     Json(input): Json<start::StartTeamInput>,
 ) -> Result<impl IntoResponse, AppError> {
     let result = start::start_team(&state, input).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "ok": true, "data": result }))))
+}
+
+/// `POST /api/teams/start-from-existing` (FEAT-CONVERT-TEAM) — turn the
+/// EXISTING session named in the body into a team lead in place. Returns 201
+/// with the LEAD `SessionView` (the same supermux name; conversation context is
+/// fresh because the env+settings only take effect at process launch).
+///
+/// Body: `{ name, task, teammates?, model? }` (see [`start::ConvertToTeamInput`]).
+/// `name` + `task` are required; everything else is optional + clamped. The
+/// existing row's `dir` is authoritative — the body intentionally has no
+/// `dir` field so the user can't accidentally move the session.
+///
+/// Errors:
+///   * 404 — `name` does not exist.
+///   * 409 — the session is already a team lead / archived.
+///   * 400 — bad name / empty task / non-Claude provider.
+async fn convert_to_team_handler(
+    State(state): State<AppState>,
+    Json(input): Json<start::ConvertToTeamInput>,
+) -> Result<impl IntoResponse, AppError> {
+    let result = start::convert_to_team(&state, input).await?;
     Ok((StatusCode::CREATED, Json(json!({ "ok": true, "data": result }))))
 }
 

@@ -54,6 +54,10 @@ export interface DesktopSplitProps {
   onDetach: () => void
   /** Stop (⌘W): stop the session, then leave. */
   onStop: () => void
+  /** FEAT-CONVERT-TEAM: open the "Make it a team" sheet for the focused
+   *  session. Omit to hide the affordance entirely (e.g. the route gates it on
+   *  "already a team lead" / archived). */
+  onMakeTeam?: () => void
   /** Optional hook to open the snippet drawer from the parent (the dock owns its
    *  own state too; this is just for route-level openers). */
   onSnippets?: () => void
@@ -67,6 +71,7 @@ export function DesktopSplit({
   onSelect,
   onDetach,
   onStop,
+  onMakeTeam,
   onSnippets,
 }: DesktopSplitProps) {
   // Build the team-aware strip model from the SAME sessions + the shared teams
@@ -376,6 +381,7 @@ export function DesktopSplit({
           provider={current?.provider}
           onDetach={onDetach}
           onStop={onStop}
+          onMakeTeam={onMakeTeam}
           // Open only — Radix closes the popover on outside-click / Escape, so a
           // toggle here would race its onOpenChange(false) and re-open it.
           onTitleClick={() => setInfoOpen(true)}

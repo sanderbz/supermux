@@ -33,8 +33,10 @@ import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { CONFIRM, killTeamLeadConfirm } from '@/brand/copy'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { DesktopSplit } from '@/components/focus-mode/desktop-split'
+import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
 import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
 import { useTeams } from '@/hooks/use-teams'
+import { useToast } from '@/components/ui/use-toast'
 import type { Team } from '@/lib/api/teams'
 import type { TileSession } from '@/components/session-tile/types'
 
@@ -108,16 +110,59 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
       })
   }, [name, navigate, qc, teams])
 
+  // FEAT-CONVERT-TEAM: gate the "Make it a team" affordance on a session that
+  // is eligible to be converted — must exist, not be archived, and not already
+  // be a team lead (AT-B detection). When ineligible we omit the callback so
+  // the header doesn't render the button at all (calmer than a disabled one).
+  const isTeamLead = React.useMemo(
+    () => teams.some((t) => t.lead_supermux_session === name),
+    [teams, name],
+  )
+  const { toast } = useToast()
+  const [convertOpen, setConvertOpen] = React.useState(false)
+  const eligibleForTeamConversion = !!current && !isTeamLead
+  const onMakeTeam = React.useMemo(
+    () =>
+      eligibleForTeamConversion ? () => setConvertOpen(true) : undefined,
+    [eligibleForTeamConversion],
+  )
+
   return (
-    <DesktopSplit
-      name={name}
-      sessions={sessions}
-      current={current}
-      teams={teams}
-      onSelect={onSelect}
-      onDetach={onDetach}
-      onStop={onStop}
-    />
+    <>
+      <DesktopSplit
+        name={name}
+        sessions={sessions}
+        current={current}
+        teams={teams}
+        onSelect={onSelect}
+        onDetach={onDetach}
+        onStop={onStop}
+        onMakeTeam={onMakeTeam}
+      />
+      {current && (
+        <StartTeamSheet
+          mode="convert"
+          sessionName={name}
+          sessionDir={current.dir}
+          open={convertOpen}
+          onOpenChange={setConvertOpen}
+          onStarted={(leadName) => {
+            // Conversion REUSES the existing row, so the name is unchanged —
+            // we stay on this focus route. Refresh the cache so the (now-team)
+            // session's tags/desc reflect server state, and confirm with a
+            // calm toast (the TEAM CARD itself will appear as AT-B detects the
+            // on-disk team files within a tick or two).
+            void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+            toast({ message: 'Team starting', tone: 'active' })
+            if (leadName !== name) {
+              // Defensive — shouldn't happen for convert, but if the server
+              // ever returns a different lead name we still route correctly.
+              navigate(`/focus/${encodeURIComponent(leadName)}`)
+            }
+          }}
+        />
+      )}
+    </>
   )
 }
 

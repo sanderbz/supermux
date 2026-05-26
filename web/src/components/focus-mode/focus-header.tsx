@@ -16,6 +16,7 @@ import {
   Minimize2,
   SlidersHorizontal,
   Square,
+  Users,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -68,6 +69,10 @@ export interface DesktopFocusHeaderProps {
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave (§4.4.3). */
   onStop: () => void
+  /** FEAT-CONVERT-TEAM: open the "Make it a team" sheet for this session. Omit
+   *  to hide the affordance entirely (e.g. on a session that's ALREADY a team
+   *  lead — the route owns that gating so the header stays presentational). */
+  onMakeTeam?: () => void
   /** Open the session info panel (feat-session-info). When set, the title becomes
    *  a bare button (pixel-identical to the span — no padding/border/extra height,
    *  so NO resting space is added). The route owns the panel + its anchor ref. */
@@ -87,6 +92,7 @@ export function DesktopFocusHeader({
   provider,
   onDetach,
   onStop,
+  onMakeTeam,
   onTitleClick,
   titleRef,
 }: DesktopFocusHeaderProps) {
@@ -170,6 +176,28 @@ export function DesktopFocusHeader({
           </TooltipTrigger>
           <TooltipContent>Claude tools</TooltipContent>
         </Tooltip>
+
+        {/* FEAT-CONVERT-TEAM — "Make it a team": only rendered when the route
+            decides this session is eligible (not already a team lead, not
+            archived). Placed BEFORE Detach so the destructive Stop button
+            stays last in the cluster — iOS-y reading order. */}
+        {onMakeTeam && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <motion.button
+                type="button"
+                onClick={onMakeTeam}
+                whileTap={{ scale: 0.96 }}
+                transition={springs.buttonPress}
+                aria-label="Make this a team"
+                className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary"
+              >
+                <Users className="size-4" />
+              </motion.button>
+            </TooltipTrigger>
+            <TooltipContent>Make this a team</TooltipContent>
+          </Tooltip>
+        )}
 
         <Tooltip>
           <TooltipTrigger asChild>

@@ -1,6 +1,7 @@
 import * as React from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Drawer } from 'vaul'
-import { X, Square, RotateCcw, Archive } from 'lucide-react'
+import { X, Square, RotateCcw, Archive, Users } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { cn } from '@/lib/utils'
@@ -12,6 +13,7 @@ import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
 import { useTeams } from '@/hooks/use-teams'
 import { useToast } from '@/components/ui/use-toast'
 import { LiveTerminal } from '@/components/terminal/live-terminal'
+import { StartTeamSheet } from './start-team-sheet'
 import { StatusDot } from './status-dot'
 import { TailPreview } from './tail-preview'
 import type { TileSession } from './types'
@@ -45,9 +47,20 @@ export function QuickPeekModal({
   onOpenChange,
 }: QuickPeekModalProps) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const { toast } = useToast()
   const { teams } = useTeams()
   const [busy, setBusy] = React.useState(false)
+  // FEAT-CONVERT-TEAM: the "Make it a team" sheet is mounted lazily inside
+  // the peek so the action lives next to Restart/Stop (the natural mobile home
+  // for session lifecycle actions). On success we navigate to the lead's focus
+  // view AND close the peek — the session is now a team and the focus view's
+  // TEAM CARD is the natural next surface.
+  const [convertOpen, setConvertOpen] = React.useState(false)
+  const isAlreadyLead = React.useMemo(
+    () => teams.some((t) => t.lead_supermux_session === session.name),
+    [teams, session.name],
+  )
   // Bumped after a Restart completes to force the live pane to REMOUNT. A stop
   // closes the terminal WS with a terminal (no-retry) code, and nothing else
   // re-subscribes the already-mounted <LiveTerminal> — so without this the pane
@@ -150,18 +163,28 @@ export function QuickPeekModal({
             </Drawer.Title>
 
             {/* Session actions — Restart + a state-dependent secondary (the two
-                controls with no other mobile home). Small, iOS-native. While the
-                session is running the secondary is Stop (destructive); once it's
-                already stopped, Stop has nothing to do, so it becomes Archive —
-                the same archive the desktop reaches via the stopped tile's
-                hover-peek (no confirm: archive is reversible from the Archived
-                sheet). */}
+                controls with no other mobile home) + (when applicable) Make
+                team. Small, iOS-native. While the session is running the
+                secondary is Stop (destructive); once it's already stopped, Stop
+                has nothing to do, so it becomes Archive — the same archive the
+                desktop reaches via the stopped tile's hover-peek (no confirm:
+                archive is reversible from the Archived sheet).
+                "Make team" (FEAT-CONVERT-TEAM) is hidden once the session IS
+                already a team lead — there's nothing to convert. */}
             <PeekAction
               label="Restart"
               icon={RotateCcw}
               onClick={doRestart}
               disabled={busy}
             />
+            {!isAlreadyLead && (
+              <PeekAction
+                label="Make team"
+                icon={Users}
+                onClick={() => setConvertOpen(true)}
+                disabled={busy}
+              />
+            )}
             {isStopped ? (
               <PeekAction
                 label="Archive"
@@ -220,6 +243,24 @@ export function QuickPeekModal({
           </div>
         </Drawer.Content>
       </Drawer.Portal>
+
+      {/* FEAT-CONVERT-TEAM: the convert sheet mounts OUTSIDE Drawer.Portal so a
+          Vaul-managed peek closing/opening doesn't tear the sheet down. On
+          success we dismiss the peek AND navigate to the (now team-lead) focus
+          view — the team's TEAM CARD is the natural next surface. */}
+      <StartTeamSheet
+        mode="convert"
+        sessionName={session.name}
+        sessionDir={session.dir}
+        open={convertOpen}
+        onOpenChange={setConvertOpen}
+        onStarted={(name) => {
+          onOpenChange(false)
+          void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+          toast({ message: 'Team starting', tone: 'active' })
+          navigate(`/focus/${encodeURIComponent(name)}`)
+        }}
+      />
     </Drawer.Root>
   )
 }

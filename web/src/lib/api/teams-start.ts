@@ -28,6 +28,19 @@ export interface StartTeamInput {
   name?: string
 }
 
+/** Body for `POST /api/teams/start-from-existing` (FEAT-CONVERT-TEAM). The
+ *  existing session's `dir` is authoritative — there is no `dir` field. */
+export interface ConvertToTeamInput {
+  /** The existing session's name. Required. */
+  name: string
+  /** The team's goal. Required, non-empty. */
+  task: string
+  /** Teammate count (lead is +1). Clamped 1..=8 server-side. */
+  teammates?: number
+  /** Optional per-teammate model alias. */
+  model?: string
+}
+
 /** Success payload from `POST /api/teams/start`: the created LEAD session (so the
  *  caller can navigate to `/focus/<name>`) + the resolved teammate count. */
 export interface StartTeamResult {
@@ -81,6 +94,18 @@ export const teamsStartApi = {
    *  appears via detection once the lead spawns its panes. */
   start: (input: StartTeamInput): Promise<StartTeamResult> =>
     teamsReq<StartTeamResult>('/api/teams/start', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** `POST /api/teams/start-from-existing` (FEAT-CONVERT-TEAM) — convert an
+   *  EXISTING session into a team lead in place. The session keeps its name,
+   *  dir, tags / pin / branch / mcp; only the desc is refreshed and a `team`
+   *  tag is added. The Claude agent is restarted (fresh conversation) because
+   *  the Agent Teams env+settings only take effect at process launch — the
+   *  caller surfaces this in confirm copy. Errors map to: 404 unknown name,
+   *  409 already-a-lead / archived, 400 bad name / empty task / wrong provider. */
+  convert: (input: ConvertToTeamInput): Promise<StartTeamResult> =>
+    teamsReq<StartTeamResult>('/api/teams/start-from-existing', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
