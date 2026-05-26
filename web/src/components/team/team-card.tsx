@@ -23,6 +23,11 @@ import { AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { useSession } from '@/hooks/use-sessions'
 import { useTeamDensity, type TeamDensity } from '@/stores/team-density-store'
+import {
+  useTeamWidth,
+  TEAM_WIDTH_PX,
+  type TeamWidth,
+} from '@/stores/team-width-store'
 import { SessionTile } from '@/components/session-tile'
 import type { TileSession } from '@/components/session-tile'
 import type { OverviewSize } from '@/lib/overview-size'
@@ -32,6 +37,7 @@ import { TeammateChip } from './teammate-chip'
 import { TeammateCard } from './teammate-card'
 import { TeammatePeekSheet } from './teammate-peek-sheet'
 import { TeammateFocus } from './teammate-focus'
+import { TeamWidthToggle } from './team-width-toggle'
 
 export interface TeamCardProps {
   team: Team
@@ -46,6 +52,13 @@ export interface TeamCardProps {
 
 export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
   const [density, setDensity] = useTeamDensity(team.team_name)
+  // Per-team desktop width tier (FEAT-RESIZE). The store defaults to `'full'`
+  // so the overview reads identically to today until the user opts in. The
+  // outer `<section>` reads the tier and applies a max-width (`full` ⇒ no
+  // cap), and the overview's flex-wrap container lays sibling cards out
+  // accordingly. Mobile (< sm) ignores the value entirely (the wrapper drops
+  // the max-width below `sm` so every card is full-width there — see below).
+  const [width, setWidth] = useTeamWidth(team.team_name)
   // Peek (half-sheet) + focus (full-screen) state — by member NAME so it survives
   // an SSE snapshot replace (the member object identity changes each tick).
   const [peekName, setPeekName] = React.useState<string | null>(null)
@@ -66,12 +79,32 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
     setFocusName(name)
   }, [])
 
+  // Width tier → desktop sizing tokens (FEAT-RESIZE). Applied as inline style
+  // so the four tiers are JIT-safe without flooding the Tailwind class list.
+  // Mobile (< sm) ALWAYS gets `width: 100%` + `flex: '1 1 100%'` so the card
+  // stays full-width regardless of tier — the resize feature is desktop-only.
+  // On `sm:` and up the per-team tier kicks in:
+  //   • `full`  → no cap (the row's lone card OR fills remaining flex space)
+  //   • else    → max-width = tier ceiling, flex-basis = ceiling so wrapping
+  //               siblings honour the tier instead of crashing into each other.
+  // `flex: '1 1 <basis>'` lets a single card on a row still claim the full
+  // width gracefully (the only sibling would be empty space), while
+  // `max-width` keeps it from running past its tier when peers are present.
+  const widthStyle = useTeamCardWidthStyle(width)
+
   return (
     <section
       aria-label={`Team ${team.team_name}`}
-      className="flex flex-col gap-2.5 rounded-xl border border-border bg-card p-2.5 sm:p-3"
+      style={widthStyle}
+      className="flex w-full flex-col gap-2.5 rounded-xl border border-border bg-card p-2.5 transition-[max-width,flex-basis] duration-200 sm:p-3"
     >
-      <TeamRollup team={team} density={density} onDensityChange={setDensity} />
+      <TeamRollup
+        team={team}
+        density={density}
+        onDensityChange={setDensity}
+        width={width}
+        onWidthChange={setWidth}
+      />
 
       {/* Lead — a FULL session tile (reused). When the lead session isn't in the
           cache (unmapped this tick) we show a calm placeholder so the card never
@@ -176,10 +209,14 @@ function TeamRollup({
   team,
   density,
   onDensityChange,
+  width,
+  onWidthChange,
 }: {
   team: Team
   density: TeamDensity
   onDensityChange: (d: TeamDensity) => void
+  width: TeamWidth
+  onWidthChange: (w: TeamWidth) => void
 }) {
   return (
     <header className="flex items-center gap-2 px-0.5">
@@ -199,14 +236,72 @@ function TeamRollup({
           secondary drops first on a narrow screen via the `card` density). */}
       <TeamRollupBadges team={team} density="card" />
 
-      {/* Density toggle — per-team Chips↔Cards (NOT the global controls). On the
-          narrow screen the secondary is hidden, so the toggle keeps its own
-          margin-left to stay right-aligned. */}
+      {/* Width toggle — per-team TEAM CARD width (FEAT-RESIZE). Desktop-only
+          (the component itself is `hidden sm:flex`); the narrow screen always
+          renders the card full-width, so the control would be a no-op. Sits
+          just before the density toggle so the two read as one pair of
+          per-team chrome controls. `ml-auto` so the toggle cluster stays
+          right-aligned even when the secondary badge is hidden on narrow. */}
+      <TeamWidthToggle
+        value={width}
+        onChange={onWidthChange}
+        className="ml-auto"
+      />
+
+      {/* Density toggle — per-team Chips↔Cards (NOT the global controls). On
+          desktop it sits next to the width toggle; on mobile (where the width
+          toggle is hidden) it keeps its own `ml-auto` so the cluster is still
+          right-aligned. */}
       <div className="ml-auto sm:ml-2">
         <DensityToggle value={density} onChange={onDensityChange} />
       </div>
     </header>
   )
+}
+
+// ── Width tier → sizing style (FEAT-RESIZE) ──────────────────────────────────
+// The TEAM CARD wrapper applies these as inline style: max-width caps the
+// card at the chosen tier, flex-basis seeds the flex-wrap parent so siblings
+// honour the cap when they share a row. `full` → no cap (current behaviour).
+// Mobile (< sm) overrides this via a matchMedia hook so every card stays
+// full-width below the breakpoint regardless of the chosen tier.
+
+function useTeamCardWidthStyle(width: TeamWidth): React.CSSProperties {
+  // Track viewport against the Tailwind `sm` breakpoint (640px). Below it, we
+  // collapse every tier to full-width so the resize feature is truly
+  // desktop-only and mobile sees the historical behaviour. matchMedia (vs
+  // `useMediaQuery`) keeps the dep set local to this hook + avoids importing
+  // the project hook just for one boolean here.
+  const [isDesktop, setIsDesktop] = React.useState(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return true
+    return window.matchMedia('(min-width: 640px)').matches
+  })
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mql = window.matchMedia('(min-width: 640px)')
+    const onChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches)
+    // addEventListener is the modern API; fall back to addListener for the
+    // (vanishingly rare) old Safari that still ships the legacy form.
+    if (mql.addEventListener) mql.addEventListener('change', onChange)
+    else mql.addListener(onChange)
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener('change', onChange)
+      else mql.removeListener(onChange)
+    }
+  }, [])
+
+  // Mobile OR `full` tier → no cap. `flex: 1 1 100%` so the card occupies its
+  // entire row even when sibling cards (different teams) coexist on desktop.
+  if (!isDesktop || width === 'full') {
+    return { maxWidth: '100%', flex: '1 1 100%' }
+  }
+  const px = TEAM_WIDTH_PX[width]
+  // Desktop, non-full: cap the card at the tier's px ceiling, but let it
+  // GROW within that ceiling so a lone card on a row still feels balanced
+  // (not pinned to the left edge with empty space beside it). The grow
+  // factor is `1` so multiple sub-Full cards on the same row share leftover
+  // space proportionally up to their caps.
+  return { maxWidth: `${px}px`, flex: `1 1 ${px}px` }
 }
 
 // ── Chips↔Cards density toggle (F5) ──────────────────────────────────────────

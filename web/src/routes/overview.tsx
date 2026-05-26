@@ -694,7 +694,14 @@ export function Overview() {
             the dnd-kit sortable context. The lead's own session is excluded from
             the grid below so it renders only here, as the card's full tile. */}
         {filteredTeams.length > 0 && !showSkeleton && (
-          <div className="mb-3 flex flex-col gap-3">
+          // Mobile (< sm): stack the cards vertically as today — `flex-col`,
+          // each card consumes the row regardless of its width tier (the card
+          // itself collapses its tier below `sm`). Desktop (sm+): switch to
+          // `flex-wrap` so cards with sub-Full widths can sit side-by-side
+          // and Full cards still occupy the whole row (their `flex: 1 1 100%`
+          // forces a wrap). `items-start` so a narrower card next to a taller
+          // one doesn't stretch — each card keeps its natural height.
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start">
             {filteredTeams.map((team) => (
               <TeamCard
                 key={team.team_name}
