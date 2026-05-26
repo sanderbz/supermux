@@ -39,6 +39,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   Command as CommandIcon,
+  FolderPlus,
   MessageSquare,
   Play,
   Send,
@@ -72,6 +73,7 @@ import {
 } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
+import { useNewGroupAction } from '@/stores/new-group-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { ClaudeToolsHost } from '@/components/claude-tools/claude-tools-host'
 
@@ -249,6 +251,9 @@ export function CommandPalette() {
   const regCommands = React.useMemo(() => regData?.commands ?? [], [regData])
   const openArchived = useArchivedSheet((s) => s.openSheet)
   const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
+  // The Overview installs its handler while mounted; absent on every other
+  // route, so the "New group" row is conditionally surfaced below.
+  const newGroupAction = useNewGroupAction((s) => s.action)
   const board = useBoard()
   const { toast } = useToast()
   const { sendToAgent } = useSendToAgent()
@@ -331,6 +336,19 @@ export function CommandPalette() {
         run: () => openClaudeTools(pickFreshestSession(sessions)?.name ?? null),
       },
     ]
+    // "New group" is only meaningful on the Overview (which installs its
+    // handler via `new-group-store`); on every other route the action is null
+    // and we hide the row so the palette doesn't surface a no-op.
+    if (newGroupAction) {
+      base.push({
+        kind: 'action',
+        id: 'action:new-group',
+        label: 'New group',
+        keywords: 'group new section divider organize overview folder',
+        icon: FolderPlus,
+        run: newGroupAction,
+      })
+    }
     if (!onBoard) return base
     return [
       ...base,
@@ -367,7 +385,7 @@ export function CommandPalette() {
         run: () => enterMode({ step: 'done-pick-issue' }),
       },
     ]
-  }, [openArchived, openClaudeTools, sessions, onBoard, enterMode])
+  }, [openArchived, openClaudeTools, sessions, onBoard, enterMode, newGroupAction])
 
   // The board's issues, hardened to an array at the consumption boundary too.
   // `useBoard` already guarantees an array, but a malformed / 404 board payload

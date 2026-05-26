@@ -1,3 +1,10 @@
+/* eslint-disable react-hooks/refs --
+ * dnd-kit's `useSortable` returns `setNodeRef`, `attributes`, `listeners`,
+ * `transform`, `transition`, `isDragging` as a stable object that the canonical
+ * pattern reads + spreads during render (see dnd-kit docs). The new
+ * `react-hooks/refs` rule mis-classifies these as ref-during-render reads;
+ * the values are NOT React refs and are safe to read in render. File-level
+ * disable keeps the dnd-kit binding code readable. */
 // GroupGrid — the custom-mode body of the Overview (feat-group-ux 2026 spec).
 //
 // Owns:
@@ -224,8 +231,12 @@ function useGroupSortModes(
 
   // When the set of group ids changes (group added / removed), pull the modes
   // for the new ids from localStorage. Run as an effect (not in render) so we
-  // don't violate React state rules; the lookup is cheap.
+  // don't violate React state rules; the lookup is cheap. The setModes call
+  // here is conditional (only fires when ids actually changed → returns same
+  // ref otherwise) so it can't loop; the strict rule's blanket warning is a
+  // false positive for prop-reconciling effects.
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setModes((prev) => {
       let changed = false
       const next = new Map(prev)

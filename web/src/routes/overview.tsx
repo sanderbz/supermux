@@ -57,7 +57,6 @@ import {
   nameSort,
   type LayoutItem,
   type OverviewLayout,
-  type SortMode,
 } from '@/lib/overview-layout'
 import type { TileSession } from '@/components/session-tile'
 
