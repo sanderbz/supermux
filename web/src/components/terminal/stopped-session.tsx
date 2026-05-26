@@ -24,7 +24,7 @@ import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { Archive, History, PlayCircle, PowerOff } from 'lucide-react'
+import { Archive, History, PlayCircle, PowerOff, Users } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -36,6 +36,10 @@ import {
   type ResumableConversation,
 } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import { useTeams } from '@/hooks/use-teams'
+import { useToast } from '@/components/ui/use-toast'
+import { useSessions } from '@/hooks/use-sessions'
+import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
 import { ResumePicker } from './resume-picker'
 
 export interface StoppedSessionProps {
@@ -51,6 +55,10 @@ export interface StoppedSessionActionsProps {
    *  focus pane uses the default. Compact still respects the 44pt hit-target
    *  floor — only the spacing tightens. */
   compact?: boolean
+  /** FEAT-CONVERT-TEAM: show the "Make it a team" ghost button. The focus
+   *  pane <StoppedSession> turns it on; the overview hover-peek leaves it off
+   *  (mobile users still get it via the quick-peek modal — no missing path). */
+  showMakeTeam?: boolean
   /** Optional callback after a successful archive — the focus pane navigates
    *  to '/', the peek host just dismisses itself. */
   onAfterArchive?: () => void
@@ -78,6 +86,7 @@ export interface StoppedSessionActionsHandle {
 export function StoppedSessionActions({
   name,
   compact = false,
+  showMakeTeam = false,
   onAfterArchive,
   onResumeOpenChange,
   triggerRef,
@@ -86,10 +95,26 @@ export function StoppedSessionActions({
   const reduce = useReducedMotion()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const { toast } = useToast()
+  const { sessions } = useSessions()
+  const { teams } = useTeams()
   const [busy, setBusy] = React.useState(false)
   const [failed, setFailed] = React.useState(false)
   const [archiveConfirm, setArchiveConfirm] = React.useState(false)
   const [archiving, setArchiving] = React.useState(false)
+  const [convertOpen, setConvertOpen] = React.useState(false)
+  // Only show "Make team" when this session is eligible — not already a team
+  // lead. Cheap to derive; the teams cache is shared with the overview.
+  const isAlreadyLead = React.useMemo(
+    () => teams.some((t) => t.lead_supermux_session === name),
+    [teams, name],
+  )
+  const currentRow = React.useMemo(
+    () => sessions.find((s) => s.name === name) ?? null,
+    [sessions, name],
+  )
+  const canMakeTeam =
+    showMakeTeam && !isAlreadyLead && !!currentRow && currentRow.provider === 'claude'
   // Resume affordance — lazily probes the dir's Claude conversations so the
   // button only appears when there's something to resume (no empty picker).
   const [conversations, setConversations] = React.useState<
@@ -219,6 +244,23 @@ export function StoppedSessionActions({
         </Button>
       )}
 
+      {/* FEAT-CONVERT-TEAM — "Make it a team": ghost button (secondary
+          intent — not the primary Start path). Hidden when the session is
+          already a team lead (no-op) or when the host (overview hover-peek)
+          doesn't enable it. The action restarts the session with the Agent
+          Teams env injected (env+settings only apply at process launch). */}
+      {canMakeTeam && (
+        <Button
+          variant="ghost"
+          onClick={() => setConvertOpen(true)}
+          disabled={busy || archiving}
+          className="h-11"
+        >
+          <Users aria-hidden />
+          Make team
+        </Button>
+      )}
+
       {/* Inline confirm — sentence-case, neutral copy (Archive is reversible
           data loss, not destructive deletion; the confirm guards an
           accidental tap rather than an irrecoverable one). */}
@@ -291,6 +333,27 @@ export function StoppedSessionActions({
           conversations={conversations}
         />
       )}
+
+      {/* FEAT-CONVERT-TEAM convert sheet — mounted lazily; the action restarts
+          this session as a team lead via POST /api/teams/start-from-existing.
+          On success the SSE `status` delta flips the row to running and the
+          parent route's <StoppedSession> swaps to <LiveTerminal>. */}
+      {canMakeTeam && currentRow && (
+        <StartTeamSheet
+          mode="convert"
+          sessionName={name}
+          sessionDir={currentRow.dir}
+          open={convertOpen}
+          onOpenChange={setConvertOpen}
+          onStarted={() => {
+            // Stays on this focus route (name unchanged). Refresh the cache so
+            // the row's tags/desc reflect server state and the live terminal
+            // mounts as soon as the start broadcasts `active`.
+            void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+            toast({ message: 'Team starting', tone: 'active' })
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -334,9 +397,10 @@ export function StoppedSession({ name, className }: StoppedSessionProps) {
           {EMPTY.stoppedSession.body}
         </p>
 
-        {/* Action row — Resume primary, Archive secondary. Both ≥44pt; spring
-            button-press inherited from <Button>'s shadcn baseline. */}
-        <StoppedSessionActions name={name} />
+        {/* Action row — Resume primary, Archive secondary, Make team (when
+            eligible — FEAT-CONVERT-TEAM). Both ≥44pt; spring button-press
+            inherited from <Button>'s shadcn baseline. */}
+        <StoppedSessionActions name={name} showMakeTeam />
       </motion.div>
     </div>
   )
