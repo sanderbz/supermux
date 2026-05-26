@@ -99,8 +99,15 @@ export interface UseExternalEditResult {
    *  forever (no bridge round-trip → no `arrived` → no `ready`). */
   setOpen: (open: boolean) => void
   /** Save the edited text back to Claude's buffer (Done). Closes the sheet.
-   *  Does NOT submit the prompt — Claude leaves the text at `❯` for the user. */
-  save: (text: string) => void
+   *  Does NOT submit the prompt — Claude leaves the text at `❯` for the user.
+   *  Resolves once the submit POST returns (so callers — e.g. the "Send" button —
+   *  can chain an Enter byte via the terminal's `sendKey('Enter')` to auto-submit
+   *  the now-edited prompt). The Enter byte is queued in the pty input stream and
+   *  is consumed by Claude only AFTER the bridge writes the file + exits + Claude
+   *  reads the new buffer — the input stream's sequential nature guarantees the
+   *  ordering (write-back lands before the queued Enter). Rejects on POST failure
+   *  so the Send caller can skip the Enter + surface a toast. */
+  save: (text: string) => Promise<void>
 }
 
 /** Type-guard the loosely-typed SSE payload. Either `buffer` or `cancelled` must
@@ -187,18 +194,31 @@ export function useExternalEdit(session: string): UseExternalEditResult {
   // swallowed (the bridge already timed out; the sheet just closes). From
   // `pending` (no buffer yet → no requestId) we just close locally; the bridge
   // will time out on its own.
+  //
+  // Returns a Promise that resolves once the submit POST returns (or
+  // immediately when there's no requestId / no POST to make). The Promise lets
+  // the "Send" button (saveAndSubmit) sequence `sendKey('Enter')` AFTER the
+  // server acknowledges the write-back — so the queued Enter byte arrives in
+  // the pty input stream after the bridge has released the tty + Claude has
+  // updated its buffer. A failed POST rejects so the Send caller can skip the
+  // Enter dispatch and surface a toast.
   const resolve = React.useCallback(
-    (body: { text?: string; cancelled?: boolean }) => {
+    (body: { text?: string; cancelled?: boolean }): Promise<void> => {
       const current: EditState = stateRef.current
       const requestId = current.requestId
       dispatch({ type: 'close' })
-      if (!requestId) return
-      void sessionsApi
+      if (!requestId) return Promise.resolve()
+      return sessionsApi
         .externalEditSubmit(session, { requestId, ...body })
+        .then(() => undefined)
         .catch((e) => {
           // 409 (stale) is expected if the bridge already timed out; anything
           // else is logged but never crashes the route (sheet is already closed).
+          // We still REJECT here so the Send caller can skip the Enter
+          // dispatch + show a toast — the plain `save` path swallows the
+          // rejection at the call site (`void edit.save(text)`).
           console.warn('externalEditSubmit failed', e)
+          throw e
         })
     },
     [session],
@@ -229,7 +249,8 @@ export function useExternalEdit(session: string): UseExternalEditResult {
   const setOpen = React.useCallback(
     (next: boolean) => {
       if (next) return // no-op — see JSDoc; open via requestOpen()
-      resolve({ cancelled: true })
+      // Dismiss → fire-and-forget cancel POST; we don't care about the promise.
+      void resolve({ cancelled: true }).catch(() => undefined)
     },
     [resolve],
   )
