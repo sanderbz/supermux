@@ -381,13 +381,13 @@ function OnboardingSection() {
 
 /** Settings → Remote hosts (REMOTE_PLAN.md RT9). One-line "manage" link to the
  *  dedicated /hosts route plus the SSH onboarding hint so users discover the
- *  Tailscale / authorized_keys expectations without leaving Settings. */
+ *  reachability / authorized_keys expectations without leaving Settings. */
 function RemoteHostsSection() {
   const navigate = useNavigate()
   return (
     <Section
       title="Remote hosts"
-      footnote="Remote hosts require Tailscale or a reachable hostname. Generate an SSH key on the supermux server and copy the public key into the host’s ~/.ssh/authorized_keys via the Bootstrap button."
+      footnote="Remote hosts need a reachable address — Tailscale, a VPN, public DNS, or an SSH reverse tunnel all work. Generate an SSH key on the supermux server and copy the public key into the host’s ~/.ssh/authorized_keys via the Bootstrap button."
     >
       <Row
         label="Manage hosts"
