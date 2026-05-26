@@ -124,11 +124,13 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
     let pane_map = live_pane_map(state).await;
 
     for team in &mut teams {
-        // Find which supermux window owns this team's member panes. The lead's
-        // own pane + the teammate panes all live in ONE window (the lead's), so
-        // the session whose live pane set contains the most of our members is the
-        // host. This is the robust team→lead map (cwd/leadSessionId are softer).
-        let host = host_session_for(team, &pane_map);
+        // Map team → supermux session via a multi-key resolver that tolerates
+        // the (common) state where no teammate has a tmuxPaneId yet: lead just
+        // booted but hasn't invoked Spawn, in-process teammates, half-written
+        // config.json mid-write, transient pane churn between watcher ticks.
+        // Pane-id intersection (the docstring's original promise; AT-B v1) is
+        // kept as the strongest signal AND the final fallback.
+        let host = resolve_host_session(state, team, &pane_map).await;
         let live_ids: &[String] = host
             .as_deref()
             .and_then(|h| pane_map.get(h))
@@ -141,6 +143,44 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
     }
 
     teams
+}
+
+/// Resolve a team's host supermux session, trying cheapest signals first so the
+/// mapping survives transient teammate-pane churn AND the new-team window before
+/// any teammate is spawned. Order:
+///   (1) `leadSessionId` as a supermux name — per sessions/teams.rs:74-76 Claude
+///       writes the supermux session name into `leadSessionId`. Cheap + decisive.
+///   (2) `team_name` as a supermux name — Start-a-team's `gen_team_name` often
+///       matches the supermux session name directly.
+///   (3) Canonical-cwd match against live Claude DB sessions — handles renames
+///       and cases where neither id nor name was preserved.
+///   (4) Pane-id intersection (the prior sole strategy). Strongest signal once
+///       teammate panes are live; kept as the final fallback.
+async fn resolve_host_session(
+    _state: &AppState,
+    team: &Team,
+    pane_map: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    // (1) leadSessionId-as-supermux-name. Trust if present in the live map.
+    let lead_id = team.lead_session.trim();
+    if !lead_id.is_empty() && pane_map.contains_key(lead_id) {
+        return Some(lead_id.to_string());
+    }
+    // (2) team_name-as-supermux-name.
+    if pane_map.contains_key(&team.team_name) {
+        return Some(team.team_name.clone());
+    }
+    // (3) Canonical-cwd match — INTENTIONALLY OMITTED for now: the cleaned
+    //     `Member` struct doesn't carry `cwd` (it lives only on the raw config
+    //     deserialization), so threading it would require a model change. The
+    //     id/name matches above cover the common cases (Start-a-team writes the
+    //     supermux name as leadSessionId per sessions/teams.rs:74-76); the pane
+    //     intersection below remains the strongest signal once teammates spawn.
+    //     If a cwd-only mapping case shows up live, plumb `cwd` onto Member +
+    //     add the canonical-cwd match here.
+    // (4) Pane-id intersection — the AT-B v1 strategy, still authoritative when
+    //     teammate panes ARE live.
+    host_session_for(team, pane_map)
 }
 
 /// Tear down team boards whose team has ENDED (AT-G §3), conservatively. For
