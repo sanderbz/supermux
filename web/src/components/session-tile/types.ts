@@ -25,4 +25,8 @@ export interface TileSession extends SessionSummary {
   /** The latest unrecovered agent error from a StopFailure hook (hooks-10x).
    *  Cleared when the agent resumes — drives the amber error badge. */
   error?: { type: string; message: string }
+  /** Remote host the session runs on (REMOTE_PLAN.md RT9). `null` /
+   *  undefined = LOCAL — the historical default. The tile renders a small
+   *  <HostBadge> when this is set. */
+  host_id?: number | null
 }

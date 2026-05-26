@@ -16,6 +16,7 @@ use crate::config::Config;
 pub mod audit;
 pub mod board;
 pub mod boards;
+pub mod hosts;
 pub mod prefs;
 pub mod push;
 pub mod runtime_state;
@@ -72,6 +73,7 @@ mod tests {
             auth_token: "test-token".to_string(),
             provider_defaults: Default::default(),
             ws: Default::default(),
+            remote_callback_url: None,
         };
         let pool = init(&config).await.expect("init pool");
         (pool, dir)

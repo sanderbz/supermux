@@ -81,6 +81,11 @@ async fn main() -> anyhow::Result<()> {
     // agent's board-write surface is present with no manual step. Idempotent +
     // non-clobbering (preserves a co-located user command of the same name).
     agents::skills::seed_managed_commands().await;
+    // RT2 (REMOTE_PLAN §RT2): start the HostPool reaper. Sweeps every 60s,
+    // tears down SSH ControlMasters that have been idle > 10min AND have no
+    // live session row pointing at them. Cheap no-op while no remote hosts
+    // are registered.
+    sessions::spawn_reaper(state.host_pool.clone());
 
     let app = http::router(state);
 

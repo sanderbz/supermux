@@ -22,8 +22,10 @@
 
 pub mod path_safe;
 pub mod range;
+pub mod transport;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
@@ -35,11 +37,13 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::db;
 use crate::error::AppError;
 use crate::state::AppState;
+
+use transport::FileTransport;
 
 const CACHE_HEADER: &str = "private, max-age=3600, immutable";
 const TEXT_LIMIT: usize = 200 * 1024; // 200 KB
@@ -101,6 +105,11 @@ struct LsQuery {
     path: String,
     #[serde(default)]
     hidden: Option<String>,
+    /// REMOTE_PLAN §RT6: when set, the named session's `host_id` (if any)
+    /// picks the remote SSH transport. Absent / unknown → local FS (the
+    /// legacy contract — every existing caller keeps working).
+    #[serde(default)]
+    session: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +117,8 @@ struct FileQuery {
     path: String,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +127,8 @@ struct PutBody {
     content: String,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +136,8 @@ struct DeleteBody {
     path: String,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,28 +158,75 @@ struct AutocompleteQuery {
     hidden: Option<String>,
 }
 
+// ────────────────────────── transport resolution ──────────────────────────
+
+/// Look up the [`FileTransport`] for an optional `session` name. Missing /
+/// unknown session → local FS (the legacy behaviour, byte-for-byte). A known
+/// session whose `host_id` is `NULL` is also local. Only when the session
+/// row has a non-NULL `host_id` do we dispatch via `SshFileTransport`.
+async fn transport_for_session(
+    state: &AppState,
+    session: Option<&str>,
+) -> Result<Arc<dyn FileTransport>, AppError> {
+    let host_id = match session {
+        None => None,
+        Some(name) => match db::sessions::get(&state.pool, name).await {
+            Ok(Some(s)) => s.host_id,
+            // Unknown session is NOT an error — the caller may simply not have
+            // a session context (the legacy contract). The endpoint operates
+            // on the local FS in that case.
+            Ok(None) => None,
+            Err(e) => return Err(AppError::Internal(e.into())),
+        },
+    };
+    Ok(transport::resolve(&state.host_pool, host_id))
+}
+
+/// Path-safety + transport in one. Local transports go through the original
+/// `resolve_safe` (canonicalize, blocklist, jail). Remote transports go
+/// through the text-based blocklist (`resolve_safe_remote`) — we cannot
+/// canonicalize a remote path against our local FS.
+async fn safe_path(
+    transport: &Arc<dyn FileTransport>,
+    input: &str,
+    jail: Option<&Path>,
+) -> Result<PathBuf, AppError> {
+    let is_local = is_local_transport(transport);
+    if is_local {
+        Ok(path_safe::resolve_safe(input, jail).await?)
+    } else {
+        // The jail is a LOCAL FS concept; it doesn't apply to remote paths
+        // (the global browser never sets one anyway). Honor only the blocklist.
+        Ok(path_safe::resolve_safe_remote(input)?)
+    }
+}
+
+/// True iff `transport` is the local-FS impl. Used to pick the right path
+/// safety routine and to keep the local hot-path on `tokio::fs` (`O_NOFOLLOW`
+/// + Range seek) rather than the trait's full-file `read()`.
+fn is_local_transport(transport: &Arc<dyn FileTransport>) -> bool {
+    transport.is_local()
+}
+
 // ──────────────────────────────── handlers ─────────────────────────────────
 
 /// `GET /api/ls` — list a directory's entries.
-async fn ls(State(_state): State<AppState>, Query(q): Query<LsQuery>) -> Result<Json<Value>, AppError> {
-    let abs = path_safe::resolve_safe(&to_abs(&q.path, None), None).await?;
+async fn ls(State(state): State<AppState>, Query(q): Query<LsQuery>) -> Result<Json<Value>, AppError> {
+    let transport = transport_for_session(&state, q.session.as_deref()).await?;
+    let abs = safe_path(&transport, &to_abs(&q.path, None), None).await?;
     let show_hidden = is_truthy(q.hidden.as_deref());
 
-    let mut rd = tokio::fs::read_dir(&abs).await.map_err(map_io)?;
-    let mut entries: Vec<Value> = Vec::new();
-    while let Some(entry) = rd.next_entry().await.map_err(map_io)? {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !show_hidden && name.starts_with('.') {
+    let raw = transport.list_dir(&abs).await.map_err(map_transport)?;
+    let mut entries: Vec<Value> = Vec::with_capacity(raw.len());
+    for e in raw {
+        if !show_hidden && e.name.starts_with('.') {
             continue;
         }
-        let Ok(meta) = entry.metadata().await else {
-            continue;
-        };
         entries.push(json!({
-            "name": name,
-            "type": if meta.is_dir() { "dir" } else { "file" },
-            "size": meta.len(),
-            "modified": mtime_unix(&meta),
+            "name": e.name,
+            "type": if e.is_dir { "dir" } else { "file" },
+            "size": e.size.unwrap_or(0),
+            "modified": e.modified.unwrap_or(0),
         }));
     }
     // Directories first, then by name — a stable, predictable order.
@@ -185,15 +247,17 @@ async fn ls(State(_state): State<AppState>, Query(q): Query<LsQuery>) -> Result<
 
 /// `GET /api/file` — read a file with a type-aware JSON envelope (§3.2).
 async fn get_file(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(q): Query<FileQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let abs = path_safe::resolve_safe(&to_abs(&q.path, q.cwd.as_deref()), None).await?;
-    let meta = tokio::fs::metadata(&abs).await.map_err(map_io)?;
-    if meta.is_dir() {
+    let transport = transport_for_session(&state, q.session.as_deref()).await?;
+    let abs = safe_path(&transport, &to_abs(&q.path, q.cwd.as_deref()), None).await?;
+    let stat = transport.stat(&abs).await.map_err(map_transport)?;
+    if stat.is_dir {
         return Err(AppError::BadRequest("path is a directory".into()));
     }
-    let size = meta.len();
+    let size = stat.size;
+    let modified = stat.modified;
     let ext = extension_lower(&abs);
     let path_str = abs.to_string_lossy().into_owned();
 
@@ -201,7 +265,7 @@ async fn get_file(
         if size > IMAGE_MAX {
             return Err(AppError::BadRequest("image exceeds 5 MB".into()));
         }
-        let bytes = read_all(&abs).await?;
+        let bytes = read_all(&transport, &abs).await?;
         let mime = mime_for(&abs);
         let data_url = format!("data:{mime};base64,{}", b64_standard().encode(&bytes));
         return Ok(Json(json!({
@@ -213,7 +277,7 @@ async fn get_file(
         if size > PDF_MAX {
             return Err(AppError::BadRequest("pdf exceeds 10 MB".into()));
         }
-        let bytes = read_all(&abs).await?;
+        let bytes = read_all(&transport, &abs).await?;
         let data_url = format!("data:application/pdf;base64,{}", b64_standard().encode(&bytes));
         return Ok(Json(json!({ "path": path_str, "is_pdf": true, "data_url": data_url })));
     }
@@ -221,7 +285,7 @@ async fn get_file(
     if VIDEO_EXTS.contains(&ext.as_str()) {
         return Ok(Json(json!({
             "path": path_str, "is_video": true, "mime": mime_for(&abs),
-            "size": size, "modified": mtime_unix(&meta),
+            "size": size, "modified": modified,
         })));
     }
 
@@ -232,7 +296,7 @@ async fn get_file(
     }
 
     // Binary sniff: a NUL byte in the first 8 KB.
-    let head = read_head(&abs, 8192).await?;
+    let head = read_head(&transport, &abs, 8192).await?;
     if head.contains(&0) {
         return Ok(Json(json!({
             "path": path_str, "is_binary": true, "size": size, "ext": ext,
@@ -241,7 +305,7 @@ async fn get_file(
 
     // Text.
     let limit = if matches!(ext.as_str(), "csv" | "tsv") { CSV_LIMIT } else { TEXT_LIMIT };
-    let (content, truncated) = read_text(&abs, limit).await?;
+    let (content, truncated) = read_text(&transport, &abs, limit).await?;
     Ok(Json(json!({
         "path": path_str,
         "content": content,
@@ -262,16 +326,29 @@ async fn put_file(
         return Err(AppError::Forbidden("file extension is not writable".into()));
     }
 
+    let transport = transport_for_session(&state, body.session.as_deref()).await?;
     // resolve_safe canonicalizes the nearest existing ancestor, so a brand-new
     // (non-existent) target resolves without 500ing (Codex #3 regression).
-    let abs = path_safe::resolve_safe(&raw, None).await?;
-    if let Some(parent) = abs.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(map_io)?;
-    }
+    let abs = safe_path(&transport, &raw, None).await?;
 
-    let mut f = path_safe::safe_open_write(&abs).await.map_err(map_io)?;
-    f.write_all(body.content.as_bytes()).await.map_err(map_io)?;
-    f.flush().await.map_err(map_io)?;
+    // For the LOCAL transport keep the old `safe_open_write` (`O_NOFOLLOW`)
+    // hot path — it defends a TOCTOU symlink swap on the final component.
+    // The remote transport's atomic-rename `write` provides the same property
+    // at the SSH layer (a writer can't race the rename into a symlink target
+    // we don't own).
+    if is_local_transport(&transport) {
+        if let Some(parent) = abs.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(map_io)?;
+        }
+        let mut f = path_safe::safe_open_write(&abs).await.map_err(map_io)?;
+        f.write_all(body.content.as_bytes()).await.map_err(map_io)?;
+        f.flush().await.map_err(map_io)?;
+    } else {
+        transport
+            .write(&abs, body.content.as_bytes())
+            .await
+            .map_err(map_transport)?;
+    }
 
     db::audit::log(
         &state.pool,
@@ -287,18 +364,27 @@ async fn put_file(
 }
 
 /// `GET /api/file/raw` — stream bytes with Range + ETag (§3.7).
+///
+/// REMOTE_PLAN §RT6 LIMITATION: native byte-range reads only work for the
+/// LOCAL transport (which can `O_NOFOLLOW` + `seek`). Remote requests with a
+/// `Range:` header materialise the full file in memory on the server, slice
+/// the requested window, and return `206 Partial Content`. That's correct
+/// (the FE only ever sends single ranges for `<video>`/`<audio>` resume) but
+/// it's NOT efficient for huge remote files — a future russh-sftp swap would
+/// give us native partial reads.
 async fn get_raw(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<FileQuery>,
 ) -> Result<Response<Body>, AppError> {
-    let abs = path_safe::resolve_safe(&to_abs(&q.path, q.cwd.as_deref()), None).await?;
-    let meta = tokio::fs::metadata(&abs).await.map_err(map_io)?;
-    if meta.is_dir() {
+    let transport = transport_for_session(&state, q.session.as_deref()).await?;
+    let abs = safe_path(&transport, &to_abs(&q.path, q.cwd.as_deref()), None).await?;
+    let stat = transport.stat(&abs).await.map_err(map_transport)?;
+    if stat.is_dir {
         return Err(AppError::BadRequest("path is a directory".into()));
     }
-    let total = meta.len();
-    let etag = range::etag(mtime_unix(&meta), total);
+    let total = stat.size;
+    let etag = range::etag(stat.modified, total);
     let mime = mime_for(&abs);
 
     // Conditional GET.
@@ -316,10 +402,21 @@ async fn get_raw(
     if let Some(rh) = header_str(&headers, header::RANGE) {
         match range::parse_range(&rh, total) {
             Some(r) => {
-                let mut f = path_safe::safe_open_read(&abs).await.map_err(map_io)?;
-                f.seek(std::io::SeekFrom::Start(r.start)).await.map_err(map_io)?;
-                let mut buf = vec![0u8; r.len() as usize];
-                f.read_exact(&mut buf).await.map_err(map_io)?;
+                let buf = if is_local_transport(&transport) {
+                    // Local hot path: O_NOFOLLOW + seek, only read the window.
+                    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                    let mut f = path_safe::safe_open_read(&abs).await.map_err(map_io)?;
+                    f.seek(std::io::SeekFrom::Start(r.start)).await.map_err(map_io)?;
+                    let mut buf = vec![0u8; r.len() as usize];
+                    f.read_exact(&mut buf).await.map_err(map_io)?;
+                    buf
+                } else {
+                    // Remote: full read then slice. See doc-comment above.
+                    let all = transport.read(&abs).await.map_err(map_transport)?;
+                    let start = r.start as usize;
+                    let end = (r.end as usize + 1).min(all.len());
+                    all.get(start..end).unwrap_or(&[]).to_vec()
+                };
                 let content_range = format!("bytes {}-{}/{}", r.start, r.end, total);
                 let len = r.len().to_string();
                 return build(
@@ -347,7 +444,7 @@ async fn get_raw(
     }
 
     // Full body.
-    let bytes = read_all(&abs).await?;
+    let bytes = read_all(&transport, &abs).await?;
     let len = total.to_string();
     build(
         StatusCode::OK,
@@ -364,20 +461,27 @@ async fn get_raw(
 
 /// `POST /api/fs/upload` — multipart upload into a chosen directory.
 async fn fs_upload(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     mut mp: Multipart,
 ) -> Result<Json<Value>, AppError> {
     let mut dir: Option<String> = None;
+    let mut session: Option<String> = None;
     let mut files: Vec<(String, bytes::Bytes)> = Vec::new();
     let mut total: u64 = 0;
 
     while let Some(field) = mp.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         match field.file_name().map(|s| s.to_string()) {
-            None => {
-                if field.name() == Some("dir") {
+            None => match field.name() {
+                Some("dir") => {
                     dir = Some(field.text().await.map_err(|e| AppError::BadRequest(e.to_string()))?);
                 }
-            }
+                Some("session") => {
+                    session = Some(
+                        field.text().await.map_err(|e| AppError::BadRequest(e.to_string()))?,
+                    );
+                }
+                _ => {}
+            },
             Some(fname) => {
                 let data = field.bytes().await.map_err(|e| AppError::BadRequest(e.to_string()))?;
                 total += data.len() as u64;
@@ -390,18 +494,27 @@ async fn fs_upload(
     }
 
     let dir = dir.ok_or_else(|| AppError::BadRequest("missing `dir` field".into()))?;
-    let dir_abs = path_safe::resolve_safe(&to_abs(&dir, None), None).await?;
-    let dir_meta = tokio::fs::metadata(&dir_abs).await.map_err(map_io)?;
-    if !dir_meta.is_dir() {
+    let transport = transport_for_session(&state, session.as_deref()).await?;
+    let dir_abs = safe_path(&transport, &to_abs(&dir, None), None).await?;
+    let dir_stat = transport.stat(&dir_abs).await.map_err(map_transport)?;
+    if !dir_stat.is_dir {
         return Err(AppError::BadRequest("`dir` is not a directory".into()));
     }
 
     let mut saved = Vec::new();
     for (raw_name, data) in files {
-        let target = dedupe_path(&dir_abs, &sanitize_filename(&raw_name)).await;
-        let mut f = path_safe::safe_open_write(&target).await.map_err(map_io)?;
-        f.write_all(&data).await.map_err(map_io)?;
-        f.flush().await.map_err(map_io)?;
+        let target = if is_local_transport(&transport) {
+            dedupe_path_local(&dir_abs, &sanitize_filename(&raw_name)).await
+        } else {
+            dedupe_path_remote(&transport, &dir_abs, &sanitize_filename(&raw_name)).await
+        };
+        if is_local_transport(&transport) {
+            let mut f = path_safe::safe_open_write(&target).await.map_err(map_io)?;
+            f.write_all(&data).await.map_err(map_io)?;
+            f.flush().await.map_err(map_io)?;
+        } else {
+            transport.write(&target, &data).await.map_err(map_transport)?;
+        }
         saved.push(json!({
             "name": target.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
             "size": data.len(),
@@ -412,16 +525,27 @@ async fn fs_upload(
 }
 
 /// `DELETE /api/fs/delete` — remove a file (or a directory, recursively).
+///
+/// REMOTE_PLAN §RT6 LIMITATION: over the remote transport, directory deletes
+/// are REFUSED (a stray `rm -rf` over the wire is too easy to misuse). The
+/// remote transport returns an error which surfaces as 400 here. Local
+/// deletes keep their full recursive semantics.
 async fn fs_delete(
     State(state): State<AppState>,
     Json(body): Json<DeleteBody>,
 ) -> Result<Json<Value>, AppError> {
-    let abs = path_safe::resolve_safe(&to_abs(&body.path, body.cwd.as_deref()), None).await?;
-    let meta = tokio::fs::symlink_metadata(&abs).await.map_err(map_io)?;
-    if meta.is_dir() {
-        tokio::fs::remove_dir_all(&abs).await.map_err(map_io)?;
+    let transport = transport_for_session(&state, body.session.as_deref()).await?;
+    let abs = safe_path(&transport, &to_abs(&body.path, body.cwd.as_deref()), None).await?;
+
+    if is_local_transport(&transport) {
+        let meta = tokio::fs::symlink_metadata(&abs).await.map_err(map_io)?;
+        if meta.is_dir() {
+            tokio::fs::remove_dir_all(&abs).await.map_err(map_io)?;
+        } else {
+            tokio::fs::remove_file(&abs).await.map_err(map_io)?;
+        }
     } else {
-        tokio::fs::remove_file(&abs).await.map_err(map_io)?;
+        transport.delete(&abs).await.map_err(map_transport)?;
     }
 
     db::audit::log(&state.pool, "user", "file.delete", &abs.to_string_lossy(), json!({}))
@@ -694,14 +818,6 @@ fn mime_for(p: &Path) -> String {
     mime_guess::from_path(p).first_or_octet_stream().to_string()
 }
 
-fn mtime_unix(meta: &std::fs::Metadata) -> i64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 fn b64_standard() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
@@ -723,42 +839,80 @@ fn build(
     b.body(body).map_err(|e| AppError::Internal(anyhow::Error::new(e)))
 }
 
-async fn read_all(path: &Path) -> Result<Vec<u8>, AppError> {
-    let mut f = path_safe::safe_open_read(path).await.map_err(map_io)?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).await.map_err(map_io)?;
-    Ok(buf)
+/// Full-file read. The LOCAL transport uses `safe_open_read` (`O_NOFOLLOW`)
+/// for TOCTOU symlink defense; the remote transport delegates to the trait's
+/// `read()` (a `cat` shell-out — no symlink-swap window because the open and
+/// read happen on the remote in one syscall pair).
+async fn read_all(transport: &Arc<dyn FileTransport>, path: &Path) -> Result<Vec<u8>, AppError> {
+    if is_local_transport(transport) {
+        use tokio::io::AsyncReadExt;
+        let mut f = path_safe::safe_open_read(path).await.map_err(map_io)?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf).await.map_err(map_io)?;
+        Ok(buf)
+    } else {
+        transport.read(path).await.map_err(map_transport)
+    }
 }
 
-async fn read_head(path: &Path, n: usize) -> Result<Vec<u8>, AppError> {
-    let mut f = path_safe::safe_open_read(path).await.map_err(map_io)?;
-    let mut buf = vec![0u8; n];
-    let read = f.read(&mut buf).await.map_err(map_io)?;
-    buf.truncate(read);
-    Ok(buf)
+/// Read up to `n` bytes (no Vec pre-allocation past what we read). Used for
+/// the 8 KB binary-sniff in `get_file`. Remote transports do a full read and
+/// slice the head — small remote files are common, and we'd `cat` the file
+/// anyway for the text body that usually follows the sniff.
+async fn read_head(
+    transport: &Arc<dyn FileTransport>,
+    path: &Path,
+    n: usize,
+) -> Result<Vec<u8>, AppError> {
+    if is_local_transport(transport) {
+        use tokio::io::AsyncReadExt;
+        let mut f = path_safe::safe_open_read(path).await.map_err(map_io)?;
+        let mut buf = vec![0u8; n];
+        let read = f.read(&mut buf).await.map_err(map_io)?;
+        buf.truncate(read);
+        Ok(buf)
+    } else {
+        let all = transport.read(path).await.map_err(map_transport)?;
+        let take = all.len().min(n);
+        Ok(all[..take].to_vec())
+    }
 }
 
 /// Read up to `limit` bytes as lossy UTF-8; the second tuple element is `true`
 /// when the file was longer than `limit` (and thus truncated).
-async fn read_text(path: &Path, limit: usize) -> Result<(String, bool), AppError> {
-    let mut f = path_safe::safe_open_read(path).await.map_err(map_io)?;
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = vec![0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut chunk).await.map_err(map_io)?;
-        if n == 0 {
-            break;
+async fn read_text(
+    transport: &Arc<dyn FileTransport>,
+    path: &Path,
+    limit: usize,
+) -> Result<(String, bool), AppError> {
+    if is_local_transport(transport) {
+        use tokio::io::AsyncReadExt;
+        let mut f = path_safe::safe_open_read(path).await.map_err(map_io)?;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            let n = f.read(&mut chunk).await.map_err(map_io)?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.len() > limit {
+                break;
+            }
         }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > limit {
-            break;
+        let truncated = buf.len() > limit;
+        if truncated {
+            buf.truncate(limit);
         }
+        Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
+    } else {
+        let mut buf = transport.read(path).await.map_err(map_transport)?;
+        let truncated = buf.len() > limit;
+        if truncated {
+            buf.truncate(limit);
+        }
+        Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
     }
-    let truncated = buf.len() > limit;
-    if truncated {
-        buf.truncate(limit);
-    }
-    Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
 }
 
 /// Replace any character outside `[\w.\- ]` with `_` (feature-extract §3.5).
@@ -778,7 +932,8 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Pick a non-colliding path in `dir`, appending `_N` before the extension.
-async fn dedupe_path(dir: &Path, name: &str) -> PathBuf {
+/// Local-FS variant — uses `tokio::fs::try_exists` directly.
+async fn dedupe_path_local(dir: &Path, name: &str) -> PathBuf {
     let candidate = dir.join(name);
     if !tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
         return candidate;
@@ -793,6 +948,35 @@ async fn dedupe_path(dir: &Path, name: &str) -> PathBuf {
         };
         let path = dir.join(&trial);
         if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            return path;
+        }
+    }
+    dir.join(format!("{}-{}", uuid::Uuid::new_v4().simple(), name))
+}
+
+/// Remote-transport variant of [`dedupe_path_local`]. Probes existence via
+/// `transport.stat(...).is_ok()` — one ssh round-trip per probe, so a busy
+/// dir is more expensive than the local case, but a fresh upload typically
+/// finds an uncontended name on the first try.
+async fn dedupe_path_remote(
+    transport: &Arc<dyn FileTransport>,
+    dir: &Path,
+    name: &str,
+) -> PathBuf {
+    let candidate = dir.join(name);
+    if transport.stat(&candidate).await.is_err() {
+        return candidate;
+    }
+    let p = Path::new(name);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = p.extension().map(|s| s.to_string_lossy().into_owned());
+    for i in 1..10_000 {
+        let trial = match &ext {
+            Some(e) => format!("{stem}_{i}.{e}"),
+            None => format!("{stem}_{i}"),
+        };
+        let path = dir.join(&trial);
+        if transport.stat(&path).await.is_err() {
             return path;
         }
     }
@@ -859,6 +1043,25 @@ async fn purge_old_uploads(dir: &Path) {
                 }
             }
         }
+    }
+}
+
+/// Map a transport-layer (`anyhow::Error`) failure to an HTTP error. We use a
+/// best-effort string-sniff to pick between 404 / 403 / 500 — the underlying
+/// SSH layer doesn't always preserve a `std::io::ErrorKind` through the
+/// shell-out, so we fall back to inspecting the stderr we captured.
+fn map_transport(e: anyhow::Error) -> AppError {
+    let msg = format!("{e:#}");
+    let lower = msg.to_lowercase();
+    if lower.contains("no such file or directory") || lower.contains("not found") {
+        AppError::NotFound(msg)
+    } else if lower.contains("permission denied")
+        || lower.contains("operation not permitted")
+        || lower.contains("refusing to")
+    {
+        AppError::Forbidden(msg)
+    } else {
+        AppError::Internal(e)
     }
 }
 

@@ -45,6 +45,11 @@ pub struct Session {
     /// config to / from `~/.claude/teams/.archived/` so an archived team can't
     /// shadow a new team that lands in the same cwd.
     pub team_name: Option<String>,
+    /// FK into `hosts(id)` for remote sessions, `NULL` for local (RT4 of the
+    /// remote-ssh plan, migration 0018). The entire pre-RT4 fleet backfills to
+    /// `NULL` so existing call sites that don't yet pass a host_id keep their
+    /// local-only semantics.
+    pub host_id: Option<i64>,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).
@@ -284,10 +289,10 @@ pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Re
         "INSERT INTO sessions
             (name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             created_at)
+             host_id, created_at)
          SELECT ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                ?
+                host_id, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)
