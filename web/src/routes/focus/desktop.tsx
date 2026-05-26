@@ -32,21 +32,31 @@ import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { CONFIRM } from '@/brand/copy'
 import { DesktopSplit } from '@/components/focus-mode/desktop-split'
 import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
+import { useTeams } from '@/hooks/use-teams'
+import type { Team } from '@/lib/api/teams'
 import type { TileSession } from '@/components/session-tile/types'
 
 export interface DesktopFocusProps {
   /** DEV-only mock injection (the /dev/focus verification page). Production omits
    *  it → the real `useSessions` store. */
   mockSessions?: TileSession[]
+  /** DEV-only mock teams injection (the /dev/focus verification page). Production
+   *  omits it → the real `useTeams` store. */
+  mockTeams?: Team[]
 }
 
-export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
+export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}) {
   const { name = '' } = useParams()
   // View-Transition navigate (§M23a): focus→overview plays the reverse morph,
   // focus→focus cross-fades the main pane. Falls back to a plain navigate where
   // the API is unsupported / reduced-motion is set.
   const navigate = useNavigateMorph()
   const { sessions, current } = useFocusSessions(name, mockSessions)
+  // Detected Agent Teams — the SAME shared `['teams']` cache the overview TEAM
+  // CARD reads (GET on mount, then SSE-live). Mock injection bypasses the hook's
+  // network so the /dev/focus harness can eyeball team states offline.
+  const liveTeams = useTeams()
+  const teams = mockTeams ?? liveTeams.teams
 
   const onSelect = React.useCallback(
     (next: string) => navigate(`/focus/${encodeURIComponent(next)}`),
@@ -77,6 +87,7 @@ export function DesktopFocus({ mockSessions }: DesktopFocusProps = {}) {
       name={name}
       sessions={sessions}
       current={current}
+      teams={teams}
       onSelect={onSelect}
       onDetach={onDetach}
       onStop={onStop}
