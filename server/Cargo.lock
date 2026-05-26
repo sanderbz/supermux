@@ -3266,6 +3266,7 @@ name = "supermux-server"
 version = "3.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "axum-server",
  "base64 0.22.1",

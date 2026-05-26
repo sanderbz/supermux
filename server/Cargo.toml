@@ -87,6 +87,7 @@ url = "2.5"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 dirs = "5.0"                                             # home dir
 which = "7.0"                                            # locate claude/tmux
+async-trait = "0.1"                                      # trait objects with async fns (RT3 PtyReader)
 
 [dev-dependencies]
 tokio-test = "0.4"
