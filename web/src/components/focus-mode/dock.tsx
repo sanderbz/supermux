@@ -571,28 +571,56 @@ export function MobileDock({
           appears while the soft keyboard is open — when it's down the user is
           not in a typing context, so the affordance is just noise. Desktop has
           no soft keyboard (its Edit IconButton lives in DesktopDock above and
-          is always visible — correct there). Gated at the include site so no
-          empty pill ever renders (no flash, no in/out animation of nothing).
+          is always visible — correct there).
+
+          UNMOUNT-RACE FIX: the previous mount-gate (`{keyboardOpen && <…>}`)
+          tore ComposeField out of the DOM the moment `keyboardOpen` flipped
+          false. A tap on ✎ Edit at the EXACT instant the keyboard began
+          dismissing would lose its `pointerUp` (unmount kills the in-flight
+          gesture) → the user's intentional tap was silently swallowed. We now
+          ALWAYS MOUNT the field and toggle `pointer-events-none opacity-0
+          invisible` via class instead — a tap landed BEFORE the class flips
+          still resolves because the element stays in the DOM. (The chosen
+          implementation is the simpler "always mount, style-gate" alternative
+          from the Principle critic's two options; a deferred-lag hook is
+          unnecessary here because there is no fade-in to preserve.)
+
           A `data-vr-keyboard-gated` attribute on the wrapper lets the visual-
-          regression battery assert the gating: child present = keyboard up;
-          child absent = keyboard down. */}
+          regression battery assert the visible gating: data-vr-keyboard-open
+          reflects the keyboard's CURRENT state (true = pill visible + hittable;
+          false = pill invisible + unhittable, but still mounted). */}
       <div className="flex items-center gap-1">
+        {/* Style-gate (not mount-gate): when the keyboard is down the field is
+            fully transparent + unhittable, but stays MOUNTED so an in-flight
+            tap (pointerDown landed while keyboardOpen=true) completes its
+            pointerUp even if the keyboard begins dismissing mid-gesture. The
+            `invisible` class drops it from AT/Tab order; `pointer-events-none`
+            blocks fresh taps; `opacity-0` hides it visually; `w-0 overflow-
+            hidden` collapses its layout box so the dock-icon cluster sits
+            flush-left exactly as when keyboardOpen=false used to unmount. The
+            wrapper is a normal block (NOT `display:contents`) so the hide
+            classes actually take effect on a real DOM box. */}
         <div
           data-vr-keyboard-gated="compose-field"
           data-vr-keyboard-open={keyboardOpen ? 'true' : 'false'}
-          className="contents"
-        >
-          {keyboardOpen && (
-            <ComposeField
-              current={current}
-              prevSession={prevSession}
-              nextSession={nextSession}
-              onTap={onOpenPicker}
-              onSwitch={onSwitchSession}
-              onEdit={onEdit}
-              editOpen={editOpen}
-            />
+          className={cn(
+            'flex shrink-0 items-center',
+            // When the keyboard is down: hide visually, drop layout, ignore
+            // pointer events, hide from AT. When up: a normal flex item that
+            // wraps ComposeField (which has its own `max-w-[40%]` cap).
+            !keyboardOpen && 'invisible w-0 overflow-hidden opacity-0 pointer-events-none',
           )}
+          aria-hidden={!keyboardOpen || undefined}
+        >
+          <ComposeField
+            current={current}
+            prevSession={prevSession}
+            nextSession={nextSession}
+            onTap={onOpenPicker}
+            onSwitch={onSwitchSession}
+            onEdit={onEdit}
+            editOpen={editOpen}
+          />
         </div>
 
         <DockIcon

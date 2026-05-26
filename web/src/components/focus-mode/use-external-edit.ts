@@ -34,6 +34,7 @@ import * as React from 'react'
 
 import { sessionsApi } from '@/lib/api/sessions'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
+import { useToast } from '@/components/ui/use-toast'
 import {
   initialEditState,
   isSheetOpen,
@@ -41,6 +42,12 @@ import {
   type EditPhase,
   type EditState,
 } from './external-edit-machine'
+
+/** Client-side ceiling on the bridge round-trip. If `pending` doesn't transition
+ *  to `ready` within this window we synthesize a local `cancelled` + surface a
+ *  toast — protects against an infinite "Loading your prompt…" when WS/SSE
+ *  disconnects mid-flight (the bridge's eventual cancelled SSE can't reach us). */
+const PENDING_TIMEOUT_MS = 15_000
 
 /** The `external-edit` SSE payload (mirrors the server's `open` broadcast).
  *  An optional `cancelled` field lets the bridge report a timed-out edit. */
@@ -62,14 +69,34 @@ export interface UseExternalEditResult {
   /** The buffer text to seed the textarea with (Claude's current `❯` input).
    *  Empty while pending (skeleton up); populated when ready. */
   buffer: string
+  /** The bridge correlation id — `null` while closed/pending, populated when
+   *  `arrived` fires. Surfaced so the sheet can `key` its EditorBody on the
+   *  requestId (NOT on the buffer); a redundant `arrived` SSE for the SAME
+   *  requestId (e.g. an SSE reconnect replay) then re-renders with the same key,
+   *  no remount, in-progress textarea state survives. Keying on buffer would
+   *  cause an identical-buffer re-fire to clobber the user's edits. */
+  requestId: string | null
   /** Optimistic-open trigger — the caller invokes this on the ✎ Edit tap. It
    *  flips the machine to `pending` (sheet renders skeleton THIS frame) and the
    *  caller is expected to send Ctrl+G to the pty in the same tick (we don't
-   *  send Ctrl+G here — the caller owns the pty handle). */
-  requestOpen: () => void
-  /** Controlled close — a dismiss (false) CANCELS the in-flight edit. From
-   *  `pending` (buffer never arrived) we still call the submit endpoint with
-   *  `cancelled:true` — but the requestId is null then, so we just swallow. */
+   *  send Ctrl+G here — the caller owns the pty handle).
+   *
+   *  Returns `true` if the machine transitioned `closed`→`pending` (so the
+   *  caller SHOULD fire Ctrl+G), or `false` if the call was a no-op because we
+   *  were already `pending`/`ready` (a rapid double-tap, or a sheet still up).
+   *  Use the return to gate the Ctrl+G dispatch — a 2nd bridge round-trip with
+   *  an empty buffer can otherwise race the first and clobber an in-progress
+   *  textarea. */
+  requestOpen: () => boolean
+  /** Controlled close — `setOpen(false)` CANCELS the in-flight edit (from
+   *  `pending` the requestId is null so the dismiss is local-only; from `ready`
+   *  it POSTs `cancelled:true`).
+   *
+   *  `setOpen(true)` is a NO-OP — opening must go through `requestOpen()`
+   *  (which the call sites use, paired with a Ctrl+G to the pty). A `setOpen(true)`
+   *  from a future Drawer-style consumer would otherwise flip the machine to
+   *  `pending` WITHOUT firing Ctrl+G, leaving the sheet stuck on its skeleton
+   *  forever (no bridge round-trip → no `arrived` → no `ready`). */
   setOpen: (open: boolean) => void
   /** Save the edited text back to Claude's buffer (Done). Closes the sheet.
    *  Does NOT submit the prompt — Claude leaves the text at `❯` for the user. */
@@ -128,6 +155,34 @@ export function useExternalEdit(session: string): UseExternalEditResult {
   // itself is already open for the overview/board.
   useSse(React.useMemo(() => ({ onEvent }), [onEvent]))
 
+  // Client-side pending timeout (Fix 5 — skeleton-stuck guard). If WS/SSE
+  // disconnects while the bridge round-trip is in flight, the eventual
+  // `cancelled` SSE can never reach this client and the sheet would sit on
+  // "Loading your prompt…" forever. Mirror the cancelled path locally on a 15s
+  // ceiling: dispatch a local `cancelled` (closes the sheet) + surface a toast.
+  // Effect-cleanup clears the timer on any transition OUT of pending (ready,
+  // cancelled, close), so the on-time `arrived`/explicit-close paths cost
+  // nothing.
+  const { toast } = useToast()
+  React.useEffect(() => {
+    if (state.phase !== 'pending') return
+    const timer = window.setTimeout(() => {
+      dispatch({ type: 'cancelled' })
+      toast({
+        message: 'Editor timed out — tap Edit again to retry.',
+        tone: 'error',
+      })
+      // VR marker — a transient attribute on <html> so the visual-regression
+      // battery can assert the timeout fired. Cleared after the toast's default
+      // dismiss window (2500ms) so it doesn't linger across navigations.
+      document.documentElement.setAttribute('data-vr-edit-timeout', 'true')
+      window.setTimeout(() => {
+        document.documentElement.removeAttribute('data-vr-edit-timeout')
+      }, 2500)
+    }, PENDING_TIMEOUT_MS)
+    return () => window.clearTimeout(timer)
+  }, [state.phase, toast])
+
   // Resolve the in-flight edit, then close. A stale/expired requestId → 409,
   // swallowed (the bridge already timed out; the sheet just closes). From
   // `pending` (no buffer yet → no requestId) we just close locally; the bridge
@@ -153,18 +208,27 @@ export function useExternalEdit(session: string): UseExternalEditResult {
   // with a skeleton) — the CALLER then sends Ctrl+G to the pty in the same tick.
   // Splitting "open the sheet" from "fire the pty signal" keeps this hook free
   // of the pty handle.
-  const requestOpen = React.useCallback(() => {
+  //
+  // The return value mirrors the reducer's `request` guard: `true` iff we
+  // transitioned `closed`→`pending` (caller SHOULD send Ctrl+G), `false` if the
+  // sheet was already up (caller MUST NOT fire a 2nd Ctrl+G — a rapid double-tap
+  // would otherwise queue a 2nd bridge round-trip whose empty-buffer arrival
+  // could clobber an in-progress textarea).
+  const requestOpen = React.useCallback((): boolean => {
+    const willTransition = stateRef.current.phase === 'closed'
     dispatch({ type: 'request' })
+    return willTransition
   }, [])
 
-  // Controlled close: any dismiss (backdrop, Cancel, swipe-confirm-discard)
-  // CANCELS the edit so Claude's buffer is left unchanged.
+  // Controlled close: `setOpen(false)` is the dismiss/cancel path (backdrop,
+  // Cancel, swipe-confirm-discard). `setOpen(true)` is a deliberate NO-OP —
+  // opening MUST go through `requestOpen()` so the caller can pair the optimistic
+  // open with a Ctrl+G to the pty. A `setOpen(true)` from a future Drawer-style
+  // `onOpenChange` consumer would otherwise flip to `pending` without a bridge
+  // in flight, stranding the sheet on its skeleton forever.
   const setOpen = React.useCallback(
     (next: boolean) => {
-      if (next) {
-        dispatch({ type: 'request' })
-        return
-      }
+      if (next) return // no-op — see JSDoc; open via requestOpen()
       resolve({ cancelled: true })
     },
     [resolve],
@@ -179,6 +243,7 @@ export function useExternalEdit(session: string): UseExternalEditResult {
     open: isSheetOpen(state),
     phase: state.phase,
     buffer: state.buffer,
+    requestId: state.requestId,
     requestOpen,
     setOpen,
     save,

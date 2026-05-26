@@ -105,6 +105,13 @@ export interface MobileComposeSheetProps {
   /** The buffer text to seed the textarea with — Claude's current `❯` input,
    *  delivered over the `external-edit` SSE event. Empty/ignored while pending. */
   buffer: string
+  /** The bridge correlation id — the EditorBody is key'd on this so a redundant
+   *  `arrived` SSE for the SAME requestId (an SSE reconnect replay, server
+   *  re-broadcast) re-renders with the same key and DOES NOT remount → an
+   *  in-progress textarea's state survives. Keying on `buffer` instead would let
+   *  an identical-buffer re-fire clobber the user's mid-edit text. `null` while
+   *  pending (no requestId yet); never null when `phase === 'ready'`. */
+  requestId: string | null
   /** Save the edited text back into Claude's input buffer. Receives the FINAL text
    *  (edited body + any attachment path sentence), NO trailing Enter — the text
    *  lands at Claude's `❯` and the user submits with Enter themselves. */
@@ -116,6 +123,7 @@ export function MobileComposeSheet({
   onOpenChange,
   phase,
   buffer,
+  requestId,
   onSave,
 }: MobileComposeSheetProps) {
   const reduce = useReducedMotion()
@@ -261,10 +269,17 @@ export function MobileComposeSheet({
                     <PendingBody reduce={!!reduce} />
                   ) : (
                     <EditorBody
-                      // Re-seed the body whenever the buffer identity changes (a
-                      // new Ctrl+G opens a fresh edit), so the textarea reflects
-                      // Claude's current input each time.
-                      key={`edit-${buffer}`}
+                      // Key on the bridge requestId (NOT the buffer): a fresh
+                      // Ctrl+G gets a new requestId → the body remounts → the
+                      // textarea reflects Claude's new input. A REDUNDANT
+                      // `arrived` SSE for the SAME requestId (SSE reconnect
+                      // replay, server re-broadcast) re-uses the same key → no
+                      // remount → an in-progress textarea's state survives.
+                      // Keying on buffer would let an identical-buffer re-fire
+                      // clobber the user's mid-edit text. `requestId` is
+                      // never-null while phase==='ready' (the reducer sets them
+                      // together), but we coalesce defensively for TS.
+                      key={`edit-${requestId ?? ''}`}
                       reduce={!!reduce}
                       textRef={textRef}
                       buffer={buffer}

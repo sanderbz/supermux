@@ -258,8 +258,13 @@ export function MobileFocus() {
   // sheet flips from skeleton → real textarea when the bridge SSE arrives with
   // Claude's buffer. This collapses the perceived ~5s wait to ~250ms.
   const onEdit = React.useCallback(() => {
-    edit.requestOpen()
-    termRef.current?.sendKey('Ctrl-G')
+    // Gate the Ctrl+G on requestOpen's outcome: a rapid 2nd tap while we're
+    // still `pending` returns false (no transition) — firing another Ctrl+G then
+    // would queue a 2nd bridge round-trip whose empty-buffer arrival could race
+    // the first and clobber an in-progress textarea. One tap, one Ctrl+G.
+    if (edit.requestOpen()) {
+      termRef.current?.sendKey('Ctrl-G')
+    }
   }, [edit])
   // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
   const [infoOpen, setInfoOpen] = React.useState(false)
@@ -463,6 +468,7 @@ export function MobileFocus() {
         onOpenChange={edit.setOpen}
         phase={edit.phase === 'closed' ? 'pending' : edit.phase}
         buffer={edit.buffer}
+        requestId={edit.requestId}
         onSave={edit.save}
       />
 

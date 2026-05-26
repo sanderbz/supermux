@@ -48,11 +48,10 @@ export type EditEvent =
    *  Idempotent from 'pending'/'ready' (a second tap while a sheet is up is a
    *  no-op; the bridge already has one in flight per session). */
   | { type: 'request' }
-  /** The bridge SSE `external-edit` event arrived with Claude's buffer. Moves
-   *  'pending' → 'ready' (the common case) or 'closed' → 'ready' (a buffer
-   *  arrived without a prior tap — e.g. the bridge fired before the user got to
-   *  request; we honor it). From 'ready', this REPLACES the buffer + requestId
-   *  (the prior was superseded server-side). */
+  /** The bridge SSE `external-edit` event arrived with Claude's buffer. ONLY
+   *  honored from 'pending' (the canonical "user just tapped Edit" entry). From
+   *  'closed' or 'ready' this is a no-op — see the reducer for the rationale
+   *  (stale-event race + cross-tab uninvited-open). */
   | { type: 'arrived'; buffer: string; requestId: string }
   /** The bridge reported a cancelled edit (timeout, user pressed Esc in Claude
    *  before the sheet finished, etc.). Close the sheet politely — no error
@@ -75,9 +74,19 @@ export function reduceEdit(state: EditState, event: EditEvent): EditState {
       return state
 
     case 'arrived':
-      // The bridge delivered the buffer. Always honor it — even from 'closed'
-      // (a bridge fired before the user's tap registered, or the focused client
-      // changed) — so the sheet opens pre-filled, never stuck on skeleton.
+      // Tightened invariant: ONLY honored from 'pending'. The user's tap is the
+      // canonical entry to 'pending', so a buffer can only legitimately arrive
+      // for a tap we already saw. Honoring from 'closed'/'ready' opens two real
+      // bugs:
+      //   • A late 'arrived' after 'cancelled' re-opens the sheet with a STALE
+      //     requestId → the eventual save 409s silently (lost edit).
+      //   • Cross-tab: Client B taps Edit; the broadcast `external-edit` SSE
+      //     reaches Client A (same session focused) and would pop an uninvited
+      //     sheet. With this guard A stays 'closed' and ignores the event.
+      // The previous "pre-tap arrival" branch was speculative — in practice the
+      // tap always precedes the bridge round-trip. Ignoring from non-'pending'
+      // is the safe-by-default policy.
+      if (state.phase !== 'pending') return state
       return {
         phase: 'ready',
         buffer: event.buffer,
