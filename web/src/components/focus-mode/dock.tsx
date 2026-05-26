@@ -606,11 +606,15 @@ export function MobileDock({
           className={cn(
             'flex shrink-0 items-center',
             // When the keyboard is down: hide visually, drop layout, ignore
-            // pointer events, hide from AT. When up: a normal flex item that
-            // wraps ComposeField (which has its own `max-w-[40%]` cap).
+            // pointer events. `visibility:hidden` (via `invisible`) ALREADY
+            // removes the subtree from the accessibility tree — adding an
+            // explicit `aria-hidden` here also caused the "aria-hidden on a
+            // focused descendant" warning when the keyboard dismissed while
+            // the inner ComposeField button still held focus. CSS hides it
+            // from AT; the browser will move focus off the now-invisible
+            // button naturally.
             !keyboardOpen && 'invisible w-0 overflow-hidden opacity-0 pointer-events-none',
           )}
-          aria-hidden={!keyboardOpen || undefined}
         >
           <ComposeField
             current={current}
