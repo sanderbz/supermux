@@ -39,6 +39,9 @@ import { StoppedSession } from '@/components/terminal/stopped-session'
 import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useSessions } from '@/hooks/use-sessions'
+import { useTeams } from '@/hooks/use-teams'
+import type { Team, TeamMember } from '@/lib/api/teams'
+import { TeammateFocus } from '@/components/team'
 import type { ApiSession, SessionStatus } from '@/lib/api'
 import { springs } from '@/lib/springs'
 import { StatusDot } from '@/components/session-tile/status-dot'
@@ -80,6 +83,10 @@ export function MobileFocus() {
   const navigateMorph = useNavigateMorph()
   const reduceMotion = useReducedMotion()
   const { sessions } = useSessions()
+  // Detected Agent Teams — the shared `['teams']` cache (GET on mount + SSE-live),
+  // the SAME source the overview TEAM CARD reads. Drives the team-aware picker +
+  // the read-only teammate focus overlay.
+  const { teams } = useTeams()
 
   const current =
     sessions.find((s) => s.name === name) ?? placeholderSession(name)
@@ -218,6 +225,24 @@ export function MobileFocus() {
   )
 
   const [pickerOpen, setPickerOpen] = React.useState(false)
+  // Read-only teammate focus overlay (AT-H2). Held by team+agent_id so it stays
+  // resolved across SSE snapshot replaces (member identity changes each tick). We
+  // route teammate focus through the SHARED <TeammateFocus> overlay (the single
+  // teammate-focus UI app-wide — the overview uses the same one) rather than a
+  // second in-pane mechanism, so there aren't two competing teammate views.
+  const [teammateFocus, setTeammateFocus] = React.useState<{
+    teamName: string
+    agentId: string
+  } | null>(null)
+  const focusTeam = teammateFocus
+    ? teams.find((t) => t.team_name === teammateFocus.teamName) ?? null
+    : null
+  const focusMember: TeamMember | null = teammateFocus
+    ? focusTeam?.members.find((m) => m.agent_id === teammateFocus.agentId) ?? null
+    : null
+  const openTeammate = React.useCallback((team: Team, member: TeamMember) => {
+    setTeammateFocus({ teamName: team.team_name, agentId: member.agent_id })
+  }, [])
   const [specialsOpen, setSpecialsOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
   // The on-demand native compose sheet (typed prompt + staged attachments). The
@@ -391,6 +416,8 @@ export function MobileFocus() {
         sessions={sessions}
         current={name}
         onPick={goSession}
+        teams={teams}
+        onPickTeammate={openTeammate}
       />
 
       {/* DOCK — the action panels share the one Vaul shell
@@ -431,6 +458,24 @@ export function MobileFocus() {
         onOpenChange={setInfoOpen}
         onNavigate={goSession}
       />
+
+      {/* AT-H2 — read-only teammate focus. The SAME full-screen <TeammateFocus>
+          overlay the overview uses (one teammate-focus UI app-wide): glass
+          header, read-only terminal, the member strip to switch teammates inside
+          the team. Opened from the team-aware session picker. */}
+      <AnimatePresence>
+        {focusTeam && focusMember && (
+          <TeammateFocus
+            team={focusTeam}
+            member={focusMember}
+            onSelectMember={(memberName) => {
+              const m = focusTeam.members.find((x) => x.name === memberName)
+              if (m) setTeammateFocus({ teamName: focusTeam.team_name, agentId: m.agent_id })
+            }}
+            onClose={() => setTeammateFocus(null)}
+          />
+        )}
+      </AnimatePresence>
     </>
   )
 }
