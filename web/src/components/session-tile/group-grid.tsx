@@ -65,7 +65,7 @@ import {
   rectSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Plus } from 'lucide-react'
+import { Plus, MoveRight } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
 import {
@@ -78,11 +78,30 @@ import {
 } from '@/lib/overview-layout'
 import type { ApiSession } from '@/lib/api'
 import { GROUP_SORT_LABEL } from '@/lib/overview-layout'
+import { useToast } from '@/components/ui/use-toast'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuPortal,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { GroupHeader } from './group-header'
 import { SessionTile } from './tile'
 import { SessionRow } from './session-row'
 import type { OverviewSize } from '@/lib/overview-size'
 import type { TileSession } from './types'
+
+/** Duration of the post-drop "flash" highlight on the just-dropped tile.
+ *  Spec §4 (Atlassian motion language) calls for a brief background-color
+ *  flash so the eye locks onto the landing. 700ms ease-out. Skipped under
+ *  `useReducedMotion`. */
+const DROP_FLASH_MS = 700
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -344,6 +363,75 @@ export function GroupGrid({
   tourFirstTileId,
 }: GroupGridProps) {
   const reduce = useReducedMotion()
+  const { toast } = useToast()
+
+  // ── Drop-flash state (Gap 1) ────────────────────────────────────────────
+  // The just-dropped session's name — present for ~DROP_FLASH_MS after a
+  // successful onDragEnd, then cleared. The matching <SortableTileSlot> reads
+  // this and plays a 700ms background-color flash via framer-motion's
+  // `animate`. Skipped entirely under `useReducedMotion`.
+  const [justDroppedName, setJustDroppedName] = React.useState<string | null>(
+    null,
+  )
+  const flashTimerRef = React.useRef<number | null>(null)
+  const armDropFlash = React.useCallback(
+    (name: string) => {
+      if (reduce) return
+      if (flashTimerRef.current !== null) {
+        window.clearTimeout(flashTimerRef.current)
+      }
+      setJustDroppedName(name)
+      flashTimerRef.current = window.setTimeout(() => {
+        flashTimerRef.current = null
+        setJustDroppedName(null)
+      }, DROP_FLASH_MS)
+    },
+    [reduce],
+  )
+  React.useEffect(
+    () => () => {
+      if (flashTimerRef.current !== null) {
+        window.clearTimeout(flashTimerRef.current)
+      }
+    },
+    [],
+  )
+
+  // ── Gap 3: smart-sort snackbar VR hook ────────────────────────────────
+  // The toast itself is rendered by the shared <ToastProvider>'s viewport
+  // (lives in a portal near the root, not under this component). To give the
+  // visual-regression battery a deterministic DOM hook on *this* component's
+  // subtree, we mount a hidden marker span here for the duration of the toast
+  // (matches the toast's default 2.5s). The marker carries the message text
+  // so a single VR assertion can check both "fired" and "with the right
+  // copy" without screen-scraping the toast capsule.
+  const [smartSortSnackbar, setSmartSortSnackbar] = React.useState<
+    string | null
+  >(null)
+  const snackbarTimerRef = React.useRef<number | null>(null)
+  const fireSmartSortSnackbar = React.useCallback(
+    (message: string) => {
+      toast({ message })
+      // VR-hook lifetime mirrors the default toast duration.
+      if (snackbarTimerRef.current !== null) {
+        window.clearTimeout(snackbarTimerRef.current)
+      }
+      setSmartSortSnackbar(message)
+      snackbarTimerRef.current = window.setTimeout(() => {
+        snackbarTimerRef.current = null
+        setSmartSortSnackbar(null)
+      }, 2500)
+    },
+    [toast],
+  )
+  React.useEffect(
+    () => () => {
+      if (snackbarTimerRef.current !== null) {
+        window.clearTimeout(snackbarTimerRef.current)
+      }
+    },
+    [],
+  )
 
   // Discover all current group ids (including the implicit Ungrouped if any
   // sessions float without a group). Stable identity for the sort-mode hook.
@@ -553,7 +641,69 @@ export function GroupGrid({
       toSec.sessions.push(moved)
     }
     onLayoutChange(layoutFromSections(nextSections))
+
+    // ── Gap 1: arm the 700ms drop-flash on the just-dropped tile. ────────
+    armDropFlash(draggedName)
+
+    // ── Gap 3: smart-sort destination snackbar. ──────────────────────────
+    // The position was discarded (toSec.sortMode !== 'custom') and the smart
+    // sort re-runs on the next render. Surface a calm snackbar so the user
+    // understands why their precise drop position didn't stick. Same message
+    // for any non-custom destination (Smart / Name / Status / Recent / Age)
+    // since the user experience is identical: "you dropped it here, but the
+    // sort kernel just repositioned it." Always references "Smart" per the
+    // spec snackbar copy — that's the canonical case; we don't fragment the
+    // copy by every mode.
+    if (toSec.sortMode !== 'custom') {
+      fireSmartSortSnackbar(
+        `Moved to ${toSec.groupName} — re-sorted by ${GROUP_SORT_LABEL[toSec.sortMode]}.`,
+      )
+    }
   }
+
+  // ── moveSessionToGroup (Gap 2 — kebab "Move to ▸" reuses this) ────────
+  // The same logical action the drag-drop performs, but driven by an explicit
+  // destination group id (no precise index — the kebab is the keyboard /
+  // touch alternative path, not a precision tool). For a custom-sort dest the
+  // tile lands at the END; for smart-sort the sort kernel positions it.
+  const moveSessionToGroup = React.useCallback(
+    (sessionName: string, destGroupId: string) => {
+      const fromSection = sections.find((s) =>
+        s.sessions.some((x) => x.name === sessionName),
+      )
+      const destSec = sections.find((s) => s.groupId === destGroupId)
+      if (!fromSection || !destSec) return
+      if (fromSection.groupId === destSec.groupId) return // No-op.
+
+      const nextSections = sections.map((s) => ({
+        ...s,
+        sessions: [...s.sessions],
+      }))
+      const fromSec = nextSections.find(
+        (s) => s.groupId === fromSection.groupId,
+      )!
+      const toSec = nextSections.find((s) => s.groupId === destSec.groupId)!
+      const fromIdx = fromSec.sessions.findIndex((x) => x.name === sessionName)
+      if (fromIdx < 0) return
+      const [moved] = fromSec.sessions.splice(fromIdx, 1)
+      // No precise index for the kebab path — append; the smart sort (if any)
+      // will reposition on render. For custom, "end of list" is the safest
+      // landing for a non-drag action.
+      toSec.sessions.push(moved)
+      onLayoutChange(layoutFromSections(nextSections))
+
+      // Mirror the drag-drop UX: flash the just-moved tile + (if dest is
+      // auto-sorted) fire the same snackbar so the user has the same mental
+      // model regardless of the entrypoint (drag vs kebab).
+      armDropFlash(sessionName)
+      if (toSec.sortMode !== 'custom') {
+        fireSmartSortSnackbar(
+          `Moved to ${toSec.groupName} — re-sorted by ${GROUP_SORT_LABEL[toSec.sortMode]}.`,
+        )
+      }
+    },
+    [sections, onLayoutChange, armDropFlash, fireSmartSortSnackbar],
+  )
 
   // ── Group-header move-actions (kebab alt path) ───────────────────────────
   const moveGroup = React.useCallback(
@@ -655,7 +805,14 @@ export function GroupGrid({
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div data-vr="group-grid" className="relative">
+    <div
+      data-vr="group-grid"
+      // Gap 3 — when the smart-sort snackbar is active, the grid root carries
+      // the flag too, so the VR battery can assert "snackbar fired" from a
+      // single root selector without screen-scraping the toast portal.
+      data-vr-smart-sort-snackbar={smartSortSnackbar ? 'active' : undefined}
+      className="relative"
+    >
       {/* SR live region — assertive so a Picked up / dropped / cancel message
           interrupts whatever the SR was reading. Visually hidden. */}
       <div
@@ -666,6 +823,17 @@ export function GroupGrid({
       >
         {liveText}
       </div>
+      {/* Gap 3 VR hook — hidden marker that mirrors the smart-sort snackbar
+          while it's on screen. Carries the message text so a VR assertion can
+          verify both "fired" and "the right copy" in one query. */}
+      {smartSortSnackbar && (
+        <span
+          hidden
+          data-vr="smart-sort-snackbar"
+          data-vr-smart-sort-snackbar="active"
+          data-vr-message={smartSortSnackbar}
+        />
+      )}
       <DndContext
         sensors={sensors}
         accessibility={{ announcements }}
@@ -722,6 +890,7 @@ export function GroupGrid({
                     )}
                     <GroupSection
                       section={section}
+                      allSections={sections}
                       sIdx={sIdx}
                       viewMode={viewMode}
                       sizeTier={sizeTier}
@@ -732,6 +901,8 @@ export function GroupGrid({
                       activeSessionName={
                         activeSession?.name ?? null
                       }
+                      justDroppedName={justDroppedName}
+                      onMoveSessionToGroup={moveSessionToGroup}
                       overItemId={overItemId}
                       onSortModeChange={(mode) =>
                         setGroupMode(section.groupId, mode)
@@ -847,6 +1018,7 @@ export function GroupGrid({
 
 function GroupSection({
   section,
+  allSections,
   sIdx,
   viewMode,
   sizeTier,
@@ -855,6 +1027,8 @@ function GroupSection({
   isDragging,
   draggingKind,
   activeSessionName,
+  justDroppedName,
+  onMoveSessionToGroup,
   overItemId,
   onSortModeChange,
   onMoveUp,
@@ -868,6 +1042,9 @@ function GroupSection({
   tourFirstTileId,
 }: {
   section: Section
+  /** All sections in render order — passed through to each tile so the
+   *  "Move to ▸" kebab submenu can list every OTHER group. (Gap 2.) */
+  allSections: ReadonlyArray<Section>
   sIdx: number
   viewMode: 'tile' | 'list'
   sizeTier: OverviewSize
@@ -876,6 +1053,12 @@ function GroupSection({
   isDragging: boolean
   draggingKind: 'group' | 'session' | null
   activeSessionName: string | null
+  /** The name of the session that was JUST DROPPED (and should flash). Cleared
+   *  ~700ms after the drop. (Gap 1.) */
+  justDroppedName: string | null
+  /** Move a session to another group, used by the kebab "Move to ▸" submenu
+   *  (Gap 2) and (internally) the drag-drop path. */
+  onMoveSessionToGroup: (sessionName: string, destGroupId: string) => void
   overItemId: UniqueIdentifier | null
   onSortModeChange: (mode: GroupSortMode) => void
   onMoveUp?: () => void
@@ -1009,6 +1192,12 @@ function GroupSection({
                 }
                 tour={i === 0 && sIdx === 0 ? tourFirstTileId : undefined}
                 reduce={reduce}
+                justDropped={justDroppedName === sess.name}
+                currentGroupId={section.groupId}
+                allSections={allSections}
+                onMoveToGroup={(destGroupId) =>
+                  onMoveSessionToGroup(sess.name, destGroupId)
+                }
                 // If smart-sort dest and a session is dragged from elsewhere,
                 // hide the inter-tile line; the container indication shows.
               />
@@ -1053,6 +1242,12 @@ function GroupSection({
                   overItemId === sessionDragId(sess.name)
                 }
                 reduce={reduce}
+                justDropped={justDroppedName === sess.name}
+                currentGroupId={section.groupId}
+                allSections={allSections}
+                onMoveToGroup={(destGroupId) =>
+                  onMoveSessionToGroup(sess.name, destGroupId)
+                }
               />
             ))}
             <span hidden data-vr-active-session-group={activeSessionGroupId} />
@@ -1075,6 +1270,10 @@ function SortableTileSlot({
   showLineBefore,
   tour,
   reduce,
+  justDropped,
+  currentGroupId,
+  allSections,
+  onMoveToGroup,
 }: {
   session: ApiSession
   sizeTier: OverviewSize
@@ -1085,6 +1284,18 @@ function SortableTileSlot({
   showLineBefore: boolean
   tour?: string
   reduce: boolean
+  /** True for ~700ms after this tile was the drop target — drives the
+   *  Gap-1 background-color flash. Honors `useReducedMotion` (when reduced,
+   *  the parent never sets justDropped). */
+  justDropped: boolean
+  /** This tile's CURRENT group id — used to filter out the current group
+   *  from the kebab "Move to ▸" submenu (Gap 2). */
+  currentGroupId: string
+  /** All sections in render order, so the submenu can list every OTHER
+   *  group. (Gap 2.) */
+  allSections: ReadonlyArray<Section>
+  /** Move this tile to the given destination group (Gap 2). */
+  onMoveToGroup: (destGroupId: string) => void
 }) {
   const sortable = useSortable({
     id: sessionDragId(session.name),
@@ -1115,6 +1326,10 @@ function SortableTileSlot({
             : 'idle'
       }
       data-vr-group-sort-mode={groupSortMode}
+      // Gap 1 — VR hook the visual-regression battery can assert. Stays
+      // "active" for the duration of the flash, then clears.
+      data-vr-just-dropped={justDropped ? 'true' : undefined}
+      data-vr-drop-flash={justDropped ? 'active' : undefined}
       className="group/tile relative"
     >
       {showLineBefore && (
@@ -1128,6 +1343,23 @@ function SortableTileSlot({
           className="pointer-events-none absolute -left-1 -top-1 z-30 h-0.5 w-[calc(100%+0.5rem)] rounded-full bg-primary shadow-[0_0_0_2px_hsl(var(--background))]"
         />
       )}
+      {/* Gap 1 — 700ms drop-flash overlay. Sits ABOVE the tile chrome
+          (z-10) but BELOW the drag handle / kebab (z-20) so the
+          accent-tinted flash announces the landing without disabling
+          clicks. AnimatePresence drives a single one-shot tween: tinted
+          background → transparent over 700ms ease-out. The framer-motion
+          render returns null under Reduce Motion (justDropped is never
+          set in that branch). */}
+      {justDropped && (
+        <motion.div
+          aria-hidden
+          data-vr="drop-flash"
+          initial={{ backgroundColor: 'hsl(var(--primary) / 0.18)' }}
+          animate={{ backgroundColor: 'hsl(var(--primary) / 0)' }}
+          transition={{ duration: DROP_FLASH_MS / 1000, ease: 'easeOut' }}
+          className="pointer-events-none absolute inset-0 z-10 rounded-xl"
+        />
+      )}
       <SessionTileWrapper
         session={session}
         sizeTier={sizeTier}
@@ -1135,6 +1367,9 @@ function SortableTileSlot({
         reduce={reduce}
         tour={tour}
         draggingKind={draggingKind}
+        currentGroupId={currentGroupId}
+        allSections={allSections}
+        onMoveToGroup={onMoveToGroup}
       />
     </div>
   )
@@ -1148,6 +1383,10 @@ function SortableRow({
   activeSessionName,
   showLineBefore,
   reduce,
+  justDropped,
+  currentGroupId,
+  allSections,
+  onMoveToGroup,
 }: {
   session: ApiSession
   groupSortMode: GroupSortMode
@@ -1156,6 +1395,12 @@ function SortableRow({
   activeSessionName: string | null
   showLineBefore: boolean
   reduce: boolean
+  /** Gap 1 — 700ms drop-flash. See <SortableTileSlot>. */
+  justDropped: boolean
+  /** Gap 2 — the "Move to ▸" submenu lists every other group. */
+  currentGroupId: string
+  allSections: ReadonlyArray<Section>
+  onMoveToGroup: (destGroupId: string) => void
 }) {
   const sortable = useSortable({ id: sessionDragId(session.name) })
   const style: React.CSSProperties = {
@@ -1178,6 +1423,8 @@ function SortableRow({
             : 'idle'
       }
       data-vr-group-sort-mode={groupSortMode}
+      data-vr-just-dropped={justDropped ? 'true' : undefined}
+      data-vr-drop-flash={justDropped ? 'active' : undefined}
       className="relative flex items-stretch gap-1"
     >
       {showLineBefore && (
@@ -1186,6 +1433,18 @@ function SortableRow({
           data-vr="row-drop-line"
           data-vr-drop-line="tile"
           className="pointer-events-none absolute -top-0.5 left-0 right-0 z-30 h-0.5 rounded-full bg-primary shadow-[0_0_0_2px_hsl(var(--background))]"
+        />
+      )}
+      {/* Gap 1 — 700ms drop-flash overlay (row variant). Inset to cover the
+          row + its drag handle without overlapping the surrounding gap. */}
+      {justDropped && (
+        <motion.div
+          aria-hidden
+          data-vr="drop-flash"
+          initial={{ backgroundColor: 'hsl(var(--primary) / 0.18)' }}
+          animate={{ backgroundColor: 'hsl(var(--primary) / 0)' }}
+          transition={{ duration: DROP_FLASH_MS / 1000, ease: 'easeOut' }}
+          className="pointer-events-none absolute inset-0 z-10 rounded-md"
         />
       )}
       <button
@@ -1216,6 +1475,17 @@ function SortableRow({
       <div className="min-w-0 flex-1">
         <SessionRow session={toTileSession(session)} />
       </div>
+      {/* Gap 2 — the "Move to ▸" kebab is the a11y alt path for the row
+          view too. Tiny hover-revealed button (≥44pt via padding) so the
+          row chrome stays calm at rest. */}
+      <TileMoveToKebab
+        sessionName={session.name}
+        sessionLabel={session.task_summary ?? session.name}
+        currentGroupId={currentGroupId}
+        allSections={allSections}
+        onMoveToGroup={onMoveToGroup}
+        variant="row"
+      />
       {/* Silently consume props that don't affect the row render but matter
           for future expansion (suppresses unused-var lint). */}
       <span hidden data-dragging-kind={draggingKind ?? ''} />
@@ -1233,6 +1503,9 @@ function SessionTileWrapper({
   reduce,
   tour,
   draggingKind,
+  currentGroupId,
+  allSections,
+  onMoveToGroup,
 }: {
   session: ApiSession
   sizeTier: OverviewSize
@@ -1240,6 +1513,10 @@ function SessionTileWrapper({
   reduce: boolean
   tour?: string
   draggingKind: 'group' | 'session' | null
+  /** Gap 2 — props for the tile-level "Move to ▸" kebab. */
+  currentGroupId: string
+  allSections: ReadonlyArray<Section>
+  onMoveToGroup: (destGroupId: string) => void
 }) {
   // Wrap the tile in a button that owns the drag listeners but pass-through
   // pointer events (so the tile's own clickable surfaces still work). We
@@ -1283,10 +1560,158 @@ function SessionTileWrapper({
           <circle cx="10" cy="12" r="0.75" fill="currentColor" />
         </svg>
       </button>
+      {/* Gap 2 — tile-level "Move to ▸" kebab. Mirrors the group-header
+          kebab's a11y intent: a non-drag entrypoint that lets keyboard +
+          touch users move a tile between groups without ever picking up a
+          drag handle. Hover-revealed (fine pointers) / always-shown
+          (coarse pointers) via the kebab component itself. Positioned
+          LEFT of the drag handle so the two affordances form a small
+          icon cluster in the top-right of the tile. */}
+      <TileMoveToKebab
+        sessionName={session.name}
+        sessionLabel={session.task_summary ?? session.name}
+        currentGroupId={currentGroupId}
+        allSections={allSections}
+        onMoveToGroup={onMoveToGroup}
+        variant="tile"
+      />
       {/* Silently consume `draggingKind` so it's tracked but doesn't
           influence render (kept for future state hooks / VR assertions). */}
       <span hidden data-vr-dragging-kind={draggingKind ?? ''} />
     </div>
+  )
+}
+
+// ── TileMoveToKebab — Gap 2 ─────────────────────────────────────────────
+//
+// A tiny per-tile kebab (the SAME affordance the group-header kebab uses,
+// scaled to tile chrome) whose only menu is "Move to ▸" — a Radix submenu
+// listing every OTHER group the tile could land in. Clicking an item calls
+// `onMoveToGroup(destGroupId)`, which the parent wires to the same move
+// action the drag-drop path uses (one source of truth in `moveSessionToGroup`).
+//
+// Why not invent a new kebab on the bare <SessionTile>? Because the spec
+// says "ADD to an existing tile-level menu" — but the desktop tile has
+// none. The closest pre-existing surface that ALREADY houses tile-level
+// drag affordances is THIS wrapper (group-grid only adds it in custom
+// mode, which is exactly when "Move to" makes sense). So this is the
+// existing wrapper, with a kebab added next to the existing drag handle —
+// not a parallel chrome layer on the bare tile.
+//
+// Variants:
+//   * 'tile' — overlay on the top-right of the tile chrome (mirrors the
+//     drag handle's position); hover-revealed on fine pointers,
+//     always-shown on coarse.
+//   * 'row' — inline on the right of the row chrome; hover-revealed on
+//     fine pointers.
+//
+// Visual-critic hook: `data-vr-tile-kebab` on the trigger and
+// `data-vr-move-to-submenu` on the submenu trigger so the VR battery can
+// click through deterministically.
+function TileMoveToKebab({
+  sessionName,
+  sessionLabel,
+  currentGroupId,
+  allSections,
+  onMoveToGroup,
+  variant,
+}: {
+  sessionName: string
+  sessionLabel: string
+  currentGroupId: string
+  allSections: ReadonlyArray<Section>
+  onMoveToGroup: (destGroupId: string) => void
+  variant: 'tile' | 'row'
+}) {
+  // Every OTHER group, in render order. Skip the implicit Ungrouped bucket
+  // ONLY if THIS tile is currently in it (you can't "Move to Ungrouped" from
+  // Ungrouped — but moving a tile from a named group INTO Ungrouped is fine,
+  // since the user might want to drop something out of every group).
+  const targets = React.useMemo(
+    () =>
+      allSections.filter((sec) => {
+        if (sec.groupId === currentGroupId) return false
+        return true
+      }),
+    [allSections, currentGroupId],
+  )
+
+  // If there is literally nowhere to move (only one group exists, this tile
+  // is in it), the kebab has no meaningful action — render nothing so the
+  // tile chrome stays uncluttered. Single-group layouts are the common
+  // starting state.
+  if (targets.length === 0) return null
+
+  const triggerClassName =
+    variant === 'tile'
+      ? // Overlay on the top-right of the tile, just left of the drag handle.
+        // Same hover-reveal pattern as the drag handle: invisible at rest on
+        // fine pointers, always visible on coarse. ≥44pt touch target.
+        'absolute right-12 top-1 z-20 flex size-9 items-center justify-center rounded-md bg-card/80 text-muted-foreground/60 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:right-14 [@media(pointer:coarse)]:opacity-100 [@media(pointer:fine)]:opacity-0'
+      : // Inline at the end of the row.
+        'flex w-7 items-center justify-center rounded-md text-muted-foreground/40 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring opacity-0 transition-opacity group-hover/tile:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100'
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`More actions for ${sessionLabel}`}
+          data-vr="tile-kebab"
+          data-vr-tile-kebab="true"
+          data-vr-session-name={sessionName}
+          // Stop pointer events at the trigger so opening the menu doesn't
+          // initiate a drag or navigate to focus.
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          className={triggerClassName}
+        >
+          <span aria-hidden className="text-base leading-none">⋯</span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        // Stop the dnd-kit sensors / tile click from firing when the user
+        // interacts with the menu content.
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger
+            data-vr="tile-move-to"
+            data-vr-move-to-submenu="true"
+          >
+            <MoveRight className="size-4" aria-hidden />
+            <span>Move to</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuPortal>
+            <DropdownMenuSubContent>
+              <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+                Move {sessionLabel}
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {targets.map((sec) => (
+                <DropdownMenuItem
+                  key={sec.groupId}
+                  data-vr="tile-move-to-item"
+                  data-vr-dest-group-id={sec.groupId}
+                  onSelect={() => onMoveToGroup(sec.groupId)}
+                >
+                  {sec.groupName}
+                  {sec.sortMode !== 'custom' && (
+                    <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                      {GROUP_SORT_LABEL[sec.sortMode]}
+                    </span>
+                  )}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuPortal>
+        </DropdownMenuSub>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
