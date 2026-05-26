@@ -52,7 +52,7 @@
 //   • data-vr-session-name="<name>" + data-vr-current on each entry
 
 import * as React from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -64,14 +64,23 @@ import { orderSessions } from '@/components/focus-mode/session-order'
 //   • DRAG_SLOP_PX  — how far the finger must travel before we CLAIM the
 //                     gesture. Below this it stays a tap → the dock's button
 //                     under the finger gets to handle its own click.
-//   • OPEN_HEIGHT   — fully-open bar height (one row of pills + padding).
+//   • OPEN_HEIGHT   — fully-open bar height: GRABBER_HEIGHT_PX (closed-state
+//                     grabber row) + one row of h-11 (44pt) pills + 4px
+//                     breathing. Total ≈ 56px. The old 280px value left ~120px
+//                     of EMPTY SPACE above + below the single pill row (pills
+//                     vertically-centered inside a tall container) — the
+//                     "amateur lots of white space" the user complained about.
 //   • COMMIT_PX     — vertical travel that commits the swipe-up to "open"
 //                     on release; below it the bar snaps back closed.
 //   • CLOSE_DRAG_PX — downward travel from OPEN that commits the close.
+//   • GRABBER_HEIGHT_PX — closed-state height: just the grabber pill peeking
+//                     above the dock as the swipe-up affordance hint. Tap on
+//                     it opens the switcher (iOS HIG: tap = swipe alternative).
 const DRAG_SLOP_PX = 8
-const OPEN_HEIGHT_PX = 280
-const COMMIT_PX = 80
-const CLOSE_DRAG_PX = 60
+const GRABBER_HEIGHT_PX = 12
+const OPEN_HEIGHT_PX = GRABBER_HEIGHT_PX + 44 + 4 // grabber + pill row + tiny pad
+const COMMIT_PX = 40 // half-open commits; matches the shorter throw
+const CLOSE_DRAG_PX = 30
 
 type SwipeSwitcherState = 'closed' | 'opening' | 'open'
 
@@ -239,8 +248,14 @@ export function SwipeSessionSwitcher({
       }
 
       // Closed-then-opening: -dy is how far up the finger is from start.
+      // The bar's resting visual height (closed) is GRABBER_HEIGHT_PX, so we
+      // map travel onto (GRABBER, OPEN] — at travel=0 the bar matches its
+      // closed height; at travel ≥ (OPEN − GRABBER) it's fully open. Clamped
+      // both ends so an over-drag past OPEN doesn't run away.
       const travel = Math.max(0, -dy)
-      setOpenOffset(Math.min(OPEN_HEIGHT_PX, travel))
+      setOpenOffset(
+        Math.min(OPEN_HEIGHT_PX, GRABBER_HEIGHT_PX + travel),
+      )
     }
 
     const onPointerUp = (e: PointerEvent) => {
@@ -433,82 +448,149 @@ export function SwipeSessionSwitcher({
     [closeSwitcher],
   )
 
-  // Don't render the bar at all when there's nothing useful to show. One
-  // session (the current one) means the switcher has zero swap targets.
-  // We still keep the gesture listeners active above — they will be cheap
-  // no-ops when there's nothing to do.
+  // The switcher is ALWAYS-MOUNTED (the grabber peeks above the dock as the
+  // swipe-up affordance hint, iOS-native). One session (no swap targets) hides
+  // it entirely; the gesture listeners stay armed but cheap no-ops.
   const firstNonCurrentIdx = React.useMemo(
     () => ordered.findIndex((s) => s.name !== currentName),
     [ordered, currentName],
   )
   const hasSwapTargets = firstNonCurrentIdx !== -1
-  const show = state !== 'closed' && hasSwapTargets
-  // Height: drives the slide-up. Mirrors openOffset (so finger-tracked while
-  // opening) and clamps to OPEN_HEIGHT_PX once committed open.
-  const height = show ? openOffset : 0
+
+  // Height: closed → GRABBER_HEIGHT_PX (just the grabber peeking, ~12px);
+  // opening → finger-tracked (clamped between GRABBER and OPEN); open →
+  // OPEN_HEIGHT_PX. `openOffset` is the absolute pixel height of the bar
+  // while opening — gesture A sets it from upward travel, gesture B from
+  // (OPEN − downward travel). The grabber stays put at the top of the bar
+  // visually because it's positioned `top:0` inside the box.
+  let height: number
+  if (state === 'closed') height = GRABBER_HEIGHT_PX
+  else if (state === 'open') height = OPEN_HEIGHT_PX
+  else height = Math.min(OPEN_HEIGHT_PX, Math.max(GRABBER_HEIGHT_PX, openOffset))
+
+  // The pill-row's animated opacity — fades in as the bar opens past the
+  // grabber, so finger-tracked it reads as "the pills rising into view."
+  const pillsRevealed = state !== 'closed' && height > GRABBER_HEIGHT_PX
+
+  // Tap on the grabber while closed → open the switcher (iOS HIG: tap is the
+  // discoverable alternative to swipe-up). Tap while open → close. The height
+  // resolves from `state` directly when not 'opening', so we don't need to
+  // pre-seed `openOffset` here.
+  const onGrabberTap = React.useCallback(() => {
+    if (state === 'closed') {
+      setState('open')
+    } else if (state === 'open') {
+      closeSwitcher()
+    }
+  }, [state, closeSwitcher])
+  const onGrabberKeyDown = React.useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        onGrabberTap()
+      }
+    },
+    [onGrabberTap],
+  )
+
+  if (!hasSwapTargets) return null
 
   return (
-    <AnimatePresence>
-      {show && (
-        <motion.div
-          ref={overlayRef}
-          data-vr="swipe-switcher"
-          data-vr-swipe-state={state}
-          role="dialog"
-          aria-modal="false"
-          aria-label="Switch session"
-          initial={{ height: 0, opacity: 0 }}
-          animate={{ height, opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          transition={
-            reduceMotion
-              ? { duration: 0.15 }
-              : state === 'opening'
-                ? // While the finger is on screen we follow it 1:1 — no
-                  // smoothing (a spring here would feel laggy).
-                  { duration: 0 }
-                : springs.snippetSlide
-          }
-          // Pin to the dock's top edge — the parent positions us as a sibling
-          // ABOVE the dock, so we just need our own background + clip. No
-          // border-bottom (the dock's border-top is the visual separator).
-          className={cn(
-            'glass relative overflow-hidden border-t border-border/60',
-            // Touch-pan-x ensures the bar's horizontal scroller still works
-            // even while the dock-level pointer logic is observing.
-            'touch-pan-x',
-          )}
-        >
-          <div
-            data-vr-swipe-scroll
-            className={cn(
-              'flex h-full items-center gap-2 overflow-x-auto px-3 py-2',
-              // Native scroll-snap so each pill lands flush — feels closer to
-              // Termius's quick-switch (one finger flick = next page of pills).
-              'snap-x snap-mandatory',
-              // Hide scrollbar — it's a thumb-driven swipe surface, not a
-              // mouse list. Tailwind doesn't ship a `scrollbar-none` utility
-              // by default; the inline style does it without a plugin.
-            )}
-            style={{ scrollbarWidth: 'none' }}
-          >
-            {ordered.map((s, i) => {
-              const isCurrent = s.name === currentName
-              return (
-                <SessionPill
-                  key={s.name}
-                  session={s}
-                  isCurrent={isCurrent}
-                  onPick={onPickInternal}
-                  // First non-current pill takes focus on open.
-                  pillRef={i === firstNonCurrentIdx ? firstPillRef : undefined}
-                />
-              )
-            })}
-          </div>
-        </motion.div>
+    <motion.div
+      ref={overlayRef}
+      data-vr="swipe-switcher"
+      data-vr-swipe-state={state}
+      role="dialog"
+      aria-modal="false"
+      aria-label="Switch session"
+      animate={{ height }}
+      transition={
+        reduceMotion
+          ? { duration: 0.15 }
+          : state === 'opening'
+            ? // While the finger is on screen we follow it 1:1 — no
+              // smoothing (a spring here would feel laggy).
+              { duration: 0 }
+            : springs.snippetSlide
+      }
+      // Visually fuse with the dock — same `glass` background so the open
+      // switcher reads as "the dock grew taller upward" (Termius-native), not
+      // a second floating bar. The `-mb-px` overlaps the dock's existing
+      // border-t so we don't get a double hairline between the two surfaces.
+      // The switcher's own `border-t` is the outer top edge of the unified
+      // stack (replaces the dock's border as the visible top hairline).
+      className={cn(
+        'glass relative -mb-px shrink-0 overflow-hidden border-t border-border/60',
+        // Touch-pan-x ensures the bar's horizontal scroller still works
+        // even while the dock-level pointer logic is observing.
+        'touch-pan-x',
       )}
-    </AnimatePresence>
+      style={{ height }}
+    >
+      {/* iOS-style drag handle (grabber). Always visible at the very top of
+          the switcher: closed = peeks above the dock as the swipe-up hint;
+          open = the close-handle. 36×4 rounded-full muted-gray pill —
+          tasteful, not loud. The button stretches full-width across the
+          grabber row so any tap above the pills hits the toggle. */}
+      <button
+        type="button"
+        onClick={onGrabberTap}
+        onKeyDown={onGrabberKeyDown}
+        aria-label="Drag handle — swipe up to switch session"
+        aria-expanded={state === 'open'}
+        // No focus stealing from xterm's hidden helper textarea (keeps the
+        // soft keyboard up if it's already showing, same trick the dock's
+        // accessory keys use).
+        onPointerDown={(e) => e.preventDefault()}
+        onMouseDown={(e) => e.preventDefault()}
+        className={cn(
+          // 12px tall full-width row above the pills — the visible 4×36 pill
+          // sits at its center. The 390×12 hit area is small in height but
+          // generous in width, so reliable to tap on a phone.
+          'absolute inset-x-0 top-0 z-10 flex h-3 w-full items-center justify-center',
+          'cursor-pointer',
+        )}
+      >
+        <span
+          aria-hidden
+          data-vr="swipe-grabber"
+          className="block h-1 w-9 rounded-full bg-muted-foreground/40"
+        />
+      </button>
+
+      {/* Pill row — sits below the grabber and meets the dock's top edge with
+          a thin breathing band (≤9px) of `glass` background. `pt-3` (12px)
+          reserves the absolute-positioned grabber's row at the top; the pill
+          itself is h-11 (44pt) and `items-center` keeps it visually centered
+          inside the row. Opacity fades in past the grabber peek so the finger-
+          tracked drag reads as "pills rising into view." */}
+      <motion.div
+        data-vr-swipe-scroll
+        animate={{ opacity: pillsRevealed ? 1 : 0 }}
+        transition={reduceMotion ? { duration: 0.15 } : springs.smooth}
+        className={cn(
+          'flex h-11 items-center gap-2 overflow-x-auto px-3 pt-3',
+          // Native scroll-snap so each pill lands flush — feels closer to
+          // Termius's quick-switch (one finger flick = next page of pills).
+          'snap-x snap-mandatory',
+        )}
+        style={{ scrollbarWidth: 'none' }}
+      >
+        {ordered.map((s, i) => {
+          const isCurrent = s.name === currentName
+          return (
+            <SessionPill
+              key={s.name}
+              session={s}
+              isCurrent={isCurrent}
+              onPick={onPickInternal}
+              // First non-current pill takes focus on open.
+              pillRef={i === firstNonCurrentIdx ? firstPillRef : undefined}
+            />
+          )
+        })}
+      </motion.div>
+    </motion.div>
   )
 }
 
