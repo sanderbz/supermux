@@ -268,22 +268,12 @@
      (index.html) + viewport-fit=cover, `height: 100%` resolves SHORT of the
      physical screen on iOS standalone — leaving a black band BELOW the bottom
      nav (the home-indicator region the app should paint through). The dynamic
-     viewport unit `100dvh` is the full screen incl. safe areas in standalone
-     SO LONG AS WebKit has re-evaluated since the initial paint. On a COLD
-     LAUNCH there's a long-known WebKit PWA bug where `100dvh` resolves to
-     `visualViewport.height - home-indicator inset` at first paint and only
-     "settles" after a resize event (orientation flip, keyboard open+close,
-     URL-bar toggle). Users reported a ~80%-of-the-time black band at the
-     bottom; the fix is a belt-and-suspenders `min-height: 100vh` AFTER the
-     `100dvh` line — `vh` includes the home-indicator inset on cold launch,
-     so the larger of the two wins and the page always reaches the physical
-     bottom. In non-PWA Safari `vh` slightly over-paints when the URL bar is
-     visible, but the over-paint sits below `pb-safe` (BottomNav) so it's
-     invisible; in PWA standalone there is no URL bar to differ from. */
+     viewport unit `100dvh` is the full screen incl. safe areas in standalone,
+     so the flex shell reaches the physical bottom and BottomNav's `pb-safe`
+     covers the home indicator. */
   html {
     height: 100%;
     height: 100dvh;
-    min-height: 100vh;
     color-scheme: dark;
     background: var(--color-background);
   }
@@ -292,7 +282,24 @@
   #root {
     height: 100%;
     height: 100dvh;
-    min-height: 100vh;
+  }
+
+  /* PWA standalone ONLY: belt-and-suspenders for the iOS WebKit cold-launch
+     dvh bug where `100dvh` first resolves to `visualViewport.height - home-
+     indicator inset` and only "settles" after a resize event — users saw a
+     black band at the bottom on ~80% of cold launches.
+     `min-height: 100vh` ensures the larger of (dvh, lvh) wins, so the page
+     always reaches the physical bottom. We gate this on `display-mode:
+     standalone` because in REGULAR mobile Safari `vh` is the LARGE viewport
+     (URL-bar-hidden) — applying it there would push BottomNav UNDER the
+     bottom URL bar when Safari shows it. PWA has no URL bar, so the gate
+     is safe + the over-paint is invisible (sits below `pb-safe`). */
+  @media all and (display-mode: standalone) {
+    html,
+    body,
+    #root {
+      min-height: 100vh;
+    }
   }
 
   body {

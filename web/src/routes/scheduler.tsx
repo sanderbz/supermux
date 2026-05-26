@@ -75,7 +75,12 @@ function SchedulerInner() {
           the inset GROWS the box instead of eating into a fixed h-14 and tucking
           the title under the notch / Dynamic Island; `sm:pt-0` resets the inset
           once the desktop SideNav owns the chrome (env()=0 there anyway). */}
-      <header className="glass safe-header flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 sm:px-6 sm:pt-0">
+      {/* `pb-2` (8px bottom padding) keeps the New-schedule button (h-11) from
+          sitting flush against the header's border-b — most visible on iOS PWA
+          where safe-header's additive `pt-safe` consumes the min-h:14 slack
+          and `items-center` then centers the button in a 0-slack content box.
+          Mobile browser gains a few extra px of bottom breathing too. */}
+      <header className="glass safe-header flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 pb-2 sm:px-6 sm:pb-0 sm:pt-0">
         <h1 className="text-xl font-semibold tracking-tight">Scheduler</h1>
         <Button
           size="sm"

@@ -89,16 +89,14 @@ function MobileBody({
             'rounded-t-[10px] border-t border-border/60 pb-safe outline-none',
           )}
         >
-          {/* Top region: ONE additive `env(safe-area-inset-top)` (pt-safe) so a
-              tall sheet's grab-handle + header always clear the iOS status bar /
-              Dynamic Island in standalone PWA (black-translucent + viewport-fit=
-              cover). Desktop/web env()=0 → renders as the normal 6px gap. Exactly
-              one top inset here — the route shells own their own; the sheet is a
-              separate top-level surface, so this never double-insets (ios-pwa). */}
-          <div className="shrink-0 pt-safe">
-            {/* Drag indicator — 36×5, 2.5px radius, tertiary tint (Termius #11). */}
-            <div className="mx-auto mt-1.5 h-[5px] w-9 rounded-[2.5px] bg-muted-foreground/30" />
-          </div>
+          {/* Drag indicator — 36×5, 2.5px radius, tertiary tint (Termius #11).
+              NO `pt-safe` wrapper: the sheet is capped at `max-h-[92vh]` so the
+              top of the drawer always sits ≥8% below the physical screen top —
+              more than the iOS notch / Dynamic Island inset (~47–59px) on any
+              current device, so the grab-handle is already clear of the status
+              bar. The previous defensive `pt-safe` added 40-50px of dead space
+              ABOVE the drag indicator on PWA. */}
+          <div className="mx-auto mt-1.5 h-[5px] w-9 shrink-0 rounded-[2.5px] bg-muted-foreground/30" />
 
           <div className="border-b border-border px-5 pb-3 pt-2 text-left">
             <Drawer.Title className="truncate text-lg font-semibold text-foreground">
