@@ -26,12 +26,8 @@ import { useTeamDensity, type TeamDensity } from '@/stores/team-density-store'
 import { SessionTile } from '@/components/session-tile'
 import type { TileSession } from '@/components/session-tile'
 import type { OverviewSize } from '@/lib/overview-size'
-import {
-  needsYouCount,
-  taskProgress,
-  type Team,
-  type TeamMember,
-} from '@/lib/api/teams'
+import { type Team, type TeamMember } from '@/lib/api/teams'
+import { TeamRollupBadges } from './team-rollup-badges'
 import { TeammateChip } from './teammate-chip'
 import { TeammateCard } from './teammate-card'
 import { TeammatePeekSheet } from './teammate-peek-sheet'
@@ -171,6 +167,10 @@ export function TeamCard({ team, sizeTier, customMode }: TeamCardProps) {
 // secondary (`N agents · X/Y tasks`) that drops first on a narrow screen. We do
 // NOT show a "working" number — it's the implicit default (per-member spinners
 // already show it). The density toggle (Chips↔Cards) sits at the trailing edge.
+//
+// The two attention badges (primary token + muted secondary) are the SHARED
+// <TeamRollupBadges> — the SAME markup the focus session-strip header renders —
+// so the roll-up never drifts between the overview and focus views.
 
 function TeamRollup({
   team,
@@ -181,10 +181,6 @@ function TeamRollup({
   density: TeamDensity
   onDensityChange: (d: TeamDensity) => void
 }) {
-  const needs = needsYouCount(team)
-  const { done, total } = taskProgress(team)
-  const agentCount = team.members.length
-
   return (
     <header className="flex items-center gap-2 px-0.5">
       {/* Team name — the stable identity. */}
@@ -199,27 +195,9 @@ function TeamRollup({
         Lead
       </span>
 
-      {/* PRIMARY attention token. */}
-      {needs > 0 ? (
-        <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
-          needs you · {needs}
-        </span>
-      ) : (
-        <span className="shrink-0 rounded-full bg-status-ready/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-ready">
-          done
-        </span>
-      )}
-
-      {/* SECONDARY, muted, tabular — drops first on a narrow screen (hidden < sm). */}
-      <span className="ml-auto hidden shrink-0 items-center gap-1 text-[11px] tabular-nums text-muted-foreground/70 sm:flex">
-        {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
-        {total > 0 && (
-          <>
-            <span aria-hidden>·</span>
-            {done}/{total} tasks
-          </>
-        )}
-      </span>
+      {/* Shared attention badges (primary token + muted, tabular secondary; the
+          secondary drops first on a narrow screen via the `card` density). */}
+      <TeamRollupBadges team={team} density="card" />
 
       {/* Density toggle — per-team Chips↔Cards (NOT the global controls). On the
           narrow screen the secondary is hidden, so the toggle keeps its own

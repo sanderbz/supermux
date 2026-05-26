@@ -146,6 +146,14 @@ impl PtyStreamer {
             self.streams.insert(new.to_string(), v);
         }
     }
+
+    /// Whether a stream is currently cached under `key`. Test-only probe for the
+    /// teammate-stream eviction path (lets a test assert a `{lead}/{member}` slot
+    /// is dropped on team deregister without exposing the registry in prod).
+    #[cfg(test)]
+    pub fn is_cached(&self, key: &str) -> bool {
+        self.streams.contains_key(key)
+    }
 }
 
 /// Make a stream key filename-safe (Agent Teams §3.5). Keeps `[A-Za-z0-9._-]`

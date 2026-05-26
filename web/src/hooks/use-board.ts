@@ -305,8 +305,18 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
   const issuesQuery = useQuery({
     queryKey: [...issuesK],
     // Scope the fetch to the selected board: a specific board hits its
-    // `/cards` endpoint; `'all'` hits the cross-board aggregate.
-    queryFn: () => boardsApi.cards(boardId),
+    // `/cards` endpoint; `'all'` hits the cross-board aggregate. Coerce the
+    // result to an array AT THE SOURCE: a malformed / 404 board payload (a
+    // non-array error body that slipped past the client's envelope unwrap)
+    // must degrade to an EMPTY board, never a truthy non-array that crashes
+    // every consumer's `.filter` / `.map` (CommandPalette, BoardCard, the
+    // column renderers) — the `?? []` fallback elsewhere can't catch a truthy
+    // non-array, so the array guarantee is established here, once, for all of
+    // them.
+    queryFn: async () => {
+      const data = await boardsApi.cards(boardId)
+      return Array.isArray(data) ? data : []
+    },
     staleTime: 30_000,
   })
   const statusesQuery = useQuery({
@@ -545,8 +555,11 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
 
   return useMemo<UseBoardResult>(
     () => ({
-      issues: issuesQuery.data ?? [],
-      statuses: statusesQuery.data ?? [],
+      // Final array guarantee for consumers (CommandPalette / BoardCard / the
+      // columns all assume an array): even if a non-array somehow reached the
+      // cache, a malformed board degrades to empty, never blanks the app.
+      issues: Array.isArray(issuesQuery.data) ? issuesQuery.data : [],
+      statuses: Array.isArray(statusesQuery.data) ? statusesQuery.data : [],
       isLoading: issuesQuery.isLoading || statusesQuery.isLoading,
       isError: issuesQuery.isError || statusesQuery.isError,
       error,
