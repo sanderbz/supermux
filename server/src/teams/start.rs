@@ -134,9 +134,10 @@ pub fn build_seed_prompt(task: &str, teammates: u32, model: Option<&str>) -> Str
     )
 }
 
-/// Generate a unique-ish lead session name (`team-<6 base36>`). The caller
-/// re-checks existence via `sessions::create`, which 409s on a collision.
-fn gen_team_name() -> String {
+/// Generate a unique-ish RANDOM lead session name (`team-<6 base36>`). The
+/// fallback when the working dir gives no usable slug. The caller re-checks
+/// existence via `sessions::create`, which 409s on a collision.
+fn gen_random_team_name() -> String {
     let suffix: String = uuid::Uuid::new_v4()
         .simple()
         .to_string()
@@ -144,6 +145,66 @@ fn gen_team_name() -> String {
         .take(6)
         .collect();
     format!("team-{suffix}")
+}
+
+/// Slugify a working dir's basename for a human-readable lead-session name —
+/// e.g. `/opt/projects/supermux` -> `supermux`, `/home/me/My App/` -> `my-app`.
+/// Lower-cases, replaces every non-`[a-z0-9]` run with a single `-`, trims
+/// leading/trailing dashes, caps at 32 chars. Returns `None` for an empty or
+/// otherwise unusable basename (e.g. `/` or a path with only punctuation).
+fn slugify_dir(dir: &str) -> Option<String> {
+    let trimmed = dir.trim().trim_end_matches('/');
+    let base = std::path::Path::new(trimmed).file_name()?.to_str()?;
+    let mut out = String::with_capacity(base.len());
+    let mut last_dash = true; // suppresses a leading `-`
+    for c in base.chars() {
+        let l = c.to_ascii_lowercase();
+        if l.is_ascii_alphanumeric() {
+            out.push(l);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        return None;
+    }
+    if out.len() > 32 {
+        out.truncate(32);
+        while out.ends_with('-') {
+            out.pop();
+        }
+    }
+    Some(out)
+}
+
+/// Pick a human-readable lead session name from the working dir, e.g.
+/// `team-supermux`, with `-2`/`-3`/... collision suffixing against existing
+/// session rows. Falls back to [`gen_random_team_name`] when the dir yields no
+/// usable slug or every reasonable suffix is taken. Async because it consults
+/// the DB to skip taken names BEFORE `sessions::create` would 409.
+async fn gen_team_name_for_dir(state: &AppState, dir: Option<&str>) -> String {
+    let Some(slug) = dir.and_then(slugify_dir) else {
+        return gen_random_team_name();
+    };
+    let base = format!("team-{slug}");
+    // Try the bare name first, then -2..-99. 99 is a comfortable ceiling — at
+    // that point something has gone weird and the random fallback is fine.
+    for i in 1..=99u32 {
+        let candidate = if i == 1 { base.clone() } else { format!("{base}-{i}") };
+        match db::sessions::exists(&state.pool, &candidate).await {
+            Ok(false) => return candidate,
+            Ok(true) => continue,
+            // On DB error fall back to the random name — never wedge a team
+            // start on a transient query failure.
+            Err(_) => return gen_random_team_name(),
+        }
+    }
+    gen_random_team_name()
 }
 
 /// Start a team: create the LEAD session (provider=claude), flag it for Agent
@@ -165,7 +226,7 @@ pub async fn start_team(
 
     let name = match input.name.as_deref().map(str::trim) {
         Some(n) if !n.is_empty() => n.to_string(),
-        _ => gen_team_name(),
+        _ => gen_team_name_for_dir(state, input.dir.as_deref()).await,
     };
 
     // 1. Create the LEAD as a normal Claude session (reuses `sessions::create` —
@@ -434,10 +495,27 @@ mod tests {
     }
 
     #[test]
-    fn gen_team_name_is_valid_and_prefixed() {
-        let n = gen_team_name();
+    fn gen_random_team_name_is_valid_and_prefixed() {
+        let n = gen_random_team_name();
         assert!(n.starts_with("team-"));
         assert!(crate::sessions::valid_name(&n), "generated name must be a valid session name");
+    }
+
+    #[test]
+    fn slugify_dir_basics() {
+        assert_eq!(slugify_dir("/opt/projects/supermux"), Some("supermux".into()));
+        assert_eq!(slugify_dir("/opt/projects/supermux/"), Some("supermux".into()));
+        assert_eq!(slugify_dir("/home/me/My App/"), Some("my-app".into()));
+        assert_eq!(slugify_dir("/home/me/.config/"), Some("config".into()));
+        assert_eq!(slugify_dir("/home/me/__init__.py"), Some("init-py".into()));
+        // Edge: root or pure punctuation → no slug, caller falls back to random.
+        assert_eq!(slugify_dir("/"), None);
+        assert_eq!(slugify_dir("///---"), None);
+        // Long: capped at 32, no trailing dash.
+        let long = format!("/x/{}", "a".repeat(50));
+        let slug = slugify_dir(&long).unwrap();
+        assert!(slug.len() <= 32);
+        assert!(!slug.ends_with('-'));
     }
 
     // ── FEAT-CONVERT-TEAM tests ────────────────────────────────────────────────
