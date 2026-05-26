@@ -15,6 +15,7 @@
 // (single source of truth — no second fetch, WebSocket/SSE-driven downstream).
 
 import * as React from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
@@ -104,6 +105,30 @@ export function DesktopSplit({
     agentId: string
     forName: string
   } | null>(null)
+
+  // Seed from the URL: `/focus/<lead>?teammate=<agent_id>` selects the matching
+  // teammate on mount / when the param changes (the overview TEAM CARD navigates
+  // here for a teammate tap — single teammate-view surface, no in-overview
+  // overlay). We resolve the team via the lead session (only one team can host a
+  // given lead) so the param stays minimal. A user-initiated strip click later
+  // overwrites `selected` independently; the param is read-once per
+  // (name, teammate) pair via the effect's dep array.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const teammateParam = searchParams.get('teammate')
+  React.useEffect(() => {
+    if (!teammateParam) return
+    const t = teams.find((x) => x.lead_supermux_session === name)
+    const m = t?.members.find((x) => x.agent_id === teammateParam)
+    if (!t || !m) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelected({ teamName: t.team_name, agentId: m.agent_id, forName: name })
+    // Strip the param so a manual sidebar switch later (which clears `selected`
+    // via selectSession) isn't silently undone by a re-mount that re-reads the
+    // same param. Replace, not push — back-button should still land on overview.
+    const next = new URLSearchParams(searchParams)
+    next.delete('teammate')
+    setSearchParams(next, { replace: true })
+  }, [teammateParam, teams, name, searchParams, setSearchParams])
 
   // Honour the selection ONLY while the route is still on the session it was made
   // from; a route change implicitly drops it.

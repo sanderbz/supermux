@@ -11,19 +11,16 @@
 //   • BODY: name (text-sm font-medium, truncate) + live <ActivityLine> (reused
 //     from activity-status.tsx) inline/under it, muted + truncating.
 //   • TRAILING (tabular): a `needs you` pill (tile waiting-pill geometry) when
-//     needs_you — THE ONLY loud element — ELSE a muted task-count (`2/3`) + a
-//     small zero-click PEEK GLYPH.
+//     needs_you — THE ONLY loud element — ELSE a muted task-count (`2/3`).
 //
-// GESTURES (no-extra-clicks + @dnd-kit clash avoidance):
-//   • Tap        → focus that teammate's terminal (onFocus).
-//   • Peek glyph → half-sheet peek (onPeek). Zero-click, always present (the
-//                  preferred trigger per the no-extra-clicks feedback).
-//   • Long-press → peek too, but ONLY when NOT in custom mode (custom mode owns
-//                  the @dnd-kit TouchSensor long-press for reorder; firing our own
-//                  long-press there would clash). The glyph is the universal path.
+// GESTURES:
+//   • Tap → navigate to the teammate's focus page (the lead's focus route with
+//     `?teammate=<agent_id>` so the focus view auto-selects this teammate).
+//     There is no in-overview peek half-sheet anymore — the focus page IS the
+//     single teammate-view surface across desktop + mobile (one source of truth,
+//     no sync drift).
 
 import { cn } from '@/lib/utils'
-import { useLongPress } from '@/hooks/use-long-press'
 import { ActivityLine } from '@/components/session-tile/activity-status'
 import { MemberStatusDot } from './member-status-dot'
 import { tasksForMember, type Team, type TeamMember } from '@/lib/api/teams'
@@ -36,14 +33,8 @@ export interface TeammateChipProps {
   /** Live "what this teammate is doing now" label (optional — AT-B doesn't carry
    *  a per-teammate activity line yet; threaded for forward-compat + AT-F3). */
   activity?: string
-  /** Tap → focus this teammate's terminal full-screen. */
+  /** Tap → navigate to this teammate's focus page. */
   onFocus: () => void
-  /** Peek glyph / long-press → half-sheet peek. */
-  onPeek: () => void
-  /** True while the overview is in custom (drag-reorder) mode — disables the
-   *  chip's own long-press so it doesn't clash with @dnd-kit's TouchSensor. The
-   *  peek glyph still works (it's the universal, no-extra-clicks trigger). */
-  customMode?: boolean
 }
 
 export function TeammateChip({
@@ -51,31 +42,20 @@ export function TeammateChip({
   member,
   activity,
   onFocus,
-  onPeek,
-  customMode = false,
 }: TeammateChipProps) {
   const needsYou = member.status === 'needs_you'
   const memberTasks = tasksForMember(team, member)
   const taskTotal = memberTasks.length
   const taskDone = memberTasks.filter((t) => t.status === TASK_DONE).length
 
-  // Long-press → peek, suppressed in custom mode (TouchSensor owns the gesture
-  // there). A short tap → focus. The glyph (below) handles peek in every mode.
-  const longPress = useLongPress({
-    onLongPress: () => {
-      if (!customMode) onPeek()
-    },
-    onClick: onFocus,
-  })
-
   const rail = member.color || 'hsl(var(--status-idle))'
 
   return (
     <div
-      // The row is the tap target → focus. Long-press → peek (non-custom mode).
-      // relative + overflow-hidden so the colour rail clips to the rounded corner.
+      // The row is the tap target → focus page. No long-press / no peek — the
+      // focus page is the single teammate-view surface.
       className={cn(
-        'group/chip relative flex h-11 items-center gap-2.5 overflow-hidden rounded-[10px] border border-border/60 bg-card/60 pl-3 pr-1.5',
+        'group/chip relative flex h-11 items-center gap-2.5 overflow-hidden rounded-[10px] border border-border/60 bg-card/60 pl-3 pr-3',
         'cursor-pointer select-none transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         // A calm tint when needs_you — the row itself reads as "attention here"
         // without an alarmist fill; the pill is the loud token.
@@ -83,14 +63,14 @@ export function TeammateChip({
       )}
       role="button"
       tabIndex={0}
-      aria-label={`Teammate ${member.name}${needsYou ? ', needs you' : ''}. Tap to open, long-press or peek to preview.`}
+      aria-label={`Open ${member.name}${needsYou ? ', needs you' : ''} full screen`}
+      onClick={onFocus}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onFocus()
         }
       }}
-      {...longPress}
     >
       {/* 2px left colour rail = identity colour. */}
       <span
@@ -116,7 +96,7 @@ export function TeammateChip({
       </div>
 
       {/* Trailing (tabular). needs_you → the ONE loud blue pill (tile waiting-pill
-          geometry). Else → muted task-count + the zero-click peek glyph. */}
+          geometry). Else → muted task-count. */}
       <div className="flex shrink-0 items-center gap-1">
         {needsYou ? (
           <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
@@ -129,47 +109,7 @@ export function TeammateChip({
             </span>
           )
         )}
-
-        {/* Peek glyph — zero-click peek trigger. The visible glyph stays small
-            (size-9) but the TAP TARGET is bumped to a full 44pt square on a
-            coarse pointer ([@media(pointer:coarse)]:size-11) so touch users get
-            the HIG-grade hit area in BOTH axes (the row's 44pt height alone only
-            covered the vertical). Fine pointers keep the compact 36px aim target.
-            Stops propagation so it never also triggers the row's tap→focus. */}
-        <button
-          type="button"
-          aria-label={`Peek ${member.name}`}
-          title="Peek"
-          onClick={(e) => {
-            e.stopPropagation()
-            onPeek()
-          }}
-          onPointerDown={(e) => e.stopPropagation()}
-          className="flex size-9 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:size-11"
-        >
-          <PeekGlyph />
-        </button>
       </div>
     </div>
-  )
-}
-
-/** A small "peek" glyph — an eye-like preview mark. Kept inline (no new icon dep)
- *  and sized to read at the chip's trailing edge without crowding. */
-function PeekGlyph() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      aria-hidden
-      className="size-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z" />
-      <circle cx="8" cy="8" r="1.75" />
-    </svg>
   )
 }
