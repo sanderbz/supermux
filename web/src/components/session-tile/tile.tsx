@@ -803,9 +803,25 @@ export function SessionTile({
               // Sentence-case "Stopped" pill — neutral muted treatment, NOT
               // red. Mirrors the needs-input pill geometry so the row stays
               // balanced. Reads at a glance: this tile is OFF.
-              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+              //
+              // ON HOVER: the kebab (⋯) hover-menu lives at the wrapper's
+              // top-right and would otherwise OVERLAP this pill (both occupy
+              // the title row's right edge). We translate the pill leftward
+              // and fade it slightly so the kebab gets clean real-estate —
+              // the dimmed card + grey StatusDot already signal "stopped" at
+              // a glance, so the pill can step aside without losing the cue.
+              // Spring (cardExpand: response 0.32, dampingFraction 0.72) —
+              // never a hard jump, never `transition: all`. Reduce Motion →
+              // instant swap (springs degrade to duration 0).
+              <motion.span
+                animate={
+                  hovered ? { x: -36, opacity: 0 } : { x: 0, opacity: 1 }
+                }
+                transition={reduce ? { duration: 0 } : springs.cardExpand}
+                className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground"
+              >
                 {STATUS_LABEL.stopped}
-              </span>
+              </motion.span>
             )}
             {/* Archive affordance — a single hover-revealed icon, on EVERY tile
                 (no kebab, no extra clicks). Swaps in over the status dot on

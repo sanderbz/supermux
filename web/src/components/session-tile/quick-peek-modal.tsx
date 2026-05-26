@@ -1,18 +1,17 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Drawer } from 'vaul'
-import { X, Square, RotateCcw, Archive, Users } from 'lucide-react'
+import { X, Square, RotateCcw, Archive, Users, Info } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { cn } from '@/lib/utils'
-import { CONFIRM, killTeamLeadConfirm } from '@/brand/copy'
 import { focusApi } from '@/lib/api/focus'
-import { sessionsApi, type ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
-import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
 import { useTeams } from '@/hooks/use-teams'
 import { useToast } from '@/components/ui/use-toast'
+import { useSessionActions } from '@/hooks/use-session-actions'
 import { LiveTerminal } from '@/components/terminal/live-terminal'
+import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
 import { StartTeamSheet } from './start-team-sheet'
 import { StatusDot } from './status-dot'
 import { TailPreview } from './tail-preview'
@@ -50,13 +49,25 @@ export function QuickPeekModal({
   const navigate = useNavigate()
   const { toast } = useToast()
   const { teams } = useTeams()
-  const [busy, setBusy] = React.useState(false)
+  // Stop / Archive share their logic with the desktop hover-kebab via
+  // `useSessionActions` — one source of truth for lifecycle behaviour across
+  // surfaces. Restart stays local (it's quick-peek-specific: it pairs with the
+  // live pane's `restartNonce` remount, which the kebab has no use for).
+  const { busy: actionsBusy, stop, archive } = useSessionActions(session.name)
+  const [restartBusy, setRestartBusy] = React.useState(false)
+  const busy = actionsBusy || restartBusy
   // FEAT-CONVERT-TEAM: the "Make it a team" sheet is mounted lazily inside
   // the peek so the action lives next to Restart/Stop (the natural mobile home
   // for session lifecycle actions). On success we navigate to the lead's focus
   // view AND close the peek — the session is now a team and the focus view's
   // TEAM CARD is the natural next surface.
   const [convertOpen, setConvertOpen] = React.useState(false)
+  // FEAT-SESSION-INFO: the same Info panel the focus-page title-click opens —
+  // mounted here so mobile gets parity with the desktop hover-kebab. Reuses the
+  // SAME <SessionInfoPanel> component (mobile fork = bottom Sheet) so there is
+  // ONE info surface app-wide, two entry points. Tapping a clone navigates to
+  // its focus route AND closes both this peek and the info sheet.
+  const [infoOpen, setInfoOpen] = React.useState(false)
   const isAlreadyLead = React.useMemo(
     () => teams.some((t) => t.lead_supermux_session === session.name),
     [teams, session.name],
@@ -74,64 +85,20 @@ export function QuickPeekModal({
     [qc],
   )
 
-  const doStop = React.useCallback(async () => {
-    if (busy) return
-    // Team-lead awareness: teammates are split-panes INSIDE the lead's session,
-    // so stopping a lead ends the whole team. When this session IS a team lead we
-    // swap in the team-aware confirm copy (spelling out the N teammates that go
-    // down with it); a normal session reads EXACTLY as before.
-    const team = teams.find((t) => t.lead_supermux_session === session.name)
-    const c = team ? killTeamLeadConfirm(team.members.length) : CONFIRM.killSession
-    if (!window.confirm(`${c.title}\n\n${c.body}`)) return
-    setBusy(true)
-    try {
-      await focusApi.stopSession(session.name)
-      refresh()
-      toast({ message: 'Session stopped', tone: 'waiting' })
-    } catch (e) {
-      toast({ message: e instanceof Error ? e.message : 'Stop failed.', tone: 'error' })
-    } finally {
-      setBusy(false)
-    }
-  }, [busy, session.name, refresh, toast, teams])
-
-  // Archive replaces the (dead) Stop button once a session is already stopped —
-  // the one archive affordance with no other mobile home (the desktop reaches it
-  // via the stopped tile's hover-peek). Reuses the SAME server call the desktop
-  // peek + header icon use (`sessionsApi.archive`), so there is ONE archive path,
-  // not a mobile-only copy. No confirm: archive is reversible from the Archived
-  // sheet (`unarchive`), so unlike Stop (which `window.confirm`s) it just needs a
-  // tap. Mirrors doStop's robustness — busy guard, success/error toasts. On
-  // success we optimistically drop the row from the overview cache (same as the
-  // desktop peek), refresh the Archived sheet count, and close the sheet.
-  const doArchive = React.useCallback(async () => {
-    if (busy) return
-    setBusy(true)
-    try {
-      await sessionsApi.archive(session.name)
-      // Optimistically drop the archived row from the live overview list so the
-      // overview reflects the change immediately (the next SSE/refetch backfills
-      // authoritatively — archived rows are filtered out server-side).
-      qc.setQueryData<ApiSession[]>(SESSIONS_KEY, (prev) =>
-        (prev ?? []).filter((s) => s.name !== session.name),
-      )
-      // Keep the Archived sheet's count/list in sync without a manual reopen.
-      void qc.invalidateQueries({ queryKey: ARCHIVED_SESSIONS_KEY })
-      toast({ message: 'Session archived', tone: 'waiting' })
-      onOpenChange(false)
-    } catch (e) {
-      toast({
-        message: e instanceof Error ? e.message : 'Archive failed.',
-        tone: 'error',
-      })
-    } finally {
-      setBusy(false)
-    }
-  }, [busy, qc, session.name, toast, onOpenChange])
+  const doStop = stop
+  // Archive dismisses the host sheet on success — same intent as before, now
+  // expressed via the shared hook's `onAfterArchive` option. Mobile quick-peek
+  // ONLY shows Archive when the session is already stopped (the secondary
+  // swaps to Stop while running), so no `confirm: true` here — archive is
+  // reversible from the Archived sheet.
+  const doArchive = React.useCallback(
+    () => archive({ onAfterArchive: () => onOpenChange(false) }),
+    [archive, onOpenChange],
+  )
 
   const doRestart = React.useCallback(async () => {
     if (busy) return
-    setBusy(true)
+    setRestartBusy(true)
     try {
       // Restart = stop (no-op/ignored if already stopped) then start; the server
       // resumes the same conversation. Bump the nonce so the live pane remounts
@@ -144,7 +111,7 @@ export function QuickPeekModal({
     } catch (e) {
       toast({ message: e instanceof Error ? e.message : 'Restart failed.', tone: 'error' })
     } finally {
-      setBusy(false)
+      setRestartBusy(false)
     }
   }, [busy, session.name, refresh, toast])
 
@@ -171,6 +138,12 @@ export function QuickPeekModal({
                 archive is reversible from the Archived sheet).
                 "Make team" (FEAT-CONVERT-TEAM) is hidden once the session IS
                 already a team lead — there's nothing to convert. */}
+            <PeekAction
+              label="Info"
+              icon={Info}
+              onClick={() => setInfoOpen(true)}
+              disabled={busy}
+            />
             <PeekAction
               label="Restart"
               icon={RotateCcw}
@@ -258,6 +231,21 @@ export function QuickPeekModal({
           onOpenChange(false)
           void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
           toast({ message: 'Team starting', tone: 'active' })
+          navigate(`/focus/${encodeURIComponent(name)}`)
+        }}
+      />
+
+      {/* FEAT-SESSION-INFO (mobile parity) — the same Info panel the focus-page
+          title-click opens. Mounted OUTSIDE Drawer.Portal so the Vaul peek
+          stays alive underneath while the info sheet is on top. Cloning an
+          agent navigates to its focus route AND dismisses the peek. */}
+      <SessionInfoPanel
+        name={session.name}
+        open={infoOpen}
+        onOpenChange={setInfoOpen}
+        onNavigate={(name) => {
+          setInfoOpen(false)
+          onOpenChange(false)
           navigate(`/focus/${encodeURIComponent(name)}`)
         }}
       />
