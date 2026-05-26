@@ -218,23 +218,33 @@ function TeamRollup({
   width: TeamWidth
   onWidthChange: (w: TeamWidth) => void
 }) {
+  // At the Compact (360px) tier the header chrome (4-segment width toggle +
+  // 2-segment density toggle + needs-you pill + "Lead" tag + muted secondary)
+  // genuinely doesn't fit ~340px usable. Drop the muted "Lead" tag and the
+  // muted secondary AT Compact so the loud needs-you/done pill + toggles stay
+  // legible and the team name keeps its identity (see also h2 min-w below).
+  const isCompact = width === 'compact'
   return (
     <header className="flex items-center gap-2 px-0.5">
-      {/* Team name — the stable identity. */}
-      <h2 className="min-w-0 shrink truncate text-sm font-semibold tracking-tight">
+      {/* Team name — the stable identity. min-w keeps a few characters always
+          visible so the name never collapses to 0 even when chrome is dense. */}
+      <h2 className="min-w-[5ch] shrink truncate text-sm font-semibold tracking-tight">
         {team.team_name}
       </h2>
 
       {/* "Lead" tag — inline here (not overlaid on the tile) so it labels the
-          hierarchy ("the full tile below is the lead, the rows under it are its
-          crew") without ever covering the tile's own title / status dot. */}
-      <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
-        Lead
-      </span>
+          hierarchy. Dropped at the Compact card width: the lead tile sitting
+          right below is already unmistakable on its own. */}
+      {!isCompact && (
+        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+          Lead
+        </span>
+      )}
 
-      {/* Shared attention badges (primary token + muted, tabular secondary; the
-          secondary drops first on a narrow screen via the `card` density). */}
-      <TeamRollupBadges team={team} density="card" />
+      {/* Shared attention badges (primary token + muted, tabular secondary).
+          `hideSecondary` is gated on CARD width (not viewport) — at Compact the
+          card itself is too narrow regardless of the screen size. */}
+      <TeamRollupBadges team={team} density="card" hideSecondary={isCompact} />
 
       {/* Width toggle — per-team TEAM CARD width (FEAT-RESIZE). Desktop-only
           (the component itself is `hidden sm:flex`); the narrow screen always

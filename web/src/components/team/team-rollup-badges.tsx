@@ -43,13 +43,21 @@ const TOKENS: Record<
 /** The shared roll-up badges: the PRIMARY attention token (needs-you blue pill
  *  ELSE green "done") + the muted secondary (`N agents · X/Y tasks`). Render
  *  inside the host's `<header>` so its flex layout (team name, lead chip,
- *  density toggle) wraps these consistently at each site. */
+ *  density toggle) wraps these consistently at each site.
+ *
+ *  `hideSecondary` lets the host force-drop the muted secondary regardless of
+ *  the viewport-gated default (TOKENS.card.secondary uses `hidden sm:flex` for
+ *  the screen-width breakpoint; the team-card uses this prop instead for its
+ *  own CARD-width breakpoint, so a Compact-width team card on a wide desktop
+ *  still drops the secondary). */
 export function TeamRollupBadges({
   team,
   density,
+  hideSecondary = false,
 }: {
   team: Team
   density: TeamRollupDensity
+  hideSecondary?: boolean
 }) {
   const needs = needsYouCount(team)
   const { done, total } = taskProgress(team)
@@ -69,8 +77,9 @@ export function TeamRollupBadges({
         </span>
       )}
 
-      {/* SECONDARY, muted, tabular. */}
-      {t.spellTasks ? (
+      {/* SECONDARY, muted, tabular. Suppressed when the host wants it gone
+          (Compact-width team card — header chrome won't fit). */}
+      {!hideSecondary && (t.spellTasks ? (
         <span className={t.secondary}>
           {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
           {total > 0 && (
@@ -85,7 +94,7 @@ export function TeamRollupBadges({
           {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
           {total > 0 && ` · ${done}/${total}`}
         </span>
-      )}
+      ))}
     </>
   )
 }
