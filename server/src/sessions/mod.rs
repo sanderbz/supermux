@@ -25,6 +25,9 @@ pub mod status;
 pub mod steering;
 pub mod teams;
 pub mod tmux;
+pub mod transport;
+
+pub use transport::{HostId, Transport, LOCAL as LOCAL_TRANSPORT};
 
 use std::collections::HashMap;
 
