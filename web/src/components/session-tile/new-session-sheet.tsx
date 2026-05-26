@@ -9,8 +9,11 @@ import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { sessionsApi, SessionError, type NewSession } from '@/lib/api'
-import { homeDir } from '@/env'
-import { DirectoryField } from './directory-field'
+import {
+  WherePicker,
+  defaultWhereSelection,
+  type NewWhereSelection,
+} from './where-picker'
 
 // ── Quick-start preset boot configs (M12 acceptance) ────────────────────────
 // Each preset prefills the whole form: a name stem, a provider, and the initial
@@ -68,16 +71,28 @@ function suggestName(stem: string): string {
 
 interface FormState {
   name: string
-  dir: string
+  /** The "Where" selection. FEAT-NEWSES-WHERE replaced the old `dir: string`
+   *  with the richer WherePicker selection so the user sees the Projects list
+   *  (and the "Create a new folder" affordance) up front — same picker the
+   *  Start-a-team sheet uses, narrowed to `'new'` picks only via
+   *  `showSessions={false}` (no take-over for a brand-new session). The dir
+   *  string is read out of `where.dir` at submit time. */
+  where: NewWhereSelection
   provider: NonNullable<NewSession['provider']>
   desc: string
   command: string
   worktree: boolean
 }
 
-const EMPTY_FORM = (defaultDir: string): FormState => ({
+/** Initial form state. The "where" defaults to the Projects root (or the
+ *  server's home dir when SUPERMUX_PROJECT_DIRS is unset) so the picker
+ *  opens on the Projects list immediately — same default Start-a-team uses
+ *  via `defaultWhereSelection()`. */
+const EMPTY_FORM = (defaultDir: string | undefined): FormState => ({
   name: '',
-  dir: defaultDir,
+  where: defaultDir
+    ? { kind: 'new', dir: defaultDir }
+    : defaultWhereSelection(),
   provider: 'claude',
   desc: '',
   command: '',
@@ -109,9 +124,12 @@ export function NewSessionSheet({
   defaultDir,
   onCreated,
 }: NewSessionSheetProps) {
-  // Fall back to the server's home directory so the working-directory field is
-  // always pre-filled — the user can create a session in one click, no typing.
-  const initialDir = defaultDir ?? homeDir()
+  // FEAT-NEWSES-WHERE: the working dir is now picked via <WherePicker> rather
+  // than a single free-text field, so the initial value is the picker's
+  // structured default: `projectsDir()` → Projects list opens immediately;
+  // falls back to homeDir() when SUPERMUX_PROJECT_DIRS is unset; an explicit
+  // `defaultDir` override (passed in from the caller) wins. The picker still
+  // accepts free typing too, so a power user can ignore the list entirely.
   // The shared iOS bottom-sheet (ResponsiveSheet): Vaul drag-detent sheet on
   // touch — grab-handle + swipe-down/backdrop-tap dismiss, NO ✕ — and the
   // right-side dialog on desktop, matching every other sheet in the app
@@ -127,7 +145,7 @@ export function NewSessionSheet({
     >
       {open && (
         <NewSessionForm
-          defaultDir={initialDir}
+          defaultDir={defaultDir}
           onCancel={() => onOpenChange(false)}
           onCreated={(name) => {
             onOpenChange(false)
@@ -140,7 +158,7 @@ export function NewSessionSheet({
 }
 
 interface NewSessionFormProps {
-  defaultDir: string
+  defaultDir: string | undefined
   onCancel: () => void
   onCreated: (name: string) => void
 }
@@ -175,9 +193,16 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
     setSubmitting(true)
     setError(null)
     try {
+      // The WherePicker is locked to 'new' picks via `showSessions={false}` so
+      // `where.kind` is always 'new' here. We read the path off `.dir` —
+      // whether the user picked a Project row, typed a path, or used the
+      // "Create a new folder" flow (the picker has already materialised the
+      // folder server-side before advancing). Trim is the same normalisation
+      // the old DirectoryField path did. Empty string is OK — the server
+      // defaults to the home directory.
       const created = await sessionsApi.create({
         name: form.name.trim(),
-        dir: form.dir.trim(),
+        dir: form.where.dir.trim(),
         provider: form.provider,
         desc: form.desc.trim() || undefined,
         worktree: form.worktree,
@@ -260,10 +285,23 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
                 />
               </Field>
 
-              <DirectoryField
-                id="ns-dir"
-                value={form.dir}
-                onChange={(value) => set('dir', value)}
+              {/* FEAT-NEWSES-WHERE: the Projects list + "Use another folder"
+                  + "Create a new folder" affordances from Start-a-team —
+                  narrowed for the New-Session context. `showSessions={false}`
+                  suppresses the take-over section (a brand-new session can't
+                  take over another) AND narrows the value/onChange types so
+                  this consumer can never end up with a `'session'` selection.
+                  `gitHint="info"` drops the amber non-git WARNING banner — a
+                  normal session can run anywhere, the warning would just be
+                  noise (Start-a-team keeps `gitHint="warn"` because teammates
+                  each need their own git worktree). The per-row `git`/`no git`
+                  chip in the Projects list is kept either way. */}
+              <WherePicker
+                id="ns-where"
+                value={form.where}
+                onChange={(value) => set('where', value)}
+                showSessions={false}
+                gitHint="info"
               />
 
               <Field label="Description" htmlFor="ns-desc">

@@ -59,26 +59,64 @@ import { StatusDot, STATUS_LABEL } from './status-dot'
 
 // ── public API ───────────────────────────────────────────────────────────────
 
-export type WhereSelection =
-  /** Fresh dir: a new (or existing) folder to run the lead in. */
-  | { kind: 'new'; dir: string }
-  /** Take over an existing session and convert it in place. */
-  | { kind: 'session'; session: ApiSession }
+/** A "fresh dir" pick — a new (or existing) folder to run the agent/lead in. */
+export type NewWhereSelection = { kind: 'new'; dir: string }
+/** A "take over" pick — convert an existing session into a team lead in place. */
+export type SessionWhereSelection = { kind: 'session'; session: ApiSession }
 
-export interface WherePickerProps {
-  value: WhereSelection
-  onChange: (selection: WhereSelection) => void
+/** Discriminated union of the two pick kinds. The picker can be narrowed at
+ *  compile time to ONLY emit `NewWhereSelection` by passing `showSessions={false}`
+ *  — see the overloaded signature on [`WherePicker`] below. */
+export type WhereSelection = NewWhereSelection | SessionWhereSelection
+
+/** Common props shared by both modes of the picker. */
+interface WherePickerBaseProps {
   /** DOM id prefix for inputs (must be unique per sheet). */
   id?: string
-  /** Disable the sessions section (e.g. when the parent flow can't handle the
-   *  take-over mode). Defaults to false. */
+  /** Controls the calm-amber "Not a git repo" warning banner under the picker.
+   *
+   *   - `'warn'` (default) — show the amber GitRepoHint banner when the current
+   *     selection is a non-git project folder. Used by Start-a-team: each
+   *     teammate gets its own git worktree, so non-git fails without hooks.
+   *   - `'info'` / `'none'` — suppress the banner. A normal session (New
+   *     Session) can run anywhere; the warning would just be noise. The small
+   *     per-row `git`/`no git` chip in the Projects section is kept either way
+   *     (useful context at a glance).
+   */
+  gitHint?: 'warn' | 'info' | 'none'
+  /** Disable the sessions section (legacy; not used now that `showSessions`
+   *  exists). Kept for back-compat. Defaults to false. */
   sessionsDisabled?: boolean
 }
 
+/** Props when the picker is allowed to emit BOTH "new" and "session" picks. */
+export interface WherePickerFullProps extends WherePickerBaseProps {
+  value: WhereSelection
+  onChange: (selection: WhereSelection) => void
+  /** Show the "Your sessions" take-over section. Defaults to `true`. */
+  showSessions?: true
+}
+
+/** Props when the picker is locked to "new" picks only. The Sessions section
+ *  is suppressed entirely (no session rows are rendered, so the user can't
+ *  even attempt a take-over from this surface). `value`/`onChange` are typed
+ *  so the parent's state can be `NewWhereSelection` — no runtime guard or
+ *  assertion needed at the call site. */
+export interface WherePickerNewOnlyProps extends WherePickerBaseProps {
+  value: NewWhereSelection
+  onChange: (selection: NewWhereSelection) => void
+  /** Lock the picker to "new" picks only. Defaults to `true` when omitted. */
+  showSessions: false
+}
+
+export type WherePickerProps = WherePickerFullProps | WherePickerNewOnlyProps
+
 /** Initial selection helper used by callers — picks `projectsDir()` if set,
  *  else `homeDir()`. Always with a trailing slash so the autocomplete on focus
- *  immediately surfaces the project subdirs. */
-export function defaultWhereSelection(): WhereSelection {
+ *  immediately surfaces the project subdirs. The return type is the narrow
+ *  `NewWhereSelection` so callers using the new-only picker (New Session)
+ *  don't need to cast. */
+export function defaultWhereSelection(): NewWhereSelection {
   const p = projectsDir()
   if (p) return { kind: 'new', dir: p.endsWith('/') ? p : `${p}/` }
   return { kind: 'new', dir: homeDir() }
@@ -86,12 +124,20 @@ export function defaultWhereSelection(): WhereSelection {
 
 // ── component ────────────────────────────────────────────────────────────────
 
-export function WherePicker({
-  value,
-  onChange,
-  id = 'where',
-  sessionsDisabled = false,
-}: WherePickerProps) {
+export function WherePicker(props: WherePickerProps) {
+  const {
+    value,
+    onChange,
+    id = 'where',
+    sessionsDisabled = false,
+    gitHint = 'warn',
+  } = props as WherePickerFullProps & { sessionsDisabled?: boolean }
+  // Discriminated narrowing: when callers pass `showSessions={false}` we
+  // suppress the Sessions section entirely AND treat any stray `kind: 'session'`
+  // selection as unreachable (the prop overload prevents it at compile time —
+  // this is the runtime backstop). Default is `true` so existing callers
+  // (Start-a-team) behave identically.
+  const showSessions = props.showSessions !== false
   const { sessions } = useSessions()
   const [projects, setProjects] = React.useState<ProjectRepo[]>([])
   const [projectsLoaded, setProjectsLoaded] = React.useState(false)
@@ -150,15 +196,25 @@ export function WherePicker({
       </label>
 
       {/* Current selection summary — always visible so the user sees what
-          they're about to commit to before scrolling the list. */}
-      <SelectionSummary id={`${id}-summary`} value={value} />
+          they're about to commit to before scrolling the list. Copy varies
+          with the parent context: Start-a-team says "Team will run in:" (the
+          team voice); New-Session (showSessions={false}) says "Will run in:"
+          (no team noun) so the picker reads correctly in both surfaces. */}
+      <SelectionSummary
+        id={`${id}-summary`}
+        value={value}
+        teamVoice={showSessions}
+      />
 
       {/* Scrollable list. max-h is large enough to feel like real content
           (not a tiny dropdown) but capped so the sheet's other fields stay
           reachable without thumb gymnastics. */}
       <div className="flex max-h-[44vh] min-h-[12rem] flex-col gap-3 overflow-y-auto rounded-lg border border-border bg-card/30 p-2">
         {/* ── Section 1: Your sessions ─────────────────────────────────── */}
-        {sessionRows.length > 0 && (
+        {/* Suppressed entirely when `showSessions={false}` — the New-Session
+            consumer has no take-over flow, so showing rows that can't be
+            picked would be a dead-end. */}
+        {showSessions && sessionRows.length > 0 && (
           <Section
             label="Your sessions"
             hint="Take over an existing session as the team lead."
@@ -169,7 +225,12 @@ export function WherePicker({
                 session={s}
                 selected={selectedSessionName === s.name}
                 disabled={sessionsDisabled}
-                onPick={() => onChange({ kind: 'session', session: s })}
+                onPick={() =>
+                  (onChange as (sel: WhereSelection) => void)({
+                    kind: 'session',
+                    session: s,
+                  })
+                }
               />
             ))}
           </Section>
@@ -226,19 +287,36 @@ export function WherePicker({
 
       {/* Calm git-repo warning — surfaces at the bottom of the picker when
           the current selection is a non-git folder. Amber, never red; never
-          blocks submit (advanced users may have WorktreeCreate hooks). */}
-      <GitRepoHint
-        value={value}
-        projects={projects}
-        projectsLoaded={projectsLoaded}
-      />
+          blocks submit (advanced users may have WorktreeCreate hooks).
+          Suppressed when `gitHint !== 'warn'`: a normal New-Session can run
+          anywhere, so the amber warning would just be noise. The per-row
+          `git`/`no git` chips in Projects are kept either way — useful
+          context at a glance. */}
+      {gitHint === 'warn' && (
+        <GitRepoHint
+          value={value}
+          projects={projects}
+          projectsLoaded={projectsLoaded}
+        />
+      )}
     </div>
   )
 }
 
 // ── selection summary ────────────────────────────────────────────────────────
 
-function SelectionSummary({ id, value }: { id: string; value: WhereSelection }) {
+function SelectionSummary({
+  id,
+  value,
+  teamVoice,
+}: {
+  id: string
+  value: WhereSelection
+  /** When true, copy uses the team voice ("Team will run in:"). When false,
+   *  copy is generic ("Will run in:") so the picker reads naturally in the
+   *  New-Session context. */
+  teamVoice: boolean
+}) {
   if (value.kind === 'session') {
     const s = value.session
     return (
@@ -266,7 +344,9 @@ function SelectionSummary({ id, value }: { id: string; value: WhereSelection }) 
     >
       <Folder className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       <span className="min-w-0 flex-1">
-        <span className="font-medium text-foreground">Team will run in:</span>
+        <span className="font-medium text-foreground">
+          {teamVoice ? 'Team will run in:' : 'Will run in:'}
+        </span>
         <span className="block truncate font-mono text-muted-foreground" title={dir}>
           {dir || '(none picked)'}
         </span>

@@ -278,9 +278,20 @@ function StartTeamForm({
           session's dir is authoritative (surfaced as the footnote above).
           Create mode (new + take-over picks): show the WherePicker so the
           user can choose either fresh dir, an existing project, or take over
-          an existing session — without leaving the sheet. */}
+          an existing session — without leaving the sheet.
+          showSessions + gitHint are passed EXPLICITLY (matching the defaults)
+          so a future reader sees why New Session — which passes the OPPOSITE
+          values — diverges: Start-a-team teammates each need their own git
+          worktree (warn appropriate; take-over reachable), a normal session
+          can run anywhere (warn off; no take-over). */}
       {!isLegacyConvert && (
-        <WherePicker id="st-where" value={where} onChange={onWhereChange} />
+        <WherePicker
+          id="st-where"
+          value={where}
+          onChange={onWhereChange}
+          showSessions={true}
+          gitHint="warn"
+        />
       )}
 
       <Field label="Teammates" htmlFor="st-count" hint="How many agents work alongside the lead.">
