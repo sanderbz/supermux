@@ -699,12 +699,20 @@ async fn local_reader_loop(
 /// that writes into the remote FIFO via `tee`, then runs TWO long-lived
 /// `tokio::process::Child` over the host's ControlMaster:
 ///
-/// * **READER**: `ssh -o ControlPath=<cp> -- cat <fifo>` — stdout streams into
-///   the sink in 8 KB chunks.
+/// * **READER**: `ssh -o ControlPath=<cp> -- sh -c 'cat -- "$HOME/…fifo"'` —
+///   stdout streams into the sink in 8 KB chunks.
 /// * **KEEP-ALIVE WRITER**: `ssh -o ControlPath=<cp> -- sh -c
-///   'exec 9>"$0"; while sleep 60; do :; done' <fifo>` — holds the remote write
-///   fd open so the reader doesn't see EOF when tmux's tee briefly closes
-///   (the SSH analogue of the Linux pipe keep-alive trick).
+///   'exec 9>"$HOME/…fifo"; while sleep 60; do :; done'` — holds the remote
+///   write fd open so the reader doesn't see EOF when tmux's tee briefly
+///   closes (the SSH analogue of the Linux pipe keep-alive trick).
+///
+/// **Why `$HOME` inside double quotes.** Transport's SSH branch single-quotes
+/// every argv token via `shell_escape::unix::escape`, which suppresses tilde
+/// expansion (`~/…` becomes a literal). We bake the path into an `sh -c`
+/// script body with the `$HOME/…` token inside DOUBLE quotes — single quotes
+/// survive the outer shell-escape, the remote login shell unwraps them, and
+/// the inner `/bin/sh -c` then expands `$HOME` against the REMOTE user's
+/// home. See [`SshPtyReader::remote_paths`] for the full rationale.
 ///
 /// **Failure handling.** The reader self-heals across a ControlMaster bounce:
 /// if its `ssh cat` child exits but the remote tmux session is still alive, it
@@ -730,11 +738,13 @@ impl SshPtyReader {
     fn new(stream: &PtyStream, host_pool: Arc<HostPool>, host_id: HostId) -> Self {
         // The LOCAL stream.fifo/.log live under the server's data dir and are
         // meaningless on the remote. Translate to the REMOTE convention —
-        // `~/.supermux-remote/pty-<name>.fifo` / `.log` — using the stream key
-        // (which is filename-safe via `sanitize_key`, so the remote path has
-        // no shell metacharacters: safe for ssh argv-flattening into the
-        // remote shell). The `~/.supermux-remote/` directory is created on
-        // the remote by RT8's bootstrap, so we don't `mkdir -p` here.
+        // `$HOME/.supermux-remote/pty-<name>.fifo` / `.log` — using the
+        // stream key (which is filename-safe via `sanitize_key`, so the
+        // remote path has no shell metacharacters: safe to embed inside the
+        // double-quoted script-body context our SSH wrappers use). The
+        // `$HOME/.supermux-remote/` directory is created on the remote by
+        // RT8's bootstrap, so we don't `mkdir -p` here. See
+        // [`SshPtyReader::remote_paths`] for why `$HOME` (not `~/`).
         let (fifo, log) = Self::remote_paths(&stream.name);
         Self {
             name: stream.name.clone(),
@@ -750,13 +760,24 @@ impl SshPtyReader {
     /// SSH path's argv tests construct an SshPtyReader without spinning up a
     /// HostPool by reaching for these directly.
     ///
-    /// Uses `~/.supermux-remote/pty-<name>.{fifo,log}`: literal `~/` (NOT
-    /// shell-expanded by us) so the remote shell expands it once when the
-    /// argv reaches sh on the other side. Don't pre-resolve `$HOME` from the
-    /// local environment — the remote user's home is what matters.
+    /// Uses `$HOME/.supermux-remote/pty-<name>.{fifo,log}`. We embed the
+    /// literal token `$HOME/...` (NOT a locally-resolved home) so the REMOTE
+    /// user's `$HOME` is what expands. The token is always embedded inside a
+    /// DOUBLE-quoted shell context within an `sh -c '<body>'` script — the
+    /// outer single quotes survive `shell_escape::unix::escape` (Transport's
+    /// SSH branch single-quotes every argv token), and inside that the inner
+    /// double quotes around `$HOME/...` are preserved literally and let the
+    /// remote `/bin/sh -c` expand `$HOME` at execution time.
+    ///
+    /// Why not literal `~/`: `shell_escape::unix::escape` single-quotes
+    /// anything containing `~` (it's outside the whitelist), and tilde is
+    /// NOT expanded inside single quotes — the remote `cat`/`mkfifo`/etc.
+    /// would see literal `~/...` and fail ENOENT. `$HOME` survives because
+    /// shells expand variables inside DOUBLE quotes, which we ensure via
+    /// the `sh -c "… \"$HOME/…\" …"` wrapper.
     fn remote_paths(name: &str) -> (PathBuf, PathBuf) {
-        let fifo = PathBuf::from(format!("~/.supermux-remote/pty-{name}.fifo"));
-        let log = PathBuf::from(format!("~/.supermux-remote/pty-{name}.log"));
+        let fifo = PathBuf::from(format!("$HOME/.supermux-remote/pty-{name}.fifo"));
+        let log = PathBuf::from(format!("$HOME/.supermux-remote/pty-{name}.log"));
         (fifo, log)
     }
 
@@ -764,10 +785,14 @@ impl SshPtyReader {
     /// `mkfifo` is treated as "already there" (the common EEXIST), matching
     /// the local path's behaviour. Errors only when the transport itself
     /// fails to spawn (e.g. ssh binary missing).
+    ///
+    /// Runs `sh -c 'mkfifo -- "$HOME/…"'` so the `$HOME` token is expanded
+    /// by the remote shell (see [`remote_paths`] for the quoting rationale).
     async fn ensure_remote_fifo(transport: &Transport, fifo: &Path) -> Result<()> {
-        let fifo_str = fifo.to_string_lossy().to_string();
+        let fifo_str = fifo.to_string_lossy();
+        let script = format!(r#"mkfifo -- "{fifo_str}""#);
         let out = transport
-            .spawn_command("mkfifo", &[&fifo_str])
+            .spawn_command("sh", &["-c", &script])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .stdin(Stdio::null())
@@ -780,23 +805,26 @@ impl SshPtyReader {
         Ok(())
     }
 
-    /// Build the un-spawned `cat <fifo>` Command. Split out from
-    /// [`spawn_cat_child`] so the argv test can inspect the configured
-    /// `Command` (program + args) without actually executing ssh.
+    /// Build the un-spawned `sh -c 'cat -- "$HOME/…"'` reader Command. Split
+    /// out from [`spawn_cat_child`] so the argv test can inspect the
+    /// configured `Command` (program + args) without actually executing ssh.
     pub fn build_cat_command(transport: &Transport, fifo: &Path) -> tokio::process::Command {
-        let fifo_str = fifo.to_string_lossy().to_string();
-        let mut cmd = transport.spawn_command("cat", &[&fifo_str]);
+        let fifo_str = fifo.to_string_lossy();
+        // Bake the path into the script body inside double quotes — the
+        // remote `/bin/sh -c` expands `$HOME` there. See [`remote_paths`].
+        let script = format!(r#"cat -- "{fifo_str}""#);
+        let mut cmd = transport.spawn_command("sh", &["-c", &script]);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         cmd
     }
 
-    /// Spawn the `ssh ... cat <fifo>` reader child over the current Transport's
-    /// ControlMaster. `Stdin` is set to null so the remote `cat` doesn't try
-    /// to forward our local terminal; `stderr` is piped so a meaningful error
-    /// is captured if the child dies; `stdout` is piped — that's the byte
-    /// stream we drain into the sink.
+    /// Spawn the `ssh ... sh -c 'cat -- "$HOME/…"'` reader child over the
+    /// current Transport's ControlMaster. `Stdin` is set to null so the
+    /// remote `cat` doesn't try to forward our local terminal; `stderr` is
+    /// piped so a meaningful error is captured if the child dies; `stdout`
+    /// is piped — that's the byte stream we drain into the sink.
     fn spawn_cat_child(transport: &Transport, fifo: &Path) -> Result<Child> {
         let child = Self::build_cat_command(transport, fifo)
             .spawn()
@@ -804,38 +832,88 @@ impl SshPtyReader {
         Ok(child)
     }
 
-    /// The remote keep-alive shell snippet. Exposed so the argv test can
-    /// assert the exact body without copy-pasting.
-    pub const KEEPALIVE_SCRIPT: &'static str =
-        r#"exec 9>"$0"; while sleep 60; do :; done"#;
-
-    /// Build the un-spawned `sh -c '…' <fifo>` keep-alive Command. See
-    /// [`build_cat_command`] for the split rationale.
+    /// Build the un-spawned `sh -c '…'` keep-alive Command. See
+    /// [`build_cat_command`] for the split rationale. The FIFO path is baked
+    /// into the script body inside double quotes so `$HOME` expands at the
+    /// remote shell (see [`remote_paths`]).
     pub fn build_keepalive_command(
         transport: &Transport,
         fifo: &Path,
     ) -> tokio::process::Command {
-        let fifo_str = fifo.to_string_lossy().to_string();
-        // Use $0 trick so the FIFO path is one positional arg — no shell
-        // metacharacter concerns.
-        let mut cmd = transport.spawn_command("sh", &["-c", Self::KEEPALIVE_SCRIPT, &fifo_str]);
+        let fifo_str = fifo.to_string_lossy();
+        // Bake the path into the script body so we have NO positional args
+        // (the previous `"$0"` trick relied on a separate argv element that
+        // Transport's shell_escape would now single-quote, suppressing tilde
+        // expansion — `$HOME` inside double quotes is the durable fix).
+        let script = format!(
+            r#"exec 9>"{fifo_str}"; while sleep 60; do :; done"#
+        );
+        let mut cmd = transport.spawn_command("sh", &["-c", &script]);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         cmd
     }
 
-    /// Spawn the keep-alive writer child. The remote `sh -c 'exec 9> "$0";
-    /// while sleep 60; do :; done' <fifo>` opens fd 9 onto the FIFO for write
-    /// and parks forever, holding the write end open so the reader's `cat`
-    /// never sees EOF when tmux's tee momentarily closes its write fd. We
-    /// don't read this child's stdout; just hold its `Child` so it stays
+    /// Build the script body for the keep-alive writer for a given FIFO
+    /// path. Exposed so the argv test can pin the exact body without
+    /// recomputing the format string.
+    pub fn keepalive_script_for(fifo: &Path) -> String {
+        let fifo_str = fifo.to_string_lossy();
+        format!(r#"exec 9>"{fifo_str}"; while sleep 60; do :; done"#)
+    }
+
+    /// Spawn the keep-alive writer child. The remote `sh -c 'exec 9>
+    /// "$HOME/…"; while sleep 60; do :; done'` opens fd 9 onto the FIFO for
+    /// write and parks forever, holding the write end open so the reader's
+    /// `cat` never sees EOF when tmux's tee momentarily closes its write fd.
+    /// We don't read this child's stdout; just hold its `Child` so it stays
     /// alive as long as we do, and `start_kill` it on drop.
     fn spawn_keepalive_child(transport: &Transport, fifo: &Path) -> Result<Child> {
         let child = Self::build_keepalive_command(transport, fifo)
             .spawn()
             .with_context(|| format!("spawning ssh keepalive writer for {fifo:?}"))?;
         Ok(child)
+    }
+
+    /// Attach the remote `pipe-pane` directly via Transport (bypassing
+    /// [`Tmux::pipe_pane_to_fifo`], whose `shell_escape::escape` on the path
+    /// args would single-quote `$HOME` and suppress its expansion).
+    ///
+    /// We build the pipe-pane shell command with the log + fifo paths embedded
+    /// inside DOUBLE quotes: `tee -a "$HOME/…log" > "$HOME/…fifo"`. Transport's
+    /// SSH branch single-quotes the whole command (preserving the inner double
+    /// quotes), the remote login shell unwraps it once and hands tmux the
+    /// literal cmd; tmux runs `/bin/sh -c <cmd>` and the inner double quotes
+    /// let `$HOME` expand at THAT layer.
+    async fn attach_remote_pipe(
+        transport: &Transport,
+        tmux_target: &str,
+        log: &Path,
+        fifo: &Path,
+    ) -> Result<()> {
+        let log_str = log.to_string_lossy();
+        let fifo_str = fifo.to_string_lossy();
+        let pipe_cmd = format!(r#"tee -a "{log_str}" > "{fifo_str}""#);
+        let out = transport
+            .spawn_command(
+                "tmux",
+                &["pipe-pane", "-O", "-t", tmux_target, &pipe_cmd],
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .with_context(|| format!("spawning remote tmux pipe-pane (target={tmux_target})"))?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "remote tmux pipe-pane failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
     }
 
     /// Test accessor: the remote FIFO + log path convention. Exposed so the
@@ -942,11 +1020,18 @@ impl PtyReader for SshPtyReader {
         }
 
         // Attach the remote pipe (5×100ms backoff for tmux contention, mirrors
-        // the local path).
+        // the local path). We deliberately bypass `Tmux::pipe_pane_to_fifo` —
+        // it calls `shell_escape::escape` on the path args, which would
+        // single-quote `$HOME` and suppress its expansion at the remote
+        // `/bin/sh -c` layer. `attach_remote_pipe` embeds the paths inside
+        // DOUBLE quotes in the tmux pipe-pane shell command so `$HOME`
+        // expands when tmux runs the cmd. See `remote_paths` for the full
+        // quoting rationale.
+        let tmux_target = tmux.target();
         let mut last_err = None;
         let mut piped = false;
         for _ in 0..5 {
-            match tmux.pipe_pane_to_fifo(&self.log, &self.fifo).await {
+            match Self::attach_remote_pipe(&transport, &tmux_target, &self.log, &self.fifo).await {
                 Ok(()) => {
                     piped = true;
                     break;

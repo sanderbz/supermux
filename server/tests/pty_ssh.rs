@@ -44,6 +44,7 @@ async fn test_pool() -> (SqlitePool, PathBuf) {
         auth_token: "pty-ssh-test".to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: Default::default(),
+        remote_callback_url: None,
     };
     let pool = db::init(&config).await.expect("db init");
     (pool, dir)
@@ -86,6 +87,13 @@ fn argv_of(cmd: &tokio::process::Command) -> (String, Vec<String>) {
 /// regression here (a missing `BatchMode=yes`, the wrong `--` placement, a
 /// stray flag) silently changes the network/quoting story — the only way to
 /// catch that cheaply is to pin the exact argv.
+///
+/// Transport's SSH branch (since commit 1290ad0) shell-escapes every token
+/// and joins into ONE final argv element. The remote command we ship is
+/// `sh -c 'cat -- "$HOME/…"'` — the inner double quotes preserve the
+/// `$HOME` variable through `shell_escape::unix::escape`'s outer
+/// single-quoting, so the remote `/bin/sh -c` expands `$HOME` at exec time
+/// (literal `~/…` would be silently single-quoted and fail ENOENT).
 #[test]
 fn cat_child_argv_is_pinned() {
     let control_path = PathBuf::from("/tmp/supermux-ssh-test.sock");
@@ -99,7 +107,8 @@ fn cat_child_argv_is_pinned() {
     let (program, args) = argv_of(&cmd);
     assert_eq!(program, "ssh", "must invoke the local ssh client");
     // Expected: ssh -o ControlPath=… -o ControlMaster=auto -o ControlPersist=600
-    //           -o BatchMode=yes user@example -- cat <fifo>
+    //           -o BatchMode=yes user@example -- sh -c 'cat -- "$HOME/…"'
+    // The final argv element is the shell_escape-joined remote command.
     let expected: Vec<String> = vec![
         "-o".into(),
         format!("ControlPath={}", control_path.display()),
@@ -111,16 +120,18 @@ fn cat_child_argv_is_pinned() {
         "BatchMode=yes".into(),
         "user@example".into(),
         "--".into(),
-        "cat".into(),
-        "~/.supermux-remote/pty-proj.fifo".into(),
+        // `sh` + `-c` are whitelisted (no quoting); the script body contains
+        // space + `"` + `$` so shell_escape wraps it in single quotes.
+        r#"sh -c 'cat -- "$HOME/.supermux-remote/pty-proj.fifo"'"#.into(),
     ];
     assert_eq!(args, expected, "cat child argv must match exactly");
 }
 
-/// The keep-alive writer's argv pins three things: (a) `sh -c <script>` then
-/// (b) the FIFO path as `$0`, then (c) NO extra positional args (so the
-/// `while sleep 60; do :; done` parks forever and ssh argv-flattening doesn't
-/// re-split anything on a remote space).
+/// The keep-alive writer's argv pins the `sh -c '<body>'` shape with the FIFO
+/// path baked into the script body inside double quotes (so `$HOME` expands at
+/// the remote shell). The previous `"$0"` positional-arg trick relied on
+/// Transport NOT shell-escaping each token; with the 1290ad0 escape fix that
+/// trick broke (single-quoted `~/…` doesn't tilde-expand).
 #[test]
 fn keepalive_child_argv_is_pinned() {
     let control_path = PathBuf::from("/tmp/supermux-ssh-test.sock");
@@ -133,6 +144,8 @@ fn keepalive_child_argv_is_pinned() {
     let cmd = SshPtyReader::build_keepalive_command(&transport, &fifo);
     let (program, args) = argv_of(&cmd);
     assert_eq!(program, "ssh");
+    // Final argv element: `sh -c 'exec 9>"$HOME/…"; while sleep 60; do :; done'`
+    // `sh` + `-c` whitelisted; script body has `"`/`$`/`;`/space → single-quoted.
     let expected: Vec<String> = vec![
         "-o".into(),
         format!("ControlPath={}", control_path.display()),
@@ -144,27 +157,32 @@ fn keepalive_child_argv_is_pinned() {
         "BatchMode=yes".into(),
         "user@example".into(),
         "--".into(),
-        "sh".into(),
-        "-c".into(),
-        SshPtyReader::KEEPALIVE_SCRIPT.to_string(),
-        "~/.supermux-remote/pty-proj.fifo".into(),
+        r#"sh -c 'exec 9>"$HOME/.supermux-remote/pty-proj.fifo"; while sleep 60; do :; done'"#
+            .into(),
     ];
     assert_eq!(args, expected, "keepalive child argv must match exactly");
     // And the script body itself — pin the keep-alive trick verbatim.
     assert_eq!(
-        SshPtyReader::KEEPALIVE_SCRIPT,
-        r#"exec 9>"$0"; while sleep 60; do :; done"#
+        SshPtyReader::keepalive_script_for(&fifo),
+        r#"exec 9>"$HOME/.supermux-remote/pty-proj.fifo"; while sleep 60; do :; done"#
     );
 }
 
 /// Remote path convention (RT3 + RT8 bootstrap). Lives outside the data dir;
-/// the SshPtyReader hard-codes `~/` so the remote login shell expands it once
-/// against the REMOTE user's HOME.
+/// the SshPtyReader uses the `$HOME/…` token form so the remote `/bin/sh -c`
+/// expands it once against the REMOTE user's HOME (literal `~/` would be
+/// suppressed by `shell_escape`'s single-quoting in Transport's SSH branch).
 #[test]
 fn remote_paths_follow_supermux_remote_convention() {
     let (fifo, log) = SshPtyReader::test_remote_paths("my-proj");
-    assert_eq!(fifo, PathBuf::from("~/.supermux-remote/pty-my-proj.fifo"));
-    assert_eq!(log, PathBuf::from("~/.supermux-remote/pty-my-proj.log"));
+    assert_eq!(
+        fifo,
+        PathBuf::from("$HOME/.supermux-remote/pty-my-proj.fifo")
+    );
+    assert_eq!(
+        log,
+        PathBuf::from("$HOME/.supermux-remote/pty-my-proj.log")
+    );
 }
 
 // ── Tests 1-3: real localhost SSH (#[ignore]) ───────────────────────────────
