@@ -19,7 +19,7 @@
 // drag.
 
 import * as React from 'react'
-import { ArrowDownAZ, ArrowUpDown, Check, GripVertical, Sparkles, Trash2 } from 'lucide-react'
+import { GripVertical, Trash2 } from 'lucide-react'
 
 import {
   DropdownMenu,
@@ -28,22 +28,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import {
-  GROUP_SORT_HINT,
-  GROUP_SORT_LABEL,
-  GROUP_SORT_MODES,
-  type GroupSortMode,
-} from '@/lib/overview-layout'
-
-/** A tiny per-mode glyph for the chip + popover. */
-const MODE_ICON: Record<GroupSortMode, typeof Sparkles> = {
-  smart: Sparkles,
-  custom: GripVertical,
-  name: ArrowDownAZ,
-  status: ArrowUpDown,
-  recent: ArrowUpDown,
-  age: ArrowUpDown,
-}
+import { type GroupSortMode } from '@/lib/overview-layout'
+import { GroupSortChip } from './group-sort-chip'
 
 export interface GroupHeaderProps {
   /** Stable id used as the dnd-kit sortable key + group identity. */
@@ -234,7 +220,9 @@ export function GroupHeader({
       )}
 
       {/* Per-group SORT CHIP — right-aligned. Spec: small, muted text,
-          `Sort: <Mode> ▾`, Radix DropdownMenu. */}
+          `Sort: <Mode> ▾`, Radix DropdownMenu. Shared chip component
+          (group-sort-chip.tsx) so the strip's section header renders the
+          identical UI without forking the menu. */}
       <GroupSortChip
         open={sortOpen}
         onOpenChange={setSortOpen}
@@ -298,76 +286,3 @@ export function GroupHeader({
   )
 }
 
-/** The right-aligned `Sort: <Mode> ▾` chip — opens a Radix DropdownMenu with
- *  the 6 per-group modes. Honors the keyboard `o` shortcut (handled by the
- *  GroupHeader row) by controlling `open` from outside. */
-function GroupSortChip({
-  open,
-  onOpenChange,
-  sortMode,
-  onChange,
-}: {
-  open: boolean
-  onOpenChange: (next: boolean) => void
-  sortMode: GroupSortMode
-  onChange: (mode: GroupSortMode) => void
-}) {
-  const ActiveIcon = MODE_ICON[sortMode]
-  return (
-    <DropdownMenu open={open} onOpenChange={onOpenChange}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-haspopup="menu"
-          aria-label={`Sort: ${GROUP_SORT_LABEL[sortMode]}. Change`}
-          title={`Sort: ${GROUP_SORT_LABEL[sortMode]}`}
-          data-vr="group-sort-chip"
-          data-vr-sort-mode={sortMode}
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-          // 44pt hit target on touch via the surrounding row's h-10 + the chip's
-          // padding-y; the visible chip is small + muted to keep the header calm.
-          className="flex h-8 min-h-8 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-11"
-        >
-          <ActiveIcon className="size-3.5" aria-hidden />
-          <span className="hidden sm:inline">
-            Sort: {GROUP_SORT_LABEL[sortMode]}
-          </span>
-          <span className="sm:hidden">{GROUP_SORT_LABEL[sortMode]}</span>
-          <span aria-hidden className="opacity-60">▾</span>
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="min-w-52">
-        {GROUP_SORT_MODES.map((mode) => {
-          const Icon = MODE_ICON[mode]
-          const active = mode === sortMode
-          return (
-            <DropdownMenuItem
-              key={mode}
-              onSelect={() => onChange(mode)}
-              aria-current={active ? 'true' : undefined}
-              className="flex items-start gap-2"
-            >
-              <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <span className="flex min-w-0 flex-col">
-                <span className="flex items-center gap-1 text-foreground">
-                  {GROUP_SORT_LABEL[mode]}
-                  {active && (
-                    <Check
-                      className="size-3.5 text-muted-foreground"
-                      aria-hidden
-                    />
-                  )}
-                </span>
-                <span className="text-[11px] leading-tight text-muted-foreground">
-                  {GROUP_SORT_HINT[mode]}
-                </span>
-              </span>
-            </DropdownMenuItem>
-          )
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}

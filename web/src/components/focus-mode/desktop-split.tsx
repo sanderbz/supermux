@@ -21,10 +21,11 @@ import { StoppedSession } from '@/components/terminal/stopped-session'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import type { TileSession } from '@/components/session-tile/types'
 import type { Team, TeamMember } from '@/lib/api/teams'
-import { CompactTile } from './compact-tile'
 import { TeamStripGroup } from './team-strip-group'
 import { TeammatePane } from './teammate-pane'
-import { buildFocusStrip } from './focus-strip-groups'
+import { useGroupedStrip } from './use-grouped-strip'
+import { FocusStripSection } from './focus-strip-section'
+import { FocusStripModeToggle } from './focus-strip-mode-toggle'
 import { DesktopFocusHeader } from './focus-header'
 import { DesktopDock } from './dock'
 import { TerminalCaptureIndicator } from './terminal-capture-indicator'
@@ -74,13 +75,22 @@ export function DesktopSplit({
   onMakeTeam,
   onSnippets,
 }: DesktopSplitProps) {
-  // Build the team-aware strip model from the SAME sessions + the shared teams
-  // cache (no second fetch). No teams → every session is one ungrouped row =
-  // today's behaviour exactly.
-  const strip = React.useMemo(
-    () => buildFocusStrip(sessions, teams),
-    [sessions, teams],
-  )
+  // Build the grouped, team-aware strip model from the SAME sessions + the
+  // shared teams cache + the shared `useOverviewLayout` (no second fetch).
+  // The hook also owns the strip's local concerns (mode toggle, per-group
+  // collapse, per-group sort overrides).
+  //
+  // With NO teams + NO user groups + NO ungrouped → the hook returns an empty
+  // model and we fall through to the "No other sessions." placeholder below
+  // (zero regression for first-time users).
+  const {
+    model: strip,
+    stripMode,
+    setStripMode,
+    setGroupSortMode,
+    isCollapsed,
+    setCollapsed,
+  } = useGroupedStrip(sessions, teams)
 
   // Which teammate (if any) is shown in the MAIN pane. Held by team+agent_id so
   // the selection survives an SSE snapshot replace (member identity changes each
@@ -330,21 +340,33 @@ export function DesktopSplit({
 
   return (
     <div className="flex h-full w-full bg-background" data-testid="desktop-split">
-      {/* Left: 320px session-strip (vertical scroll). */}
-      <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background/60">
-        <div className="flex h-11 shrink-0 items-center px-3 text-[13px] font-semibold tracking-tight text-muted-foreground">
-          Sessions
+      {/* Left: 320px session-strip (vertical scroll). The header carries the
+          strip mode toggle ("Match overview" / "Custom for this strip") so a
+          user who wants a different per-group sort here than the overview can
+          opt in WITHOUT clobbering the overview's prefs. */}
+      <aside
+        className="flex w-80 shrink-0 flex-col border-r border-border bg-background/60"
+        data-vr="focus-strip"
+        data-vr-strip-mode={stripMode}
+      >
+        <div className="flex h-11 shrink-0 items-center gap-2 px-3 text-[13px] font-semibold tracking-tight text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">Sessions</span>
+          <FocusStripModeToggle mode={stripMode} onChange={setStripMode} />
         </div>
-        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
-          {sessions.length === 0 && strip.groups.length === 0 ? (
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
+          {sessions.length === 0 &&
+          strip.teamGroups.length === 0 &&
+          strip.userGroups.length === 0 ? (
             <p className="px-1 pt-2 text-[13px] text-muted-foreground">
               No other sessions.
             </p>
           ) : (
             <>
               {/* Detected teams — grouped (header + lead + teammates), mirroring
-                  the overview TEAM CARD. Renders nothing when there are no teams. */}
-              {strip.groups.map((g) => (
+                  the overview TEAM CARD. Pinned ABOVE user groups because that
+                  matches how the overview pins team cards above the grid in
+                  every sort mode. Renders nothing when there are no teams. */}
+              {strip.teamGroups.map((g) => (
                 <TeamStripGroup
                   key={g.team.team_name}
                   team={g.team}
@@ -359,13 +381,23 @@ export function DesktopSplit({
                 />
               ))}
 
-              {/* Non-team sessions — the flat list, exactly as today. */}
-              {strip.loose.map((s) => (
-                <CompactTile
-                  key={s.name}
-                  session={s}
-                  current={!teammateActive && s.name === name}
-                  onSelect={selectSession}
+              {/* User groups — one collapsible section each, with the same
+                  6-mode sort chip the overview uses on its group headers
+                  (shared component, single source of truth). The implicit
+                  "Ungrouped" bucket renders here too when it has any
+                  sessions, mirroring the overview's behaviour. */}
+              {strip.userGroups.map((g) => (
+                <FocusStripSection
+                  key={g.groupId}
+                  group={g}
+                  focusedSessionName={name}
+                  teammateActive={teammateActive}
+                  onSelectSession={selectSession}
+                  onSortModeChange={(mode) =>
+                    setGroupSortMode(g.groupId, mode)
+                  }
+                  collapsed={isCollapsed(g.groupId)}
+                  onCollapsedChange={(next) => setCollapsed(g.groupId, next)}
                 />
               ))}
             </>
