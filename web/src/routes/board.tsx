@@ -81,6 +81,27 @@ export function Board() {
     boards.some((b) => b.id === selectedBoard)
   const activeBoardId = boardExists ? selectedBoard : MAIN_BOARD_ID
   const isAll = activeBoardId === ALL_BOARD_ID
+  // A team board is a READ-THROUGH mirror of the team's on-disk task list — the
+  // server re-syncs it every ~3s, so any drag/edit would snap back. Treat it
+  // like the "All" aggregate in the UI: non-draggable cards, no composer, and no
+  // per-card write affordances (Start / Reply / Discard). Board→file write-back
+  // is out of scope (see FIX-B).
+  const activeBoard = boards.find((b) => b.id === activeBoardId)
+  const readThrough = activeBoard?.kind === 'team'
+
+  // When the persisted selection points at a board that no longer exists (a team
+  // board was deregistered / deleted), realign the stored selection to Main so the
+  // active cards query targets a live board immediately — without this the query
+  // briefly 404s on the vanished id and flashes the error banner. We only fall
+  // back once the boards list has actually loaded (length > 0) so a slow initial
+  // fetch doesn't bounce a valid persisted selection to Main.
+  useEffect(() => {
+    if (selectedBoard === ALL_BOARD_ID) return
+    if (boards.length === 0) return
+    if (!boards.some((b) => b.id === selectedBoard)) {
+      setSelectedBoard(MAIN_BOARD_ID)
+    }
+  }, [boards, selectedBoard, setSelectedBoard])
 
   const board = useBoard(activeBoardId)
   const reduce = useReducedMotion()
@@ -426,12 +447,25 @@ export function Board() {
                   onShowAllDone={() => setShowAllDone(true)}
                   onDeselect={() => setSelectedId(null)}
                   composer={
-                    // The "All" overview is read-through — the composer would
-                    // create on Main (ambiguous), so hide it there.
-                    lane.id === 'todo' && !isAll ? (
+                    // The "All" overview AND team boards are read-through — the
+                    // composer would create on Main (ambiguous) / can't write
+                    // back to the team's files, so hide it there.
+                    lane.id === 'todo' && !isAll && !readThrough ? (
                       <BoardComposer onAdd={onAdd} onAddAndStart={onAddAndStart} />
                     ) : null
                   }
+                  hint={
+                    // A calm, non-alarmist note so a team board reads as a live
+                    // mirror, not a stuck interactive board (only on To do so it
+                    // sits once at the top, like the composer it replaces).
+                    lane.id === 'todo' && readThrough ? (
+                      <p className="px-1.5 pt-0.5 text-xs leading-snug text-muted-foreground">
+                        Reflecting {activeBoard?.name ?? 'the team'}’s live task
+                        list — read-only here.
+                      </p>
+                    ) : null
+                  }
+                  readThrough={readThrough}
                   onOpen={(i) => (fine ? setSelectedId(i.id) : setEditId(i.id))}
                   onFocus={openFocus}
                   onStart={(i) => void startIssue(i)}
@@ -514,6 +548,8 @@ function LaneColumn({
   onShowAllDone,
   onDeselect,
   composer,
+  hint,
+  readThrough,
   onOpen,
   onFocus,
   onStart,
@@ -532,6 +568,11 @@ function LaneColumn({
   onShowAllDone: () => void
   onDeselect: () => void
   composer: React.ReactNode
+  /** A calm read-only note shown in place of the composer on a team board. */
+  hint?: React.ReactNode
+  /** True for a `kind='team'` board: cards are non-draggable + write-affordance
+   *  free (the board is a read-through mirror of the team's task files). */
+  readThrough?: boolean
   onOpen: (issue: BoardIssue) => void
   onFocus: (issue: BoardIssue) => void
   onStart: (issue: BoardIssue) => void
@@ -599,6 +640,7 @@ function LaneColumn({
         }}
       >
         {composer && <div className="px-0.5 pt-0.5">{composer}</div>}
+        {hint && <div className="px-0.5 pt-0.5">{hint}</div>}
 
         {visible.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-2 py-8 text-center text-xs text-muted-foreground/60">
@@ -646,6 +688,7 @@ function LaneColumn({
                   lane={lane}
                   activeId={activeId}
                   isSelected={issue.id === selectedId}
+                  readThrough={readThrough}
                   onOpen={onOpen}
                   onFocus={onFocus}
                   onStart={onStart}
@@ -681,6 +724,7 @@ function SortableCard({
   lane,
   activeId,
   isSelected,
+  readThrough,
   onOpen,
   onFocus,
   onStart,
@@ -691,13 +735,17 @@ function SortableCard({
   lane: Lane
   activeId: string | null
   isSelected: boolean
+  /** Read-through (team) board: non-draggable + no write affordances. */
+  readThrough?: boolean
   onOpen: (issue: BoardIssue) => void
   onFocus: (issue: BoardIssue) => void
   onStart: (issue: BoardIssue) => void
   onReply: (issue: BoardIssue, text: string) => Promise<void>
   onDiscard: (issue: BoardIssue) => void
 }) {
-  const draggable = lane !== 'done'
+  // A team board mirrors the on-disk task files (re-synced every ~3s); a drag
+  // would just snap back, so cards are never draggable there.
+  const draggable = lane !== 'done' && !readThrough
   const {
     attributes,
     listeners,
@@ -716,6 +764,7 @@ function SortableCard({
         issue={issue}
         lane={lane}
         draggable={draggable}
+        readOnly={readThrough}
         dragAttributes={draggable ? attributes : undefined}
         dragListeners={draggable ? listeners : undefined}
         onOpen={onOpen}
