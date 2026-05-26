@@ -1,7 +1,10 @@
 # supermux
 
-A self-hosted terminal multiplexer for running many parallel AI coding-agent
-sessions (Claude Code, Codex, and any other CLI agent) from one dashboard.
+**Run a roomful of AI coding agents from one dashboard.** supermux drives real
+`tmux` sessions on your machine — Claude Code, Codex, plain shells, anything
+you want — and gives you a fast, live web UI to watch, steer, and switch
+between dozens of them at once. A single Rust binary embeds the PWA: no Node,
+no Docker, no Python at runtime.
 
 <p align="center">
   <video src="https://github.com/sanderbz/supermux/raw/main/docs/showcase/supermux-showcase.mp4" autoplay loop muted playsinline width="900">
@@ -11,234 +14,221 @@ sessions (Claude Code, Codex, and any other CLI agent) from one dashboard.
 
 <p align="center"><em>Every tmux session at a glance — hover any tile for a live peek, type without leaving the overview, click for a smooth zoom into focus mode, jump anywhere with ⌘K, and the same dashboard on your phone.</em></p>
 
-supermux drives real `tmux` sessions on your machine and exposes them through a
-fast web UI: a dense overview of every session with live terminal previews, a
-keyboard-captured focus mode on desktop, and a Termius-grade bottom-sheet
-experience on mobile. A single `cargo build` produces one self-contained binary
-that embeds the web app (a PWA) — no Node, no Docker, no Python at runtime.
+---
 
-- **Backend** — Rust (`axum` + `tokio` + `sqlx`/SQLite), in `server/`.
-- **Frontend** — TypeScript + React + Vite PWA, in `web/`.
-- **Architecture** — see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+## Why supermux
+
+If you've ever spun up three Claude sessions in three terminals and wished you
+could *see* them all without `⌘+\`-juggling tabs, supermux is that. It's
+**one self-hosted process** that:
+
+- Watches all your live tmux panes with sub-second-fresh previews.
+- Lets you jump into any one full-screen with keyboard-captured terminal input.
+- Survives reboots — sessions live in tmux, not in supermux, so your agents
+  keep working when the dashboard restarts.
+- Runs the **same UI on your phone** as on your desktop — installable as a PWA.
 
 ## Features
 
-- **Live session overview** — a grid of tiles, each showing the last lines of
-  its agent's terminal, updated live.
-- **Focus mode** — full keyboard-captured terminal (xterm.js) on desktop; a
-  detented bottom sheet with an accessory dock on mobile.
-- **Board** — a lightweight issue tracker tied to sessions.
-- **Files** — a path-jailed file browser + editor.
-- **Scheduler** — cron-style scheduled jobs.
-- **Single binary** — the release build embeds the frontend via `rust-embed`;
+### See everything, jump anywhere
+- **Live overview** of every tmux session with color-true terminal previews
+  refreshed adaptively (1s for the top 4 most-active, 2s for the rest).
+- **Focus mode**: full keyboard-captured xterm.js on desktop, a Termius-grade
+  detented bottom sheet on mobile. ⌘1..9 jumps between sessions instantly.
+- **⌘K command palette** with fuzzy search across sessions, board issues,
+  schedules, files, snippets, MCP tools, and Claude Code skills.
+- **Full scrollback on every attach**: a fresh browser tab gets the same
+  history `tmux` is still holding, not just the visible screen.
+
+### Agent Teams
+- Tell one agent to *spawn a team* and supermux auto-detects the teammates
+  it created, groups them into a single **TEAM CARD** in the overview, and
+  pins the team above the rest of the grid.
+- One-click **convert** any existing session into a team in place.
+- Per-team width controls (Compact / Standard / Wide / Full) so a busy team
+  card doesn't crowd the rest of the grid.
+- Team-aware focus strip on the left of the focus mode — see lead +
+  teammates side-by-side, tap a teammate for a read-only live view.
+- Team-scoped boards: per-team task entries roll up to one place.
+
+### Custom groups + per-group sort
+- Drag-and-drop **groups** of sessions in the overview with dnd-kit.
+- **Per-group sort modes** — Smart / Custom / Name / Status / Recent activity
+  / Age — persisted per group in localStorage.
+- Hover the gap between two rows on desktop to reveal an inline **+ Add group
+  here**; or press `g n`, or use the command palette.
+- Tile drag with click-vs-drag threshold (short clicks open the session;
+  drags pick up). 700ms drop-flash, container outline for smart-sort
+  destinations, inter-tile insertion line for custom-sort.
+- The desktop focus mode's left **session strip** is group-aware too: same
+  groups, same sort modes — either **mirror the overview** or set a
+  **custom-for-this-strip** override.
+
+### Edit your prompt in a native editor
+- ✎ Edit affordance in the dock lifts whatever you've typed at Claude's `❯`
+  prompt into a browser-native textarea — full iOS selection handles,
+  autocorrect, dictation, paste-over-select.
+- **Send button** writes back AND submits in one tap; **Done** writes back
+  to the prompt for the user to send when ready.
+- On mobile: a full-page edit surface (iOS Notes-style) with system-font
+  body, tuned spring physics, and proper safe-area handling.
+- Clean architecture: Claude Code's own `chat:externalEditor` (Ctrl+G) owns
+  the buffer serialize→edit→deserialize contract — supermux just bridges
+  `$EDITOR` to a browser sheet. No scraping, no keystroke replay.
+
+### Mobile-first, not mobile-afterthought
+- **Swipe-up session switcher** — a Termius-style horizontal session strip
+  slides out from above the lower bar. Tap a pill to jump.
+- Always-visible ✎ Edit pill (no more keyboard-gated affordances).
+- Full-page edit surface that covers the dimmed terminal so there's nothing
+  to look at except what you're typing.
+- iOS PWA cold-launch black-bar fix, sheet-vs-keyboard race fixes, drag-
+  handle dead space removed.
+- Same web app, installable on any device.
+
+### The rest
+- **Inline session rename**: live tmux rename + pty survival so a running
+  session can be renamed without losing its terminal.
+- **Live git status per session**: branch, dirty, ahead/behind — read on
+  demand when you open the info panel.
+- **Board** — a lightweight, session-scoped issue tracker. Sessions can
+  comment, mark issues done, or ask for input via per-session hook tokens.
+- **Scheduler** — cron-style scheduled jobs with a live calendar.
+- **Files** — path-jailed file browser + editor.
+- **MCP & Skills** discovery in the command palette — toggle MCPs per
+  session, tap-activate skills.
+
+### Built for self-hosting
+- **Single binary**: the release build embeds the frontend via `rust-embed`;
   ship one file plus a SQLite database.
-- **Auth by default** — every API route requires a bearer token; there is no
-  localhost bypass.
+- **Auth by default**: every API route requires a bearer token; no localhost
+  bypass. The token is generated on first start at `~/.supermux/auth_token`
+  with mode `0600`.
+- **systemd-sandboxed**: runs as a dedicated unprivileged user with
+  `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`, restricted address families,
+  and a tight `ReadWritePaths` scoped to the data dir + your project dirs.
+- **Tmux survival**: tmux's socket lives in the persistent data dir, so
+  sessions outlive supermux restarts (and even reboots if the kernel
+  cooperates).
 
-## Quickstart deploy
-
-The friendly path — one command, a few questions, you're deployed:
+## Quickstart — deploy
 
 ```bash
 bash scripts/setup.sh     # friendly wizard, ~30 seconds
-bash scripts/deploy.sh    # actual deploy
+bash scripts/deploy.sh    # ships, builds natively on the host, starts the service
 ```
 
-`setup.sh` walks you through the handful of values `deploy.sh` needs (SSH host,
-service user, ports, optional Tailscale) with smart defaults — hit Enter
-through it for the common case. It also detects your environment (does SSH
-work? is `tailscale` on the host?) and adjusts defaults. Advanced users can
-still hand-edit `.env` directly afterwards, or run the wizard non-interactively
-with `bash scripts/setup.sh --yes` (you'll need `SUPERMUX_DEPLOY_HOST` set in
-the environment).
+The wizard asks the handful of values `deploy.sh` needs (SSH host, service
+user, ports, Tailscale, …) with smart defaults — hit Enter through it for
+the common case. Or set `SUPERMUX_DEPLOY_HOST=user@host` and run
+`scripts/setup.sh --yes` for a non-interactive deploy.
 
-## Quickstart (development)
+## Quickstart — develop
 
 Prerequisites: `cargo` (rustup), `bun`, and `tmux`.
 
 ```bash
-scripts/dev.sh        # runs the Rust backend + Vite dev server with hot-reload
+scripts/dev.sh        # Rust backend + Vite dev server with hot-reload
 ```
 
-The backend listens on `127.0.0.1:8823` by default and serves the API; Vite
-serves the frontend with hot module reload. Configuration is resolved in this
-order (see `server/src/config.rs`):
+The backend listens on `127.0.0.1:8823`; Vite serves the frontend with HMR.
+On first start the server generates `~/.supermux/auth_token` (mode `0600`);
+all API routes require `Authorization: Bearer <token>` — there is no
+localhost bypass.
 
-1. `SUPERMUX_DATA_DIR` env var — data directory (default `~/.supermux`).
-2. `<data_dir>/config.toml` — optional partial overrides (`bind`, `auth_token`, …).
-3. `SUPERMUX_BIND` env var — overrides the bind address (e.g. `:0` in tests).
+## Architecture
 
-On first start the server generates an auth token at `<data_dir>/auth_token`
-(mode `0600`). All API routes require `Authorization: Bearer <token>` —
-**there is no localhost bypass**. The single public, unauthenticated route is
-`GET /api/health`, used by deploy verification.
+- **Backend** — Rust (`axum` + `tokio` + `sqlx`/SQLite), in `server/`.
+- **Frontend** — TypeScript + React + Vite PWA, in `web/`.
+- **Process model** — a single binary; tmux runs out-of-process on a
+  persistent socket so sessions survive supermux restarts.
+- **Live data path** — WebSockets for terminal pty streams (binary frames),
+  SSE for everything else (session lists, status, board, schedules, alerts).
 
-## Production build
+Full design + module map: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-```bash
-scripts/build.sh      # bun build -> embed into server/static -> cargo build --release
-```
+<details>
+<summary><strong>Deploy guide — the full reference</strong></summary>
 
-Produces `server/target/release/supermux-server`. The binary embeds `web/dist`
-via `rust-embed`, so it has no runtime asset dependencies. Expect a ~30–60 MB
-stripped binary given the dependency set.
+`scripts/deploy.sh` ships a pinned `git archive` of a clean commit to a
+host, builds **natively** there (no cross-compilation), installs
+`/usr/local/bin/supermux-server` plus the systemd unit, and starts the
+service. It runs an upfront preflight and prints a one-page plan before
+doing anything destructive.
 
-## Deploy
-
-`scripts/deploy.sh` ships a pinned `git archive` of a clean commit to a host,
-builds **natively** there (no cross-compilation), installs
-`/usr/local/bin/supermux-server` and the systemd unit, and starts the service.
-
-### Quickstart deploy
-
-For a fresh host where you have key-based SSH and passwordless sudo, the
-"set one variable and go" path is:
-
-```bash
-cp .env.example .env
-$EDITOR .env          # set SUPERMUX_DEPLOY_HOST=<user@host>
-# On a fresh host with no toolchains, prepend SUPERMUX_INSTALL_TOOLCHAINS=1 so
-# deploy.sh installs bun + cargo for you (the wizard asks this and defaults Yes):
-SUPERMUX_INSTALL_TOOLCHAINS=1 bash scripts/deploy.sh
-```
-
-(If the host already has `bun` and `cargo` for the service user, drop the
-`SUPERMUX_INSTALL_TOOLCHAINS=1` prefix — or just use `scripts/setup.sh`, which
-asks and wires it for you.)
-
-`deploy.sh` runs an upfront preflight against the host and prints a one-page
-plan before doing anything destructive. The defaults are noob-proof:
+### Noob-proof defaults
 
 - **Non-root by default — even from a root SSH session.** The account you
   *deploy with* (your SSH login, often `root` on a fresh VPS) is **not** the
-  account the service *runs as*. Deploying over a root SSH session is fine and
-  expected — root provisions (creates the service user, installs the unit) —
-  but the service runs as the unprivileged `supermux` user. Running as root
-  would throw away the systemd hardening sandbox **and** trip Claude Code's
-  refusal to run `--dangerously-skip-permissions` as uid 0, so it is refused
-  unless you explicitly force `SUPERMUX_ALLOW_ROOT=1` (a loud, last-resort
-  escape hatch — see below).
-- **Service user** — defaults to `supermux`. If the user doesn't exist on the
-  host, `deploy.sh` fully provisions it for you: `sudo useradd -m -s /bin/bash
-  supermux` plus ownership of its home, data dir, and project dirs. If you pick
-  a non-default `SUPERMUX_SERVICE_USER`, you must create it yourself (the script
-  refuses rather than silently provisioning an unexpected account).
-- **Project directories** (where your agents work) — `deploy.sh` provisions the
-  dirs the service user needs read+write access to. The default is
-  `<user-home>/projects` (e.g. `/home/supermux/projects`), already owned by the
-  service user → zero permission fuss. Point `SUPERMUX_PROJECT_DIRS` elsewhere
-  (colon-separated) and the script wires it up: dirs under the user's home just
-  work; dirs outside it (`/opt/projects`, `/srv/work`, …) are created and
-  `chown -R`'d to the service user, then added to the systemd `ReadWritePaths`
-  so the sandbox permits the writes.
-- **Service-user Claude login** — supermux uses your Claude **subscription**
-  (OAuth), never an API key / `ANTHROPIC_API_KEY` / API billing. The service
-  user must be logged in. After provisioning, `deploy.sh` checks for
-  `~supermux/.claude/.credentials.json`; if it's missing it offers (with your
-  consent) to copy the deployer's existing Claude login to the service user —
-  the fast path that reuses your subscription. Either way it **verifies** the
-  login before declaring success and, if it's still missing, warns loudly with
-  the exact command to run: `sudo -u supermux -i claude` then `/login`. Control
-  the copy behaviour with `SUPERMUX_COPY_CLAUDE_CREDS` (`ask` / `1` / `0`).
-- **ReadWritePaths** — defaults to a sane set covering the data dir, the
-  service user's home, the project dirs, and `/opt/projects` (only if that
-  directory exists on the host). Override `SUPERMUX_READ_WRITE_PATHS` to scope
-  it differently — `deploy.sh` still appends your project dirs so agents can
-  always write there.
-- **Tailscale** — auto-detected. If the host has `tailscale` installed AND
-  `tailscaled` is running, `deploy.sh` defaults to exposing the service via
-  `tailscale serve` on port `443`, giving you a clean URL like
-  `https://<host>.<your-tailnet>.ts.net/` (no port suffix). For the nicest
-  hostname, rename the device once: `sudo tailscale set --hostname=supermux`
-  → the URL becomes `https://supermux.<your-tailnet>.ts.net/`. Without
-  Tailscale, `deploy.sh` skips this step and you front the loopback port with
-  your own reverse proxy. Override with `SUPERMUX_USE_TAILSCALE=0` or `=1`,
-  or change the port via `SUPERMUX_PUBLIC_PORT` if `443` is already taken.
-- **Toolchains** — `bun` and `cargo` are required on the host (the build is
-  native). They are not installed silently. Set
+  account the service *runs as*. Deploying over a root SSH session is fine
+  — root provisions (creates the service user, installs the unit) — but the
+  service drops to the unprivileged `supermux` user. Forcing root throws
+  away the systemd sandbox **and** trips Claude Code's refusal to run
+  `--dangerously-skip-permissions` as uid 0, so it's refused unless you
+  explicitly set `SUPERMUX_ALLOW_ROOT=1` (a loud, last-resort escape hatch).
+- **Service user** — defaults to `supermux`. If it doesn't exist on the
+  host, `deploy.sh` provisions it (home + ownership). Pick a non-default
+  user and the script refuses rather than silently provisioning an
+  unexpected account.
+- **Project directories** — `SUPERMUX_PROJECT_DIRS` (default
+  `<user-home>/projects`). Under-home dirs just work; outside-home dirs
+  (`/opt/projects`, `/srv/work`, …) are created, `chown -R`'d to the
+  service user, and folded into the systemd `ReadWritePaths` so the
+  sandbox permits agent writes.
+- **Service-user Claude login** — supermux uses your Claude
+  **subscription** (OAuth), never an API key or `ANTHROPIC_API_KEY`. After
+  provisioning, `deploy.sh` checks for `~supermux/.claude/.credentials.json`
+  and offers to copy the deployer's existing Claude login; it verifies
+  before declaring success and prints the exact `sudo -u supermux -i
+  claude` + `/login` command if anything's still missing.
+- **Tailscale** — auto-detected. If `tailscale` is installed and
+  `tailscaled` running, `deploy.sh` exposes the service via `tailscale
+  serve` on port `443`, giving you a clean `https://<host>.<your-tailnet>
+  .ts.net/` URL. Rename once with `sudo tailscale set --hostname=supermux`
+  for the nicest URL. Override with `SUPERMUX_USE_TAILSCALE=0|1` or
+  `SUPERMUX_PUBLIC_PORT`.
+- **Toolchains** — `bun` and `cargo` are required (native build). Set
   `SUPERMUX_INSTALL_TOOLCHAINS=1` to opt in to automatic install via the
-  official `bun` and `rustup` installers (pinned to your local `bun` version
-  and `rustup`'s stable channel) — otherwise a missing toolchain is a hard
-  error with manual-install instructions.
-- **Running as root (last resort)** — `SUPERMUX_SERVICE_USER=root` is refused
-  unless you also set `SUPERMUX_ALLOW_ROOT=1`, which prints a loud warning. This
-  is a security + functionality trade-off, not just a hardening knob: the
-  systemd sandbox is largely given up (`ProtectHome=false`,
-  `ReadWritePaths=/root`) and Claude Code refuses
-  `--dangerously-skip-permissions` as uid 0, so your agents may not run. Prefer
-  the default unprivileged user — root still runs the deploy, only the service
-  drops privileges.
+  official `bun` + `rustup` installers — otherwise missing toolchains are a
+  hard error with manual-install instructions.
 
-### Configuration reference
+### TLS
 
-The service binds to `127.0.0.1` (a loopback port — `SUPERMUX_INTERNAL_PORT`,
-default `8824`) and speaks plain HTTP. Put it behind TLS one of two ways:
+The service binds `127.0.0.1` and speaks plain HTTP. Put it behind TLS one
+of two ways:
 
-1. **Reverse proxy** (recommended for most setups) — terminate TLS with nginx
-   or Caddy and proxy to `http://localhost:<SUPERMUX_INTERNAL_PORT>`.
-2. **`tailscale serve`** — if your host is on a tailnet, set
-   `SUPERMUX_USE_TAILSCALE=1` and `deploy.sh` will run
-   `tailscale serve --https=<SUPERMUX_PUBLIC_PORT>` (default `443`) to
-   terminate TLS and proxy to the loopback port. Rename the device once with
-   `sudo tailscale set --hostname=supermux` for a clean
-   `https://supermux.<your-tailnet>.ts.net/` URL.
+1. **Reverse proxy** (nginx, Caddy, etc.) terminating at
+   `http://localhost:<SUPERMUX_INTERNAL_PORT>` (default `8824`).
+2. **`tailscale serve`** — set `SUPERMUX_USE_TAILSCALE=1` and `deploy.sh`
+   runs `tailscale serve --https=<SUPERMUX_PUBLIC_PORT>` to terminate TLS
+   and proxy to the loopback port.
 
-The committed systemd unit at [`etc/systemd/supermux.service`](etc/systemd/supermux.service)
-is a **template** — `deploy.sh` substitutes the service user, the user's login
-home, the data directory, and the hardening knobs (`ProtectHome`,
-`ReadWritePaths`) from your environment at install time. By default it keeps
-the service unprivileged and applies a full set of systemd sandboxing
-directives.
+### HOME and DATA_DIR are deliberately separate
 
-**HOME and DATA_DIR are deliberately separate.** The unit's `WorkingDirectory`
-and `$HOME` point at the service user's actual login home
-(`SUPERMUX_USER_HOME`, derived from the account or `/root`), while
-`SUPERMUX_DATA_DIR` (e.g. `~/.supermux`) lives as a scoped sibling of it. This
-way the dotfiles that spawned shells and agents (claude, codex, tmux children)
-write — `.bash_history`, `.claude/`, `.claude.json`, `.cache/`, `.local/`, … —
-land in the conventional place under `$HOME` and do **not** pollute the data
-dir. The data dir stays scoped to supermux's own state (SQLite DB, auth
-token, `config.toml`, uploads), so backing it up or wiping it never touches
-the user's shell history or agent caches.
+The systemd unit's `WorkingDirectory` + `$HOME` point at the service user's
+actual login home (so agent caches like `.claude/`, `.cache/`,
+`.bash_history` land where they're conventionally expected). The data dir
+(`~/.supermux`) lives as a scoped sibling and holds only supermux's own
+state — SQLite DB, auth token, `config.toml`, uploads. Backing it up or
+wiping it never touches the user's shell history or agent caches.
 
-- **Default (unprivileged user) — even from a root SSH session.**
-  `SUPERMUX_SERVICE_USER` defaults to `supermux`; the unit renders with
-  `ProtectHome=true` and `ReadWritePaths=` set to the smart default (data dir +
-  service-user home + project dirs + `/opt/projects` if present). The account
-  you SSH in as to deploy is independent of this: root (or any sudo-capable
-  login) *provisions* the host, then the service drops to `supermux`. Override
-  `SUPERMUX_READ_WRITE_PATHS` (colon-separated) to scope the writable set
-  differently, e.g. `SUPERMUX_READ_WRITE_PATHS=/home/supermux:/srv/scratch`.
-- **Project directories.** `SUPERMUX_PROJECT_DIRS` (default
-  `<user-home>/projects`) is where agents do their work. `deploy.sh` creates
-  these and ensures the service user owns them — under-home dirs already are
-  owned; outside-home dirs are `chown -R`'d — and folds them into
-  `ReadWritePaths` so the sandbox permits agent writes.
-- **Claude login (subscription, never API key).** The service user must be
-  logged in to Claude with your **subscription**. `deploy.sh` checks for
-  `~supermux/.claude/.credentials.json` after provisioning, offers (with
-  consent) to copy the deployer's existing login, then verifies — warning loudly
-  with `sudo -u supermux -i claude` + `/login` if it's still missing. supermux
-  never uses `ANTHROPIC_API_KEY` or API billing.
-- **Running as root (last resort).** `SUPERMUX_SERVICE_USER=root` is refused by
-  default — not only because `ProtectHome=true` would mask `/root`, but because
-  Claude Code refuses `--dangerously-skip-permissions` as uid 0 (agents may not
-  run at all). To force it, set `SUPERMUX_ALLOW_ROOT=1`; you'll get a loud
-  warning, and `deploy.sh` renders the unit with `ProtectHome=false` and
-  `ReadWritePaths=/root`. All other hardening directives (NoNewPrivileges,
-  ProtectKernelTunables, PrivateTmp, RestrictAddressFamilies, …) still apply,
-  but the user-isolation + Claude trade-offs are on the operator.
-
-Verify after deploy (the health route is public, no token needed):
+### Verify after deploy
 
 ```bash
 curl -sf http://127.0.0.1:<SUPERMUX_INTERNAL_PORT>/api/health
 journalctl -u supermux -n 50
 ```
 
-Coming from amux v2? See [`scripts/migrate-v2.py`](scripts/migrate-v2.py) — it
-copies sessions, board issues, schedules, skills and prefs into the supermux
-SQLite database (idempotent, dry-runnable).
+The `/api/health` route is the only public one — no token needed — and is
+what `deploy.sh` uses to confirm the service came up.
+
+### Coming from amux v2?
+
+See [`scripts/migrate-v2.py`](scripts/migrate-v2.py) — it copies sessions,
+board issues, schedules, skills, and prefs into the supermux SQLite
+database (idempotent, dry-runnable).
+
+</details>
 
 ## License
 
