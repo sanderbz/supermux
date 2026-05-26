@@ -94,9 +94,18 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
     let tasks = read_tasks(&tasks_root.join(team_name));
     let inbox_dir = team_dir.join("inboxes");
 
+    // FIX-TEAMS bug 1 (phantom "team-lead" chip): Claude writes the LEAD as a
+    // members[] entry alongside the real teammates (agentType="orchestrator",
+    // tmuxPaneId=""). The lead ALREADY renders as the full SessionTile via
+    // `lead_supermux_session`; surfacing it again as a teammate chip is the
+    // duplicate the user sees. Filter it before materializing — by agentId
+    // match (the canonical, version-stable key) AND by role marker (belt +
+    // braces against schema drift / missing leadAgentId).
+    let lead_agent_id = config.lead_agent_id.trim().to_string();
     let members = config
         .members
         .into_iter()
+        .filter(|m| !is_lead_entry(m, &lead_agent_id))
         .map(|m| resolve_member(m, &inbox_dir, &tasks))
         .collect();
 
@@ -107,6 +116,36 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
         members,
         tasks: tasks.into_iter().map(TeamTask::from).collect(),
     })
+}
+
+/// Should this `members[]` entry be DROPPED as the lead's own roster row (not a
+/// teammate)? Three orthogonal signals; ANY hit filters the entry so a schema
+/// rename in one of them can't re-surface the phantom chip:
+///   (a) `agent_id == lead_agent_id` — the canonical match when Claude writes
+///       a top-level `leadAgentId`.
+///   (b) `agent_type == "orchestrator"` — the role marker Claude writes for the
+///       lead row even when `leadAgentId` is absent.
+///   (c) empty `tmux_pane_id` AND empty `backend_type` AND empty `color` —
+///       the lead row has none of these (its pane is the lead's own window,
+///       not a split), so a member with all three blank is structurally the
+///       lead, not a teammate. This catches forward-drifted configs that
+///       drop the role marker.
+fn is_lead_entry(m: &RawMember, lead_agent_id: &str) -> bool {
+    let aid = m.agent_id.trim();
+    if !lead_agent_id.is_empty() && aid.eq_ignore_ascii_case(lead_agent_id) {
+        return true;
+    }
+    if m.agent_type.trim().eq_ignore_ascii_case("orchestrator") {
+        return true;
+    }
+    // Structural fallback: the lead's roster row has no pane, no backend, no
+    // color (a real teammate ALWAYS has at minimum a tmuxPaneId once spawned,
+    // plus a backendType the lead lacks). Don't filter a member that just hasn't
+    // spawned yet — gate on the conjunction of all three blank fields.
+    let no_pane = m.tmux_pane_id.trim().is_empty();
+    let no_backend = m.backend_type.trim().is_empty();
+    let no_color = m.color.trim().is_empty();
+    no_pane && no_backend && no_color
 }
 
 /// Parse a `config.json`. Returns `None` (logged) on any read/parse failure so a
@@ -186,6 +225,7 @@ fn resolve_member(raw: RawMember, inbox_dir: &Path, tasks: &[RawTask]) -> Member
         tmux_pane_id: pane,
         is_active: raw.is_active,
         status,
+        cwd: raw.cwd,
     }
 }
 
@@ -521,6 +561,118 @@ mod tests {
         let teams = scan_teams(&base);
         assert_eq!(teams.len(), 1, "only the good team survives");
         assert_eq!(teams[0].team_name, "good");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    // ── FIX-TEAMS bug 1: phantom "team-lead" chip ───────────────────────────────
+    // Ground truth (~/.claude/teams/viral-news-hunt/config.json on the live
+    // server) showed Claude writes the LEAD as members[0] with
+    // agentType="orchestrator", tmuxPaneId="", and the team's leadAgentId
+    // pointing at it. The scan must filter that row OUT — the lead already
+    // renders as the SessionTile via `lead_supermux_session`, so listing it
+    // again as a teammate chip is the duplicate the user reported.
+
+    #[test]
+    fn lead_member_filtered_by_lead_agent_id_match() {
+        let base = tmp();
+        let tdir = base.join("teams").join("vh");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "8a7e1f9e-10f5-4e9c-a9de-29201ec5708f",
+            "leadAgentId": "team-lead@vh",
+            "members": [
+                // The phantom orchestrator row — must be filtered.
+                { "name": "team-lead", "agentId": "team-lead@vh",
+                  "agentType": "orchestrator", "tmuxPaneId": "", "cwd": "/p",
+                  "model": "claude-opus-4-7" },
+                // A real teammate — must survive.
+                { "name": "data-hunter", "agentId": "data-hunter@vh",
+                  "agentType": "claude", "tmuxPaneId": "%123", "color": "blue",
+                  "isActive": true, "backendType": "tmux", "cwd": "/p",
+                  "model": "claude-opus-4-7" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+
+        let teams = scan_teams(&base);
+        assert_eq!(teams.len(), 1);
+        let t = &teams[0];
+        assert_eq!(t.members.len(), 1, "phantom lead row filtered out");
+        assert_eq!(t.members[0].name, "data-hunter");
+        // Real teammate carries its cwd onto the supermux Member (for the
+        // host-session cwd-match fallback in the watcher).
+        assert_eq!(t.members[0].cwd, "/p");
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn lead_member_filtered_by_orchestrator_role_when_no_lead_agent_id() {
+        // Defensive: even without `leadAgentId`, the agentType=orchestrator
+        // marker filters the row — schema-drift safety.
+        let base = tmp();
+        let tdir = base.join("teams").join("sq");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "any-uuid",
+            "members": [
+                { "name": "boss", "agentId": "boss@sq",
+                  "agentType": "orchestrator", "tmuxPaneId": "" },
+                { "name": "alice", "agentId": "alice@sq",
+                  "agentType": "claude", "tmuxPaneId": "%1",
+                  "isActive": true, "backendType": "tmux" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+        let teams = scan_teams(&base);
+        assert_eq!(teams[0].members.len(), 1);
+        assert_eq!(teams[0].members[0].name, "alice");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn lead_member_filtered_by_structural_blanks_fallback() {
+        // Pure forward-drift fallback: no leadAgentId, no agentType, but the
+        // row has no pane / backend / color (the lead's signature shape). It's
+        // filtered — a real teammate would carry at least one of those.
+        let base = tmp();
+        let tdir = base.join("teams").join("sq2");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "x",
+            "members": [
+                { "name": "lead-ish", "agentId": "lead-ish@sq2" },
+                { "name": "bob", "agentId": "bob@sq2",
+                  "tmuxPaneId": "%2", "color": "red", "backendType": "tmux",
+                  "isActive": true }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+        let teams = scan_teams(&base);
+        assert_eq!(teams[0].members.len(), 1);
+        assert_eq!(teams[0].members[0].name, "bob");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn unspawned_real_teammate_is_not_filtered_as_lead() {
+        // A teammate written into config BEFORE its pane spawns (no tmuxPaneId
+        // yet) but WITH a color or backendType is still a real teammate —
+        // the structural fallback only fires when ALL three are blank.
+        let base = tmp();
+        let tdir = base.join("teams").join("sq3");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "x",
+            "members": [
+                { "name": "starting", "agentId": "starting@sq3",
+                  "tmuxPaneId": "", "color": "blue", "isActive": false }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+        let teams = scan_teams(&base);
+        assert_eq!(teams[0].members.len(), 1, "unspawned teammate kept");
+        assert_eq!(teams[0].members[0].name, "starting");
         let _ = fs::remove_dir_all(base);
     }
 

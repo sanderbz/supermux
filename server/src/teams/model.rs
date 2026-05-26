@@ -29,6 +29,13 @@ pub struct RawTeamConfig {
     /// The lead Claude session id. One of the team→lead mapping handles (§3.2).
     #[serde(default)]
     pub lead_session_id: String,
+    /// The lead's agent id, e.g. `"team-lead@viral-news-hunt"` — Claude writes
+    /// the LEAD into `members[]` as an orchestrator entry alongside the real
+    /// teammates. We filter it out when materializing the supermux roster (it
+    /// already renders as the full SessionTile via `lead_supermux_session`;
+    /// surfacing it AGAIN as a chip is the phantom-chip bug from FIX-TEAMS).
+    #[serde(default)]
+    pub lead_agent_id: String,
     /// The team's roster. A missing/absent array → an empty team (skipped).
     #[serde(default)]
     pub members: Vec<RawMember>,
@@ -62,6 +69,12 @@ pub struct RawMember {
     /// `"claude"` etc. Surfaced as-is; we don't gate on it.
     #[serde(default)]
     pub backend_type: String,
+    /// Claude's role marker. `"orchestrator"` ⇒ the LEAD (already rendered as
+    /// the SessionTile, NOT a teammate chip — see FIX-TEAMS bug 1). `"claude"`
+    /// (or empty) is a real teammate. Used belt-and-braces alongside the
+    /// `agent_id == lead_agent_id` filter for forward-compat with schema drift.
+    #[serde(default)]
+    pub agent_type: String,
 }
 
 /// `~/.claude/tasks/{team}/NN.json` — one shared task. supermux mirrors these
@@ -145,6 +158,13 @@ pub struct Member {
     pub is_active: bool,
     /// Derived live status (§3.3).
     pub status: MemberStatus,
+    /// The member's working directory (raw, from config.json). Server-side
+    /// signal only — used by the host-session resolver to match teammates to
+    /// the supermux session whose `dir` they live under (FIX-TEAMS bug 2,
+    /// when `leadSessionId` is a Claude UUID rather than the supermux name).
+    /// Empty when absent; not currently surfaced in the wire response shape.
+    #[serde(skip_serializing)]
+    pub cwd: String,
 }
 
 /// One shared task (the SSE/API shape).
@@ -164,7 +184,9 @@ pub struct TeamTask {
 pub struct Team {
     /// The sanitized team directory name (`~/.claude/teams/<team_name>/`).
     pub team_name: String,
-    /// The lead Claude session id (config.json `leadSessionId`).
+    /// The lead Claude session id (config.json `leadSessionId`). Per FIX-TEAMS
+    /// ground truth this is a Claude UUID (not the supermux session name), so
+    /// it is NOT directly the host session — see [`Self::lead_supermux_session`].
     pub lead_session: String,
     /// The supermux session that hosts the lead, when we could map it
     /// (`supermux-<name>`); `None` when unmapped (§3.2 — still surfaced).

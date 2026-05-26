@@ -562,6 +562,53 @@ pub async fn pane_in_session(lead_session: &str, pane_id: &str) -> Result<bool> 
     Ok(lead.list_pane_ids().await?.iter().any(|p| p == pane_id))
 }
 
+/// Find the BARE supermux session name whose window currently contains
+/// `pane_id` (`%id`), scanning every live `supermux-*` tmux session (Agent
+/// Teams / FIX-TEAMS bug 3). This is the tmux-level fallback used by the
+/// teammate WS resolver when the team config's `leadSessionId` is a Claude
+/// UUID (not the supermux name): the pane really IS live, just not in the
+/// session the lead-id naively pointed at. Returns `None` when the pane is
+/// not present in any supermux session (a true stale / gone id) — fail-closed
+/// so callers refuse the stream, never serving a re-handed pane.
+///
+/// Implementation note: uses `tmux list-panes -a` with a server-wide filter on
+/// `#{session_name}` prefix `supermux-`, so one tmux roundtrip covers every
+/// candidate session (no per-session shell-out fan-out).
+pub async fn find_pane_session(pane_id: &str) -> Result<Option<String>> {
+    let bin = tmux_bin()?;
+    let out = Command::new(bin)
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name} #{pane_id}",
+        ])
+        .output()
+        .await
+        .context("spawning tmux list-panes -a")?;
+    if !out.status.success() {
+        // tmux server may not be running yet (no sessions at all). Treat the
+        // same as "no match" — never error on "no panes anywhere".
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(session), Some(pid)) = (it.next(), it.next()) else {
+            continue;
+        };
+        if pid != pane_id {
+            continue;
+        }
+        // Strip the `supermux-` prefix so callers get the BARE session name
+        // (the supermux DB key). A pane in a non-supermux session is ignored.
+        if let Some(bare) = session.strip_prefix("supermux-") {
+            return Ok(Some(bare.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod target_tests {
     //! Target-string formatting (Agent Teams §3.5). Pins that a `Session` target

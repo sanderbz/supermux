@@ -148,16 +148,20 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
 /// Resolve a team's host supermux session, trying cheapest signals first so the
 /// mapping survives transient teammate-pane churn AND the new-team window before
 /// any teammate is spawned. Order:
-///   (1) `leadSessionId` as a supermux name — per sessions/teams.rs:74-76 Claude
-///       writes the supermux session name into `leadSessionId`. Cheap + decisive.
+///   (1) `leadSessionId` as a supermux name — true when Start-a-team set it, but
+///       per FIX-TEAMS ground truth (viral-news-hunt) Claude often writes a UUID
+///       there instead; the live-map presence check guards against that case.
 ///   (2) `team_name` as a supermux name — Start-a-team's `gen_team_name` often
-///       matches the supermux session name directly.
-///   (3) Canonical-cwd match against live Claude DB sessions — handles renames
-///       and cases where neither id nor name was preserved.
-///   (4) Pane-id intersection (the prior sole strategy). Strongest signal once
-///       teammate panes are live; kept as the final fallback.
+///       matches the supermux session name directly (`team-supermux`, etc.).
+///   (3) Pane-id intersection — for any teammate `%id` known to be live in the
+///       roster, find the supermux session whose window contains it. Authoritative
+///       once teammates have spawned, AND it does NOT depend on `leadSessionId`
+///       matching the supermux name (the FIX-TEAMS bug 2 case).
+///   (4) Canonical-cwd match — last resort: a member's `cwd` matching a live
+///       Claude DB session's `dir` (handles the moment when teammates exist on
+///       disk but their panes haven't shown up in tmux yet, e.g. mid-spawn).
 async fn resolve_host_session(
-    _state: &AppState,
+    state: &AppState,
     team: &Team,
     pane_map: &HashMap<String, Vec<String>>,
 ) -> Option<String> {
@@ -170,17 +174,61 @@ async fn resolve_host_session(
     if pane_map.contains_key(&team.team_name) {
         return Some(team.team_name.clone());
     }
-    // (3) Canonical-cwd match — INTENTIONALLY OMITTED for now: the cleaned
-    //     `Member` struct doesn't carry `cwd` (it lives only on the raw config
-    //     deserialization), so threading it would require a model change. The
-    //     id/name matches above cover the common cases (Start-a-team writes the
-    //     supermux name as leadSessionId per sessions/teams.rs:74-76); the pane
-    //     intersection below remains the strongest signal once teammates spawn.
-    //     If a cwd-only mapping case shows up live, plumb `cwd` onto Member +
-    //     add the canonical-cwd match here.
-    // (4) Pane-id intersection — the AT-B v1 strategy, still authoritative when
-    //     teammate panes ARE live.
-    host_session_for(team, pane_map)
+    // (3) Pane-id intersection — the FIX-TEAMS bug 2 fix path. When the lead's
+    //     `leadSessionId` is a Claude UUID (NOT the supermux name) and the
+    //     team-name doesn't match a live session either, we still have a strong
+    //     signal: any teammate `%id` from config that is actually present in
+    //     some live `supermux-*` window IS the host. Locates the host without
+    //     trusting the lead-id key at all.
+    if let Some(host) = host_session_for(team, pane_map) {
+        return Some(host);
+    }
+    // (4) Canonical-cwd match. A member's `cwd` (raw from config.json) matched
+    //     against the live Claude sessions' `dir` — the lead's working directory
+    //     IS the team's working directory, so the supermux session whose `dir`
+    //     equals a teammate's cwd is the host. Last resort because it scans the
+    //     session list (cheap, but later than the in-pane-map checks above).
+    cwd_match_session(state, team).await
+}
+
+/// Find a live Claude session whose `dir` matches one of `team`'s members' cwd.
+/// Used as the final host-session fallback when neither `leadSessionId`, the
+/// team-name, nor pane-id intersection resolves. A DB error or no match yields
+/// `None` — the team is then surfaced as unmapped (a calm UI state, never wrong).
+async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
+    // Collect the unique non-empty member cwds (typically all the same — the
+    // lead's dir — but defensive against a future per-teammate-worktree shape).
+    let mut cwds: Vec<&str> = team
+        .members
+        .iter()
+        .map(|m| m.cwd.trim())
+        .filter(|c| !c.is_empty())
+        .collect();
+    cwds.sort();
+    cwds.dedup();
+    if cwds.is_empty() {
+        return None;
+    }
+    let sessions = match db::sessions::list(&state.pool).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(error = %e, "teams watcher: cwd-match session list failed");
+            return None;
+        }
+    };
+    for s in &sessions {
+        if s.provider != "claude" {
+            continue;
+        }
+        let s_dir = s.dir.trim_end_matches('/');
+        if s_dir.is_empty() {
+            continue;
+        }
+        if cwds.iter().any(|c| c.trim_end_matches('/').eq_ignore_ascii_case(s_dir)) {
+            return Some(s.name.clone());
+        }
+    }
+    None
 }
 
 /// Tear down team boards whose team has ENDED (AT-G §3), conservatively. For
@@ -374,6 +422,7 @@ mod tests {
                 tmux_pane_id: Some("%1".into()),
                 is_active: true,
                 status: MemberStatus::Working,
+                cwd: String::new(),
             }],
             tasks: vec![TeamTask {
                 id: "01".into(),
@@ -436,6 +485,124 @@ mod tests {
             db::boards::get_by_team(&state.pool, "alpha").await.unwrap().is_none(),
             "ended team's board torn down after N consecutive misses"
         );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── FIX-TEAMS bug 2: lead not mapped when leadSessionId is a UUID ───────────
+
+    /// Helper: build a team whose `leadSessionId` is a Claude UUID (NOT a
+    /// supermux name) and whose members carry the lead's cwd. Mirrors the
+    /// ground-truth viral-news-hunt config from FIX-TEAMS.
+    fn uuid_lead_team(team_name: &str, cwd: &str, pane_ids: &[&str]) -> Team {
+        use super::super::model::{Member, MemberStatus};
+        Team {
+            team_name: team_name.into(),
+            lead_session: "8a7e1f9e-10f5-4e9c-a9de-29201ec5708f".into(),
+            lead_supermux_session: None,
+            members: pane_ids
+                .iter()
+                .enumerate()
+                .map(|(i, pid)| Member {
+                    name: format!("m{i}"),
+                    agent_id: format!("m{i}@{team_name}"),
+                    model: "opus".into(),
+                    color: "blue".into(),
+                    tmux_pane_id: Some((*pid).to_string()),
+                    is_active: true,
+                    status: MemberStatus::Working,
+                    cwd: cwd.into(),
+                })
+                .collect(),
+            tasks: vec![],
+        }
+    }
+
+    /// FIX-TEAMS bug 2: pane-id intersection resolves the host EVEN when
+    /// `leadSessionId` is a UUID that doesn't match any supermux session.
+    /// Reproduces the viral-news-hunt scenario where (1) lead-id is `8a7e…`,
+    /// (2) team_name `viral-news-hunt` is NOT a session, but (3) teammate
+    /// panes `%123/%124` ARE live in the supermux session that hosts the lead.
+    #[tokio::test]
+    async fn resolve_host_via_pane_intersection_when_lead_id_is_uuid() {
+        let (state, dir) = test_state().await;
+        let mut team = uuid_lead_team("viral-news-hunt", "/opt/projects/ipc-astro",
+                                       &["%123", "%124"]);
+        // The live supermux-`ipc-astro` window contains both teammate panes
+        // (the lead's split-window children) — pane intersection MUST win even
+        // though neither the UUID lead-id nor the team_name matches.
+        let mut pane_map: HashMap<String, Vec<String>> = HashMap::new();
+        pane_map.insert(
+            "ipc-astro".into(),
+            vec!["%1".into(), "%123".into(), "%124".into()],
+        );
+        // A red herring — another live session with NO teammate panes.
+        pane_map.insert("supermux-dev".into(), vec!["%7".into()]);
+
+        let host = resolve_host_session(&state, &team, &pane_map).await;
+        assert_eq!(host.as_deref(), Some("ipc-astro"));
+
+        // And the watcher's overall enrichment uses that host's pane list to
+        // validate %ids — both teammate panes survive validate_pane_ids.
+        scan::validate_pane_ids(&mut team, &pane_map["ipc-astro"]);
+        assert_eq!(team.members[0].tmux_pane_id.as_deref(), Some("%123"));
+        assert_eq!(team.members[1].tmux_pane_id.as_deref(), Some("%124"));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// FIX-TEAMS bug 2 final fallback: when no teammate pane has shown up in
+    /// the live pane map yet (a fresh team mid-spawn), a member's `cwd` can
+    /// still map the team to its host supermux session via the session row's
+    /// `dir` — so the "Lead not mapped" placeholder doesn't flash during the
+    /// spawn window even with a UUID lead-id.
+    #[tokio::test]
+    async fn resolve_host_via_cwd_match_when_pane_map_is_empty() {
+        let (state, dir) = test_state().await;
+        // Register a real session whose dir matches the team's member cwd.
+        let _ = crate::sessions::create(
+            &state,
+            crate::sessions::CreateInput {
+                name: "ipc-astro".into(),
+                dir: Some("/opt/projects/ipc-astro".into()),
+                desc: None,
+                provider: Some("claude".into()),
+                creator: None,
+                flags: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let team = uuid_lead_team("viral-news-hunt", "/opt/projects/ipc-astro", &["%999"]);
+        // Empty pane map → cwd-match is the only remaining signal.
+        let pane_map: HashMap<String, Vec<String>> = HashMap::new();
+
+        let host = resolve_host_session(&state, &team, &pane_map).await;
+        assert_eq!(host.as_deref(), Some("ipc-astro"));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A truly orphaned team (no UUID match, no name match, no pane match, no
+    /// cwd match) stays unmapped — the watcher SURFACES it (so the user can see
+    /// the on-disk team) but the card renders the calm "unmapped" placeholder.
+    /// Regression guard: the new fallbacks must not invent a wrong mapping.
+    #[tokio::test]
+    async fn truly_orphaned_team_stays_unmapped() {
+        let (state, dir) = test_state().await;
+        let team = uuid_lead_team("ghost-team", "/no/such/dir", &["%999"]);
+        let pane_map: HashMap<String, Vec<String>> = HashMap::new();
+
+        let host = resolve_host_session(&state, &team, &pane_map).await;
+        assert!(host.is_none(), "no false positive when nothing matches");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
