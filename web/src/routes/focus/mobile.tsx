@@ -49,6 +49,7 @@ import { StatusDot } from '@/components/session-tile/status-dot'
 import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
 import { FocusHeader } from '@/components/focus-mode/focus-header'
 import { MobileDock } from '@/components/focus-mode/dock'
+import { SwipeSessionSwitcher } from '@/components/focus-mode/swipe-session-switcher'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
@@ -103,6 +104,12 @@ export function MobileFocus() {
 
   // Imperative terminal handle — the ONE surface every key path drives.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
+  // feat/swipe-switcher — the MobileDock's wrapper element. The dock is the
+  // swipe-up gesture origin: the switcher attaches a CAPTURE-phase pointerdown
+  // here so a SWIPE-UP from this surface reveals the horizontal session strip,
+  // while regular TAPS on the dock buttons still go through (the switcher only
+  // claims the gesture after the finger crosses an 8px slop).
+  const dockRef = React.useRef<HTMLDivElement | null>(null)
   // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes
   // (hardware keyboard, or the iOS soft keyboard once the user taps in) route
   // to xterm IMMEDIATELY — the focus pane is the terminal, not the dock
@@ -406,25 +413,46 @@ export function MobileFocus() {
               and `kbdGroups` are still exposed via the "···" Specials sheet
               below. Clean removal — no orphaned import. */}
 
-          <MobileDock
-            current={current}
-            prevSession={prev}
-            nextSession={next}
-            onOpenPicker={() => setPickerOpen(true)}
-            onOpenSpecials={() => setSpecialsOpen(true)}
-            onOpenSnippets={() => setSnippetsOpen(true)}
-            // Edit-in-native-editor uses Claude's Ctrl+G bridge; no-op on
-            // codex/shell — only surface it for Claude sessions.
-            onEdit={current.provider === 'claude' ? onEdit : undefined}
-            editOpen={edit.open}
-            onSwitchSession={goSession}
-            onSend={sendToTerm}
-            onSendKey={(key) => termRef.current?.sendKey(key)}
-            onFocusTerm={focusTerm}
-            onBlurTerm={blurTerm}
-            keyboardOpen={keyboardOpen}
-            registerInsert={registerInsert}
+          {/* feat/swipe-switcher — Termius-style horizontal session strip that
+              slides up from the dock on a SWIPE-UP (mobile only). Mounted as a
+              SIBLING above the dock so it shares the dock's bottom anchor (the
+              strip's bottom edge sits flush on top of the dock's border-top).
+              Default-hidden; gesture starts from inside the MobileDock element
+              (dockRef below). Desktop has the 320px sidebar — no parallel
+              affordance is added there.
+
+              The dock is wrapped in a `<div ref={dockRef}>` because MobileDock
+              doesn't forward refs (and forwardRef'ing it would ripple through
+              the entire dock surface for one consumer); a thin wrapper gives
+              the switcher a stable gesture-origin element without churning the
+              dock's public shape. */}
+          <SwipeSessionSwitcher
+            sessions={sessions}
+            currentName={name}
+            onPick={goSession}
+            dockRef={dockRef}
           />
+          <div ref={dockRef} className="contents">
+            <MobileDock
+              current={current}
+              prevSession={prev}
+              nextSession={next}
+              onOpenPicker={() => setPickerOpen(true)}
+              onOpenSpecials={() => setSpecialsOpen(true)}
+              onOpenSnippets={() => setSnippetsOpen(true)}
+              // Edit-in-native-editor uses Claude's Ctrl+G bridge; no-op on
+              // codex/shell — only surface it for Claude sessions.
+              onEdit={current.provider === 'claude' ? onEdit : undefined}
+              editOpen={edit.open}
+              onSwitchSession={goSession}
+              onSend={sendToTerm}
+              onSendKey={(key) => termRef.current?.sendKey(key)}
+              onFocusTerm={focusTerm}
+              onBlurTerm={blurTerm}
+              keyboardOpen={keyboardOpen}
+              registerInsert={registerInsert}
+            />
+          </div>
         </MobileSheet>
       </motion.div>
 
