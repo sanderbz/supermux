@@ -96,6 +96,14 @@ export function WherePicker({
   const [projects, setProjects] = React.useState<ProjectRepo[]>([])
   const [projectsLoaded, setProjectsLoaded] = React.useState(false)
 
+  // Refetch the projects list — used on mount and after Create-new-folder so
+  // the section reflects the freshly-created entry without reopening the sheet.
+  const refreshProjects = React.useCallback(async () => {
+    const res = await projectsApi.list()
+    setProjects(res.entries)
+    setProjectsLoaded(true)
+  }, [])
+
   // Load the project repos once on mount. The picker is cheap to render
   // without them (the sessions section + free-text input still work).
   React.useEffect(() => {
@@ -193,15 +201,26 @@ export function WherePicker({
           id={id}
           value={selectedDir ?? ''}
           onPick={(dir) => onChange({ kind: 'new', dir })}
-          // Expanded by default when the active selection is a custom path
-          // (not matched by any project / session row) so the user sees the
-          // input that holds it.
-          initiallyOpen={
-            !!selectedDir &&
-            !projects.some(
-              (p) => p.path === selectedDir || `${p.path}/` === selectedDir,
+          projectRows={projectRows}
+          sessionDirs={sessionDirs}
+          onCreated={refreshProjects}
+          // Expanded by default ONLY when the active selection is genuinely
+          // outside the picker's known set — i.e. not a project entry AND
+          // not the bare projects-root sentinel that's used as the default.
+          // Avoids eating vertical space on first open.
+          initiallyOpen={(() => {
+            if (!selectedDir) return false
+            const p = projectsDir()
+            const rootBare = p ? (p.endsWith('/') ? p.slice(0, -1) : p) : ''
+            const rootSlash = p ? (p.endsWith('/') ? p : `${p}/`) : ''
+            if (rootBare && (selectedDir === rootBare || selectedDir === rootSlash)) {
+              return false
+            }
+            return !projects.some(
+              (proj) =>
+                proj.path === selectedDir || `${proj.path}/` === selectedDir,
             )
-          }
+          })()}
         />
       </div>
 
@@ -247,7 +266,7 @@ function SelectionSummary({ id, value }: { id: string; value: WhereSelection }) 
     >
       <Folder className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       <span className="min-w-0 flex-1">
-        <span className="font-medium text-foreground">New session in:</span>
+        <span className="font-medium text-foreground">Team will run in:</span>
         <span className="block truncate font-mono text-muted-foreground" title={dir}>
           {dir || '(none picked)'}
         </span>
@@ -406,11 +425,17 @@ function UseAnotherFolder({
   value,
   onPick,
   initiallyOpen,
+  projectRows,
+  sessionDirs,
+  onCreated,
 }: {
   id: string
   value: string
   onPick: (dir: string) => void
   initiallyOpen: boolean
+  projectRows: ProjectRepo[]
+  sessionDirs: Set<string>
+  onCreated?: () => void | Promise<void>
 }) {
   const [open, setOpen] = React.useState(initiallyOpen)
   const [creating, setCreating] = React.useState(false)
@@ -438,7 +463,13 @@ function UseAnotherFolder({
       {open && (
         <div className="flex flex-col gap-3 px-1 pb-1 pt-1">
           {/* Free-text path + autocomplete. */}
-          <FreeTextDirInput id={id} value={value} onPick={onPick} />
+          <FreeTextDirInput
+            id={id}
+            value={value}
+            onPick={onPick}
+            projectRows={projectRows}
+            sessionDirs={sessionDirs}
+          />
 
           {/* Create-new-folder affordance. */}
           <div className="flex flex-col gap-1.5 rounded-lg border border-dashed border-border bg-muted/20 p-2">
@@ -452,7 +483,15 @@ function UseAnotherFolder({
                 setCreating(true)
                 try {
                   const created = await createProjectFolder(name)
-                  if (created) onPick(created)
+                  if (!created) {
+                    // Signal failure so the CreateFolderRow keeps the typed
+                    // value (user can retry without re-typing).
+                    throw new Error('create failed')
+                  }
+                  onPick(created)
+                  // Refresh the Projects list so the new folder appears in
+                  // the canonical section (was missing until sheet reopen).
+                  if (onCreated) await onCreated()
                 } finally {
                   setCreating(false)
                 }
@@ -472,10 +511,14 @@ function FreeTextDirInput({
   id,
   value,
   onPick,
+  projectRows,
+  sessionDirs,
 }: {
   id: string
   value: string
   onPick: (dir: string) => void
+  projectRows: ProjectRepo[]
+  sessionDirs: Set<string>
 }) {
   const [local, setLocal] = React.useState(value)
   const [suggestions, setSuggestions] = React.useState<string[]>([])
@@ -508,6 +551,22 @@ function FreeTextDirInput({
     }
   }, [local, fetchSuggestions])
 
+  // Dedupe suggestions against entries the user already sees in the Sessions
+  // and Projects sections above — same Set the picker uses to dedupe projects
+  // (trailing-slash normalised).
+  const projectPaths = React.useMemo(
+    () => new Set(projectRows.map((p) => normaliseDir(p.path))),
+    [projectRows],
+  )
+  const dedupedSuggestions = React.useMemo(
+    () =>
+      suggestions.filter((s) => {
+        const n = normaliseDir(s)
+        return !sessionDirs.has(n) && !projectPaths.has(n)
+      }),
+    [suggestions, sessionDirs, projectPaths],
+  )
+
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={`${id}-path`} className="px-1 text-xs text-muted-foreground">
@@ -524,9 +583,9 @@ function FreeTextDirInput({
         autoComplete="off"
         spellCheck={false}
       />
-      {suggestions.length > 0 && (
+      {dedupedSuggestions.length > 0 && (
         <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-          {suggestions.map((path) => {
+          {dedupedSuggestions.map((path) => {
             const trimmed = path.replace(/\/+$/, '')
             const base = trimmed.split('/').pop() || path
             return (
@@ -564,13 +623,24 @@ function CreateFolderRow({
   onCreate,
 }: {
   busy: boolean
-  onCreate: (name: string) => void
+  onCreate: (name: string) => void | Promise<void>
 }) {
   const [name, setName] = React.useState('')
   const root = projectsDir() || homeDir()
   const trimmed = name.trim()
   const safe = /^[A-Za-z0-9._-]+$/.test(trimmed)
   const canCreate = safe && !busy
+  const handleCreate = async () => {
+    if (!canCreate) return
+    try {
+      await onCreate(trimmed)
+      // Clear so a second Create starts blank. Done after the awaited
+      // parent call so the input stays populated if creation throws.
+      setName('')
+    } catch {
+      // Parent owns error surface; keep the typed value so the user can retry.
+    }
+  }
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
@@ -590,7 +660,7 @@ function CreateFolderRow({
         />
         <button
           type="button"
-          onClick={() => canCreate && onCreate(trimmed)}
+          onClick={handleCreate}
           disabled={!canCreate}
           className={cn(
             'inline-flex h-9 shrink-0 items-center gap-1 rounded-md border px-2.5 text-xs font-medium transition-colors',
