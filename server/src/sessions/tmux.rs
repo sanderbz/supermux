@@ -24,6 +24,8 @@ use once_cell::sync::Lazy;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use super::transport::{Transport, LOCAL};
+
 /// Payloads larger than this (in bytes) go through `load-buffer`/`paste-buffer`
 /// instead of `send-keys -l`. Bytes (not chars) because the real limit being
 /// dodged is the kernel `ARG_MAX` on the argv that carries the literal text.
@@ -77,30 +79,59 @@ impl TmuxTarget {
 /// Backwards-compatible: [`Tmux::new`] still takes a bare session name and the
 /// `supermux-` prefix is applied internally exactly as before. [`Tmux::for_pane`]
 /// builds a pane-targeted handle for agent-team teammate streaming.
+///
+/// **Transport (REMOTE_PLAN §RT1).** Every shell-out goes through the
+/// `transport: &'a Transport` — `Tmux::new(name)` defaults to a static
+/// `&LOCAL` (zero-cost, no behaviour change for today's callers);
+/// `Tmux::new_on(transport, name)` threads in an SSH transport for remote-host
+/// sessions (wired up by `HostPool` in RT2). Local + remote share the same
+/// argv-building code below; only the spawn step differs.
 pub struct Tmux<'a> {
     /// Bare session name for a `Session` handle; the pane id for a `Pane` handle.
     /// Retained for log lines / paste-buffer naming.
     name: &'a str,
     target: TmuxTarget,
+    /// Where to run tmux: local or via an SSH ControlMaster (RT1).
+    transport: &'a Transport,
 }
 
 impl<'a> Tmux<'a> {
     /// Wrap the bare session `name` (NOT the `supermux-` prefixed form). The
-    /// resulting handle targets `supermux-<name>`.
+    /// resulting handle targets `supermux-<name>` and runs tmux LOCALLY (the
+    /// existing behaviour — every today-caller takes this default path with
+    /// no allocation thanks to the static `&LOCAL`).
     pub fn new(name: &'a str) -> Self {
+        Self::new_on(&LOCAL, name)
+    }
+
+    /// Like [`Tmux::new`] but with an explicit `transport` (for remote-host
+    /// sessions in RT2+).
+    pub fn new_on(transport: &'a Transport, name: &'a str) -> Self {
         Self {
             name,
             target: TmuxTarget::Session(name.to_string()),
+            transport,
         }
     }
 
     /// Wrap a tmux pane id (`%id`) — a teammate split-window inside a lead's
     /// window (Agent Teams). All commands target `-t %id`. `name` is used only for
     /// diagnostics / buffer naming; pass the pane id (or a `{lead}/{member}` key).
+    /// Local transport — see [`Tmux::for_pane_on`] for remote.
     pub fn for_pane(name: &'a str, pane_id: impl Into<String>) -> Self {
+        Self::for_pane_on(&LOCAL, name, pane_id)
+    }
+
+    /// Like [`Tmux::for_pane`] but with an explicit `transport` (RT2+).
+    pub fn for_pane_on(
+        transport: &'a Transport,
+        name: &'a str,
+        pane_id: impl Into<String>,
+    ) -> Self {
         Self {
             name,
             target: TmuxTarget::Pane(pane_id.into()),
+            transport,
         }
     }
 
@@ -117,11 +148,27 @@ impl<'a> Tmux<'a> {
 
     // ── command helpers ──────────────────────────────────────────────────────
 
+    /// The program string to hand to [`Transport::spawn_command`]. LOCAL uses
+    /// the cached absolute path from `which::which("tmux")` (matches the
+    /// pre-RT1 behaviour — one PATH lookup at first use, never re-walked);
+    /// SSH uses the bare `"tmux"` and lets the remote shell resolve it via
+    /// the remote PATH (the remote `tmux` install lives wherever the remote
+    /// user's `which` says — we don't get to cache it from here).
+    fn program_for_transport(&self) -> Result<String> {
+        if self.transport.is_local() {
+            Ok(tmux_bin()?.to_string_lossy().into_owned())
+        } else {
+            Ok("tmux".to_string())
+        }
+    }
+
     /// Run `tmux <args>`; return stdout (lossy UTF-8) on success, error on a
     /// non-zero exit (stderr included).
     async fn run(&self, args: &[&str]) -> Result<String> {
-        let out = Command::new(tmux_bin()?)
-            .args(args)
+        let program = self.program_for_transport()?;
+        let out = self
+            .transport
+            .spawn_command(&program, args)
             .output()
             .await
             .with_context(|| format!("spawning tmux {args:?}"))?;
@@ -139,8 +186,10 @@ impl<'a> Tmux<'a> {
     /// Run `tmux <args>` feeding `stdin_data` to the child's stdin (for
     /// `load-buffer -`). No arg-length limit applies to the streamed bytes.
     async fn run_stdin(&self, args: &[&str], stdin_data: &[u8]) -> Result<()> {
-        let mut child = Command::new(tmux_bin()?)
-            .args(args)
+        let program = self.program_for_transport()?;
+        let mut child = self
+            .transport
+            .spawn_command(&program, args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -264,8 +313,11 @@ impl<'a> Tmux<'a> {
 
     /// `tmux has-session -t supermux-<name>` → true on exit 0.
     pub async fn exists(&self) -> Result<bool> {
-        let ok = Command::new(tmux_bin()?)
-            .args(["has-session", "-t", &self.target()])
+        let program = self.program_for_transport()?;
+        let target = self.target();
+        let ok = self
+            .transport
+            .spawn_command(&program, &["has-session", "-t", &target])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
