@@ -18,6 +18,7 @@
 
 pub mod activity;
 pub mod auto_actions;
+pub mod host_pool;
 pub mod lifecycle;
 pub mod pty;
 pub mod resumable;
@@ -27,6 +28,7 @@ pub mod teams;
 pub mod tmux;
 pub mod transport;
 
+pub use host_pool::{spawn_reaper, HostPool};
 pub use transport::{HostId, Transport, LOCAL as LOCAL_TRANSPORT};
 
 use std::collections::HashMap;

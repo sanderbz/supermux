@@ -14,6 +14,7 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
 
 use crate::config::Config;
+use crate::sessions::host_pool::HostPool;
 use crate::sessions::pty::PtyStream;
 use crate::sessions::status::{HookEvent, Status, TurnState};
 use crate::ws::streamer::PtyStreamer;
@@ -288,6 +289,11 @@ pub struct AppState {
     /// startup (loaded/generated from the data dir); the public half is served by
     /// `GET /api/push/key`, the private half signs every push. Cheap `Arc` clone.
     pub vapid: Arc<crate::push::Vapid>,
+    /// Persistent SSH ControlMaster pool (REMOTE_PLAN RT2). One master per
+    /// remote host, shared by every `Transport::Ssh` shell-out; warmed on
+    /// first use, reaped after 10min idle. Cheap `Arc` clone — actual state
+    /// lives inside the [`HostPool`].
+    pub host_pool: Arc<HostPool>,
 }
 
 impl AppState {
@@ -303,6 +309,10 @@ impl AppState {
         // before `config` is moved into the Arc. Non-fatal on failure (push then
         // stays disabled; the rest of the server still boots).
         let vapid = crate::push::init_vapid(&config.data_dir);
+        // RT2: SSH ControlMaster pool. Cheap to build (an empty DashMap + a
+        // mkdir of `<data_dir>/ssh-control`); the actual ssh work happens
+        // lazily when `transport_for` is first called for a host.
+        let host_pool = HostPool::new(pool.clone(), &config.data_dir);
         Self {
             pool,
             config: Arc::new(config),
@@ -324,6 +334,7 @@ impl AppState {
             forced_status: Arc::new(DashMap::new()),
             force_agent_teams: Arc::new(DashMap::new()),
             pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            host_pool,
         }
     }
 
