@@ -1,19 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 1024 1024" role="img" aria-label="supermux">
-  <title>supermux</title>
-  <!--
-    supermux app icon (v6) — single source of truth.
-    Two filled chevron-banner shapes in a vertical blue gradient, on a full-bleed
-    dark background so the icon renders correctly as a PWA "maskable" tile.
-    All content sits well inside the inner safe circle (radius ~410 from center).
-    Export raster sizes with scripts/build-icons.sh.
-  -->
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#3da0ff"/>
       <stop offset="100%" stop-color="#007aff"/>
     </linearGradient>
   </defs>
-  <rect width="1024" height="1024" fill="#0a0a0a"/>
   <g transform="translate(357.67,157.60) scale(0.8166)">
     <path d="M 264.233,306.112 L 2.141,2.480 A 1.50,1.50 0 0 1 3.276,0.000 L 249.297,0.000 A 1.50,1.50 0 0 1 250.450,0.540 L 492.787,291.728 A 18.00,18.00 0 0 1 492.034,315.605 L 400.444,412.530 A 1.50,1.50 0 0 1 399.354,413.000 L 192.899,413.000 A 1.50,1.50 0 0 1 191.674,410.634 L 264.322,307.958 A 1.50,1.50 0 0 0 264.233,306.112 Z" fill="url(#g)"/>
   </g>
