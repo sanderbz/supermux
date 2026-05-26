@@ -192,12 +192,32 @@ export function DesktopSplit({
   }, [edit])
   const onEditSave = React.useCallback(
     (text: string) => {
-      edit.save(text)
+      // Fire-and-forget the save (the Done path doesn't care when the POST
+      // returns — the sheet's already closed, the user will press Enter
+      // themselves). Swallow the rejection: the warn is logged inside
+      // useExternalEdit; the user-visible failure mode is "the next Enter
+      // doesn't submit," which is benign.
+      void edit.save(text).catch(() => undefined)
       // Re-focus xterm so the edited prompt is ready to submit with Enter.
       window.requestAnimationFrame(() => termRef.current?.focus())
     },
     [edit],
   )
+  /** Send = Save + auto-submit. The sheet awaits this promise BEFORE firing
+   *  the Enter byte, so we let the rejection propagate (the sheet surfaces a
+   *  toast on failure and skips the Enter). */
+  const onEditSaveAndSubmit = React.useCallback(
+    (text: string) => edit.save(text),
+    [edit],
+  )
+  /** Enter passthrough — fired by the sheet's Send button AFTER the submit POST
+   *  returns. Goes through the existing `sendKey('Enter')` path → `\r` on the
+   *  terminal WS. No new protocol; the byte sits in the pty input stream until
+   *  Claude finishes consuming the bridge's write-back, then submits the
+   *  now-edited prompt. */
+  const onEditSendEnter = React.useCallback(() => {
+    termRef.current?.sendKey('Enter')
+  }, [])
 
   // feat-session-info — the title-click info panel. `titleRef` is the Popover's
   // anchor (the title <button> in the header); the panel only mounts while open.
@@ -527,6 +547,8 @@ export function DesktopSplit({
         buffer={edit.buffer}
         requestId={edit.requestId}
         onSave={onEditSave}
+        onSaveAndSubmit={onEditSaveAndSubmit}
+        onSendEnter={onEditSendEnter}
       />
 
       {/* feat-session-info — the title-click info panel (Popover on desktop). The

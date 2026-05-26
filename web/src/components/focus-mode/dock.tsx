@@ -567,70 +567,36 @@ export function MobileDock({
           the sheet opens on the SSE event, pre-filled). The icon cluster is one
           balanced group; Enter is pushed to the right edge.
 
-          MOBILE KEYBOARD GATING (user-feedback refit): the ✎ Edit pill ONLY
-          appears while the soft keyboard is open — when it's down the user is
-          not in a typing context, so the affordance is just noise. Desktop has
-          no soft keyboard (its Edit IconButton lives in DesktopDock above and
-          is always visible — correct there).
+          ALWAYS VISIBLE (user-feedback refit, post `7b29c6b`): the ✎ Edit pill
+          renders unconditionally on mobile now. The previous build gated it on
+          `keyboardOpen` (keyboard up → pill visible, keyboard down → pill
+          collapsed to a `w-0 invisible` style-gated wrapper) because the dock's
+          horizontal real-estate was scarce. The session-title switcher has
+          since moved off the dock, freeing that space — so the pill stays
+          available regardless of keyboard state. Desktop's edit affordance is
+          a separate IconButton in DesktopDock and is unaffected.
 
-          UNMOUNT-RACE FIX: the previous mount-gate (`{keyboardOpen && <…>}`)
-          tore ComposeField out of the DOM the moment `keyboardOpen` flipped
-          false. A tap on ✎ Edit at the EXACT instant the keyboard began
-          dismissing would lose its `pointerUp` (unmount kills the in-flight
-          gesture) → the user's intentional tap was silently swallowed. We now
-          ALWAYS MOUNT the field and toggle `pointer-events-none opacity-0
-          invisible` via class instead — a tap landed BEFORE the class flips
-          still resolves because the element stays in the DOM. (The chosen
-          implementation is the simpler "always mount, style-gate" alternative
-          from the Principle critic's two options; a deferred-lag hook is
-          unnecessary here because there is no fade-in to preserve.)
+          The previous "unmount-race" the gate was protecting against (a tap
+          landing as the keyboard dismisses, losing its pointerUp when the
+          element unmounted mid-gesture) is now MOOT — the pill is permanently
+          mounted, so an in-flight tap always completes its pointerUp on the
+          same element.
 
-          A `data-vr-keyboard-gated` attribute on the wrapper lets the visual-
-          regression battery assert the visible gating: data-vr-keyboard-open
-          reflects the keyboard's CURRENT state (true = pill visible + hittable;
-          false = pill invisible + unhittable, but still mounted). */}
+          ComposeField caps itself at `maxWidth: 40%` (see :862) referenced
+          against its containing block. We render it as a DIRECT flex child of
+          the dock row here so the dock IS that containing block — `40%`
+          references the dock width, identical to the previous keyboardOpen
+          path which used `display: contents` for the same reason. */}
       <div className="flex items-center gap-1">
-        {/* Style-gate (not mount-gate): when the keyboard is down the field is
-            fully transparent + unhittable, but stays MOUNTED so an in-flight
-            tap (pointerDown landed while keyboardOpen=true) completes its
-            pointerUp even if the keyboard begins dismissing mid-gesture.
-            `invisible w-0 overflow-hidden opacity-0 pointer-events-none`
-            collapses + hides the box without unmounting; the browser moves
-            focus off the now-invisible button naturally (no `aria-hidden`
-            needed → no "aria-hidden on a focused descendant" warning).
-            ─
-            VISIBLE-state width fix: ComposeField caps itself at
-            `maxWidth: 40%` (see :862), which is computed against its parent's
-            content box. If we kept this wrapper as a real flex item when
-            visible, that parent is THIS wrapper — sized to its content
-            (ComposeField) — and `40%` becomes 40% of ComposeField, which
-            collapses to ~0. Fix: when keyboard is UP, use `display: contents`
-            (Tailwind `contents`) so the wrapper drops out of the layout tree
-            and ComposeField sees the DOCK as its containing block — `40%`
-            again references the dock's width, restoring the pre-regression
-            sizing. When keyboard is DOWN, the wrapper becomes a real DOM box
-            (`flex`) so `w-0 invisible` actually collapses it. The
-            `data-vr-keyboard-gated` attribute lives on the wrapper either
-            way (DOM-bound attributes work fine with `display: contents`). */}
-        <div
-          data-vr-keyboard-gated="compose-field"
-          data-vr-keyboard-open={keyboardOpen ? 'true' : 'false'}
-          className={cn(
-            keyboardOpen
-              ? 'contents'
-              : 'flex shrink-0 items-center invisible w-0 overflow-hidden opacity-0 pointer-events-none',
-          )}
-        >
-          <ComposeField
-            current={current}
-            prevSession={prevSession}
-            nextSession={nextSession}
-            onTap={onOpenPicker}
-            onSwitch={onSwitchSession}
-            onEdit={onEdit}
-            editOpen={editOpen}
-          />
-        </div>
+        <ComposeField
+          current={current}
+          prevSession={prevSession}
+          nextSession={nextSession}
+          onTap={onOpenPicker}
+          onSwitch={onSwitchSession}
+          onEdit={onEdit}
+          editOpen={editOpen}
+        />
 
         <DockIcon
           label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}

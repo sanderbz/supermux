@@ -266,6 +266,30 @@ export function MobileFocus() {
       termRef.current?.sendKey('Ctrl-G')
     }
   }, [edit])
+  /** Done = save only (current behaviour). The user presses Enter themselves
+   *  to submit. The sheet swallows any rejection — failure mode is just that
+   *  the next Enter doesn't submit, which is benign. */
+  const onEditSave = React.useCallback(
+    (text: string) => {
+      void edit.save(text).catch(() => undefined)
+    },
+    [edit],
+  )
+  /** Send = save AND auto-submit. The sheet awaits this Promise BEFORE firing
+   *  the Enter byte, so we let the rejection propagate (sheet surfaces a toast
+   *  + skips the Enter on failure). */
+  const onEditSaveAndSubmit = React.useCallback(
+    (text: string) => edit.save(text),
+    [edit],
+  )
+  /** Enter passthrough — fired by the Send button AFTER the submit POST
+   *  returns. Uses the existing `sendKey('Enter')` path → `\r` on the terminal
+   *  WS (no new protocol). The byte sits in the pty input buffer until Claude
+   *  finishes consuming the bridge's write-back, then submits the now-edited
+   *  prompt — guaranteed by the pty input stream's sequential ordering. */
+  const onEditSendEnter = React.useCallback(() => {
+    termRef.current?.sendKey('Enter')
+  }, [])
   // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
   const [infoOpen, setInfoOpen] = React.useState(false)
   // DOCK — the slash panel was removed: slash commands now run from the Claude
@@ -469,7 +493,9 @@ export function MobileFocus() {
         phase={edit.phase === 'closed' ? 'pending' : edit.phase}
         buffer={edit.buffer}
         requestId={edit.requestId}
-        onSave={edit.save}
+        onSave={onEditSave}
+        onSaveAndSubmit={onEditSaveAndSubmit}
+        onSendEnter={onEditSendEnter}
       />
 
       {/* feat-session-info — the title-click info panel (bottom Sheet on mobile).

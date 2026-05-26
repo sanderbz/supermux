@@ -80,6 +80,7 @@ import { cn } from '@/lib/utils'
 import { springs, eases } from '@/lib/springs'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { buildAttachmentPrompt } from '@/lib/api/files'
+import { useToast } from '@/components/ui/use-toast'
 import { UploadActionSheet } from './upload-action-sheet'
 import { AttachmentRow } from './attachment-chip'
 import { useStagedAttachments } from './use-staged-attachments'
@@ -116,6 +117,17 @@ export interface MobileComposeSheetProps {
    *  (edited body + any attachment path sentence), NO trailing Enter — the text
    *  lands at Claude's `❯` and the user submits with Enter themselves. */
   onSave: (text: string) => void
+  /** Save AND auto-submit. Used by the nav-bar "Send" button: same write-back as
+   *  Done, plus an Enter byte fired down the terminal WS once the submit POST
+   *  returns. Resolves on success, rejects on POST failure (so the sheet can
+   *  surface a toast and avoid firing a stale Enter). When omitted the Send
+   *  button hides — desktop routes without a terminal handle can opt out. */
+  onSaveAndSubmit?: (text: string) => Promise<void>
+  /** Queue an Enter byte (`\r`) on the terminal WS — fired by the Send button
+   *  AFTER `onSaveAndSubmit` resolves. The byte sits in the pty input stream
+   *  and is consumed by Claude AFTER the bridge writes the edited buffer and
+   *  exits — the input stream's sequential nature guarantees the ordering. */
+  onSendEnter?: () => void
 }
 
 export function MobileComposeSheet({
@@ -125,8 +137,11 @@ export function MobileComposeSheet({
   buffer,
   requestId,
   onSave,
+  onSaveAndSubmit,
+  onSendEnter,
 }: MobileComposeSheetProps) {
   const reduce = useReducedMotion()
+  const { toast } = useToast()
   // The sheet rises flush above the soft keyboard — same mechanism the focus
   // sheet uses (a keyboard-top inset off visualViewport). The inset lifts the
   // bottom-0 surface up so its bottom edge lands at the keyboard TOP.
@@ -282,10 +297,17 @@ export function MobileComposeSheet({
                       path. A grabber would mislead (and swipe-dismiss had
                       already been disabled here to protect unsaved edits). */}
 
-                  {/* iOS nav bar — [Cancel] · "Edit prompt" · [Done]. 44pt
-                      total height (the buttons own the hit target; the visual
-                      row is taller via padding). Plain text buttons, systemBlue
-                      (text-primary), Done is semibold. */}
+                  {/* iOS nav bar — [Cancel] · "Edit prompt" · [Send] [Done].
+                      44pt total height (the buttons own the hit target; the
+                      visual row is taller via padding). Plain text buttons,
+                      systemBlue (text-primary), Done is semibold. The Send
+                      button sits to the LEFT of Done as a paired secondary
+                      action — same write-back as Done, then queues an Enter
+                      byte so Claude auto-submits the now-edited prompt.
+                      Reference: iOS Notes' "Done" + "Share" pair in the
+                      top-right. Send only renders when both an `onSaveAndSubmit`
+                      and an `onSendEnter` are wired (the focus routes provide
+                      both; abstract callers can opt out). */}
                   <NavBar
                     onCancel={handleCancel}
                     onDone={() => {
@@ -302,6 +324,18 @@ export function MobileComposeSheet({
                       textRef.current?.dispatchEvent(ev)
                     }}
                     doneDisabled={phase !== 'ready'}
+                    onSend={
+                      onSaveAndSubmit && onSendEnter
+                        ? () => {
+                            if (phase !== 'ready') return
+                            const ev = new CustomEvent('edit-sheet-send', {
+                              bubbles: true,
+                            })
+                            textRef.current?.dispatchEvent(ev)
+                          }
+                        : undefined
+                    }
+                    sendDisabled={phase !== 'ready'}
                   />
 
                   {phase === 'pending' ? (
@@ -326,6 +360,11 @@ export function MobileComposeSheet({
                         textRef2.current = t
                       }}
                       onSave={onSave}
+                      onSaveAndSubmit={onSaveAndSubmit}
+                      onSendEnter={onSendEnter}
+                      onSendError={(message) => {
+                        toast({ message, tone: 'error' })
+                      }}
                     />
                   )}
                 </motion.div>
@@ -357,16 +396,26 @@ function NavBar({
   onCancel,
   onDone,
   doneDisabled,
+  onSend,
+  sendDisabled,
 }: {
   onCancel: () => void
   onDone: () => void
   doneDisabled: boolean
+  /** When set, render a "Send" button to the LEFT of Done. Save + auto-submit
+   *  (the Done write-back, then an Enter byte queued on the terminal WS). When
+   *  omitted the button hides entirely — abstract callers without a pty handle
+   *  can opt out (only Done is rendered). */
+  onSend?: () => void
+  sendDisabled?: boolean
 }) {
   return (
     <div
       // 44pt iOS nav bar (h-11 = 44px). Three columns: left button | centered
-      // title | right button. The center title uses absolute positioning so the
-      // buttons' varying widths don't push it off-center.
+      // title | right buttons. The center title uses absolute positioning so the
+      // buttons' varying widths don't push it off-center. With Send wired we
+      // get a paired right-cluster — Send (regular weight) + Done (semibold),
+      // following iOS Notes' "Share + Done" pattern.
       className="relative flex h-11 shrink-0 items-center px-3"
       data-vr="edit-sheet-top-bar"
     >
@@ -395,22 +444,48 @@ function NavBar({
         Edit prompt
       </span>
 
-      <button
-        type="button"
-        onClick={onDone}
-        disabled={doneDisabled}
-        aria-label="Done editing"
-        aria-disabled={doneDisabled || undefined}
-        className={cn(
-          'relative z-10 ml-auto flex h-11 min-w-11 items-center justify-end px-1',
-          // Semibold per spec — Done is the "primary" of the two text buttons.
-          'text-[17px] font-semibold text-primary active:opacity-60',
-          doneDisabled && 'opacity-40',
+      {/* Right cluster — Send (when wired) then Done. `ml-auto` lives on the
+          wrapper so both buttons hug the right edge regardless of Send's
+          presence. Each button keeps its own ≥44pt hit target. */}
+      <div className="relative z-10 ml-auto flex items-center">
+        {onSend && (
+          <button
+            type="button"
+            onClick={onSend}
+            disabled={sendDisabled}
+            aria-label="Send edited prompt"
+            aria-disabled={sendDisabled || undefined}
+            className={cn(
+              'flex h-11 min-w-11 items-center justify-end px-1',
+              // Regular weight — Done is the primary; Send is the secondary
+              // right-cluster action (iOS Notes "Share" pattern: paired but
+              // visually deferential to the primary "Done").
+              'text-[17px] font-normal text-primary active:opacity-60',
+              sendDisabled && 'opacity-40',
+            )}
+            data-vr="edit-sheet-send"
+          >
+            Send
+          </button>
         )}
-        data-vr="edit-sheet-done"
-      >
-        Done
-      </button>
+        <button
+          type="button"
+          onClick={onDone}
+          disabled={doneDisabled}
+          aria-label="Done editing"
+          aria-disabled={doneDisabled || undefined}
+          className={cn(
+            'flex h-11 min-w-11 items-center justify-end px-1',
+            // Semibold per spec — Done is the primary of the right cluster.
+            onSend ? 'pl-2' : '',
+            'text-[17px] font-semibold text-primary active:opacity-60',
+            doneDisabled && 'opacity-40',
+          )}
+          data-vr="edit-sheet-done"
+        >
+          Done
+        </button>
+      </div>
     </div>
   )
 }
@@ -476,6 +551,9 @@ function EditorBody({
   buffer,
   onTextSnapshot,
   onSave,
+  onSaveAndSubmit,
+  onSendEnter,
+  onSendError,
 }: {
   reduce: boolean
   /** Owned by the surface so the FocusScope can target it for the keyboard
@@ -487,6 +565,18 @@ function EditorBody({
    *  on every keystroke. */
   onTextSnapshot: (text: string) => void
   onSave: (text: string) => void
+  /** Save AND submit — same write-back as `onSave`, but returns a Promise that
+   *  resolves AFTER the server's submit POST returns. The Send button waits on
+   *  this before firing the Enter byte so the queued Enter only lands in the
+   *  pty AFTER the bridge has released the tty + Claude has updated its
+   *  buffer (the input stream's sequential nature guarantees the ordering). */
+  onSaveAndSubmit?: (text: string) => Promise<void>
+  /** Queue an Enter byte on the terminal WS. Fired by Send AFTER
+   *  `onSaveAndSubmit` resolves. */
+  onSendEnter?: () => void
+  /** Toast surface for Send failures (the POST rejected). Done's path never
+   *  fails-visibly — the sheet just closes; the rejection's logged. */
+  onSendError?: (message: string) => void
 }) {
   // Seed from Claude's current buffer. Component is key'd by `buffer` upstream,
   // so a new edit remounts → state starts at the new buffer.
@@ -540,6 +630,15 @@ function EditorBody({
   // appended once it resolves).
   const canSave = !staged.uploading && !saved
 
+  /** Compose the final write-back text from the current textarea + any staged
+   *  attachment paths. Shared by Done (just save) and Send (save + auto-submit). */
+  const composeFinal = React.useCallback((): string => {
+    const body = text
+    const attachmentPaths = buildAttachmentPrompt(staged.readyPaths()).trimEnd()
+    const parts = [body, attachmentPaths].filter((p) => p.length > 0)
+    return parts.join('\n')
+  }, [text, staged])
+
   const handleDone = React.useCallback(() => {
     if (savedRef.current) return // double-submit guard (synchronous)
     if (staged.uploading) return // wait for in-flight uploads to resolve
@@ -549,23 +648,71 @@ function EditorBody({
     // Compose the final buffer: the edited body, then any quoted attachment
     // path(s) on their own line. NO trailing Enter — the text lands back at
     // Claude's `❯` and the user submits with Enter themselves.
-    const body = text
-    const attachmentPaths = buildAttachmentPrompt(staged.readyPaths()).trimEnd()
-    const parts = [body, attachmentPaths].filter((p) => p.length > 0)
-    onSave(parts.join('\n'))
+    onSave(composeFinal())
     staged.reset()
-  }, [text, staged, onSave])
+  }, [composeFinal, staged, onSave])
 
-  // Bridge: the nav-bar Done button fires a 'edit-sheet-done' DOM event on the
-  // textarea; we listen for it here so the body owns the single submit path
-  // (uploads + double-submit guard live here).
+  /** Send = Done + auto-submit. Writes the edited buffer back AND, once the
+   *  submit POST returns, queues an Enter byte on the terminal WS. The Enter
+   *  byte sits in the pty input stream until Claude finishes consuming the
+   *  bridge's write-back (the bridge writes the file, exits, Claude reads the
+   *  buffer — THEN the queued Enter submits the now-edited prompt). The pty's
+   *  sequential input ordering is what makes this safe — no new protocol
+   *  needed, no client-side waiting on Claude. On POST failure we DO NOT fire
+   *  the Enter (it would submit the OLD buffer); we surface a toast and leave
+   *  the (already-closed) sheet alone — the user is back at the terminal. */
+  const handleSend = React.useCallback(() => {
+    if (savedRef.current) return // double-submit guard (synchronous)
+    if (staged.uploading) return // wait for in-flight uploads to resolve
+    if (!onSaveAndSubmit || !onSendEnter) {
+      // Graceful fallback if Send is invoked without the wiring (shouldn't
+      // happen — the nav-bar hides the button when these are absent — but the
+      // EditorBody is reused by tests/Storybook): degrade to Done semantics.
+      handleDone()
+      return
+    }
+    savedRef.current = true
+    setSaved(true)
+
+    const finalText = composeFinal()
+    staged.reset()
+    onSaveAndSubmit(finalText).then(
+      () => {
+        // Submit POST acknowledged → queue the Enter byte. The pty input
+        // stream serialises this AFTER Claude's buffer-replace, so the
+        // submitted text is the EDITED text (not the stale pre-edit prompt).
+        onSendEnter()
+      },
+      (e) => {
+        console.warn('edit-sheet send failed', e)
+        onSendError?.('Could not send — your edit was not saved.')
+      },
+    )
+  }, [
+    composeFinal,
+    staged,
+    onSaveAndSubmit,
+    onSendEnter,
+    onSendError,
+    handleDone,
+  ])
+
+  // Bridge: the nav-bar Done/Send buttons fire DOM events on the textarea; we
+  // listen here so the body owns the single submit path (uploads + double-
+  // submit guard live here, and `handleSend` reads the current `text` from
+  // React state — it MUST run in this component's closure, not the surface's).
   React.useEffect(() => {
     const el = textRef.current
     if (!el) return
     const onDone = () => handleDone()
+    const onSend = () => handleSend()
     el.addEventListener('edit-sheet-done', onDone as EventListener)
-    return () => el.removeEventListener('edit-sheet-done', onDone as EventListener)
-  }, [handleDone, textRef])
+    el.addEventListener('edit-sheet-send', onSend as EventListener)
+    return () => {
+      el.removeEventListener('edit-sheet-done', onDone as EventListener)
+      el.removeEventListener('edit-sheet-send', onSend as EventListener)
+    }
+  }, [handleDone, handleSend, textRef])
 
   // ── Dictate (Web Speech), feature-detected ───────────────────────────────────
   // The accessory rail's mic appends the FINAL transcript segments to the
