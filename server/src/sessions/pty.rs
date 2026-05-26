@@ -728,14 +728,36 @@ pub struct SshPtyReader {
 
 impl SshPtyReader {
     fn new(stream: &PtyStream, host_pool: Arc<HostPool>, host_id: HostId) -> Self {
+        // The LOCAL stream.fifo/.log live under the server's data dir and are
+        // meaningless on the remote. Translate to the REMOTE convention —
+        // `~/.supermux-remote/pty-<name>.fifo` / `.log` — using the stream key
+        // (which is filename-safe via `sanitize_key`, so the remote path has
+        // no shell metacharacters: safe for ssh argv-flattening into the
+        // remote shell). The `~/.supermux-remote/` directory is created on
+        // the remote by RT8's bootstrap, so we don't `mkdir -p` here.
+        let (fifo, log) = Self::remote_paths(&stream.name);
         Self {
             name: stream.name.clone(),
             target: stream.target.clone(),
-            fifo: stream.fifo.clone(),
-            log: stream.log.clone(),
+            fifo,
+            log,
             host_pool,
             host_id,
         }
+    }
+
+    /// The remote FIFO + log paths for a stream key. Pure / testable — the
+    /// SSH path's argv tests construct an SshPtyReader without spinning up a
+    /// HostPool by reaching for these directly.
+    ///
+    /// Uses `~/.supermux-remote/pty-<name>.{fifo,log}`: literal `~/` (NOT
+    /// shell-expanded by us) so the remote shell expands it once when the
+    /// argv reaches sh on the other side. Don't pre-resolve `$HOME` from the
+    /// local environment — the remote user's home is what matters.
+    fn remote_paths(name: &str) -> (PathBuf, PathBuf) {
+        let fifo = PathBuf::from(format!("~/.supermux-remote/pty-{name}.fifo"));
+        let log = PathBuf::from(format!("~/.supermux-remote/pty-{name}.log"));
+        (fifo, log)
     }
 
     /// Ensure the remote FIFO exists. Idempotent — any non-zero exit from
