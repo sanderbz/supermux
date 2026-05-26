@@ -155,9 +155,75 @@ pub fn install_agent_teams_setting(session_name: &str) -> Result<()> {
     tracing::debug!(
         session = %session_name,
         dir = %dir.display(),
-        "writing teammateMode=tmux for agent teams"
+        "writing teammateMode=tmux + env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 for agent teams"
     );
-    set_top_level_string_at(&dir, "teammateMode", "tmux")
+    set_top_level_string_at(&dir, "teammateMode", "tmux")?;
+    // Belt-and-suspenders: ALSO write the env-gate into settings.json's `env`
+    // block. The doc (code.claude.com/docs/en/agent-teams) recommends the
+    // settings.json `env` path as the most reliable for headless launches —
+    // process env (via lifecycle::build_env) and settings.json env BOTH work,
+    // but the settings.json route survives spawn paths that don't inherit the
+    // process env perfectly. Without this, the team-formation tools never
+    // load and the lead silently falls back to the regular Task tool.
+    set_env_var_at(&dir, "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
+}
+
+/// Merge-set `env.<key> = <value>` in `~/.claude/settings.json`, creating the
+/// `env` object if absent. Same atomic + idempotent discipline as
+/// [`set_top_level_string_at`]: temp-sibling → fsync → rename, only writes when
+/// the value differs, preserves every other key + the whole `hooks` subtree.
+fn set_env_var_at(dir: &Path, key: &str, value: &str) -> Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating claude config dir {}", dir.display()))?;
+    let path = dir.join("settings.json");
+
+    let mut root: Value = if path.exists() {
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if text.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&text).with_context(|| {
+                format!("{} is not valid JSON; refusing to overwrite it", path.display())
+            })?
+        }
+    } else {
+        json!({})
+    };
+
+    if !root.is_object() {
+        anyhow::bail!(
+            "{} is not a JSON object; refusing to overwrite it",
+            path.display()
+        );
+    }
+
+    let env_entry = root
+        .as_object_mut()
+        .unwrap()
+        .entry("env".to_string())
+        .or_insert_with(|| json!({}));
+    if !env_entry.is_object() {
+        *env_entry = json!({});
+    }
+    let env_obj = env_entry.as_object_mut().unwrap();
+
+    // Idempotent: only write when the value actually differs.
+    if env_obj.get(key).and_then(Value::as_str) == Some(value) {
+        return Ok(());
+    }
+    env_obj.insert(key.to_string(), json!(value));
+
+    let tmp = dir.join("settings.json.supermux-tmp");
+    let body = serde_json::to_string_pretty(&root)? + "\n";
+    let mut f = std::fs::File::create(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    f.write_all(body.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
 }
 
 /// Merge-set a single top-level STRING key in `~/.claude/settings.json`,

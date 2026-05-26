@@ -113,11 +113,19 @@ pub fn build_seed_prompt(task: &str, teammates: u32, model: Option<&str>) -> Str
         Some(m) => format!(" Use the model `{m}` for each teammate."),
         None => String::new(),
     };
+    // Canonical Agent-Teams activation phrasing per the official Claude Code doc
+    // (https://code.claude.com/docs/en/agent-teams). The model is fine-tuned to
+    // map "Create an agent team" + "Spawn N teammates" to the gated team-
+    // formation tools (which write ~/.claude/teams/<team>/config.json + spawn
+    // tmux split-pane teammates). Earlier phrasing ("Form a team using your
+    // agent-team tools…") pattern-matched onto the regular Task tool instead,
+    // so the lead would silently spin up in-process subagents — no real team.
     format!(
-        "You are the LEAD of an agent team. Form a team of {teammates} teammate{plural} \
-         to work on this goal together:\n\n{task}\n\n\
-         Create the {teammates} teammate{plural} now using your agent-team tools, give each a \
-         clear role and an initial task toward the goal, then coordinate them to completion.{model_line}",
+        "Create an agent team to work on this goal:\n\n{task}\n\n\
+         Spawn {teammates} teammate{plural}, each tackling a different angle of \
+         this goal. Give each teammate a clear role + an initial task, then \
+         coordinate them via the shared task list and message each other as \
+         needed until the goal is complete.{model_line}",
         teammates = teammates,
         plural = if teammates == 1 { "" } else { "s" },
         task = task,
