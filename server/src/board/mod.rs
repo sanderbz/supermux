@@ -915,6 +915,7 @@ async fn start_handler(
                 branch: None,
                 mcp: None,
                 worktree: spawn.worktree,
+                host_id: None,
             };
             crate::sessions::create(&state, create_input).await?;
             // Boot it so the steering deliver-loop has a live pane to talk to.

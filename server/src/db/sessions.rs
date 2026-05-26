@@ -253,6 +253,10 @@ pub struct NewSession {
     pub mcp: String,
     pub worktree: bool,
     pub worktree_repo: String,
+    /// FK into `hosts(id)` (migration 0018) for remote sessions; `None` = local.
+    /// The full create path (CreateInput → NewSession → INSERT) carries this
+    /// through so the API's `POST /api/sessions {host_id: N}` actually persists.
+    pub host_id: Option<i64>,
 }
 
 /// Insert a full session config row. `created_at` is set to now.
@@ -261,8 +265,8 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO sessions
             (name, dir, desc, provider, creator, flags, tags, branch, mcp,
-             worktree, worktree_repo, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             worktree, worktree_repo, host_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.name)
     .bind(&s.dir)
@@ -275,6 +279,7 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     .bind(&s.mcp)
     .bind(s.worktree as i64)
     .bind(&s.worktree_repo)
+    .bind(s.host_id)
     .bind(now)
     .execute(pool)
     .await?;

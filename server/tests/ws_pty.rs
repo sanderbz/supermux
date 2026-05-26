@@ -151,6 +151,7 @@ async fn make_session(state: &AppState, name: &str) {
             branch: None,
             mcp: None,
             worktree: None,
+            host_id: None,
         },
     )
     .await

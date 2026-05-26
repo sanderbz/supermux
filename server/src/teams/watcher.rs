@@ -613,6 +613,7 @@ mod tests {
                 branch: None,
                 mcp: None,
                 worktree: None,
+                host_id: None,
             },
         )
         .await
@@ -653,6 +654,7 @@ mod tests {
                 branch: None,
                 mcp: None,
                 worktree: None,
+                host_id: None,
             },
         )
         .await
