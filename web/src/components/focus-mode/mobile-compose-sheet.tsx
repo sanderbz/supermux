@@ -79,12 +79,14 @@ import { FocusScope } from '@radix-ui/react-focus-scope'
 import { cn } from '@/lib/utils'
 import { springs, eases } from '@/lib/springs'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { buildAttachmentPrompt } from '@/lib/api/files'
 import { useToast } from '@/components/ui/use-toast'
 import { UploadActionSheet } from './upload-action-sheet'
 import { AttachmentRow } from './attachment-chip'
 import { useStagedAttachments } from './use-staged-attachments'
 import { useDictation } from './use-dictation'
+import { DesktopComposePanel } from './desktop-compose-panel'
 
 /** The shared-element id linking the dock's bottom-left Edit field to this sheet's
  *  surface — both render a `<motion.*>` with this `layoutId`, so framer tweens the
@@ -130,7 +132,24 @@ export interface MobileComposeSheetProps {
   onSendEnter?: () => void
 }
 
-export function MobileComposeSheet({
+export function MobileComposeSheet(props: MobileComposeSheetProps) {
+  // Fork on input modality — same signal `ResponsiveSheet` uses
+  // (use-media-query.ts). Touch / coarse pointers (phone, tablet) get the
+  // existing full-bleed iOS-Notes-style edit surface optimised around the
+  // keyboard. Fine pointers (mouse / trackpad) get a right-side detail panel
+  // (DesktopComposePanel) over a dimmed terminal — keeps Claude's last output
+  // visible to the LEFT for reference while composing, since the terminal is
+  // frozen by the $EDITOR bridge anyway. Body components (NavBar, EditorBody,
+  // PendingBody, DiscardConfirmSheet) are shared between the two shells.
+  const isMobile = useMediaQuery('(pointer: coarse)')
+  if (!isMobile) {
+    return <DesktopComposePanel {...props} />
+  }
+
+  return <MobileComposeSheetInner {...props} />
+}
+
+function MobileComposeSheetInner({
   open,
   onOpenChange,
   phase,
@@ -392,7 +411,7 @@ export function MobileComposeSheet({
 
 // ── Nav bar (iOS-style top bar) ───────────────────────────────────────────────
 
-function NavBar({
+export function NavBar({
   onCancel,
   onDone,
   doneDisabled,
@@ -492,7 +511,7 @@ function NavBar({
 
 // ── Pending body (skeleton) ───────────────────────────────────────────────────
 
-function PendingBody({ reduce }: { reduce: boolean }) {
+export function PendingBody({ reduce }: { reduce: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2.5 px-3 pb-2 pt-1">
       <TextareaSkeleton reduce={reduce} />
@@ -545,7 +564,7 @@ function TextareaSkeleton({ reduce }: { reduce: boolean }) {
 
 /** The seeded editor form — remounted per buffer so the textarea + staged
  *  attachments always start from Claude's current input. */
-function EditorBody({
+export function EditorBody({
   reduce,
   textRef,
   buffer,
@@ -853,7 +872,7 @@ function EditorBody({
 
 // ── Discard-changes confirm sheet (iOS-style) ─────────────────────────────────
 
-function DiscardConfirmSheet({
+export function DiscardConfirmSheet({
   open,
   onCancel,
   onDiscard,
