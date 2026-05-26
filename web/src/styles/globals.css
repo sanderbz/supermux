@@ -376,3 +376,28 @@
 .sm-status-spinner {
   animation: sm-status-spin 0.9s linear infinite;
 }
+
+/* ── Edit sheet (feat-mobile-edit-refit Stage 1) ──────────────────────────────
+   The MobileComposeSheet's textarea is prose for an LLM, not code — system font
+   (not mono), with the iOS systemBlue accent for the caret + selection so the
+   surface reads as a native iOS edit screen. The class is scoped to the sheet's
+   root so the global terminal styling (mono, terminal-fg) is untouched.
+
+     • caret-color → --primary (systemBlue: #007AFF light, #0A84FF dark)
+     • ::selection → systemBlue at low alpha
+     • body font → --font-sans (the SF Pro / system stack)
+
+   The textarea itself also sets font-sans inline; this rule is the belt-and-
+   braces selection-color + a single place for the visual-critic to confirm the
+   sheet's scoped typography. */
+.edit-sheet-surface {
+  font-family: var(--font-sans);
+}
+.edit-sheet-surface textarea,
+.edit-sheet-surface input[type='text'] {
+  caret-color: var(--primary);
+}
+.edit-sheet-surface textarea::selection,
+.edit-sheet-surface input[type='text']::selection {
+  background-color: color-mix(in srgb, var(--primary) 28%, transparent);
+}

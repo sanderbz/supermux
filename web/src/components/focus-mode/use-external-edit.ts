@@ -1,5 +1,5 @@
 // useExternalEdit — the focus-route side of "edit in native editor"
-// (feat-edit-in-native-editor).
+// (feat-edit-in-native-editor; Stage 1 mobile-edit refit: OPTIMISTIC OPEN).
 //
 // WHY. Typing a long/multi-line prompt one char at a time into xterm (especially
 // on a phone) is painful. Claude Code has a built-in Ctrl+G action
@@ -10,16 +10,21 @@
 // not compose-and-send: the edited text lands back at Claude's `❯` prompt and the
 // user submits with Enter as usual (we never auto-submit).
 //
-// FLOW.
-//   1. Tap the dock's "Edit" field → send Ctrl+G to the pty (the caller wires
-//      `sendCtrlG`). We do NOT open the sheet on tap — we wait for the SSE event
-//      so the sheet is pre-filled with Claude's ACTUAL buffer.
+// FLOW — Stage 1 OPTIMISTIC OPEN (mobile-edit refit):
+//   1. Tap the dock's ✎ Edit pill → caller calls `requestOpen()`, which:
+//        (a) IMMEDIATELY moves the machine to `pending` (sheet renders THIS
+//            frame with a skeleton — `aria-busy=true`), and
+//        (b) signals the caller's `onRequest` (the route uses it to send Ctrl+G
+//            to the pty). The Ctrl+G round-trip happens in PARALLEL with the
+//            sheet animating in — the user sees the sheet at frame 1.
 //   2. The bridge POSTs the buffer to the server, which broadcasts an
 //      `external-edit` SSE event `{session, requestId, buffer}`.
-//   3. This hook (subscribed via the shared SSE singleton) opens the sheet for
-//      the FOCUSED session only, pre-filled with `buffer`, remembering `requestId`.
+//   3. This hook (subscribed via the shared SSE singleton) flips to `ready`,
+//      seeds the buffer, remembers `requestId`. The sheet swaps its skeleton for
+//      the real textarea (a 120ms crossfade) and programmatic focus pops the
+//      iOS keyboard.
 //   4. Done/Save → POST the edited text; Cancel/dismiss → POST `cancelled:true`.
-//      Either way the server resolves the bridge's long-poll and the sheet closes.
+//      A `cancelled` SSE (bridge timeout, etc.) closes the sheet politely.
 //
 // One in-flight edit per session is the server's invariant (Claude is blocked
 // while editing); a second SSE for the same session just replaces the open sheet's
@@ -29,61 +34,120 @@ import * as React from 'react'
 
 import { sessionsApi } from '@/lib/api/sessions'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
+import { useToast } from '@/components/ui/use-toast'
+import {
+  initialEditState,
+  isSheetOpen,
+  reduceEdit,
+  type EditPhase,
+  type EditState,
+} from './external-edit-machine'
 
-/** The `external-edit` SSE payload (mirrors the server's `open` broadcast). */
+/** Client-side ceiling on the bridge round-trip. If `pending` doesn't transition
+ *  to `ready` within this window we synthesize a local `cancelled` + surface a
+ *  toast — protects against an infinite "Loading your prompt…" when WS/SSE
+ *  disconnects mid-flight (the bridge's eventual cancelled SSE can't reach us). */
+const PENDING_TIMEOUT_MS = 15_000
+
+/** The `external-edit` SSE payload (mirrors the server's `open` broadcast).
+ *  An optional `cancelled` field lets the bridge report a timed-out edit. */
 interface ExternalEditEvent {
   session: string
   requestId: string
   /** Claude's current input buffer to seed the editor (may be empty). */
-  buffer: string
+  buffer?: string
+  /** Bridge reported a cancelled edit (timeout, user Esc'd in Claude, etc.). */
+  cancelled?: boolean
 }
 
 export interface UseExternalEditResult {
-  /** True while the native editor sheet should be open. */
+  /** True while the editor sheet should be rendered (pending OR ready phase). */
   open: boolean
-  /** Controlled open-state setter — a dismiss (false) cancels the in-flight edit. */
-  setOpen: (open: boolean) => void
-  /** The buffer text to seed the textarea with (Claude's current `❯` input). */
+  /** Current machine phase — the sheet uses this to render skeleton vs real
+   *  textarea (pending=skeleton, ready=textarea). */
+  phase: EditPhase
+  /** The buffer text to seed the textarea with (Claude's current `❯` input).
+   *  Empty while pending (skeleton up); populated when ready. */
   buffer: string
-  /** Save the edited text back to Claude's buffer (Done/Save). Closes the sheet.
+  /** The bridge correlation id — `null` while closed/pending, populated when
+   *  `arrived` fires. Surfaced so the sheet can `key` its EditorBody on the
+   *  requestId (NOT on the buffer); a redundant `arrived` SSE for the SAME
+   *  requestId (e.g. an SSE reconnect replay) then re-renders with the same key,
+   *  no remount, in-progress textarea state survives. Keying on buffer would
+   *  cause an identical-buffer re-fire to clobber the user's edits. */
+  requestId: string | null
+  /** Optimistic-open trigger — the caller invokes this on the ✎ Edit tap. It
+   *  flips the machine to `pending` (sheet renders skeleton THIS frame) and the
+   *  caller is expected to send Ctrl+G to the pty in the same tick (we don't
+   *  send Ctrl+G here — the caller owns the pty handle).
+   *
+   *  Returns `true` if the machine transitioned `closed`→`pending` (so the
+   *  caller SHOULD fire Ctrl+G), or `false` if the call was a no-op because we
+   *  were already `pending`/`ready` (a rapid double-tap, or a sheet still up).
+   *  Use the return to gate the Ctrl+G dispatch — a 2nd bridge round-trip with
+   *  an empty buffer can otherwise race the first and clobber an in-progress
+   *  textarea. */
+  requestOpen: () => boolean
+  /** Controlled close — `setOpen(false)` CANCELS the in-flight edit (from
+   *  `pending` the requestId is null so the dismiss is local-only; from `ready`
+   *  it POSTs `cancelled:true`).
+   *
+   *  `setOpen(true)` is a NO-OP — opening must go through `requestOpen()`
+   *  (which the call sites use, paired with a Ctrl+G to the pty). A `setOpen(true)`
+   *  from a future Drawer-style consumer would otherwise flip the machine to
+   *  `pending` WITHOUT firing Ctrl+G, leaving the sheet stuck on its skeleton
+   *  forever (no bridge round-trip → no `arrived` → no `ready`). */
+  setOpen: (open: boolean) => void
+  /** Save the edited text back to Claude's buffer (Done). Closes the sheet.
    *  Does NOT submit the prompt — Claude leaves the text at `❯` for the user. */
   save: (text: string) => void
 }
 
-/** Type-guard the loosely-typed SSE payload into an [`ExternalEditEvent`]. */
+/** Type-guard the loosely-typed SSE payload. Either `buffer` or `cancelled` must
+ *  be present — the bridge sends one or the other. */
 function isEditEvent(payload: unknown): payload is ExternalEditEvent {
   if (!payload || typeof payload !== 'object') return false
   const p = payload as Record<string, unknown>
-  return (
-    typeof p.session === 'string' &&
-    typeof p.requestId === 'string' &&
-    typeof p.buffer === 'string'
-  )
+  if (typeof p.session !== 'string' || typeof p.requestId !== 'string') return false
+  if (typeof p.buffer === 'string') return true
+  if (p.cancelled === true) return true
+  return false
 }
 
 /**
  * Drive the native-editor sheet for the focused `session`. Subscribes to the
- * shared SSE channel for `external-edit` events; opens the sheet (pre-filled)
- * only for THIS session. `save`/dismiss resolve the in-flight edit via the API.
+ * shared SSE channel for `external-edit` events; opens the sheet OPTIMISTICALLY
+ * on `requestOpen()` (skeleton), then seeds the textarea when the bridge SSE
+ * arrives. `save`/dismiss resolve the in-flight edit via the API.
  */
 export function useExternalEdit(session: string): UseExternalEditResult {
-  const [open, setOpenState] = React.useState(false)
-  const [buffer, setBuffer] = React.useState('')
-  // The request id of the in-flight edit — the submit must echo it so a stale
-  // sheet can't resolve a newer edit (the server matches on it; mismatch → 409).
-  const requestIdRef = React.useRef<string | null>(null)
+  const [state, dispatch] = React.useReducer(reduceEdit, initialEditState)
+  // Keep the latest dispatch + state available to long-lived callbacks
+  // (the SSE subscription) without re-subscribing.
+  const stateRef = React.useRef(state)
+  React.useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
-  // Stable handlers object via a ref so the SSE subscription never tears down on
+  // Stable handler via a ref so the SSE subscription never tears down on
   // re-render (the singleton reads handlers through a ref; see use-sse.ts).
   const onEvent = React.useCallback(
     (type: SseEventType, payload: unknown) => {
       if (type !== 'external-edit') return
       if (!isEditEvent(payload)) return
-      // Only the FOCUSED client opens the sheet (the SSE fan-out is process-wide).
+      // Only the FOCUSED client opens the sheet (SSE fan-out is process-wide).
       if (payload.session !== session) return
-      requestIdRef.current = payload.requestId
-      setBuffer(payload.buffer)
-      setOpenState(true)
+      if (payload.cancelled) {
+        dispatch({ type: 'cancelled' })
+        return
+      }
+      if (typeof payload.buffer === 'string') {
+        dispatch({
+          type: 'arrived',
+          buffer: payload.buffer,
+          requestId: payload.requestId,
+        })
+      }
     },
     [session],
   )
@@ -91,34 +155,80 @@ export function useExternalEdit(session: string): UseExternalEditResult {
   // itself is already open for the overview/board.
   useSse(React.useMemo(() => ({ onEvent }), [onEvent]))
 
+  // Client-side pending timeout (Fix 5 — skeleton-stuck guard). If WS/SSE
+  // disconnects while the bridge round-trip is in flight, the eventual
+  // `cancelled` SSE can never reach this client and the sheet would sit on
+  // "Loading your prompt…" forever. Mirror the cancelled path locally on a 15s
+  // ceiling: dispatch a local `cancelled` (closes the sheet) + surface a toast.
+  // Effect-cleanup clears the timer on any transition OUT of pending (ready,
+  // cancelled, close), so the on-time `arrived`/explicit-close paths cost
+  // nothing.
+  const { toast } = useToast()
+  React.useEffect(() => {
+    if (state.phase !== 'pending') return
+    const timer = window.setTimeout(() => {
+      dispatch({ type: 'cancelled' })
+      toast({
+        message: 'Editor timed out — tap Edit again to retry.',
+        tone: 'error',
+      })
+      // VR marker — a transient attribute on <html> so the visual-regression
+      // battery can assert the timeout fired. Cleared after the toast's default
+      // dismiss window (2500ms) so it doesn't linger across navigations.
+      document.documentElement.setAttribute('data-vr-edit-timeout', 'true')
+      window.setTimeout(() => {
+        document.documentElement.removeAttribute('data-vr-edit-timeout')
+      }, 2500)
+    }, PENDING_TIMEOUT_MS)
+    return () => window.clearTimeout(timer)
+  }, [state.phase, toast])
+
   // Resolve the in-flight edit, then close. A stale/expired requestId → 409,
-  // swallowed (the bridge already timed out; the sheet just closes). Always clears
-  // the local request id so a later dismiss can't double-submit.
+  // swallowed (the bridge already timed out; the sheet just closes). From
+  // `pending` (no buffer yet → no requestId) we just close locally; the bridge
+  // will time out on its own.
   const resolve = React.useCallback(
     (body: { text?: string; cancelled?: boolean }) => {
-      const requestId = requestIdRef.current
-      requestIdRef.current = null
-      setOpenState(false)
+      const current: EditState = stateRef.current
+      const requestId = current.requestId
+      dispatch({ type: 'close' })
       if (!requestId) return
       void sessionsApi
         .externalEditSubmit(session, { requestId, ...body })
         .catch((e) => {
-          // 409 (stale) is expected if the bridge already timed out; anything else
-          // is logged but never crashes the route (the sheet is already closed).
+          // 409 (stale) is expected if the bridge already timed out; anything
+          // else is logged but never crashes the route (sheet is already closed).
           console.warn('externalEditSubmit failed', e)
         })
     },
     [session],
   )
 
-  // Controlled open setter: closing the sheet (any dismiss path — backdrop tap,
-  // drag handle, Cancel) CANCELS the edit so Claude's buffer is left unchanged.
+  // The optimistic-open trigger. Flips to `pending` (sheet renders THIS frame
+  // with a skeleton) — the CALLER then sends Ctrl+G to the pty in the same tick.
+  // Splitting "open the sheet" from "fire the pty signal" keeps this hook free
+  // of the pty handle.
+  //
+  // The return value mirrors the reducer's `request` guard: `true` iff we
+  // transitioned `closed`→`pending` (caller SHOULD send Ctrl+G), `false` if the
+  // sheet was already up (caller MUST NOT fire a 2nd Ctrl+G — a rapid double-tap
+  // would otherwise queue a 2nd bridge round-trip whose empty-buffer arrival
+  // could clobber an in-progress textarea).
+  const requestOpen = React.useCallback((): boolean => {
+    const willTransition = stateRef.current.phase === 'closed'
+    dispatch({ type: 'request' })
+    return willTransition
+  }, [])
+
+  // Controlled close: `setOpen(false)` is the dismiss/cancel path (backdrop,
+  // Cancel, swipe-confirm-discard). `setOpen(true)` is a deliberate NO-OP —
+  // opening MUST go through `requestOpen()` so the caller can pair the optimistic
+  // open with a Ctrl+G to the pty. A `setOpen(true)` from a future Drawer-style
+  // `onOpenChange` consumer would otherwise flip to `pending` without a bridge
+  // in flight, stranding the sheet on its skeleton forever.
   const setOpen = React.useCallback(
     (next: boolean) => {
-      if (next) {
-        setOpenState(true)
-        return
-      }
+      if (next) return // no-op — see JSDoc; open via requestOpen()
       resolve({ cancelled: true })
     },
     [resolve],
@@ -129,5 +239,13 @@ export function useExternalEdit(session: string): UseExternalEditResult {
     [resolve],
   )
 
-  return { open, setOpen, buffer, save }
+  return {
+    open: isSheetOpen(state),
+    phase: state.phase,
+    buffer: state.buffer,
+    requestId: state.requestId,
+    requestOpen,
+    setOpen,
+    save,
+  }
 }

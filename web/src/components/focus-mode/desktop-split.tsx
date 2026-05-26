@@ -168,7 +168,18 @@ export function DesktopSplit({
   // endpoint; a dismiss cancels (buffer left unchanged). After Save we re-focus
   // xterm so the user can press Enter to submit.
   const edit = useExternalEdit(name)
-  const onEdit = React.useCallback(() => termRef.current?.sendKey('Ctrl-G'), [])
+  // Stage 1 OPTIMISTIC OPEN — opens the sheet immediately (skeleton) while
+  // Ctrl+G goes to the pty; the bridge SSE replaces the skeleton with the real
+  // textarea once Claude delivers the buffer.
+  const onEdit = React.useCallback(() => {
+    // Gate the Ctrl+G on requestOpen's outcome: a rapid 2nd tap while we're
+    // still `pending` returns false (no transition) — firing another Ctrl+G then
+    // would queue a 2nd bridge round-trip whose empty-buffer arrival could race
+    // the first and clobber an in-progress textarea. One tap, one Ctrl+G.
+    if (edit.requestOpen()) {
+      termRef.current?.sendKey('Ctrl-G')
+    }
+  }, [edit])
   const onEditSave = React.useCallback(
     (text: string) => {
       edit.save(text)
@@ -480,7 +491,9 @@ export function DesktopSplit({
       <MobileComposeSheet
         open={edit.open}
         onOpenChange={edit.setOpen}
+        phase={edit.phase === 'closed' ? 'pending' : edit.phase}
         buffer={edit.buffer}
+        requestId={edit.requestId}
         onSave={onEditSave}
       />
 
