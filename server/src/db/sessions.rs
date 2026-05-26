@@ -39,6 +39,12 @@ pub struct Session {
     pub cc_conversation_id: String,
     pub codex_session_id: String,
     pub start_error: String,
+    /// The Claude team this session currently hosts (NULL when none). Populated
+    /// by `teams::watcher` on each successful team→host resolution, consumed by
+    /// `sessions::lifecycle::{archive,unarchive}` to move the team's on-disk
+    /// config to / from `~/.claude/teams/.archived/` so an archived team can't
+    /// shadow a new team that lands in the same cwd.
+    pub team_name: Option<String>,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).
@@ -349,6 +355,33 @@ pub async fn set_flags(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Resu
 /// Set the tags column (JSON-array string).
 pub async fn set_tags(pool: &SqlitePool, name: &str, json: &str) -> sqlx::Result<()> {
     set_text_field(pool, name, "tags", json).await
+}
+
+/// Set / clear the `team_name` backlink (None → NULL). NULL means "this session
+/// does not currently host a team"; populated by `teams::watcher` whenever a
+/// team's host-resolution lands on this session.
+pub async fn set_team_name(
+    pool: &SqlitePool,
+    name: &str,
+    value: Option<&str>,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET team_name = ? WHERE name = ?")
+        .bind(value)
+        .bind(name)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// Read the `team_name` backlink. `Ok(None)` covers both "no such session" and
+/// "session exists but no team mapped" — the caller treats both the same way.
+pub async fn team_name(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<String>> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT team_name FROM sessions WHERE name = ?")
+            .bind(name)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(v,)| v))
 }
 
 /// Internal: set one whitelisted TEXT column. The column name comes ONLY from the

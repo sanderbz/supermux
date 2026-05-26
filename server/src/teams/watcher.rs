@@ -14,7 +14,7 @@
 //! the live-pane scan to MAP a team to the supermux session hosting its lead:
 //! whichever `supermux-<name>` window contains the team's member panes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -127,13 +127,6 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
     // window. We never cache this across ticks (the whole point of §3.2).
     let pane_map = live_pane_map(state).await;
 
-    // Cheap upfront query: archived `team`-tagged claude sessions. Used to
-    // hide teams whose lead was archived (so archive cascades to the team).
-    // Read once per tick (single SQL, in-process); the `archived_team_dirs`
-    // is small in practice (one row per archived team-lead, typically <10).
-    let archived_team_dirs = archived_team_lead_dirs(state).await;
-
-    let mut hidden: HashSet<String> = HashSet::new();
     for team in &mut teams {
         // Map team → supermux session via a multi-key resolver that tolerates
         // the (common) state where no teammate has a tmuxPaneId yet: lead just
@@ -142,16 +135,6 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
         // Pane-id intersection (the docstring's original promise; AT-B v1) is
         // kept as the strongest signal AND the final fallback.
         let host = resolve_host_session(state, team, &pane_map).await;
-
-        // If no LIVE host resolved AND an ARCHIVED team-tagged lead exists at
-        // the team's cwd, the user archived this team's lead — hide the team
-        // entirely (the user expectation: archive cascades to the whole team,
-        // unarchive instantly restores it). The team config on disk is left
-        // untouched, so unarchive is a pure visibility flip.
-        if host.is_none() && team_has_archived_lead(team, &archived_team_dirs) {
-            hidden.insert(team.team_name.clone());
-            continue;
-        }
 
         let live_ids: &[String] = host
             .as_deref()
@@ -162,49 +145,41 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
         // §3.2: re-validate every `%id` against the host's live panes THIS tick.
         scan::validate_pane_ids(team, live_ids);
         scan::map_lead_session(team, |_| host.clone());
+
+        // Persist the team_name backlink on the host session so
+        // `lifecycle::archive` knows which `~/.claude/teams/<name>/` dir to
+        // park in `.archived/` when the user archives the session. Only fires
+        // when host resolved AND the value would change (cheap dedupe avoids
+        // an UPDATE-per-tick on a steady-state team).
+        if let Some(host_name) = host.as_deref() {
+            persist_team_name(state, host_name, &team.team_name).await;
+        }
     }
 
-    teams.retain(|t| !hidden.contains(&t.team_name));
     teams
 }
 
-/// Return the set of cwds (`session.dir`) belonging to ARCHIVED claude
-/// sessions tagged `team`. Used to detect teams whose lead was archived —
-/// such teams are hidden from `/api/teams` (archive cascades to the team).
-///
-/// Read once per tick; small in practice (one row per archived team-lead).
-/// A DB error / parse failure yields an empty set — the team stays visible
-/// (safer than incorrectly hiding a live team).
-async fn archived_team_lead_dirs(state: &AppState) -> HashSet<String> {
-    let archived = match db::sessions::list_archived(&state.pool).await {
-        Ok(rows) => rows,
+/// Cheap-deduped UPDATE: only fire when the session's current team_name
+/// differs from the team we just mapped to it. A DB error is logged at debug
+/// and swallowed — the cleanup-on-archive degrades to "leaves a stale config
+/// behind" (the previous-band-aid worst case), never to a broken tick.
+async fn persist_team_name(state: &AppState, session_name: &str, team_name: &str) {
+    match db::sessions::team_name(&state.pool, session_name).await {
+        Ok(Some(cur)) if cur == team_name => return,
+        Ok(_) => {}
         Err(e) => {
-            tracing::debug!(error = %e, "teams watcher: list_archived failed");
-            return HashSet::new();
+            tracing::debug!(error = %e, session = %session_name, "teams watcher: read team_name failed");
+            return;
         }
-    };
-    archived
-        .into_iter()
-        .filter(|s| {
-            s.provider == "claude"
-                && serde_json::from_str::<Vec<String>>(&s.tags)
-                    .map(|v| v.iter().any(|t| t == "team"))
-                    .unwrap_or(false)
-        })
-        .map(|s| s.dir.trim_end_matches('/').to_string())
-        .collect()
-}
-
-/// Does any of `team`'s member cwds match an archived team-lead dir? Cheap
-/// HashSet lookup with trailing-slash normalisation (same rule as `cwd_match`).
-fn team_has_archived_lead(team: &Team, archived_dirs: &HashSet<String>) -> bool {
-    if archived_dirs.is_empty() {
-        return false;
     }
-    team.members.iter().any(|m| {
-        let c = m.cwd.trim().trim_end_matches('/');
-        !c.is_empty() && archived_dirs.contains(c)
-    })
+    if let Err(e) = db::sessions::set_team_name(&state.pool, session_name, Some(team_name)).await {
+        tracing::debug!(
+            error = %e,
+            session = %session_name,
+            team = %team_name,
+            "teams watcher: persist team_name failed",
+        );
+    }
 }
 
 /// Resolve a team's host supermux session, trying cheapest signals first so the
@@ -653,19 +628,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Archive cascade unit: `archived_team_lead_dirs` returns the cwds of
-    /// archived sessions tagged `team`; `team_has_archived_lead` matches a
-    /// team's member cwds against that set. When both fire, scan_and_enrich
-    /// filters the team out of `/api/teams`. Unarchive flips it back — pure
-    /// derived state, no destructive cleanup.
+    /// Archive cleanup unit: `persist_team_name` upserts the host → team
+    /// backlink so a later `lifecycle::archive(host)` can move
+    /// `~/.claude/teams/<name>/` into `.archived/`. Dedupes when the value
+    /// hasn't changed so a steady-state team doesn't UPDATE every tick.
     ///
-    /// User-facing rule: archive the lead → the whole TEAM CARD vanishes from
-    /// the overview (was: lead tile vanishes but team chips stay orphaned).
+    /// User-facing rule: archive a team-host session → its on-disk team
+    /// config is parked in `.archived/`, so the next scan can't surface a
+    /// ghost team that shadows a new team spawned in the same cwd.
     #[tokio::test]
-    async fn archive_cascade_filters_team_via_dir_match() {
+    async fn persist_team_name_writes_then_dedupes() {
         let (state, dir) = test_state().await;
-
-        // Create three claude sessions: two tagged "team", one not.
         crate::sessions::create(
             &state,
             crate::sessions::CreateInput {
@@ -683,91 +656,32 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::sessions::create(
-            &state,
-            crate::sessions::CreateInput {
-                name: "team-beta-lead".into(),
-                dir: Some("/opt/projects/beta".into()),
-                desc: Some("Team lead — beta".into()),
-                provider: Some("claude".into()),
-                creator: Some("team".into()),
-                flags: None,
-                tags: Some(vec!["team".into()]),
-                branch: None,
-                mcp: None,
-                worktree: None,
-            },
-        )
-        .await
-        .unwrap();
-        crate::sessions::create(
-            &state,
-            crate::sessions::CreateInput {
-                name: "regular-session".into(),
-                dir: Some("/opt/projects/regular".into()),
-                desc: None,
-                provider: Some("claude".into()),
-                creator: None,
-                flags: None,
-                tags: None,
-                branch: None,
-                mcp: None,
-                worktree: None,
-            },
-        )
-        .await
-        .unwrap();
 
-        // Two test teams: alpha (will be archived) + gamma (no matching session).
-        let alpha = uuid_lead_team("alpha", "/opt/projects/alpha", &["%1"]);
-        let gamma = uuid_lead_team("gamma", "/opt/projects/gamma", &["%2"]);
-
-        // Baseline: nothing archived → no dirs returned, no team hidden.
-        let dirs0 = archived_team_lead_dirs(&state).await;
-        assert!(dirs0.is_empty(), "no archived team-leads exist yet");
-        assert!(!team_has_archived_lead(&alpha, &dirs0));
-
-        // Archive a regular (non-team) session → must NOT count.
-        db::sessions::set_archived(&state.pool, "regular-session", true)
-            .await
-            .unwrap();
-        let dirs1 = archived_team_lead_dirs(&state).await;
-        assert!(
-            dirs1.is_empty(),
-            "archived sessions without 'team' tag are NOT counted as team leads",
+        // Initial: no backlink.
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "team-alpha-lead").await.unwrap(),
+            None,
         );
 
-        // Archive the alpha team-lead → alpha is hidden, gamma + beta are not.
-        db::sessions::set_archived(&state.pool, "team-alpha-lead", true)
-            .await
-            .unwrap();
-        let dirs2 = archived_team_lead_dirs(&state).await;
-        assert_eq!(dirs2.len(), 1, "exactly one team-tagged archived dir");
-        assert!(dirs2.contains("/opt/projects/alpha"));
-        assert!(team_has_archived_lead(&alpha, &dirs2), "alpha is hidden");
-        assert!(
-            !team_has_archived_lead(&gamma, &dirs2),
-            "gamma is NOT hidden (different cwd)",
+        // First persist writes the value.
+        persist_team_name(&state, "team-alpha-lead", "viral-news-hunt").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "team-alpha-lead").await.unwrap(),
+            Some("viral-news-hunt".to_string()),
         );
 
-        // Unarchive the alpha lead → alpha is restored (pure derived state).
-        db::sessions::set_archived(&state.pool, "team-alpha-lead", false)
-            .await
-            .unwrap();
-        let dirs3 = archived_team_lead_dirs(&state).await;
-        assert!(
-            dirs3.is_empty(),
-            "unarchive removes the dir from the hidden set"
+        // Second persist with the SAME value is a no-op (dedupe).
+        persist_team_name(&state, "team-alpha-lead", "viral-news-hunt").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "team-alpha-lead").await.unwrap(),
+            Some("viral-news-hunt".to_string()),
         );
-        assert!(!team_has_archived_lead(&alpha, &dirs3));
 
-        // Trailing-slash normalisation — both sides should match.
-        let mut slashy = HashSet::new();
-        slashy.insert("/opt/projects/alpha".to_string());
-        let team_with_trailing = uuid_lead_team("alpha", "/opt/projects/alpha/", &["%1"]);
-        assert!(
-            team_has_archived_lead(&team_with_trailing, &slashy),
-            "trailing slash on member.cwd matches no-slash dir",
+        // Different value → updates (a new team took over this host).
+        persist_team_name(&state, "team-alpha-lead", "viral-telecom-angle").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "team-alpha-lead").await.unwrap(),
+            Some("viral-telecom-angle".to_string()),
         );
 
         state.pool.close().await;

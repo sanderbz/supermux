@@ -46,6 +46,75 @@ pub fn tasks_dir() -> PathBuf {
     claude_config_dir().join("tasks")
 }
 
+/// Move `<base>/teams/<team_name>/` to `<base>/teams/.archived/<team_name>/`.
+/// The leading-dot dir is invisible to [`scan_teams`] (which skips dot-prefixed
+/// entries), so a parked team can't resurface in the overview by accident.
+///
+/// Best-effort semantics:
+///   * empty / dot-prefixed `team_name` → no-op (defensive; never lets the
+///     caller move arbitrary paths);
+///   * missing source → no-op success (team was never spawned, or already
+///     parked by a prior archive);
+///   * existing destination → overwritten (a re-archive after the same
+///     `team_name` was spawned again can't pile up duplicates).
+///
+/// Other I/O errors propagate so `sessions::lifecycle::archive` can log them.
+/// Public wrapper [`archive_team_config`] resolves the base from
+/// `CLAUDE_CONFIG_DIR` / `~/.claude`; tests call this variant directly.
+pub fn archive_team_config_in(base: &Path, team_name: &str) -> std::io::Result<()> {
+    if team_name.is_empty() || team_name.starts_with('.') {
+        return Ok(());
+    }
+    let teams_root = base.join("teams");
+    let src = teams_root.join(team_name);
+    if !src.exists() {
+        return Ok(());
+    }
+    let dst_parent = teams_root.join(".archived");
+    std::fs::create_dir_all(&dst_parent)?;
+    let dst = dst_parent.join(team_name);
+    if dst.exists() {
+        std::fs::remove_dir_all(&dst)?;
+    }
+    std::fs::rename(&src, &dst)
+}
+
+/// Reverse of [`archive_team_config_in`]. Refuses to overwrite a live config
+/// of the same name — if the user spawned a new team with the same `team_name`
+/// while the old one was parked, the new one wins and the parked copy stays in
+/// `.archived/` (a debug log records the skip).
+pub fn restore_team_config_in(base: &Path, team_name: &str) -> std::io::Result<()> {
+    if team_name.is_empty() || team_name.starts_with('.') {
+        return Ok(());
+    }
+    let teams_root = base.join("teams");
+    let src = teams_root.join(".archived").join(team_name);
+    if !src.exists() {
+        return Ok(());
+    }
+    let dst = teams_root.join(team_name);
+    if dst.exists() {
+        tracing::debug!(
+            team = %team_name,
+            "restore_team_config: target exists, leaving archived copy in place"
+        );
+        return Ok(());
+    }
+    std::fs::create_dir_all(&teams_root)?;
+    std::fs::rename(&src, &dst)
+}
+
+/// Convenience wrapper: archive `team_name` under the resolved Claude config
+/// dir (`CLAUDE_CONFIG_DIR` / `~/.claude`). See [`archive_team_config_in`].
+pub fn archive_team_config(team_name: &str) -> std::io::Result<()> {
+    archive_team_config_in(&claude_config_dir(), team_name)
+}
+
+/// Convenience wrapper for [`restore_team_config_in`].
+pub fn restore_team_config(team_name: &str) -> std::io::Result<()> {
+    restore_team_config_in(&claude_config_dir(), team_name)
+}
+
 /// Scan every `teams/*/config.json` under `base` (the Claude config dir) into
 /// the file-derived [`Team`] model. PURE: no tmux, no DB. `%id`s come straight
 /// from config.json (un-validated — the watcher validates them per tick); lead→
@@ -72,6 +141,13 @@ pub fn scan_teams(base: &Path) -> Vec<Team> {
             Some(n) => n.to_string(),
             None => continue,
         };
+        // Skip dot-prefixed entries so `.archived/` (where lifecycle::archive
+        // parks team configs whose host session was archived) is invisible to
+        // the scan — a single rule that also future-proofs against any other
+        // hidden housekeeping dir we may add under `teams/`.
+        if team_name.starts_with('.') {
+            continue;
+        }
         match scan_one_team(&path, &tasks_root, &team_name) {
             Some(team) => out.push(team),
             None => tracing::debug!(team = %team_name, "skipping team: no parseable config/members"),
@@ -411,6 +487,96 @@ mod tests {
         let d = std::env::temp_dir().join(format!("supermux-teams-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// archive_team_config_in moves the live team dir under `.archived/`, the
+    /// next scan ignores it (dot-prefix skip), restore_team_config_in moves it
+    /// back UNLESS a fresh team has since claimed the same name (then the
+    /// archived copy stays parked, new wins). Idempotent on missing source.
+    #[test]
+    fn archive_then_restore_round_trip() {
+        let base = tmp();
+        let teams_root = base.join("teams");
+        let team = teams_root.join("squad");
+        fs::create_dir_all(team.join("inboxes")).unwrap();
+        fs::write(
+            team.join("config.json"),
+            serde_json::json!({
+                "leadSessionId": "L",
+                "members": [{
+                    "name": "alice", "agentId": "alice@sq", "model": "opus",
+                    "color": "blue", "tmuxPaneId": "%1", "cwd": "/x",
+                    "isActive": true, "backendType": "claude"
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // Live state: scan finds the team.
+        assert_eq!(scan_teams(&base).len(), 1);
+
+        // Archive: moves the dir; scan no longer sees it.
+        archive_team_config_in(&base, "squad").unwrap();
+        assert!(!team.exists(), "live dir gone");
+        assert!(
+            teams_root.join(".archived").join("squad").join("config.json").exists(),
+            "config parked under .archived/",
+        );
+        assert!(scan_teams(&base).is_empty(), "scan skips dot-prefixed entries");
+
+        // Idempotent: a second archive call when source is missing is fine.
+        archive_team_config_in(&base, "squad").unwrap();
+
+        // Restore: target is missing → moves back; scan sees it again.
+        restore_team_config_in(&base, "squad").unwrap();
+        assert!(team.join("config.json").exists(), "config back at live path");
+        assert!(
+            !teams_root.join(".archived").join("squad").exists(),
+            "archived copy moved out",
+        );
+        assert_eq!(scan_teams(&base).len(), 1);
+    }
+
+    /// If a fresh team has spawned with the SAME name while the prior one was
+    /// archived, restore must NOT overwrite the new team — the parked copy
+    /// stays in `.archived/` (the new team wins).
+    #[test]
+    fn restore_skips_when_target_exists() {
+        let base = tmp();
+        let teams_root = base.join("teams");
+
+        // Park an old config under .archived/.
+        let archived = teams_root.join(".archived").join("squad");
+        fs::create_dir_all(&archived).unwrap();
+        fs::write(archived.join("config.json"), r#"{"leadSessionId":"old"}"#).unwrap();
+
+        // A fresh team with the SAME name exists live.
+        let live = teams_root.join("squad");
+        fs::create_dir_all(&live).unwrap();
+        fs::write(live.join("config.json"), r#"{"leadSessionId":"new"}"#).unwrap();
+
+        restore_team_config_in(&base, "squad").unwrap();
+
+        // Live config untouched (new wins).
+        assert_eq!(
+            fs::read_to_string(live.join("config.json")).unwrap(),
+            r#"{"leadSessionId":"new"}"#,
+        );
+        // Parked copy still there (skip is non-destructive).
+        assert!(archived.exists(), "archived copy preserved when target exists");
+    }
+
+    /// Defensive: empty / dot-prefixed names are no-ops (never let the caller
+    /// move arbitrary paths via a malformed `team_name`).
+    #[test]
+    fn archive_rejects_unsafe_names() {
+        let base = tmp();
+        archive_team_config_in(&base, "").unwrap(); // no-op
+        archive_team_config_in(&base, ".archived").unwrap(); // no-op
+        archive_team_config_in(&base, ".sneaky").unwrap(); // no-op
+        // Nothing was created.
+        assert!(!base.join("teams").exists() || base.join("teams").read_dir().unwrap().count() == 0);
     }
 
     /// Write a full team fixture under `base`: config + tasks + inboxes.
