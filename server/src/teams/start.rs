@@ -401,14 +401,21 @@ mod tests {
     fn seed_prompt_contains_goal_and_count() {
         let p = build_seed_prompt("ship the redesign", 3, None);
         assert!(p.contains("ship the redesign"), "goal must be present");
-        assert!(p.contains("team of 3 teammates"), "count must be present (plural)");
+        // Canonical Agent Teams activation phrasing — "Create an agent team" +
+        // "Spawn N teammates" is what the model is fine-tuned to map to the
+        // gated team-formation tools.
+        assert!(
+            p.contains("Create an agent team"),
+            "canonical 'Create an agent team' activation phrase must be present",
+        );
+        assert!(p.contains("Spawn 3 teammates"), "count must be present (plural)");
         assert!(!p.contains("model `"), "no model line when model is None");
     }
 
     #[test]
     fn seed_prompt_singular_and_model() {
         let p = build_seed_prompt("do a thing", 1, Some("opus"));
-        assert!(p.contains("team of 1 teammate "), "singular phrasing for 1");
+        assert!(p.contains("Spawn 1 teammate,"), "singular phrasing for 1");
         assert!(p.contains("model `opus`"), "model guidance included");
     }
 
