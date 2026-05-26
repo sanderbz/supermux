@@ -241,20 +241,56 @@ export function Overview() {
       const name = rawName.trim()
       if (!name) return
       const next = [...reconciledCustom]
-      // The hover-gap indexes are SECTION-based (0 = above the first section,
-      // 1 = between section 0 and 1, …). Convert that into a LayoutItem index
-      // by counting items until we've crossed the requested number of group
-      // headers. Section 0 starts at item 0 (the implicit Ungrouped header is
-      // virtual, NOT in the layout list, so a gap of 1 puts the new group
-      // BEFORE the first real group header).
+      // Convert SECTION-based gap index → LAYOUT index.
+      //
+      // GroupGrid's `sections` array OPTIONALLY contains an IMPLICIT
+      // "Ungrouped" section at index 0 — whenever the layout has any leading
+      // non-group items (sessions that don't belong to any real group). That
+      // implicit section is VIRTUAL: its header isn't in the layout array.
+      // So the gap-index → layout-index mapping must treat the implicit
+      // section as "all leading non-group items" and otherwise walk one
+      // section at a time (header + its sessions).
+      //
+      // Gap-index semantics (from GroupGrid's render):
+      //   • gap 0 = above section 0 (= implicit Ungrouped if present, else
+      //     the first real group).
+      //   • gap N (N ≥ 1) = BELOW section N-1, i.e. AFTER that section's
+      //     content and BEFORE the next section's header.
+      //   • Number.MAX_SAFE_INTEGER = "at the very end" sentinel (used by the
+      //     header button, `g n` chord, and command-palette entry); the loop
+      //     naturally walks off the layout end and splices at next.length.
+      //
+      // The OLD algorithm here counted group HEADERS crossed and stopped AT
+      // the N-th header — which works ONLY when an implicit Ungrouped
+      // exists (because then "1 header crossed" = below-implicit = before
+      // the first real group). Without implicit Ungrouped, it was off by
+      // one: clicking the gap below group A landed the new group BEFORE A
+      // instead of between A and B. This rewrite walks the layout section
+      // by section so both shapes are handled correctly.
       let layoutIdx = 0
-      let groupsCrossed = 0
-      while (layoutIdx < next.length && groupsCrossed < atIndex) {
-        if (next[layoutIdx].type === 'group') groupsCrossed += 1
-        if (groupsCrossed < atIndex) layoutIdx += 1
+      let sectionsSkipped = 0
+      const hasImplicit = next.length > 0 && next[0].type !== 'group'
+      if (hasImplicit && atIndex >= 1) {
+        // Skip the implicit Ungrouped: ALL leading non-group items.
+        while (
+          layoutIdx < next.length &&
+          next[layoutIdx].type !== 'group'
+        ) {
+          layoutIdx += 1
+        }
+        sectionsSkipped = 1
       }
-      // If we got here at the end without crossing all requested gaps, the
-      // insertion is at the tail.
+      // Skip each subsequent REAL section: one group header + its sessions.
+      while (layoutIdx < next.length && sectionsSkipped < atIndex) {
+        layoutIdx += 1 // past the group header
+        while (
+          layoutIdx < next.length &&
+          next[layoutIdx].type !== 'group'
+        ) {
+          layoutIdx += 1
+        }
+        sectionsSkipped += 1
+      }
       next.splice(layoutIdx, 0, {
         type: 'group',
         id: newGroupId(),
