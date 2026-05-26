@@ -46,20 +46,41 @@ For an **actual binary** to run locally (debug profile is fine on dev):
 
     cargo build                  # debug binary, ~1 GB rustc, no thrash
 
-### Who IS allowed to release-build
+### Deploying your changes to live supermux
 
-Only the legitimate deploy paths:
+If you're an agent on the server (in `/opt/projects/supermux-dev` or any
+on-server clone) and you want a committed change to go live on the running
+supermux UI, **use the self-deploy script — that's exactly what it's for**:
+
+    bash scripts/deploy-self.sh
+
+It writes a deploy-request file that a root-side systemd path-unit picks up
+and runs OUTSIDE the supermux sandbox (the supermux service can't sudo
+because of `NoNewPrivileges` + capability drops, so this indirection is the
+sanctioned no-sudo path). The runner builds the release binary, installs it,
+restarts the service, verifies `/api/health`, and rolls back on failure.
+This is the ONE place an on-server agent legitimately triggers a release
+build — and because the script exports `SUPERMUX_RELEASE_OK=1`, the
+cargo-guard wrapper lets it through.
+
+From an operator's Mac, the equivalent is `scripts/deploy.sh` — it builds on
+the host over SSH and installs the result via root sudo.
+
+### Don't bypass the cargo-guard wrapper
+
+The three legit deploy paths are:
 
 - `scripts/deploy.sh` (operator runs from their Mac → builds on the host
   inside an SSH session)
-- `scripts/deploy-self.sh` (the on-server agent's deploy entry point —
-  triggers a root-side path-unit to install + restart)
+- `scripts/deploy-self.sh` (on-server agents — see above)
 - `scripts/build.sh` (called by both of the above)
 
-All three export `SUPERMUX_RELEASE_OK=1` before invoking cargo, which is the
-opt-in env the wrapper allows through. If you are NOT one of these scripts,
-you are NOT allowed to set `SUPERMUX_RELEASE_OK=1` to bypass the wrapper —
-that defeats the safeguard.
+All three export `SUPERMUX_RELEASE_OK=1` before invoking cargo. If you are
+NOT one of these scripts, you are NOT allowed to set `SUPERMUX_RELEASE_OK=1`
+yourself to bypass the wrapper — that defeats the safeguard. Same for
+calling `~/.cargo/bin/cargo` by absolute path. If you think you need a
+release build outside the deploy path, you don't — use `cargo check` or
+`cargo build` (debug) and let `deploy-self.sh` handle the release build.
 
 ## Other ops notes for agents on clawd-02
 
