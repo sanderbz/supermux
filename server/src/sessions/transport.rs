@@ -72,14 +72,25 @@ impl Transport {
     ///     -o ControlPersist=600
     ///     -o BatchMode=yes
     ///     <ssh_target>
-    ///     -- <program> <args…>
+    ///     -- "<shell-quoted program> <shell-quoted args…>"
     /// ```
     ///
     /// `ControlMaster=auto` + a pre-existing socket means ssh re-uses the
     /// master — no new TCP handshake, no new auth. `BatchMode=yes` refuses
     /// any password prompt (we want a clean failure on a broken master, not
-    /// a hung child). The `--` separator stops ssh from parsing `program` /
-    /// `args` flags as its own.
+    /// a hung child).
+    ///
+    /// **Why shell-quoting on the SSH branch.** OpenSSH's client flattens every
+    /// argv element after the target with single spaces (NO quoting) and ships
+    /// the result as ONE string to the remote `$SHELL -c "<flattened>"`. If we
+    /// passed `["cat", "--", "/tmp/x;rm -rf /"]` as separate args, ssh would
+    /// hand the remote shell `cat -- /tmp/x;rm -rf /` — two commands. Defense
+    /// against this is the orchestrator's job: shell-escape each token
+    /// (`shell_escape::unix::escape`) and concatenate into ONE pre-quoted
+    /// string passed as the final argv element to ssh. Then the remote shell
+    /// sees the escaped tokens, splits cleanly, and the actual program
+    /// receives the original bytes untouched. Safe by default for every
+    /// caller — no per-callsite escaping discipline required.
     pub fn spawn_command(&self, program: &str, args: &[&str]) -> Command {
         match self {
             Transport::Local => {
@@ -92,6 +103,13 @@ impl Transport {
                 control_path,
                 ..
             } => {
+                use std::borrow::Cow;
+                let mut remote_cmd =
+                    shell_escape::unix::escape(Cow::Borrowed(program)).into_owned();
+                for a in args {
+                    remote_cmd.push(' ');
+                    remote_cmd.push_str(&shell_escape::unix::escape(Cow::Borrowed(*a)));
+                }
                 let mut cmd = Command::new("ssh");
                 cmd.args([
                     "-o",
@@ -104,9 +122,8 @@ impl Transport {
                     "BatchMode=yes",
                     ssh_target,
                     "--",
-                    program,
+                    &remote_cmd,
                 ]);
-                cmd.args(args);
                 cmd
             }
         }
@@ -173,6 +190,8 @@ mod tests {
         let cmd = t.spawn_command("tmux", &["has-session", "-t", "supermux-foo"]);
         let (prog, args) = argv_of(&cmd);
         assert_eq!(prog, "ssh");
+        // Final element is the shell-quoted remote command — single benign
+        // tokens stay literal under shell_escape::unix::escape.
         assert_eq!(
             args,
             vec![
@@ -186,11 +205,55 @@ mod tests {
                 "BatchMode=yes",
                 "user@ml-rig",
                 "--",
-                "tmux",
-                "has-session",
-                "-t",
-                "supermux-foo",
+                "tmux has-session -t supermux-foo",
             ]
+        );
+    }
+
+    #[test]
+    fn ssh_escapes_shell_metas_in_args() {
+        // The headline safety property: a path containing `;` (or any other
+        // shell meta) MUST be quoted so the remote outer shell sees it as
+        // ONE token, not two. Without this, `cat -- /tmp/x;rm -rf /` would
+        // run rm on the remote.
+        let t = Transport::Ssh {
+            host_id: HostId(1),
+            ssh_target: "u@h".to_string(),
+            control_path: PathBuf::from("/tmp/cm-1"),
+        };
+        let cmd = t.spawn_command("cat", &["--", "/tmp/x;rm -rf /"]);
+        let (_, args) = argv_of(&cmd);
+        let remote = args.last().unwrap();
+        // The dangerous semicolon must be inside the quoted token; the
+        // outer shell will pass `/tmp/x;rm -rf /` verbatim to cat as one arg.
+        assert!(
+            remote.contains("'/tmp/x;rm -rf /'") || remote.contains("\"/tmp/x;rm -rf /\""),
+            "expected the meta-containing arg to be quoted; got: {remote}"
+        );
+        // No raw unescaped `;` at the top level — otherwise the remote
+        // shell would chain commands.
+        assert!(!remote.split('\'').enumerate().any(|(i, seg)| i % 2 == 0 && seg.contains(';')),
+            "unescaped semicolon outside quotes in remote command: {remote}");
+    }
+
+    #[test]
+    fn ssh_escapes_single_quotes() {
+        // shell_escape::unix::escape handles embedded `'` by breaking the
+        // single-quoted run and re-entering (`'foo'\''bar'`). Verify nothing
+        // we ship into spawn_command can escape its quoting context.
+        let t = Transport::Ssh {
+            host_id: HostId(1),
+            ssh_target: "u@h".to_string(),
+            control_path: PathBuf::from("/tmp/cm-1"),
+        };
+        let cmd = t.spawn_command("printf", &["%s", "a'b"]);
+        let (_, args) = argv_of(&cmd);
+        let remote = args.last().unwrap();
+        // The embedded apostrophe must be escaped — verify it's not a raw
+        // `'` that would terminate the surrounding single-quoted string.
+        assert!(
+            !remote.contains("a'b") || remote.contains("'a'\\''b'") || remote.contains(r#""a'b""#),
+            "unsafe quoting of embedded apostrophe: {remote}"
         );
     }
 
