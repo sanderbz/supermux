@@ -9,7 +9,6 @@ import {
 } from 'framer-motion'
 import {
   Archive,
-  FolderPlus,
   LayoutGrid,
   List,
   Minus,
@@ -18,7 +17,6 @@ import {
   Rows3,
   Search,
   TerminalSquare,
-  Users,
   X,
 } from 'lucide-react'
 
@@ -38,6 +36,7 @@ import { SessionRow } from '@/components/session-tile/session-row'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
+import { NewActionMenu } from '@/components/session-tile/new-action-menu'
 import { SortControl } from '@/components/session-tile/sort-control'
 import { GroupGrid } from '@/components/session-tile/group-grid'
 import { useNewGroupAction } from '@/stores/new-group-store'
@@ -448,7 +447,7 @@ export function Overview() {
     <div
       className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6`}
     >
-      <header className="mb-4 flex flex-wrap items-center gap-3">
+      <header className="mb-4 flex flex-wrap items-center gap-2 sm:gap-3">
         <h1 className="mr-1 text-2xl font-semibold tracking-tight">Overview</h1>
 
         <div className="relative order-last w-full sm:order-none sm:w-auto sm:flex-1 sm:max-w-sm">
@@ -504,67 +503,22 @@ export function Overview() {
           </span>
         </Button>
 
-        {/* Persistent "New group" button — header (top right of the overview).
-            Replaces the previous bottom-of-page button per the 2026 spec.
-            Visible in EVERY sort mode: clicking from a non-custom mode auto-
-            flips the layout into custom + opens the inline AddGroupInput so
-            the new group is immediately visible. Custom-mode only chrome
-            would be surprising. */}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
+        {/* Single primary "+" trigger — consolidates the three previously-
+            separate header CTAs ("New session", "Start a team", "New group")
+            into one iOS-native disclosure menu. Desktop opens a Radix
+            Popover anchored below the trigger; mobile opens a Vaul action
+            sheet from the bottom. See `NewActionMenu` for the full pattern.
+            Both `data-tour="start-team"` and `data-tour="new-action-menu"`
+            land on the same trigger now, so the onboarding tour still points
+            at the right pixel for the team-step. */}
+        <NewActionMenu
+          onNewSession={openSheet}
+          onStartTeam={openTeamSheet}
+          onNewGroup={() => {
             if (layout.mode !== 'custom') setMode('custom')
             handleNewGroupAtEnd()
           }}
-          aria-label="New group"
-          title="New group (g n)"
-          data-vr="header-new-group"
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <FolderPlus />
-          <span className="hidden sm:inline">New group</span>
-        </Button>
-
-        <motion.button
-          type="button"
-          onClick={openTeamSheet}
-          aria-label="Start a team"
-          title="Start a team"
-          data-tour="start-team"
-          whileTap={reduce ? undefined : { scale: 0.9 }}
-          transition={springs.snappy}
-          className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground sm:hidden"
-        >
-          <Users className="size-4" />
-        </motion.button>
-
-        <motion.button
-          type="button"
-          onClick={openSheet}
-          aria-label="New session"
-          title="New session"
-          whileTap={reduce ? undefined : { scale: 0.9 }}
-          transition={springs.snappy}
-          className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground sm:hidden"
-        >
-          <Plus className="size-4" />
-        </motion.button>
-
-        <Button
-          variant="outline"
-          onClick={openTeamSheet}
-          data-tour="start-team"
-          className="hidden sm:inline-flex"
-        >
-          <Users />
-          Start a team
-        </Button>
-
-        <Button onClick={openSheet} className="hidden sm:inline-flex">
-          <Plus />
-          New session
-        </Button>
+        />
       </header>
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
