@@ -361,6 +361,7 @@ mod tests {
                 tmux_pane_id: Some("%1".into()),
                 is_active: true,
                 status: MemberStatus::Working,
+                cwd: String::new(),
             }],
             tasks,
         }

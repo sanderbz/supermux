@@ -139,27 +139,33 @@ impl ResolvedPane {
 }
 
 /// Resolve `(team, member)` → a live, validated [`ResolvedPane`] (Agent Teams
-/// §3.2/§3.5). Steps, in order:
+/// §3.2/§3.5, FIX-TEAMS bug 3). Steps, in order:
 ///   1. Read `config.json` FRESH (never cached — pane ids are reused).
-///   2. Resolve the member's `tmuxPaneId` and the team's lead session.
-///   3. VALIDATE the `%id` still exists in the lead's window
-///      (`tmux list-panes -t supermux-<lead>`) — a stale id is refused, never
-///      streamed.
+///   2. Resolve the member's `tmuxPaneId` (or the caller's override).
+///   3. Locate the BARE supermux session whose window currently contains the
+///      `%id` via [`tmux::find_pane_session`] — scans every `supermux-*` session
+///      in one tmux roundtrip. A `%id` not present anywhere is a true stale id
+///      (refused, never streamed) — fail-closed so a re-handed pane can't leak.
+///
+/// **Why we don't trust `leadSessionId` for validation any more (FIX-TEAMS).**
+/// Ground truth from `~/.claude/teams/viral-news-hunt/config.json` shows Claude
+/// records `leadSessionId` as a Claude session UUID (`8a7e1f9e-…`), NOT the
+/// supermux session name. The old code did `pane_in_session(leadSessionId, %id)`
+/// → `tmux has-session -t supermux-8a7e1f9e-…` → false → "stale id" close 4404
+/// → frontend reconnects forever. Finding the pane's CURRENT session directly
+/// removes that whole brittleness without losing the staleness guard.
 ///
 /// `pane_override` lets a caller (e.g. AT-F2's frontend, which already has the
 /// `%id` from the team model/SSE) skip config parsing for the pane id while still
-/// going through validation — but the lead session must come from config either
-/// way (it's what we validate membership against).
+/// going through validation. The lead-session field is populated from whichever
+/// `supermux-*` window actually owns the pane (the validated answer, not the
+/// raw config string), so downstream stream-keying is consistent.
 pub async fn resolve_member_pane(
     team: &str,
     member: &str,
     pane_override: Option<&str>,
 ) -> Result<ResolvedPane> {
     let cfg = read_team_config(team)?;
-    let lead = cfg
-        .lead_session()
-        .ok_or_else(|| anyhow!("team '{team}' config has no lead session id"))?
-        .to_string();
 
     let pane_id = match pane_override {
         Some(p) if !p.trim().is_empty() => p.trim().to_string(),
@@ -171,18 +177,21 @@ pub async fn resolve_member_pane(
             })?,
     };
 
-    // Validate against the LEAD's live window — a reused/stale id is refused.
-    if !tmux::pane_in_session(&lead, &pane_id)
+    // Locate the host supermux session by scanning live panes — the FIX-TEAMS
+    // bug 3 fix. Returns the BARE session name (the supermux key), so the stream
+    // key + diagnostics stay consistent with the session model.
+    let host = tmux::find_pane_session(&pane_id)
         .await
-        .with_context(|| format!("validating pane {pane_id} in lead session {lead}"))?
-    {
-        return Err(anyhow!(
-            "pane '{pane_id}' is not present in lead session '{lead}' (stale id or pane gone)"
-        ));
-    }
+        .with_context(|| format!("scanning live panes for {pane_id}"))?
+        .ok_or_else(|| {
+            anyhow!(
+                "pane '{pane_id}' is not present in any supermux-* session \
+                 (stale id or pane gone)"
+            )
+        })?;
 
     Ok(ResolvedPane {
-        lead_session: lead,
+        lead_session: host,
         pane_id,
     })
 }
