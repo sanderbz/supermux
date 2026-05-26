@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use once_cell::sync::Lazy;
@@ -21,10 +22,12 @@ use serde_json::json;
 use crate::db;
 use crate::db::sessions::Session;
 use crate::error::AppError;
+use crate::files::transport::{FileTransport, LocalFileTransport, SshFileTransport};
 use crate::state::{AppState, SseEvent};
 
 use super::status::{self, Mode};
 use super::tmux::Tmux;
+use super::transport::HostId;
 use super::SessionView;
 
 /// Outcome of a `start`/`wake` (returned to the client).
@@ -68,6 +71,45 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
+/// Resolve the URL a REMOTE session's hook `curl` should dial back to
+/// (REMOTE_PLAN RT5). Resolution order:
+///
+/// 1. `$SUPERMUX_REMOTE_URL` env override — handy for ad-hoc reverse tunnels
+///    in shell smoke tests. Trimmed; empty is treated as unset.
+/// 2. `config.remote_callback_url` from `config.toml`. The canonical
+///    deploy-time setting (usually a Tailscale hostname like
+///    `https://supermux-server.tailnet.ts.net:8823`).
+/// 3. First non-loopback address in `config.extra_binds` — best-effort
+///    discovery when the deployer hasn't configured a remote URL but HAS
+///    listed a public/Tailscale bind. The scheme matches `scheme` (http or
+///    https per TLS config) for consistency with the local callback URL.
+/// 4. `config.bind` as the LAST resort. This will only work if the remote
+///    can reach the orchestrator's loopback (typical for an SSH
+///    reverse-tunnel: `ssh -R 8823:127.0.0.1:8823 host`). The remote will
+///    dial its OWN loopback, which the reverse tunnel forwards back.
+fn effective_remote_callback_url(config: &crate::config::Config, scheme: &str) -> String {
+    if let Ok(env) = std::env::var("SUPERMUX_REMOTE_URL") {
+        let env = env.trim();
+        if !env.is_empty() {
+            return env.to_string();
+        }
+    }
+    if let Some(url) = config.remote_callback_url.as_deref() {
+        let t = url.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    if let Some(addr) = config
+        .extra_binds
+        .iter()
+        .find(|a| !a.ip().is_loopback())
+    {
+        return format!("{scheme}://{addr}");
+    }
+    format!("{scheme}://{}", config.bind)
+}
+
 /// Per-session tmux env (§6.5). Excludes the dashboard bearer by construction.
 ///
 /// `agent_teams` gates the experimental Claude Code Agent Teams feature (AT-B
@@ -83,6 +125,7 @@ fn build_env(
     hook_token: &str,
     provider: &str,
     agent_teams: bool,
+    host_id: Option<i64>,
 ) -> HashMap<String, String> {
     let scheme = if config.tls.cert_path.is_some() || config.tls.self_signed {
         "https"
@@ -92,7 +135,18 @@ fn build_env(
     let mut env = HashMap::new();
     env.insert("SUPERMUX_SESSION".to_string(), name.to_string());
     env.insert("TMUX_SESSION_NAME".to_string(), name.to_string());
-    env.insert("SUPERMUX_URL".to_string(), format!("{scheme}://{}", config.bind));
+    // REMOTE_PLAN RT5: a session running on a different machine cannot reach
+    // the orchestrator at `127.0.0.1:8823` — its hook curl would just hit its
+    // OWN loopback. For remote sessions, route `SUPERMUX_URL` through the
+    // configured `remote_callback_url` (Tailscale hostname, reverse-tunnel,
+    // or first non-loopback bind) instead. Local sessions keep the original
+    // loopback path — by far the common case.
+    let callback_url = if host_id.is_some() {
+        effective_remote_callback_url(config, scheme)
+    } else {
+        format!("{scheme}://{}", config.bind)
+    };
+    env.insert("SUPERMUX_URL".to_string(), callback_url);
     env.insert("SUPERMUX_HOOK_TOKEN".to_string(), hook_token.to_string());
     // AT-B §3.1: gated, Claude-only opt-in for Agent Teams.
     if agent_teams && provider == "claude" {
@@ -368,21 +422,46 @@ pub async fn start(
     // signals (§3.5). Idempotent + non-destructive; failure is non-fatal — the
     // detector still classifies off the regex bank + pty heartbeat. Only Claude
     // reads `~/.claude/settings.json`, so skip it for codex/shell sessions.
+    //
+    // REMOTE_PLAN RT5: when the session is remote (s.host_id is Some), resolve
+    // a SshFileTransport from the host pool so the hooks land in the REMOTE
+    // host's `~/.claude/settings.json`. Local sessions get a LocalFileTransport
+    // (the v1 behaviour, byte-for-byte). The transport's atomic-rename
+    // discipline holds across both impls.
     if s.provider == "claude" {
-        if let Err(e) = crate::claude_config::install_hooks(name, &hook_token) {
+        let transport: Arc<dyn FileTransport> = match s.host_id {
+            Some(id) => Arc::new(SshFileTransport::new(state.host_pool.clone(), HostId(id))),
+            None => Arc::new(LocalFileTransport),
+        };
+        if let Err(e) =
+            crate::claude_config::install_hooks(name, &hook_token, transport.as_ref(), None).await
+        {
             tracing::warn!(name = %name, error = %e, "install_hooks failed; status falls back to regex/heartbeat");
         }
         // AT-B §3.1: when teams is enabled, also force `teammateMode:"tmux"` so a
         // lead spawns teammates as split-panes on supermux's socket (not the
         // invisible in-process backend). Gated + Claude-only; non-fatal on error.
         if agent_teams {
-            if let Err(e) = crate::claude_config::install_agent_teams_setting(name) {
+            if let Err(e) = crate::claude_config::install_agent_teams_setting(
+                name,
+                transport.as_ref(),
+                None,
+            )
+            .await
+            {
                 tracing::warn!(name = %name, error = %e, "install_agent_teams_setting failed; teams may use the wrong backend");
             }
         }
     }
 
-    let env = build_env(&state.config, name, &hook_token, &s.provider, agent_teams);
+    let env = build_env(
+        &state.config,
+        name,
+        &hook_token,
+        &s.provider,
+        agent_teams,
+        s.host_id,
+    );
     let dir = PathBuf::from(&s.dir);
     let shell = user_shell();
 

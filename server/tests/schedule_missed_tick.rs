@@ -27,6 +27,7 @@ async fn new_state() -> (AppState, PathBuf) {
         // `ws` was added to `Config` after this test's milestone branched; default
         // it so the full suite compiles against the merged `Config`.
         ws: WsConfig::default(),
+        remote_callback_url: None,
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)

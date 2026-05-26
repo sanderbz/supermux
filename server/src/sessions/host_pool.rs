@@ -617,6 +617,7 @@ mod tests {
             auth_token: "host-pool-test".to_string(),
             provider_defaults: Default::default(),
             ws: Default::default(),
+            remote_callback_url: None,
         };
         let pool = crate::db::init(&config).await.expect("init pool");
         (pool, dir)
