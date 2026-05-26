@@ -428,7 +428,7 @@ async fn end_to_end_remote_session() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let sb = peek_until(&f.app, session, "remote-hello", 20).await;
+    let sb = peek_until(&f.app, &session, "remote-hello", 20).await;
     assert!(
         sb.contains("remote-hello"),
         "expected 'remote-hello' in peek scrollback within 5s:\n{sb}"
@@ -509,7 +509,7 @@ async fn end_to_end_remote_session() {
         SshFileTransport::new(f.state.host_pool.clone(), HostId(host_id)),
     );
     supermux_server::claude_config::install_hooks(
-        session,
+        &session,
         "rt10-hook-token",
         transport.as_ref(),
         None,
