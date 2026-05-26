@@ -33,12 +33,14 @@ import {
   useSelectedBoard,
   sortIssues,
 } from '@/hooks/use-board'
+import { useTeams } from '@/hooks/use-teams'
 import { useStartAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
 import { useToast } from '@/components/ui/use-toast'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
 import {
   ALL_BOARD_ID,
   MAIN_BOARD_ID,
+  decodeBoardId,
   type BoardIssue,
   type NewBoardIssue,
 } from '@/lib/api'
@@ -71,6 +73,9 @@ interface DropSlot {
 export function Board() {
   // ── multi-board selection (AT-C, plan §5.5) ─────────────────────────────────
   const { boards } = useBoards()
+  // Team data — needed by the composer's default-session resolver (FEAT-BOARD-
+  // SESSION §B step 2): a per-team board prefers that team's lead session.
+  const { teams } = useTeams()
   const [selectedBoard, setSelectedBoard] = useSelectedBoard()
   // A persisted selection can point at a board that was since deleted (e.g. a
   // team board). Fall back to Main so the view never shows an empty/404 board.
@@ -292,8 +297,31 @@ export function Board() {
 
   // ── Create handlers (description-first composer) ─────────────────────────────
   // A new card lands on the board currently in view. On the "All" aggregate
-  // (which isn't a real board) new cards default to Main.
-  const createBoardId = isAll ? MAIN_BOARD_ID : activeBoardId
+  // (which isn't a real board) new cards default to Main. A `session:<name>`
+  // board (FEAT-BOARD-SESSION) is a virtual filter on Main — `decodeBoardId`
+  // rewrites it to Main here so the server-side card row lands on Main with the
+  // selected session attached (the filter then surfaces it on the per-session
+  // view).
+  const decoded = decodeBoardId(activeBoardId)
+  const createBoardId = isAll ? MAIN_BOARD_ID : decoded.fetchBoardId
+
+  // The board-scoped "preferred" session for the composer's session picker
+  // (FEAT-BOARD-SESSION §B). Resolution chain (highest priority first):
+  //   1. Per-session board (`session:<name>`)         → that session.
+  //   2. Per-team board (kind `team`, with a lead)     → the team's lead session.
+  //   3. Main / All / a team with no live lead         → null (composer falls
+  //      back to the last-used persisted session, see use-last-create-session).
+  // `null` is "no recommendation — use the persisted last-used"; `''` means "no
+  // session" (the composer treats it as an explicit zero-attachment pick).
+  const boardScopedSession: string | null = useMemo(() => {
+    if (decoded.sessionFilter !== null) return decoded.sessionFilter
+    if (activeBoard?.kind === 'team' && activeBoard.team_name) {
+      const team = teams.find((t) => t.team_name === activeBoard.team_name)
+      const lead = team?.lead_supermux_session
+      if (lead) return lead
+    }
+    return null
+  }, [decoded.sessionFilter, activeBoard, teams])
   const onAdd = useCallback(
     async (input: NewBoardIssue) => {
       await board.createIssue({ ...input, status: 'todo', board_id: createBoardId })
@@ -451,7 +479,11 @@ export function Board() {
                     // composer would create on Main (ambiguous) / can't write
                     // back to the team's files, so hide it there.
                     lane.id === 'todo' && !isAll && !readThrough ? (
-                      <BoardComposer onAdd={onAdd} onAddAndStart={onAddAndStart} />
+                      <BoardComposer
+                        onAdd={onAdd}
+                        onAddAndStart={onAddAndStart}
+                        defaultSession={boardScopedSession}
+                      />
                     ) : null
                   }
                   hint={

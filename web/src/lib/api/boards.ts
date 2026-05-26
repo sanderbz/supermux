@@ -17,13 +17,55 @@ export const MAIN_BOARD_ID = 'main'
  *  the cards endpoint special-cases it to a read-through across every board. */
 export const ALL_BOARD_ID = 'all'
 
-/** A board row (server/src/db/boards.rs `Board`). */
+/** The synthetic prefix for per-session board ids (FEAT-BOARD-SESSION). NOT a real
+ *  board row — a per-session "board" is a CLIENT-SIDE FILTER on Main's cards
+ *  scoped to one session name. `session:<name>` is the id used by the switcher,
+ *  the route, and the SSE reconciler; `decodeBoardId` translates it back to the
+ *  underlying fetch target (Main) + the session filter. */
+export const SESSION_BOARD_PREFIX = 'session:'
+
+/** Build a synthetic per-session board id from a session name. */
+export function sessionBoardId(sessionName: string): string {
+  return `${SESSION_BOARD_PREFIX}${sessionName}`
+}
+
+/** True when `id` is a synthetic per-session board id. */
+export function isSessionBoardId(id: string): boolean {
+  return id.startsWith(SESSION_BOARD_PREFIX)
+}
+
+/** Resolve a (possibly-synthetic) board id into the underlying FETCH target and
+ *  an optional session-name filter applied to the cards. A real board id (Main
+ *  or a team board) round-trips unchanged; a `session:<name>` id rewrites to
+ *  Main + the session filter so the per-session view reads Main's cards filtered
+ *  to one session. The "All" aggregate stays its own special case (handled by
+ *  callers). */
+export function decodeBoardId(boardId: string): {
+  fetchBoardId: string
+  sessionFilter: string | null
+} {
+  if (isSessionBoardId(boardId)) {
+    return {
+      fetchBoardId: MAIN_BOARD_ID,
+      sessionFilter: boardId.slice(SESSION_BOARD_PREFIX.length),
+    }
+  }
+  return { fetchBoardId: boardId, sessionFilter: null }
+}
+
+/** A board row (server/src/db/boards.rs `Board`).
+ *
+ *  FEAT-BOARD-SESSION extends the union with a synthetic `'session'` kind: the
+ *  switcher list includes one entry per session that has ≥1 card on Main. These
+ *  are NOT persisted server-side — they're a CLIENT-SIDE virtual filter on
+ *  Main's cards, scoped by `session` name. `useBoards` injects them. */
 export interface Board {
   id: string
   name: string
-  /** `'main'` (the fixed user board) or `'team'` (one per Claude Code team). */
-  kind: 'main' | 'team'
-  /** The on-disk team id for a `kind='team'` board; `null` for main. */
+  /** `'main'` (the fixed user board), `'team'` (one per Claude Code team), or
+   *  `'session'` (a synthetic per-session filter on Main; client-injected). */
+  kind: 'main' | 'team' | 'session'
+  /** The on-disk team id for a `kind='team'` board; `null` for main / session. */
   team_name: string | null
   created_at: number
   position: number
