@@ -466,9 +466,15 @@ impl AppState {
         // whether Claude hooks are wired, instead of waiting out the 4s/5s tier.
         // The reader derives its tmux target (session vs pane) from the stream
         // itself (Agent Teams §3.5), so no `Tmux` is passed in.
+        //
+        // RT3: also hand the SSH ControlMaster pool so a session with
+        // `host_id = Some(...)` builds the `SshPtyReader` variant instead of
+        // the local FIFO reader; for `host_id = None` (legacy + every local
+        // session) the host_pool is never touched.
         stream
             .ensure_started(
                 &self.pool,
+                self.host_pool.clone(),
                 self.pty_heartbeat.clone(),
                 self.detector_wake_for(name),
             )
@@ -491,6 +497,7 @@ impl AppState {
         stream
             .ensure_started(
                 &self.pool,
+                self.host_pool.clone(),
                 self.pty_heartbeat.clone(),
                 self.detector_wake_for(stream_key),
             )
