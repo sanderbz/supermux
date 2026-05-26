@@ -271,9 +271,23 @@ fn latest_signal(inbox: &[RawInboxMessage]) -> Option<InboxSignal> {
 }
 
 /// Decode a control signal from a message's `text`. Tolerant: tries JSON first
-/// (`{"type":"idle"}`, `{"signal":"needs_input"}`, …) then falls back to a
-/// substring sniff so a schema rename doesn't blind us. Returns `None` for an
-/// ordinary chat line.
+/// (`{"type":"idle"}`, `{"signal":"needs_input"}`, …) then — for SHORT texts
+/// only — falls back to a substring sniff so a schema rename doesn't blind us.
+/// Returns `None` for an ordinary chat line.
+///
+/// ## Length-gating the substring fallback
+/// The lead routinely sends teammates multi-paragraph briefs that mention
+/// "shutdown" ("do NOT request shutdown"), "waiting" ("waiting on the API"),
+/// etc. as plain English. The old code substring-matched these and demoted
+/// the teammate to Offline / NeedsYou immediately. The fix: only treat the
+/// substring fallback as authoritative when the text is short enough to be
+/// a genuine control-message-shaped string (≤ [`SHORT_SIGNAL_LEN`] chars).
+/// The earliest known control formats ("shutdown requested",
+/// "agent is now idle", `{"type":"idle"}`) all fit comfortably; long briefs
+/// don't, so they fall through to `None` and the member's status is derived
+/// from `is_active` + the task list instead.
+const SHORT_SIGNAL_LEN: usize = 80;
+
 fn parse_signal(text: &str) -> Option<InboxSignal> {
     let t = text.trim();
     if t.is_empty() {
@@ -294,7 +308,12 @@ fn parse_signal(text: &str) -> Option<InboxSignal> {
             }
         }
     }
-    // 2. Best-effort substring sniff (forward-compat with schema drift).
+    // 2. Best-effort substring sniff — ONLY for short, control-shaped texts.
+    //    A multi-paragraph brief that happens to contain "shutdown" must not
+    //    be misread as a Shutdown signal.
+    if t.len() > SHORT_SIGNAL_LEN {
+        return None;
+    }
     classify(t)
 }
 
@@ -699,7 +718,38 @@ mod tests {
         );
         // Plain chat → no signal.
         assert_eq!(parse_signal("hey can you look at this"), None);
-        // Substring fallback when not valid JSON.
+        // Substring fallback when not valid JSON — short control-shaped text.
         assert_eq!(parse_signal("agent is now idle"), Some(InboxSignal::Idle));
+    }
+
+    /// Regression: a multi-paragraph teammate brief from the lead routinely
+    /// contains words like "shutdown" ("do NOT request shutdown"), "waiting",
+    /// "blocked". Before the length gate, parse_signal substring-matched these
+    /// and demoted the live teammate to Offline / NeedsYou. The gate ensures
+    /// long bodies fall through to None and the member's status is derived
+    /// from is_active + task progress instead.
+    #[test]
+    fn signal_ignores_long_brief_that_mentions_signal_words() {
+        let brief = "You are tokio-scout on team rust-async-research. Your library: \
+                     tokio. Angle you own: runtime internals — scheduler, work-stealing, \
+                     reactor. Run 10 iterations × 30s: print time, share one fact, sleep. \
+                     Stay alive — do NOT request shutdown. The lead will shut you down \
+                     explicitly. Begin now and stream output to your pane.";
+        assert!(brief.len() > 80, "test fixture must be long enough to exercise the gate");
+        assert_eq!(
+            parse_signal(brief),
+            None,
+            "long brief mentioning 'shutdown' must not be misclassified as Shutdown",
+        );
+
+        // A teammate's task_assignment JSON likewise should not match.
+        let task_msg = r#"{"type":"task_assignment","taskId":"1","subject":"Research tokio runtime","description":"Owner: tokio-scout. Run 10 iterations × 30s, then deliver a 200-word brief and SendMessage."}"#;
+        assert_eq!(parse_signal(task_msg), None);
+
+        // Short JSON-shaped signals still classify (these are the real wire format).
+        assert_eq!(
+            parse_signal("{\"type\":\"shutdown\"}"),
+            Some(InboxSignal::Shutdown),
+        );
     }
 }
