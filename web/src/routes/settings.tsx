@@ -34,7 +34,9 @@ import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
 import { usePush } from '@/hooks/use-push'
 import {
+  useAgentTeams,
   useEnvKeys,
+  usePatchAgentTeams,
   usePatchDefaultModel,
   usePatchEnvKeys,
   useRegenerateToken,
@@ -247,6 +249,39 @@ function RegenerateTokenButton({ onRotated }: { onRotated: (token: string) => vo
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Settings → Experimental (AT-B). The Agent Teams toggle enables running
+ *  several Claude agents in parallel for one task. State lives server-side
+ *  (default OFF) and takes effect on the next new session. An older server build
+ *  that lacks the endpoint surfaces as `isError`: a calm "not supported yet"
+ *  footnote + a disabled switch (NEVER red/alarmist — this is opt-in power, not a
+ *  failure). The teammateMode is forced server-side and intentionally NOT
+ *  user-facing. */
+function ExperimentalSection() {
+  const { data, isError } = useAgentTeams()
+  const patch = usePatchAgentTeams()
+  const enabled = !!data?.enabled
+
+  const footnote = isError
+    ? 'This server build doesn’t support Agent Teams yet.'
+    : 'Runs several Claude agents in parallel for one task — expect roughly a few times the tokens of a single session. Takes effect on your next new session.'
+
+  return (
+    <Section title="Experimental" footnote={footnote}>
+      <Row
+        label="Agent Teams"
+        control={
+          <Switch
+            ariaLabel="Enable Agent Teams"
+            checked={enabled}
+            onCheckedChange={(v) => patch.mutate(v)}
+            disabled={isError}
+          />
+        }
+      />
+    </Section>
   )
 }
 
@@ -569,6 +604,8 @@ export function Settings() {
           <ApiKeysSection />
 
           <ConnectionSection />
+
+          <ExperimentalSection />
 
           <Section
             title="Snippets"

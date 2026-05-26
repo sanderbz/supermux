@@ -154,10 +154,12 @@ export function Switch({
   checked,
   onCheckedChange,
   ariaLabel,
+  disabled,
 }: {
   checked: boolean
   onCheckedChange: (checked: boolean) => void
   ariaLabel: string
+  disabled?: boolean
 }) {
   return (
     <button
@@ -165,8 +167,9 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
-      className="flex h-11 items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+      className="flex h-11 items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:cursor-not-allowed disabled:opacity-40"
     >
       <span
         className={cn(
