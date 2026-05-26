@@ -66,6 +66,9 @@ export interface SessionSummary {
    *  the first capture; the ⋯ menu defaults the live-checked radio to `normal`. */
   mode?: SessionMode
   updated_at: string
+  /** Remote host the session runs on (RT9). `null` / undefined = LOCAL. Carried
+   *  on the tile so <HostBadge> can render without an extra fetch. */
+  host_id?: number | null
 }
 
 export interface Session extends SessionSummary {
@@ -263,6 +266,11 @@ export interface ApiSession {
    *  cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
    *  error badge on the card (Track 3). */
   error?: { type: string; message: string }
+  /** Remote host the session runs on (REMOTE_PLAN.md RT4/RT9). FK into the
+   *  `hosts` table; `null` means LOCAL (the historical default + the in-flight
+   *  behaviour for every existing row). The session tile renders a small globe
+   *  badge when this is set; the new-session sheet picks it via <HostPicker>. */
+  host_id?: number | null
 }
 
 /** A past Claude conversation for a session's working dir (feat-resume-picker).
@@ -327,7 +335,9 @@ export interface SetModeResult {
 }
 
 /** Body for `POST /api/sessions` (§5.1). `command` carries the initial prompt
- *  the Quick-start presets prefill; `worktree` requests an isolated git worktree. */
+ *  the Quick-start presets prefill; `worktree` requests an isolated git worktree.
+ *  `host_id` (RT9) picks the remote host the session runs on — `null` /
+ *  omitted = LOCAL (the historical behaviour). */
 export interface NewSession {
   name: string
   dir: string
@@ -335,6 +345,7 @@ export interface NewSession {
   desc?: string
   worktree?: boolean
   command?: string
+  host_id?: number | null
 }
 
 /** A failed sessions request; carries the HTTP status so callers can branch on

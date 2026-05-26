@@ -35,6 +35,7 @@ import { TailPreview } from './tail-preview'
 import { TileLiveTerminal } from './tile-live-terminal'
 import { TileError } from './tile-error'
 import { QuickPeekModal } from './quick-peek-modal'
+import { HostBadge } from './host-badge'
 import {
   StoppedSessionActions,
   type StoppedSessionActionsHandle,
@@ -776,6 +777,16 @@ export function SessionTile({
             <span className="line-clamp-1 flex-1 text-sm font-medium leading-tight">
               {title}
             </span>
+            {/* Remote-host badge (RT9). Globe + truncated host name; only
+                renders when the session has a `host_id` (local = no badge,
+                zero space). Sits BEFORE the error/state pills so the title
+                row's right edge stays calm — the badge is muted on purpose
+                so it never competes with the status dot. Hidden while the
+                archive-confirm pair is showing so the title row never
+                overflows on hover. */}
+            {typeof session.host_id === 'number' && !showArchiveControl && (
+              <HostBadge hostId={session.host_id} className="self-center" />
+            )}
             {/* Dead/blocked agent badge (hooks-10x). Sits before the status pills
                 so a blocked agent reads at a glance; clears automatically when the
                 backend nulls `session.error` on resume. Hidden while the archive
