@@ -32,6 +32,7 @@ async fn test_pool() -> (SqlitePool, std::path::PathBuf) {
         auth_token: "hosts-db-test".to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: Default::default(),
+            remote_callback_url: None,
     };
     let pool = db::init(&config).await.expect("db init");
     (pool, dir)

@@ -73,6 +73,7 @@ mod tests {
             auth_token: "test-token".to_string(),
             provider_defaults: Default::default(),
             ws: Default::default(),
+            remote_callback_url: None,
         };
         let pool = init(&config).await.expect("init pool");
         (pool, dir)

@@ -23,6 +23,7 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
         auth_token: "wait-race-token".to_string(),
         provider_defaults: ProviderDefaults::default(),
         ws: Default::default(),
+            remote_callback_url: None,
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)

@@ -158,6 +158,7 @@ async fn make_pool() -> (Arc<HostPool>, sqlx::SqlitePool, PathBuf) {
         auth_token: "rt6-test".to_string(),
         provider_defaults: Default::default(),
         ws: Default::default(),
+            remote_callback_url: None,
     };
     let pool = supermux_server::db::init(&config).await.expect("init pool");
     let hp = HostPool::new(pool.clone(), &dir);
