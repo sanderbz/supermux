@@ -278,6 +278,28 @@ export function Overview() {
   // EXACTLY as before — no DnD wrappers, no group rows, no extra DOM.
   const isCustom = layout.mode === 'custom'
 
+  /** Render-prop for GroupGrid: returns the inline AddGroupInput at a given
+   *  gap index. GroupGrid calls this to know what to render at the active gap,
+   *  keeping all state/handler ownership here in Overview. */
+  const renderInlineAddGroupInput = React.useCallback(
+    (at: number) =>
+      isCustom ? (
+        <div className="mt-1" data-vr="add-group-input">
+          <AddGroupInput
+            hint={
+              at === Number.MAX_SAFE_INTEGER
+                ? 'Add a new group at the end'
+                : `Add a new group at position ${at + 1}`
+            }
+            onCommit={(name) => commitNewGroup(name, at)}
+            onCancel={() => setAddingGroup(null)}
+            reduce={!!reduce}
+          />
+        </div>
+      ) : null,
+    [isCustom, commitNewGroup, reduce],
+  )
+
   // ── Keyboard: `g n` chord opens the new-group input ────────────────────────
   // Power-user chord: press `g`, then `n` within 1.2s. Ignored while typing in
   // form fields / during modifiers. Custom-mode only (groups don't exist
@@ -584,6 +606,8 @@ export function Overview() {
             viewMode="tile"
             onRequestNewGroupAt={handleNewGroupAtGap}
             tourFirstTileId="tile"
+            addingGroupAt={addingGroup?.at ?? null}
+            renderInlineAddGroupInput={renderInlineAddGroupInput}
           />
         ) : isCustom && viewMode === 'list' ? (
           <GroupGrid
@@ -595,6 +619,8 @@ export function Overview() {
             viewMode="list"
             onRequestNewGroupAt={handleNewGroupAtGap}
             tourFirstTileId="tile"
+            addingGroupAt={addingGroup?.at ?? null}
+            renderInlineAddGroupInput={renderInlineAddGroupInput}
           />
         ) : viewMode === 'tile' ? (
           <LayoutGroup>
@@ -630,27 +656,6 @@ export function Overview() {
           </LayoutGroup>
         )}
 
-        {/* The inline AddGroupInput — appears wherever the user invoked it
-            (hover gap / header button / `g n` shortcut / palette). Renders
-            BELOW the body so the inline input is always visible, regardless
-            of where the new group will land. Anti-anti-pattern: NO
-            window.prompt (the native dialog ignores the app's tokens / focus
-            ring / dark mode and breaks the spring-language consistency of
-            every other create flow). */}
-        {isCustom && addingGroup && (
-          <div className="mt-3" data-vr="add-group-input">
-            <AddGroupInput
-              hint={
-                addingGroup.at === Number.MAX_SAFE_INTEGER
-                  ? 'Add a new group at the end'
-                  : `Add a new group at position ${addingGroup.at + 1}`
-              }
-              onCommit={(name) => commitNewGroup(name, addingGroup.at)}
-              onCancel={() => setAddingGroup(null)}
-              reduce={!!reduce}
-            />
-          </div>
-        )}
       </div>
 
       <NewSessionSheet

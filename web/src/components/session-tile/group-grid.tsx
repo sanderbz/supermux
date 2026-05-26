@@ -135,6 +135,13 @@ export interface GroupGridProps {
   onRequestNewGroupAt: (atIndex: number) => void
   /** Tour anchor on the first tile (preserves the existing onboarding tour). */
   tourFirstTileId?: string
+  /** The gap index where an inline AddGroupInput should render (replaces the
+   *  hover-gap chip at that position). `Number.MAX_SAFE_INTEGER` means "after
+   *  the last section". Null/undefined = no inline input active. */
+  addingGroupAt?: number | null
+  /** Render-prop: supplied by Overview; returns the `<AddGroupInput>` element
+   *  to embed at the active gap. GroupGrid just decides WHERE to place it. */
+  renderInlineAddGroupInput?: (at: number) => React.ReactNode
 }
 
 /** A unit shown by the renderer. `group` items are section headers; `session`
@@ -369,6 +376,8 @@ export function GroupGrid({
   viewMode,
   onRequestNewGroupAt,
   tourFirstTileId,
+  addingGroupAt,
+  renderInlineAddGroupInput,
 }: GroupGridProps) {
   const reduce = useReducedMotion()
   const { toast } = useToast()
@@ -920,12 +929,16 @@ export function GroupGrid({
               comes from `tweens.reflow` (100ms ease-out) via the
               sortable.transition override — see SortableTileSlot. */}
             <div className="flex flex-col gap-2">
-              {/* Hover-gap above the first section. */}
-              <GapAddGroup
-                index={0}
-                onPick={() => onRequestNewGroupAt(0)}
-                reduce={!!reduce}
-              />
+              {/* Hover-gap above the first section (or inline input if active here). */}
+              {addingGroupAt != null && addingGroupAt === 0 && renderInlineAddGroupInput ? (
+                renderInlineAddGroupInput(0)
+              ) : (
+                <GapAddGroup
+                  index={0}
+                  onPick={() => onRequestNewGroupAt(0)}
+                  reduce={!!reduce}
+                />
+              )}
               {(() => {
                 // S6 — Pre-compute the first/last REORDERABLE section index
                 // (skipping the implicit Ungrouped bucket) so the kebab's
@@ -1027,12 +1040,27 @@ export function GroupGrid({
                       tourFirstTileId={tourFirstTileId}
                     />
                     {/* Hover-gap BELOW each section (the "add between" + "add
-                        after last" affordance). */}
-                    <GapAddGroup
-                      index={sIdx + 1}
-                      onPick={() => onRequestNewGroupAt(sIdx + 1)}
-                      reduce={!!reduce}
-                    />
+                        after last" affordance). When the inline input is active
+                        at this gap (exact match OR MAX_SAFE_INTEGER on the last
+                        gap), replace the chip with the input. */}
+                    {(() => {
+                      const gapIdx = sIdx + 1
+                      const isAddingHere =
+                        addingGroupAt != null &&
+                        renderInlineAddGroupInput != null &&
+                        (addingGroupAt === gapIdx ||
+                          (addingGroupAt === Number.MAX_SAFE_INTEGER &&
+                            gapIdx === sections.length))
+                      return isAddingHere ? (
+                        renderInlineAddGroupInput(addingGroupAt)
+                      ) : (
+                        <GapAddGroup
+                          index={gapIdx}
+                          onPick={() => onRequestNewGroupAt(gapIdx)}
+                          reduce={!!reduce}
+                        />
+                      )
+                    })()}
                   </React.Fragment>
                 )
               })
