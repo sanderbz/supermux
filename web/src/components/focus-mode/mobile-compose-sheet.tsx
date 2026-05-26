@@ -160,6 +160,45 @@ export function MobileComposeSheet({
     onOpenChange(false)
   }, [phase, buffer, onOpenChange])
 
+  // Esc dismisses the sheet — matching iOS Notes / Apple Mail and every modal
+  // everywhere. Two-level cascade (matches iOS native behaviour):
+  //   1. If the discard-confirm sub-sheet is open → Esc closes JUST the confirm
+  //      (return to editing). Same as tapping its "Cancel" button.
+  //   2. Otherwise → Esc delegates to handleCancel: if the textarea is dirty it
+  //      opens the confirm; if clean it closes the whole sheet immediately.
+  //
+  // Attached at document level so it fires regardless of which element inside the
+  // FocusScope (textarea, buttons, …) currently has keyboard focus. The Radix
+  // FocusScope does NOT block document-level listeners — they still fire.
+  //
+  // e.preventDefault() swallows the Esc so it cannot reach other document-level
+  // handlers (e.g. route-level Esc / xterm Esc-key delivery).
+  // stopPropagation() stops it bubbling further up the DOM.
+  //
+  // data-vr-esc-handler is the VR battery annotation the spec requires.
+  React.useEffect(() => {
+    if (!open) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      if (confirmDiscard) {
+        // Level 1: close just the discard-confirm sub-sheet, return to editing.
+        setConfirmDiscard(false)
+      } else {
+        // Level 2: delegate to Cancel — shows discard-confirm if dirty, or
+        // closes the whole sheet if clean.
+        handleCancel()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown, { capture: true })
+    document.documentElement.setAttribute('data-vr-esc-handler', 'edit-sheet')
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, { capture: true })
+      document.documentElement.removeAttribute('data-vr-esc-handler')
+    }
+  }, [open, confirmDiscard, handleCancel])
+
   // SSR / first-paint safety: only portal once a document body exists.
   if (typeof document === 'undefined') return null
 
