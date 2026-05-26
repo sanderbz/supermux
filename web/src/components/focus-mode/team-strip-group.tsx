@@ -19,10 +19,8 @@
 
 import { cn } from '@/lib/utils'
 import { CompactTile } from './compact-tile'
-import { MemberStatusDot } from '@/components/team'
+import { MemberStatusDot, TeamRollupBadges } from '@/components/team'
 import {
-  needsYouCount,
-  taskProgress,
   tasksForMember,
   type Team,
   type TeamMember,
@@ -62,22 +60,21 @@ export function TeamStripGroup({
       aria-label={`Team ${team.team_name}`}
       className="rounded-2xl border border-border/60 bg-card/30 p-1.5"
     >
-      <TeamStripHeader team={team} />
+      <TeamStripHeader team={team} hasLead={!!lead} />
 
       <div className="mt-1 flex flex-col gap-1">
-        {/* Lead — a full CompactTile (real session) with a "Lead" tag, OR a calm
-            placeholder when the lead isn't mapped to a session this tick. */}
+        {/* Lead — a full CompactTile (real session), OR a calm placeholder when
+            the lead isn't mapped to a session this tick. The "Lead" label lives
+            in the header row (next to the team name) — NOT overlaid on the tile —
+            so it can never collide with the tile's own truncated title at any
+            strip width (mirrors how the overview TEAM CARD inlines its Lead
+            chip). */}
         {lead ? (
-          <div className="relative">
-            <CompactTile
-              session={lead}
-              current={lead.name === focusedSessionName}
-              onSelect={onSelectSession}
-            />
-            <span className="pointer-events-none absolute right-2 top-1.5 z-10 rounded-full bg-card/85 px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-wide text-muted-foreground shadow-sm backdrop-blur-sm">
-              Lead
-            </span>
-          </div>
+          <CompactTile
+            session={lead}
+            current={lead.name === focusedSessionName}
+            onSelect={onSelectSession}
+          />
         ) : (
           <div className="flex h-12 items-center rounded-xl border border-dashed border-border/60 px-3 text-[12px] text-muted-foreground">
             {team.lead_supermux_session
@@ -102,30 +99,26 @@ export function TeamStripGroup({
 }
 
 // ── Team header roll-up (mirrors the overview TeamCard §5.2 language) ──────────
+// The attention badges (primary token + muted secondary) are the SHARED
+// <TeamRollupBadges> at the `strip` density — the SAME markup the overview
+// TeamCard renders — so the focus + overview roll-ups never drift.
 
-function TeamStripHeader({ team }: { team: Team }) {
-  const needs = needsYouCount(team)
-  const { done, total } = taskProgress(team)
-  const agentCount = team.members.length
-
+function TeamStripHeader({ team, hasLead }: { team: Team; hasLead: boolean }) {
   return (
     <header className="flex items-center gap-1.5 px-1.5 pt-0.5">
       <h3 className="min-w-0 shrink truncate text-[12px] font-semibold tracking-tight">
         {team.team_name}
       </h3>
-      {needs > 0 ? (
-        <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
-          needs you · {needs}
-        </span>
-      ) : (
-        <span className="shrink-0 rounded-full bg-status-ready/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-ready">
-          done
+      {/* "Lead" tag — inline here (not overlaid on the tile below) so it labels
+          the hierarchy without ever covering the lead row's truncated title.
+          Shown only when a lead is mapped; the unmapped case carries its own
+          "Lead not mapped" placeholder row instead. */}
+      {hasLead && (
+        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+          Lead
         </span>
       )}
-      <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/70">
-        {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
-        {total > 0 && ` · ${done}/${total}`}
-      </span>
+      <TeamRollupBadges team={team} density="strip" />
     </header>
   )
 }

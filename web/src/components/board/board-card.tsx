@@ -64,7 +64,10 @@ function parseTeamTags(tags: string[]): ParsedTeamTags {
   let assignee: string | null = null
   let color: string | null = null
   const rest: string[] = []
-  for (const tag of tags) {
+  // Defensive: a malformed card payload could carry a non-array `tags`; iterate
+  // an empty list rather than throwing (a single bad card must never blank the
+  // board).
+  for (const tag of Array.isArray(tags) ? tags : []) {
     if (tag.startsWith('team:')) {
       const v = tag.slice('team:'.length).trim()
       if (v && !assignee) {

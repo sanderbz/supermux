@@ -305,26 +305,35 @@ export function CommandPalette() {
     ]
   }, [openArchived, openClaudeTools, sessions, onBoard, enterMode])
 
+  // The board's issues, hardened to an array at the consumption boundary too.
+  // `useBoard` already guarantees an array, but a malformed / 404 board payload
+  // must never make these `.filter` calls throw and blank the whole palette —
+  // belt-and-braces against the data source ever regressing. Memoized so the
+  // identity stays stable for the dependent `useMemo`s below.
+  const boardIssues = React.useMemo(
+    () => (Array.isArray(board.issues) ? board.issues : []),
+    [board.issues],
+  )
   // Issues a board verb can target. "Send" only offers agent-owned issues (a
   // human-owned card can't be claimed/dispatched); comment + done offer any
   // non-done issue.
   const sendableIssues = React.useMemo(
-    () => board.issues.filter((i) => i.owner_type === 'agent'),
-    [board.issues],
+    () => boardIssues.filter((i) => i.owner_type === 'agent'),
+    [boardIssues],
   )
   const openIssues = React.useMemo(
-    () => board.issues.filter((i) => i.status !== 'done'),
-    [board.issues],
+    () => boardIssues.filter((i) => i.status !== 'done'),
+    [boardIssues],
   )
   // "Start agent" targets the entry columns (`todo`/`backlog`) — the only place
   // an agent gets started. Owner is NOT a precondition (starting MAKES the issue
   // agent-owned), so this offers every startable card, human- or agent-owned.
   const startableIssues = React.useMemo(
     () =>
-      board.issues.filter(
+      boardIssues.filter(
         (i) => i.status === 'todo' || i.status === 'backlog',
       ),
-    [board.issues],
+    [boardIssues],
   )
 
   // Build the flat row list. In a board sub-flow the list is the step's pick

@@ -108,9 +108,13 @@ pub async fn rename(pool: &SqlitePool, id: &str, name: &str) -> sqlx::Result<boo
     Ok(res.rows_affected() > 0)
 }
 
-/// Delete a board. Its cards CASCADE-delete (FK `issues.board_id ... ON DELETE
-/// CASCADE`). Returns false if the id does not exist. The API blocks this for
-/// the main board.
+/// Delete a board. Its cards are removed by the migration TRIGGER
+/// `trg_board_delete_cascade_issues` (0015), which fires `AFTER DELETE ON boards`
+/// to `DELETE FROM issues WHERE board_id = OLD.id`. There is NO `issues.board_id`
+/// foreign key — SQLite refuses `ALTER TABLE ... ADD COLUMN ... REFERENCES ...
+/// DEFAULT '<non-null>'` under `PRAGMA foreign_keys=ON`, so the cascade is the
+/// trigger, not an FK. Do NOT re-add an inline FK here (it breaks the migration).
+/// Returns false if the id does not exist. The API blocks this for the main board.
 pub async fn delete(pool: &SqlitePool, id: &str) -> sqlx::Result<bool> {
     let res = sqlx::query("DELETE FROM boards WHERE id = ?")
         .bind(id)

@@ -248,10 +248,21 @@ fn board_prefix(team_name: &str) -> String {
 /// ticks to rule out a transient FS glitch (see [`super::watcher`]). Idempotent:
 /// a team with no board is a clean no-op. Returns `true` when a board was
 /// actually removed (so the watcher re-publishes the boards list + cards).
+///
+/// Also EVICTS the team's teammate pane-stream entries from the [`PtyStreamer`]
+/// (resource hygiene): each teammate WS caches a per-pane `PtyStream` keyed by
+/// `{lead}/{member}` (Agent Teams §3.5) that is otherwise NEVER removed, so the
+/// registry would grow unbounded across many team starts. We compute the SAME
+/// `{lead}/{member}` keys the WS uses and `forget` them — best-effort (a missing
+/// config / already-gone key is a clean no-op) and scoped to teammate keys only,
+/// so bare-session streams are untouched.
+///
+/// [`PtyStreamer`]: crate::ws::streamer::PtyStreamer
 pub async fn deregister_team(state: &crate::state::AppState, team_name: &str) -> bool {
     match db::boards::get_by_team(&state.pool, team_name).await {
         Ok(Some(board)) => match db::boards::delete(&state.pool, &board.id).await {
             Ok(true) => {
+                evict_teammate_streams(state, team_name);
                 emit_boards(state).await;
                 crate::board::emit_board(state).await;
                 true
@@ -266,6 +277,35 @@ pub async fn deregister_team(state: &crate::state::AppState, team_name: &str) ->
         Err(e) => {
             tracing::debug!(team = %team_name, error = %e, "team board deregister lookup failed");
             false
+        }
+    }
+}
+
+/// Evict the teammate pane-stream entries for an ended team from the PtyStreamer
+/// (resource hygiene; see [`deregister_team`]). Reads the team's on-disk config
+/// FRESH to recover its lead session + member keys, then forgets each
+/// `{lead}/{member}` stream key — the EXACT key the WS builds via
+/// `ResolvedPane::stream_key` (`crate::sessions::teams`). Best-effort: a deleted
+/// / unreadable config (the common case for an ended team) just means nothing to
+/// evict, and never panics. Only teammate `{lead}/{member}` keys are touched —
+/// the lead IS a normal session whose stream is owned by the session lifecycle.
+fn evict_teammate_streams(state: &crate::state::AppState, team_name: &str) {
+    let cfg = match crate::sessions::teams::read_team_config(team_name) {
+        Ok(c) => c,
+        Err(e) => {
+            // Expected once the team's files are gone — nothing left to evict.
+            tracing::debug!(team = %team_name, error = %e, "no team config to evict pane streams from");
+            return;
+        }
+    };
+    let Some(lead) = cfg.lead_session() else {
+        return;
+    };
+    for member in &cfg.members {
+        if let Some(key) = member.key() {
+            // SAME shape as ResolvedPane::stream_key(&member): `{lead}/{member}`.
+            let stream_key = format!("{lead}/{key}");
+            state.forget_teammate_stream(&stream_key);
         }
     }
 }
@@ -530,6 +570,43 @@ mod tests {
         // Idempotent: deregistering again (or an unknown team) is a no-op.
         assert!(!deregister_team(&state, "alpha").await);
         assert!(!deregister_team(&state, "never-existed").await);
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Resource hygiene (AT-G follow-up): evicting a team's teammate pane streams
+    /// drops ONLY the `{lead}/{member}` keys from the PtyStreamer — a bare SESSION
+    /// stream (owned by the session lifecycle) is left untouched. This pins the
+    /// fix for "teammate pane streams are cached forever, growing the registry
+    /// unbounded across many team starts."
+    #[tokio::test]
+    async fn forget_teammate_stream_evicts_pane_keys_only() {
+        let (state, dir) = test_state().await;
+
+        // Seed two teammate pane streams under `{lead}/{member}` keys + one bare
+        // session stream (the registry slots a real run would create on attach).
+        let _ = state.pty.for_pane("lead-x/worker-1", "%11");
+        let _ = state.pty.for_pane("lead-x/worker-2", "%12");
+        let _ = state.pty.for_session("lead-x");
+        assert!(state.pty.is_cached("lead-x/worker-1"));
+        assert!(state.pty.is_cached("lead-x/worker-2"));
+        assert!(state.pty.is_cached("lead-x"), "bare session stream cached");
+
+        // Evict the teammate keys (the deregister path's primitive).
+        state.forget_teammate_stream("lead-x/worker-1");
+        state.forget_teammate_stream("lead-x/worker-2");
+
+        assert!(!state.pty.is_cached("lead-x/worker-1"), "teammate stream evicted");
+        assert!(!state.pty.is_cached("lead-x/worker-2"), "teammate stream evicted");
+        assert!(
+            state.pty.is_cached("lead-x"),
+            "bare session stream survives teammate eviction"
+        );
+
+        // Idempotent: a second evict (or an unknown key) is a clean no-op.
+        state.forget_teammate_stream("lead-x/worker-1");
+        state.forget_teammate_stream("never/existed");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
