@@ -70,9 +70,12 @@ import {
   rectSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Plus, MoveRight } from 'lucide-react'
+import { Plus, MoveRight, Square, Archive, Info } from 'lucide-react'
 
 import { springs, tweens } from '@/lib/springs'
+import { useSessionActions } from '@/hooks/use-session-actions'
+import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
+import { useNavigateMorph } from '@/components/view-transitions/morph'
 import {
   bucketSessionsByLayout,
   defaultGroupSortMode,
@@ -1597,6 +1600,7 @@ function SortableRow({
       <TileMoveToKebab
         sessionName={session.name}
         sessionLabel={session.task_summary ?? session.name}
+        sessionStatus={session.status}
         currentGroupId={currentGroupId}
         allSections={allSections}
         onMoveToGroup={onMoveToGroup}
@@ -1688,6 +1692,7 @@ function SessionTileWrapper({
       <TileMoveToKebab
         sessionName={session.name}
         sessionLabel={session.task_summary ?? session.name}
+        sessionStatus={session.status}
         currentGroupId={currentGroupId}
         allSections={allSections}
         onMoveToGroup={onMoveToGroup}
@@ -1700,21 +1705,27 @@ function SessionTileWrapper({
   )
 }
 
-// ── TileMoveToKebab — Gap 2 ─────────────────────────────────────────────
+// ── TileMoveToKebab — Gap 2 + feat-tile-hover-actions ───────────────────
 //
-// A tiny per-tile kebab (the SAME affordance the group-header kebab uses,
-// scaled to tile chrome) whose only menu is "Move to ▸" — a Radix submenu
-// listing every OTHER group the tile could land in. Clicking an item calls
-// `onMoveToGroup(destGroupId)`, which the parent wires to the same move
-// action the drag-drop path uses (one source of truth in `moveSessionToGroup`).
+// A tiny per-tile kebab whose menu carries the FULL set of overview-context
+// session actions: Info (always), Stop (when running), Archive (when not
+// already stopped — a stopped tile already shows a big Archive in its peek
+// body), and "Move to ▸" (the original a11y alt path for drag-drop, listed
+// last because moving between groups is the rarer click-driven action).
 //
-// Why not invent a new kebab on the bare <SessionTile>? Because the spec
-// says "ADD to an existing tile-level menu" — but the desktop tile has
-// none. The closest pre-existing surface that ALREADY houses tile-level
-// drag affordances is THIS wrapper (group-grid only adds it in custom
-// mode, which is exactly when "Move to" makes sense). So this is the
-// existing wrapper, with a kebab added next to the existing drag handle —
-// not a parallel chrome layer on the bare tile.
+// One menu, one trigger — no separate kebab + archive-icon competing for the
+// same top-right real-estate. Mirrors the mobile quick-peek's action surface
+// (Info / Restart / Stop|Archive) so desktop hover and mobile long-press
+// share intent: the SAME `useSessionActions` hook performs Stop + Archive, and
+// the SAME `<SessionInfoPanel>` component opens for Info (desktop = anchored
+// Popover, mobile = bottom Sheet — the panel forks internally on pointer
+// modality).
+//
+// Why not invent a new kebab on the bare <SessionTile>? Because group-grid
+// is the only surface that wraps the tile with drag affordances AND owns the
+// LayoutItem context the Move-to submenu needs. Keeping the kebab here
+// scopes the chrome to the place it can act on; bare tiles outside groups
+// remain calm.
 //
 // Variants:
 //   * 'tile' — overlay on the top-right of the tile chrome (mirrors the
@@ -1729,6 +1740,7 @@ function SessionTileWrapper({
 function TileMoveToKebab({
   sessionName,
   sessionLabel,
+  sessionStatus,
   currentGroupId,
   allSections,
   onMoveToGroup,
@@ -1736,6 +1748,7 @@ function TileMoveToKebab({
 }: {
   sessionName: string
   sessionLabel: string
+  sessionStatus: ApiSession['status']
   currentGroupId: string
   allSections: ReadonlyArray<Section>
   onMoveToGroup: (destGroupId: string) => void
@@ -1754,11 +1767,36 @@ function TileMoveToKebab({
     [allSections, currentGroupId],
   )
 
-  // If there is literally nowhere to move (only one group exists, this tile
-  // is in it), the kebab has no meaningful action — render nothing so the
-  // tile chrome stays uncluttered. Single-group layouts are the common
-  // starting state.
-  if (targets.length === 0) return null
+  // Shared lifecycle handlers — one source of truth across desktop kebab
+  // and mobile quick-peek (busy guard, team-lead-aware confirm, optimistic
+  // cache update, toasts). The kebab's gating decides whether to SHOW the
+  // item; the hook decides whether to RUN it.
+  const { busy, stop, archive } = useSessionActions(sessionName)
+
+  // FEAT-SESSION-INFO — the SAME panel the focus-page title-click opens,
+  // hosted here for overview parity. Desktop = anchored Popover (we pass
+  // `infoAnchorRef` as the trigger), mobile = bottom Sheet (the panel forks
+  // internally; no anchor needed for the touch path through the kebab).
+  const [infoOpen, setInfoOpen] = React.useState(false)
+  const infoAnchorRef = React.useRef<HTMLButtonElement>(null)
+  const navigateMorph = useNavigateMorph()
+
+  // Action visibility matrix (per user spec — keep redundancies pruned):
+  //   Stop:    session is mid-flight (active / waiting / idle / starting).
+  //            Skipped on 'stopped' (nothing to stop) and 'error' (the
+  //            session is already dead — Archive is the actionable path).
+  //   Archive: session is NOT stopped. A stopped tile already exposes a
+  //            primary Archive button in its hover-peek body — listing it
+  //            here too would surface Archive twice on the same tile.
+  //   Move to: at least one other group exists.
+  //   Info:    always.
+  const canStop =
+    sessionStatus === 'active' ||
+    sessionStatus === 'waiting' ||
+    sessionStatus === 'idle' ||
+    sessionStatus === 'starting'
+  const canArchive = sessionStatus !== 'stopped'
+  const canMove = targets.length > 0
 
   const triggerClassName =
     variant === 'tile'
@@ -1771,66 +1809,123 @@ function TileMoveToKebab({
         'flex w-7 items-center justify-center rounded-md text-muted-foreground/40 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring opacity-0 transition-opacity group-hover/tile:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100'
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`More actions for ${sessionLabel}`}
-          data-vr="tile-kebab"
-          data-vr-tile-kebab="true"
-          data-vr-session-name={sessionName}
-          // Stop pointer events at the trigger so opening the menu doesn't
-          // initiate a drag or navigate to focus.
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-          className={triggerClassName}
-        >
-          <span aria-hidden className="text-base leading-none">⋯</span>
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        sideOffset={6}
-        // Stop the dnd-kit sensors / tile click from firing when the user
-        // interacts with the menu content.
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger
-            data-vr="tile-move-to"
-            data-vr-move-to-submenu="true"
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            ref={infoAnchorRef}
+            type="button"
+            aria-label={`More actions for ${sessionLabel}`}
+            data-vr="tile-kebab"
+            data-vr-tile-kebab="true"
+            data-vr-session-name={sessionName}
+            // Stop pointer events at the trigger so opening the menu doesn't
+            // initiate a drag or navigate to focus.
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            className={triggerClassName}
           >
-            <MoveRight className="size-4" aria-hidden />
-            <span>Move to</span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuPortal>
-            <DropdownMenuSubContent>
-              <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
-                Move {sessionLabel}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {targets.map((sec) => (
-                <DropdownMenuItem
-                  key={sec.groupId}
-                  data-vr="tile-move-to-item"
-                  data-vr-dest-group-id={sec.groupId}
-                  onSelect={() => onMoveToGroup(sec.groupId)}
+            <span aria-hidden className="text-base leading-none">⋯</span>
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          sideOffset={6}
+          // Stop the dnd-kit sensors / tile click from firing when the user
+          // interacts with the menu content.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <DropdownMenuItem
+            data-vr="tile-info"
+            disabled={busy}
+            onSelect={() => setInfoOpen(true)}
+          >
+            <Info className="size-4" aria-hidden />
+            <span>Info</span>
+          </DropdownMenuItem>
+          {canStop && (
+            <DropdownMenuItem
+              data-vr="tile-stop"
+              disabled={busy}
+              onSelect={() => void stop()}
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+            >
+              <Square className="size-4" aria-hidden />
+              <span>Stop</span>
+            </DropdownMenuItem>
+          )}
+          {canArchive && (
+            <DropdownMenuItem
+              data-vr="tile-archive"
+              disabled={busy}
+              // RUNNING-session archive also stops the pty — confirm before
+              // committing. A stopped tile never reaches this branch (`canArchive`
+              // is false there), so the desktop kebab's archive is always the
+              // "destructive" variant; the confirm is non-negotiable.
+              onSelect={() => void archive({ confirm: true })}
+            >
+              <Archive className="size-4" aria-hidden />
+              <span>Archive</span>
+            </DropdownMenuItem>
+          )}
+          {canMove && (
+            <>
+              {(canStop || canArchive) && <DropdownMenuSeparator />}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger
+                  data-vr="tile-move-to"
+                  data-vr-move-to-submenu="true"
                 >
-                  {sec.groupName}
-                  {sec.sortMode !== 'custom' && (
-                    <span className="ml-2 text-[10px] font-normal text-muted-foreground">
-                      {GROUP_SORT_LABEL[sec.sortMode]}
-                    </span>
-                  )}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuPortal>
-        </DropdownMenuSub>
-      </DropdownMenuContent>
-    </DropdownMenu>
+                  <MoveRight className="size-4" aria-hidden />
+                  <span>Move to</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuPortal>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+                      Move {sessionLabel}
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {targets.map((sec) => (
+                      <DropdownMenuItem
+                        key={sec.groupId}
+                        data-vr="tile-move-to-item"
+                        data-vr-dest-group-id={sec.groupId}
+                        onSelect={() => onMoveToGroup(sec.groupId)}
+                      >
+                        {sec.groupName}
+                        {sec.sortMode !== 'custom' && (
+                          <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                            {GROUP_SORT_LABEL[sec.sortMode]}
+                          </span>
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuPortal>
+              </DropdownMenuSub>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {/* FEAT-SESSION-INFO — same component as the focus-page title-click.
+          Desktop forks to an anchored Popover (positions against the kebab
+          trigger), mobile forks to the bottom Sheet. Cloning navigates to the
+          new focus route via the morph navigation helper so the View
+          Transitions handoff is consistent with tile-click navigation. */}
+      <SessionInfoPanel
+        name={sessionName}
+        open={infoOpen}
+        onOpenChange={setInfoOpen}
+        triggerRef={infoAnchorRef}
+        onNavigate={(name) => {
+          setInfoOpen(false)
+          navigateMorph(`/focus/${name}`)
+        }}
+      />
+    </>
   )
 }
 
