@@ -34,7 +34,10 @@ export function TeammateCard({
   onFocus,
 }: TeammateCardProps) {
   const needsYou = member.status === 'needs_you'
-  const gone = member.status === 'offline' || !member.tmux_pane_id
+  // Only gate on pane absence (not status). Claude flips teammates to
+  // isActive:false the moment their turn ends, but the tmux pane keeps
+  // streaming — show whatever's in the pane while it's alive.
+  const gone = !member.tmux_pane_id
   const memberTasks = tasksForMember(team, member)
   const taskTotal = memberTasks.length
   const taskDone = memberTasks.filter((t) => t.status === TASK_DONE).length
@@ -93,9 +96,7 @@ export function TeammateCard({
       >
         {gone ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
-            {member.status === 'offline'
-              ? 'Offline — no live terminal'
-              : 'No live pane right now'}
+            No live pane right now
           </div>
         ) : (
           <div className="absolute inset-0">

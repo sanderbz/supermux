@@ -24,9 +24,10 @@ export interface TeammatePaneProps {
 }
 
 export function TeammatePane({ team, member }: TeammatePaneProps) {
-  // A teammate with no live pane this tick (offline or dropped %id) has nothing
-  // to stream — show a calm placeholder, never a failing/looping WS.
-  const gone = member.status === 'offline' || !member.tmux_pane_id
+  // Only gate on pane absence. Claude flips teammates to isActive:false
+  // (→ status=offline) the moment their turn ends, but the tmux pane keeps
+  // streaming — show whatever's in the pane while it's alive.
+  const gone = !member.tmux_pane_id
   const rail = member.color || 'hsl(var(--status-idle))'
 
   return (
@@ -61,9 +62,7 @@ export function TeammatePane({ team, member }: TeammatePaneProps) {
       <div className="relative min-h-0 flex-1" style={{ backgroundColor: 'var(--terminal-bg)' }}>
         {gone ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-            {member.status === 'offline'
-              ? 'This teammate is offline — no live terminal right now.'
-              : 'No live pane for this teammate right now. It may come back shortly.'}
+            No live pane for this teammate right now. It may come back shortly.
           </div>
         ) : (
           <TeammateTerminal

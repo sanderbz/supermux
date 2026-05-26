@@ -35,7 +35,10 @@ export function TeammatePeekSheet({
   onOpenChange,
   onFocus,
 }: TeammatePeekSheetProps) {
-  const gone = member.status === 'offline' || !member.tmux_pane_id
+  // Only gate on pane absence (not status). Claude flips teammates to
+  // isActive:false the moment their turn ends, but the tmux pane keeps
+  // streaming — show whatever's in the pane while it's alive.
+  const gone = !member.tmux_pane_id
 
   return (
     <Drawer.Root open={open} onOpenChange={onOpenChange}>
@@ -90,13 +93,11 @@ export function TeammatePeekSheet({
             style={{ backgroundColor: 'var(--terminal-bg)' }}
           >
             {gone ? (
-              // No live pane this tick — calm "no live pane" message rather than a
+              // No pane id this tick — calm "no live pane" message rather than a
               // failing WS. The pane can come back (the %id flips across ticks),
               // so this is informational, not an error.
               <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                {member.status === 'offline'
-                  ? 'This teammate is offline — no live terminal right now.'
-                  : 'No live pane for this teammate right now.'}
+                No live pane for this teammate right now.
               </div>
             ) : (
               <div className="absolute inset-0">

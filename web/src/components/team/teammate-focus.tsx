@@ -43,7 +43,11 @@ export function TeammateFocus({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  const gone = member.status === 'offline' || !member.tmux_pane_id
+  // Only gate on pane absence. Claude marks a teammate `isActive:false` the
+  // moment its primary turn ends (often within a minute) even while the tmux
+  // pane keeps streaming — so we show the live terminal whenever a pane_id
+  // exists. The status dot in the header still surfaces the offline state.
+  const gone = !member.tmux_pane_id
   const teammates = team.members
 
   return (
@@ -126,9 +130,7 @@ export function TeammateFocus({
       <div className="relative min-h-0 flex-1">
         {gone ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-            {member.status === 'offline'
-              ? 'This teammate is offline — no live terminal right now.'
-              : 'No live pane for this teammate right now. It may come back shortly.'}
+            No live pane for this teammate right now. It may come back shortly.
           </div>
         ) : (
           <TeammateTerminal
