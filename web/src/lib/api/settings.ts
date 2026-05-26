@@ -58,6 +58,17 @@ export interface RegenerateTokenResult {
   token: string
 }
 
+/** Experimental Agent Teams toggle (AT-B). Server default is OFF; the change
+ *  takes effect on the NEXT session start. */
+export interface AgentTeamsSetting {
+  enabled: boolean
+}
+
+/** Pref key the server stamps onto the SSE `settings` event so peer tabs can
+ *  route just the keys they own (mirrors `OVERVIEW_LAYOUT_PREF_KEY` in
+ *  use-sessions). The `settings` event payload is `{ key, enabled }`. */
+export const AGENT_TEAMS_PREF_KEY = 'experimental.agent_teams'
+
 export const settingsApi = {
   /** GET `/api/settings/env` — returns MASKED key previews (§1.8). */
   getEnv: (): Promise<MaskedEnv> => settingsRequest('/api/settings/env'),
@@ -86,6 +97,20 @@ export const settingsApi = {
   /** POST `/api/settings/regenerate-token` — rotate the dashboard bearer. */
   regenerateToken: (): Promise<RegenerateTokenResult> =>
     settingsRequest('/api/settings/regenerate-token', { method: 'POST' }),
+
+  /** GET `/api/settings/experimental/agent-teams` — current toggle state (AT-B).
+   *  Default OFF. An older server build (404/501) surfaces as `isError` and the
+   *  Settings UI shows a calm "not supported yet" state. */
+  getAgentTeams: (): Promise<AgentTeamsSetting> =>
+    settingsRequest('/api/settings/experimental/agent-teams'),
+  /** PUT `/api/settings/experimental/agent-teams` — `{ enabled }`. The server
+   *  echoes the new state and broadcasts an SSE `settings` event so peer tabs
+   *  reconcile live (no polling). Takes effect on the next new session. */
+  setAgentTeams: (enabled: boolean): Promise<AgentTeamsSetting> =>
+    settingsRequest('/api/settings/experimental/agent-teams', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
 
   /** `GET /api/prefs/:key` — fetch the account-wide opaque pref value (or `null`
    *  if unset). Currently used by `overview_layout` (sort mode + custom-mode
