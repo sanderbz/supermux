@@ -432,11 +432,26 @@ impl<'a> Tmux<'a> {
     ///        thinks it is, so the user's first keystroke lands in the
     ///        input row of Claude's prompt and not at a stale cell.
     ///
+    /// **Race-B tightening (cursor-row-mismatch fix).** Step 3 issues three
+    /// sequential tmux forks (history capture + visible capture + cursor
+    /// probe), and an interactive TUI can redraw between the FIRST cursor
+    /// probe in step 1 and the visible capture. If we used the step-1 cursor,
+    /// the CUP at the end of the seed would point at a stale cell relative
+    /// to the bytes we just captured. To pin the cursor to the SAME frame
+    /// the visible body shows, we re-issue `display-message` IMMEDIATELY
+    /// after `capture-pane visible` and use that SECOND reading. One extra
+    /// tmux fork (~2 ms) for an order-of-magnitude tighter coupling between
+    /// the cursor position and the bytes it's positioning into. The step-1
+    /// probe is still required to choose primary vs alt-screen mode (the
+    /// branch decision can't be deferred to after the captures).
+    ///
     /// On any tmux failure we fall through to the flat full-capture (still
     /// useful, just with the old "stacked banner" oddity) rather than leaving
     /// the client empty. Read-only, no lock.
     pub async fn capture_history_with_alt_screen_aware_visible(&self) -> Result<String> {
-        // 1. Probe pane mode + cursor.
+        // 1. Probe pane mode (and a provisional cursor, used only as a
+        //    fallback if the second probe in step 3c fails). The branch
+        //    decision below needs `alternate_on`, so this probe stays.
         let info = self
             .run(&[
                 "display-message",
@@ -447,7 +462,7 @@ impl<'a> Tmux<'a> {
             ])
             .await
             .unwrap_or_default();
-        let (alt_on, cursor_x, cursor_y) = parse_pane_info(&info);
+        let (alt_on, provisional_x, provisional_y) = parse_pane_info(&info);
 
         // 2. Primary-screen mode: flat full capture is correct as-is.
         if !alt_on {
@@ -456,6 +471,7 @@ impl<'a> Tmux<'a> {
         }
 
         // 3. Alt-screen mode: split + frame.
+        // 3a. PRIMARY scrollback (everything above the current visible frame).
         let history = self
             .run(&[
                 "capture-pane",
@@ -471,10 +487,27 @@ impl<'a> Tmux<'a> {
             ])
             .await
             .unwrap_or_default();
+        // 3b. Visible alt-screen body (the current TUI frame).
         let visible = self
             .run(&["capture-pane", "-p", "-e", "-t", &self.target()])
             .await
             .unwrap_or_default();
+        // 3c. RE-PROBE the cursor (Race-B tightening). The TUI may have moved
+        //     the cursor between step 1 and step 3b; this reading matches the
+        //     `visible` body we just captured. Fall back to step 1's reading
+        //     on the rare probe failure rather than corrupting the seed.
+        let info2 = self
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.target(),
+                "#{cursor_x},#{cursor_y}",
+            ])
+            .await
+            .unwrap_or_default();
+        let (cursor_x, cursor_y) =
+            parse_cursor_xy(&info2).unwrap_or((provisional_x, provisional_y));
         Ok(frame_alt_screen_seed(&history, &visible, cursor_x, cursor_y))
     }
 
@@ -710,6 +743,18 @@ pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32) {
     (alt_on, cursor_x, cursor_y)
 }
 
+/// Parse tmux's `display-message -p '#{cursor_x},#{cursor_y}'` (the Race-B
+/// re-probe in [`Tmux::capture_history_with_alt_screen_aware_visible`]) into
+/// `(cursor_x, cursor_y)`. Returns `None` on malformed/empty input so the
+/// caller can fall back to the step-1 cursor reading rather than emitting a
+/// CUP at `(0, 0)` and putting the user's first keystroke at the top-left.
+pub(crate) fn parse_cursor_xy(info: &str) -> Option<(u32, u32)> {
+    let mut parts = info.trim().split(',');
+    let cx = parts.next()?.trim().parse::<u32>().ok()?;
+    let cy = parts.next()?.trim().parse::<u32>().ok()?;
+    Some((cx, cy))
+}
+
 /// PRIMARY-mode seed: the flat `capture_full_ansi_joined` dump is correct
 /// as-is (no alt buffer in play), normalised to CRLF + prefixed with
 /// `\x1b[2J\x1b[3J\x1b[H` so it lands at a deterministic origin in the
@@ -774,6 +819,20 @@ mod seed_tests {
         assert_eq!(parse_pane_info("garbage"), (false, 0, 0));
         assert_eq!(parse_pane_info("1,x,y"), (true, 0, 0));
         assert_eq!(parse_pane_info("2,5,21"), (false, 5, 21)); // `2` != `1` → false
+    }
+
+    #[test]
+    fn parse_cursor_xy_happy_and_malformed() {
+        // Race-B re-probe parser: `display-message -p '#{cursor_x},#{cursor_y}'`.
+        // Whitespace + trailing newline tolerated; malformed → None so the
+        // caller can fall back to the step-1 reading instead of CUP-to-(0,0).
+        assert_eq!(parse_cursor_xy("5,21"), Some((5, 21)));
+        assert_eq!(parse_cursor_xy("  5 , 21 \n"), Some((5, 21)));
+        assert_eq!(parse_cursor_xy("0,0"), Some((0, 0)));
+        assert_eq!(parse_cursor_xy(""), None);
+        assert_eq!(parse_cursor_xy("5"), None);
+        assert_eq!(parse_cursor_xy("x,y"), None);
+        assert_eq!(parse_cursor_xy("5,y"), None);
     }
 
     #[test]

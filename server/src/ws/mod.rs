@@ -40,6 +40,15 @@ const PING_EVERY: Duration = Duration::from_secs(20);
 const PONG_DEADLINE: Duration = Duration::from_secs(30);
 /// First-frame auth window.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+/// Pre-seed peek for the client's initial `Resize`. The web client (since the
+/// cursor-row-mismatch fix) batches `[auth, resize]` together on `ws.onopen`, so
+/// the resize lands within a couple of millis on the happy path. The 150ms
+/// budget covers a slow first-paint browser; an older client that never resizes
+/// (or that sends input as its second frame) just times out and the seed flows
+/// at tmux's current pane size — same shape as pre-fix, no regression. Cost on
+/// the never-resize path: ≤150 ms added to first paint, which is rare in
+/// practice (every supermux client resizes on `auth_ok`).
+const PRESEED_RESIZE_PEEK: Duration = Duration::from_millis(150);
 
 /// Application close code for "the session's tmux pty is gone" (e.g. the DB row
 /// survived a reboot but the tmux session did not). This is a TERMINAL condition,
@@ -290,6 +299,19 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    rationale and the replay_done boundary contract.
     let (_replay, mut rx) = stream.subscribe();
     let tmux = Tmux::new(&name);
+
+    // 4a. Cursor-row-mismatch fix (Option A — server-side belt). Before the
+    //    seed capture, peek up to one inbound frame within PRESEED_RESIZE_PEEK.
+    //    If it's a Resize, apply it FIRST so the capture-pane visible covers
+    //    the CLIENT'S geometry; otherwise hold it and re-queue after the input
+    //    task exists (strict in-order delivery — never dropped). The companion
+    //    client change batches `[auth, resize]` together so this peek almost
+    //    always finds the resize within an RTT.
+    let held_first_frame = match peek_initial_resize(&mut socket, &state, &name, &tmux).await {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
     if !send_seed_then_done(&mut socket, &tmux).await {
         return;
     }
@@ -307,6 +329,16 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    queue means we never drop a keystroke under a momentary fork stall.
     let (input_tx, input_rx) = mpsc::unbounded_channel::<ClientMsg>();
     let input_task = tokio::spawn(input_drain_loop(state.clone(), name.clone(), input_rx));
+
+    // If `peek_initial_resize` held a non-resize first frame (rare — a stray
+    // Input typed before WS open, a client Ping, an auth-after-auth), enqueue
+    // it on the input task NOW so strict arrival order is preserved (it came
+    // BEFORE any frame the loop below will read). An unbounded mpsc never
+    // blocks; a send failure means the task already exited (teardown), in
+    // which case the loop below will exit on its own.
+    if let Some(held) = held_first_frame {
+        let _ = input_tx.send(held);
+    }
 
     // 6. Unified fan-out + client-read + ping loop (single task, no split — uses
     //    WebSocket's inherent recv/send).
@@ -386,6 +418,82 @@ enum Apply {
     Text(String),
     /// A single non-`Input` control frame that breaks the batch.
     Ctrl(ClientMsg),
+}
+
+/// Defense-in-depth "Option A" for the cursor-row-mismatch bug: peek ONE
+/// inbound frame within [`PRESEED_RESIZE_PEEK`] BEFORE building the seed. If
+/// it's a `Resize`, apply it to tmux so the seed's `capture-pane visible`
+/// covers the CLIENT'S geometry (not tmux's default 80×24, which would land
+/// fewer rows than xterm's grid and put the CUP at a row that maps to blank
+/// space below the captured content). If it's any other frame (a stray Input,
+/// a client Ping, etc.) we **hold** it and return it to the caller, which
+/// re-queues it onto the input mpsc the moment that channel exists — strict
+/// arrival-order delivery is preserved (no dropped keystrokes).
+///
+/// Paired with the client's `[auth, resize]` batched send (Option B in
+/// `web/src/hooks/use-live-term.ts`); together they make the happy path
+/// "resize-then-seed" instead of "seed-with-stale-geometry-then-resize".
+///
+/// Returns `Ok(held)`:
+/// - `Ok(None)` — peek timed out OR the peeked frame was a `Resize` we already
+///   applied. Caller proceeds to seed at the (possibly resized) geometry.
+/// - `Ok(Some(msg))` — a non-resize frame arrived; hold it so the caller can
+///   enqueue it on the input task once that task's channel exists.
+/// - `Err(())` — the socket errored / closed mid-peek; caller should return
+///   (the connection is already done).
+///
+/// Cost on the "no client ever resizes" path: ≤150 ms wall-clock added to
+/// first paint. Cost on the typical path (client sends auth+resize together):
+/// ≈ one network RTT (microseconds on a LAN).
+async fn peek_initial_resize(
+    socket: &mut WebSocket,
+    state: &AppState,
+    name: &str,
+    tmux: &Tmux<'_>,
+) -> Result<Option<ClientMsg>, ()> {
+    let inbound = match tokio::time::timeout(PRESEED_RESIZE_PEEK, socket.recv()).await {
+        // Peek window expired. Common when the client never sends a resize
+        // (legacy/test client) or hasn't finished its first paint yet.
+        Err(_) => return Ok(None),
+        // Socket closed cleanly or errored: tear down.
+        Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => return Err(()),
+        Ok(Some(Ok(msg))) => msg,
+    };
+    let text = match inbound {
+        Message::Text(t) => t,
+        // Ping is auto-ponged by the transport; Binary/Pong on the client→server
+        // direction aren't part of the wire protocol. Treat as "no resize seen"
+        // — don't hold (nothing to apply), don't drop a real input.
+        _ => return Ok(None),
+    };
+    let cmd = match serde_json::from_str::<ClientMsg>(text.as_str()) {
+        Ok(c) => c,
+        // Malformed JSON: same as "no resize". Don't hold; the client will
+        // either keep talking or we'll close on inbound-silence.
+        Err(_) => return Ok(None),
+    };
+    match cmd {
+        ClientMsg::Resize { cols, rows } => {
+            // Apply the resize INLINE under the per-session lock — matches the
+            // contract `apply_one` follows on the live input path (§5.2). No
+            // input drain task exists yet, so taking the lock here cannot
+            // deadlock against it. A failure is logged and ignored so the
+            // attach still proceeds (the seed degrades to tmux's current size
+            // — same as the no-peek world).
+            let lock = state.lock_for(name);
+            let _guard = lock.lock().await;
+            if let Err(e) = tmux.resize(cols, rows).await {
+                tracing::debug!(session = %name, error = %e, "pre-seed resize failed");
+            }
+            Ok(None)
+        }
+        // Any other first-frame-after-auth (Input typed before WS open, a
+        // client Ping, etc.) is held; the caller queues it onto the input
+        // task's mpsc the moment that channel exists. Strict in-order
+        // delivery: nothing was applied between auth and this frame, and the
+        // queue is drained in arrival order under the per-session lock.
+        other => Ok(Some(other)),
+    }
 }
 
 /// Build the attach seed from tmux's authoritative pane state — full primary
