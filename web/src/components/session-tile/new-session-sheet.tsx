@@ -10,6 +10,7 @@ import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { sessionsApi, SessionError, type NewSession } from '@/lib/api'
 import { homeDir } from '@/env'
+import { DirectoryField } from './directory-field'
 
 // ── Quick-start preset boot configs (M12 acceptance) ────────────────────────
 // Each preset prefills the whole form: a name stem, a provider, and the initial
@@ -147,23 +148,11 @@ interface NewSessionFormProps {
 function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps) {
   const [tab, setTab] = React.useState('quick')
   const [form, setForm] = React.useState<FormState>(() => EMPTY_FORM(defaultDir))
-  const [dirSuggestions, setDirSuggestions] = React.useState<string[]>([])
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }))
-
-  // Directory typeahead (debounced) against the M7 autocomplete endpoint.
-  const dirDebounce = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  const onDirChange = (value: string) => {
-    set('dir', value)
-    if (dirDebounce.current) clearTimeout(dirDebounce.current)
-    dirDebounce.current = setTimeout(async () => {
-      if (!value.trim()) return setDirSuggestions([])
-      setDirSuggestions(await sessionsApi.autocompleteDir(value))
-    }, 200)
-  }
 
   const applyPreset = (preset: Preset) => {
     setForm((f) => ({
@@ -271,28 +260,11 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
                 />
               </Field>
 
-              <Field
-                label="Directory"
-                htmlFor="ns-dir"
-                hint="Where the agent runs. Defaults to your home directory."
-              >
-                <Input
-                  id="ns-dir"
-                  value={form.dir}
-                  onChange={(e) => onDirChange(e.target.value)}
-                  placeholder="~/projects/app"
-                  autoComplete="off"
-                  spellCheck={false}
-                  list="ns-dir-suggestions"
-                />
-                {dirSuggestions.length > 0 && (
-                  <datalist id="ns-dir-suggestions">
-                    {dirSuggestions.map((d) => (
-                      <option key={d} value={d} />
-                    ))}
-                  </datalist>
-                )}
-              </Field>
+              <DirectoryField
+                id="ns-dir"
+                value={form.dir}
+                onChange={(value) => set('dir', value)}
+              />
 
               <Field label="Description" htmlFor="ns-desc">
                 <Input

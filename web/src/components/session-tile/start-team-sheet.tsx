@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { teamsStartApi, SessionError } from '@/lib/api'
+import { homeDir } from '@/env'
+import { DirectoryField } from './directory-field'
 
 // "Start a team" (AT-D, plan §10d / §11-D). Reuses the iOS-style ResponsiveSheet
 // (Vaul drag-detent bottom sheet on touch, right-side dialog on desktop) — the
@@ -77,6 +79,10 @@ function StartTeamForm({ defaultDir, onCancel, onStarted }: StartTeamFormProps) 
   const [task, setTask] = React.useState('')
   const [teammates, setTeammates] = React.useState(DEFAULT_TEAMMATES)
   const [model, setModel] = React.useState('')
+  // Pre-fill the directory the same way New Session does (defaultDir ?? home),
+  // so the lead launches in a sensible cwd and the user can pick a repo without
+  // typing. A blank value still works — the server falls back to home.
+  const [dir, setDir] = React.useState(() => defaultDir ?? homeDir())
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
@@ -92,7 +98,7 @@ function StartTeamForm({ defaultDir, onCancel, onStarted }: StartTeamFormProps) 
         task: task.trim(),
         teammates,
         model: model.trim() || undefined,
-        dir: defaultDir?.trim() || undefined,
+        dir: dir.trim() || undefined,
       })
       onStarted(result.lead.name)
     } catch (err) {
@@ -121,6 +127,13 @@ function StartTeamForm({ defaultDir, onCancel, onStarted }: StartTeamFormProps) 
           className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
       </Field>
+
+      <DirectoryField
+        id="st-dir"
+        value={dir}
+        onChange={setDir}
+        hint="Where the lead runs. Defaults to your home directory."
+      />
 
       <Field label="Teammates" htmlFor="st-count" hint="How many agents work alongside the lead.">
         <div className="flex items-center gap-3">
