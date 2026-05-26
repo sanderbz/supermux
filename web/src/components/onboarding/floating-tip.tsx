@@ -1,6 +1,6 @@
 // FloatingTip (M27 — Time to Wow tour).
 //
-// A single coach-mark card in the 3-step unboxing tour. Each tip is anchored to
+// A single coach-mark card in the 4-step unboxing tour. Each tip is anchored to
 // a real onboarding target by a CSS selector — at mount it measures that
 // element's bounding box and parks the card beside it, with a small pointer
 // triangle aimed at the anchor. If the anchor isn't on screen (e.g. the focus

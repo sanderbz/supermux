@@ -6,7 +6,7 @@
 //
 //   • First-launch flag absent + sessions already exist (count > 0)
 //        → these are migrated v2 sessions. Show the non-blocking WelcomeBanner;
-//          if the user taps "Take the tour", run the 3-step TourOverlay.
+//          if the user taps "Take the tour", run the 4-step TourOverlay.
 //          Dismiss / finish → completeFirstLaunch().
 //
 //   • First-launch flag absent + ZERO sessions
