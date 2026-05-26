@@ -530,8 +530,8 @@ export function SwipeSessionSwitcher({
       {/* iOS-style drag handle (grabber). Always visible at the very top of
           the switcher: closed = peeks above the dock as the swipe-up hint;
           open = the close-handle. 36×4 rounded-full muted-gray pill —
-          tasteful, not loud. Generous ≥24pt vertical hit area via padding
-          so a finger tap reliably hits it (iOS HIG). */}
+          tasteful, not loud. The button stretches full-width across the
+          grabber row so any tap above the pills hits the toggle. */}
       <button
         type="button"
         onClick={onGrabberTap}
@@ -544,11 +544,10 @@ export function SwipeSessionSwitcher({
         onPointerDown={(e) => e.preventDefault()}
         onMouseDown={(e) => e.preventDefault()}
         className={cn(
+          // 12px tall full-width row above the pills — the visible 4×36 pill
+          // sits at its center. The 390×12 hit area is small in height but
+          // generous in width, so reliable to tap on a phone.
           'absolute inset-x-0 top-0 z-10 flex h-3 w-full items-center justify-center',
-          // Expand the tappable area downward when closed (24pt floor) without
-          // changing the visible grabber size — the button sits over the row
-          // edge and intercepts the tap before the row's pointerdown arms a
-          // swipe gesture.
           'cursor-pointer',
         )}
       >
@@ -559,13 +558,12 @@ export function SwipeSessionSwitcher({
         />
       </button>
 
-      {/* Pill row — vertically centered in the (OPEN_HEIGHT_PX − GRABBER) zone
-          below the grabber, so the pills sit flush against the dock's top edge
-          with zero wasted padding. `pt-3` (12px) reserves the grabber zone;
-          `pb-1` is the minimal breathing under the pills before they meet the
-          dock. Pill row itself is h-11 (44pt). Opacity fades in past the
-          grabber peek so finger-tracked drag reads as "pills rising into view."
-        */}
+      {/* Pill row — sits below the grabber and meets the dock's top edge with
+          a thin breathing band (≤9px) of `glass` background. `pt-3` (12px)
+          reserves the absolute-positioned grabber's row at the top; the pill
+          itself is h-11 (44pt) and `items-center` keeps it visually centered
+          inside the row. Opacity fades in past the grabber peek so the finger-
+          tracked drag reads as "pills rising into view." */}
       <motion.div
         data-vr-swipe-scroll
         animate={{ opacity: pillsRevealed ? 1 : 0 }}
