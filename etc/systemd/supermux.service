@@ -100,6 +100,15 @@ LimitNOFILE=65536
 # pressure the kernel prefers to evict a runaway agent/rustc here over sshd,
 # keeping the box recoverable without a reboot.
 OOMScoreAdjust=200
+# Soft memory throttle for the whole cgroup (supermux + tmux + agents + their
+# children). Rendered by deploy.sh from SUPERMUX_MEMORY_HIGH (default `infinity`
+# = no cap, so the default behaviour is identical for every existing operator).
+# When set (e.g. `6G` on an 8 GiB host, `12G` on a 16 GiB host), the kernel
+# reclaims aggressively past the threshold but NEVER OOM-kills — so an
+# over-tight value just slows things down, it doesn't break the service. Pairs
+# with OOMScoreAdjust=200 above: this caps the cgroup's growth; OOMScoreAdjust
+# decides who gets killed if the host as a whole still tips into OOM.
+MemoryHigh=__MEMORY_HIGH__
 StandardOutput=journal
 StandardError=journal
 
