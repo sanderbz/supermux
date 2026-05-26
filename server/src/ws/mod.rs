@@ -388,34 +388,36 @@ enum Apply {
     Ctrl(ClientMsg),
 }
 
-/// Build the attach seed from tmux's CURRENT VISIBLE SCREEN ONLY
-/// (`capture-pane -p -e`), send it as a Binary frame, then the `replay_done`
-/// Text boundary the client uses to reveal its viewport. Returns false on a
-/// socket-send failure (the caller should return).
+/// Build the attach seed from tmux's authoritative pane state — full primary
+/// scrollback AND the current visible screen, properly framed so xterm.js's
+/// two-buffer model lines up with tmux's. Send as one Binary frame, then the
+/// `replay_done` Text boundary the client uses to reveal its viewport. Returns
+/// false on a socket-send failure (the caller should return).
 ///
-/// **Why visible-only?** Earlier this seed used `capture-pane -S - -E -` to
-/// include the full tmux scrollback so a fresh tab woke up with history.
-/// That flattened tmux's primary scrollback AND the current alt-screen
-/// (the buffer a TUI like Claude Code paints on) into one byte-stream,
-/// without the `\x1b[?1049h` enter-alt-screen marker xterm.js needs to keep
-/// its two buffers distinct. Symptoms: the splash banner appearing 2–3×
-/// stacked (each one a past Claude (re)launch in primary scrollback) and
-/// the live cursor landing on the wrong line because xterm's cursor sat
-/// where the captured cells dropped it rather than where Claude's TUI
-/// model placed it (typing then echoed above the input row).
+/// **Why this is alt-screen-aware (the bug history)** — an earlier revision
+/// dumped `capture-pane -p -e -S - -E -` as one flat stream prefixed with
+/// `\x1b[2J\x1b[3J\x1b[H`. That works for shell sessions (no alt buffer in
+/// play) but corrupts a TUI session (Claude Code's alt-screen mode): tmux's
+/// capture-pane DOES NOT emit the `\x1b[?1049h` enter-alt-screen marker
+/// between primary scrollback and the alt-screen visible portion, so xterm
+/// landed the captured cells in whichever buffer was currently active and
+/// the cursor sat at the end of the captured block rather than at Claude's
+/// TUI prompt. Symptoms: splash banner stacked 2–3× (past Claude relaunches
+/// in primary scrollback) and typed echo painting on the wrong row.
 ///
-/// The fix: the WS seed always paints the CURRENT VISIBLE SCREEN only —
-/// which is exactly what xterm expects (visible bytes go into whichever
-/// buffer the captured escape sequences open, alt or primary). Older
-/// scrollback is now an explicit user gesture: scroll up → the client
-/// fetches `GET /api/sessions/{name}/scrollback` (see [`scrollback`]
-/// in `crate::sessions::mod`) which serves alt-screen-aware bytes that
-/// the client writes once on top of a `term.reset()`.
+/// [`Tmux::capture_history_with_alt_screen_aware_visible`] models the two
+/// buffers explicitly: in primary mode it returns the flat capture (correct
+/// without alt-screen escapes); in alt-screen mode it splits the capture
+/// into history (PRIMARY scrollback) + `\x1b[?1049h\x1b[2J\x1b[H` (enter
+/// ALT, clear, home) + visible (ALT buffer) + `\x1b[<row>;<col>H` (restore
+/// cursor where tmux says). Writing that onto a fresh `term.reset()`
+/// reproduces tmux's state — both buffers populated, cursor where Claude
+/// expects it, and the user can scroll up natively to see history.
 ///
 /// **CALL AFTER `stream.subscribe()`** so the broadcast receiver is already
 /// queueing live bytes — that way the snapshot covers tmux up to ~now and the
 /// queued bytes drain in order BEHIND it. A byte that lands in both (captured
-/// AND broadcast) repaints harmlessly; the snapshot is a complete ANSI state
+/// AND broadcast) repaints harmlessly: the snapshot is a complete ANSI state
 /// and the live drain appends whole chunks, so no escape sequence is torn
 /// across the seed boundary.
 ///
@@ -423,24 +425,16 @@ enum Apply {
 /// the client still attaches and sees live output from this point. The
 /// `replay_done` boundary is ALWAYS sent so the client's "hide viewport until
 /// the snapshot lands, then jump to bottom + reveal in one paint" gate is
-/// released even when nothing seeded (an old server that omits it is covered
-/// by the client's fallback timeout).
+/// released even when nothing seeded.
 async fn send_seed_then_done(socket: &mut WebSocket, tmux: &Tmux<'_>) -> bool {
-    if let Ok(text) = tmux.capture_screen_ansi().await {
-        let trimmed = text.trim_end_matches('\n');
-        if !trimmed.is_empty() {
-            // CRLF on the wire + clear screen+scrollback+home prefix so the
-            // captured content lands at a deterministic origin in the client
-            // buffer (matches the existing pty.rs streamer-attach seed format).
-            let body = trimmed.replace('\n', "\r\n");
-            let frame = format!("\x1b[2J\x1b[3J\x1b[H{body}");
-            if socket
-                .send(Message::Binary(Bytes::from(frame)))
+    if let Ok(body) = tmux.capture_history_with_alt_screen_aware_visible().await {
+        if !body.is_empty()
+            && socket
+                .send(Message::Binary(Bytes::from(body)))
                 .await
                 .is_err()
-            {
-                return false;
-            }
+        {
+            return false;
         }
     }
     socket
