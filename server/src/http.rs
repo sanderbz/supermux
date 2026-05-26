@@ -22,6 +22,7 @@ use crate::claude_tools;
 use crate::external_edit;
 use crate::files;
 use crate::hooks;
+use crate::hosts;
 use crate::prefs;
 use crate::public;
 use crate::push;
@@ -77,6 +78,7 @@ fn protected_router(state: AppState) -> Router {
     Router::new()
         .merge(sessions::router_for(state.clone()))
         .merge(board::router_for(state.clone()))
+        .merge(hosts::router_for(state.clone())) // RT8: hosts CRUD + bootstrap
         // M7's `files::router_for()` returns a `Router<AppState>` (state not yet
         // provided); `.with_state` resolves it to `Router<()>` so it merges
         // alongside M2's already-stateful sessions router.
