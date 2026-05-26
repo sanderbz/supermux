@@ -59,8 +59,9 @@ export default function App() {
             {/* M23b: "Add to Home Screen" coaching sheet — self-gates to the
                 first iOS-Safari (non-standalone) load, then remembers dismiss. */}
             <A2HSInstructionsSheet />
-            {/* M27: first-60-seconds unboxing — welcome banner + 3-step tour
-                for migrated v2 users; self-gates to the first launch only. */}
+            {/* M27: first-60-seconds unboxing — welcome banner + 4-step tour
+                (step 4 = Agent Teams explainer, FEAT-ONBOARDING-TEAMS) for
+                migrated v2 users; self-gates to the first launch only. */}
             <OnboardingHost />
             <Routes>
               <Route element={<Layout />}>

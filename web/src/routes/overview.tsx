@@ -645,6 +645,7 @@ export function Overview() {
           onClick={openTeamSheet}
           aria-label="Start a team"
           title="Start a team"
+          data-tour="start-team"
           whileTap={reduce ? undefined : { scale: 0.9 }}
           transition={springs.snappy}
           className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground sm:hidden"
@@ -675,6 +676,7 @@ export function Overview() {
         <Button
           variant="outline"
           onClick={openTeamSheet}
+          data-tour="start-team"
           className="hidden sm:inline-flex"
         >
           <Users />

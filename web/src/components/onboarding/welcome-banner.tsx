@@ -23,7 +23,7 @@ import { ONBOARDING } from '@/brand/copy'
 export interface WelcomeBannerProps {
   /** Migrated session count — drives the copy ("your N sessions are here"). */
   sessionCount: number
-  /** Start the 3-step tour. */
+  /** Start the 4-step tour. */
   onStartTour: () => void
   /** Dismiss without touring (still completes first-launch). */
   onSkip: () => void

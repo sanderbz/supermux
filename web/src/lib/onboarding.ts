@@ -7,7 +7,7 @@
 //
 // Two branches are decided at runtime by the OnboardingHost (§M27):
 //   1. v2 data was migrated  — sessions exist AND the flag is absent → a
-//      non-blocking "welcome back" banner + a 3-step tour overlay.
+//      non-blocking "welcome back" banner + a 4-step tour overlay.
 //   2. fresh, no sessions yet — the overview's own empty state carries the
 //      primary "boot your first agent" CTA plus a one-tap demo-agent button.
 //
