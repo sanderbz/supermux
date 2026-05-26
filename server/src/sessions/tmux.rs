@@ -395,10 +395,17 @@ impl<'a> Tmux<'a> {
         .await
     }
 
-    /// Build an alt-screen-AWARE scrollback payload for the "load earlier
-    /// output" client gesture. Returns bytes shaped so that writing them once
-    /// onto a freshly `term.reset()`-ed xterm.js viewport reproduces tmux's
-    /// pane state without cursor drift or duplicated TUI banners.
+    /// Build the alt-screen-AWARE seed payload for a fresh WS attach (and any
+    /// later "re-seed" path). Returns bytes shaped so that writing them once
+    /// onto a freshly opened xterm.js viewport reproduces tmux's pane state
+    /// without cursor drift or duplicated TUI banners — both buffers
+    /// populated, cursor where Claude's TUI expects it, full primary
+    /// scrollback available for native scroll-up.
+    ///
+    /// Used by `ws::send_seed_then_done`; supersedes the flat
+    /// `capture_full_ansi_joined` seed which was correct for shell sessions
+    /// but corrupted TUI panes (primary scrollback dumped into the alt
+    /// buffer, splash banner stacking, typed echo on the wrong row).
     ///
     /// Strategy (split-capture; one extra tmux fork per load, ~5ms total):
     ///
@@ -440,22 +447,12 @@ impl<'a> Tmux<'a> {
             ])
             .await
             .unwrap_or_default();
-        let mut parts = info.trim().split(',');
-        let alt_on = parts.next().map(|s| s.trim() == "1").unwrap_or(false);
-        let cursor_x: u32 = parts
-            .next()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
-        let cursor_y: u32 = parts
-            .next()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+        let (alt_on, cursor_x, cursor_y) = parse_pane_info(&info);
 
         // 2. Primary-screen mode: flat full capture is correct as-is.
         if !alt_on {
             let full = self.capture_full_ansi_joined().await?;
-            let body = full.trim_end_matches('\n').replace('\n', "\r\n");
-            return Ok(format!("\x1b[2J\x1b[3J\x1b[H{body}"));
+            return Ok(frame_primary_seed(&full));
         }
 
         // 3. Alt-screen mode: split + frame.
@@ -478,19 +475,7 @@ impl<'a> Tmux<'a> {
             .run(&["capture-pane", "-p", "-e", "-t", &self.target()])
             .await
             .unwrap_or_default();
-
-        // tmux's cursor_y is 0-based; ANSI CUP `\x1b[<row>;<col>H` is 1-based.
-        let row = cursor_y.saturating_add(1);
-        let col = cursor_x.saturating_add(1);
-        let history_body = history.trim_end_matches('\n').replace('\n', "\r\n");
-        let visible_body = visible.trim_end_matches('\n').replace('\n', "\r\n");
-
-        // Frame: clear+home → primary history → enter-alt+clear+home → visible
-        // → cursor restore. Writing this onto a `term.reset()` produces xterm
-        // state that matches tmux exactly, with both buffers populated.
-        Ok(format!(
-            "\x1b[2J\x1b[3J\x1b[H{history_body}\x1b[?1049h\x1b[2J\x1b[H{visible_body}\x1b[{row};{col}H"
-        ))
+        Ok(frame_alt_screen_seed(&history, &visible, cursor_x, cursor_y))
     }
 
     // ── input ────────────────────────────────────────────────────────────────
@@ -704,6 +689,144 @@ pub async fn find_pane_session(pane_id: &str) -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+/// Parse tmux's `display-message -p '#{alternate_on},#{cursor_x},#{cursor_y}'`
+/// output into the three pieces the seed framer needs. Whitespace-tolerant;
+/// malformed input falls back to `(false, 0, 0)` so the seed degrades to a
+/// flat capture-pane rather than crashing the WS attach. Free fn so the
+/// parse contract is unit-testable without spinning up a real tmux server.
+pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32) {
+    let mut parts = info.trim().split(',');
+    let alt_on = parts.next().map(|s| s.trim() == "1").unwrap_or(false);
+    let cursor_x: u32 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let cursor_y: u32 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    (alt_on, cursor_x, cursor_y)
+}
+
+/// PRIMARY-mode seed: the flat `capture_full_ansi_joined` dump is correct
+/// as-is (no alt buffer in play), normalised to CRLF + prefixed with
+/// `\x1b[2J\x1b[3J\x1b[H` so it lands at a deterministic origin in the
+/// client buffer.
+pub(crate) fn frame_primary_seed(full_capture: &str) -> String {
+    let body = full_capture.trim_end_matches('\n').replace('\n', "\r\n");
+    format!("\x1b[2J\x1b[3J\x1b[H{body}")
+}
+
+/// ALT-SCREEN-mode seed: PRIMARY scrollback (history above the visible
+/// frame) painted first, then `\x1b[?1049h\x1b[2J\x1b[H` to switch xterm
+/// into its ALT buffer (clear + home), then the alt visible (the live TUI
+/// frame), then `\x1b[<row>;<col>H` to restore the cursor where tmux says
+/// it is. Writing this onto a fresh `term.reset()` reproduces tmux's pane
+/// state with both buffers populated and the cursor in Claude's expected
+/// input position. tmux's cursor_y is 0-based; ANSI CUP is 1-based.
+pub(crate) fn frame_alt_screen_seed(
+    history: &str,
+    visible: &str,
+    cursor_x: u32,
+    cursor_y: u32,
+) -> String {
+    let row = cursor_y.saturating_add(1);
+    let col = cursor_x.saturating_add(1);
+    let history_body = history.trim_end_matches('\n').replace('\n', "\r\n");
+    let visible_body = visible.trim_end_matches('\n').replace('\n', "\r\n");
+    format!(
+        "\x1b[2J\x1b[3J\x1b[H{history_body}\x1b[?1049h\x1b[2J\x1b[H{visible_body}\x1b[{row};{col}H"
+    )
+}
+
+#[cfg(test)]
+mod seed_tests {
+    //! Pin the contract of the alt-screen-aware WS seed framer (the fix for
+    //! the splash-stacking + typed-on-wrong-row bugs). The parse + the format
+    //! are free fns so we don't need a live tmux to exercise them — the
+    //! integration with tmux is the well-defined `display-message` /
+    //! `capture-pane` output that we mock here byte-for-byte.
+    use super::*;
+
+    #[test]
+    fn parse_pane_info_happy_path() {
+        // Typical tmux 3.x output for an alt-screen TUI at (col=5, row=21).
+        assert_eq!(parse_pane_info("1,5,21"), (true, 5, 21));
+        assert_eq!(parse_pane_info("0,0,0"), (false, 0, 0));
+        assert_eq!(parse_pane_info("0,80,23"), (false, 80, 23));
+    }
+
+    #[test]
+    fn parse_pane_info_trims_whitespace_and_trailing_newline() {
+        // tmux's `display-message -p` usually adds a trailing newline.
+        assert_eq!(parse_pane_info("1,5,21\n"), (true, 5, 21));
+        assert_eq!(parse_pane_info("  1 , 5 , 21  "), (true, 5, 21));
+    }
+
+    #[test]
+    fn parse_pane_info_degrades_safely_on_malformed_input() {
+        // Empty / partial / non-numeric → falls back to (false, 0, 0) so the
+        // seed degrades to a flat primary capture rather than crashing.
+        assert_eq!(parse_pane_info(""), (false, 0, 0));
+        assert_eq!(parse_pane_info("1"), (true, 0, 0));
+        assert_eq!(parse_pane_info("garbage"), (false, 0, 0));
+        assert_eq!(parse_pane_info("1,x,y"), (true, 0, 0));
+        assert_eq!(parse_pane_info("2,5,21"), (false, 5, 21)); // `2` != `1` → false
+    }
+
+    #[test]
+    fn frame_primary_seed_normalises_crlf_and_prefixes_clear_home() {
+        let out = frame_primary_seed("line a\nline b\n");
+        assert_eq!(out, "\x1b[2J\x1b[3J\x1b[Hline a\r\nline b");
+    }
+
+    #[test]
+    fn frame_primary_seed_empty_capture_still_prefixes() {
+        // An empty primary capture still yields a deterministic "clear screen"
+        // — the client lands in a known origin even on a brand-new pane.
+        assert_eq!(frame_primary_seed(""), "\x1b[2J\x1b[3J\x1b[H");
+    }
+
+    #[test]
+    fn frame_alt_screen_seed_contains_both_buffers_and_cursor_restore() {
+        let out = frame_alt_screen_seed("history line", "tui frame", 5, 21);
+        // Primary scrollback comes first (after clear+home).
+        assert!(out.starts_with("\x1b[2J\x1b[3J\x1b[Hhistory line"));
+        // Then the enter-alt + clear + home that switches xterm to alt buffer.
+        assert!(out.contains("\x1b[?1049h\x1b[2J\x1b[H"));
+        // Then the visible TUI frame.
+        assert!(out.contains("tui frame"));
+        // Then the cursor restore (1-based: 0,0 → 1,1; here 5,21 → row 22, col 6).
+        assert!(out.ends_with("\x1b[22;6H"));
+        // The ordering is what makes both buffers consistent — assert it.
+        let hist_pos = out.find("history line").unwrap();
+        let alt_pos = out.find("\x1b[?1049h").unwrap();
+        let vis_pos = out.find("tui frame").unwrap();
+        let cur_pos = out.find("\x1b[22;6H").unwrap();
+        assert!(hist_pos < alt_pos);
+        assert!(alt_pos < vis_pos);
+        assert!(vis_pos < cur_pos);
+    }
+
+    #[test]
+    fn frame_alt_screen_seed_at_origin_cursor_is_1_1() {
+        // The 0-based → 1-based off-by-one trap — pin (0, 0) → `\x1b[1;1H`.
+        let out = frame_alt_screen_seed("", "", 0, 0);
+        assert!(out.ends_with("\x1b[1;1H"));
+    }
+
+    #[test]
+    fn frame_alt_screen_seed_handles_lf_in_both_captures() {
+        // Both history + visible may contain raw LF from tmux — both must be
+        // CRLF-normalised so xterm.js doesn't half-paint the next column down.
+        let out = frame_alt_screen_seed("h1\nh2", "v1\nv2", 0, 0);
+        assert!(out.contains("h1\r\nh2"));
+        assert!(out.contains("v1\r\nv2"));
+        assert!(!out.contains("h1\nh2"), "no bare LF in history body");
+        assert!(!out.contains("v1\nv2"), "no bare LF in visible body");
+    }
 }
 
 #[cfg(test)]

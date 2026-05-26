@@ -15,7 +15,7 @@
 
 import * as React from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowUp, ChevronDown, Loader2, WifiOff } from 'lucide-react'
+import { ChevronDown, Loader2, WifiOff } from 'lucide-react'
 
 import '@xterm/xterm/css/xterm.css'
 
@@ -26,7 +26,6 @@ import type { LiveTermState, UseLiveTermResult } from '@/hooks/use-live-term'
 import { useTerminalConnectionLink } from '@/hooks/use-connection-link'
 import { useSession } from '@/hooks/use-sessions'
 import { TailPreview } from '@/components/session-tile/tail-preview'
-import { HistorySheet } from '@/components/terminal/history-sheet'
 
 export interface LiveTerminalProps {
   /** Session name — maps to the M4 WS route `/ws/sessions/:name`. */
@@ -125,29 +124,8 @@ export function LiveTerminal({
     onSettled,
     wsPath,
   })
-  const {
-    containerRef,
-    state,
-    hasFirstFrame,
-    ready,
-    retry,
-    scrolledUp,
-    scrollToBottom,
-    atTop,
-  } = term
-
-  // Earlier-output sheet — opens on tap of the "↑ Earlier output" pill. State
-  // lives in the React tree (not in `useLiveTerm`) because it's a pure UI
-  // concern that doesn't touch the WS lifecycle. If `name` changes while the
-  // sheet is open, HistorySheet's own mount effect keys on `name` and re-fetches
-  // — the brief "stale-then-new" repaint inside the sheet is invisible (the
-  // useLiveTerm hook re-mounts on `name` change anyway, taking the pill with it).
-  const [historyOpen, setHistoryOpen] = React.useState(false)
-  // The pill is meaningful only on a real session (the read-only teammate
-  // route + the hover-peek embeds + the quick-peek modal all skip it). And
-  // hide until the live terminal has settled (`ready`) so the pill never
-  // peeks out from under the on-open cached-tail cover.
-  const earlierOutputAvailable = !readOnly && !wsPath && ready
+  const { containerRef, state, hasFirstFrame, ready, retry, scrolledUp, scrollToBottom } =
+    term
 
   // Resolve the cached tail. Callers that already hold the session row (mobile
   // focus route, the overview peek) pass it explicitly. The desktop focus route
@@ -286,34 +264,6 @@ export function LiveTerminal({
         )}
       </AnimatePresence>
 
-      {/* "↑ Earlier output" pill — surfaces when the user has scrolled to the
-          very top of xterm's current scrollback. Visible-only seed keeps the
-          live terminal stable, so older output is reachable through this
-          quiet opt-in pill (tap → read-only history sheet). The pill is
-          top-anchored to mirror the <ConnectionPill> geometry; safe-area is
-          handled with `pt-safe` so the iOS notch / Dynamic Island never
-          clips it. Hidden during the on-open cover (`ready` guard via
-          `earlierOutputAvailable`) — no flash before the live terminal
-          settles. Read-only embeds + teammate WSes skip it entirely. */}
-      <AnimatePresence>
-        {earlierOutputAvailable && atTop && !historyOpen && (
-          <EarlierOutputPill onClick={() => setHistoryOpen(true)} />
-        )}
-      </AnimatePresence>
-
-      {/* Earlier-output sheet (read-only history viewer). Mounted only when
-          opened so the xterm fits against a real layout box and the fetch
-          aborts on a quick dismiss. Underneath, the live terminal keeps
-          streaming — the sheet is a quiet read-only archive, not a takeover. */}
-      {!readOnly && !wsPath && (
-        <HistorySheet
-          open={historyOpen}
-          onOpenChange={setHistoryOpen}
-          name={name}
-          fontSize={fontSize}
-        />
-      )}
-
       {/* In-terminal connection pill — kept ONLY for read-only embeds (e.g. the
           quick-peek modal), which do NOT register with the global connection
           store and so have no other surface. A normal focus terminal registers
@@ -352,45 +302,6 @@ function ScrollToBottomButton({ onClick }: { onClick: () => void }) {
         )}
       >
         <ChevronDown className="size-4" aria-hidden />
-      </button>
-    </motion.div>
-  )
-}
-
-// ── Earlier-output pill (history opt-in) ──────────────────────────────────────
-
-// A subtle, glass-material pill that fades+drops in at the top of the live
-// terminal when the user has scrolled to the very top of xterm's current
-// scrollback. Tap → opens the read-only HistorySheet. Mirrors the geometry of
-// <ConnectionPill> (top-centre, glass, ≥36pt tall) so the two top-anchored
-// affordances are mutually exclusive in feel + never visually compete. The
-// hit-area is padded to ≥44pt via the negative-margin trick (the pill stays
-// 36pt tall for visual quietness; the touch box stays HIG-grade).
-function EarlierOutputPill({ onClick }: { onClick: () => void }) {
-  return (
-    <motion.div
-      key="earlier-output"
-      initial={{ y: -44, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      exit={{ y: -44, opacity: 0 }}
-      transition={springs.smooth}
-      className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center pt-safe"
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label="View earlier output"
-        className={cn(
-          'glass pointer-events-auto mt-2 flex h-9 items-center gap-1.5 rounded-full px-3.5',
-          'border border-border/60 text-[13px] font-medium text-muted-foreground shadow-sm',
-          'transition-colors hover:text-foreground active:bg-secondary',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          // HIG ≥44pt touch box around the 36pt visual pill (negative margin).
-          '-my-1 py-1',
-        )}
-      >
-        <ArrowUp className="size-3.5" aria-hidden />
-        <span>Earlier output</span>
       </button>
     </motion.div>
   )

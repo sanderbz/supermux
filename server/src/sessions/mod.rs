@@ -71,12 +71,6 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/keys", post(keys_handler))
         .route("/api/sessions/{name}/paste", post(paste_handler))
         .route("/api/sessions/{name}/peek", get(peek_handler))
-        // feat-load-history: serve the alt-screen-aware FULL scrollback payload
-        // when the user explicitly opts in by scrolling to the top of the live
-        // terminal. The WS attach seed paints only the CURRENT visible screen
-        // (stable, no cursor drift), so older output is reachable solely via
-        // this endpoint — keeping the always-on attach path lean.
-        .route("/api/sessions/{name}/scrollback", get(scrollback_handler))
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
@@ -935,36 +929,6 @@ async fn peek_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let text = lifecycle::peek(&state, &name, q.lines).await?;
     Ok(Json(json!({ "ok": true, "data": text })))
-}
-
-/// `GET /api/sessions/{name}/scrollback` — serve the alt-screen-AWARE FULL
-/// scrollback payload for the "load earlier output" client gesture (xterm.js
-/// scroll-to-top auto-loader). The returned bytes are pre-framed so that
-/// writing them once onto a freshly `term.reset()`-ed viewport reproduces
-/// tmux's pane state — both buffers populated, cursor restored — without the
-/// duplicated-banner / cursor-drift artefacts the old always-on full seed
-/// produced.
-///
-/// 404 when the session row is absent; 500 if tmux capture fails outright
-/// (rare). Empty body when the pane is empty (caller treats that as no-op).
-async fn scrollback_handler(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<impl IntoResponse, AppError> {
-    if !db::sessions::exists(&state.pool, &name).await? {
-        return Err(AppError::NotFound(format!("session '{name}'")));
-    }
-    let tmux = crate::sessions::tmux::Tmux::new(&name);
-    // The helper already CRLF-normalises and frames the alt-screen escapes;
-    // pass the bytes through unmodified.
-    let bytes = tmux
-        .capture_history_with_alt_screen_aware_visible()
-        .await
-        .unwrap_or_default();
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        bytes,
-    ))
 }
 
 async fn archive_handler(
