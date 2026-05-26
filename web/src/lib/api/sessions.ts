@@ -552,13 +552,16 @@ export const sessionsApi = {
     sessReq<GitInfo>(`/api/sessions/${encodeURIComponent(name)}/git`),
 
 
-  /** `GET /api/autocomplete/dir?q=…` — directory typeahead for the Advanced tab
-   *  (M7). Returns `[]` on any failure so the field degrades to a plain input. */
-  autocompleteDir: async (q: string): Promise<string[]> => {
+  /** `GET /api/autocomplete/dir?q=…[&hidden=0]` — directory typeahead for the
+   *  Advanced tab (M7). FEAT-WHERE-PICKER: pass `noHidden:true` to filter the
+   *  dotfile subdirs (`.git`, `.cache`, …) out of the typeahead — the new
+   *  "Where" picker does this so the suggestions never surface noise the user
+   *  has to scroll past. Default (`false`) preserves the legacy contract.
+   *  Returns `[]` on any failure so the field degrades to a plain input. */
+  autocompleteDir: async (q: string, noHidden = false): Promise<string[]> => {
     try {
-      const body = await sessReq<unknown>(
-        `/api/autocomplete/dir?q=${encodeURIComponent(q)}`,
-      )
+      const query = `q=${encodeURIComponent(q)}${noHidden ? '&hidden=0' : ''}`
+      const body = await sessReq<unknown>(`/api/autocomplete/dir?${query}`)
       const arr = Array.isArray(body)
         ? body
         : ((body as { entries?: unknown; data?: unknown })?.entries ??
@@ -567,6 +570,53 @@ export const sessionsApi = {
       return Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : []
     } catch {
       return []
+    }
+  },
+}
+
+// ── FEAT-WHERE-PICKER: project repos endpoint ────────────────────────────────
+
+/** One entry from `GET /api/projects/repos` — a subdir of the first
+ *  `SUPERMUX_PROJECT_DIRS` entry, with git-repo metadata. The "Where" picker
+ *  renders these as primary project candidates; `is_git_repo` drives the tiny
+ *  `git` tag vs the calm amber "not a git repo" warning (teammates each need
+ *  their own git worktree per the official Agent Teams doc). */
+export interface ProjectRepo {
+  path: string
+  name: string
+  is_git_repo: boolean
+}
+
+/** Response from `GET /api/projects/repos`. `root` is the scanned dir (empty
+ *  when `SUPERMUX_PROJECT_DIRS` is unset — the UI then hides the Projects
+ *  section and nudges the user to "Use another folder"). */
+export interface ProjectReposResponse {
+  root: string
+  entries: ProjectRepo[]
+}
+
+export const projectsApi = {
+  /** `GET /api/projects/repos` — list immediate subdirs of the first
+   *  `SUPERMUX_PROJECT_DIRS` entry with `is_git_repo` set per `.git` presence.
+   *  Returns `{ root: '', entries: [] }` on any failure so the picker degrades
+   *  to the free-text input. */
+  list: async (): Promise<ProjectReposResponse> => {
+    try {
+      const body = await sessReq<unknown>('/api/projects/repos')
+      const obj = (body ?? {}) as { root?: unknown; entries?: unknown }
+      const root = typeof obj.root === 'string' ? obj.root : ''
+      const entries = Array.isArray(obj.entries)
+        ? obj.entries.filter(
+            (e): e is ProjectRepo =>
+              !!e &&
+              typeof (e as { path?: unknown }).path === 'string' &&
+              typeof (e as { name?: unknown }).name === 'string' &&
+              typeof (e as { is_git_repo?: unknown }).is_git_repo === 'boolean',
+          )
+        : []
+      return { root, entries }
+    } catch {
+      return { root: '', entries: [] }
     }
   },
 }

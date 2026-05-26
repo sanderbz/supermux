@@ -372,3 +372,154 @@ fn base64_std(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
+
+// ── FEAT-WHERE-PICKER: autocomplete dotfile filter + projects/repos ───────────
+
+/// `GET /api/autocomplete/dir?q=…&hidden=0` filters dotfile subdirs.
+#[tokio::test]
+async fn autocomplete_hidden_filter() {
+    let env = setup().await;
+    // Seed two normal dirs and two dotfile dirs.
+    for name in ["alpha", "beta", ".git", ".cache"] {
+        std::fs::create_dir_all(env.work_dir.join(name)).unwrap();
+    }
+    let q = format!("{}/", env.work_dir.display());
+    let q_enc = urlencode(&q);
+
+    // Default (no hidden param): legacy behaviour — dotfiles INCLUDED.
+    let resp = env
+        .app
+        .clone()
+        .oneshot(authed(Method::GET, &format!("/api/autocomplete/dir?q={q_enc}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let names: Vec<String> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            std::path::Path::new(v.as_str().unwrap())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(names.contains(&".git".to_string()), "default keeps dotfiles");
+    assert!(names.contains(&"alpha".to_string()));
+
+    // hidden=0 → dotfiles dropped.
+    let resp = env
+        .app
+        .clone()
+        .oneshot(authed(
+            Method::GET,
+            &format!("/api/autocomplete/dir?q={q_enc}&hidden=0"),
+        ))
+        .await
+        .unwrap();
+    let body = json_body(resp).await;
+    let names: Vec<String> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            std::path::Path::new(v.as_str().unwrap())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(!names.contains(&".git".to_string()), "hidden=0 drops dotfiles");
+    assert!(!names.contains(&".cache".to_string()));
+    assert!(names.contains(&"alpha".to_string()));
+    assert!(names.contains(&"beta".to_string()));
+}
+
+/// Process-global serial guard around `SUPERMUX_PROJECT_DIRS` env-mutating
+/// tests so the two below can't race each other (cargo test runs tests in
+/// parallel by default).
+static PROJECTS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `GET /api/projects/repos` reads `SUPERMUX_PROJECT_DIRS`, returns subdirs
+/// with `is_git_repo` set per `.git` presence (directory OR file). Hidden
+/// entries filtered.
+#[tokio::test]
+async fn projects_repos_lists_git_subdirs() {
+    let _guard = PROJECTS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = setup().await;
+    // Seed a fake projects root with: a real git dir (.git as dir), a worktree-
+    // style entry (.git as file), a non-repo, and a dotfile dir (must be hidden).
+    let proj_root = env.work_dir.join("projects-root");
+    std::fs::create_dir_all(&proj_root).unwrap();
+    let repo_a = proj_root.join("repo-a");
+    std::fs::create_dir_all(repo_a.join(".git")).unwrap();
+    let wt_b = proj_root.join("worktree-b");
+    std::fs::create_dir_all(&wt_b).unwrap();
+    std::fs::write(wt_b.join(".git"), "gitdir: /tmp/elsewhere\n").unwrap();
+    let plain = proj_root.join("plain-folder");
+    std::fs::create_dir_all(&plain).unwrap();
+    let hidden = proj_root.join(".hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+
+    // SAFETY: env mutation is process-global; the `set_var`/`remove_var` calls
+    // are unsafe in current std but our test process owns the env entirely.
+    unsafe {
+        std::env::set_var("SUPERMUX_PROJECT_DIRS", proj_root.display().to_string());
+    }
+    let resp = env
+        .app
+        .clone()
+        .oneshot(authed(Method::GET, "/api/projects/repos"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    unsafe { std::env::remove_var("SUPERMUX_PROJECT_DIRS") };
+
+    // `root` field surfaces the configured path.
+    assert_eq!(body["root"].as_str().unwrap(), proj_root.display().to_string());
+
+    let entries = body["entries"].as_array().unwrap();
+    let by_name: std::collections::HashMap<String, &Value> = entries
+        .iter()
+        .map(|e| (e["name"].as_str().unwrap().to_string(), e))
+        .collect();
+
+    // .hidden filtered.
+    assert!(!by_name.contains_key(".hidden"));
+    // Real git dir → is_git_repo=true.
+    assert_eq!(by_name["repo-a"]["is_git_repo"].as_bool().unwrap(), true);
+    // Worktree-style .git FILE also counts as a repo.
+    assert_eq!(by_name["worktree-b"]["is_git_repo"].as_bool().unwrap(), true);
+    // Non-repo → false.
+    assert_eq!(by_name["plain-folder"]["is_git_repo"].as_bool().unwrap(), false);
+
+    // Alphabetical order.
+    let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "entries are alphabetical");
+}
+
+/// When `SUPERMUX_PROJECT_DIRS` is unset, the endpoint returns empty `root` +
+/// `entries` (the UI then hides the Projects section gracefully).
+#[tokio::test]
+async fn projects_repos_unset_returns_empty() {
+    let _guard = PROJECTS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = setup().await;
+    unsafe { std::env::remove_var("SUPERMUX_PROJECT_DIRS") };
+    let resp = env
+        .app
+        .clone()
+        .oneshot(authed(Method::GET, "/api/projects/repos"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["root"].as_str().unwrap(), "");
+    assert_eq!(body["entries"].as_array().unwrap().len(), 0);
+}
