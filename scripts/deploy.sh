@@ -785,6 +785,7 @@ trap 'rm -f "$UNIT_TMP"' EXIT
 sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__USER_HOME__|$USER_HOME|g" \
     -e "s|__DATA_DIR__|$DATA_DIR|g" \
+    -e "s|__PROJECT_DIRS__|$PROJECT_DIRS|g" \
     -e "s|__PROTECT_HOME__|$PROTECT_HOME|g" \
     -e "s|__READ_WRITE_PATHS__|$READ_WRITE_PATHS|g" \
     -e "s|__MEMORY_DENY_WRITE_EXECUTE__|$MEMORY_DENY_WRITE_EXECUTE|g" \

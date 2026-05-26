@@ -150,11 +150,24 @@ fn inject_runtime_config(html: &str, state: &AppState) -> String {
     let home_dir = dirs::home_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+    // `_SUPERMUX_PROJECT_DIR`: the FIRST project directory from the deploy-time
+    // `SUPERMUX_PROJECT_DIRS` env var (smart default `<home>/projects`; clawd-02
+    // is `/opt/projects`). Start-a-team pre-fills its directory field with this
+    // (with a trailing slash) so the autocomplete on focus immediately surfaces
+    // the project repos — making "pick a repo" one click. Empty string when the
+    // var is unset (the form falls back to home).
+    let projects_dir = std::env::var("SUPERMUX_PROJECT_DIRS")
+        .ok()
+        .and_then(|s| s.split(':').next().map(str::to_string))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
     let script = format!(
-        "<script>window._SUPERMUX_AUTH_TOKEN={token};window._SUPERMUX_VERSION={version};window._SUPERMUX_HOME_DIR={home};</script>",
+        "<script>window._SUPERMUX_AUTH_TOKEN={token};window._SUPERMUX_VERSION={version};window._SUPERMUX_HOME_DIR={home};window._SUPERMUX_PROJECT_DIR={projects};</script>",
         token = json_string(&state.config.auth_token),
         version = json_string(env!("CARGO_PKG_VERSION")),
         home = json_string(&home_dir),
+        projects = json_string(&projects_dir),
     );
 
     // `<div id="root">` is the documented injection anchor (§3.2 line 153).

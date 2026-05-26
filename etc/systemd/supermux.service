@@ -69,6 +69,13 @@ Environment=SUPERMUX_DATA_DIR=__DATA_DIR__
 # bind-mounted data dir survives restarts, so sessions reconnect. (The server also
 # defaults this in code; this line makes it explicit + covers any early tmux use.)
 Environment=TMUX_TMPDIR=__DATA_DIR__/tmux
+# The colon-separated project-dirs deploy.sh provisions (smart default
+# <home>/projects; operators may set SUPERMUX_PROJECT_DIRS to a custom list,
+# e.g. /opt/projects). The server reads this at runtime and exposes the FIRST
+# entry to the SPA as `window._SUPERMUX_PROJECT_DIR` so Start-a-team can
+# pre-fill its directory field with the projects root — the autocomplete then
+# immediately surfaces the project repos for a one-click pick.
+Environment=SUPERMUX_PROJECT_DIRS=__PROJECT_DIRS__
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/supermux-server
 Restart=always

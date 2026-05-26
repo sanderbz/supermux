@@ -10,6 +10,7 @@ declare global {
     _SUPERMUX_WS_URL?: string
     _SUPERMUX_VERSION?: string
     _SUPERMUX_HOME_DIR?: string
+    _SUPERMUX_PROJECT_DIR?: string
   }
 }
 
@@ -42,4 +43,15 @@ export function appVersion(): string {
  *  home dir server-side anyway). */
 export function homeDir(): string {
   return window._SUPERMUX_HOME_DIR ?? ''
+}
+
+/** The first deploy-configured project directory (`SUPERMUX_PROJECT_DIRS`'s
+ *  first entry; smart default `<home>/projects`, on production hosts often
+ *  `/opt/projects`). Start-a-team pre-fills its directory field with this so the
+ *  on-focus autocomplete immediately surfaces the project repos — turning "pick
+ *  a repo" into a one-click action. Empty string when the env var is unset (the
+ *  caller falls back to [`homeDir`]). The returned path has NO trailing slash;
+ *  callers that need one for autocomplete-as-children behaviour should append it. */
+export function projectsDir(): string {
+  return window._SUPERMUX_PROJECT_DIR ?? ''
 }

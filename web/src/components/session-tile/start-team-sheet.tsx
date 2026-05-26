@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { teamsStartApi, SessionError } from '@/lib/api'
-import { homeDir } from '@/env'
+import { homeDir, projectsDir } from '@/env'
 import { DirectoryField } from './directory-field'
 
 // "Start a team" (AT-D, plan §10d / §11-D). Reuses the iOS-style ResponsiveSheet
@@ -79,10 +79,18 @@ function StartTeamForm({ defaultDir, onCancel, onStarted }: StartTeamFormProps) 
   const [task, setTask] = React.useState('')
   const [teammates, setTeammates] = React.useState(DEFAULT_TEAMMATES)
   const [model, setModel] = React.useState('')
-  // Pre-fill the directory the same way New Session does (defaultDir ?? home),
-  // so the lead launches in a sensible cwd and the user can pick a repo without
-  // typing. A blank value still works — the server falls back to home.
-  const [dir, setDir] = React.useState(() => defaultDir ?? homeDir())
+  // Pre-fill the directory with the deploy-configured projects root (with a
+  // trailing slash so the autocomplete on focus IMMEDIATELY lists the project
+  // subdirs as candidates — turning "pick a repo" into a one-click choice).
+  // Falls back to home when SUPERMUX_PROJECT_DIRS isn't set; an explicit
+  // `defaultDir` from the caller still wins. Blank is fine — server defaults
+  // to home server-side.
+  const [dir, setDir] = React.useState(() => {
+    if (defaultDir) return defaultDir
+    const p = projectsDir()
+    if (p) return p.endsWith('/') ? p : `${p}/`
+    return homeDir()
+  })
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
