@@ -388,10 +388,29 @@ enum Apply {
     Ctrl(ClientMsg),
 }
 
-/// Build the attach seed from tmux's authoritative scrollback (`capture-pane
-/// -p -e -J -S - -E -`), send it as a Binary frame, then the `replay_done` Text
-/// boundary the client uses to reveal its viewport. Returns false on a socket-
-/// send failure (the caller should return).
+/// Build the attach seed from tmux's CURRENT VISIBLE SCREEN ONLY
+/// (`capture-pane -p -e`), send it as a Binary frame, then the `replay_done`
+/// Text boundary the client uses to reveal its viewport. Returns false on a
+/// socket-send failure (the caller should return).
+///
+/// **Why visible-only?** Earlier this seed used `capture-pane -S - -E -` to
+/// include the full tmux scrollback so a fresh tab woke up with history.
+/// That flattened tmux's primary scrollback AND the current alt-screen
+/// (the buffer a TUI like Claude Code paints on) into one byte-stream,
+/// without the `\x1b[?1049h` enter-alt-screen marker xterm.js needs to keep
+/// its two buffers distinct. Symptoms: the splash banner appearing 2–3×
+/// stacked (each one a past Claude (re)launch in primary scrollback) and
+/// the live cursor landing on the wrong line because xterm's cursor sat
+/// where the captured cells dropped it rather than where Claude's TUI
+/// model placed it (typing then echoed above the input row).
+///
+/// The fix: the WS seed always paints the CURRENT VISIBLE SCREEN only —
+/// which is exactly what xterm expects (visible bytes go into whichever
+/// buffer the captured escape sequences open, alt or primary). Older
+/// scrollback is now an explicit user gesture: scroll up → the client
+/// fetches `GET /api/sessions/{name}/scrollback` (see [`scrollback`]
+/// in `crate::sessions::mod`) which serves alt-screen-aware bytes that
+/// the client writes once on top of a `term.reset()`.
 ///
 /// **CALL AFTER `stream.subscribe()`** so the broadcast receiver is already
 /// queueing live bytes — that way the snapshot covers tmux up to ~now and the
@@ -407,7 +426,7 @@ enum Apply {
 /// released even when nothing seeded (an old server that omits it is covered
 /// by the client's fallback timeout).
 async fn send_seed_then_done(socket: &mut WebSocket, tmux: &Tmux<'_>) -> bool {
-    if let Ok(text) = tmux.capture_full_ansi_joined().await {
+    if let Ok(text) = tmux.capture_screen_ansi().await {
         let trimmed = text.trim_end_matches('\n');
         if !trimmed.is_empty() {
             // CRLF on the wire + clear screen+scrollback+home prefix so the

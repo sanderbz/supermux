@@ -374,12 +374,11 @@ impl<'a> Tmux<'a> {
     /// (`-e`) and lines joined where tmux wrapped them at pane width (`-J`) so
     /// xterm.js re-wraps at the client's actual viewport.
     ///
-    /// Used as the WS-attach seed: tmux owns the persistent pane state, so a
-    /// fresh browser tab (or a tab after the web app restarted) gets the same
-    /// scrollback the multiplexer is holding — regardless of how the web app
-    /// came and went. Up to ~10 MB worst-case at the 50000-line history-limit,
-    /// which is fine for an attach event (and the WS layer compresses it heavily).
-    /// Read-only, no lock.
+    /// **WARNING** — flattens primary scrollback + alt-screen visible into one
+    /// byte stream without `\x1b[?1049h` framing. Safe only for non-interactive
+    /// uses (archive dump, debug print). For WS seeding or "load earlier output"
+    /// use [`Self::capture_history_with_alt_screen_aware_visible`] which models
+    /// the two distinct xterm.js buffers correctly. Read-only, no lock.
     pub async fn capture_full_ansi_joined(&self) -> Result<String> {
         self.run(&[
             "capture-pane",
@@ -394,6 +393,104 @@ impl<'a> Tmux<'a> {
             "-",
         ])
         .await
+    }
+
+    /// Build an alt-screen-AWARE scrollback payload for the "load earlier
+    /// output" client gesture. Returns bytes shaped so that writing them once
+    /// onto a freshly `term.reset()`-ed xterm.js viewport reproduces tmux's
+    /// pane state without cursor drift or duplicated TUI banners.
+    ///
+    /// Strategy (split-capture; one extra tmux fork per load, ~5ms total):
+    ///
+    /// 1. `tmux display-message #{alternate_on},#{cursor_x},#{cursor_y}` —
+    ///    learn whether the pane is in alternate-screen (a TUI like Claude
+    ///    Code) and where its cursor currently is.
+    ///
+    /// 2. PRIMARY-SCREEN MODE (a shell at a prompt): there is no alt screen,
+    ///    so the full capture (`capture_full_ansi_joined`) already lands in
+    ///    the right buffer — return it as-is (`\x1b[2J\x1b[3J\x1b[H` prefix
+    ///    keeps origin deterministic, matching the WS-seed contract).
+    ///
+    /// 3. ALT-SCREEN MODE: capture the two buffers SEPARATELY and frame
+    ///    them with the standard alt-screen escapes so xterm's two-buffer
+    ///    model lines up with tmux's:
+    ///      - history (`capture-pane -p -e -J -S - -E -1`) — everything
+    ///        ABOVE the current visible screen, lands in the PRIMARY buffer
+    ///        as scrollback (the user can scroll up to read it);
+    ///      - `\x1b[?1049h\x1b[2J\x1b[H` — switch xterm to the ALT buffer,
+    ///        clear it, home cursor (the alt buffer never owns scrollback);
+    ///      - visible (`capture-pane -p -e`) — the current TUI frame as
+    ///        Claude has it painted RIGHT NOW;
+    ///      - `\x1b[<row>;<col>H` — restore the cursor to where the TUI
+    ///        thinks it is, so the user's first keystroke lands in the
+    ///        input row of Claude's prompt and not at a stale cell.
+    ///
+    /// On any tmux failure we fall through to the flat full-capture (still
+    /// useful, just with the old "stacked banner" oddity) rather than leaving
+    /// the client empty. Read-only, no lock.
+    pub async fn capture_history_with_alt_screen_aware_visible(&self) -> Result<String> {
+        // 1. Probe pane mode + cursor.
+        let info = self
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.target(),
+                "#{alternate_on},#{cursor_x},#{cursor_y}",
+            ])
+            .await
+            .unwrap_or_default();
+        let mut parts = info.trim().split(',');
+        let alt_on = parts.next().map(|s| s.trim() == "1").unwrap_or(false);
+        let cursor_x: u32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        let cursor_y: u32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+
+        // 2. Primary-screen mode: flat full capture is correct as-is.
+        if !alt_on {
+            let full = self.capture_full_ansi_joined().await?;
+            let body = full.trim_end_matches('\n').replace('\n', "\r\n");
+            return Ok(format!("\x1b[2J\x1b[3J\x1b[H{body}"));
+        }
+
+        // 3. Alt-screen mode: split + frame.
+        let history = self
+            .run(&[
+                "capture-pane",
+                "-p",
+                "-e",
+                "-J",
+                "-t",
+                &self.target(),
+                "-S",
+                "-",
+                "-E",
+                "-1",
+            ])
+            .await
+            .unwrap_or_default();
+        let visible = self
+            .run(&["capture-pane", "-p", "-e", "-t", &self.target()])
+            .await
+            .unwrap_or_default();
+
+        // tmux's cursor_y is 0-based; ANSI CUP `\x1b[<row>;<col>H` is 1-based.
+        let row = cursor_y.saturating_add(1);
+        let col = cursor_x.saturating_add(1);
+        let history_body = history.trim_end_matches('\n').replace('\n', "\r\n");
+        let visible_body = visible.trim_end_matches('\n').replace('\n', "\r\n");
+
+        // Frame: clear+home → primary history → enter-alt+clear+home → visible
+        // → cursor restore. Writing this onto a `term.reset()` produces xterm
+        // state that matches tmux exactly, with both buffers populated.
+        Ok(format!(
+            "\x1b[2J\x1b[3J\x1b[H{history_body}\x1b[?1049h\x1b[2J\x1b[H{visible_body}\x1b[{row};{col}H"
+        ))
     }
 
     // ── input ────────────────────────────────────────────────────────────────

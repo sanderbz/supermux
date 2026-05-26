@@ -78,6 +78,14 @@ export interface UseLiveTermResult {
   /** Pin the viewport back to the live bottom (resume following output) and
    *  re-focus the input. Wired to the "jump to bottom" button (SD-2). */
   scrollToBottom(): void
+  /** True when the user has scrolled all the way to the TOP of xterm's
+   *  scrollback — drives the in-terminal "↑ Earlier output" affordance that
+   *  opens the read-only history sheet. The WS attach seed paints only the
+   *  current visible screen (so cursor+alt-screen state stays coherent); older
+   *  output is reachable only via this explicit user gesture (the read-only
+   *  history sheet fetches `/api/sessions/{name}/scrollback`). False while the
+   *  viewport has content above. */
+  atTop: boolean
 }
 
 // ── Tunables (TECH_PLAN §4.5) ─────────────────────────────────────────────────
@@ -342,6 +350,13 @@ export function useLiveTerm(
   // an unchanged value); the state drives the React render of the button.
   const [scrolledUp, setScrolledUp] = React.useState(false)
   const scrolledUpRef = React.useRef(false)
+  // history-load: whether the viewport is scrolled to the very TOP of xterm's
+  // current scrollback. Drives the "↑ Earlier output" pill that opens the
+  // read-only history sheet (the WS seed paints only the visible screen, so
+  // older output is opt-in via this gesture). Same hot-path latch as
+  // `scrolledUp` — ref guards setState noise on every scroll-pixel.
+  const [atTop, setAtTop] = React.useState(false)
+  const atTopRef = React.useRef(false)
 
   // Flips true the first time the WS delivers REAL pty bytes — distinct from
   // `state==='live'` (which only proves auth_ok arrived). A `stopped` session
@@ -519,6 +534,8 @@ export function useLiveTerm(
     // gap. Start fresh each (re)subscribe so a prior session's state never leaks.
     scrolledUpRef.current = false
     setScrolledUp(false)
+    atTopRef.current = false
+    setAtTop(false)
     const viewportEl = container.querySelector<HTMLElement>('.xterm-viewport')
     const syncScrolledUp = () => {
       if (!viewportEl) return
@@ -529,8 +546,26 @@ export function useLiveTerm(
         scrolledUpRef.current = up
         setScrolledUp(up)
       }
+      // At-top latch: reached the very top of xterm's current scrollback.
+      // Same SCROLL_TO_BOTTOM_SLACK_PX slack so a sub-pixel rounding or 1-row
+      // rubber-band never flips the state on a still viewport. A non-scrollable
+      // viewport (scrollHeight === clientHeight, no history yet) reports
+      // scrollTop===0 too — that's a valid "at top" state (nothing to scroll
+      // means we are AT the top already), so the "↑ Earlier output" pill is
+      // available on freshly-attached sessions too, not gated behind a user
+      // having to first scroll up through nothing.
+      const top = viewportEl.scrollTop <= SCROLL_TO_BOTTOM_SLACK_PX
+      if (top !== atTopRef.current) {
+        atTopRef.current = top
+        setAtTop(top)
+      }
     }
     viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
+    // Compute the initial state once the viewport exists — without this the
+    // first render shows `atTop=false` even though scrollTop is 0 (no scroll
+    // event has fired yet because the user hasn't touched it). One sync after
+    // mount + the listener handles every subsequent change.
+    queueMicrotask(syncScrolledUp)
 
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
@@ -1324,5 +1359,6 @@ export function useLiveTerm(
     blur,
     scrolledUp,
     scrollToBottom,
+    atTop,
   }
 }
