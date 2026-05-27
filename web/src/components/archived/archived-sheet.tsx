@@ -90,16 +90,106 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
         ) : count === 0 ? (
           <EmptyArchived />
         ) : (
-          <ul className="flex flex-col gap-1" aria-label="Archived sessions">
-            <AnimatePresence initial={false}>
-              {archived.map((s) => (
-                <ArchivedRow key={s.name} session={s} recovery={recovery} />
-              ))}
-            </AnimatePresence>
-          </ul>
+          <>
+            {/* SD-9: bulk "Delete all" — only visible when there's something
+                to delete. Lives above the list (not in the sheet header) so it
+                sits at thumb height on touch and so the confirm can morph
+                in-place with the same pattern as per-row delete. */}
+            <DeleteAllRow recovery={recovery} />
+            <ul className="flex flex-col gap-1" aria-label="Archived sessions">
+              <AnimatePresence initial={false}>
+                {archived.map((s) => (
+                  <ArchivedRow key={s.name} session={s} recovery={recovery} />
+                ))}
+              </AnimatePresence>
+            </ul>
+          </>
         )}
       </div>
     </ResponsiveSheet>
+  )
+}
+
+/** SD-9 "Delete all" row — irreversible, inline-confirm matching the per-row
+ *  delete pattern. Disabled while any individual purge is in flight (we'd be
+ *  fighting the per-row mutation otherwise). On confirm, fans out every
+ *  archived row's purge in parallel; the sheet empties progressively as each
+ *  request resolves. */
+function DeleteAllRow({ recovery }: { recovery: UseArchivedSessionsResult }) {
+  const { archived, purgeAll, pending } = recovery
+  const { toast } = useToast()
+  const reduce = useReducedMotion()
+  const [confirming, setConfirming] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  // Lock out the bulk action while ANY individual purge is mid-flight to avoid
+  // racing with a per-row delete-confirm the user already kicked off.
+  const anyPending = pending.size > 0 || busy
+  const count = archived.length
+
+  const onPurgeAll = React.useCallback(async () => {
+    setConfirming(false)
+    setBusy(true)
+    try {
+      const { ok, failed } = await purgeAll()
+      if (failed === 0) {
+        toast({ message: `Deleted ${ok} session${ok === 1 ? '' : 's'}` })
+      } else if (ok === 0) {
+        toast({
+          message: 'Couldn’t delete archived sessions',
+          tone: 'error',
+        })
+      } else {
+        // Partial — be specific so the user knows what's left.
+        toast({
+          message: `Deleted ${ok}, ${failed} couldn’t be deleted`,
+          tone: 'error',
+        })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [purgeAll, toast])
+
+  return (
+    <div className="mb-1 flex items-center justify-end px-3 py-1">
+      {confirming ? (
+        <motion.div
+          initial={reduce ? false : { opacity: 0, x: 8 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={springs.snappy}
+          className="flex shrink-0 items-center gap-1"
+        >
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            disabled={anyPending}
+            className="flex h-11 items-center rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void onPurgeAll()}
+            disabled={anyPending}
+            className="flex h-11 items-center gap-1.5 rounded-md bg-destructive px-3 text-[13px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            <Trash2 className="size-4" aria-hidden />
+            Delete all {count} forever
+          </button>
+        </motion.div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          disabled={anyPending}
+          aria-label={`Delete all ${count} archived sessions forever`}
+          className="flex h-11 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <Trash2 className="size-4" aria-hidden />
+          Delete all
+        </button>
+      )}
+    </div>
   )
 }
 
