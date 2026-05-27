@@ -599,6 +599,18 @@ async fn send_seed_then_done(socket: &mut WebSocket, tmux: &Tmux<'_>) -> bool {
 /// any pending `Text` BEFORE it. The output order matches the input order
 /// exactly, so strict in-order delivery is preserved (type "abc"→"abc"; an Enter
 /// after text submits after the text; a multi-line paste stays contiguous).
+///
+/// `Resize` coalesce (server-side liveness fix). A contiguous run of `Resize`
+/// frames collapses to the LAST one because tmux window geometry is idempotent
+/// on last write. Without this, a single drag-resize gesture fires 10+ resize
+/// frames in <100ms (via the client-side `ResizeObserver`); each one shells out
+/// a fresh `tmux resize-window` subprocess that backs up the per-session lock
+/// behind `apply_one`, which then starves typed-character `Input` frames queued
+/// behind it — the user sees their letters disappear and (under enough load)
+/// the server can be DoS'd into a 1006 reconnect storm. Coalescing is ONLY
+/// applied to a CONTIGUOUS run: any `Input` / `Key` between two resizes breaks
+/// the run, so the earlier resize survives at its position and the typed bytes
+/// hit tmux at the correct geometry boundary.
 fn plan_applies(msgs: impl IntoIterator<Item = ClientMsg>) -> Vec<Apply> {
     let mut plan: Vec<Apply> = Vec::new();
     let mut pending = String::new();
@@ -608,6 +620,14 @@ fn plan_applies(msgs: impl IntoIterator<Item = ClientMsg>) -> Vec<Apply> {
             other => {
                 if !pending.is_empty() {
                     plan.push(Apply::Text(std::mem::take(&mut pending)));
+                }
+                // Resize-coalesce: if the just-prior op is also a Resize (and
+                // nothing — Text/Key/etc. — has flushed in between), drop it.
+                // Last-write-wins is semantically correct for tmux geometry.
+                if matches!(other, ClientMsg::Resize { .. })
+                    && matches!(plan.last(), Some(Apply::Ctrl(ClientMsg::Resize { .. })))
+                {
+                    plan.pop();
                 }
                 plan.push(Apply::Ctrl(other));
             }
@@ -841,6 +861,58 @@ mod coalesce_tests {
             input("cd"),
         ]);
         assert_eq!(trace(&plan), vec!["=ab", "R:80x24", "=cd"]);
+    }
+
+    #[test]
+    fn contiguous_resizes_coalesce_to_last() {
+        // Drag-resize burst: many Resize frames in flight collapse to the LAST,
+        // since tmux geometry is idempotent on last write. One fork, not N —
+        // unblocks typed Input frames queued behind on the per-session lock.
+        let plan = plan_applies([
+            ClientMsg::Resize { cols: 100, rows: 30 },
+            ClientMsg::Resize { cols: 90, rows: 28 },
+            ClientMsg::Resize { cols: 80, rows: 24 },
+        ]);
+        assert_eq!(trace(&plan), vec!["R:80x24"]);
+    }
+
+    #[test]
+    fn resize_input_resize_keeps_both_resizes() {
+        // Input between resizes is NOT contiguous → both resizes survive so the
+        // typed bytes hit tmux at the correct geometry boundary.
+        let plan = plan_applies([
+            ClientMsg::Resize { cols: 100, rows: 30 },
+            input("a"),
+            ClientMsg::Resize { cols: 80, rows: 24 },
+        ]);
+        assert_eq!(trace(&plan), vec!["R:100x30", "=a", "R:80x24"]);
+    }
+
+    #[test]
+    fn resize_key_resize_keeps_both_resizes() {
+        // A named Key between resizes also forms a non-contiguous boundary;
+        // both resizes survive at their positions.
+        let plan = plan_applies([
+            ClientMsg::Resize { cols: 100, rows: 30 },
+            key("Enter"),
+            ClientMsg::Resize { cols: 80, rows: 24 },
+        ]);
+        assert_eq!(trace(&plan), vec!["R:100x30", "K:Enter", "R:80x24"]);
+    }
+
+    #[test]
+    fn resize_burst_with_typing_at_end_preserves_typing() {
+        // The most common real burst shape: drag-resize spam followed by the
+        // user immediately typing into the new size. Resizes collapse to the
+        // last; typed bytes land AFTER the final geometry is set. Crucially
+        // the typed bytes are NOT lost behind a queue of stale resizes.
+        let plan = plan_applies([
+            ClientMsg::Resize { cols: 100, rows: 30 },
+            ClientMsg::Resize { cols: 90, rows: 28 },
+            ClientMsg::Resize { cols: 80, rows: 24 },
+            input("hi"),
+        ]);
+        assert_eq!(trace(&plan), vec!["R:80x24", "=hi"]);
     }
 
     #[test]
