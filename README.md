@@ -1,10 +1,10 @@
 # supermux
 
 **Run a roomful of AI coding agents from one dashboard.** supermux drives real
-`tmux` sessions on your machine — Claude Code, Codex, plain shells, anything
-you want — and gives you a fast, live web UI to watch, steer, and switch
-between dozens of them at once. A single Rust binary embeds the PWA: no Node,
-no Docker, no Python at runtime.
+`tmux` sessions across your fleet — local *and* remote machines over SSH —
+running Claude Code, Codex, plain shells, anything you want. A fast, live
+web UI lets you watch, steer, and switch between dozens of them at once. A
+single Rust binary embeds the PWA: no Node, no Docker, no Python at runtime.
 
 <p align="center">
   <video src="https://github.com/sanderbz/supermux/raw/main/docs/showcase/supermux-showcase.mp4" autoplay loop muted playsinline width="900">
@@ -26,6 +26,8 @@ could *see* them all without `⌘+\`-juggling tabs, supermux is that. It's
 - Lets you jump into any one full-screen with keyboard-captured terminal input.
 - Survives reboots — sessions live in tmux, not in supermux, so your agents
   keep working when the dashboard restarts.
+- **Spans machines** — point supermux at any host you can `ssh` into and its
+  tmux sessions show up next to your local ones, same dashboard, same shortcuts.
 - Runs the **same UI on your phone** as on your desktop — installable as a PWA.
 
 ## Features
@@ -39,6 +41,19 @@ could *see* them all without `⌘+\`-juggling tabs, supermux is that. It's
   schedules, files, snippets, MCP tools, and Claude Code skills.
 - **Full scrollback on every attach**: a fresh browser tab gets the same
   history `tmux` is still holding, not just the visible screen.
+- **Hover any tile** for an action menu — Stop, Archive, Info — without
+  leaving the overview.
+
+### Remote hosts over SSH
+- Register any reachable machine (Tailscale, VPN, public DNS, SSH reverse
+  tunnel — all work) on the **/hosts** page; supermux multiplexes a single
+  SSH ControlMaster connection per host for low-latency PTY streaming.
+- **One-click bootstrap** installs the `authorized_keys` entry and verifies
+  each prereq with a per-line checklist — no manual ssh-copy-id dance.
+- Start a session on a remote host from the same "New session" sheet as a
+  local one; a discreet **remote badge** marks tiles that aren't on this box.
+- Sessions reattach across hosts on supermux restart; the host registry
+  soft-deletes so historical tiles still resolve their origin machine.
 
 ### Agent Teams
 - Tell one agent to *spawn a team* and supermux auto-detects the teammates
