@@ -269,7 +269,7 @@ function ExperimentalSection() {
 
   const footnote = isError
     ? 'This server build doesn’t support Agent Teams yet.'
-    : 'Runs several Claude agents in parallel for one task — expect roughly a few times the tokens of a single session. Takes effect on your next new session.'
+    : 'Runs several Claude agents in parallel for one task — expect roughly a few times the tokens of a single session. Applies only when you start a team.'
 
   return (
     <Section title="Experimental" footnote={footnote}>
