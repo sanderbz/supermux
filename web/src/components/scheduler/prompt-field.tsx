@@ -35,7 +35,11 @@ function insertion(cmd: string): string {
 
 /** Split the merged text back into `command` + `prompt`. A leading slash token
  *  becomes `command`; everything else is the `prompt`. Falls back to all-prompt
- *  when nothing looks like a command (free-text only). */
+ *  when nothing looks like a command (free-text only). Used at the WIRE
+ *  boundary only (form → API payload) — not on every keystroke, because the
+ *  split → merge round-trip is lossy (it strips trailing spaces and the
+ *  command-prompt separator, which would prevent the user from typing spaces
+ *  in the field). The editor keeps the raw merged text in its own state. */
 export function splitCommandAndPrompt(text: string): {
   command: string
   prompt: string
@@ -54,7 +58,9 @@ export function splitCommandAndPrompt(text: string): {
 
 /** Inverse of `splitCommandAndPrompt` — assemble the merged text for the field
  *  from a stored row's `command` + `prompt`. Adds the leading slash if the row
- *  stored a bare command name. */
+ *  stored a bare command name. Used to SEED the editor on first open; once
+ *  the user starts typing the editor keeps the raw merged text directly so the
+ *  round-trip can't strip user-typed spaces. */
 export function mergeCommandAndPrompt(
   command: string,
   prompt: string,
