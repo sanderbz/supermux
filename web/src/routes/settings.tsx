@@ -497,35 +497,6 @@ function ActivityRow({ a }: { a: PushAttempt }) {
   )
 }
 
-/** Per-category Send-test button. Fires `pushApi.test(kind)` which routes
- *  through the SAME `send_push_for` path the real trigger uses — so a click
- *  exercises the prefs gate + transport in one step. */
-function TypeTestButton({ kind, disabled }: { kind: NotifCategory; disabled: boolean }) {
-  const [busy, setBusy] = React.useState(false)
-  async function fire() {
-    if (busy) return
-    setBusy(true)
-    try {
-      await pushApi.test(kind)
-    } catch {
-      /* the Recent activity panel surfaces the failure detail — no toast spam */
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={() => void fire()}
-      disabled={disabled || busy}
-      className="h-8 text-[12px]"
-    >
-      {busy ? 'Sending…' : 'Test'}
-    </Button>
-  )
-}
-
 /** Settings → Notifications (PUSH milestone + this PR's per-type prefs).
  *
  *  Layout, top-to-bottom:
@@ -703,18 +674,12 @@ function NotificationsSection() {
               label={t.label}
               hint={t.hint}
               control={
-                <div className="flex items-center gap-1">
-                  {/* The per-type Test fires THROUGH the gate — a click that
-                      doesn't ring means the toggle is off (or transport is
-                      broken; activity row will say which). */}
-                  <TypeTestButton kind={t.key} disabled={!prefs?.[t.key]} />
-                  <Switch
-                    ariaLabel={`Notify me when ${t.label.toLowerCase()}`}
-                    checked={prefs?.[t.key] ?? true}
-                    onCheckedChange={(next) => togglePref(t.key, next)}
-                    disabled={!prefs}
-                  />
-                </div>
+                <Switch
+                  ariaLabel={`Notify me when ${t.label.toLowerCase()}`}
+                  checked={prefs?.[t.key] ?? true}
+                  onCheckedChange={(next) => togglePref(t.key, next)}
+                  disabled={!prefs}
+                />
               }
             />
           ))}
