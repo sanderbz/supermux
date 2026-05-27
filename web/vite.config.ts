@@ -136,6 +136,14 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/]framer-motion[\\/]/.test(id)) return 'vendor-framer'
           if (/[\\/]node_modules[\\/](@codemirror|@uiw|@lezer|codemirror)[\\/]/.test(id))
             return 'vendor-codemirror'
+          // M-MD: rendered-markdown stack — unified/remark/rehype/mdast/hast/
+          // micromark/lowlight/highlight.js plus react-markdown itself. Lazy
+          // route only (FileViewer markdown Preview tab), so split it out so
+          // the overview/focus hero loop never pays for it.
+          if (
+            /[\\/]node_modules[\\/](react-markdown|remark-[^/\\]+|rehype-[^/\\]+|unified|unist-[^/\\]+|mdast-[^/\\]+|micromark[^/\\]*|hast-[^/\\]+|lowlight|highlight\.js|character-entities[^/\\]*|decode-named-character-reference|ccount|escape-string-regexp|trim-lines|space-separated-tokens|comma-separated-tokens|property-information|html-url-attributes|html-void-elements|web-namespaces|zwitch|trough|vfile[^/\\]*|bail|is-plain-obj|extend|devlop|fault)[\\/]/.test(id)
+          )
+            return 'vendor-markdown'
           return 'vendor'
         },
       },

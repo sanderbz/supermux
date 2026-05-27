@@ -2,8 +2,10 @@ import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   ChevronLeft,
+  Code2,
   Download,
   EllipsisVertical,
+  Eye,
   LoaderCircle,
   RotateCcw,
   Save,
@@ -23,12 +25,20 @@ import {
 import { filesApi } from '@/lib/api'
 import type { FileMeta } from '@/lib/api'
 import { useFileContent, useSaveFile } from '@/hooks/use-files'
-import { extOf, isWritable } from './file-types'
+import { extOf, isMarkdown, isWritable } from './file-types'
 
 // Lazy-load the CodeMirror editor (and its core bundle) so it only ships when a
 // text file is actually opened — keeps the initial route bundle lean (M29).
 const CodeEditor = React.lazy(() =>
   import('./code-editor').then((m) => ({ default: m.CodeEditor })),
+)
+
+// Lazy-load the rendered-markdown viewer + its vendor-markdown chunk
+// (react-markdown / remark-gfm / rehype-* / lowlight) — shipped only when the
+// user actually opens a `.md` file. Vite's manualChunks splits this into
+// `vendor-markdown` so the hero overview / focus route never pays for it.
+const MarkdownViewer = React.lazy(() =>
+  import('./markdown-viewer').then((m) => ({ default: m.MarkdownViewer })),
 )
 
 export interface FileViewerProps {
@@ -62,6 +72,14 @@ export function FileViewer({
   const content = isText ? (data as { content: string }).content : ''
   const value = draft ?? content
   const dirty = isText && draft !== null && draft !== content
+
+  // Markdown surface mode (M-MD). Opens in `preview` for `.md`/`.markdown`/
+  // `.mdx`; the user flips to `source` (CodeMirror) to edit. The Preview
+  // surface has no edit affordance, so the only way to dirty the buffer is
+  // through Source — no auto-switch effect needed. FileViewer is keyed by
+  // path upstream, so opening a different file resets this to `preview`.
+  const md = isText && isMarkdown(name)
+  const [mdMode, setMdMode] = React.useState<'preview' | 'source'>('preview')
 
   const onSave = () => {
     if (!dirty) return
@@ -101,13 +119,61 @@ export function FileViewer({
                 ? 'Unsaved changes'
                 : !isText
                   ? typeLabel(data)
-                  : editable
-                    ? 'Editable'
-                    : truncated
-                      ? 'Read-only (truncated)'
-                      : 'Read-only'}
+                  : md
+                    ? mdMode === 'preview'
+                      ? 'Rendered'
+                      : editable
+                        ? 'Editable source'
+                        : 'Source'
+                    : editable
+                      ? 'Editable'
+                      : truncated
+                        ? 'Read-only (truncated)'
+                        : 'Read-only'}
           </span>
         </div>
+
+        {/* Preview ↔ Source segmented control — only on markdown files. The
+            button widths match the icon-only header buttons so the toolbar
+            keeps its rhythm on narrow phones. */}
+        {md && (
+          <div
+            role="group"
+            aria-label="Markdown view"
+            className="mr-1 flex h-9 items-center rounded-lg border border-border bg-card p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={mdMode === 'preview'}
+              onClick={() => setMdMode('preview')}
+              title="Rendered preview"
+              className={cn(
+                'flex h-8 items-center gap-1 rounded-md px-2 text-[12px] font-medium transition-colors',
+                mdMode === 'preview'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Eye className="size-3.5" />
+              <span className="hidden sm:inline">Preview</span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={mdMode === 'source'}
+              onClick={() => setMdMode('source')}
+              title="Markdown source"
+              className={cn(
+                'flex h-8 items-center gap-1 rounded-md px-2 text-[12px] font-medium transition-colors',
+                mdMode === 'source'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Code2 className="size-3.5" />
+              <span className="hidden sm:inline">Source</span>
+            </button>
+          </div>
+        )}
 
         {editable && (
           <>
@@ -186,6 +252,7 @@ export function FileViewer({
               truncated={truncated}
               value={value}
               onChange={setDraft}
+              renderMarkdown={md && mdMode === 'preview'}
             />
           </motion.div>
         ) : null}
@@ -202,6 +269,7 @@ function FileBody({
   truncated,
   value,
   onChange,
+  renderMarkdown,
 }: {
   data: FileMeta
   name: string
@@ -210,6 +278,7 @@ function FileBody({
   truncated: boolean
   value: string
   onChange: (v: string) => void
+  renderMarkdown: boolean
 }) {
   if ('is_image' in data) {
     return (
@@ -274,7 +343,11 @@ function FileBody({
     )
   }
 
-  // Text — CodeMirror, editable when the extension is writable + not truncated.
+  // Text — either the CodeMirror editor (Source mode + every non-markdown
+  // file), or the rendered MarkdownViewer when the user is reading a `.md` /
+  // `.markdown` / `.mdx` in Preview mode. We pass the LATEST draft `value`
+  // (not the server `content`) into the renderer so unsaved edits show their
+  // typeset form live the moment the user toggles back to Preview.
   return (
     <div className="flex h-full min-h-0 flex-col">
       {truncated && (
@@ -291,12 +364,16 @@ function FileBody({
             </Centered>
           }
         >
-          <CodeEditor
-            name={name}
-            value={value}
-            editable={editable}
-            onChange={onChange}
-          />
+          {renderMarkdown ? (
+            <MarkdownViewer source={value} basePath={path} />
+          ) : (
+            <CodeEditor
+              name={name}
+              value={value}
+              editable={editable}
+              onChange={onChange}
+            />
+          )}
         </React.Suspense>
       </div>
     </div>

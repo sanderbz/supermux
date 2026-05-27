@@ -38,6 +38,14 @@ export function extOf(name: string): string {
   return name.slice(dot + 1).toLowerCase()
 }
 
+/** Is this a Markdown / MDX file? Drives the FileViewer's Preview ↔ Source
+ *  toggle in the M-MD rendered-markdown surface. Mirrors the backend's
+ *  `is_markdown` test (server/src/files/mod.rs §3.2). */
+export function isMarkdown(name: string): boolean {
+  const ext = extOf(name)
+  return ext === 'md' || ext === 'markdown' || ext === 'mdx'
+}
+
 /** Does M7 accept a PUT to this filename? */
 export function isWritable(name: string): boolean {
   const ext = extOf(name)

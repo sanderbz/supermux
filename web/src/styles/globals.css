@@ -418,3 +418,64 @@
 .edit-sheet-surface input[type='text']::selection {
   background-color: color-mix(in srgb, var(--primary) 28%, transparent);
 }
+
+/* ── Rendered Markdown syntax-highlight palette (M-MD) ────────────────────────
+   The MarkdownViewer pipes fenced code blocks through `rehype-highlight`
+   (lowlight + highlight.js core), which tags spans with `.hljs-*` class names.
+   Instead of importing a stock highlight.js stylesheet (which would lock the
+   palette to one theme + add ~3-5 KB of CSS we don't fully control), we map a
+   small set of token classes to the same theme tokens the rest of the app
+   uses — so light/dark switches in zero frames and the colours read as part
+   of supermux's UI, not "code from somewhere else".
+   Scoped to `.markdown-body .hljs *` to avoid touching the (also-class-named)
+   xterm output rules. */
+.hljs-comment,
+.hljs-quote {
+  color: color-mix(in srgb, var(--muted-foreground) 90%, transparent);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag,
+.hljs-name,
+.hljs-strong {
+  color: color-mix(in srgb, var(--primary) 85%, var(--foreground));
+  font-weight: 600;
+}
+.hljs-string,
+.hljs-attr,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+  color: hsl(var(--status-active));
+}
+.hljs-number,
+.hljs-meta,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-type {
+  color: hsl(var(--status-ready));
+}
+.hljs-title,
+.hljs-class .hljs-title,
+.hljs-function .hljs-title,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: hsl(var(--status-waiting));
+}
+.hljs-variable,
+.hljs-tag,
+.hljs-attribute,
+.hljs-regexp {
+  color: color-mix(in srgb, var(--foreground) 80%, transparent);
+}
+.hljs-deletion {
+  color: hsl(var(--status-error));
+}
+.hljs-emphasis {
+  font-style: italic;
+}
