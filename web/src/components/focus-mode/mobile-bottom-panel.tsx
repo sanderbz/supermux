@@ -81,11 +81,22 @@ import { orderSessions } from '@/components/focus-mode/session-order'
 //   PILLS_GAP      — breathing room above the pills row, between the dock
 //                    buttons and the pills row. Makes the open state read as
 //                    "two cohesive rows" instead of "one crammed row".
+//   PILLS_PB       — INNER breathing below the pills row, owned by the inner
+//                    pills container (not the outer panel — see SAFE-AREA note).
+//                    On iOS PWA the panel's outer pb is env(safe-area-inset-
+//                    bottom) ≈ 34px (the home-indicator gutter) — that alone
+//                    leaves pills sitting flush against the gutter when expanded.
+//                    PILLS_PB adds a small inner cushion ABOVE the gutter so the
+//                    pills don't visually crash into it. Applied to the INNER
+//                    listbox div ONLY (never to a vaul-wrapped ancestor — see
+//                    the 2026-05-27 mega-bug post-mortem on outer-Drawer touch
+//                    capture).
 //   PILLS_H        — total animated reveal of the pills SECTION (the pill
-//                    row + the gap above it). The pills row's container
-//                    animates `height` from 0 → PILLS_H so the panel grows
-//                    UPWARD by exactly this much; PILL_H of that is the
-//                    pills, PILLS_GAP of it is the top breathing.
+//                    row + the gap above + the inner pb below). The pills row's
+//                    container animates `height` from 0 → PILLS_H so the panel
+//                    grows UPWARD by exactly this much; PILL_H of that is the
+//                    pills, PILLS_GAP of it is the top breathing, PILLS_PB is
+//                    the bottom breathing above the iOS home indicator.
 //   HANDLE_HIT_H   — height of the invisible touch region around the visual
 //                    grabber pill. 22pt minimum, easy to grab without crowding
 //                    the dock buttons below.
@@ -97,7 +108,8 @@ import { orderSessions } from '@/components/focus-mode/session-order'
 //                    a tap (a long press without movement is not a toggle).
 const PILL_H = 44
 const PILLS_GAP = 8
-const PILLS_H = PILL_H + PILLS_GAP
+const PILLS_PB = 8
+const PILLS_H = PILL_H + PILLS_GAP + PILLS_PB
 const HANDLE_HIT_H = 22
 const COMMIT_RATIO = 0.4
 const FLING_VEL_PX_S = 600
@@ -450,7 +462,8 @@ export function MobileBottomPanel({
 
       {/* Pills row — animated height 0 → PILLS_H. ONE motion.div, ONE animated
           value, ONE spring. The whole row, scrollbar fix included:
-            • h-[44px] matches each pill's h-11 so natural content == box
+            • natural content height (pt-2 + h-11 pill + pb-2) == PILLS_H by
+              construction, so the outer height tween clips one rhythm cleanly
             • overflow-y-hidden defends against perpendicular-axis promotion
             • [scrollbar-width:none] + ::-webkit-scrollbar:hidden = no scrollbar
             • every pill is shrink-0 so the row never multi-lines
@@ -476,11 +489,27 @@ export function MobileBottomPanel({
             role="listbox"
             aria-label="Switch session"
             // pt-2 = the PILLS_GAP breathing above the pill row (between dock
-            // buttons and pills). The outer motion.div animates total height
-            // to PILLS_H (= 44 + 8); the pill row itself stays h-[44px] so each
-            // pill keeps its iOS 44pt floor and natural content matches the box.
+            // buttons and pills). pb-2 = PILLS_PB inner breathing below the row,
+            // applied HERE (inner listbox) — NOT to the outer panel or any vaul-
+            // wrapped ancestor — so the pills clear the iOS home indicator with
+            // a soft inner cushion above the env(safe-area-inset-bottom) gutter
+            // the outer panel owns. The outer motion.div animates total height
+            // to PILLS_H (= 44 + 8 + 8); the pill row itself stays h-[44px] so
+            // each pill keeps its iOS 44pt floor and natural content matches the
+            // box, with breathing room top and bottom.
+            //
+            // CRITICAL (2026-05-27 post-mortem): do NOT hoist this pb to the
+            // outer Drawer.Content or its wrappers. vaul intercepts touches
+            // across its entire visible surface; the +8px there pushed the
+            // closed panel into the terminal viewport bottom on iOS PWA, eating
+            // taps on the shell prompt and freezing mobile input. Inner-only
+            // padding is the only safe path.
             className={cn(
-              'flex h-[44px] shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden px-3 pt-2',
+              // h removed (was h-[44px]): with pt-2 + pb-2 added, the inner box's
+              // natural content height (44 pill + 8 + 8) equals PILLS_H exactly,
+              // so the outer motion.div's height tween clips to a clean rhythm
+              // without a second fixed-height value to keep in sync.
+              'flex shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden px-3 pb-2 pt-2',
               // Native scroll-snap so a finger-flick lands a pill flush.
               'snap-x snap-mandatory',
               // Hide the scrollbar visually — both engines.

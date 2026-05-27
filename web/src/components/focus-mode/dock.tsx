@@ -541,7 +541,13 @@ export function MobileDock({
         //   • relative — preserved for the dock's existing ComposeField morph
         //     surface (the COMPOSE_LAYOUT_ID layoutId resolves rects against
         //     its closest positioned ancestor, which has been this <div>).
-        'relative flex flex-col gap-2 px-2.5 pb-2 pt-2',
+        // pt-1 (was pt-2): the panel handle above the dock already contributes
+        // ~9px of bottom whitespace from its centered grabber pill — pt-2 here
+        // added another 8px so the visual gap between grabber and the button row
+        // read as ~17px, too generous. pt-1 (4px) collapses the doubled-spacing
+        // to a single tight rhythm without crowding the buttons. Open-state
+        // breathing above pills is owned by PILLS_GAP in mobile-bottom-panel.
+        'relative flex flex-col gap-2 px-2.5 pb-2 pt-1',
         className,
       )}
     >
