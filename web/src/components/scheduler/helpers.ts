@@ -2,7 +2,7 @@
 // helper patterns. Pure functions only, no React — so both the route and the
 // dialog/sheet import without circular deps.
 
-import type { RecipeCommand, ScheduleKind } from '@/lib/api'
+import type { ScheduleKind } from '@/lib/api'
 
 /** Relative + absolute formatting for a next/last-run timestamp (RFC3339). */
 export function formatRunTime(iso: string | null | undefined): string {
@@ -54,30 +54,12 @@ export function formatRanAt(epochSeconds: number): string {
 
 /** Human label for a job kind. Sentence case (never UPPERCASE). */
 export const KIND_LABEL: Record<ScheduleKind, string> = {
-  boot: 'Boot agent',
-  tmux: 'Send command',
+  boot: 'Boot session',
+  tmux: 'Prompt session',
   shell: 'Shell job',
 }
 
-/** How many recipe cards to surface (one tap prefills a boot job from the REAL
- *  installed command). Kept small so the create sheet stays scannable. */
-const RECIPE_LIMIT = 6
-
-/** Build the "start from a command" recipe cards from the user's REAL installed
- *  commands (skills + user/managed commands + MCP connectors — see
- *  `GET /api/schedules/commands`). MCP connectors aren't sendable slash commands,
- *  so they're excluded from the one-tap recipe cards; the picker still lists them.
- *  No fabricated/standard commands — if nothing is installed, no cards show. */
-export function recipesFromCommands(
-  commands: ReadonlyArray<RecipeCommand>,
-): RecipeCommand[] {
-  return commands
-    .filter((c) => c.source === 'skill' || c.source === 'command')
-    .slice(0, RECIPE_LIMIT)
-}
-
 export const PROVIDERS = ['claude'] as const
-export const DONE_ACTIONS = ['disable', 'notify'] as const
 
 // ── recurrence composer + English humanizer (frontend-only; the server parser
 // already accepts every grammar form below — see scheduler/parser.rs) ──────────

@@ -1,10 +1,14 @@
-// Scheduler route (M21) — the schedule list on the M8 backend. Columns: title /
+// Scheduler route — the schedule list on the M8 backend. Columns: title /
 // human schedule / next-run / last-run / enable-toggle. The `+` button and the
 // row click both open the SAME <ScheduleDetailSheet> (a full-height right Sheet)
-// — `create` mode (preset recipes + recurrence composer + live next-5-runs
-// preview + test-fire) or `edit` mode (inline edit + fire log + run history with
-// idempotency-aware status pills). One container, no centered modal. Real-time
-// via SSE (useSchedulerStream) — never polled.
+// — `create` mode (combined prompt field with inline `/` autocomplete +
+// recurrence composer + live next-5-runs preview + test-fire) or `edit` mode
+// (inline edit + fire log + run history with idempotency-aware status pills).
+// Real-time via SSE (useSchedulerStream) — never polled.
+//
+// Visual language matches /hosts (the sibling registry route): same headline
+// scale, same plain action row at the top (no glass + border-bottom chrome),
+// same card-list density, same `max-w-` container.
 
 import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
@@ -67,33 +71,36 @@ function SchedulerInner() {
     setCreating(true)
   }
 
+  const reduce = useReducedMotion()
+
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl flex-col">
-      {/* R5: the shared mobile top bar was removed, so this glass header owns
-          the safe-area top inset on mobile (≤md). ios-pwa: use the shared
-          `safe-header` utility (min-h 56px + additive padding-top:env(top)) so
-          the inset GROWS the box instead of eating into a fixed h-14 and tucking
-          the title under the notch / Dynamic Island; `sm:pt-0` resets the inset
-          once the desktop SideNav owns the chrome (env()=0 there anyway). */}
-      {/* `pb-2` (8px bottom padding) keeps the New-schedule button (h-11) from
-          sitting flush against the header's border-b — most visible on iOS PWA
-          where safe-header's additive `pt-safe` consumes the min-h:14 slack
-          and `items-center` then centers the button in a 0-slack content box.
-          Mobile browser gains a few extra px of bottom breathing too. */}
-      <header className="glass safe-header flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 pb-2 sm:px-6 sm:pb-0 sm:pt-0">
-        <h1 className="text-xl font-semibold tracking-tight">Scheduler</h1>
-        <Button
-          size="sm"
-          className="h-11"
+    // Matches /hosts: a single scrollable column inside the safe-area-aware
+    // route shell, headline + secondary action row at top, then a card list.
+    // No glass + border-bottom chrome — the page reads as one calm surface.
+    <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6">
+      <header className="mb-4 flex flex-wrap items-center gap-3">
+        <h1 className="mr-1 text-2xl font-semibold tracking-tight">Scheduler</h1>
+        <p className="hidden flex-1 text-sm text-muted-foreground sm:block">
+          Recurring jobs — prompt a session, boot a fresh one, or run a shell command on a timer.
+        </p>
+        <motion.button
+          type="button"
           onClick={openCreate}
           aria-label="New schedule"
+          title="New schedule"
+          whileTap={reduce ? undefined : { scale: 0.9 }}
+          transition={springs.snappy}
+          className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground sm:hidden"
         >
           <Plus className="size-4" />
+        </motion.button>
+        <Button onClick={openCreate} className="hidden sm:inline-flex">
+          <Plus />
           New schedule
         </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-4 sm:px-6">
+      <div className="min-h-0 flex-1">
         {schedules.isLoading ? (
           <ListSkeleton />
         ) : schedules.isError ? (
