@@ -16,7 +16,6 @@
 import * as React from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  ChevronDown,
   Clock3,
   FlaskConical,
   Loader2,
@@ -29,6 +28,7 @@ import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/use-toast'
+import { SessionPicker } from '@/components/session/session-picker'
 import {
   schedulerApi,
   type ScheduleCreateInput,
@@ -276,7 +276,13 @@ export function ScheduleForm({
             <SessionPicker
               value={value.session}
               onChange={(v) => set('session', v)}
-              sessions={sessions}
+              sessions={sessions.map((name) => ({ name }))}
+              allowEmpty={false}
+              ariaLabel="Target session"
+              menuLabel="Target session"
+              placeholder={
+                sessions.length ? 'Choose a session…' : 'No live sessions'
+              }
             />
           </Field>
           <Field label="Prompt">
@@ -686,42 +692,6 @@ function DayPicker({
         })}
       </div>
     </SubField>
-  )
-}
-
-// ── session picker (select over the live sessions list) ─────────────────────────
-
-function SessionPicker({
-  value,
-  onChange,
-  sessions,
-}: {
-  value: string
-  onChange: (v: string) => void
-  sessions: string[]
-}) {
-  // When the bound session isn't in the live list (e.g. an edited row pointing
-  // at a stopped session), keep it selectable so the value isn't silently lost.
-  const options = value && !sessions.includes(value) ? [value, ...sessions] : sessions
-  return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label="Target session"
-        className="h-11 w-full appearance-none rounded-md border border-input bg-transparent px-3 pr-10 font-mono text-base md:text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <option value="" disabled>
-          {sessions.length ? 'Choose a session…' : 'No live sessions'}
-        </option>
-        {options.map((s) => (
-          <option key={s} value={s}>
-            {s}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute inset-y-0 right-3 my-auto size-4 text-muted-foreground" />
-    </div>
   )
 }
 
