@@ -57,6 +57,7 @@ import {
 import { SnippetsSection } from '@/components/settings/snippets-section'
 import { HostsSection } from '@/components/settings/hosts-section'
 import { AuditLog } from '@/components/settings/audit-log'
+import { UpdatesSection } from '@/components/settings/updates-panel'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -878,6 +879,8 @@ export function Settings() {
           </Section>
 
           <NotificationsSection />
+
+          <UpdatesSection />
 
           <Section title="Model">
             <Row
