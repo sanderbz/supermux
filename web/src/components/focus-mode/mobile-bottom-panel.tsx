@@ -1,69 +1,64 @@
-// MobileBottomPanel — the unified mobile bottom surface (polish/swipe-integrate).
+// MobileBottomPanel — native-quality iOS-style bottom drawer.
 //
-// One panel = ONE positioned element that holds BOTH the session-pills strip
-// AND the existing MobileDock (Edit/⌨/···/+/🎙/↵). The pills row sits ABOVE the
-// dock content; on swipe-up the whole panel "grows" upward to reveal the pills,
-// pushing the terminal's flex-1 area up by exactly the pills row height. On
-// swipe-down (or tap-on-grabber while open), the panel shrinks back to dock-only.
+// THE MODEL (read this first):
 //
-// This replaces the previous architecture (a separate `SwipeSessionSwitcher`
-// rendered as a SIBLING above MobileDock). Two siblings with their own borders,
-// backgrounds and animated heights compete for the bottom anchor → visible
-// "glackiness" (the user's word). One container, one height/transform driver,
-// one continuous surface → smooth.
+//   The panel is ONE bottom-anchored surface with TWO sections stacked
+//   vertically inside it (top → bottom DOM order):
 //
-//   ╭─ panel (single bg-card / glass surface, ONE top border) ───────────────╮
-//   │ ─ grabber (4×36 pill) ─                                                │
-//   │ ╭─ pills row (h:44, overflow-x-auto, NO vertical scroll) ─────────────╮│
-//   │ │ [● claude-1] [● claude-2] [● router] [● db] [● …]                   ││
-//   │ ╰─────────────────────────────────────────────────────────────────────╯│
-//   │ ─ MobileDock content (unchanged) ──────────────────────────────────────│
-//   │ [✎ Edit] [⌨] [···] [＋] [🎙]                              [↵ Enter]    │
-//   ╰────────────────────────────────────────────────────────────────────────╯
+//     ╭─ panel (glass; one top hairline; rounded continuous corners) ──╮
+//     │  ─── 22pt drag handle (with the 4×36pt visual pill at center) ──│
+//     │  ╭─ pills row (h: 44pt; revealed by drag-up) ─────────────────╮│
+//     │  │  [● claude-1]  [● claude-2]  [● router]  [● db]  …          ││
+//     │  ╰────────────────────────────────────────────────────────────╯│
+//     │  ─── MobileDock (children — Edit/⌨/···/+/🎙/↵, plus the iOS ───│
+//     │       accessory key row when the soft keyboard is up) ─────────│
+//     ╰────────────────────────────────────────────────────────────────╯
 //
-// Geometry:
-//   • The panel always lives in flex flow at the bottom of MobileSheet. Its
-//     OUTER height is animated between H_DOCK (closed) and H_DOCK + H_PILLS
-//     (open). The terminal's `flex-1 min-h-0` re-flows around it — exactly ONE
-//     element changes size each frame, so there's no two-sibling thrash.
-//   • The panel has `overflow: hidden` so the pills row (which sits at the TOP
-//     of the column) is clipped off-screen when the panel is at its closed
-//     height. There is no second border, no opacity gate, no separate layer —
-//     just a clipped child of the single growing wrapper.
-//   • The grabber is positioned `absolute; top:0`; it's visible above the pills
-//     row when open (as a drag-to-close handle) and inside the dock's tiny
-//     top-strip when closed (peeking ~12px above as the swipe-up affordance).
+//   • Resting (closed): the pills-row height = 0. Panel = handle + dock.
+//   • Expanded (open):  the pills-row height = PILLS_H. Panel grows UPWARD
+//     by exactly PILLS_H; the terminal's `flex-1 min-h-0` shrinks to match.
 //
-// Gesture model (relocated, not rewritten — the prior critic confirmed this is
-// correct; we just bind it to the panel wrapper instead of the dock sibling):
-//   • Capture-phase pointerdown on the PANEL WRAPPER (covers both pills and
-//     dock surfaces): swipes started ANYWHERE on the panel are claimable; taps
-//     on the dock's buttons still receive the event because we don't
-//     stopPropagation.
-//   • 8 px upward movement (closed) or downward (open) crosses the slop +
-//     claims the gesture; `setPointerCapture` on the wrapper.
-//   • Capture-phase click swallow after a claimed drag: a swipe that releases
-//     on a dock button never triggers the button.
-//   • Multi-touch rejection (`pointerType` + `e.button` checks).
-//   • A/B arming: swipe-UP claims only while closed; swipe-DOWN claims only
-//     while open. Inside the pills row, native horizontal scroll keeps working
-//     because `data-vr-swipe-scroll` is the exclusion sentinel for the close
-//     gesture (the open-gesture is only armed when state === 'closed' anyway).
-//   • `useReducedMotion` collapses the spring to a 150 ms tween.
+// THE GESTURE (the part the previous version got wrong):
 //
-// Pills row CSS — the scrollbar fix:
-//   • `flex h-[44px] shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden`
-//   • Every pill is `shrink-0` so the row never compresses pills into a multi-
-//     line cluster that could overflow vertically.
-//   • The scrollbar is visually hidden (`[scrollbar-width:none]` +
-//     `[&::-webkit-scrollbar]:hidden`) so the row reads as a clean strip.
-//   • No `pt-*` or `min-h-*` larger than the row's natural height — the prior
-//     `pt-3` inside an `h-11` row was what made scrollHeight (50) > clientHeight
-//     (44) and gave Chrome a reason to promote the perpendicular axis to
-//     `overflow-y: auto`.
+//   The drag handle is THE drag region — a single 22pt-tall full-width strip
+//   at the very top of the panel. It carries `touch-action: none` so the OS
+//   doesn't preempt our vertical drag, and a pointerdown anywhere ON IT
+//   captures the pointer to the strip (so the move/up always reach us — the
+//   finger can wander off the handle without losing the drag).
+//
+//   The DOCK BUTTONS are untouched: pointer events go to them as usual. No
+//   capture-phase listener on the wrapper, no swallow-the-next-click after a
+//   drag, no risk of an Esc/Enter tap firing as the panel collapses.
+//
+//   Drag physics:
+//     • tap (no movement past 6pt within 250ms)      → toggle
+//     • drag UP from closed                          → follow 1:1, snap on
+//       release: ≥40% of PILLS_H committed → open, else snap back closed
+//     • drag DOWN from open                          → follow 1:1, snap on
+//       release: ≥40% travel committed → close, else snap back open
+//     • flick (release velocity ≥ 600 px/s)          → commit in that direction
+//
+//   Snap-back uses framer-motion `springs.sheetDetent` (Apple Maps feel:
+//   stiffness 280, damping 30). Reduced-motion users get a 150ms tween.
+//
+// HIT TARGET:
+//   • The handle's hit region is the FULL panel width × 22pt — well above
+//     Apple's 44pt floor when you include the dock's top edge proximity.
+//     The visible pill itself is the classic 4×36pt iOS grabber.
+//
+// ESCAPE HATCHES:
+//   • Tap outside (anywhere not in the panel) → close.
+//   • Esc key                                  → close.
+//   • Switching to a session                   → close (and the new session's
+//     terminal takes focus).
+//
+// SAFE-AREA:
+//   The dock children own `pb-[max(env(safe-area-inset-bottom),0.625rem)]` so
+//   the home indicator never overlaps. The panel here only owns the chrome
+//   above that.
 
 import * as React from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
+import { motion, useReducedMotion, type PanInfo } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -72,39 +67,41 @@ import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { orderSessions } from '@/components/focus-mode/session-order'
 
 // ── Geometry knobs ────────────────────────────────────────────────────────────
-//   • PILLS_ROW_HEIGHT_PX — fixed-height of the pills strip. 44 = iOS hit target;
-//     matches each pill's own h-11 so the row hugs the pill content with no
-//     vertical padding (the scrollbar fix lives here).
-//   • DRAG_SLOP_PX — minimum finger travel before we claim the gesture; below
-//     this it stays a tap → the dock's button under the finger handles its own
-//     click.
-//   • COMMIT_OPEN_PX / COMMIT_CLOSE_PX — vertical travel that commits to the
-//     new state on release; below it snaps back.
-const PILLS_ROW_HEIGHT_PX = 44
-const DRAG_SLOP_PX = 8
-const COMMIT_OPEN_PX = 24
-const COMMIT_CLOSE_PX = 24
+//   PILLS_H        — height of the revealed pills row. 44pt iOS hit target.
+//   HANDLE_HIT_H   — height of the invisible touch region around the visual
+//                    grabber pill. 22pt minimum, easy to grab without crowding
+//                    the dock buttons below.
+//   COMMIT_RATIO   — fraction of PILLS_H you must travel to commit on release.
+//   FLING_VEL_PX_S — pointer velocity (px/s) that always commits in its
+//                    direction regardless of distance — the iOS flick.
+//   TAP_SLOP_PX    — pointer travel under which a release counts as a tap.
+//   TAP_MAX_MS     — press duration above which a release stops counting as
+//                    a tap (a long press without movement is not a toggle).
+const PILLS_H = 44
+const HANDLE_HIT_H = 22
+const COMMIT_RATIO = 0.4
+const FLING_VEL_PX_S = 600
+const TAP_SLOP_PX = 6
+const TAP_MAX_MS = 250
 
 type PanelState = 'closed' | 'dragging' | 'open'
 
 export interface MobileBottomPanelProps {
   /** All sessions from `useSessions()`. Filtered + ordered inside (pinned >
    *  live > recent). When there is only one session the pills row is hidden
-   *  (no swap targets) but the gesture listeners stay armed as cheap no-ops. */
+   *  (no swap targets) and the handle collapses to nothing — the dock then
+   *  has no drawer affordance and reads as a plain bottom bar. */
   sessions: ApiSession[]
   /** Name of the currently-focused session — highlighted as "current". */
   currentName: string
   /** Navigate to a session's focus route. The panel closes after this. */
   onPick: (name: string) => void
-  /** The dock content — rendered inside the panel at the BOTTOM of the column.
-   *  We pass it as a child so MobileBottomPanel doesn't need to know about the
-   *  dock's many props (the route knows them, and renders <MobileDock> directly
-   *  as children). */
+  /** The dock content (MobileDock). Rendered at the bottom of the panel. */
   children: React.ReactNode
 }
 
-/** The unified mobile bottom panel — pills row + dock as one continuous
- *  surface, with a single gesture-driven reveal. */
+/** The unified mobile bottom panel — handle + pills + dock as one continuous
+ *  iOS-native bottom drawer with a single drag gesture on the handle. */
 export function MobileBottomPanel({
   sessions,
   currentName,
@@ -113,20 +110,12 @@ export function MobileBottomPanel({
 }: MobileBottomPanelProps) {
   const reduceMotion = useReducedMotion()
   const [state, setState] = React.useState<PanelState>('closed')
-  // While dragging we follow the finger 1:1: `dragOffset` is the 0..PILLS_ROW_HEIGHT_PX
-  // pixels the panel has "grown" above its closed height. At rest = 0 (closed)
-  // or PILLS_ROW_HEIGHT_PX (open).
+  // The live drag offset in px — 0 = closed, PILLS_H = open. While dragging
+  // we set this 1:1 to the finger; at rest it equals the detent of `state`.
   const [dragOffset, setDragOffset] = React.useState(0)
 
-  // Ref-mirror for the imperative pointer handlers (registered once) so they
-  // read the latest state without re-binding every render.
-  const stateRef = React.useRef<PanelState>('closed')
-  React.useEffect(() => {
-    stateRef.current = state
-  }, [state])
-
-  // Ordered sessions — shared with the overview/edge-swipe nav (pinned > live
-  // > recent).
+  // Ordered sessions — pinned > live > recent — shared with the overview's
+  // edge-swipe order so muscle memory carries over.
   const ordered = React.useMemo(() => orderSessions(sessions), [sessions])
   const firstNonCurrentIdx = React.useMemo(
     () => ordered.findIndex((s) => s.name !== currentName),
@@ -134,197 +123,171 @@ export function MobileBottomPanel({
   )
   const hasSwapTargets = firstNonCurrentIdx !== -1
 
-  // Latest-onPick ref so the gesture closure doesn't re-bind on every render.
+  // Latest-onPick mirror so the close-and-pick callback doesn't churn the
+  // effect-bound listeners.
   const onPickRef = React.useRef(onPick)
   React.useEffect(() => {
     onPickRef.current = onPick
   })
 
-  // The DOM element that owns the gesture: the panel wrapper. setPointerCapture
-  // routes subsequent move/up here once we CLAIM, so the dock's pointerup never
-  // sees the finger (its buttons can't fire on release after a claimed drag).
-  const wrapperRef = React.useRef<HTMLDivElement | null>(null)
-  // Focus restore on close — and the first non-current pill takes focus on open.
+  // ── Refs for focus restoration + the panel-wrapper outside-tap test ────────
+  const panelRef = React.useRef<HTMLDivElement | null>(null)
   const previousFocusRef = React.useRef<Element | null>(null)
   const firstPillRef = React.useRef<HTMLButtonElement | null>(null)
 
-  const closePanel = React.useCallback(() => {
+  const close = React.useCallback(() => {
     setDragOffset(0)
     setState('closed')
   }, [])
-  const openPanel = React.useCallback(() => {
-    setDragOffset(PILLS_ROW_HEIGHT_PX)
+  const open = React.useCallback(() => {
+    setDragOffset(PILLS_H)
     setState('open')
   }, [])
-
-  // ── Gesture: swipe-up (closed → open) AND swipe-down (open → closed) ───────
-  // ONE listener block on the wrapper, since both gestures share the same
-  // plumbing (slop gate + setPointerCapture + click swallow). The direction
-  // arming is gated by `stateRef.current`: when closed, only swipe-UP claims;
-  // when open, only swipe-DOWN claims. Inside the pills row, horizontal native
-  // scroll keeps working because `data-vr-swipe-scroll` is excluded from the
-  // close gesture and the open gesture only fires when the panel is closed
-  // (pills row is then hidden anyway).
-  React.useEffect(() => {
-    const wrapper = wrapperRef.current
-    if (!wrapper) return
-
-    type Track = {
-      id: number
-      startX: number
-      startY: number
-      direction: 'up' | 'down' // arming direction at pointerdown
-      claimed: boolean
-    } | null
-    let track: Track = null
-
-    // Block the synthetic click that the browser fires after a claimed drag —
-    // without this, releasing on top of a dock button would activate it
-    // (toggle the keyboard, send Enter, etc.). Reset per gesture.
-    let swallowNextClick = false
-    const onClickCapture = (e: MouseEvent) => {
-      if (!swallowNextClick) return
-      swallowNextClick = false
-      e.stopPropagation()
-      e.preventDefault()
-    }
-
-    const onPointerDown = (e: PointerEvent) => {
-      // Single-pointer only — multi-touch (e.g. a pinch on the terminal) →
-      // never a candidate.
-      if (e.pointerType === 'mouse' && e.button !== 0) return
-      if (track) return // already tracking another finger
-      // Direction arming: closed → swipe-UP opens; open → swipe-DOWN closes.
-      // 'dragging' is a transient state during the gesture — never armed from.
-      const s = stateRef.current
-      if (s !== 'closed' && s !== 'open') return
-      // While OPEN we exclude pointerdowns on the horizontally-scrolling pill
-      // row so native overflow-x panning keeps working; the gesture is then
-      // only claimable from the dock surface.
+  const toggle = React.useCallback(() => {
+    setState((s) => {
       if (s === 'open') {
-        const target = e.target as HTMLElement | null
-        if (target?.closest('[data-vr-swipe-scroll]')) return
+        setDragOffset(0)
+        return 'closed'
       }
-      track = {
-        id: e.pointerId,
-        startX: e.clientX,
-        startY: e.clientY,
-        direction: s === 'closed' ? 'up' : 'down',
-        claimed: false,
+      setDragOffset(PILLS_H)
+      return 'open'
+    })
+  }, [])
+
+  // ── The drag handle's gesture (the ONE pointer handler in this component) ──
+  //
+  // We use framer-motion's `motion.div drag="y"` on the handle: it gives us
+  // the 1:1 finger-follow, pointer-capture, multi-touch rejection, and
+  // release-velocity for free; we just translate offset+velocity into our
+  // open/close detents on release. The DOCK BUTTONS below are completely
+  // unaffected — the drag region is geometrically scoped to the handle alone.
+  //
+  // `dragArmedFromRef` snapshots the panel's state at the instant the drag
+  // STARTS, so onDrag/onDragEnd can compute "where did the finger START in
+  // open-amount terms?" without racing the React `state` flip to 'dragging'.
+  // It's a ref (not state) because (a) it never needs to trigger a render,
+  // (b) reading it from event handlers must be synchronous, and (c) writing
+  // it from `onDragStart` is part of the gesture's natural lifecycle.
+  const dragArmedFromRef = React.useRef<'open' | 'closed'>('closed')
+  const draggingRef = React.useRef(false)
+  const tapCandidateRef = React.useRef<{ t: number; x: number; y: number } | null>(
+    null,
+  )
+
+  const onHandlePointerDown = React.useCallback((e: React.PointerEvent) => {
+    // Only single-touch / left-mouse — pinch / right-click are never drags.
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    draggingRef.current = false
+    tapCandidateRef.current = { t: Date.now(), x: e.clientX, y: e.clientY }
+  }, [])
+
+  // Use a callback-ref pattern to avoid the stateRef churn: capture the
+  // last-committed (open/closed) panel state into `dragArmedFromRef` lazily
+  // from the *current* React state at drag-start time. We read it via a
+  // closure over a function-form setState so it always sees the freshest
+  // value (and never trips the "modifying a hook argument" lint rule).
+  const onHandleDragStart = React.useCallback(() => {
+    draggingRef.current = true
+    setState((s) => {
+      // s is either 'closed' or 'open' here — 'dragging' is unreachable
+      // from a pointerdown that begins a NEW drag (the previous drag's
+      // onPointerUp/cancel always settles back to a detent first).
+      const armed: 'open' | 'closed' = s === 'open' ? 'open' : 'closed'
+      dragArmedFromRef.current = armed
+      return 'dragging'
+    })
+  }, [])
+
+  const onHandleDrag = React.useCallback(
+    (_: unknown, info: PanInfo) => {
+      // Per the gesture spec: drag UP from closed grows the pills row,
+      // drag DOWN from open shrinks it. `info.offset.y` is +ve when the
+      // finger has moved DOWN from the pointerdown point.
+      const startOffset = dragArmedFromRef.current === 'open' ? PILLS_H : 0
+      // Convert finger-travel into an open-amount in [0, PILLS_H]. Up =
+      // negative dy = open more; down = positive dy = close more.
+      const next = clamp(startOffset - info.offset.y, 0, PILLS_H)
+      setDragOffset(next)
+    },
+    [],
+  )
+
+  const onHandleDragEnd = React.useCallback(
+    (_: unknown, info: PanInfo) => {
+      const armed = dragArmedFromRef.current
+      const startOffset = armed === 'open' ? PILLS_H : 0
+      const next = clamp(startOffset - info.offset.y, 0, PILLS_H)
+      const fling = info.velocity.y
+      // Fling: any motion above FLING_VEL_PX_S commits in its direction,
+      // regardless of how far the finger actually traveled.
+      if (fling <= -FLING_VEL_PX_S) {
+        open()
+        return
       }
-    }
-
-    const onPointerMove = (e: PointerEvent) => {
-      if (!track || e.pointerId !== track.id) return
-      const dx = e.clientX - track.startX
-      const dy = e.clientY - track.startY
-
-      if (!track.claimed) {
-        const dist = Math.hypot(dx, dy)
-        if (dist < DRAG_SLOP_PX) return
-        // Predominantly vertical movement in the armed direction → claim.
-        // Diagonal / horizontal / wrong-direction → never ours.
-        const vertical = Math.abs(dy) > Math.abs(dx)
-        if (!vertical) return
-        if (track.direction === 'up' && dy >= 0) return
-        if (track.direction === 'down' && dy <= 0) return
-
-        track.claimed = true
-        swallowNextClick = true
-        try {
-          wrapper.setPointerCapture(e.pointerId)
-        } catch {
-          /* setPointerCapture can throw if the target hasn't received any
-             events yet — fine; we still receive moves via document-level
-             listeners below. */
-        }
-        setState('dragging')
+      if (fling >= FLING_VEL_PX_S) {
+        close()
+        return
       }
-
-      // Linear 1:1 finger tracking between 0 (closed) and PILLS_ROW_HEIGHT_PX
-      // (open). Opening: -dy is upward travel; closing: PILLS_ROW_HEIGHT_PX − dy.
-      const travel =
-        track.direction === 'up'
-          ? Math.max(0, -dy)
-          : Math.max(0, PILLS_ROW_HEIGHT_PX - dy)
-      setDragOffset(Math.min(PILLS_ROW_HEIGHT_PX, travel))
-    }
-
-    const onPointerUp = (e: PointerEvent) => {
-      if (!track || e.pointerId !== track.id) return
-      const claimed = track.claimed
-      const dy = e.clientY - track.startY
-      const direction = track.direction
-      track = null
-      if (!claimed) return
-      if (direction === 'up') {
-        if (-dy >= COMMIT_OPEN_PX) openPanel()
-        else closePanel()
+      // Settled: commit if you've crossed COMMIT_RATIO of the detent gap,
+      // else snap back to where you came from.
+      const traveled = Math.abs(next - startOffset)
+      const commit = traveled >= PILLS_H * COMMIT_RATIO
+      if (armed === 'closed') {
+        if (commit) open()
+        else close()
       } else {
-        if (dy >= COMMIT_CLOSE_PX) closePanel()
-        else openPanel()
+        if (commit) close()
+        else open()
       }
-    }
+    },
+    [close, open],
+  )
 
-    const onPointerCancel = (e: PointerEvent) => {
-      if (!track || e.pointerId !== track.id) return
-      const claimed = track.claimed
-      track = null
-      if (!claimed) return
-      // A cancelled drag (system gesture, app backgrounded) → snap back to the
-      // ARMED-FROM state. Never strand the panel mid-height.
-      if (stateRef.current === 'dragging') {
-        // We were dragging from `direction`'s armed state; snap back to that.
-        // For up-armed (was closed) → close; for down-armed (was open) → open.
-        // Reading the direction off the closure here would be lost since
-        // `track` was nulled; instead use the post-cancel snap rule: any
-        // cancel returns to the LAST committed state, which we held in
-        // stateRef before transitioning to 'dragging' — but we set 'dragging'
-        // in onPointerMove without snapshotting. Safest: snap to the closest
-        // detent based on current dragOffset.
-        setDragOffset((cur) => {
-          if (cur >= PILLS_ROW_HEIGHT_PX / 2) {
-            setState('open')
-            return PILLS_ROW_HEIGHT_PX
-          }
-          setState('closed')
-          return 0
-        })
+  const onHandlePointerUp = React.useCallback(
+    (e: React.PointerEvent) => {
+      const cand = tapCandidateRef.current
+      tapCandidateRef.current = null
+      if (!cand) return
+      // A drag committed → onDragEnd handled it; not a tap.
+      if (draggingRef.current) return
+      const dist = Math.hypot(e.clientX - cand.x, e.clientY - cand.y)
+      const elapsed = Date.now() - cand.t
+      if (dist < TAP_SLOP_PX && elapsed < TAP_MAX_MS) {
+        toggle()
       }
-    }
+    },
+    [toggle],
+  )
 
-    // CAPTURE-phase so we see the pointerdown FIRST without stopping
-    // propagation; the dock's buttons still receive their taps.
-    wrapper.addEventListener('pointerdown', onPointerDown, true)
-    document.addEventListener('pointermove', onPointerMove)
-    document.addEventListener('pointerup', onPointerUp)
-    document.addEventListener('pointercancel', onPointerCancel)
-    wrapper.addEventListener('click', onClickCapture, true)
-    return () => {
-      wrapper.removeEventListener('pointerdown', onPointerDown, true)
-      document.removeEventListener('pointermove', onPointerMove)
-      document.removeEventListener('pointerup', onPointerUp)
-      document.removeEventListener('pointercancel', onPointerCancel)
-      wrapper.removeEventListener('click', onClickCapture, true)
-    }
-  }, [closePanel, openPanel])
+  const onHandleKeyDown = React.useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        toggle()
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        open()
+      } else if (e.key === 'ArrowDown' || e.key === 'Escape') {
+        e.preventDefault()
+        close()
+      }
+    },
+    [toggle, open, close],
+  )
 
-  // ── Tap-outside + Escape to close ──────────────────────────────────────────
+  // ── Tap-outside + Escape close ─────────────────────────────────────────────
   React.useEffect(() => {
     if (state !== 'open') return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        closePanel()
+        close()
       }
     }
     const onDocPointerDown = (e: PointerEvent) => {
-      // Tap inside the panel keeps it open; tap outside dismisses. We use
-      // pointerdown so a tap-outside that lands on the terminal dismisses
-      // BEFORE the synthetic click fires there.
       const target = e.target as Node | null
-      const inside = !!target && (wrapperRef.current?.contains(target) ?? false)
-      if (!inside) closePanel()
+      const inside = !!target && (panelRef.current?.contains(target) ?? false)
+      if (!inside) close()
     }
     document.addEventListener('keydown', onKey)
     document.addEventListener('pointerdown', onDocPointerDown)
@@ -332,7 +295,7 @@ export function MobileBottomPanel({
       document.removeEventListener('keydown', onKey)
       document.removeEventListener('pointerdown', onDocPointerDown)
     }
-  }, [state, closePanel])
+  }, [state, close])
 
   // ── Focus management ───────────────────────────────────────────────────────
   React.useEffect(() => {
@@ -346,7 +309,8 @@ export function MobileBottomPanel({
     if (state === 'closed') {
       const prev = previousFocusRef.current
       if (prev instanceof HTMLElement) {
-        // Only restore if focus is on body (nothing else has grabbed it).
+        // Only restore focus if it's still on body — the user hasn't
+        // grabbed it elsewhere (e.g. tapping back into the terminal).
         if (document.activeElement === document.body) {
           prev.focus({ preventScroll: true })
         }
@@ -355,64 +319,91 @@ export function MobileBottomPanel({
     }
   }, [state])
 
-  const onPickInternal = React.useCallback(
-    (name: string) => {
-      onPickRef.current(name)
-      closePanel()
-    },
-    [closePanel],
-  )
+  const onPickInternal = React.useCallback((name: string) => {
+    onPickRef.current(name)
+    setDragOffset(0)
+    setState('closed')
+  }, [])
 
-  // Tap on the grabber: closed → open, open → close (iOS HIG: tap is the
-  // discoverable alternative to swipe).
-  const onGrabberTap = React.useCallback(() => {
-    if (state === 'closed') openPanel()
-    else if (state === 'open') closePanel()
-  }, [state, openPanel, closePanel])
-  const onGrabberKeyDown = React.useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        onGrabberTap()
-      }
-    },
-    [onGrabberTap],
-  )
-
-  // Pills row reveal height: 0 (closed) ‥ PILLS_ROW_HEIGHT_PX (open). The
-  // wrapper's flex height = dockHeight + revealHeight; with overflow:hidden the
-  // top pills row is clipped exactly to the revealed portion. One value drives
-  // everything — no second opacity gate, no second layer.
-  let revealHeight: number
-  if (state === 'closed') revealHeight = 0
-  else if (state === 'open') revealHeight = PILLS_ROW_HEIGHT_PX
-  else revealHeight = Math.max(0, Math.min(PILLS_ROW_HEIGHT_PX, dragOffset))
+  // The pills-row's animated height in px. While dragging we follow the
+  // finger 1:1 (no spring lag); at rest we tween to the detent with the
+  // Apple Maps spring.
+  const revealHeight = state === 'dragging' ? dragOffset : state === 'open' ? PILLS_H : 0
 
   return (
     <motion.div
-      ref={wrapperRef}
+      ref={panelRef}
       data-vr="mobile-bottom-panel"
       data-vr-swipe-state={state}
-      // The continuous surface — pills + dock share ONE glass background, ONE
-      // top hairline, ONE 10px continuous-corner rounding at the top edge of the
-      // sheet. No mid-panel border, no doubled outline.
+      // ONE continuous glass surface: pills + dock share the same background
+      // and the same top hairline. The handle sits on top as a 22pt drag region
+      // that's part of the same surface.
+      //
+      // overflow-hidden clips the pills-row mask cleanly to height 0 when closed
+      // and to PILLS_H when open — no second border, no opacity gate, no second
+      // animated value.
       className={cn(
         'glass relative shrink-0 overflow-hidden border-t border-border/60',
-        // Touch-pan-x keeps the inner horizontal scroll working while our
-        // capture-phase pointer listener observes — vertical claims are explicit.
-        'touch-pan-x',
       )}
     >
-      {/* Pills row — fixed height (44 px) inside an overflow-x-only strip.
-          When the panel is closed, this child is clipped off the top by the
-          parent's `overflow: hidden` because the parent's first row in the
-          column is sized via the animated `revealHeight` wrapper just below.
+      {/* The drag handle — the ONE drag region. 22pt tall hit area; visible
+          4×36pt iOS grabber pill centered. touch-action:none disables the OS's
+          vertical-pan preempt so our drag is always honored on iOS. cursor
+          flips to grabbing while dragging.
 
-          Vertical scrollbar fix: `h-[44px]`, `overflow-x-auto overflow-y-hidden`,
-          every pill `shrink-0` — the row's natural content never exceeds 44 px
-          tall, so the browser has no reason to promote `overflow-y` to `auto`.
-          Scrollbar visually hidden via `[scrollbar-width:none]` +
-          `[&::-webkit-scrollbar]:hidden`. */}
+          framer-motion `drag="y"` with `dragConstraints={{top:0,bottom:0}}`
+          keeps the handle visually fixed (we drive the pills-row height
+          separately via state), but still gives us the full PanInfo stream
+          (offset + velocity) on the handle itself.
+
+          We attach a pointerdown/up pair too so a TAP (no drag commit, no
+          significant movement) toggles the panel — the discoverable iOS
+          alternative to the swipe affordance. */}
+      {hasSwapTargets && (
+        <motion.div
+          role="button"
+          tabIndex={0}
+          aria-label={
+            state === 'open'
+              ? 'Drag down or tap to hide session switcher'
+              : 'Drag up or tap to show session switcher'
+          }
+          aria-expanded={state === 'open'}
+          drag="y"
+          dragConstraints={{ top: 0, bottom: 0 }}
+          dragElastic={0}
+          dragMomentum={false}
+          onPointerDown={onHandlePointerDown}
+          onPointerUp={onHandlePointerUp}
+          onDragStart={onHandleDragStart}
+          onDrag={onHandleDrag}
+          onDragEnd={onHandleDragEnd}
+          onKeyDown={onHandleKeyDown}
+          // Stop the soft keyboard from being dismissed when the user grabs the
+          // handle (the same focus-preservation trick the dock buttons use).
+          onPointerDownCapture={(e) => e.preventDefault()}
+          style={{ touchAction: 'none', height: HANDLE_HIT_H }}
+          className={cn(
+            'relative z-10 flex w-full shrink-0 cursor-grab items-center justify-center',
+            'select-none active:cursor-grabbing focus-visible:outline-none',
+            'focus-visible:ring-2 focus-visible:ring-ring',
+          )}
+          data-vr="mobile-bottom-panel-handle"
+        >
+          <span
+            aria-hidden
+            data-vr="swipe-grabber"
+            className="block h-1 w-9 rounded-full bg-muted-foreground/40"
+          />
+        </motion.div>
+      )}
+
+      {/* Pills row — animated height 0 → PILLS_H. ONE motion.div, ONE animated
+          value, ONE spring. The whole row, scrollbar fix included:
+            • h-[44px] matches each pill's h-11 so natural content == box
+            • overflow-y-hidden defends against perpendicular-axis promotion
+            • [scrollbar-width:none] + ::-webkit-scrollbar:hidden = no scrollbar
+            • every pill is shrink-0 so the row never multi-lines */}
       {hasSwapTargets && (
         <motion.div
           animate={{ height: revealHeight }}
@@ -420,31 +411,21 @@ export function MobileBottomPanel({
             reduceMotion
               ? { duration: 0.15 }
               : state === 'dragging'
-                ? // While the finger is on screen we follow it 1:1 — no
-                  // smoothing (a spring here would feel laggy).
-                  { duration: 0 }
-                : springs.snippetSlide
+                ? { duration: 0 } // follow the finger frame-perfectly
+                : springs.sheetDetent
           }
-          // The growable mask: this inner wrapper's height animates between 0
-          // and PILLS_ROW_HEIGHT_PX; overflow:hidden on the outer panel clips
-          // the pills row off the top edge of the panel exactly as the mask
-          // narrows. ONE element, ONE animated value drives the whole reveal.
           className="overflow-hidden"
           // `inert` (not aria-hidden): blurs focus AND hides from AT, so a
-          // pill that briefly retained focus during an open→close transition
-          // never leaves us in the "aria-hidden on a focused element" warning
-          // state. Modern browsers (Chrome 102+ / Safari 15.5+) honor inert
-          // natively; React 19 maps the JSX boolean to the right DOM attribute.
+          // pill that briefly retained focus during open→close transition
+          // doesn't trip Chrome's "aria-hidden on a focused element" warning.
           inert={state === 'closed'}
         >
           <div
-            data-vr-swipe-scroll
             role="listbox"
             aria-label="Switch session"
             className={cn(
               'flex h-[44px] shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden px-3',
-              // Native scroll-snap so a finger flick lands a pill flush — feels
-              // closer to Termius's quick-switch.
+              // Native scroll-snap so a finger-flick lands a pill flush.
               'snap-x snap-mandatory',
               // Hide the scrollbar visually — both engines.
               '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
@@ -459,8 +440,6 @@ export function MobileBottomPanel({
                   isCurrent={isCurrent}
                   onPick={onPickInternal}
                   pillRef={i === firstNonCurrentIdx ? firstPillRef : undefined}
-                  // Tab order is handled by the parent's `inert` attribute when
-                  // closed — pills are removed from the focusable set wholesale.
                 />
               )
             })}
@@ -468,47 +447,21 @@ export function MobileBottomPanel({
         </motion.div>
       )}
 
-      {/* The grabber — iOS-style horizontal handle (4×36 muted pill) sitting at
-          the very top of the dock content. When closed it peeks ~6 px above
-          the dock surface as the swipe-up affordance; when open it's the
-          drag-to-close handle. Full-width 12 px tall button for a generous tap
-          target. preventDefault on pointer/mouse-down so the tap never steals
-          focus from xterm's hidden helper textarea (the SAME trick the dock's
-          accessory keys use — keeps the soft keyboard up). */}
-      {hasSwapTargets && (
-        <button
-          type="button"
-          onClick={onGrabberTap}
-          onKeyDown={onGrabberKeyDown}
-          onPointerDown={(e) => e.preventDefault()}
-          onMouseDown={(e) => e.preventDefault()}
-          aria-label="Drag handle — swipe up to switch session"
-          aria-expanded={state === 'open'}
-          className={cn(
-            'flex h-3 w-full items-center justify-center',
-            'cursor-pointer',
-          )}
-        >
-          <span
-            aria-hidden
-            data-vr="swipe-grabber"
-            className="block h-1 w-9 rounded-full bg-muted-foreground/40"
-          />
-        </button>
-      )}
-
-      {/* Dock content — exactly what the route already renders today. We let
-          the route compose <MobileDock> directly so MobileBottomPanel doesn't
-          have to know the dock's many props (and stays a pure presentational
-          shell that owns ONE thing: the panel chrome + the reveal gesture). */}
+      {/* Dock content — exactly what the route renders. We let mobile.tsx pass
+          <MobileDock> as children so this component stays a pure presentational
+          shell that owns ONE thing: the panel chrome + the drawer gesture. */}
       {children}
     </motion.div>
   )
 }
 
-/** One session pill — status dot + truncated name, ≥44pt hit, snap-aligned.
- *  Identical look + behaviour to the pre-refactor SessionPill; relocated here
- *  so the strip and the pill are one cohesive surface in code. */
+function clamp(v: number, lo: number, hi: number): number {
+  if (v < lo) return lo
+  if (v > hi) return hi
+  return v
+}
+
+/** One session pill — status dot + truncated name, ≥44pt hit, snap-aligned. */
 function SessionPill({
   session,
   isCurrent,
@@ -534,9 +487,6 @@ function SessionPill({
       }`}
       aria-current={isCurrent || undefined}
       className={cn(
-        // ≥44pt hit target via h-11. Soft pill, continuous corner. shrink-0 so
-        // a long list never compresses pills into a vertically-overflowing
-        // cluster (the original bug).
         'flex h-11 shrink-0 snap-start items-center gap-2 rounded-xl px-3 text-[14px] font-medium',
         isCurrent
           ? 'bg-primary/15 text-primary'
