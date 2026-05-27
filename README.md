@@ -255,12 +255,6 @@ journalctl -u supermux -n 50
 The `/api/health` route is the only public one — no token needed — and is
 what `deploy.sh` uses to confirm the service came up.
 
-### Coming from amux v2?
-
-See [`scripts/migrate-v2.py`](scripts/migrate-v2.py) — it copies sessions,
-board issues, schedules, skills, and prefs into the supermux SQLite
-database (idempotent, dry-runnable).
-
 </details>
 
 ## License
