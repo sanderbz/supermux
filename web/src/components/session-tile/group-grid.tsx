@@ -41,7 +41,7 @@
 // It receives the already-filtered session list + the persisted custom order.
 
 import * as React from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   closestCenter,
   DndContext,
@@ -70,9 +70,13 @@ import {
   rectSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Plus, MoveRight, Square, Archive, Info } from 'lucide-react'
+import { Plus, MoveRight, Square, Archive, Info, ChevronRight } from 'lucide-react'
 
 import { springs, tweens } from '@/lib/springs'
+import {
+  removeCollapsed,
+  useCollapsibleGroups,
+} from '@/lib/collapsible-group'
 import { useSessionActions } from '@/hooks/use-session-actions'
 import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
@@ -491,6 +495,22 @@ export function GroupGrid({
   }, [layoutItems, filteredSessions])
 
   const [groupSortModes, setGroupSortMode] = useGroupSortModes(groupIds)
+
+  // ── Per-group COLLAPSE state ─────────────────────────────────────────────
+  // Mirrors the focus-mode strip's collapse contract (chevron left of title,
+  // localStorage-persisted, hydrate-on-demand) via the shared
+  // `useCollapsibleGroups` primitive. Namespace `overview` keeps the keys
+  // separate from `focus-strip` so the two surfaces collapse independently
+  // (the overview is the layout surface; the strip is the viewport-rail
+  // surface — same group can legitimately be expanded on one and collapsed
+  // on the other).
+  const { isCollapsed, setCollapsed } = useCollapsibleGroups('overview')
+  const toggleCollapsed = React.useCallback(
+    (groupId: string) => {
+      setCollapsed(groupId, !isCollapsed(groupId))
+    },
+    [isCollapsed, setCollapsed],
+  )
 
   const sections = React.useMemo(
     () => buildSections(layoutItems, filteredSessions, groupSortModes),
@@ -972,6 +992,10 @@ export function GroupGrid({
                       section={section}
                       allSections={sections}
                       sIdx={sIdx}
+                      collapsed={isCollapsed(section.groupId)}
+                      onToggleCollapsed={() =>
+                        toggleCollapsed(section.groupId)
+                      }
                       viewMode={viewMode}
                       sizeTier={sizeTier}
                       tileGridClass={tileGridClass}
@@ -1015,9 +1039,11 @@ export function GroupGrid({
                       onDelete={() => {
                         // Remove the group header; sessions inside it survive
                         // (the reconciler floats them into Ungrouped). Also
-                        // drop the per-group sort-mode localStorage row (M4)
-                        // so dead keys don't accumulate.
+                        // drop the per-group sort-mode + collapsed
+                        // localStorage rows so dead keys don't accumulate (M4
+                        // hygiene + the matching collapse-row cleanup).
                         removeGroupSortMode(section.groupId)
+                        removeCollapsed('overview', section.groupId)
                         const next = layoutItems.filter(
                           (it) =>
                             !(it.type === 'group' && it.id === section.groupId),
@@ -1143,6 +1169,8 @@ function GroupSection({
   activeSessionGroupId,
   reduce,
   tourFirstTileId,
+  collapsed,
+  onToggleCollapsed,
 }: {
   section: Section
   /** All sections in render order — passed through to each tile so the
@@ -1173,6 +1201,12 @@ function GroupSection({
   activeSessionGroupId: string | null
   reduce: boolean
   tourFirstTileId?: string
+  /** Per-group collapse state from the parent's `useCollapsibleGroups`. */
+  collapsed: boolean
+  /** Toggle the collapse state. Wired to the chevron + (when collapsed) a
+   *  click on the implicit-bucket label so every section can re-expand even
+   *  without the GroupHeader chrome. */
+  onToggleCollapsed: () => void
 }) {
   // Each section has its OWN SortableContext over its session ids so dnd-kit's
   // within-container sortable strategy operates on the right scope.
@@ -1215,6 +1249,17 @@ function GroupSection({
     containerIndicate === 'custom' &&
     overItemId !== null
 
+  // EFFECTIVE collapse — the user's persisted collapse state, but FORCE-OPEN
+  // while a drag is in flight. Rationale: dnd-kit's drop targets live on the
+  // body's sortable wrappers; collapsing the body mid-drag would yank those
+  // out from under the active gesture and break "drag a tile into a
+  // collapsed group" (a power-user move the user would silently lose if we
+  // unmounted). The chevron's aria-expanded still reflects the user's
+  // PERSISTED state so the SR announcement is honest — the temporary
+  // open-while-dragging is a transient visual concession, not a state
+  // change.
+  const effectiveCollapsed = collapsed && !isDragging
+
   return (
     <section
       data-vr="group-section"
@@ -1222,6 +1267,7 @@ function GroupSection({
       data-vr-sort-mode={section.sortMode}
       data-vr-container-indicate={containerIndicate}
       data-vr-section-index={sIdx}
+      data-vr-collapsed={collapsed ? 'true' : 'false'}
       ref={droppable.setNodeRef}
       // Container indication — a smart-sort dest gets a tinted outline + bg;
       // a custom-sort dest gets a quieter outline (the inter-tile line owns
@@ -1261,21 +1307,62 @@ function GroupSection({
             onMoveDown={onMoveDown}
             onMoveTop={onMoveTop}
             onMoveBottom={onMoveBottom}
+            collapsed={collapsed}
+            onToggleCollapsed={onToggleCollapsed}
           />
         </div>
       )}
       {section.isImplicit && (
         // Implicit "Ungrouped" bucket — render a tiny muted label so the user
         // sees what they're looking at without it competing for attention.
-        <div
+        // Wrapped in a button so the same collapse affordance is available
+        // here as on a real group header (chevron-left-of-title pattern from
+        // the focus-strip — but at the implicit bucket's muted density).
+        <button
+          type="button"
           data-vr="ungrouped-label"
-          className="px-1 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70"
+          data-vr-collapse-toggle="true"
+          data-vr-collapsed={collapsed ? 'true' : 'false'}
+          aria-expanded={!collapsed}
+          aria-label={`${
+            collapsed ? 'Expand' : 'Collapse'
+          } Ungrouped (${section.sessions.length})`}
+          onClick={onToggleCollapsed}
+          className="flex w-full items-center gap-1.5 rounded-md px-1 pb-1 pt-0.5 text-left text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:py-2"
         >
-          Ungrouped · {section.sessions.length}
-        </div>
+          <ChevronRight
+            aria-hidden
+            className={
+              'size-3 shrink-0 transition-transform duration-150 ease-out motion-reduce:transition-none' +
+              (!collapsed ? ' rotate-90' : '')
+            }
+          />
+          <span>Ungrouped · {section.sessions.length}</span>
+        </button>
       )}
 
-      {/* The tiles. Tile view → grid; list view → flex column. */}
+      {/* The tiles. Tile view → grid; list view → flex column.
+          The body is wrapped in AnimatePresence so collapse animates a
+          smooth height: auto → 0 transition (matches the user's preferred
+          focus-mode sidepanel collapse feel). Under prefers-reduced-motion
+          the transition is a single-frame snap (duration: 0). While a drag
+          is in flight `effectiveCollapsed` is forced false so dnd-kit's
+          drop targets remain mounted — see the comment on
+          `effectiveCollapsed` above. */}
+      <AnimatePresence initial={false}>
+        {!effectiveCollapsed && (
+          <motion.div
+            key="body"
+            data-vr="group-body-wrapper"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={reduce ? { duration: 0 } : springs.smooth}
+            // overflow-hidden so the height tween doesn't reveal content as
+            // it shrinks past the new height; the tile grid otherwise paints
+            // outside the collapsing container.
+            className="overflow-hidden"
+          >
       <SortableContext
         items={sessionIds}
         strategy={viewMode === 'tile' ? rectSortingStrategy : verticalListSortingStrategy}
@@ -1363,6 +1450,9 @@ function GroupSection({
           </div>
         )}
       </SortableContext>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   )
 }

@@ -19,7 +19,7 @@
 // drag.
 
 import * as React from 'react'
-import { GripVertical, Trash2 } from 'lucide-react'
+import { ChevronRight, GripVertical, Trash2 } from 'lucide-react'
 
 import {
   DropdownMenu,
@@ -64,6 +64,13 @@ export interface GroupHeaderProps {
   onMoveDown?: () => void
   onMoveTop?: () => void
   onMoveBottom?: () => void
+  /** Collapse state for the section body. When undefined the chevron is not
+   *  rendered (callers that don't need a collapse affordance — e.g. an
+   *  embedded preview — opt out by omitting both props). */
+  collapsed?: boolean
+  /** Toggle handler, mirrors the chevron's role. Required iff `collapsed` is
+   *  passed. */
+  onToggleCollapsed?: () => void
 }
 
 export function GroupHeader({
@@ -82,6 +89,8 @@ export function GroupHeader({
   onMoveDown,
   onMoveTop,
   onMoveBottom,
+  collapsed,
+  onToggleCollapsed,
 }: GroupHeaderProps) {
   // Editing-mode state. `inputRef` lets us read the input value at blur/commit
   // time without re-rendering on every keystroke (uncontrolled input).
@@ -167,6 +176,47 @@ export function GroupHeader({
       >
         <GripVertical className="size-4" />
       </span>
+
+      {/* Collapse chevron — sits LEFT of the title (per user spec: same
+          pattern as the focus-mode left sidepanel). Stops drag-listeners so
+          a click on the chevron toggles collapse without picking up a group
+          drag; the title remains independently click-to-rename. Rendered
+          only when the caller wires the collapse contract — preserves
+          opt-out for embedded previews that don't want collapse chrome. */}
+      {collapsed !== undefined && onToggleCollapsed && (
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          aria-label={`${
+            collapsed ? 'Expand' : 'Collapse'
+          } group ${name} (${count})`}
+          data-vr="group-collapse-toggle"
+          data-vr-collapsed={collapsed ? 'true' : 'false'}
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleCollapsed()
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          // ≥44pt mobile hit target via padded size on coarse pointers;
+          // compact 28px on fine pointers (matches the focus-strip's h-7
+          // chevron + the surrounding row chrome density).
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:size-11"
+        >
+          <ChevronRight
+            aria-hidden
+            // 0° → 90° on expand. CSS-driven so the rotation is GPU-cheap; the
+            // shared `motion-reduce:transition-none` honors prefers-reduced-
+            // motion (snaps instead of animating). Same recipe used by the
+            // focus-strip section chevron (focus-strip-section.tsx) so the
+            // two surfaces feel identical at the icon level.
+            className={
+              'size-3.5 transition-transform duration-150 ease-out motion-reduce:transition-none' +
+              (!collapsed ? ' rotate-90' : '')
+            }
+          />
+        </button>
+      )}
 
       {editing ? (
         <input
