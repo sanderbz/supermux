@@ -80,7 +80,6 @@ interface FormState {
    *  string is read out of `where.dir` at submit time. */
   where: NewWhereSelection
   provider: NonNullable<NewSession['provider']>
-  desc: string
   command: string
   worktree: boolean
   /** Remote host (RT9). `null` = LOCAL, the default for every existing
@@ -99,7 +98,6 @@ const EMPTY_FORM = (defaultDir: string | undefined): FormState => ({
     ? { kind: 'new', dir: defaultDir }
     : defaultWhereSelection(),
   provider: 'claude',
-  desc: '',
   command: '',
   worktree: false,
   hostId: null,
@@ -184,7 +182,6 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
       name: f.name || suggestName(preset.nameStem),
       provider: preset.provider ?? 'claude',
       command: preset.command,
-      desc: f.desc || preset.label,
     }))
     setTab('advanced')
   }
@@ -210,7 +207,6 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
         name: form.name.trim(),
         dir: form.where.dir.trim(),
         provider: form.provider,
-        desc: form.desc.trim() || undefined,
         worktree: form.worktree,
         command: form.command.trim() || undefined,
         // RT9: omit when LOCAL so the wire stays clean for the historical
@@ -313,16 +309,6 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
                 showSessions={false}
                 gitHint="info"
               />
-
-              <Field label="Description" htmlFor="ns-desc">
-                <Input
-                  id="ns-desc"
-                  value={form.desc}
-                  onChange={(e) => set('desc', e.target.value)}
-                  placeholder="What this agent is for (optional)"
-                  autoComplete="off"
-                />
-              </Field>
 
               <fieldset className="flex flex-col gap-2">
                 <legend className="mb-1 text-sm font-medium">Provider</legend>
