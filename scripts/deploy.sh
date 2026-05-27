@@ -615,6 +615,19 @@ else
   PRIVATE_TMP=no
 fi
 
+# VAPID 'sub' contact (RFC-8292) for Web Push — operator-set in .env. When
+# present, render `Environment=SUPERMUX_PUSH_SUB=…` into the unit so the running
+# service reads it (the server otherwise falls back to the placeholder + logs a
+# WARN). When unset, the placeholder LINE is DELETED entirely below (mirroring
+# __BIND_PATHS__) — an empty `Environment=` directive is a systemd parse error.
+# This closes the gap between .env.example documenting the var and the unit
+# actually honoring it.
+if [ -n "${SUPERMUX_PUSH_SUB:-}" ]; then
+  PUSH_SUB_LINE="Environment=SUPERMUX_PUSH_SUB=$SUPERMUX_PUSH_SUB"
+else
+  PUSH_SUB_LINE=""
+fi
+
 # ── 0d. host preflight: Tailscale auto-detect ───────────────────────────────
 # If the operator didn't set SUPERMUX_USE_TAILSCALE, sniff the host: if
 # tailscale is installed AND tailscaled is running, default to exposing the
@@ -729,6 +742,55 @@ while IFS= read -r pd; do
 done <<EOF_PROVISION_PD
 $(split_path_list "$PROJECT_DIRS")
 EOF_PROVISION_PD
+
+# ── 0g-tris. host preflight: tmux (every session needs it) ───────────────────
+# tmux is a HARD runtime requirement: server/src/sessions/tmux.rs::tmux_bin()
+# returns "tmux not found on PATH (install tmux)" for every create-session call
+# if it's missing. The server still starts + /api/health returns 200, so a deploy
+# can SUCCEED while every actual session attempt fails. Fail loudly here before
+# the build phase — same shape as the bun/cargo preflight — with a per-package-
+# manager install hint so the operator's next step is one copy-paste away.
+#
+# Detected via $HOST's package-manager binary (apt-get / dnf / apk / pacman /
+# zypper / brew). Unknown distro → generic "install tmux" hint. We probe with
+# `command -v tmux` only — we do NOT auto-install (matches the bun/cargo
+# discipline: never silently fetch+exec system packages as root).
+remote_tmux_install_hint() {
+  # Echoes a single-line install command for $HOST's package manager.
+  local mgr
+  mgr="$(ssh "$HOST" '
+    if command -v apt-get >/dev/null 2>&1; then echo apt
+    elif command -v dnf     >/dev/null 2>&1; then echo dnf
+    elif command -v yum     >/dev/null 2>&1; then echo yum
+    elif command -v apk     >/dev/null 2>&1; then echo apk
+    elif command -v pacman  >/dev/null 2>&1; then echo pacman
+    elif command -v zypper  >/dev/null 2>&1; then echo zypper
+    elif command -v brew    >/dev/null 2>&1; then echo brew
+    else                                          echo unknown
+    fi
+  ' 2>/dev/null || echo unknown)"
+  case "$mgr" in
+    apt)     printf 'sudo apt-get update && sudo apt-get install -y tmux' ;;
+    dnf)     printf 'sudo dnf install -y tmux' ;;
+    yum)     printf 'sudo yum install -y tmux' ;;
+    apk)     printf 'sudo apk add tmux' ;;
+    pacman)  printf 'sudo pacman -S --noconfirm tmux' ;;
+    zypper)  printf 'sudo zypper install -y tmux' ;;
+    brew)    printf 'brew install tmux' ;;
+    *)       printf '# install tmux via your distro package manager (apt/dnf/apk/pacman/zypper/brew)' ;;
+  esac
+}
+echo "[deploy] preflight: checking tmux on $HOST (required at runtime for every session)"
+if ! remote_check 'command -v tmux'; then
+  echo "[deploy] error: 'tmux' is NOT installed on $HOST." >&2
+  echo "[deploy]   supermux multiplexes sessions through tmux; without it every" >&2
+  echo "[deploy]   create-session call fails with 'tmux not found on PATH'." >&2
+  echo "[deploy]   The service would still start + /api/health = 200, but no agent" >&2
+  echo "[deploy]   can be created — so fail HERE rather than after the long build." >&2
+  echo "[deploy]   Fix: install tmux on $HOST, then re-run:" >&2
+  echo "[deploy]        ssh $HOST '$(remote_tmux_install_hint)'" >&2
+  exit 1
+fi
 
 # ── 0h. host preflight: bun + cargo toolchain (check, then optionally install) ─
 # The build runs as the service user. Check bun + cargo under THAT user's
@@ -992,6 +1054,18 @@ if [ -n "$BIND_PATHS_LINE" ]; then
   sed -i.bak "s|__BIND_PATHS__|$BIND_PATHS_LINE|g" "$UNIT_TMP"
 else
   sed -i.bak '/__BIND_PATHS__/d' "$UNIT_TMP"
+fi
+rm -f "$UNIT_TMP.bak" 2>/dev/null || true
+# __PUSH_SUB_LINE__ — same pattern as __BIND_PATHS__: render the full
+# `Environment=SUPERMUX_PUSH_SUB=<value>` line if SUPERMUX_PUSH_SUB is set in
+# .env, or DELETE THE LINE entirely if unset (an empty `Environment=` directive
+# is a systemd parse error). This is the missing wiring noted by the OSS audit
+# (item 5): .env.example documents the var but without this substitution it
+# never reaches the running service.
+if [ -n "$PUSH_SUB_LINE" ]; then
+  sed -i.bak "s|__PUSH_SUB_LINE__|$PUSH_SUB_LINE|g" "$UNIT_TMP"
+else
+  sed -i.bak '/__PUSH_SUB_LINE__/d' "$UNIT_TMP"
 fi
 rm -f "$UNIT_TMP.bak" 2>/dev/null || true
 if [ "$USE_TAILSCALE" = "1" ]; then

@@ -80,6 +80,12 @@ Environment=SUPERMUX_PROJECT_DIRS=__PROJECT_DIRS__
 # under SUPERMUX_INSTALL_CARGO_GUARD=1) is inherited by every spawned child,
 # not just interactive bash that reads .bashrc.
 Environment=PATH=__USER_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Optional VAPID 'sub' contact (RFC-8292) for Web Push. Rendered by deploy.sh
+# from SUPERMUX_PUSH_SUB (.env); if unset, deploy.sh DELETES the placeholder
+# line below entirely (same delete-on-empty pattern used for the bind-paths
+# directive) — an empty `Environment=` is a systemd parse error. The
+# config.toml `push_sub` setting on the host remains the file-on-host alternative.
+__PUSH_SUB_LINE__
 ExecStart=/usr/local/bin/supermux-server
 Restart=always
 RestartSec=2

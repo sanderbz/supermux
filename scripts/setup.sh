@@ -279,6 +279,66 @@ detect_tailscale() {
       >/dev/null 2>&1
 }
 
+detect_tmux_remote() {
+  # detect_tmux_remote HOST -> 0 if `tmux` is on PATH on the host.
+  # tmux is a HARD runtime requirement (every session is a tmux session). Without
+  # it, the server starts + /api/health = 200 but every create-session call dies
+  # with "tmux not found on PATH" — so we surface this in the WIZARD (not just at
+  # deploy time) so the operator's first-touch experience never hits the late
+  # silent-failure cliff.
+  local host="$1"
+  command -v ssh >/dev/null 2>&1 || return 1
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" 'command -v tmux' >/dev/null 2>&1
+}
+
+tmux_install_hint_remote() {
+  # tmux_install_hint_remote HOST -> echoes a single-line install command
+  # tailored to the host's package manager. Used by step_tmux below to give a
+  # copy-pasteable next step instead of a generic "install tmux".
+  local host="$1"
+  local mgr
+  mgr=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" '
+    if command -v apt-get >/dev/null 2>&1; then echo apt
+    elif command -v dnf     >/dev/null 2>&1; then echo dnf
+    elif command -v yum     >/dev/null 2>&1; then echo yum
+    elif command -v apk     >/dev/null 2>&1; then echo apk
+    elif command -v pacman  >/dev/null 2>&1; then echo pacman
+    elif command -v zypper  >/dev/null 2>&1; then echo zypper
+    elif command -v brew    >/dev/null 2>&1; then echo brew
+    else                                          echo unknown
+    fi
+  ' 2>/dev/null || echo unknown)
+  case "$mgr" in
+    apt)     printf 'sudo apt-get update && sudo apt-get install -y tmux' ;;
+    dnf)     printf 'sudo dnf install -y tmux' ;;
+    yum)     printf 'sudo yum install -y tmux' ;;
+    apk)     printf 'sudo apk add tmux' ;;
+    pacman)  printf 'sudo pacman -S --noconfirm tmux' ;;
+    zypper)  printf 'sudo zypper install -y tmux' ;;
+    brew)    printf 'brew install tmux' ;;
+    *)       printf '# install tmux via your distro package manager (apt/dnf/apk/pacman/zypper/brew)' ;;
+  esac
+}
+
+tmux_install_hint_local() {
+  # tmux_install_hint_local -> echoes a single-line install command for the
+  # operator's LOCAL machine (used when scripts/dev.sh would be run here).
+  # Falls back to Linux's apt on an unknown box.
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Darwin) printf 'brew install tmux' ;;
+    Linux)
+      if   command -v apt-get >/dev/null 2>&1; then printf 'sudo apt-get update && sudo apt-get install -y tmux'
+      elif command -v dnf     >/dev/null 2>&1; then printf 'sudo dnf install -y tmux'
+      elif command -v apk     >/dev/null 2>&1; then printf 'sudo apk add tmux'
+      elif command -v pacman  >/dev/null 2>&1; then printf 'sudo pacman -S --noconfirm tmux'
+      elif command -v zypper  >/dev/null 2>&1; then printf 'sudo zypper install -y tmux'
+      else printf '# install tmux via your distro package manager'
+      fi
+      ;;
+    *) printf '# install tmux via your platform package manager' ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
@@ -479,6 +539,43 @@ step_host() {
       note "  - if the host needs a password, use ssh-copy-id first"
       note "(continuing — deploy.sh will give a clearer error if SSH is broken)"
     fi
+  fi
+}
+
+step_tmux_preflight() {
+  # Soft preflight (no own numbered step — folds into the host-validation phase).
+  # tmux is a HARD runtime requirement: every supermux session is a tmux session
+  # (server/src/sessions/tmux.rs). If it's missing on the deploy target the
+  # service starts + /api/health = 200, but every "create session" call fails
+  # silently — the operator only finds out by trying their first thing.
+  # We warn here (don't block — they may install before running deploy.sh) and
+  # deploy.sh itself does a hard-stop preflight before the build phase.
+  hdr "preflight: tmux"
+  note "every supermux session is a tmux session — tmux is a runtime requirement."
+
+  # Local check — only meaningful if the operator might run scripts/dev.sh here.
+  if command -v tmux >/dev/null 2>&1; then
+    ok "tmux found locally ($(tmux -V 2>/dev/null || echo 'version unknown'))"
+  else
+    warn "tmux NOT found on your local machine."
+    note "  not fatal for deploy (it runs on the host), but scripts/dev.sh"
+    note "  needs it locally. Install:  $(tmux_install_hint_local)"
+  fi
+
+  # Remote check — the load-bearing one. Skip silently if we can't reach the
+  # host (step_host already warned + the deploy preflight will catch it).
+  if [ -z "$V_HOST" ]; then return 0; fi
+  printf "  %schecking tmux on %s…%s " "$c_dim" "$V_HOST" "$c_reset"
+  if detect_tmux_remote "$V_HOST"; then
+    printf "\n"
+    ok "tmux found on $V_HOST."
+  else
+    printf "\n"
+    warn "tmux NOT found on $V_HOST — supermux WILL deploy + start, but every"
+    note "  'create session' call would fail with 'tmux not found on PATH'."
+    note "  Install it on the host BEFORE running deploy.sh:"
+    note "    ssh $V_HOST '$(tmux_install_hint_remote "$V_HOST")'"
+    note "  (deploy.sh also hard-fails its own tmux preflight before the build.)"
   fi
 }
 
@@ -866,6 +963,7 @@ main() {
   derive_defaults_from_existing
 
   step_host
+  step_tmux_preflight
   step_user
   step_project_dirs
   step_ports
