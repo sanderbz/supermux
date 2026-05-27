@@ -63,7 +63,12 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-const WORKTREE = '/Users/sandervm/supermux-worktrees/feat-showcase-video'
+// Working directory the seeded sessions will `cd` into. Override with
+// SUPERMUX_SHOWCASE_WORKTREE to point at any existing folder on the host
+// running the supermux server (this script is internal showcase tooling,
+// not a public-facing seed — see docs/showcase/).
+const WORKTREE =
+  process.env.SUPERMUX_SHOWCASE_WORKTREE ?? `${process.env.HOME}/supermux`
 
 // Sessions in the order they should appear AT REST (visual top → bottom row).
 // Names are short so they fit in the tile title; descriptions are realistic.
