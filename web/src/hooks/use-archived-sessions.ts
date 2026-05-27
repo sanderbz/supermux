@@ -35,6 +35,12 @@ export interface UseArchivedSessionsResult {
   restore: (name: string) => Promise<void>
   /** Permanently delete an archived session (irreversible). */
   purge: (name: string) => Promise<void>
+  /** Permanently delete EVERY archived session in the current list. Best-effort
+   *  per-row — fans out [`purge`] calls in parallel, resolves with `{ ok, failed }`
+   *  counts so the sheet can toast a precise outcome. Each row that succeeds
+   *  drops from the archived cache the moment its individual mutation lands, so
+   *  the sheet empties progressively even on slow networks. SD-9. */
+  purgeAll: () => Promise<{ ok: number; failed: number }>
   /** Names currently mid-flight, so the sheet can disable their row actions. */
   pending: Set<string>
 }
@@ -94,6 +100,30 @@ export function useArchivedSessions(
     onSettled: (_d, _e, name) => mark(name, false),
   })
 
+  // SD-9 "delete all": fan out individual purge mutations in parallel so each
+  // row drops from the archived cache (via `purgeMut.onSuccess`) the moment
+  // ITS request resolves — the sheet empties progressively rather than waiting
+  // for the whole batch. We deliberately reuse the per-row mutation rather
+  // than calling `sessionsApi.purge` directly so:
+  //   1. The `pending` set marks every in-flight name (rows go busy together).
+  //   2. The cache-drop side-effect runs per row, matching the per-row UX.
+  //   3. A backend purge-all endpoint can later replace the inner call here
+  //      without touching the sheet.
+  // `allSettled` (not `all`) so one row's failure never short-circuits the rest.
+  const purgeAll = React.useCallback(async () => {
+    const names = (query.data ?? []).map((s) => s.name)
+    const results = await Promise.allSettled(
+      names.map((n) => purgeMut.mutateAsync(n)),
+    )
+    let ok = 0
+    let failed = 0
+    for (const r of results) {
+      if (r.status === 'fulfilled') ok += 1
+      else failed += 1
+    }
+    return { ok, failed }
+  }, [query.data, purgeMut])
+
   return {
     archived: query.data ?? [],
     isLoading: query.isLoading,
@@ -101,6 +131,7 @@ export function useArchivedSessions(
     refetch: () => void query.refetch(),
     restore: (name) => restoreMut.mutateAsync(name),
     purge: (name) => purgeMut.mutateAsync(name),
+    purgeAll,
     pending,
   }
 }
