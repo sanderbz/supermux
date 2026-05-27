@@ -902,86 +902,6 @@ export function useLiveTerm(
     // (we clear+reschedule), so a redraw storm still paints exactly once per frame
     // — no busy loop, no per-byte work. On desktop / keyboard-closed this is a
     // no-op (the guard is false), so the normal live-stream paint path is untouched.
-    // ── Live-stream `term.write()` rAF coalescer (residual row-mismatch fix) ──
-    //
-    // ROOT-CAUSE for the residual "typed text lands one row above the actual
-    // `>` prompt" symptom. The server side is now correct (Resize coalesce
-    // 8888d0a, DECSET 2026 force b60b440, peek_initial_resize 080ecd3 all
-    // shipped), so the bytes claude emits ARE coherent frames most of the
-    // time. The remaining race is on the CLIENT: when claude streams a redraw
-    // that spans multiple WS Binary frames (long mid-stream output, or any
-    // case where tmux's DEC 2026 buffer flushes mid-frame — tmux's sync gate
-    // has a 1s timeout), each frame fires its OWN onmessage handler and each
-    // calls `term.write(...)` separately. Xterm's parser commits each call's
-    // bytes to the buffer synchronously and schedules ONE paint per microtask,
-    // but two writes in the same tick can produce a transient state where the
-    // earlier write's cursor-move + erase-line have committed but the later
-    // write's repaint hasn't — and if the user's keystroke echo from claude is
-    // split across those frames, the echo paints at the OLD cursor row (one
-    // above the new `>` row that the later frame would have moved to). This is
-    // the textbook "partial-frame race" the GitHub Copilot CLI team identified
-    // as Layer 2 of their "4-Layer Rocket Scroll Fix" (copilot-cli#1805).
-    //
-    // THE FIX. Queue every WS Binary frame into a small Uint8Array list and
-    // flush them ALL inside one requestAnimationFrame as a single concatenated
-    // `term.write()`. Xterm's parser then sees the frame as one atomic unit;
-    // no intermediate cursor state is ever observable, no echo can land on a
-    // mid-write row. Order is preserved (FIFO queue, single flush). Cost: at
-    // most one frame (~16 ms) added to first-byte latency per burst — well
-    // below the perception threshold and identical to xterm's own
-    // RenderDebouncer cadence. On a quiet stream (one frame per tick) it
-    // behaves identically to today: enqueue → rAF → single write → paint.
-    //
-    // SAFETY. Independent of the prewarm-adopt path (which writes inside its
-    // OWN rAF at line ~1162 BEFORE installHandlers wires onmessage, so its
-    // bytes always land first by scheduling order). Cleared on teardown
-    // alongside `renderKickRaf` so a late frame can't write into a disposed
-    // terminal. NEVER drops bytes: if the rAF is already pending, we just
-    // append to the queue.
-    let pendingWrites: Uint8Array[] = []
-    let writeFlushRaf: number | null = null
-    const flushPendingWrites = () => {
-      writeFlushRaf = null
-      if (pendingWrites.length === 0) return
-      const term = termRef.current
-      if (!term) {
-        pendingWrites = []
-        return
-      }
-      // Fast path: a single queued frame writes directly (no copy).
-      if (pendingWrites.length === 1) {
-        const only = pendingWrites[0]
-        pendingWrites = []
-        try {
-          term.write(only)
-        } catch {
-          /* terminal disposed mid-flush — harmless */
-        }
-        return
-      }
-      // Concat path: 2+ queued frames merge into ONE write so xterm's parser
-      // sees the whole multi-frame redraw atomically.
-      let total = 0
-      for (const chunk of pendingWrites) total += chunk.byteLength
-      const merged = new Uint8Array(total)
-      let offset = 0
-      for (const chunk of pendingWrites) {
-        merged.set(chunk, offset)
-        offset += chunk.byteLength
-      }
-      pendingWrites = []
-      try {
-        term.write(merged)
-      } catch {
-        /* terminal disposed mid-flush — harmless */
-      }
-    }
-    const enqueueWrite = (bytes: Uint8Array) => {
-      pendingWrites.push(bytes)
-      if (writeFlushRaf !== null) return
-      writeFlushRaf = window.requestAnimationFrame(flushPendingWrites)
-    }
-
     let renderKickRaf: number | null = null
     const kickRenderWhileKeyboardOpen = () => {
       if (!keyboardOpenRef.current) return
@@ -1085,9 +1005,9 @@ export function useLiveTerm(
         const term = termRef.current
         if (!term) return
         if (data instanceof ArrayBuffer) {
-          enqueueWrite(new Uint8Array(data))
+          term.write(new Uint8Array(data))
         } else if (data instanceof Blob) {
-          enqueueWrite(new Uint8Array(await data.arrayBuffer()))
+          term.write(new Uint8Array(await data.arrayBuffer()))
         }
         kickRenderWhileKeyboardOpen()
         // Mark the first real pty frame so the overview hover-zoom can swap the
@@ -1378,8 +1298,6 @@ export function useLiveTerm(
       }
       if (kbRaf) window.cancelAnimationFrame(kbRaf)
       if (renderKickRaf !== null) window.cancelAnimationFrame(renderKickRaf)
-      if (writeFlushRaf !== null) window.cancelAnimationFrame(writeFlushRaf)
-      pendingWrites = []
       ro.disconnect()
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
       clearReconnectTimer()
