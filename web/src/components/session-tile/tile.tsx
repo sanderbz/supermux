@@ -807,7 +807,12 @@ export function SessionTile({
                 aria-hidden={false}
                 animate={hovered ? { opacity: 0, x: -8 } : { opacity: 1, x: 0 }}
                 transition={reduce ? { duration: 0 } : springs.cardExpand}
-                className="hidden self-center md:inline-flex"
+                // No `self-center` — the parent flex is `items-start`, and
+                // every sibling pill on this row (host badge, stopped pill,
+                // needs-input) top-aligns to the title's cap height. Center-
+                // aligning here pushed the chip ~3px down and read crooked
+                // next to a visible "Stopped" pill.
+                className="hidden md:inline-flex"
               >
                 <Kbd combo={`mod+${resolvedJumpIndex}`} variant="muted" />
               </motion.span>
