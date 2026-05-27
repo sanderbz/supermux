@@ -57,6 +57,9 @@ export interface FocusStripSectionProps {
   /** Per-section collapse state + setter (strip-local, persisted). */
   collapsed: boolean
   onCollapsedChange: (collapsed: boolean) => void
+  /** Map of session name → 1-indexed Cmd+N slot (≤9). Used to surface the
+   *  ⌘N / Ctrl+N hint on the first 9 jumpable rows. */
+  jumpIndexBySession?: Map<string, number>
 }
 
 export function FocusStripSection({
@@ -67,6 +70,7 @@ export function FocusStripSection({
   onSortModeChange,
   collapsed,
   onCollapsedChange,
+  jumpIndexBySession,
 }: FocusStripSectionProps) {
   const [sortOpen, setSortOpen] = React.useState(false)
   const headerId = React.useId()
@@ -161,6 +165,7 @@ export function FocusStripSection({
                 session={s}
                 current={!teammateActive && s.name === focusedSessionName}
                 onSelect={onSelectSession}
+                jumpIndex={jumpIndexBySession?.get(s.name)}
               />
             ))
           )}

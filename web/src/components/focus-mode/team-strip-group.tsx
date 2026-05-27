@@ -44,6 +44,10 @@ export interface TeamStripGroupProps {
   onSelectSession: (name: string) => void
   /** Select a teammate → its read-only terminal in the main pane. */
   onSelectTeammate: (team: Team, member: TeamMember) => void
+  /** Map of session name → 1-indexed Cmd+N slot (≤9). The lead row reads
+   *  its index out of this map so the same ⌘N hint shown in the focus
+   *  strip matches the canonical `jumpSessions` order. */
+  jumpIndexBySession?: Map<string, number>
 }
 
 export function TeamStripGroup({
@@ -54,6 +58,7 @@ export function TeamStripGroup({
   selectedTeammateId,
   onSelectSession,
   onSelectTeammate,
+  jumpIndexBySession,
 }: TeamStripGroupProps) {
   return (
     <section
@@ -74,6 +79,7 @@ export function TeamStripGroup({
             session={lead}
             current={lead.name === focusedSessionName}
             onSelect={onSelectSession}
+            jumpIndex={jumpIndexBySession?.get(lead.name)}
           />
         ) : (
           <div className="flex h-12 items-center rounded-xl border border-dashed border-border/60 px-3 text-[12px] text-muted-foreground">

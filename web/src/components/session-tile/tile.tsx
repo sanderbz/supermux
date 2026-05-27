@@ -36,6 +36,8 @@ import { TileLiveTerminal } from './tile-live-terminal'
 import { TileError } from './tile-error'
 import { QuickPeekModal } from './quick-peek-modal'
 import { HostBadge } from './host-badge'
+import { Kbd } from '@/components/ui/kbd'
+import { useJumpIndex } from './jump-index-context'
 import {
   StoppedSessionActions,
   type StoppedSessionActionsHandle,
@@ -166,6 +168,12 @@ export interface SessionTileProps {
    *  mass — so hierarchy stays consistent across tiers. Default 1 preserves
    *  the baseline for non-overview call sites (e.g. dev-tiles). */
   sizeTier?: OverviewSize
+  /** 1-indexed Cmd+N shortcut slot (≤9) — when set, the tile shows a small
+   *  ⌘N / Ctrl+N hint at the LEFT of the title-row's right cluster (left of
+   *  the host badge, error / needs-input pills, stopped pill, archive icon).
+   *  Desktop-only: hidden on touch / narrow viewports. Undefined for tiles
+   *  past 9 (no hint). */
+  jumpIndex?: number
 }
 
 /** The hero surface (§4.3). One tile = one agent: title (Claude chat summary),
@@ -182,8 +190,17 @@ export function SessionTile({
   onReattach,
   onRemove,
   sizeTier = MIN_OVERVIEW_SIZE,
+  jumpIndex,
 }: SessionTileProps) {
   const reduce = useReducedMotion()
+  // Fall back to the surface-wide JumpIndexContext when the caller didn't
+  // pass an explicit `jumpIndex` — the overview wraps its render tree in a
+  // provider so team-leads (rendered via <TeamCard>) and ordinary tiles
+  // (rendered via <GroupGrid>) both pick up their slot without prop-drilling
+  // through six layers. Surfaces with no provider (archived sheet, settings)
+  // get `undefined` and the chip is omitted.
+  const ctxJumpIndex = useJumpIndex(session.name)
+  const resolvedJumpIndex = jumpIndex ?? ctxJumpIndex
   const {
     idleLines: IDLE_LINES,
     expandedLines: EXPANDED_LINES,
@@ -777,6 +794,24 @@ export function SessionTile({
             <span className="line-clamp-1 flex-1 text-sm font-medium leading-tight">
               {title}
             </span>
+            {/* ⌘N / Ctrl+N shortcut hint — leftmost in the right-cluster so
+                everything that already lives on this row (host badge, error
+                pill, needs-input pill, stopped pill, archive icon) keeps
+                its existing position. Resting state shows the chip; hover
+                fades it out so the archive icon gets clean real-estate
+                (mirroring how the stopped pill steps aside). Hidden on
+                touch / narrow viewports — no shortcuts on mobile. Hidden
+                during archive-confirm so the icon pair has room. */}
+            {resolvedJumpIndex && resolvedJumpIndex <= 9 && !showArchiveControl && (
+              <motion.span
+                aria-hidden={false}
+                animate={hovered ? { opacity: 0, x: -8 } : { opacity: 1, x: 0 }}
+                transition={reduce ? { duration: 0 } : springs.cardExpand}
+                className="hidden self-center md:inline-flex"
+              >
+                <Kbd combo={`mod+${resolvedJumpIndex}`} variant="muted" />
+              </motion.span>
+            )}
             {/* Remote-host badge (RT9). Globe + truncated host name; only
                 renders when the session has a `host_id` (local = no badge,
                 zero space). Sits BEFORE the error/state pills so the title
