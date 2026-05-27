@@ -7,16 +7,20 @@
 //
 //     ╭─ panel (glass; one top hairline; rounded continuous corners) ──╮
 //     │  ─── 22pt drag handle (with the 4×36pt visual pill at center) ──│
+//     │  ─── MobileDock (children — Edit/⌨/···/+/🎙/↵, plus the iOS ───│
+//     │       accessory key row when the soft keyboard is up) ─────────│
 //     │  ╭─ pills row (h: 44pt; revealed by drag-up) ─────────────────╮│
 //     │  │  [● claude-1]  [● claude-2]  [● router]  [● db]  …          ││
 //     │  ╰────────────────────────────────────────────────────────────╯│
-//     │  ─── MobileDock (children — Edit/⌨/···/+/🎙/↵, plus the iOS ───│
-//     │       accessory key row when the soft keyboard is up) ─────────│
 //     ╰────────────────────────────────────────────────────────────────╯
 //
 //   • Resting (closed): the pills-row height = 0. Panel = handle + dock.
-//   • Expanded (open):  the pills-row height = PILLS_H. Panel grows UPWARD
-//     by exactly PILLS_H; the terminal's `flex-1 min-h-0` shrinks to match.
+//   • Expanded (open):  the pills-row height = PILLS_H. The bottom-anchored
+//     panel grows UPWARD by exactly PILLS_H — so the dock visually slides UP
+//     and the pills row is revealed BELOW it (in the space the dock vacated,
+//     just above the home indicator). This is the natural pull-up sheet
+//     pattern: swipe up the dock → space appears beneath it → pills fill it.
+//     The terminal's `flex-1 min-h-0` above the panel shrinks to match.
 //
 // THE GESTURE (the part the previous version got wrong):
 //
@@ -398,12 +402,22 @@ export function MobileBottomPanel({
         </motion.div>
       )}
 
+      {/* Dock content — exactly what the route renders. We let mobile.tsx pass
+          <MobileDock> as children so this component stays a pure presentational
+          shell that owns ONE thing: the panel chrome + the drawer gesture.
+          Rendered BEFORE the pills row so the pills appear UNDER the dock when
+          the panel expands (matches the natural pull-up sheet pattern — see
+          the ASCII model at the top of this file). */}
+      {children}
+
       {/* Pills row — animated height 0 → PILLS_H. ONE motion.div, ONE animated
           value, ONE spring. The whole row, scrollbar fix included:
             • h-[44px] matches each pill's h-11 so natural content == box
             • overflow-y-hidden defends against perpendicular-axis promotion
             • [scrollbar-width:none] + ::-webkit-scrollbar:hidden = no scrollbar
-            • every pill is shrink-0 so the row never multi-lines */}
+            • every pill is shrink-0 so the row never multi-lines
+          Rendered AFTER the dock so on drag-up the dock visually slides up and
+          the pills are revealed in the freed space below it. */}
       {hasSwapTargets && (
         <motion.div
           animate={{ height: revealHeight }}
@@ -446,11 +460,6 @@ export function MobileBottomPanel({
           </div>
         </motion.div>
       )}
-
-      {/* Dock content — exactly what the route renders. We let mobile.tsx pass
-          <MobileDock> as children so this component stays a pure presentational
-          shell that owns ONE thing: the panel chrome + the drawer gesture. */}
-      {children}
     </motion.div>
   )
 }
