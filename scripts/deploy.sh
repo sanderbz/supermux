@@ -911,7 +911,10 @@ fi
 # extraction rather than a cross-fs copy.
 REMOTE_PARENT="$(dirname "$REMOTE_DIR")"
 REMOTE_STAGE="$REMOTE_PARENT/.supermux-deploy-stage.$GIT_SHA_SHORT.$$"
-if ! ssh "$HOST" "sudo -u '$SERVICE_USER' mkdir -p '$REMOTE_STAGE'"; then
+# `$REMOTE_PARENT` (e.g. /opt) is root-owned on most distros so $SERVICE_USER
+# can't mkdir there directly; do it as root then hand ownership to the service
+# user — same idempotent pattern as $REMOTE_DIR above.
+if ! ssh "$HOST" "sudo mkdir -p '$REMOTE_STAGE' && sudo chown '$SERVICE_USER:$SERVICE_USER' '$REMOTE_STAGE'"; then
   echo "[deploy] error: failed to create staging dir $REMOTE_STAGE on $HOST." >&2
   exit 1
 fi
