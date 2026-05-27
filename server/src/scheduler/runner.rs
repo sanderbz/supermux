@@ -109,6 +109,31 @@ pub async fn run(state: AppState, sched: Schedule, trigger: Trigger) {
         }),
     });
 
+    // Phone push on ERROR only — successes would be too noisy for periodic
+    // schedules (a 5-min cron firing all day every day). Spawned so the run
+    // loop is never blocked on the push service; `send_push_for` honours the
+    // `schedule_error` category toggle in Settings.
+    if outcome.status == "error" {
+        let st = state.clone();
+        let title = sched.title.clone();
+        let note = outcome.note.clone();
+        tokio::spawn(async move {
+            let body = if note.is_empty() {
+                format!("Schedule '{title}' errored.")
+            } else {
+                format!("'{title}' errored: {note}")
+            };
+            let _ = crate::push::send_push_for(
+                &st,
+                crate::db::push::NotifCategory::ScheduleError,
+                &format!("schedule '{title}' errored"),
+                &body,
+                "/scheduler",
+            )
+            .await;
+        });
+    }
+
     // Persist cadence.
     match trigger {
         Trigger::Tick { .. } => {

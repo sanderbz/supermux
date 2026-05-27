@@ -32,7 +32,7 @@ import {
 } from '@/stores/ui-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
-import { pushApi } from '@/lib/api'
+import { pushApi, type NotifCategory, type PushAttempt, type PushPrefs } from '@/lib/api'
 import { usePush } from '@/hooks/use-push'
 import {
   useAgentTeams,
@@ -411,42 +411,181 @@ function ClaudeToolsSection() {
   )
 }
 
-/** Settings → Notifications (PUSH milestone). "Enable phone notifications"
- *  subscribes this device to web push so the user gets pinged when an agent is
- *  blocked on them (transitions to Waiting) or errors. Degrades gracefully:
- *  shows blocked / unsupported states instead of a dead toggle. iOS requires the
- *  PWA installed to the home screen + permission — that's the `unsupported`
- *  state until installed. */
+/** A single per-event notification toggle (the user-facing category list).
+ *  `label` is what the user sees; `key` is the wire format that the server's
+ *  `NotifCategory` enum matches. `hint` answers "when does this fire?" in one
+ *  line so the user never has to guess what they're toggling. */
+interface NotifTypeSpec {
+  key: NotifCategory
+  label: string
+  hint: string
+}
+
+/** The four categories, in display order. Kept short on purpose — every extra
+ *  toggle is another decision the user has to make AND another row in the
+ *  Recent activity diagnostic. Each one maps 1:1 to a distinct
+ *  `send_push_for(NotifCategory::*)` call site on the server. */
+const NOTIF_TYPES: NotifTypeSpec[] = [
+  {
+    key: 'agent_waiting',
+    label: 'Agent needs you',
+    hint: 'When an agent goes idle waiting on your input or asks a board question.',
+  },
+  {
+    key: 'agent_finished',
+    label: 'Agent finished',
+    hint: 'When an agent finishes its turn — ready for your review.',
+  },
+  {
+    key: 'agent_stopped',
+    label: 'Agent stopped',
+    hint: 'When a session ends unexpectedly (the tmux pane goes away).',
+  },
+  {
+    key: 'schedule_error',
+    label: 'Scheduled task errored',
+    hint: 'When a scheduled task fails. Successful runs are silent on purpose.',
+  },
+]
+
+/** Human label for the activity row's category column. Matches the server's
+ *  `human_label` so a test notification labelled "Agent finished" maps to the
+ *  same row in the activity panel. `test` is the generic transport probe. */
+function categoryLabel(slug: string): string {
+  const known = NOTIF_TYPES.find((t) => t.key === slug)
+  if (known) return known.label
+  if (slug === 'test') return 'Transport test'
+  return slug
+}
+
+/** Format an attempt timestamp (server-side Unix seconds) as a short relative
+ *  string — the user usually cares about "did THAT recent action ping?" not the
+ *  absolute clock time. */
+function formatAgo(unixSec: number): string {
+  const delta = Math.max(0, Math.floor(Date.now() / 1000 - unixSec))
+  if (delta < 60) return `${delta}s ago`
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`
+  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`
+  return `${Math.floor(delta / 86400)}d ago`
+}
+
+/** One row in the Recent activity panel. The terse "delivered N · failed N"
+ *  summary is the entire point: when the user says "I never got a notification",
+ *  the answer is here, not in a log. */
+function ActivityRow({ a }: { a: PushAttempt }) {
+  const detail = a.muted
+    ? 'muted by your preference'
+    : a.attempted === 0
+      ? 'no devices subscribed'
+      : `${a.delivered}/${a.attempted} delivered${
+          a.pruned ? ` · ${a.pruned} pruned` : ''
+        }${a.failed ? ` · ${a.failed} failed` : ''}`
+  // Failed > 0 is the smoking gun the user is hunting for — red the detail.
+  const tone = a.failed > 0 ? 'text-destructive' : 'text-muted-foreground'
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1.5 text-[13px]">
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{a.title}</div>
+        <div className={`truncate text-[12px] ${tone}`}>
+          {categoryLabel(a.category)} · {detail}
+        </div>
+      </div>
+      <div className="shrink-0 font-mono text-[11px] text-muted-foreground">
+        {formatAgo(a.at)}
+      </div>
+    </div>
+  )
+}
+
+/** Per-category Send-test button. Fires `pushApi.test(kind)` which routes
+ *  through the SAME `send_push_for` path the real trigger uses — so a click
+ *  exercises the prefs gate + transport in one step. */
+function TypeTestButton({ kind, disabled }: { kind: NotifCategory; disabled: boolean }) {
+  const [busy, setBusy] = React.useState(false)
+  async function fire() {
+    if (busy) return
+    setBusy(true)
+    try {
+      await pushApi.test(kind)
+    } catch {
+      /* the Recent activity panel surfaces the failure detail — no toast spam */
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => void fire()}
+      disabled={disabled || busy}
+      className="h-8 text-[12px]"
+    >
+      {busy ? 'Sending…' : 'Test'}
+    </Button>
+  )
+}
+
+/** Settings → Notifications (PUSH milestone + this PR's per-type prefs).
+ *
+ *  Layout, top-to-bottom:
+ *    1. Master toggle — subscribes/unsubscribes the device (Web Push
+ *       lifecycle). Without this on, no notification of any kind can arrive.
+ *    2. Generic transport test (when subscribed) — verifies the full pipe
+ *       (VAPID → push service → SW → phone) bypassing every prefs gate.
+ *    3. Per-event toggles — one per `NotifCategory`. Each has a "Test" link
+ *       that fires THROUGH the prefs gate, so a click proves routing too.
+ *    4. Recent activity — the in-memory ring of the last 10 fan-outs. The
+ *       "why didn't my phone ring?" answer is always one glance away.
+ *
+ *  Degrades gracefully: shows blocked / unsupported states instead of a dead
+ *  toggle. iOS requires the PWA installed to the home screen + permission —
+ *  that's the `unsupported` state until installed. */
 function NotificationsSection() {
   const { state, busy, error, enable, disable } = usePush()
-  // "Send test" lives next to the toggle so an operator who just enabled push
-  // can confirm the path end-to-end. Without this button the only way to fire
-  // a notification was to drive a real agent into Waiting or call a board
-  // needs-input hook — useless for QA on a fresh iPhone subscription, which
-  // is exactly the failure mode SD-7 reported.
-  const [testing, setTesting] = React.useState(false)
-  const [testResult, setTestResult] = React.useState<string | null>(null)
+  const enabled = state === 'enabled'
 
-  const footnote = (() => {
-    switch (state) {
-      case 'unsupported':
-        return 'This device can’t receive web push. On iPhone/iPad, add supermux to your Home Screen first, then enable it from the installed app.'
-      case 'blocked':
-        return 'Notifications are blocked for this site. Allow them in your browser settings, then turn this on.'
-      default:
-        return 'Get a notification on this device when an agent is waiting on you or hits an error.'
+  // Prefs (one round-trip on mount + on re-enable; we own the optimistic UI).
+  const [prefs, setPrefs] = React.useState<PushPrefs | null>(null)
+  const [prefError, setPrefError] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const p = await pushApi.getPrefs()
+        if (!cancelled) setPrefs(p)
+      } catch (e) {
+        if (!cancelled) {
+          setPrefError(e instanceof Error ? e.message : 'Could not load preferences.')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-  })()
+  }, [enabled])
 
-  function onToggle(next: boolean) {
-    // Unsupported devices have nothing to toggle; the footnote explains why.
-    if (busy || state === 'unsupported') return
-    if (next) void enable()
-    else void disable()
+  function togglePref(key: NotifCategory, next: boolean) {
+    if (!prefs) return
+    // Optimistic — the switch animation must feel instant. Rollback on a server
+    // failure (the only legit one is offline / 5xx).
+    const prev = prefs
+    setPrefs({ ...prefs, [key]: next })
+    setPrefError(null)
+    void pushApi.putPrefs({ [key]: next }).catch((e) => {
+      setPrefs(prev)
+      setPrefError(e instanceof Error ? e.message : 'Could not save preference.')
+    })
   }
 
+  // Generic transport test (the existing "Send test" button — bypasses category
+  // gates so it always fires when subscribed).
+  const [testing, setTesting] = React.useState(false)
+  const [testResult, setTestResult] = React.useState<string | null>(null)
   async function onSendTest() {
-    if (testing || state !== 'enabled') return
+    if (testing || !enabled) return
     setTesting(true)
     setTestResult(null)
     try {
@@ -458,8 +597,9 @@ function NotificationsSection() {
       setTestResult(
         delivered > 0
           ? `Sent to ${delivered} device${delivered === 1 ? '' : 's'} — check your phone.`
-          : 'Server accepted the request but no device received the push. Check the server logs and ensure `push_sub` in config.toml is a valid contact mailto.',
+          : 'Server accepted the request but no device received the push. Check `push_sub` in config.toml.',
       )
+      void refreshActivity()
     } catch (e) {
       setTestResult(
         e instanceof Error ? `Test failed: ${e.message}` : 'Test failed.',
@@ -467,6 +607,40 @@ function NotificationsSection() {
     } finally {
       setTesting(false)
     }
+  }
+
+  // Recent activity ring. Refetched on mount, after a test, and on demand
+  // ("Refresh") — there's no live SSE feed here on purpose; this is a "I want
+  // to check what just happened" surface, not a live monitor.
+  const [activity, setActivity] = React.useState<PushAttempt[] | null>(null)
+  const refreshActivity = React.useCallback(async () => {
+    try {
+      const rows = await pushApi.getAttempts()
+      setActivity(rows)
+    } catch {
+      /* best-effort; the panel renders an empty-state if this fails */
+    }
+  }, [])
+  React.useEffect(() => {
+    if (!enabled) return
+    void refreshActivity()
+  }, [enabled, refreshActivity])
+
+  const footnote = (() => {
+    switch (state) {
+      case 'unsupported':
+        return 'This device can’t receive web push. On iPhone/iPad, add supermux to your Home Screen first, then enable it from the installed app.'
+      case 'blocked':
+        return 'Notifications are blocked for this site. Allow them in your browser settings, then turn this on.'
+      default:
+        return 'Get a phone notification when an agent needs you, finishes, stops, or a scheduled task errors.'
+    }
+  })()
+
+  function onMasterToggle(next: boolean) {
+    if (busy || state === 'unsupported') return
+    if (next) void enable()
+    else void disable()
   }
 
   return (
@@ -485,15 +659,16 @@ function NotificationsSection() {
         control={
           <Switch
             ariaLabel="Enable phone notifications"
-            checked={state === 'enabled'}
-            onCheckedChange={onToggle}
+            checked={enabled}
+            onCheckedChange={onMasterToggle}
           />
         }
       />
-      {state === 'enabled' ? (
+
+      {enabled ? (
         <Row
           label="Send a test notification"
-          hint="Verifies the full path: VAPID signing, push service, your service worker, your phone."
+          hint="Bypasses every preference toggle — verifies VAPID signing, push service, your service worker, your phone."
           control={
             <Button
               variant="secondary"
@@ -506,11 +681,85 @@ function NotificationsSection() {
           }
         />
       ) : null}
+
       {testResult ? (
         <Row>
           <p className="text-[13px] text-muted-foreground">{testResult}</p>
         </Row>
       ) : null}
+
+      {enabled ? (
+        <>
+          {/* Per-event toggles. Hidden until the master is on, because they're
+              moot otherwise (and a tower of dead switches is bad UX). */}
+          <Row>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Notify me when…
+            </p>
+          </Row>
+          {NOTIF_TYPES.map((t) => (
+            <Row
+              key={t.key}
+              label={t.label}
+              hint={t.hint}
+              control={
+                <div className="flex items-center gap-1">
+                  {/* The per-type Test fires THROUGH the gate — a click that
+                      doesn't ring means the toggle is off (or transport is
+                      broken; activity row will say which). */}
+                  <TypeTestButton kind={t.key} disabled={!prefs?.[t.key]} />
+                  <Switch
+                    ariaLabel={`Notify me when ${t.label.toLowerCase()}`}
+                    checked={prefs?.[t.key] ?? true}
+                    onCheckedChange={(next) => togglePref(t.key, next)}
+                    disabled={!prefs}
+                  />
+                </div>
+              }
+            />
+          ))}
+
+          {prefError ? (
+            <Row>
+              <p className="text-[13px] text-destructive">{prefError}</p>
+            </Row>
+          ) : null}
+
+          {/* Recent activity — the "why didn't I get a notification?" answer.
+              In-memory ring, last 10. Manual refresh on purpose: this is a
+              spot-check tool, not a live monitor (no need to burn an SSE topic
+              on it). */}
+          <Row>
+            <div className="flex w-full items-baseline justify-between gap-2 pb-1">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Recent activity
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void refreshActivity()}
+                className="h-7 text-[12px]"
+              >
+                Refresh
+              </Button>
+            </div>
+          </Row>
+          <Row>
+            <div className="flex w-full flex-col divide-y divide-border/60">
+              {activity == null ? (
+                <p className="py-1.5 text-[13px] text-muted-foreground">Loading…</p>
+              ) : activity.length === 0 ? (
+                <p className="py-1.5 text-[13px] text-muted-foreground">
+                  Nothing yet. Send a test or wait for an agent to ping you.
+                </p>
+              ) : (
+                activity.map((a, i) => <ActivityRow key={`${a.at}-${i}`} a={a} />)
+              )}
+            </div>
+          </Row>
+        </>
+      ) : null}
+
       {error ? (
         <Row>
           <p className="text-[13px] text-destructive">{error}</p>

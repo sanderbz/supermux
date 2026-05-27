@@ -289,6 +289,11 @@ pub struct AppState {
     /// startup (loaded/generated from the data dir); the public half is served by
     /// `GET /api/push/key`, the private half signs every push. Cheap `Arc` clone.
     pub vapid: Arc<crate::push::Vapid>,
+    /// In-memory bounded ring of recent `send_push` attempts. Exposed via
+    /// `GET /api/push/attempts` and rendered as a "Recent activity" panel in
+    /// Settings → Notifications — the diagnostic surface that answers "why
+    /// didn't my phone ring?" without a log grep. Cheap `Arc` clone.
+    pub push_attempts: Arc<crate::push::AttemptLog>,
     /// Persistent SSH ControlMaster pool (REMOTE_PLAN RT2). One master per
     /// remote host, shared by every `Transport::Ssh` shell-out; warmed on
     /// first use, reaped after 10min idle. Cheap `Arc` clone — actual state
@@ -317,6 +322,7 @@ impl AppState {
             pool,
             config: Arc::new(config),
             vapid,
+            push_attempts: Arc::new(crate::push::AttemptLog::default()),
             session_locks: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),

@@ -24,21 +24,23 @@
 //! endpoint the service reports `404`/`410 Gone` for is pruned automatically so
 //! dead devices don't accumulate.
 
+use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use web_push::{
     ContentEncoding, SubscriptionInfo, VapidSignatureBuilder, WebPushMessageBuilder,
 };
 
 use crate::db;
+use crate::db::push::NotifCategory;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -57,6 +59,12 @@ const DEFAULT_VAPID_SUB: &str = "mailto:noreply@example.com";
 /// you" ping — beyond that the prompt is stale and silent expiry is fine.
 const PUSH_TTL_SECS: u32 = 4 * 60 * 60;
 
+/// How many recent send attempts to keep in the in-memory diagnostic ring
+/// (surfaced by `GET /api/push/attempts` and rendered as a "Recent activity"
+/// list in Settings → Notifications). Small on purpose: this is a "why didn't
+/// my phone ring just now?" aid, not an audit log — audit lives in `audit_log`.
+const ATTEMPT_RING_CAP: usize = 10;
+
 /// The resolved VAPID keypair, computed once at startup and shared via
 /// [`AppState`]. Holds the raw private key (base64url) used to sign every push
 /// and the derived public key (base64url) handed to the browser.
@@ -73,6 +81,60 @@ pub struct Vapid {
     /// set this via `config.toml` (`push_sub = "mailto:you@example.org"`) or
     /// the `SUPERMUX_PUSH_SUB` env override.
     sub: String,
+}
+
+/// One recorded send_push attempt — the unit of the in-memory diagnostic ring
+/// exposed via `GET /api/push/attempts`. Body is intentionally NOT stored: it
+/// can contain agent prompts / questions, which we treat as ephemeral user data
+/// the diagnostic surface doesn't need.
+#[derive(Debug, Clone, Serialize)]
+pub struct PushAttempt {
+    /// Unix epoch seconds when the fan-out completed.
+    pub at: i64,
+    /// The category that drove this send (`"agent_waiting"`, etc) or `"test"`
+    /// for an operator-initiated `/api/push/test` call.
+    pub category: String,
+    /// The notification title as the user sees it (no body / URL — those can
+    /// carry sensitive prompt text).
+    pub title: String,
+    /// Subscriber rows the fan-out tried.
+    pub attempted: usize,
+    /// Subscribers the push service accepted (the user's phone, in the happy
+    /// case).
+    pub delivered: usize,
+    /// Subscriber rows pruned (404/410 Gone — the device is dead).
+    pub pruned: usize,
+    /// Subscriber rows that failed for a non-Gone reason (encryption error,
+    /// 4xx/5xx from the push service, network).
+    pub failed: usize,
+    /// `true` when the category was muted in prefs and the fan-out never
+    /// happened (the row's `delivered == 0` is then NOT a transport failure).
+    pub muted: bool,
+}
+
+/// In-memory bounded ring of recent send attempts. Wrapped in a `std::sync::Mutex`
+/// because every critical section is a tiny push/pop — never held across an
+/// `.await`. Capped at [`ATTEMPT_RING_CAP`] entries; older entries roll off.
+#[derive(Default)]
+pub struct AttemptLog {
+    inner: Mutex<VecDeque<PushAttempt>>,
+}
+
+impl AttemptLog {
+    /// Append one attempt, dropping the oldest if at capacity.
+    pub fn record(&self, attempt: PushAttempt) {
+        let mut q = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if q.len() == ATTEMPT_RING_CAP {
+            q.pop_front();
+        }
+        q.push_back(attempt);
+    }
+
+    /// Snapshot the ring (newest first — Settings renders top-down).
+    pub fn snapshot(&self) -> Vec<PushAttempt> {
+        let q = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        q.iter().rev().cloned().collect()
+    }
 }
 
 impl Vapid {
@@ -147,6 +209,8 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/push/subscribe", post(subscribe))
         .route("/api/push/unsubscribe", post(unsubscribe))
         .route("/api/push/test", post(test_push))
+        .route("/api/push/prefs", get(get_prefs).put(put_prefs))
+        .route("/api/push/attempts", get(get_attempts))
         .with_state(state)
 }
 
@@ -210,6 +274,20 @@ async fn unsubscribe(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Optional `?type=<category>` on `POST /api/push/test` — when present, the
+/// test send is labelled with that category and fans out THROUGH the same
+/// gating function the real triggers use (`send_push_for`). That's the point:
+/// the per-type test button on Settings has to exercise the SAME code path
+/// the real trigger does, so an end-to-end click verifies routing, the prefs
+/// gate, AND transport — not just transport.
+#[derive(Debug, Deserialize, Default)]
+struct TestQuery {
+    /// `agent_waiting` / `agent_finished` / etc. Absent → generic test (bypass
+    /// category gate, body "Push notifications work").
+    #[serde(rename = "type")]
+    kind: Option<String>,
+}
+
 /// `POST /api/push/test` — fire a "supermux push test" notification at every
 /// stored subscription. The whole point: let an operator who just enabled the
 /// Settings toggle verify the path end-to-end without scripting a Claude
@@ -219,17 +297,97 @@ async fn unsubscribe(
 /// after the permission popup. Reports the number of devices the push reached
 /// — `0` here on a fresh enable is a clear signal that the VAPID `sub`
 /// (`config.push_sub`) is wrong for the user's push service (notably APNs).
+///
+/// When `?type=<category>` is supplied, the send goes through the per-category
+/// gate (so a user can verify "agent_finished is ON" without waiting for a
+/// real agent to finish). An unknown category is a 400.
 async fn test_push(
     State(state): State<AppState>,
+    Query(q): Query<TestQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let delivered = send_push(
-        &state,
-        "supermux test",
-        "Push notifications work — tap to open the dashboard.",
-        "/",
-    )
-    .await;
+    let delivered = match q.kind.as_deref() {
+        None => {
+            // Bypass the category gate — this is the "verify transport" test.
+            send_push_inner(&state, "test", "supermux test",
+                "Push notifications work — tap to open the dashboard.", "/").await
+        }
+        Some(name) => {
+            let cat = NotifCategory::from_str(name).ok_or_else(|| {
+                AppError::BadRequest(format!("unknown notification type '{name}'"))
+            })?;
+            let title = format!("supermux test · {}", human_label(cat));
+            let body = format!(
+                "Test for the '{}' category. Toggle it off in Settings to mute.",
+                human_label(cat)
+            );
+            send_push_for(&state, cat, &title, &body, "/").await
+        }
+    };
     Ok(Json(json!({ "ok": true, "data": { "delivered": delivered } })))
+}
+
+/// `GET /api/push/prefs` — every category's on/off state, drives the Settings
+/// section's initial toggle render.
+async fn get_prefs(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut obj = serde_json::Map::new();
+    for (cat, on) in db::push::list_prefs(&state.pool).await {
+        obj.insert(cat.as_str().to_string(), json!(on));
+    }
+    Ok(Json(json!({ "ok": true, "data": obj })))
+}
+
+/// `PUT /api/push/prefs` — partial update. Body is `{<category>: bool, ...}`;
+/// unknown keys are a 400 (better than silently dropping a typo). Any subset
+/// of known keys is accepted, so the UI can flip one switch without sending
+/// the whole map.
+async fn put_prefs(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Validate every key BEFORE writing anything, so a bad request can't leave
+    // some prefs flipped and others unchanged.
+    let mut writes = Vec::with_capacity(body.len());
+    for (k, v) in &body {
+        let cat = NotifCategory::from_str(k).ok_or_else(|| {
+            AppError::BadRequest(format!("unknown notification type '{k}'"))
+        })?;
+        let on = v.as_bool().ok_or_else(|| {
+            AppError::BadRequest(format!("'{k}' must be a boolean"))
+        })?;
+        writes.push((cat, on));
+    }
+    for (cat, on) in writes {
+        db::push::set_pref(&state.pool, cat, on)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("set pref: {e}")))?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// `GET /api/push/attempts` — the in-memory recent-send ring (newest first).
+/// The "why didn't I get a notification just now?" diagnostic surface — the
+/// user opens Settings and sees the last 10 fan-outs with their delivered /
+/// failed / pruned breakdown.
+async fn get_attempts(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    Ok(Json(json!({
+        "ok": true,
+        "data": state.push_attempts.snapshot(),
+    })))
+}
+
+/// Human label for a category — used in test-notification body text and (via
+/// the API mirror) in the Settings UI.
+const fn human_label(cat: NotifCategory) -> &'static str {
+    match cat {
+        NotifCategory::AgentWaiting => "Agent needs you",
+        NotifCategory::AgentFinished => "Agent finished",
+        NotifCategory::AgentStopped => "Agent stopped",
+        NotifCategory::ScheduleError => "Scheduled task errored",
+    }
 }
 
 /// Notification payload delivered to the service worker. The SW reads `title` /
@@ -241,6 +399,37 @@ struct PushPayload<'a> {
     url: &'a str,
 }
 
+/// Send a notification gated by a category preference. The triggers ALWAYS
+/// use this — never `send_push_inner` — so the user's per-type Settings
+/// toggles are honoured at the dispatch site instead of inside each trigger.
+/// A muted category records a `PushAttempt { muted: true, attempted: 0 }` in
+/// the ring so the diagnostic surface explains the missing notification
+/// ("muted by your preference") instead of looking like a silent transport
+/// failure.
+pub async fn send_push_for(
+    state: &AppState,
+    cat: NotifCategory,
+    title: &str,
+    body: &str,
+    url: &str,
+) -> usize {
+    if !db::push::pref_enabled(&state.pool, cat).await {
+        state.push_attempts.record(PushAttempt {
+            at: chrono::Utc::now().timestamp(),
+            category: cat.as_str().to_string(),
+            title: title.to_string(),
+            attempted: 0,
+            delivered: 0,
+            pruned: 0,
+            failed: 0,
+            muted: true,
+        });
+        tracing::debug!(category = cat.as_str(), "send_push_for: muted by pref");
+        return 0;
+    }
+    send_push_inner(state, cat.as_str(), title, body, url).await
+}
+
 /// Send a notification to EVERY stored subscription. Best-effort: each device is
 /// sent independently, a per-device failure is logged at debug, and an endpoint
 /// the push service reports `404`/`410 Gone` for is pruned from the DB so dead
@@ -248,7 +437,19 @@ struct PushPayload<'a> {
 ///
 /// `url` is an app-relative path (e.g. `/focus/<session>`) the SW opens on tap.
 /// No-op (no DB scan beyond a count, no network) when nobody is subscribed.
-pub async fn send_push(state: &AppState, title: &str, body: &str, url: &str) -> usize {
+///
+/// This is the lower-level path — bypasses the per-category gate. Callers
+/// should prefer [`send_push_for`] so the user's mute prefs are honoured; the
+/// only legitimate direct caller is `POST /api/push/test` (a `?type` parameter
+/// is provided to route THROUGH the gate when the user wants to verify a
+/// specific category's wiring).
+pub async fn send_push_inner(
+    state: &AppState,
+    category: &str,
+    title: &str,
+    body: &str,
+    url: &str,
+) -> usize {
     let subs = match db::push::list(&state.pool).await {
         Ok(subs) => subs,
         Err(e) => {
@@ -306,12 +507,25 @@ pub async fn send_push(state: &AppState, title: &str, body: &str, url: &str) -> 
     // default-level service journal (matches the existing "push subscription
     // stored" cadence — one info per user-visible event).
     tracing::info!(
+        category,
         attempted = total,
         delivered,
         pruned,
         failed,
         "send_push: fan-out complete",
     );
+    // Record into the diagnostic ring so the Settings "Recent activity" panel
+    // can answer "why didn't my phone ring just now?" without a log grep.
+    state.push_attempts.record(PushAttempt {
+        at: chrono::Utc::now().timestamp(),
+        category: category.to_string(),
+        title: title.to_string(),
+        attempted: total,
+        delivered,
+        pruned,
+        failed,
+        muted: false,
+    });
     delivered
 }
 
@@ -439,7 +653,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("supermux-vapid-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let first = Vapid::load_or_generate(&dir).expect("first load generates");
+        let first = Vapid::load_or_generate(&dir, DEFAULT_VAPID_SUB.to_string())
+            .expect("first load generates");
         // The key file exists with 0o600 perms (Unix).
         let path = dir.join(VAPID_KEY_FILE);
         assert!(path.exists(), "private key persisted");
@@ -452,7 +667,8 @@ mod tests {
 
         // A second load reads the SAME persisted key (stable public key across
         // restarts — existing subscriptions keep working).
-        let second = Vapid::load_or_generate(&dir).expect("second load reads file");
+        let second = Vapid::load_or_generate(&dir, DEFAULT_VAPID_SUB.to_string())
+            .expect("second load reads file");
         assert_eq!(first.public_b64, second.public_b64);
         assert!(!first.public_b64.is_empty());
 
