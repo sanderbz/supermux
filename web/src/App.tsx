@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ThemeProvider } from '@/components/theme-provider'
@@ -14,7 +14,6 @@ import { Board } from '@/routes/board'
 import { Files } from '@/routes/files'
 import { Scheduler } from '@/routes/scheduler'
 import { Settings } from '@/routes/settings'
-import { Hosts } from '@/routes/hosts'
 
 // DEV-only verification pages (M11 /dev/tiles, M13 /dev/term/:name, …). Lazy so
 // neither the route component nor its mock data lands in the production bundle.
@@ -71,7 +70,13 @@ export default function App() {
                 <Route path="/board" element={<Board />} />
                 <Route path="/files/:name?" element={<Files />} />
                 <Route path="/scheduler" element={<Scheduler />} />
-                <Route path="/hosts" element={<Hosts />} />
+                {/* Hosts moved into Settings → Remote hosts. Redirect old
+                    bookmarks / deep links to the Settings anchor so no link
+                    breaks. The fragment lands on the section header. */}
+                <Route
+                  path="/hosts"
+                  element={<Navigate to="/settings#hosts" replace />}
+                />
                 <Route path="/settings" element={<Settings />} />
               </Route>
               {DevTiles && (

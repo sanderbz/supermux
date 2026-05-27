@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   MotionConfig,
   motion,
@@ -9,7 +9,6 @@ import {
 import {
   Check,
   ChevronsUpDown,
-  Globe,
   PlayCircle,
   RefreshCw,
   SlidersHorizontal,
@@ -55,6 +54,7 @@ import {
   RevealableSecret,
 } from '@/components/settings/secret-field'
 import { SnippetsSection } from '@/components/settings/snippets-section'
+import { HostsSection } from '@/components/settings/hosts-section'
 import { AuditLog } from '@/components/settings/audit-log'
 import { Button } from '@/components/ui/button'
 import {
@@ -379,40 +379,6 @@ function OnboardingSection() {
   )
 }
 
-/** Settings → Remote hosts (REMOTE_PLAN.md RT9). One-line "manage" link to the
- *  dedicated /hosts route plus the SSH onboarding hint so users discover the
- *  reachability / authorized_keys expectations without leaving Settings. */
-function RemoteHostsSection() {
-  const navigate = useNavigate()
-  return (
-    <Section
-      title="Remote hosts"
-      footnote="Remote hosts need a reachable address — Tailscale, a VPN, public DNS, or an SSH reverse tunnel all work. Generate an SSH key on the supermux server and copy the public key into the host’s ~/.ssh/authorized_keys via the Bootstrap button."
-    >
-      <Row
-        label="Manage hosts"
-        hint="Register, recheck, and bootstrap machines you’ll run agents on."
-        control={
-          <Button
-            asChild
-            variant="outline"
-            onClick={() => navigate('/hosts')}
-            className="h-11 gap-1.5"
-          >
-            <motion.button
-              whileTap={{ scale: 0.96 }}
-              transition={springs.buttonPress}
-            >
-              <Globe />
-              Open Hosts
-            </motion.button>
-          </Button>
-        }
-      />
-    </Section>
-  )
-}
-
 /** Settings → Claude tools (skills-mcp-manager plan §C.1, entry point 3). Opens
  *  the same manager sheet the ⌘K command + focus title-bar icon open, scoped to
  *  global (no session in this context). */
@@ -515,6 +481,28 @@ export function Settings() {
   const { scrollY } = useScroll({ container: scrollRef })
   const navOpacity = useTransform(scrollY, [8, 44], [0, 1])
   const titleOpacity = useTransform(scrollY, [0, 52], [1, 0])
+
+  // Fragment-anchor scroll. The Settings route lives inside a route-local
+  // scroll container, so the browser's default `#hosts` scroll doesn't work —
+  // it tries to scroll `document` and finds the element at zero, then quits.
+  // We watch `location.hash` and manually scroll the matching child into view
+  // (smooth on subsequent navigations, instant on initial load so the user
+  // doesn't see a jump after the route mounts). Used by /hosts → /settings#hosts.
+  const { hash } = useLocation()
+  React.useEffect(() => {
+    if (!hash) return
+    const id = hash.slice(1)
+    // RAF so the children have laid out by the time we look up the target —
+    // the iOS-style stagger animation otherwise reports a still-shifting
+    // element top.
+    const raf = requestAnimationFrame(() => {
+      const el = scrollRef.current?.querySelector<HTMLElement>(`#${CSS.escape(id)}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [hash])
 
   function toggleSound(next: boolean) {
     primeAudio() // unlock iOS AudioContext from this user gesture
@@ -632,7 +620,7 @@ export function Settings() {
             />
           </Section>
 
-          <RemoteHostsSection />
+          <HostsSection />
 
           <ClaudeToolsSection />
 
