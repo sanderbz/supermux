@@ -1,23 +1,23 @@
-// /hosts (REMOTE_PLAN.md RT9) — remote host registry. List + add + recheck +
-// bootstrap + delete. Mirrors the visual language of /board and /scheduler:
-// a single scrollable column inside the safe-area-aware route shell, headline
-// + secondary action row at top, then a card list (one card per host) with
-// status pill, ssh target, last-seen relative time, and per-row controls. A
-// "+ Add host" button opens a ResponsiveSheet (Vaul on mobile, side-Sheet on
-// desktop — same primitive every other create flow uses).
+// Settings → Hosts (moved from the standalone /hosts route).
 //
-// State strategy:
-//   * Hosts list: TanStack Query (use-hosts.ts). Mutations invalidate the
-//     cache; no SSE channel for hosts (RT8 didn't ship one — hosts change
-//     rarely and only on user actions, so cache-invalidate + refetch is
-//     enough).
-//   * Per-row check / bootstrap / delete are short-lived imperative
-//     mutations; their pending state lives on the row (not a shared store)
-//     so two rows can be in-flight simultaneously without cross-talk.
-//   * Bootstrap report is shown inline in the "Add host" sheet once the
-//     auto-check after create fails — surfacing the per-prereq checklist
-//     right where the user is already focused, with a single "Bootstrap"
-//     button that POSTs and renders the returned report.
+// The Hosts feature lives inside Settings so it shares the iOS-native
+// grouped-list visual language: a Section header, a stack of Rows (one per
+// host) divided by hairlines, and an "+ Add host" trailing button on the
+// section header. All functionality from the former /hosts route is preserved
+// 1:1 — create, recheck, bootstrap (with optional public-key install), delete
+// (with a 4-second "armed" confirmation tap), and inline error surfaces.
+//
+// State strategy is unchanged from the old route:
+//   * Hosts list: TanStack Query (use-hosts.ts) — shared cache with the
+//     host-picker so flipping to "+ Add host" in Settings warms the picker too.
+//   * Per-row mutations carry their own pending state so two rows can be
+//     in-flight without cross-talk.
+//   * Bootstrap report is rendered inline in the sheet — same component as the
+//     after-create panel, single source of copy.
+//
+// The Add / Bootstrap surfaces live in the same ResponsiveSheet primitive used
+// across the app (Vaul on mobile, side-Sheet on desktop), so the touch
+// affordances and reduced-motion behaviour come for free.
 
 import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
@@ -43,7 +43,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { EmptyStatePlaceholder } from '@/components/empty-state'
 import {
   HostError,
   type BootstrapReport,
@@ -57,6 +56,7 @@ import {
   useDeleteHost,
   useHosts,
 } from '@/hooks/use-hosts'
+import { Row } from '@/components/settings/primitives'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -95,16 +95,21 @@ function HostStatusPill({ status }: { status: HostStatus }) {
         ? 'text-status-error'
         : 'text-muted-foreground'
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+    <span className="inline-flex items-center gap-1.5 text-[12px] font-medium">
       <span aria-hidden className={cn('size-2 rounded-full', dotCls)} />
       <span className={textCls}>{STATUS_LABEL[status]}</span>
     </span>
   )
 }
 
-// ── route ─────────────────────────────────────────────────────────────────────
+// ── section ───────────────────────────────────────────────────────────────────
 
-export function Hosts() {
+/** Settings-section variant of the former /hosts route. Renders a section
+ *  header with a trailing "+ Add host" button, then a Row per registered host
+ *  (status pill, ssh target, last-seen relative, action cluster). Empty and
+ *  loading states are inline Rows so the section never collapses to nothing
+ *  (the iOS grouped-list never shows a card with zero rows). */
+export function HostsSection() {
   const reduce = useReducedMotion()
   const { data: hosts, isLoading, isError, refetch } = useHosts()
   const [sheetOpen, setSheetOpen] = React.useState(false)
@@ -117,75 +122,128 @@ export function Hosts() {
     [hosts],
   )
 
+  // The Add control sits on the same line as the section header so it reads as
+  // "this section's primary action". A 44pt hit target keeps the touch-spec
+  // honest; the visual is a calm pill that mirrors other Settings outline
+  // buttons (Manage, Rotate, etc.).
+  const headerAction = (
+    <Button
+      asChild
+      variant="outline"
+      onClick={() => setSheetOpen(true)}
+      className="h-9 gap-1.5 px-3"
+      aria-label="Add host"
+    >
+      <motion.button
+        whileTap={reduce ? undefined : { scale: 0.96 }}
+        transition={springs.buttonPress}
+      >
+        <Plus className="size-4" />
+        <span className="text-[13px] font-medium">Add host</span>
+      </motion.button>
+    </Button>
+  )
+
   return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6">
-      <header className="mb-4 flex flex-wrap items-center gap-3">
-        <h1 className="mr-1 text-2xl font-semibold tracking-tight">Hosts</h1>
-        <p className="hidden flex-1 text-sm text-muted-foreground sm:block">
-          Remote machines you can run agents on, reached via SSH.
-        </p>
-        <motion.button
-          type="button"
-          onClick={() => setSheetOpen(true)}
-          aria-label="Add host"
-          title="Add host"
-          whileTap={reduce ? undefined : { scale: 0.9 }}
-          transition={springs.snappy}
-          className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground sm:hidden"
-        >
-          <Plus className="size-4" />
-        </motion.button>
-        <Button
-          onClick={() => setSheetOpen(true)}
-          className="hidden sm:inline-flex"
-        >
-          <Plus />
-          Add host
-        </Button>
-      </header>
-
-      <div className="min-h-0 flex-1">
-        {isLoading ? (
-          <div className="flex h-full items-center justify-center">
-            <Loader2 className="size-5 animate-spin text-muted-foreground" />
+    <SectionWithAction
+      id="hosts"
+      title="Remote hosts"
+      action={headerAction}
+      footnote="Remote hosts need a reachable address — Tailscale, a VPN, public DNS, or an SSH reverse tunnel all work. Generate an SSH key on the supermux server and copy the public key into the host’s ~/.ssh/authorized_keys via the Bootstrap button."
+    >
+      {isLoading ? (
+        <Row>
+          <div className="flex items-center gap-2 py-1 text-[13px] text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Loading hosts…
           </div>
-        ) : isError ? (
-          <div className="flex h-full items-center justify-center">
-            <EmptyStatePlaceholder
-              icon={<ServerCog />}
-              message="Couldn’t load hosts. The server may be unreachable."
-              cta={{ label: 'Retry', onClick: () => refetch() }}
-            />
-          </div>
-        ) : sortedHosts.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <EmptyStatePlaceholder
-              icon={<Globe />}
-              message="No remote hosts yet. Add one to run agents off-machine."
-              cta={{ label: 'Add host', onClick: () => setSheetOpen(true) }}
-            />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {sortedHosts.map((host) => (
-              <HostRow key={host.id} host={host} />
-            ))}
-
-            <SshHint className="mt-4" />
-          </div>
-        )}
-      </div>
+        </Row>
+      ) : isError ? (
+        <Row
+          label="Couldn’t load hosts"
+          hint="The server may be unreachable. Try again in a moment."
+          control={
+            <Button
+              variant="outline"
+              onClick={() => refetch()}
+              className="h-11 gap-1.5"
+            >
+              <RefreshCw className="size-4" />
+              Retry
+            </Button>
+          }
+        />
+      ) : sortedHosts.length === 0 ? (
+        <Row
+          label="No remote hosts yet"
+          hint="Add one to run agents off-machine."
+          control={
+            <Button
+              variant="outline"
+              onClick={() => setSheetOpen(true)}
+              className="h-11 gap-1.5"
+            >
+              <Globe className="size-4" />
+              Add host
+            </Button>
+          }
+        />
+      ) : (
+        sortedHosts.map((host) => <HostRow key={host.id} host={host} />)
+      )}
 
       <AddHostSheet open={sheetOpen} onOpenChange={setSheetOpen} />
-    </div>
+    </SectionWithAction>
+  )
+}
+
+/** Section variant with a trailing control on the title row + a stable `id`
+ *  anchor so `/settings#hosts` deep-links land here. Mirrors the visual
+ *  language of `Section` (same grouped card, divider rules, footnote spacing)
+ *  but reserves space for an action button next to the section title. */
+function SectionWithAction({
+  id,
+  title,
+  action,
+  footnote,
+  children,
+}: {
+  id?: string
+  title: string
+  action?: React.ReactNode
+  footnote?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <section
+      id={id}
+      // `scroll-mt` keeps the section header clear of the floating top bar
+      // when a fragment anchor scrolls us into view.
+      className="flex scroll-mt-16 flex-col"
+    >
+      <div className="flex items-end justify-between px-4 pb-2">
+        <h2 className="text-[13px] font-medium leading-none text-muted-foreground">
+          {title}
+        </h2>
+        {action}
+      </div>
+      <div className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
+        {children}
+      </div>
+      {footnote ? (
+        <p className="px-4 pt-2 text-[12px] leading-snug text-muted-foreground">
+          {footnote}
+        </p>
+      ) : null}
+    </section>
   )
 }
 
 // ── one row ───────────────────────────────────────────────────────────────────
 
-/** A single host card: name + globe, status pill, ssh target (mono), last
- *  seen (relative), and per-row action cluster (recheck, bootstrap, delete).
- *  Per-row mutation state stays local so two rows can be in-flight at once. */
+/** A single host row inside the Settings section: name + globe + status pill
+ *  on the title line, ssh target / last-seen / key path on the hint line, and
+ *  the per-row action cluster (recheck, bootstrap, delete) trailing. */
 function HostRow({ host }: { host: Host }) {
   const check = useCheckHost()
   const remove = useDeleteHost()
@@ -203,8 +261,8 @@ function HostRow({ host }: { host: Host }) {
     setDeleteError(null)
     if (!confirmDelete) {
       setConfirmDelete(true)
-      // Auto-cancel the confirm after a few seconds so the card never sits
-      // in a half-armed state.
+      // Auto-cancel the confirm after a few seconds so the row never sits in a
+      // half-armed state.
       window.setTimeout(() => setConfirmDelete(false), 4000)
       return
     }
@@ -220,99 +278,101 @@ function HostRow({ host }: { host: Host }) {
     })
   }
 
-  return (
-    <div className="rounded-lg border border-border bg-card p-3">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <Globe className="size-4 shrink-0 text-muted-foreground" />
-            <span className="truncate text-sm font-medium">{host.name}</span>
-            <HostStatusPill status={host.status} />
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <span className="truncate font-mono">{host.ssh_target}</span>
-            <span className="shrink-0">
-              Last seen: {relativeFromUnix(host.last_seen)}
-            </span>
-            {host.ssh_key_path && (
-              <span className="truncate font-mono">
-                key: {host.ssh_key_path}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onRecheck}
-                aria-label={`Recheck ${host.name}`}
-                disabled={checking}
-              >
-                {checking ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <RefreshCw />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Check reachability</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setBootstrapOpen(true)}
-                aria-label={`Bootstrap ${host.name}`}
-              >
-                <ServerCog />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Bootstrap remote prerequisites</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onDelete}
-                aria-label={
-                  confirmDelete
-                    ? `Confirm delete ${host.name}`
-                    : `Delete ${host.name}`
-                }
-                disabled={deleting}
-                className={cn(
-                  confirmDelete &&
-                    'bg-status-error/10 text-status-error hover:bg-status-error/15',
-                )}
-              >
-                {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {confirmDelete ? 'Click again to delete' : 'Delete host'}
-            </TooltipContent>
-          </Tooltip>
-        </div>
-      </div>
+  const label = (
+    <div className="flex min-w-0 items-center gap-2">
+      <Globe className="size-4 shrink-0 text-muted-foreground" />
+      <span className="truncate text-[15px] font-medium">{host.name}</span>
+      <HostStatusPill status={host.status} />
+    </div>
+  )
 
-      {/* Inline post-check error surfaces under the row so the user sees why
-          the recheck failed (e.g. ssh stderr). Best-effort — present only
-          when the server returned an `error` snippet in the CheckReport. */}
+  const hint = (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted-foreground">
+      <span className="truncate font-mono">{host.ssh_target}</span>
+      <span className="shrink-0">
+        Last seen: {relativeFromUnix(host.last_seen)}
+      </span>
+      {host.ssh_key_path && (
+        <span className="truncate font-mono">key: {host.ssh_key_path}</span>
+      )}
+    </div>
+  )
+
+  const control = (
+    <div className="flex items-center gap-1">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onRecheck}
+            aria-label={`Recheck ${host.name}`}
+            disabled={checking}
+          >
+            {checking ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <RefreshCw />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Check reachability</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setBootstrapOpen(true)}
+            aria-label={`Bootstrap ${host.name}`}
+          >
+            <ServerCog />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Bootstrap remote prerequisites</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onDelete}
+            aria-label={
+              confirmDelete
+                ? `Confirm delete ${host.name}`
+                : `Delete ${host.name}`
+            }
+            disabled={deleting}
+            className={cn(
+              confirmDelete &&
+                'bg-status-error/10 text-status-error hover:bg-status-error/15',
+            )}
+          >
+            {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {confirmDelete ? 'Click again to delete' : 'Delete host'}
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  )
+
+  return (
+    <Row label={label} hint={hint} control={control}>
+      {/* Inline post-check error surfaces under the row so the user sees why a
+          recheck failed (e.g. ssh stderr). Best-effort — present only when the
+          server returned an `error` snippet in the CheckReport. */}
       {check.isSuccess &&
         check.variables === host.id &&
         check.data.status !== 'reachable' &&
         check.data.error && (
-          <p className="mt-2 text-xs text-status-error">
+          <p className="mt-2 text-[12px] text-status-error">
             {check.data.error}
           </p>
         )}
       {deleteError && (
-        <p className="mt-2 text-xs text-status-error" role="alert">
+        <p className="mt-2 text-[12px] text-status-error" role="alert">
           {deleteError}
         </p>
       )}
@@ -322,7 +382,7 @@ function HostRow({ host }: { host: Host }) {
         onOpenChange={setBootstrapOpen}
         host={host}
       />
-    </div>
+    </Row>
   )
 }
 
@@ -384,10 +444,10 @@ function AddHostForm({ onDone }: { onDone: () => void }) {
         ssh_target: form.sshTarget.trim(),
       })
       setCreated(host)
-      // If the auto-check after create came back reachable, dismiss the
-      // sheet immediately — there is nothing else for the user to do. A
-      // failing auto-check keeps the sheet open so the user can run
-      // Bootstrap inline (with the optional pubkey paste if they typed one).
+      // If the auto-check after create came back reachable, dismiss the sheet
+      // immediately — there is nothing else for the user to do. A failing
+      // auto-check keeps the sheet open so the user can run Bootstrap inline
+      // (with the optional pubkey paste if they typed one).
       if (host.status === 'reachable') {
         onDone()
       }
@@ -453,7 +513,9 @@ function AddHostForm({ onDone }: { onDone: () => void }) {
           <textarea
             id="ah-pubkey"
             value={form.publicKey}
-            onChange={(e) => setForm((f) => ({ ...f, publicKey: e.target.value }))}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, publicKey: e.target.value }))
+            }
             rows={3}
             placeholder="ssh-ed25519 AAAA... user@supermux"
             className="w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -664,7 +726,7 @@ function BootstrapBody({
   )
 }
 
-// ── Checklist + the SSH-onboarding hint ───────────────────────────────────────
+// ── Checklist ─────────────────────────────────────────────────────────────────
 
 function BootstrapChecklist({ report }: { report: BootstrapReport }) {
   return (
@@ -685,10 +747,7 @@ function BootstrapChecklist({ report }: { report: BootstrapReport }) {
           ok={report.supermux_dir === 'created'}
           label={`~/.supermux-remote (${report.supermux_dir})`}
         />
-        <ChecklistItem
-          ok={report.claude_installed}
-          label="Claude CLI"
-        />
+        <ChecklistItem ok={report.claude_installed} label="Claude CLI" />
         {report.authorized_key_added !== undefined && (
           <ChecklistItem
             ok={report.authorized_key_added}
@@ -730,8 +789,7 @@ function ChecklistItem({
 }) {
   const okState = ok || forceOk
   // The supermux-dir line never goes "red" — `missing` is a soft state.
-  const isSoftMissing =
-    !okState && label.startsWith('~/.supermux-remote')
+  const isSoftMissing = !okState && label.startsWith('~/.supermux-remote')
   const Icon = okState ? CheckCircle2 : isSoftMissing ? CircleDashed : XCircle
   return (
     <li className="flex items-center gap-2">
@@ -749,27 +807,6 @@ function ChecklistItem({
       </span>
       <span className={cn(!okState && 'text-muted-foreground')}>{label}</span>
     </li>
-  )
-}
-
-/** Settings-style hint paragraph repeated on /hosts to explain the network
- *  expectations: Tailscale / a reachable hostname, plus the SSH key dance the
- *  Bootstrap button automates. Mirrors the same paragraph the Settings route
- *  renders in its Remote hosts section (single source of copy lives here). */
-export function SshHint({ className }: { className?: string }) {
-  return (
-    <div
-      className={cn(
-        'rounded-lg border border-dashed border-border bg-muted/20 p-3 text-xs text-muted-foreground',
-        className,
-      )}
-    >
-      Remote hosts need a reachable address — Tailscale, a VPN, public DNS,
-      or an SSH reverse tunnel all work. Generate an SSH key on the supermux
-      server and copy the public key into the host&rsquo;s{' '}
-      <code className="font-mono">~/.ssh/authorized_keys</code> via the{' '}
-      <span className="font-medium">Bootstrap</span> button.
-    </div>
   )
 }
 
@@ -794,3 +831,9 @@ function Field({
     </div>
   )
 }
+
+// Re-exported for the settings route to keep its imports tidy. Wider use of
+// `Section` (without a header action) stays on `@/components/settings/primitives`.
+// Unused but kept as the canonical name in case future settings sections want
+// the same "header with a trailing action" layout.
+export { SectionWithAction }

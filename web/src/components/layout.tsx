@@ -3,7 +3,6 @@ import { motion } from 'framer-motion'
 import {
   CalendarClock,
   FolderClosed,
-  Globe,
   LayoutGrid,
   Settings as SettingsIcon,
   SquareKanban,
@@ -38,10 +37,9 @@ const NAV: NavItem[] = [
   { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
   { to: '/scheduler', label: 'Scheduler', icon: CalendarClock, tour: 'scheduler' },
-  // RT9: registry of remote hosts to run agents on (SSH-reached). Lives in
-  // the primary nav so the new-session host picker has a discoverable
-  // "manage hosts" destination.
-  { to: '/hosts', label: 'Hosts', icon: Globe },
+  // RT9 hosts registry moved into Settings → Remote hosts (rare-use config
+  // doesn't need a primary-nav slot). `/hosts` redirects to /settings#hosts
+  // (App.tsx) so old bookmarks land in the right section.
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 
