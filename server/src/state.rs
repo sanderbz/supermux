@@ -310,6 +310,12 @@ pub struct AppState {
     /// first use, reaped after 10min idle. Cheap `Arc` clone — actual state
     /// lives inside the [`HostPool`].
     pub host_pool: Arc<HostPool>,
+    /// In-UI update mechanism (v0.3.0): cached latest GitHub release + the
+    /// per-job broadcast registry the SSE progress endpoint subscribes to.
+    /// Cheap `Arc` clone; created once in `new()` so every handler shares the
+    /// SAME cache + registry (a `/start` writer + `/progress` subscriber must
+    /// rendezvous on one channel — see `crate::updates`).
+    pub updates: crate::updates::UpdatesState,
 }
 
 impl AppState {
@@ -353,6 +359,7 @@ impl AppState {
             force_agent_teams: Arc::new(DashMap::new()),
             pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
             host_pool,
+            updates: crate::updates::UpdatesState::new(),
         }
     }
 
