@@ -216,7 +216,9 @@ pub async fn send_push(state: &AppState, title: &str, body: &str, url: &str) -> 
     let subs = match db::push::list(&state.pool).await {
         Ok(subs) => subs,
         Err(e) => {
-            tracing::debug!(error = %e, "send_push: listing subscriptions failed");
+            // Failing to list subs means NO push goes out — surface at warn so it's
+            // visible at default log level (the user's only diagnosis channel).
+            tracing::warn!(error = %e, "send_push: listing subscriptions failed");
             return 0;
         }
     };
@@ -224,24 +226,56 @@ pub async fn send_push(state: &AppState, title: &str, body: &str, url: &str) -> 
         return 0;
     }
 
+    let total = subs.len();
     let payload = serde_json::to_vec(&PushPayload { title, body, url }).unwrap_or_default();
     let client = reqwest::Client::new();
     let mut delivered = 0usize;
+    let mut pruned = 0usize;
+    let mut failed = 0usize;
 
     for sub in subs {
+        // Per-device origin (the push-service host, NOT user data: APNs is
+        // `web.push.apple.com`, FCM is `fcm.googleapis.com`, etc) — useful to
+        // diagnose service-specific failures without ever exposing the per-device
+        // path or keys.
+        let origin = sub
+            .endpoint
+            .splitn(4, '/')
+            .nth(2)
+            .unwrap_or("")
+            .to_string();
         match send_one(&client, &state.vapid, &sub, &payload).await {
             Ok(()) => delivered += 1,
             Err(SendError::Gone) => {
                 // The device unsubscribed / uninstalled — prune the dead endpoint.
                 let _ = db::push::delete(&state.pool, &sub.endpoint).await;
-                tracing::debug!("send_push: pruned a gone push endpoint");
+                pruned += 1;
+                tracing::info!(origin = %origin, "send_push: pruned a gone push endpoint");
             }
             Err(SendError::Other(msg)) => {
-                // Never log the subscription fields (user data) — only the reason.
-                tracing::debug!(reason = %msg, "send_push: delivery to one device failed");
+                failed += 1;
+                // Surface at warn — a silent debug log here is exactly why "I
+                // never got a notification" had no diagnosable trail. The
+                // reason carries the push-service status / encryption error,
+                // never the subscription fields (those are user data).
+                tracing::warn!(
+                    origin = %origin,
+                    reason = %msg,
+                    "send_push: delivery to one device failed",
+                );
             }
         }
     }
+    // One-line fan-out summary at INFO so any push attempt is observable in the
+    // default-level service journal (matches the existing "push subscription
+    // stored" cadence — one info per user-visible event).
+    tracing::info!(
+        attempted = total,
+        delivered,
+        pruned,
+        failed,
+        "send_push: fan-out complete",
+    );
     delivered
 }
 
