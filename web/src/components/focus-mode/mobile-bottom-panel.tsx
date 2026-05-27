@@ -57,9 +57,14 @@
 //     terminal takes focus).
 //
 // SAFE-AREA:
-//   The dock children own `pb-[max(env(safe-area-inset-bottom),0.625rem)]` so
-//   the home indicator never overlaps. The panel here only owns the chrome
-//   above that.
+//   The PANEL owns `pb-[max(env(safe-area-inset-bottom),0.5rem)]` (the
+//   bottom-most-thing-in-the-panel always owns the home-indicator inset).
+//   Previously the dock owned it, which was correct in the closed state but
+//   wrong in the open state: when the pills row revealed BELOW the dock, the
+//   dock's safe-area pb sat trapped between dock and pills (extra gap above
+//   pills) while the pills themselves sat flush against the viewport. Hoisting
+//   the inset to the panel container gives the closed state the same total pb
+//   it had before AND gives the pills row breathing room below it when open.
 
 import * as React from 'react'
 import { motion, useReducedMotion, type PanInfo } from 'framer-motion'
@@ -71,7 +76,16 @@ import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { orderSessions } from '@/components/focus-mode/session-order'
 
 // ── Geometry knobs ────────────────────────────────────────────────────────────
-//   PILLS_H        — height of the revealed pills row. 44pt iOS hit target.
+//   PILL_H         — height of each pill (also each pill's row hit target,
+//                    44pt iOS floor).
+//   PILLS_GAP      — breathing room above the pills row, between the dock
+//                    buttons and the pills row. Makes the open state read as
+//                    "two cohesive rows" instead of "one crammed row".
+//   PILLS_H        — total animated reveal of the pills SECTION (the pill
+//                    row + the gap above it). The pills row's container
+//                    animates `height` from 0 → PILLS_H so the panel grows
+//                    UPWARD by exactly this much; PILL_H of that is the
+//                    pills, PILLS_GAP of it is the top breathing.
 //   HANDLE_HIT_H   — height of the invisible touch region around the visual
 //                    grabber pill. 22pt minimum, easy to grab without crowding
 //                    the dock buttons below.
@@ -81,7 +95,9 @@ import { orderSessions } from '@/components/focus-mode/session-order'
 //   TAP_SLOP_PX    — pointer travel under which a release counts as a tap.
 //   TAP_MAX_MS     — press duration above which a release stops counting as
 //                    a tap (a long press without movement is not a toggle).
-const PILLS_H = 44
+const PILL_H = 44
+const PILLS_GAP = 8
+const PILLS_H = PILL_H + PILLS_GAP
 const HANDLE_HIT_H = 22
 const COMMIT_RATIO = 0.4
 const FLING_VEL_PX_S = 600
@@ -346,8 +362,16 @@ export function MobileBottomPanel({
       // overflow-hidden clips the pills-row mask cleanly to height 0 when closed
       // and to PILLS_H when open — no second border, no opacity gate, no second
       // animated value.
+      //
+      // pb — owns the safe-area inset (see SAFE-AREA note above): the
+      // home-indicator clearance + a ~8 px breathing floor when no inset is
+      // reported. This sits OUTSIDE the pills row's height-animated container,
+      // so the pills always clear the iOS home indicator AND have visible
+      // bottom padding in a desktop browser. Closed-state total pb is
+      // unchanged from when the dock owned this.
       className={cn(
         'glass relative shrink-0 overflow-hidden border-t border-border/60',
+        'pb-[max(env(safe-area-inset-bottom),0.5rem)]',
       )}
     >
       {/* The drag handle — the ONE drag region. 22pt tall hit area; visible
@@ -393,6 +417,20 @@ export function MobileBottomPanel({
             'focus-visible:ring-2 focus-visible:ring-ring',
           )}
           data-vr="mobile-bottom-panel-handle"
+          // The whole focus mode lives inside Vaul's <Drawer.Content>, which
+          // wires its own drag-to-dismiss on every descendant by default. A
+          // swipe-down starting ON THIS HANDLE was double-claimed: framer-motion
+          // followed the finger (correct — our drag) AND Vaul also armed (wrong —
+          // the swipe leaked into "dismiss the whole focus mother sheet"). The
+          // result: swiping down on the grabber dismissed the entire focus mode
+          // instead of just collapsing the pills row.
+          //
+          // `data-vaul-no-drag` is Vaul's documented opt-out: shouldDrag short-
+          // circuits for any pointerdown whose target carries this attr. Our
+          // motion.div handler still receives the gesture (it owns its own
+          // pointer capture); only Vaul's parallel drag is suppressed. Same
+          // pattern is used on the terminal wrapper for the same reason.
+          data-vaul-no-drag
         >
           <span
             aria-hidden
@@ -437,8 +475,12 @@ export function MobileBottomPanel({
           <div
             role="listbox"
             aria-label="Switch session"
+            // pt-2 = the PILLS_GAP breathing above the pill row (between dock
+            // buttons and pills). The outer motion.div animates total height
+            // to PILLS_H (= 44 + 8); the pill row itself stays h-[44px] so each
+            // pill keeps its iOS 44pt floor and natural content matches the box.
             className={cn(
-              'flex h-[44px] shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden px-3',
+              'flex h-[44px] shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden px-3 pt-2',
               // Native scroll-snap so a finger-flick lands a pill flush.
               'snap-x snap-mandatory',
               // Hide the scrollbar visually — both engines.

@@ -525,17 +525,23 @@ export function MobileDock({
         // The glass background + top hairline now live on the parent
         // <MobileBottomPanel> so the pills row above AND the dock buttons read
         // as ONE continuous surface (no doubled border, no gap). The dock here
-        // owns only its INNER chrome: horizontal padding, top/bottom breathing,
-        // safe-area inset for the home indicator.
-        //   • pb — at least ~10 px of breathing room under the row even when
-        //     the device reports no safe-area inset (iPhone Air in the Vaul
-        //     sheet), so the session pill + Enter never sit flush against the
-        //     viewport bottom; grows to the home-indicator inset where there
-        //     is one.
+        // owns only its INNER chrome: horizontal padding + a small symmetric
+        // top/bottom breathing pair.
+        //
+        // SAFE-AREA OWNERSHIP — the home-indicator inset + the "viewport-bottom
+        // breathing room" used to live HERE (pb-[max(env(safe-area-inset-bottom),
+        // 0.625rem)]). That broke the open-state of <MobileBottomPanel>: when the
+        // pills row revealed BELOW the dock, the dock's safe-area pb sat trapped
+        // BETWEEN dock buttons and pills (extra space above pills), while the
+        // pills themselves sat flush against the viewport (no safe-area below).
+        // The bottom-most-thing-in-the-panel SHOULD own the safe area; in the
+        // single-surface panel that's now the panel container itself. The dock
+        // here keeps a small consistent pb so the handle↔dock and dock↔pills
+        // gaps stay equal across closed/open states.
         //   • relative — preserved for the dock's existing ComposeField morph
         //     surface (the COMPOSE_LAYOUT_ID layoutId resolves rects against
         //     its closest positioned ancestor, which has been this <div>).
-        'relative flex flex-col gap-2 px-2.5 pb-[max(env(safe-area-inset-bottom),0.625rem)] pt-2',
+        'relative flex flex-col gap-2 px-2.5 pb-2 pt-2',
         className,
       )}
     >
