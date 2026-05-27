@@ -486,6 +486,22 @@ impl StatusDetector {
     }
 
     fn classify(&self, capture: &str, last_pty: Instant, turn: TurnState, has_hooks: bool) -> Status {
+        // ── 0. user-interrupt pre-emption ────────────────────────────────────
+        // When the user presses Esc twice in the Claude TUI, the current turn
+        // is interrupted and the TUI shows the literal "Interrupted · What
+        // should Claude do instead?" prompt. Claude Code does NOT emit a
+        // `Stop` hook for this case, so the turn state machine still sees
+        // `turn_start > turn_end` and would pin Active for the full
+        // [`TURN_SAFETY`] window (15 min) — wrong, the agent is at rest. The
+        // marker is unambiguous: it only appears on that exact prompt, so we
+        // safely pre-empt the turn machine and return Waiting (the agent is
+        // blocked on the user picking the next action — same semantics as
+        // every other entry in WAITING_BANK). Pure capture-driven, robust
+        // even when hooks are flapping.
+        if INTERRUPT_MARKER.is_match(capture) {
+            return Status::Waiting;
+        }
+
         // ── 1. hook TURN STATE MACHINE (the multi-signal apex; spec §B) ────────
         // The per-turn hook timestamps come straight from the agent runtime — the
         // most authoritative signal we have — so they OUTRANK the regex bank and
@@ -673,6 +689,13 @@ static WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
+/// USER-INTERRUPT marker: the literal prompt Claude Code shows after the user
+/// presses Esc twice mid-turn. Unique enough to pre-empt the turn state
+/// machine (Claude Code doesn't emit a `Stop` hook for user-interrupts, so the
+/// machine would otherwise pin Active for the full TURN_SAFETY window).
+static INTERRUPT_MARKER: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)interrupted.*what should claude do").unwrap());
+
 /// IDLE markers: a COMPLETED spinner or a bare shell/agent prompt.
 ///
 /// The persistent status-bar / mode indicators `⏵⏵`, `bypass permissions`, and
@@ -772,6 +795,21 @@ mod tests {
         ] {
             assert_eq!(fresh(cap), Status::Waiting, "{cap:?}");
         }
+    }
+
+    /// User-interrupt (Esc Esc) pre-empts the turn state machine. Claude Code
+    /// does NOT emit a `Stop` hook for user-interrupts, so without the
+    /// INTERRUPT_MARKER pre-emption the turn machine would still see
+    /// `turn_start > turn_end` and pin Active for the full TURN_SAFETY (15 min)
+    /// window — but the agent is clearly at rest waiting for the user to pick
+    /// what to do next. This is the user-reported regression.
+    #[test]
+    fn user_interrupt_preempts_active_turn() {
+        let mut d = StatusDetector::new();
+        // Simulate an in-flight turn: PreToolUse just fired, no Stop yet.
+        let turn = turn_with(HookEvent::PreToolUse, Duration::from_secs(5));
+        let cap = "Interrupted · What should Claude do instead?";
+        assert_eq!(d.detect(cap, Instant::now(), turn, true), Status::Waiting);
     }
 
     #[test]
