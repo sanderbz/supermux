@@ -29,7 +29,10 @@ use regex::Regex;
 pub enum Recurrence {
     /// One-shot: no fire after the first.
     Once,
-    /// Fixed interval anchored to the previous fire (drifts intentionally).
+    /// Fixed interval anchored to the previous fire. Successive fires drift by
+    /// dispatch lag (intentional, small); after a long gap or any lag that
+    /// pushes `anchor + d` past `now`, the next fire is re-anchored to `now + d`
+    /// rather than walking the cadence grid — see [`next_after`] for why.
     Interval(Duration),
     /// Wall-clock aligned via a cron schedule.
     Cron(Box<CronSchedule>),
@@ -46,15 +49,20 @@ impl Recurrence {
         match self {
             Recurrence::Once => None,
             Recurrence::Interval(d) => {
-                let mut next = anchor + *d;
-                if next <= now {
-                    // Skip whole intervals so a long sleep/restart doesn't burst.
-                    let dn = d.num_milliseconds().max(1);
-                    let elapsed = (now - anchor).num_milliseconds().max(0);
-                    let mult = (elapsed / dn).saturating_add(1).min(i32::MAX as i64) as i32;
-                    next = anchor + *d * mult;
+                let next = anchor + *d;
+                if next > now {
+                    Some(next)
+                } else {
+                    // `anchor + d` is in the past — either a long gap/restart or
+                    // cumulative dispatch lag pushed the grid past `now`. Walking
+                    // the cadence grid forward (`anchor + d * mult`) lands at the
+                    // next slot which can be only seconds after `now`, triggering
+                    // a near-immediate re-fire on the very next tick (SS-1: bursts
+                    // of ~30s-apart fires on an "every 5m" schedule). Re-anchor on
+                    // `now` so successive fires are always a full interval apart,
+                    // regardless of lag or downtime.
+                    Some(now + *d)
                 }
-                Some(next)
             }
             Recurrence::Cron(s) => s.after(&now).next(),
         }
@@ -378,6 +386,34 @@ mod tests {
         let next = p.recurrence.next_after(anchor, now()).unwrap();
         assert!(next > now());
         assert!(next <= now() + Duration::seconds(60));
+    }
+
+    /// SS-1: after a long gap (or a lagged fire that pushes `anchor + d` just
+    /// past `now`), the next fire must be one FULL interval out — not a few
+    /// seconds away. The old impl walked the cadence grid (`anchor + d * mult`)
+    /// and landed e.g. 21 s after `now`, which the scheduler tick then re-fired
+    /// immediately, producing bursts of ~30 s-apart fires on every-5-min jobs.
+    #[test]
+    fn interval_after_long_gap_does_not_double_fire() {
+        let p = parse("every 5m", now()).unwrap();
+        // Anchor far in the past (4.5 h ago) — server-restart / disabled-then-
+        // re-enabled / long sleep. The next fire must be a full 5 min from now.
+        let anchor = now() - Duration::seconds(16_779);
+        let next = p.recurrence.next_after(anchor, now()).unwrap();
+        assert_eq!(next, now() + Duration::seconds(300));
+    }
+
+    /// SS-1: dispatch lag (catch-up fire at `now > anchor + d`) must also
+    /// re-anchor on `now`, not pick the next cadence-grid boundary which can
+    /// land seconds ahead and cause the second fire of an observed pair.
+    #[test]
+    fn interval_lagged_fire_resets_to_now_plus_d() {
+        let p = parse("every 5m", now()).unwrap();
+        // Anchor ≈ 5 min ago + a 10 s lag — i.e. the previous fire happened a
+        // little late, so `anchor + d` is now ~10 s in the past.
+        let anchor = now() - Duration::seconds(310);
+        let next = p.recurrence.next_after(anchor, now()).unwrap();
+        assert_eq!(next, now() + Duration::seconds(300));
     }
 
     #[test]

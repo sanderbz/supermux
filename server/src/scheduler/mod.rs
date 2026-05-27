@@ -558,6 +558,21 @@ async fn patch_handler(
                 parser::parse(expr, Utc::now()).map_err(|e| AppError::BadRequest(e.to_string()))?;
             (Some(parsed.next_run), Some(parsed.sched_type.to_string()))
         }
+        // Re-enable from off → on without a cadence change: the stored `next_run`
+        // is anchored to the pre-pause fire (or was never advanced), so the UI
+        // would show "next: <hours ago>" until the tick loop's missed-window
+        // sweep heals it. Reparse the existing expression from `now` so the
+        // next fire is one cadence-step ahead instead.
+        None if input.enabled == Some(true) && existing.enabled == 0 => {
+            match existing.schedule_expr.as_deref() {
+                Some(expr) => {
+                    let parsed = parser::parse(expr, Utc::now())
+                        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                    (Some(parsed.next_run), Some(parsed.sched_type.to_string()))
+                }
+                None => (None, None),
+            }
+        }
         None => (None, None),
     };
 
