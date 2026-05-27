@@ -939,39 +939,19 @@ export function useLiveTerm(
     // terminal. NEVER drops bytes: if the rAF is already pending, we just
     // append to the queue.
     let pendingWrites: Uint8Array[] = []
-    let pendingBytes = 0
     let writeFlushRaf: number | null = null
-    let writeFlushTimeout: number | null = null
-    let capWarned = false
-    // Soft cap on the queue: rAF does NOT fire in background tabs, so a
-    // backgrounded terminal that's still receiving WS bytes builds up the queue
-    // until either the tab is foregrounded (rAF fires + flushes) OR the
-    // setTimeout fallback below fires (1s). The cap is a sanity warning so a
-    // pathological queue (e.g. a multi-minute background tab on a chatty agent)
-    // surfaces in the console before memory pressure shows up elsewhere.
-    // xterm.js's own internal queue caps at ~50 MB; 4 MB warns early.
-    const QUEUE_WARN_BYTES = 4 * 1024 * 1024
     const flushPendingWrites = () => {
-      if (writeFlushRaf !== null) {
-        window.cancelAnimationFrame(writeFlushRaf)
-        writeFlushRaf = null
-      }
-      if (writeFlushTimeout !== null) {
-        window.clearTimeout(writeFlushTimeout)
-        writeFlushTimeout = null
-      }
+      writeFlushRaf = null
       if (pendingWrites.length === 0) return
       const term = termRef.current
       if (!term) {
         pendingWrites = []
-        pendingBytes = 0
         return
       }
       // Fast path: a single queued frame writes directly (no copy).
       if (pendingWrites.length === 1) {
         const only = pendingWrites[0]
         pendingWrites = []
-        pendingBytes = 0
         try {
           term.write(only)
         } catch {
@@ -981,14 +961,15 @@ export function useLiveTerm(
       }
       // Concat path: 2+ queued frames merge into ONE write so xterm's parser
       // sees the whole multi-frame redraw atomically.
-      const merged = new Uint8Array(pendingBytes)
+      let total = 0
+      for (const chunk of pendingWrites) total += chunk.byteLength
+      const merged = new Uint8Array(total)
       let offset = 0
       for (const chunk of pendingWrites) {
         merged.set(chunk, offset)
         offset += chunk.byteLength
       }
       pendingWrites = []
-      pendingBytes = 0
       try {
         term.write(merged)
       } catch {
@@ -997,25 +978,8 @@ export function useLiveTerm(
     }
     const enqueueWrite = (bytes: Uint8Array) => {
       pendingWrites.push(bytes)
-      pendingBytes += bytes.byteLength
-      if (pendingBytes > QUEUE_WARN_BYTES && !capWarned) {
-        capWarned = true
-        console.warn(
-          `[supermux] WS write queue past ${(QUEUE_WARN_BYTES / 1024 / 1024).toFixed(0)} MB — ` +
-            `tab likely backgrounded (rAF paused). Foreground the tab to flush.`,
-        )
-      }
       if (writeFlushRaf !== null) return
       writeFlushRaf = window.requestAnimationFrame(flushPendingWrites)
-      // Background-tab fallback: rAF callbacks pause when the tab is hidden.
-      // Without this, queued bytes would sit until the user foregrounds the
-      // tab (could be minutes). The 1s wakeup keeps the buffer fresh enough
-      // that a foreground-then-Cmd-Tab-back cycle reveals a current view.
-      // Cleared inside flushPendingWrites so a normal foreground rAF flush
-      // doesn't trigger a duplicate setTimeout flush.
-      if (writeFlushTimeout === null) {
-        writeFlushTimeout = window.setTimeout(flushPendingWrites, 1000)
-      }
     }
 
     let renderKickRaf: number | null = null
@@ -1415,9 +1379,7 @@ export function useLiveTerm(
       if (kbRaf) window.cancelAnimationFrame(kbRaf)
       if (renderKickRaf !== null) window.cancelAnimationFrame(renderKickRaf)
       if (writeFlushRaf !== null) window.cancelAnimationFrame(writeFlushRaf)
-      if (writeFlushTimeout !== null) window.clearTimeout(writeFlushTimeout)
       pendingWrites = []
-      pendingBytes = 0
       ro.disconnect()
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
       clearReconnectTimer()
