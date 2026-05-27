@@ -190,12 +190,35 @@ async fn handle_team_socket(
     //    discarded for the WS path (still maintained by pty.rs for tail/preview).
     let (_replay, mut rx) = stream.subscribe();
     let tmux = Tmux::for_pane(&resolved.lead_session, &resolved.pane_id);
+
+    // 4a. Pre-seed Resize peek — mirrors `handle_socket`'s `peek_initial_resize`
+    //     so the teammate's xterm geometry is applied to ITS pane BEFORE the
+    //     seed capture lands. The teammate WS path is pane-scoped: pass
+    //     `pane_scoped = true` so the resize hits `resize-pane -t %paneid`
+    //     (not `resize-window`, which would re-flow all sibling panes — incl.
+    //     the lead — to the teammate's narrower viewport). Per-session lock is
+    //     keyed on the LEAD's session name so this serializes against the
+    //     lead's input drain (one lock per tmux session, shared by every pane).
+    //     A non-Resize first frame is dropped on the read-only teammate path:
+    //     there's no input drain to enqueue it on, and the only inputs we
+    //     legitimately accept are Resize anyway.
+    //     See `.claude/peek-diff-audit.md` Deferred #2 and
+    //     `.claude/team-lead-mobile-width-audit.md` for the full rationale.
+    if let Err(()) =
+        peek_initial_resize(&mut socket, &state, &resolved.lead_session, &tmux, true).await
+    {
+        return;
+    }
+
     if !send_seed_then_done(&mut socket, &tmux).await {
         return;
     }
 
-    // 5. Read-only fan-out + ping loop. No input task: inbound frames are
-    //    ignored except to refresh the liveness timer (and Close ends the loop).
+    // 5. Read-only fan-out + ping loop. Inbound Resize frames ARE applied
+    //    (pane-scoped, see 4a) so the teammate's xterm geometry stays in sync
+    //    with the streamed bytes; every other inbound frame is dropped (the
+    //    teammate WS is keystroke-read-only for this slice) and only refreshes
+    //    the liveness timer.
     let mut last_inbound = Instant::now();
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -206,8 +229,32 @@ async fn handle_team_socket(
             inbound = socket.recv() => {
                 match inbound {
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    // Any other inbound frame (incl. a stray Input) just refreshes
-                    // the liveness timer — read-only means we never apply it.
+                    Some(Ok(Message::Text(t))) => {
+                        last_inbound = Instant::now();
+                        // Resize is the ONLY control frame we apply on the
+                        // read-only teammate path — keeps tmux's pane geometry
+                        // synced with xterm's grid as the user resizes their
+                        // viewport (drag, mobile orientation flip, etc.).
+                        // Everything else (Input/Key) is silently dropped per
+                        // the read-only contract above; malformed JSON is a
+                        // no-op (the inbound-silence timer still ticks).
+                        if let Ok(ClientMsg::Resize { cols, rows }) =
+                            serde_json::from_str::<ClientMsg>(t.as_str())
+                        {
+                            let lock = state.lock_for(&resolved.lead_session);
+                            let _guard = lock.lock().await;
+                            if let Err(e) = tmux.resize_pane(cols, rows).await {
+                                tracing::debug!(
+                                    team = %team,
+                                    member = %member,
+                                    error = %e,
+                                    "teammate resize_pane failed"
+                                );
+                            }
+                        }
+                    }
+                    // Any other inbound frame (Binary, Pong, stray Input
+                    // shape) just refreshes the liveness timer.
                     Some(Ok(_)) => { last_inbound = Instant::now(); }
                 }
             }
@@ -333,7 +380,15 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    task exists (strict in-order delivery — never dropped). The companion
     //    client change batches `[auth, resize]` together so this peek almost
     //    always finds the resize within an RTT.
-    let held_first_frame = match peek_initial_resize(&mut socket, &state, &name, &tmux).await {
+    let held_first_frame = match peek_initial_resize(
+        &mut socket,
+        &state,
+        &name,
+        &tmux,
+        lead_pane_id.is_some(),
+    )
+    .await
+    {
         Ok(h) => h,
         Err(_) => return,
     };
@@ -472,6 +527,15 @@ enum Apply {
 /// `web/src/hooks/use-live-term.ts`); together they make the happy path
 /// "resize-then-seed" instead of "seed-with-stale-geometry-then-resize".
 ///
+/// `pane_scoped` mirrors the same fork that [`apply_one`] makes: when the WS is
+/// pinned to a tmux pane (Agent Teams lead OR teammate), the resize must hit
+/// `resize-pane -t %id` so ONLY the subscribed pane is sized to the client's
+/// geometry. Calling `resize-window` on a multi-pane lead window would reflow
+/// every sibling pane to share the lead's xterm cols (`cols/N` per pane) —
+/// see `.claude/team-lead-mobile-width-audit.md` for the full mechanism.
+/// Non-team sessions still take the window-scoped path (window == single pane,
+/// no reflow).
+///
 /// Returns `Ok(held)`:
 /// - `Ok(None)` — peek timed out OR the peeked frame was a `Resize` we already
 ///   applied. Caller proceeds to seed at the (possibly resized) geometry.
@@ -488,6 +552,7 @@ async fn peek_initial_resize(
     state: &AppState,
     name: &str,
     tmux: &Tmux<'_>,
+    pane_scoped: bool,
 ) -> Result<Option<ClientMsg>, ()> {
     let inbound = match tokio::time::timeout(PRESEED_RESIZE_PEEK, socket.recv()).await {
         // Peek window expired. Common when the client never sends a resize
@@ -520,7 +585,12 @@ async fn peek_initial_resize(
             // — same as the no-peek world).
             let lock = state.lock_for(name);
             let _guard = lock.lock().await;
-            if let Err(e) = tmux.resize(cols, rows).await {
+            let res = if pane_scoped {
+                tmux.resize_pane(cols, rows).await
+            } else {
+                tmux.resize(cols, rows).await
+            };
+            if let Err(e) = res {
                 tracing::debug!(session = %name, error = %e, "pre-seed resize failed");
             }
             Ok(None)
@@ -687,14 +757,23 @@ async fn input_drain_loop(
 /// to the active pane (= a teammate after Claude splits) and silently steals
 /// the keystrokes — the multi-bug fix this whole code path is paired with.
 ///
-/// `Resize` of a teammate-aware lead uses `resize-window` regardless (see
-/// `Tmux::resize`): resize-window with a pane target tells tmux "resize the
-/// window CONTAINING this pane", which is exactly the same effect (and same
-/// teammate reflow) the legacy session-target had. Pane-scoped resize is NOT
-/// what we want here — the user is resizing their xterm to the WINDOW, which
-/// is what tmux already maps to via `resize-window`; using `resize-pane`
-/// instead would only stretch the lead inside the existing window and leave
-/// the user without their full viewport.
+/// `Resize` semantics fork on `lead_pane_id`:
+///
+/// - **Non-team (`None`):** `tmux.resize` → `resize-window` (window-scoped),
+///   unchanged. The session window contains exactly one pane, so window-scoped
+///   and pane-scoped collapse to the same op.
+/// - **Team lead (`Some(%id)`):** `tmux.resize_pane` → `resize-pane -t %id`.
+///   The lead's xterm shows ONLY the lead pane (teammates render through their
+///   own AT-E WS), so the client's `cols×rows` is the LEAD PANE's viewport, not
+///   the whole window's. Using `resize-window` here distributes the window cols
+///   across all N split panes — the lead lands at ≈ `cols/N`, content renders
+///   at ~50% width on mobile (the bug `.claude/team-lead-mobile-width-audit.md`
+///   diagnosed). `resize-pane` keeps tmux managing the joint window geometry
+///   (siblings reflow to make room) and ensures the LEAD owns the client's
+///   reported size. Teammates each carry their own per-pane geometry via the
+///   AT-E teammate WS (see [`handle_team_socket`]'s `Resize` arm) and reclaim
+///   their viewport on their next ResizeObserver tick — same idempotent
+///   contract, just with the lead/teammate panes correctly addressed.
 ///
 /// [`PASTE_THRESHOLD`]: crate::sessions::tmux::PASTE_THRESHOLD
 async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op: Apply) {
@@ -708,7 +787,17 @@ async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op:
         Apply::Text(text) => tmux.send_text(&text).await,
         Apply::Ctrl(ClientMsg::Input { data }) => tmux.send_text(&data).await,
         Apply::Ctrl(ClientMsg::Key { data }) => tmux.send_key(&data).await,
-        Apply::Ctrl(ClientMsg::Resize { cols, rows }) => tmux.resize(cols, rows).await,
+        Apply::Ctrl(ClientMsg::Resize { cols, rows }) => {
+            // Fork on the routing pin: lead-of-a-team uses pane-scoped resize
+            // so the lead's xterm geometry sizes the lead pane (not the whole
+            // window split across N panes). Non-team uses window-scoped resize
+            // (byte-for-byte unchanged for single-pane sessions).
+            if lead_pane_id.is_some() {
+                tmux.resize_pane(cols, rows).await
+            } else {
+                tmux.resize(cols, rows).await
+            }
+        }
         // Auth-after-auth and client Ping are no-ops on the input path.
         Apply::Ctrl(ClientMsg::Auth { .. } | ClientMsg::Ping) => Ok(()),
     };
