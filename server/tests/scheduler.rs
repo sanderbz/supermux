@@ -31,6 +31,7 @@ fn temp_config() -> (Config, PathBuf) {
         // it so the full suite compiles against the merged `Config`.
         ws: WsConfig::default(),
         remote_callback_url: None,
+            push_sub: None,
     };
     (config, dir)
 }

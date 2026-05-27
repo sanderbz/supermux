@@ -109,6 +109,7 @@ fn config_round_trips_remote_callback_url() {
         provider_defaults: ProviderDefaults::default(),
         ws: WsConfig::default(),
         remote_callback_url: None,
+            push_sub: None,
     };
     assert!(cfg_none.remote_callback_url.is_none());
 }

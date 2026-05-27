@@ -38,6 +38,7 @@ async fn test_app(data_dir: &Path) -> axum::Router {
         provider_defaults: ProviderDefaults::default(),
         ws: Default::default(),
             remote_callback_url: None,
+            push_sub: None,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);
