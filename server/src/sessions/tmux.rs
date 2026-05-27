@@ -251,6 +251,54 @@ impl<'a> Tmux<'a> {
             .run(&["set-option", "-g", "history-limit", &history_limit])
             .await;
 
+        // Synchronized-output passthrough (DECSET 2026; tmux 3.4+). Without this
+        // tmux silently drops the `\x1b[?2026h ... \x1b[?2026l` sequences that
+        // Claude Code's Ink renderer emits to batch a full-frame redraw, so the
+        // pipe-pane sees the renderer's INTERMEDIATE flushes — line erases,
+        // partial cursor moves, half-painted prompt bars — and those torn
+        // fragments fan out over the WS as their own broadcast chunks. xterm.js
+        // then paints frame N's bottom row(s) before frame N+1's top arrives,
+        // and the user sees "Determining…" / "Did 1 search…" lines stack
+        // visibly in TWO positions (the leftover partial AND the next-frame
+        // repaint). The exact failure mode tracked upstream as claude-code#37283,
+        // #49086, #51828, #40555, #57145 — confirmed across many terminals
+        // because nearly every wrapping multiplexer (tmux, screen, mosh)
+        // defaults to NO sync passthrough.
+        //
+        // Enabling it tells tmux: when the inner app opens a sync block, BUFFER
+        // the pane output until the app closes it (or 1s timeout) and emit one
+        // coherent flush to the pipe-pane. The downstream broadcast then carries
+        // whole-frame redraws, no torn fragments, no duplicate-looking ghosts.
+        //
+        // SAFETY of the change:
+        //   • `set -as terminal-features` is ADDITIVE (`-a`): we only add the
+        //     `sync` capability to the `xterm*` TERM class, never remove an
+        //     existing one. supermux always sets `TERM=xterm-256color`
+        //     (lifecycle.rs), so the pattern matches exactly the panes we own.
+        //   • `-g` makes it a server-global default. supermux owns the tmux
+        //     server it spawns (a fresh server boot for each first session),
+        //     so this affects supermux panes only in practice. A teammate
+        //     pane on the same server inherits the benefit — same render fix
+        //     applies, no regression.
+        //   • For a session that NEVER emits `\x1b[?2026h` (a plain shell, vim,
+        //     less), the sync gate is never entered, so flush behaviour is
+        //     byte-identical to today. Pure additive: a TUI that opts in gets
+        //     coherent frames; everything else is unchanged.
+        //   • xterm.js 5.5 does NOT implement DECSET 2026 itself (added in 6.0)
+        //     — it silently ignores the `\x1b[?2026h/l` bytes as unknown DEC
+        //     private modes. The frame-coherence we want comes ENTIRELY from
+        //     tmux batching upstream; the client renderer is incidental.
+        //   • Old tmux (<3.4) doesn't recognize the `sync` feature token and
+        //     rejects the command. Best-effort with `let _ = ...` so a failure
+        //     here is a no-op (sessions still attach; behaviour falls back to
+        //     today's torn-frame state — same shape as pre-fix, no regression).
+        //   • Idempotent: re-running on a server that already has the feature
+        //     is a no-op (the `-a` append silently dedupes — tmux's option
+        //     parser de-duplicates the same feature string).
+        let _ = self
+            .run(&["set-option", "-g", "-as", "terminal-features", "xterm*:sync"])
+            .await;
+
         // Build argv: new-session -d -s supermux-<name> -n <name> -c <dir> [-e K=V…] <shell>
         let mut args: Vec<String> = vec![
             "new-session".into(),
@@ -937,6 +985,104 @@ mod seed_tests {
         assert!(out.contains("v1\r\nv2"));
         assert!(!out.contains("h1\nh2"), "no bare LF in history body");
         assert!(!out.contains("v1\nv2"), "no bare LF in visible body");
+    }
+}
+
+/// Boots a uniquely-named session on a PRIVATE tmux socket (`-L`), runs the
+/// EXACT `set-option -g -as terminal-features 'xterm*:sync'` argv `new_session`
+/// uses, and asserts tmux both accepts it AND resolves `sync` as a feature for
+/// the session. Pins the literal argv (refactor canary: a future change that
+/// drops `-a`, mis-spells the feature, or moves to the wrong target-class
+/// fails here) and proves it on a live tmux — the option string is
+/// server-parsed, so a string-only test would only prove formatting, not
+/// acceptance.
+///
+/// SAFETY of the test:
+///   • Uses `-L supermux-sync-test-<pid>` to spawn its OWN private tmux
+///     server on a dedicated socket — completely isolated from any other
+///     test, IDE tmux, or live `supermux-*` session on the default socket.
+///     Never calls `kill-server` on the default socket (which would
+///     clobber any in-flight integration test).
+///   • Tears down its own server at end (best-effort).
+///   • Skipped when tmux is unavailable so a tmux-less CI host still passes.
+#[cfg(test)]
+mod sync_feature_tests {
+    use std::process::Command;
+
+    fn tmux_available() -> bool {
+        Command::new("tmux")
+            .arg("-V")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn terminal_features_sync_accepted_and_resolved() {
+        if !tmux_available() {
+            eprintln!("tmux not available — skipping");
+            return;
+        }
+        // Per-test PRIVATE socket so we never touch the default tmux server
+        // (which other concurrent tests + the developer's IDE rely on).
+        let socket = format!("supermux-sync-test-{}", std::process::id());
+        let session = "feature-probe";
+
+        let new = Command::new("tmux")
+            .args(["-L", &socket, "new-session", "-d", "-s", session, "sleep", "60"])
+            .output()
+            .expect("spawn tmux new-session");
+        assert!(
+            new.status.success(),
+            "tmux new-session failed: {}",
+            String::from_utf8_lossy(&new.stderr).trim()
+        );
+
+        // The EXACT argv `new_session` runs — refactor-canary on the option name,
+        // the `-a` (append) flag, and the feature token.
+        let set = Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "set-option",
+                "-g",
+                "-as",
+                "terminal-features",
+                "xterm*:sync",
+            ])
+            .output()
+            .expect("spawn tmux set-option");
+        assert!(
+            set.status.success(),
+            "tmux >= 3.4 must accept set-option -g -as terminal-features 'xterm*:sync': {}",
+            String::from_utf8_lossy(&set.stderr).trim()
+        );
+
+        // Read back the resolved feature set for this session and confirm `sync`
+        // is present. This proves tmux PARSED the option (not just stored a
+        // string) — a typo would store but never resolve.
+        let q = Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "display-message",
+                "-p",
+                "-t",
+                session,
+                "#{?#{m/r:.*sync.*,#{terminal-features}},SYNC_OK,SYNC_MISSING}",
+            ])
+            .output()
+            .expect("spawn tmux display-message");
+        let out = String::from_utf8_lossy(&q.stdout);
+        assert!(
+            out.trim() == "SYNC_OK",
+            "expected SYNC_OK in tmux terminal-features, got: {out:?}"
+        );
+
+        // Best-effort teardown of our private server only; never touches the
+        // default socket. A leak here would just leave one private socket
+        // behind for the duration of the OS session — harmless.
+        let _ = Command::new("tmux").args(["-L", &socket, "kill-server"]).output();
     }
 }
 

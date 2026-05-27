@@ -165,6 +165,53 @@ fn build_env(
     // 16-colour palette set in the web-side `theme`.
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
+    // Force Claude Code to emit synchronized-output (DECSET 2026) frames.
+    //
+    // BACKGROUND. Claude Code's Ink renderer batches a full-frame redraw
+    // between `\x1b[?2026h` ... `\x1b[?2026l`, so the OUTER terminal can paint
+    // one coherent frame instead of seeing every intermediate cursor-move /
+    // line-erase mid-redraw. Without sync, those intermediate flushes land in
+    // the pipe-pane → broadcast stream and xterm.js paints frame N's bottom
+    // row(s) before frame N+1's top arrives — the user sees lines like
+    // "Determining…" and "Did 1 search in 7s" / "Allowed by auto mode
+    // classifier" stack in TWO positions (the leftover partial plus the next
+    // frame's repaint). The exact failure mode is tracked upstream as
+    // claude-code#37283, #49086, #51828, #40555, #57145, #55613, #49584.
+    //
+    // BUT Claude only emits the DEC 2026 sequences when it BELIEVES the outer
+    // terminal supports them — and it auto-detects via a HARDCODED TERM list
+    // (xterm-ghostty, xterm-kitty, …). `xterm-256color` is NOT on that list,
+    // so without this env Claude stays silent on sync — and the duplicate-line
+    // bug persists no matter what tmux is configured to do.
+    //
+    // `CLAUDE_CODE_FORCE_SYNC_OUTPUT=1` (Anthropic's documented escape hatch
+    // for exactly this case — see #55613, #49584) tells Claude to emit the
+    // sequences unconditionally. Paired with the tmux `xterm*:sync` feature
+    // (sessions/tmux.rs) those bytes are PASSED THROUGH the pipe-pane instead
+    // of being silently dropped, so the broadcast stream carries whole-frame
+    // redraws and xterm.js paints coherent frames — no torn lines, no
+    // duplicate-looking ghosts.
+    //
+    // SAFETY of the change:
+    //   • Pure additive: an env var the agent OPTIONALLY reads. Sessions
+    //     where the agent doesn't recognize it (older Claude, Codex, shell)
+    //     just ignore it — no behaviour change.
+    //   • Bounded blast radius: scoped to this session's tmux pane via
+    //     `tmux new-session -e KEY=VAL` (the per-pane env path); does NOT
+    //     pollute the server-wide environment or any other session.
+    //   • Symmetric on FAIL: if Claude can't construct the sync sequences for
+    //     any reason, it falls back to NOT emitting them — same as today.
+    //     There is no "broken sync" failure mode that's worse than today's
+    //     no-sync state.
+    //   • Cooperates with the tmux feature flag: without `xterm*:sync`
+    //     enabled in tmux (sessions/tmux.rs), tmux would drop the sequences
+    //     anyway and the env would be a no-op. With BOTH set, the chain
+    //     completes: Claude emits → tmux batches → broadcast → xterm.js
+    //     paints atomically. Setting only ONE side is harmless.
+    env.insert(
+        "CLAUDE_CODE_FORCE_SYNC_OUTPUT".to_string(),
+        "1".to_string(),
+    );
     env
 }
 
