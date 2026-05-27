@@ -18,6 +18,7 @@
 //! schema may drift, so unknown fields are ignored (`serde` default) and any parse
 //! failure becomes a clean `Err`, never a panic.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
@@ -196,6 +197,129 @@ pub async fn resolve_member_pane(
     })
 }
 
+/// Resolve the LEAD pane of `session_name`'s tmux window when that session is
+/// hosting an Agent Team (multi-bug fix: "main pane shows teammate content" +
+/// "typing into lead doesn't reach").
+///
+/// **The bug it fixes.** `/ws/sessions/{name}` and its server-side `tmux`
+/// commands historically address `supermux-{name}` (a SESSION target). tmux
+/// resolves a session target to the **currently-active pane** in the session's
+/// only window. For a single-pane session (no team) that's always the lead, so
+/// the bug never surfaced. But once Claude `split-window`s a teammate, the
+/// freshly-created teammate pane becomes active by default — and any agent
+/// action (a `select-pane`, a teammate write that triggers tmux focus events)
+/// can flip the active pane mid-stream. From that moment forward every
+/// session-target command (`send-keys`, `capture-pane`, `pipe-pane`,
+/// `resize-window`) silently retargets the teammate, so the user typing into
+/// `/focus/<lead>` sees the teammate's screen and their keystrokes land in the
+/// teammate's pty.
+///
+/// **The fix.** Find a team in `~/.claude/teams/*/config.json` whose teammate
+/// `tmuxPaneId`s intersect the live panes of `supermux-{session_name}`'s window.
+/// The LEAD pane is the window pane that is NOT in any teammate set. Return
+/// `Some(pane_id)` so callers can target it explicitly via [`tmux::Tmux::for_pane`].
+/// Returns `None` when:
+///   * `session_name` isn't a team host (no config references its panes), OR
+///   * the lead pane can't be uniquely discriminated this tick (e.g. the panes
+///     have all churned), OR
+///   * the tmux session is gone / the call faulted — fail-open: the caller
+///     falls back to the historical session-target (today's behaviour, which
+///     is correct for non-team sessions).
+///
+/// This is intentionally cheap and stateless: ONE `tmux list-panes` plus a
+/// directory walk of `~/.claude/teams/`. Never cached — pane ids can churn
+/// across ticks, and the team config can change on disk while the user is on
+/// the focus route (`pane_override` is a hint, not a contract).
+pub async fn resolve_lead_pane(session_name: &str) -> Option<String> {
+    // 1. List the live panes in this session's window.
+    let lead_tmux = tmux::Tmux::new(session_name);
+    let live_panes = match lead_tmux.list_pane_ids().await {
+        Ok(p) if !p.is_empty() => p,
+        _ => return None,
+    };
+    // 2. Single-pane session → not a team OR the lead pane IS the only pane.
+    //    Either way the session-target is already correct; tell the caller to
+    //    keep the legacy behaviour. (Zero-regression for non-team sessions.)
+    if live_panes.len() == 1 {
+        return None;
+    }
+    // 3. Walk `~/.claude/teams/*/config.json` and collect every teammate `%id`
+    //    across every team. We deliberately don't try to match team→session
+    //    first: a team's `leadSessionId` is often a Claude UUID, not the
+    //    supermux name (see FIX-TEAMS bug 3), so the cheapest reliable signal
+    //    is "any teammate %id that lives in THIS window means the team is
+    //    hosted here, and the lead is the leftover pane."
+    let teams_root = claude_config_dir().join("teams");
+    let entries = match std::fs::read_dir(&teams_root) {
+        Ok(e) => e,
+        Err(_) => return None, // no teams dir → not a team
+    };
+    let mut teammate_panes: HashSet<String> = HashSet::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        // Skip dot-prefixed (`.archived`, `.tmp`) and any non-dir entry.
+        if name_str.starts_with('.') {
+            continue;
+        }
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let cfg = match read_team_config(name_str) {
+            Ok(c) => c,
+            Err(_) => continue, // malformed config → skip this team
+        };
+        for m in &cfg.members {
+            if let Some(p) = m.tmux_pane_id.as_deref() {
+                let p = p.trim();
+                if !p.is_empty() {
+                    teammate_panes.insert(p.to_string());
+                }
+            }
+        }
+    }
+    if teammate_panes.is_empty() {
+        return None; // no teams known to claude → keep legacy session-target
+    }
+    // 4. Does at least one teammate pane live in this window? If not, this
+    //    session isn't hosting any team — fall through.
+    let any_teammate_here = live_panes.iter().any(|p| teammate_panes.contains(p));
+    if !any_teammate_here {
+        return None;
+    }
+    // 5. The lead pane = live panes minus all teammate panes. Expected: exactly
+    //    one match. If the math gives 0 (every pane is a teammate — shouldn't
+    //    happen) or >1 (multiple non-teammate panes — also unexpected), fall
+    //    back to None so the caller keeps the legacy behaviour rather than
+    //    guessing wrong.
+    discriminate_lead_pane(&live_panes, &teammate_panes)
+}
+
+/// Pure helper: pick the LEAD pane from a window's `live_panes` given the
+/// set of `teammate_panes` known to claude. Returns `Some(pane_id)` iff
+/// exactly one pane is NOT in the teammate set (the lead pane). Returns `None`
+/// in every other case (0 or >1 leftover panes) — the caller falls back to the
+/// legacy session-target so an unexpected pane layout never produces a WRONG
+/// answer (fail-open).
+///
+/// Factored out so the `live tmux + on-disk config` integration is one thin
+/// adapter ([`resolve_lead_pane`]) and the discrimination MATH is exercised
+/// directly by the unit tests below.
+fn discriminate_lead_pane(
+    live_panes: &[String],
+    teammate_panes: &HashSet<String>,
+) -> Option<String> {
+    let mut non_teammate: Vec<&String> =
+        live_panes.iter().filter(|p| !teammate_panes.contains(*p)).collect();
+    if non_teammate.len() == 1 {
+        return Some(non_teammate.remove(0).clone());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +366,64 @@ mod tests {
         // A config with no members array still parses (defensive default).
         let cfg: TeamConfig = serde_json::from_str(r#"{"leadSessionId":"x"}"#).unwrap();
         assert!(cfg.members.is_empty());
+    }
+
+    // Lead-pane discrimination — pins the multi-bug fix:
+    // "main pane shows teammate content" + "typing into lead doesn't reach"
+    // both stem from a session WS resolving to whatever tmux thinks is the
+    // active pane. The pure math here is the single source of truth: the lead
+    // pane is the window pane NOT in any teammate set.
+
+    fn panes(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+    fn teammates(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn discriminate_picks_the_one_non_teammate_pane_as_lead() {
+        // The bug repro layout from the live server: lead %6 plus three
+        // teammates %7/%8/%9 split into the window. The session-target would
+        // resolve to whichever pane tmux had active; the discrimination math
+        // returns the LEAD pane unambiguously.
+        let live = panes(&["%6", "%7", "%9", "%8"]); // any order tmux returns
+        let mates = teammates(&["%7", "%8", "%9"]);
+        assert_eq!(discriminate_lead_pane(&live, &mates), Some("%6".into()));
+    }
+
+    #[test]
+    fn discriminate_returns_none_when_zero_panes_are_left() {
+        // Every pane is a teammate (shouldn't happen — claude always leaves the
+        // lead pane in the window — but if it does, fail-open rather than guess
+        // wrong: returning None makes the caller use the session-target which
+        // at worst lands on the active pane, the same as today).
+        let live = panes(&["%7", "%8", "%9"]);
+        let mates = teammates(&["%7", "%8", "%9"]);
+        assert_eq!(discriminate_lead_pane(&live, &mates), None);
+    }
+
+    #[test]
+    fn discriminate_returns_none_when_two_panes_are_left() {
+        // Two non-teammate panes (e.g. the user manually `tmux split-window`d
+        // their own pane, or claude is mid-spawn). Ambiguous → None, the
+        // caller falls back to the session-target so we never write to a
+        // wrong pane based on a guess.
+        let live = panes(&["%6", "%10", "%7"]);
+        let mates = teammates(&["%7"]);
+        assert_eq!(discriminate_lead_pane(&live, &mates), None);
+    }
+
+    #[test]
+    fn discriminate_passes_through_unrelated_teammate_panes() {
+        // The teammate set may contain panes that don't live in THIS window
+        // (other teams elsewhere) — those just don't intersect and don't
+        // affect the math. The lead is still the one non-teammate in this
+        // window. (The async wrapper above also requires AT LEAST ONE teammate
+        // from any team to be in this window — that gate is tested
+        // operationally; this pure helper just does the subtraction.)
+        let live = panes(&["%42"]);
+        let mates = teammates(&["%7", "%8"]); // panes in some other team
+        assert_eq!(discriminate_lead_pane(&live, &mates), Some("%42".into()));
     }
 }

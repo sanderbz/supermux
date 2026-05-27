@@ -273,8 +273,27 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         return;
     }
 
+    // 2a. Agent Teams routing fix — if THIS session is hosting a team, pin the
+    //     whole WS path (live stream + seed + send-keys + resize) to the LEAD's
+    //     specific tmux pane id. Without this, every session-target tmux op
+    //     resolves to whichever pane tmux thinks is "active", which Claude
+    //     `split-window`s a teammate to be by default — so the user typing into
+    //     `/focus/<lead>` would see the teammate's screen and their keystrokes
+    //     would land in the teammate's pty (see [`teams::resolve_lead_pane`]).
+    //     `None` for a non-team session preserves the historical session-target
+    //     byte-for-byte (zero regression for single-pane sessions).
+    let lead_pane_id: Option<String> = teams::resolve_lead_pane(&name).await;
+
     // 3. Ensure the per-session reader is running and enforce the subscriber cap.
-    let stream = match state.pty_for(&name).await {
+    //    When `lead_pane_id` is `Some`, build the stream PINNED to that pane id
+    //    (replacing any cached stream still on the legacy session-target — see
+    //    `for_lead_session`); otherwise the historical per-session stream is
+    //    used unchanged.
+    let stream = match lead_pane_id.as_deref() {
+        Some(lp) => state.pty_for_lead(&name, lp).await,
+        None => state.pty_for(&name).await,
+    };
+    let stream = match stream {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(session = %name, error = %e, "pty stream unavailable");
@@ -297,8 +316,15 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    not just the in-memory replay ring's last 512 KB (which evicts on a
     //    busy session). See [`send_seed_then_done`] for the ANSI-coherence
     //    rationale and the replay_done boundary contract.
+    //
+    //    Build `tmux` against the LEAD pane if one was resolved above (so seed
+    //    captures the lead's content, not whichever pane tmux thinks is active)
+    //    — same byte-for-byte behaviour as today for non-team sessions.
     let (_replay, mut rx) = stream.subscribe();
-    let tmux = Tmux::new(&name);
+    let tmux = match lead_pane_id.as_deref() {
+        Some(lp) => Tmux::for_pane(&name, lp.to_string()),
+        None => Tmux::new(&name),
+    };
 
     // 4a. Cursor-row-mismatch fix (Option A — server-side belt). Before the
     //    seed capture, peek up to one inbound frame within PRESEED_RESIZE_PEEK.
@@ -327,8 +353,20 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    key-repeat / paste bursts). The channel is unbounded: input frames are
     //    tiny and already rate-limited by the human at the keyboard; an unbounded
     //    queue means we never drop a keystroke under a momentary fork stall.
+    //
+    //    Pass the resolved `lead_pane_id` through so `apply_one` targets the
+    //    lead pane explicitly — without it, send-keys would silently hit the
+    //    active pane (typically a teammate post-split). The drain task
+    //    inherits the routing for as long as this WS is open; a later WS
+    //    attach re-resolves via the same `resolve_lead_pane` (pane ids can
+    //    churn across team config writes).
     let (input_tx, input_rx) = mpsc::unbounded_channel::<ClientMsg>();
-    let input_task = tokio::spawn(input_drain_loop(state.clone(), name.clone(), input_rx));
+    let input_task = tokio::spawn(input_drain_loop(
+        state.clone(),
+        name.clone(),
+        lead_pane_id.clone(),
+        input_rx,
+    ));
 
     // If `peek_initial_resize` held a non-resize first frame (rare — a stray
     // Input typed before WS open, a client Ping, an auth-after-auth), enqueue
@@ -589,9 +627,16 @@ fn plan_applies(msgs: impl IntoIterator<Item = ClientMsg>) -> Vec<Apply> {
 /// flushed first, THEN that message is applied — strict in-order delivery is
 /// preserved (type "abc"→"abc"; an Enter after text submits after the text).
 /// Exits when the channel closes (socket teardown), after draining what's left.
+///
+/// `lead_pane_id` is the Agent Teams routing pin (see [`handle_socket`]):
+/// `Some(%id)` when the session is hosting a team — every tmux op in `apply_one`
+/// targets that pane explicitly so keystrokes can't be silently misrouted to
+/// the active pane (typically a teammate post-split). `None` for a non-team
+/// session keeps the historical session-target behaviour byte-for-byte.
 async fn input_drain_loop(
     state: AppState,
     name: String,
+    lead_pane_id: Option<String>,
     mut rx: mpsc::UnboundedReceiver<ClientMsg>,
 ) {
     // Reused across wakeups to avoid a per-burst allocation.
@@ -605,7 +650,7 @@ async fn input_drain_loop(
             run.push(next);
         }
         for op in plan_applies(run.drain(..)) {
-            apply_one(&state, &name, op).await;
+            apply_one(&state, &name, lead_pane_id.as_deref(), op).await;
         }
     }
 }
@@ -616,9 +661,27 @@ async fn input_drain_loop(
 /// `send-keys` path and the paste-buffer fallback for large merges); a `Ctrl`
 /// boundary applies the named key / resize / no-op as before.
 ///
+/// When `lead_pane_id` is `Some` (the session is hosting an Agent Team), the
+/// tmux handle is built with `Tmux::for_pane` so send-keys/resize hit the
+/// LEAD's pane explicitly. Without this pin tmux resolves `-t supermux-<name>`
+/// to the active pane (= a teammate after Claude splits) and silently steals
+/// the keystrokes — the multi-bug fix this whole code path is paired with.
+///
+/// `Resize` of a teammate-aware lead uses `resize-window` regardless (see
+/// `Tmux::resize`): resize-window with a pane target tells tmux "resize the
+/// window CONTAINING this pane", which is exactly the same effect (and same
+/// teammate reflow) the legacy session-target had. Pane-scoped resize is NOT
+/// what we want here — the user is resizing their xterm to the WINDOW, which
+/// is what tmux already maps to via `resize-window`; using `resize-pane`
+/// instead would only stretch the lead inside the existing window and leave
+/// the user without their full viewport.
+///
 /// [`PASTE_THRESHOLD`]: crate::sessions::tmux::PASTE_THRESHOLD
-async fn apply_one(state: &AppState, name: &str, op: Apply) {
-    let tmux = Tmux::new(name);
+async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op: Apply) {
+    let tmux = match lead_pane_id {
+        Some(lp) => Tmux::for_pane(name, lp.to_string()),
+        None => Tmux::new(name),
+    };
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
     let res = match op {

@@ -327,13 +327,18 @@ impl PtyStream {
         pool: &SqlitePool,
         host_pool: &Arc<HostPool>,
     ) -> Result<Box<dyn PtyReader>> {
-        // Teammate pane streams: always local (lead's tmux is local today).
-        if self.target.is_pane() {
-            return Ok(Box::new(LocalPtyReader::new(self)));
-        }
-        // Look up the session row to find its host_id (RT4: `Option<i64>`,
-        // NULL = local). Missing → caller's bug, but treat as local rather
-        // than failing (the legacy path).
+        // Pane streams come in two flavours:
+        //   (a) a TEAMMATE pane (key shaped like `{lead}/{member}` or `%id`) —
+        //       no `sessions` row, always local (lead's tmux is local today).
+        //   (b) a LEAD pane targeted by `%id` for a team-host SESSION (the
+        //       Agent Teams routing fix) — key IS a session name, so look up
+        //       its row to honour `host_id` (a remote-host team-lead, RT3+).
+        // The session-row lookup below already disambiguates: a teammate pane
+        // misses (`Ok(None)`) and falls through to LOCAL, identical to the
+        // legacy "always local for pane streams" behaviour. A LEAD pane finds
+        // its row and inherits the session's host_id — so a hypothetical
+        // remote-host team-lead doesn't accidentally get pinned to the wrong
+        // (local) reader by the routing fix.
         let session = match crate::db::sessions::get(pool, &self.name).await {
             Ok(Some(s)) => s,
             Ok(None) => {

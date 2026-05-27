@@ -111,6 +111,90 @@ impl PtyStreamer {
         )
     }
 
+    /// Get (creating, or replacing if dead OR mis-targeted) the stream for a
+    /// SESSION that is hosting an Agent Team. The stream key stays the session
+    /// `name` (so FIFO/log/registry paths are unchanged for that session) but
+    /// the tmux target is pinned to the LEAD's pane id.
+    ///
+    /// This fixes the multi-bug "main pane shows teammate content + typing
+    /// doesn't reach the lead" symptom: the legacy [`for_session`] builds a
+    /// stream targeting `supermux-{name}` (the session), which tmux resolves
+    /// to the **currently active pane**. The moment Claude `split-window`s a
+    /// teammate, the new pane becomes active and the stream's `pipe-pane` /
+    /// `send-keys` / `capture-pane` all start hitting that teammate instead of
+    /// the lead. Building the stream against the lead's specific `%id` pins
+    /// every operation to the right pane regardless of which pane tmux thinks
+    /// is "active" right now (or in the future).
+    ///
+    /// **Rebuild semantics**: an existing alive stream is reused ONLY when its
+    /// target matches `lead_pane_id`. If the cached stream still has the
+    /// legacy `Session(name)` target (it was built before teams were detected,
+    /// or before this fix shipped), it is invalidated + rebuilt — any open WS
+    /// gets `Closed` on the old broadcast and reconnects onto the rebuilt
+    /// stream within milliseconds (the same path session-restart already
+    /// uses). One brief blip on first attach after the fix lands; steady-state
+    /// is then correctly pinned. Mismatch on `pane_id` (the rare case where
+    /// the lead pane id itself churned — e.g. lead crash-restart inside a
+    /// surviving window) takes the same rebuild path for the same reason.
+    pub fn for_lead_session(&self, name: &str, lead_pane_id: &str) -> Arc<PtyStream> {
+        // Reuse iff alive AND already pinned to the right pane. The DashMap
+        // `get` guard is scoped tight so we never hold it across the rebuild
+        // path's `insert` on the same key.
+        let needs_rebuild = {
+            match self.streams.get(name) {
+                None => true,
+                Some(existing) => {
+                    if !existing.is_alive() {
+                        true
+                    } else {
+                        match &existing.target {
+                            TmuxTarget::Pane(p) if p == lead_pane_id => false,
+                            // Any other target (legacy Session, or a Pane bound
+                            // to a stale id) → rebuild against the right pane.
+                            _ => true,
+                        }
+                    }
+                }
+            }
+        };
+        if !needs_rebuild {
+            return self
+                .streams
+                .get(name)
+                .map(|e| e.clone())
+                .expect("checked Some + alive above");
+        }
+        // Drop the old stream cleanly: shutdown() flips alive=false and wakes
+        // the reader so its `pipe-pane` releases and any open WS broadcast
+        // closes (clients reconnect onto the rebuilt stream). Then insert
+        // the fresh pane-targeted stream under the SAME name key so all
+        // existing call sites (`pty_for`, `pty_invalidate`, the heartbeat
+        // map keyed by name) keep working unchanged.
+        if let Some((_, old)) = self.streams.remove(name) {
+            old.shutdown();
+        }
+        let fresh = Arc::new(self.build_lead_pane(name, lead_pane_id));
+        self.streams.insert(name.to_string(), fresh.clone());
+        fresh
+    }
+
+    /// Build an un-started PtyStream keyed by the session `name` but TARGETED
+    /// at the lead's `%id` — used by [`for_lead_session`] for a team-host
+    /// session. Distinct from [`build_pane`] (which keys by a pane-unique id
+    /// for teammate streams); here the key stays the bare session name so
+    /// every existing per-session subsystem (FIFO/log paths, heartbeat map,
+    /// status detector wake) keeps reading the same slot.
+    fn build_lead_pane(&self, name: &str, lead_pane_id: &str) -> PtyStream {
+        let (fifo, log) = self.paths_for(name);
+        PtyStream::new_with_target(
+            name.to_string(),
+            TmuxTarget::Pane(lead_pane_id.to_string()),
+            fifo,
+            log,
+            self.broadcast_capacity,
+        )
+    }
+
     /// Drop the cached stream for `name` (called from session delete cleanup).
     pub fn forget(&self, name: &str) {
         self.streams.remove(name);
@@ -171,6 +255,111 @@ fn sanitize_key(key: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod lead_session_tests {
+    //! Agent Teams routing pin (the multi-bug fix: "main pane shows teammate
+    //! content + typing doesn't reach the lead"). Pins that `for_lead_session`
+    //! rebuilds the cached stream when its target doesn't match the requested
+    //! lead pane id (so a stream cached as `Session(name)` from before teams
+    //! were spawned gets re-pinned to the lead's `%id` on the next attach) and
+    //! reuses the cached stream when the target is already right (so a steady-
+    //! state team doesn't get a WS blip on every attach).
+    //!
+    //! Doesn't exercise the FIFO reader / pipe-pane — those need a real tmux.
+    //! The behaviours pinned here are the rebuild DECISIONS (target match vs
+    //! mismatch, alive vs dead) — the registry's authoritative contract.
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static UNIQUE: AtomicU32 = AtomicU32::new(0);
+
+    // Per-test scratch dir under the OS tmpdir — the registry only USES the
+    // log/fifo paths as filename roots (no actual mkfifo here; the FIFO is
+    // only created when `ensure_started` runs, which these tests don't call).
+    // Unique per call so concurrent test runs never share a slot.
+    fn streamer() -> PtyStreamer {
+        let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("supermux-lead-test-{pid}-{n}"));
+        let log = base.join("logs");
+        let fifo = base.join("fifo");
+        std::fs::create_dir_all(&log).unwrap();
+        std::fs::create_dir_all(&fifo).unwrap();
+        PtyStreamer::new(log, fifo, 16)
+    }
+
+    #[test]
+    fn rebuilds_when_no_stream_cached() {
+        let s = streamer();
+        let stream = s.for_lead_session("teamA", "%6");
+        assert!(stream.is_alive());
+        assert!(matches!(&stream.target, TmuxTarget::Pane(p) if p == "%6"));
+        assert!(s.is_cached("teamA"));
+    }
+
+    #[test]
+    fn rebuilds_legacy_session_targeted_stream_to_pin_to_lead_pane() {
+        // The bug repro: a stream cached as Session(name) — from the legacy
+        // for_session path, before this fix shipped — must be REBUILT against
+        // the lead pane id on the next attach. The old stream's `pipe-pane`
+        // was bound to whatever pane was active when it first attached (often
+        // a teammate post-split), so the live stream silently showed the
+        // wrong pane. Rebuild = correct routing.
+        let s = streamer();
+        let legacy = s.for_session("teamA");
+        assert!(matches!(&legacy.target, TmuxTarget::Session(n) if n == "teamA"));
+        let legacy_ptr = Arc::as_ptr(&legacy);
+
+        let pinned = s.for_lead_session("teamA", "%6");
+        // Different Arc → freshly built (the old one was invalidated).
+        assert_ne!(Arc::as_ptr(&pinned), legacy_ptr);
+        assert!(matches!(&pinned.target, TmuxTarget::Pane(p) if p == "%6"));
+        // The legacy one was shut down so any open WS reconnects.
+        assert!(!legacy.is_alive());
+    }
+
+    #[test]
+    fn reuses_cached_stream_when_target_already_matches_lead_pane() {
+        // Steady state: the second attach to the SAME lead pane must reuse
+        // the cached stream, not rebuild it — otherwise every WS attach would
+        // blip the live stream and force a reconnect (the user-visible
+        // "unstable" symptom the wider fix is paired with).
+        let s = streamer();
+        let first = s.for_lead_session("teamA", "%6");
+        let second = s.for_lead_session("teamA", "%6");
+        assert_eq!(Arc::as_ptr(&first), Arc::as_ptr(&second));
+        assert!(first.is_alive());
+    }
+
+    #[test]
+    fn rebuilds_when_cached_stream_pinned_to_a_different_pane_id() {
+        // Pane ids can churn (lead crash-restart inside the surviving window,
+        // a re-spawn). A cached stream pinned to a stale %id must be
+        // invalidated + rebuilt on the next attach with the current lead %id
+        // — otherwise we'd keep streaming a dead pane.
+        let s = streamer();
+        let stale = s.for_lead_session("teamA", "%6");
+        let fresh = s.for_lead_session("teamA", "%42");
+        assert_ne!(Arc::as_ptr(&stale), Arc::as_ptr(&fresh));
+        assert!(matches!(&fresh.target, TmuxTarget::Pane(p) if p == "%42"));
+        assert!(!stale.is_alive());
+    }
+
+    #[test]
+    fn rebuilds_when_cached_stream_is_dead_even_if_target_would_match() {
+        // A dead stream is never reused regardless of target — the reader
+        // exited and the fan-out is closed. Rebuild to bring up a fresh
+        // FIFO/broadcast/replay against the same pane id.
+        let s = streamer();
+        let first = s.for_lead_session("teamA", "%6");
+        first.shutdown();
+        assert!(!first.is_alive());
+        let second = s.for_lead_session("teamA", "%6");
+        assert_ne!(Arc::as_ptr(&first), Arc::as_ptr(&second));
+        assert!(second.is_alive());
+    }
 }
 
 #[cfg(test)]
