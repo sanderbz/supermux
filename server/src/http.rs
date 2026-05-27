@@ -32,6 +32,7 @@ use crate::sse;
 use crate::state::AppState;
 use crate::static_assets;
 use crate::teams;
+use crate::updates;
 use crate::ws;
 
 /// Build the application router from `state`.
@@ -94,5 +95,8 @@ fn protected_router(state: AppState) -> Router {
         // PUSH: web-push VAPID key + subscribe/unsubscribe (single-user dashboard,
         // so bearer-gated like the rest of /api).
         .merge(push::router_for(state.clone()))
+        // v0.3.0: in-UI updater (`/api/version*` + `/api/update/*`). Same bearer
+        // gate as the rest of /api — auto-update is admin-equivalent.
+        .merge(updates::router_for(state.clone()))
         .layer(from_fn_with_state(state, auth::auth_middleware))
 }

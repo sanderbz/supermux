@@ -156,6 +156,14 @@ the push service has a real address if it needs to flag abuse), set
 host, or export `SUPERMUX_PUSH_SUB`. The Settings page has a "Send test"
 button that confirms end-to-end delivery.
 
+**In-UI updates (v0.3.0+):** Settings → Updates polls GitHub for new
+releases and offers a 1-click upgrade with live SSE progress and auto-
+rollback on failure — the same `git fetch + reset + build + install +
+verify` pipeline as `scripts/deploy-self.sh`, just exposed as a button. A
+preflight refuses unsafe upgrades (dirty working tree, unpushed commits,
+detached HEAD, missing tools, low disk) and the manual command is shown
+when the install isn't systemd+path-unit (bare binary, dev, docker).
+
 ## Quickstart — develop
 
 Prerequisites: `cargo` (rustup), `bun`, and `tmux`.
