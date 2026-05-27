@@ -482,6 +482,31 @@ impl AppState {
         Ok(stream)
     }
 
+    /// Get (creating, or replacing if dead/mis-targeted) the per-session stream
+    /// PINNED to the LEAD's tmux pane id for a session that is currently
+    /// hosting an Agent Team. The stream key stays the session `name` (so the
+    /// FIFO/log/registry slot + heartbeat key + detector wake remain unchanged
+    /// for that session), only the tmux TARGET differs — `Pane(lead_pane_id)`
+    /// instead of `Session(name)`. See [`PtyStreamer::for_lead_session`] for
+    /// the rebuild semantics and the bug history (the routing bug that lets a
+    /// teammate `split-window` silently steal the lead's pipe/send-keys/capture).
+    pub async fn pty_for_lead(
+        &self,
+        name: &str,
+        lead_pane_id: &str,
+    ) -> anyhow::Result<Arc<PtyStream>> {
+        let stream = self.pty.for_lead_session(name, lead_pane_id);
+        stream
+            .ensure_started(
+                &self.pool,
+                self.host_pool.clone(),
+                self.pty_heartbeat.clone(),
+                self.detector_wake_for(name),
+            )
+            .await?;
+        Ok(stream)
+    }
+
     /// Get (creating on first use) the live pty stream for a teammate PANE (Agent
     /// Teams §3.5) and ensure its FIFO reader is running. `stream_key` is a
     /// pane-unique id (`%id` or `{lead}/{member}`) — it keys the registry AND the
