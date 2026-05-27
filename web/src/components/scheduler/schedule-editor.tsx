@@ -1,25 +1,22 @@
-// ScheduleEditor (M21) — the single editor body shared by the create + edit
-// surfaces. Both modes now live in the same right-side Sheet shell (see
+// ScheduleEditor — the editor body shared by the create + edit surfaces.
+// Both modes live in the same right-side Sheet shell (see
 // schedule-detail-sheet.tsx); this component owns the form state, the validity
-// gate, a single submit that branches on `mode` (create vs patch), the
-// create-mode preset recipes, and a compact last/next-fire log for an existing
-// schedule. Extracting it collapses the two former submit handlers (the old
-// NewScheduleDialog + the edit sheet) into one place.
+// gate, a single submit that branches on `mode` (create vs patch), and a
+// compact last/next-fire log for an existing schedule.
+//
+// The old "Start from one of your commands" recipe grid was removed — the same
+// command discovery now happens inline via the PromptField's `/` autocomplete
+// (one field, no forced step). Picking a row in the autocomplete inserts the
+// `/command` token; everything after it is the prompt body.
 
 import * as React from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
 
-import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { TOAST } from '@/brand/copy'
-import type { RecipeCommand, ScheduleRow } from '@/lib/api'
-import {
-  useCreateSchedule,
-  usePatchSchedule,
-  useSchedulerCommands,
-} from '@/hooks/use-scheduler'
+import type { ScheduleRow } from '@/lib/api'
+import { useCreateSchedule, usePatchSchedule } from '@/hooks/use-scheduler'
 import {
   EMPTY_FORM,
   isFormValid,
@@ -28,10 +25,13 @@ import {
   type ScheduleFormValue,
 } from './schedule-form'
 import { FireLog } from './fire-log'
-import { recipesFromCommands } from './helpers'
 
-/** Map an existing row back into the editable form shape (edit mode seed). */
+/** Map an existing row back into the editable form shape (edit mode seed).
+ *  The `notify` flag is reconstructed from the row's watch+done_action pair:
+ *  the friendly UI says "Send me notification when done" but the M8 wire shape
+ *  is still `watch=true` + `done_action='notify'`. */
 export function rowToForm(s: ScheduleRow): ScheduleFormValue {
+  const notify = s.watch === 1 && s.done_action === 'notify'
   return {
     title: s.title,
     kind: s.kind,
@@ -42,14 +42,13 @@ export function rowToForm(s: ScheduleRow): ScheduleFormValue {
     boot_dir: s.boot_dir,
     boot_provider: s.boot_provider || 'claude',
     boot_worktree: s.boot_worktree === 1,
-    watch: s.watch === 1,
+    notify,
     done_pattern: s.done_pattern ?? '',
-    done_action: s.done_action || 'disable',
   }
 }
 
 interface ScheduleEditorProps {
-  /** `create` starts from EMPTY_FORM + preset recipes; `edit` seeds from the row. */
+  /** `create` starts from EMPTY_FORM; `edit` seeds from the row. */
   mode: 'create' | 'edit'
   /** The existing row (edit mode only). */
   schedule?: ScheduleRow
@@ -70,28 +69,9 @@ export function ScheduleEditor({
   const create = useCreateSchedule()
   const patch = usePatchSchedule()
   const { toast } = useToast()
-  const reduce = useReducedMotion()
-  // Recipes are built from the user's REAL installed commands (skills + MCP) —
-  // tapping one prefills a sensible boot job. No fabricated/standard commands.
-  const commands = useSchedulerCommands()
-  const recipes = React.useMemo(
-    () => recipesFromCommands(commands.data ?? []),
-    [commands.data],
-  )
 
   const valid = isFormValid(form)
   const pending = create.isPending || patch.isPending
-
-  const applyRecipe = (r: RecipeCommand) => {
-    setForm({
-      ...EMPTY_FORM,
-      kind: 'boot',
-      title: `${r.cmd} run`,
-      command: r.cmd,
-      schedule_expr: 'daily at 9am',
-      boot_provider: 'claude',
-    })
-  }
 
   const submit = () => {
     const input = toCreateInput(form)
@@ -140,38 +120,6 @@ export function ScheduleEditor({
 
   return (
     <div className="flex flex-col gap-6">
-      {mode === 'create' && recipes.length > 0 && (
-        <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground">
-            Start from one of your commands
-          </p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {recipes.map((r, i) => (
-              <motion.button
-                key={`${r.source}:${r.cmd}`}
-                type="button"
-                onClick={() => applyRecipe(r)}
-                initial={reduce ? false : { opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ ...springs.cardExpand, delay: reduce ? 0 : i * 0.04 }}
-                whileTap={reduce ? undefined : { scale: 0.97 }}
-                className="flex min-h-11 flex-col gap-1 rounded-lg border border-border p-3 text-left transition-colors hover:bg-accent"
-              >
-                <span className="font-mono text-sm font-medium text-foreground">
-                  {r.cmd}
-                </span>
-                {r.desc && (
-                  <span className="line-clamp-2 text-xs text-muted-foreground">
-                    {r.desc}
-                  </span>
-                )}
-              </motion.button>
-            ))}
-          </div>
-          <div className="mt-4 h-px bg-border" />
-        </div>
-      )}
-
       {mode === 'edit' && schedule && (
         <FireLog
           lastRun={schedule.last_run}

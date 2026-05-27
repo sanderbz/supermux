@@ -1,17 +1,21 @@
-// ScheduleForm (M21) — the kind/fields/expression body shared by the create +
-// edit surfaces (both now host it in the same right-side Sheet). Owns: kind
-// radio, matching field set (boot / tmux / shell), a real command picker
-// (combobox over GET /api/slash-commands) for boot/tmux prompts, a real session
-// picker (select over the live sessions list) for tmux, a friendly recurrence
-// composer (quick-pick chips → schedule_expr) with a live English render + a
-// Custom escape hatch (raw natural-language / cron) and a DEBOUNCED next-5-runs
-// preview (POST /api/schedules/preview), one-shot datetime picker, optional
-// watch-mode, and a test-fire button. Animations use springs.ts only.
+// ScheduleForm — the kind/fields/expression body shared by the create + edit
+// surfaces (both host it in the same right-side Sheet). Owns: kind toggle
+// (Prompt session / Boot session / Shell job), per-kind fields, the combined
+// `PromptField` (one textarea with inline slash autocomplete — the old
+// CommandPicker + PromptArea fused into one), a real session picker (select
+// over the live sessions list) for tmux, the recurrence composer with a live
+// English render + debounced next-5-runs preview (POST /api/schedules/preview),
+// a one-shot datetime picker, an opt-in "Send me notification when done"
+// checkbox (the M8 watch + done_action='notify' path with a friendlier label
+// and dynamic permission hint), and the test-fire button.
+//
+// Animations come from springs.ts (no `transition: all`). Default kind is the
+// most common case — `tmux` (Prompt session) — so the user lands on the
+// minimum-typing flow.
 
 import * as React from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
-  Check,
   ChevronDown,
   Clock3,
   FlaskConical,
@@ -27,13 +31,12 @@ import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/use-toast'
 import {
   schedulerApi,
-  type RecipeCommand,
   type ScheduleCreateInput,
   type ScheduleKind,
 } from '@/lib/api'
 import { useSchedulerCommands, useTestFire } from '@/hooks/use-scheduler'
+import { usePush } from '@/hooks/use-push'
 import {
-  DONE_ACTIONS,
   describeSchedule,
   EMPTY_RECURRENCE,
   exprToRecurrence,
@@ -47,6 +50,11 @@ import {
   type RecurrenceDraft,
   WEEKDAYS,
 } from './helpers'
+import {
+  mergeCommandAndPrompt,
+  PromptField,
+  splitCommandAndPrompt,
+} from './prompt-field'
 
 export interface ScheduleFormValue {
   title: string
@@ -59,14 +67,17 @@ export interface ScheduleFormValue {
   boot_dir: string
   boot_provider: string
   boot_worktree: boolean
-  watch: boolean
+  /** "Send me notification when done" → maps to watch=true + done_action=notify. */
+  notify: boolean
+  /** Optional regex; empty = the server's default done marker. */
   done_pattern: string
-  done_action: string
 }
 
 export const EMPTY_FORM: ScheduleFormValue = {
   title: '',
-  kind: 'boot',
+  // Default is the simplest, most-common path — Prompt session — so the user
+  // hits the minimum number of required fields on first open.
+  kind: 'tmux',
   command: '',
   prompt: '',
   schedule_expr: '',
@@ -74,9 +85,8 @@ export const EMPTY_FORM: ScheduleFormValue = {
   boot_dir: '',
   boot_provider: 'claude',
   boot_worktree: false,
-  watch: false,
+  notify: false,
   done_pattern: '',
-  done_action: 'disable',
 }
 
 const KIND_ICON: Record<ScheduleKind, React.ReactNode> = {
@@ -85,20 +95,22 @@ const KIND_ICON: Record<ScheduleKind, React.ReactNode> = {
   shell: <Clock3 className="size-4" />,
 }
 
-const KINDS: ScheduleKind[] = ['boot', 'tmux', 'shell']
+const KINDS: ScheduleKind[] = ['tmux', 'boot', 'shell']
 
 /** Build the API payload from form state (only the fields the kind needs). The
- *  free-text `prompt` rides alongside the slash `command` for boot/tmux; shell
- *  jobs run the command literally so a prompt has no meaning there. */
+ *  combined PromptField text is split into `command` + `prompt` at the wire
+ *  boundary so the M8 schema stays unchanged. Shell jobs run the command text
+ *  literally so a prompt has no meaning there. The notify checkbox serializes
+ *  to the M8 `watch=true` + `done_action='notify'` path. */
 export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
   const base: ScheduleCreateInput = {
     title: v.title.trim(),
     kind: v.kind,
     command: v.command.trim(),
     schedule_expr: v.schedule_expr.trim(),
-    watch: v.watch,
-    done_pattern: v.watch ? v.done_pattern.trim() || undefined : undefined,
-    done_action: v.watch ? v.done_action : undefined,
+    watch: v.notify,
+    done_pattern: v.notify ? v.done_pattern.trim() || undefined : undefined,
+    done_action: v.notify ? 'notify' : undefined,
   }
   if (v.kind === 'tmux') {
     base.session = v.session.trim()
@@ -154,6 +166,20 @@ export function ScheduleForm({
   const commands = useSchedulerCommands()
   const valid = isFormValid(value)
 
+  // The combined "type-anything" field holds `/cmd then prompt` as one string.
+  // The form's stored shape stays split (`command` + `prompt`) so the API call
+  // doesn't have to know about the merge. We mirror state both ways via the
+  // helpers below — the merged view is derived from `value`, the inverse runs
+  // on every change so the row stays in sync.
+  const mergedPrompt = React.useMemo(
+    () => mergeCommandAndPrompt(value.command, value.prompt),
+    [value.command, value.prompt],
+  )
+  const setMergedPrompt = (next: string) => {
+    const split = splitCommandAndPrompt(next)
+    onChange({ ...value, command: split.command, prompt: split.prompt })
+  }
+
   const runTestFire = () => {
     testFire.mutate(toCreateInput(value), {
       onSuccess: (res) => {
@@ -188,7 +214,7 @@ export function ScheduleForm({
         />
       </Field>
 
-      {/* Kind radio */}
+      {/* Kind toggle — Prompt session is the most-common case + default. */}
       <Field label="Job kind">
         <div className="grid grid-cols-3 gap-2" role="radiogroup">
           {KINDS.map((k) => {
@@ -222,7 +248,30 @@ export function ScheduleForm({
         </div>
       </Field>
 
-      {/* Kind-specific fields */}
+      {/* Kind-specific fields. The combined PromptField replaces the old
+          CommandPicker + PromptArea pair: one textarea, type `/` for the
+          autocomplete, type anything else for a free-text prompt. */}
+      {value.kind === 'tmux' && (
+        <>
+          <Field label="Target session">
+            <SessionPicker
+              value={value.session}
+              onChange={(v) => set('session', v)}
+              sessions={sessions}
+            />
+          </Field>
+          <Field label="Prompt">
+            <PromptField
+              value={mergedPrompt}
+              onChange={setMergedPrompt}
+              commands={commands.data ?? []}
+              loading={commands.isLoading}
+              placeholder="Type a prompt — or start with /command for one of your installed skills."
+            />
+          </Field>
+        </>
+      )}
+
       {value.kind === 'boot' && (
         <>
           <Field label="Directory">
@@ -255,48 +304,13 @@ export function ScheduleForm({
               />
             </Field>
           </div>
-          <Field label="Command">
-            <CommandPicker
-              value={value.command}
-              onChange={(v) => set('command', v)}
+          <Field label="Prompt">
+            <PromptField
+              value={mergedPrompt}
+              onChange={setMergedPrompt}
               commands={commands.data ?? []}
               loading={commands.isLoading}
-              placeholder="/cso"
-            />
-          </Field>
-          <Field label="Prompt (optional)">
-            <PromptArea
-              value={value.prompt}
-              onChange={(v) => set('prompt', v)}
-              placeholder="Anything to say after the command — or leave the command blank and just send this."
-            />
-          </Field>
-        </>
-      )}
-
-      {value.kind === 'tmux' && (
-        <>
-          <Field label="Target session">
-            <SessionPicker
-              value={value.session}
-              onChange={(v) => set('session', v)}
-              sessions={sessions}
-            />
-          </Field>
-          <Field label="Command (optional)">
-            <CommandPicker
-              value={value.command}
-              onChange={(v) => set('command', v)}
-              commands={commands.data ?? []}
-              loading={commands.isLoading}
-              placeholder="/status"
-            />
-          </Field>
-          <Field label="Prompt (optional)">
-            <PromptArea
-              value={value.prompt}
-              onChange={(v) => set('prompt', v)}
-              placeholder="Free-text to send after the command — or on its own."
+              placeholder="Type the boot prompt — or start with /command for one of your installed skills."
             />
           </Field>
         </>
@@ -320,49 +334,11 @@ export function ScheduleForm({
         preview={preview}
       />
 
-      {/* Watch mode */}
-      <Field label="Watch mode">
-        <CheckRow
-          checked={value.watch}
-          onChange={(c) => set('watch', c)}
-          label="Watch the session for a done-pattern after it runs"
-        />
-        <AnimatePresence initial={false}>
-          {value.watch && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={springs.cardExpand}
-              className="overflow-hidden"
-            >
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Field label="Done pattern (regex)">
-                  <Input
-                    value={value.done_pattern}
-                    onChange={(e) => set('done_pattern', e.target.value)}
-                    placeholder="✓ done"
-                    className="h-11 font-mono text-base md:text-xs"
-                  />
-                </Field>
-                <Field label="On match">
-                  <select
-                    value={value.done_action}
-                    onChange={(e) => set('done_action', e.target.value)}
-                    className="h-11 w-full rounded-md border border-input bg-transparent px-3 text-base md:text-sm"
-                  >
-                    {DONE_ACTIONS.map((a) => (
-                      <option key={a} value={a}>
-                        {a}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </Field>
+      {/* Notification opt-in (top-level, friendlier than the old "watch mode"
+          jargon). Maps to M8 watch + done_action='notify'. The hint surfaces
+          the live Notification.permission + push subscription state so the
+          user knows whether the ping will actually reach them. */}
+      <NotifyField value={value} set={set} />
 
       {/* Test fire */}
       {!hideTestFire && (
@@ -385,6 +361,70 @@ export function ScheduleForm({
   )
 }
 
+// ── notify checkbox (top-level "send me notification when done") ────────────────
+
+function NotifyField({
+  value,
+  set,
+}: {
+  value: ScheduleFormValue
+  set: <K extends keyof ScheduleFormValue>(
+    key: K,
+    v: ScheduleFormValue[K],
+  ) => void
+}) {
+  const push = usePush()
+  // Surface the live permission + subscription state so the hint is accurate
+  // rather than a generic "remember to enable it" line.
+  const hint = React.useMemo(() => {
+    switch (push.state) {
+      case 'enabled':
+        return 'Currently enabled on this device.'
+      case 'disabled':
+        return 'Enable phone notifications in Settings → Notifications to actually receive these.'
+      case 'blocked':
+        return 'Notifications are blocked for this site — allow them in your browser settings first.'
+      case 'unsupported':
+        return 'This device can’t deliver push notifications (iOS needs the PWA installed to the home screen).'
+      default:
+        return 'Requires notifications enabled in Settings + browser/PWA permission.'
+    }
+  }, [push.state])
+
+  return (
+    <Field label="When it finishes">
+      <CheckRow
+        checked={value.notify}
+        onChange={(c) => set('notify', c)}
+        label="Send me notification"
+      />
+      <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p>
+      <AnimatePresence initial={false}>
+        {value.notify && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={springs.cardExpand}
+            className="overflow-hidden"
+          >
+            <div className="mt-3">
+              <SubField label="Done pattern (optional regex)">
+                <Input
+                  value={value.done_pattern}
+                  onChange={(e) => set('done_pattern', e.target.value)}
+                  placeholder="✓ done"
+                  className="h-11 font-mono text-base md:text-xs"
+                />
+              </SubField>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </Field>
+  )
+}
+
 // ── recurrence composer ────────────────────────────────────────────────────────
 //
 // Quick-pick chips compose the `schedule_expr` for the common cases; "Custom"
@@ -401,14 +441,11 @@ function RecurrenceComposer({
   onExpr: (v: string) => void
   preview: PreviewState
 }) {
-  // Seed the composer from the current expression (so edit lands on the right
-  // chip). Stored during render via the wasExpr guard — no setState-in-effect.
   const [draft, setDraft] = React.useState<RecurrenceDraft>(() =>
     expr.trim() ? exprToRecurrence(expr) : { ...EMPTY_RECURRENCE },
   )
   const [seededFrom, setSeededFrom] = React.useState(expr)
   if (expr !== seededFrom && expr.trim() && draft.frequency === 'custom') {
-    // External expr change while on custom: keep custom (user is editing raw).
     setSeededFrom(expr)
   }
 
@@ -422,10 +459,6 @@ function RecurrenceComposer({
   }
 
   const pickFrequency = (f: Frequency) => {
-    if (f === 'custom') {
-      applyDraft({ ...draft, frequency: f })
-      return
-    }
     applyDraft({ ...draft, frequency: f })
   }
 
@@ -637,170 +670,6 @@ function DayPicker({
   )
 }
 
-// ── command picker (combobox over the REAL installed commands) ──────────────────
-//
-// Source is `GET /api/schedules/commands` — the user's actual installed skills +
-// user/managed commands + claude.ai MCP connectors, never the built-in Claude
-// slash commands. The field still accepts any typed text (a command not in the
-// list is sent as-is), so it degrades gracefully.
-
-/** Sentence-case label for each command source (no UPPERCASE literals). */
-const SOURCE_LABEL: Record<RecipeCommand['source'], string> = {
-  skill: 'Skill',
-  command: 'Command',
-  mcp: 'MCP connector',
-}
-
-function CommandPicker({
-  value,
-  onChange,
-  commands,
-  loading,
-  placeholder,
-}: {
-  value: string
-  onChange: (v: string) => void
-  commands: RecipeCommand[]
-  loading: boolean
-  placeholder: string
-}) {
-  const [open, setOpen] = React.useState(false)
-  const ref = React.useRef<HTMLDivElement>(null)
-
-  React.useEffect(() => {
-    if (!open) return
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-
-  const q = value.trim().toLowerCase()
-  const filtered = q
-    ? commands.filter(
-        (c) =>
-          c.cmd.toLowerCase().includes(q) ||
-          c.desc.toLowerCase().includes(q),
-      )
-    : commands
-
-  return (
-    <div ref={ref} className="relative">
-      <div className="relative">
-        <Input
-          value={value}
-          onChange={(e) => {
-            onChange(e.target.value)
-            setOpen(true)
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder}
-          aria-label="Command"
-          className="h-11 pr-10 font-mono text-base md:text-xs"
-        />
-        <button
-          type="button"
-          aria-label="Browse commands"
-          onClick={() => setOpen((o) => !o)}
-          className="absolute inset-y-0 right-0 grid w-10 place-items-center text-muted-foreground hover:text-foreground"
-        >
-          <ChevronDown
-            className={cn('size-4 transition-transform', open && 'rotate-180')}
-          />
-        </button>
-      </div>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={springs.cardExpand}
-            className="absolute z-50 mt-1.5 max-h-64 w-full overflow-auto rounded-lg border border-border bg-popover p-1 shadow-lg"
-          >
-            {loading ? (
-              <p className="px-2 py-2 text-xs text-muted-foreground">
-                Loading installed commands…
-              </p>
-            ) : !filtered.length ? (
-              <p className="px-2 py-2 text-xs text-muted-foreground">
-                {commands.length
-                  ? 'No matching command — type any text to send it as-is.'
-                  : 'No installed skills or commands — type any text to send it as-is.'}
-              </p>
-            ) : (
-              filtered.map((c) => {
-                const selected = c.cmd === value.trim()
-                return (
-                  <button
-                    key={`${c.source}:${c.cmd}`}
-                    type="button"
-                    onClick={() => {
-                      onChange(c.cmd)
-                      setOpen(false)
-                    }}
-                    className={cn(
-                      'flex min-h-11 w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent',
-                      selected && 'bg-accent',
-                    )}
-                  >
-                    <Check
-                      className={cn(
-                        'mt-0.5 size-3.5 shrink-0',
-                        selected ? 'text-primary' : 'text-transparent',
-                      )}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-2">
-                        <span className="font-mono text-xs text-foreground">
-                          {c.cmd}
-                        </span>
-                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                          {SOURCE_LABEL[c.source]}
-                        </span>
-                      </span>
-                      {c.desc && (
-                        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                          {c.desc}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                )
-              })
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  )
-}
-
-// ── prompt textarea (free-text sent after the command) ──────────────────────────
-
-function PromptArea({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string
-  onChange: (v: string) => void
-  placeholder: string
-}) {
-  return (
-    <textarea
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      rows={3}
-      aria-label="Prompt"
-      className="min-h-11 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    />
-  )
-}
-
 // ── session picker (select over the live sessions list) ─────────────────────────
 
 function SessionPicker({
@@ -848,14 +717,11 @@ interface PreviewState {
 const IDLE_PREVIEW: PreviewState = { runs: [], loading: false, error: null }
 
 function useExpressionPreview(expr: string): PreviewState {
-  // `fetched` holds the last debounced-fetch result. The displayed state is
-  // derived during render (empty when the field is blank), so the effect only
-  // SUBSCRIBES — it never calls setState synchronously (set-state-in-effect).
   const [fetched, setFetched] = React.useState<PreviewState>(IDLE_PREVIEW)
   const trimmed = expr.trim()
 
   React.useEffect(() => {
-    if (!trimmed) return // empty field renders idle; nothing to fetch
+    if (!trimmed) return
     const ctrl = new AbortController()
     const t = setTimeout(async () => {
       try {
@@ -878,7 +744,6 @@ function useExpressionPreview(expr: string): PreviewState {
 }
 
 function NextRunsPreview({ state }: { state: PreviewState }) {
-  const reduce = useReducedMotion()
   if (!state.runs.length && !state.error && !state.loading) return null
   return (
     <div className="mt-3 rounded-lg border border-border bg-muted/40 p-3">
@@ -891,16 +756,10 @@ function NextRunsPreview({ state }: { state: PreviewState }) {
         <p className="text-xs text-muted-foreground">Computing…</p>
       ) : (
         <ol className="flex flex-col gap-1">
-          {state.runs.map((iso, i) => (
-            <motion.li
-              key={iso}
-              initial={reduce ? false : { opacity: 0, x: -6 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ ...springs.smooth, delay: reduce ? 0 : i * 0.03 }}
-              className="font-mono text-xs text-foreground"
-            >
+          {state.runs.map((iso) => (
+            <li key={iso} className="font-mono text-xs text-foreground">
               {formatFull(iso)}
-            </motion.li>
+            </li>
           ))}
         </ol>
       )}

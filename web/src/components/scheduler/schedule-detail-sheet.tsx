@@ -88,7 +88,7 @@ function CreateBody({
       open={open}
       onOpenChange={(o) => !o && onClose()}
       title="New schedule"
-      description="Boot an agent, send a command, or run a shell job on a timer."
+      description="Prompt a session, boot a fresh one, or run a shell command on a timer."
     >
       <div className="px-5 py-5">
         <ScheduleEditor mode="create" sessions={sessions} onClose={onClose} />
