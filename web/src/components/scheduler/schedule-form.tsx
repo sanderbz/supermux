@@ -168,15 +168,34 @@ export function ScheduleForm({
 
   // The combined "type-anything" field holds `/cmd then prompt` as one string.
   // The form's stored shape stays split (`command` + `prompt`) so the API call
-  // doesn't have to know about the merge. We mirror state both ways via the
-  // helpers below — the merged view is derived from `value`, the inverse runs
-  // on every change so the row stays in sync.
-  const mergedPrompt = React.useMemo(
-    () => mergeCommandAndPrompt(value.command, value.prompt),
-    [value.command, value.prompt],
+  // doesn't have to know about the merge — but we keep the RAW merged text as
+  // a separate piece of state so the user's keystrokes (especially spaces!)
+  // never round-trip through the lossy split → merge pair. Earlier versions
+  // re-derived the merged value from `command`+`prompt` on every change, which
+  // stripped trailing spaces, multi-spaces, and the command/prompt separator
+  // — making it physically impossible to type a space in the Prompt field.
+  // Seed once from props (initial value), then own the string locally; re-seed
+  // when the upstream split values change for a reason OTHER than our own
+  // edit (e.g. the editor swaps to a different schedule).
+  const lastSplitRef = React.useRef({ command: value.command, prompt: value.prompt })
+  const [mergedPrompt, setMergedPromptState] = React.useState(() =>
+    mergeCommandAndPrompt(value.command, value.prompt),
   )
+  React.useEffect(() => {
+    // If `command`/`prompt` changed from outside this component (not from our
+    // setMergedPrompt below), re-seed the merged buffer.
+    if (
+      value.command !== lastSplitRef.current.command ||
+      value.prompt !== lastSplitRef.current.prompt
+    ) {
+      lastSplitRef.current = { command: value.command, prompt: value.prompt }
+      setMergedPromptState(mergeCommandAndPrompt(value.command, value.prompt))
+    }
+  }, [value.command, value.prompt])
   const setMergedPrompt = (next: string) => {
+    setMergedPromptState(next)
     const split = splitCommandAndPrompt(next)
+    lastSplitRef.current = { command: split.command, prompt: split.prompt }
     onChange({ ...value, command: split.command, prompt: split.prompt })
   }
 
