@@ -52,20 +52,29 @@ const CARD_W = 280
 const GAP = 12 // px between anchor and card
 
 /** Measure the anchor element; re-measures on resize + scroll so the card
- *  tracks it. Returns `null` until measured (or if the anchor is absent). */
+ *  tracks it. Returns `null` until measured (or if the anchor is absent).
+ *
+ *  Picks the first VISIBLE match — `data-tour` anchors live on both the desktop
+ *  side-nav and the mobile bottom-nav for the same nav slot (e.g. "scheduler"),
+ *  and `display:none` from the wrong-breakpoint copy still satisfies
+ *  `querySelector`, returning an all-zero rect that parks the card off-screen.
+ *  Skipping zero-size matches falls through to the visible one (or to the
+ *  centred-card fallback when none is on screen). */
 function useAnchorRect(selector: string): AnchorRect | null {
   const [rect, setRect] = React.useState<AnchorRect | null>(null)
 
   React.useEffect(() => {
     let raf = 0
     const measure = () => {
-      const el = document.querySelector(selector)
-      if (!el) {
-        setRect(null)
-        return
+      const els = document.querySelectorAll(selector)
+      for (const el of els) {
+        const r = el.getBoundingClientRect()
+        if (r.width > 0 && r.height > 0) {
+          setRect({ top: r.top, left: r.left, width: r.width, height: r.height })
+          return
+        }
       }
-      const r = el.getBoundingClientRect()
-      setRect({ top: r.top, left: r.left, width: r.width, height: r.height })
+      setRect(null)
     }
     const schedule = () => {
       cancelAnimationFrame(raf)
