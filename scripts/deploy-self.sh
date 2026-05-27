@@ -8,31 +8,38 @@
 # running service rebuilds from the clone and restarts — coming back online by
 # itself, with the tmux session that ran it surviving the restart.
 #
-# WHY NO SUDO (the bug this design fixes):
+# WHY NO SUDO + WHY BUILD-IN-RUNNER (the two bugs this design fixes):
 #   The supermux systemd unit is hardened with NoNewPrivileges=true,
 #   RestrictSUIDSGID=true, an empty CapabilityBoundingSet, and a
 #   SystemCallFilter that drops @privileged — EACH of which independently
 #   neuters setuid/sudo. Every child of the service (including THIS tmux
 #   session) inherits that, so `sudo` can NEVER run as root from inside
-#   supermux ("the 'no new privileges' flag is set"). Relaxing the hardening to
-#   allow sudo would gut the sandbox, so instead we use a systemd PATH-UNIT
-#   TRIGGER:
-#     - this script BUILDS, then atomically WRITES a small request file
-#       ($DATA_DIR/deploy/request) — an operation that needs ZERO privilege;
-#     - a root-side .path unit (supermux-deploy.path) watches that file and, on
-#       change, starts a root oneshot (supermux-deploy.service) that runs
-#       /usr/local/sbin/supermux-deploy-runner — which does the privileged
-#       backup → install → restart → verify → rollback OUTSIDE the sandbox.
-#   This adds NO privilege the agent lacks: the runner only replaces the
-#   UNPRIVILEGED service binary and restarts the UNPRIVILEGED unit (both already
-#   under the agent's uid in effect); it just bridges "write file" → "root
-#   installs + restarts".
+#   supermux ("the 'no new privileges' flag is set"). On TOP of that, the
+#   SystemCallFilter blocks `make` from spawning `/bin/sh` (the syscall it
+#   uses to fork its recipe shell is denied) — so a vendored-OpenSSL release
+#   build from inside this sandbox is also impossible whenever cargo's
+#   openssl-sys cache is cold. Relaxing the hardening to permit either would
+#   gut the sandbox, so instead we use a systemd PATH-UNIT TRIGGER:
+#     - this script atomically WRITES a small request file
+#       ($DATA_DIR/deploy/request) carrying `source_dir=<our clone>` — an
+#       operation that needs ZERO privilege;
+#     - a root-side .path unit (supermux-deploy.path) watches that file and,
+#       on change, starts a root oneshot (supermux-deploy.service) that runs
+#       /usr/local/sbin/supermux-deploy-runner — which BUILDS the binary as
+#       the service user via `runuser` (outside the supermux.service cgroup,
+#       so no SystemCallFilter — make + openssl-src work normally), then does
+#       backup → install → restart → verify → rollback.
+#   This adds NO privilege the agent lacks: the runner builds as the SAME uid
+#   the agent already runs as, then replaces the UNPRIVILEGED service binary
+#   and restarts the UNPRIVILEGED unit. It just bridges "write file" → "root
+#   builds (as service user) + installs + restarts".
 #
 # WHY IT IS SAFE (no bricking):
-#   - We build FIRST (scripts/build.sh). If the build fails, nothing is touched
-#     and the running service keeps running the OLD binary.
-#   - The root runner backs up the current binary, installs the new one,
-#     restarts, verifies `systemctl is-active` + the loopback /api/health, and
+#   - The root runner builds first; on build failure, nothing is touched and
+#     the running service keeps the OLD binary (the runner exits before any
+#     install step).
+#   - It then backs up the current binary, installs the new one, restarts,
+#     verifies `systemctl is-active` + the loopback /api/health, and
 #     ROLLS BACK to the backup (and restarts) if the new one fails to come up —
 #     so a bad build can never leave prod down.
 #   - The supermux service uses KillMode=process + a persistent TMUX_TMPDIR in
@@ -55,7 +62,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-BIN_REL="server/target/release/supermux-server"
 DATA_DIR="${SUPERMUX_DATA_DIR:-$HOME/.supermux}"
 REQ_DIR="$DATA_DIR/deploy"
 
@@ -86,20 +92,14 @@ if [ "${SUPERMUX_SELF_NO_PULL:-0}" != "1" ]; then
   fi
 fi
 
-# ── 2. build in place (build.sh fails the whole script on any error) ──────────
-# build.sh sources ~/.cargo/env and prepends ~/.bun/bin — so cargo+bun resolve
-# even on this non-login invocation.
-log "building (scripts/build.sh) — the running service is untouched until this succeeds"
-bash scripts/build.sh
-
-[ -f "$BIN_REL" ] || die "build reported success but '$BIN_REL' is missing"
-log "built binary: $BIN_REL ($(du -h "$BIN_REL" | cut -f1))"
-
-# ── 3. write the deploy request (zero privilege) → triggers the root runner ───
+# ── 2. write the deploy request (zero privilege) → triggers the root runner ──
 # The root-side supermux-deploy.path unit watches $REQ_DIR/request; the mv below
-# (a rename) fires PathChanged and starts the root oneshot that installs +
-# restarts + verifies + rolls back. deploy.sh provisioned $REQ_DIR owned by the
-# service user (mode 0775) so this write needs no privilege.
+# (a rename) fires PathChanged and starts the root oneshot that builds + installs
+# + restarts + verifies + rolls back. The BUILD runs there too (as the service
+# user via runuser, OUTSIDE the supermux.service sandbox) so the supermux unit's
+# SystemCallFilter cannot block vendored-openssl's `make` (the on-server build
+# trap before this fix). deploy.sh provisioned $REQ_DIR owned by the service
+# user (mode 0775), so this write needs no privilege.
 mkdir -p "$REQ_DIR" 2>/dev/null || die "cannot create request dir: $REQ_DIR
   This should have been provisioned by scripts/deploy.sh (install -d ... $REQ_DIR).
   Re-run a full deploy from your workstation, or create+chown it as root."
@@ -110,8 +110,8 @@ mkdir -p "$REQ_DIR" 2>/dev/null || die "cannot create request dir: $REQ_DIR
 : > "$REQ_DIR/log" 2>/dev/null || true
 
 NONCE="$(date +%s%N)"
-log "writing deploy request -> $REQ_DIR/request (triggers root runner via supermux-deploy.path)"
-printf 'binary=%s\nsha=%s\nnonce=%s\n' "$ROOT/$BIN_REL" "$GIT_SHA" "$NONCE" \
+log "writing deploy request -> $REQ_DIR/request (triggers root runner: build + install + restart)"
+printf 'source_dir=%s\nsha=%s\nnonce=%s\n' "$ROOT" "$GIT_SHA" "$NONCE" \
   > "$REQ_DIR/request.tmp" \
   && mv "$REQ_DIR/request.tmp" "$REQ_DIR/request" \
   || die "failed to write deploy request into $REQ_DIR (not writable?)"

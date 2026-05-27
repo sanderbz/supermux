@@ -7,32 +7,40 @@
 # the result to /usr/local/sbin/supermux-deploy-runner (root-owned, mode 0755).
 #
 # HOW IT IS INVOKED (no sudo anywhere):
-#   The in-service dev agent runs scripts/deploy-self.sh, which builds the
-#   binary and then atomically writes a tiny request FILE (__DEPLOY_REQUEST__)
-#   — an operation that needs ZERO privilege. A root-side systemd .path unit
-#   (supermux-deploy.path) watches that file and, on change, starts a root
-#   oneshot (supermux-deploy.service) whose ExecStart is THIS script. So this
-#   runs as ROOT, OUTSIDE the supermux.service sandbox — which is why it can
+#   The in-service dev agent runs scripts/deploy-self.sh, which atomically writes
+#   a tiny request FILE (__DEPLOY_REQUEST__) — an operation that needs ZERO
+#   privilege. A root-side systemd .path unit (supermux-deploy.path) watches that
+#   file and, on change, starts a root oneshot (supermux-deploy.service) whose
+#   ExecStart is THIS script. So this runs as ROOT, OUTSIDE the supermux.service
+#   sandbox — which is why it can BUILD (the supermux unit's SystemCallFilter
+#   blocks make from spawning sh, so a sandboxed build is impossible) and then
 #   install + restart even though the hardened service (NoNewPrivileges, empty
 #   CapabilityBoundingSet, SystemCallFilter ~@privileged) makes sudo impossible
 #   from inside supermux.
 #
 # WHY THIS IS NOT AN ESCALATION:
-#   The runner only ever (a) replaces the UNPRIVILEGED service binary
-#   (/usr/local/bin/supermux-server) and (b) restarts the UNPRIVILEGED
-#   supermux unit — both of which the agent's own uid already governs in effect.
-#   Caller-supplied inputs are limited to a SOURCE binary path (validated:
-#   regular file, ELF magic, realpath under an allowlisted prefix) and an opaque
-#   SHA (recorded only). The destination, unit name, data dir, and config are
-#   all HARDCODED (rendered) here — the request cannot redirect the install to
-#   an arbitrary path or restart an arbitrary unit.
+#   The runner only ever (a) builds inside the agent's own clone as the
+#   UNPRIVILEGED service user via `runuser`, (b) replaces the UNPRIVILEGED
+#   service binary (/usr/local/bin/supermux-server), and (c) restarts the
+#   UNPRIVILEGED supermux unit — all of which the agent's own uid already
+#   governs in effect. Caller-supplied inputs are limited to: a SOURCE DIR
+#   (a git clone — validated: realpath under an allowlisted prefix, has .git
+#   AND scripts/build.sh) OR (legacy) a prebuilt SOURCE BINARY (validated:
+#   regular file, ELF magic, realpath under allowlist), plus an opaque SHA
+#   (recorded only). The destination, unit name, data dir, and config are all
+#   HARDCODED (rendered) here — the request cannot redirect the install to an
+#   arbitrary path or restart an arbitrary unit.
 #
 # WHAT IT DOES (same guarantees as the old sudo helper):
 #   1. read + validate the request file,
-#   2. back up the currently-installed binary,
-#   3. install the freshly-built binary (atomic),
-#   4. systemctl restart the unit,
-#   5. verify is-active + loopback /api/health; ROLL BACK to the backup and
+#   2. if source_dir is given: build the binary as the service user (cargo+bun
+#      live in their home; running as that user outside the supermux unit
+#      means no sandbox restrictions apply, so vendored-OpenSSL's `make`
+#      works fine),
+#   3. back up the currently-installed binary,
+#   4. install the freshly-built binary (atomic),
+#   5. systemctl restart the unit,
+#   6. verify is-active + loopback /api/health; ROLL BACK to the backup and
 #      restart if it does not come up — a bad build can never leave prod down.
 #   All output is teed to __DATA_DIR__/deploy/log and a final DEPLOY_RESULT=
 #   line + a status file are written (chowned to the service user) so the
@@ -89,35 +97,74 @@ fail() { log "error: $*"; RESULT="failed"; exit 1; }
 # ── 0. read + validate the request file ───────────────────────────────────────
 [ -f "$REQUEST" ] || fail "no request file at $REQUEST"
 
-SRC=""; SHA=""; NONCE=""
+SRC_DIR=""; SRC=""; SHA=""; NONCE=""
 while IFS='=' read -r k v; do
   case "$k" in
-    binary) SRC="$v" ;;
-    sha)    SHA="$v" ;;
-    nonce)  NONCE="$v" ;;
+    source_dir) SRC_DIR="$v" ;;
+    binary)     SRC="$v" ;;       # legacy: agent built locally and points at the artifact
+    sha)        SHA="$v" ;;
+    nonce)      NONCE="$v" ;;
   esac
 done < "$REQUEST"
 
-log "request: binary=$SRC sha=${SHA:0:12} nonce=$NONCE"
+log "request: source_dir=$SRC_DIR binary=$SRC sha=${SHA:0:12} nonce=$NONCE"
 
-[ -n "$SRC" ] || fail "request missing 'binary='"
-[ -f "$SRC" ] || fail "source binary does not exist: $SRC"
+# Reusable: the binary's realpath must live under an allowlisted prefix (the
+# agents' project dir or the service user's home). Even though the .path
+# trigger and request file are inside the service-user-writable data dir, this
+# guards against a request pointing at, say, /bin/sh.
+under_allowlist() {
+  # under_allowlist <abs-path> — returns 0 iff the path is under PROJECTS_DIR or USER_HOME.
+  local p="$1"
+  case "$p/" in
+    "$PROJECTS_DIR"/*|"$USER_HOME"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ -n "$SRC_DIR" ]; then
+  # ── source-dir path: build here, then install the produced binary ──────────
+  # The agent passed us a clone path instead of a built artifact, so we run
+  # the build ourselves as the unprivileged SERVICE_USER. Because THIS unit
+  # (supermux-deploy.service) is separate from supermux.service, the build
+  # runs OUTSIDE that hardened cgroup — make+sh, native openssl-src build,
+  # cargo's full toolchain all work without restriction.
+  REAL_SRC_DIR="$(readlink -f "$SRC_DIR" 2>/dev/null || true)"
+  [ -n "$REAL_SRC_DIR" ] || fail "cannot resolve realpath of source_dir $SRC_DIR"
+  under_allowlist "$REAL_SRC_DIR" \
+    || fail "source_dir $REAL_SRC_DIR is outside the allowlist ($PROJECTS_DIR/, $USER_HOME/)"
+  SRC_DIR="$REAL_SRC_DIR"
+
+  [ -d "$SRC_DIR/.git" ] || [ -f "$SRC_DIR/.git" ] \
+    || fail "source_dir $SRC_DIR is not a git clone (no .git)"
+  [ -x "$SRC_DIR/scripts/build.sh" ] || [ -f "$SRC_DIR/scripts/build.sh" ] \
+    || fail "source_dir $SRC_DIR has no scripts/build.sh"
+
+  # Build as SERVICE_USER, with HOME set so build.sh's `. ~/.cargo/env` and
+  # `~/.bun/bin` PATH prepend resolve to that user's installs.
+  log "building (runuser -u $SERVICE_USER -- scripts/build.sh in $SRC_DIR) — the running service is untouched until this succeeds"
+  if ! runuser -u "$SERVICE_USER" -- env HOME="$USER_HOME" \
+      bash -c "cd '$SRC_DIR' && bash scripts/build.sh" ; then
+    fail "build.sh failed under runuser; see log above"
+  fi
+
+  SRC="$SRC_DIR/server/target/release/supermux-server"
+fi
+
+# From here on, $SRC must point at a real built binary — either freshly built
+# above (source_dir path) or supplied directly by a legacy agent (binary=).
+[ -n "$SRC" ] || fail "request missing 'source_dir=' (or legacy 'binary=')"
+[ -f "$SRC" ] || fail "binary does not exist: $SRC"
 
 # Must be a regular ELF executable, not some arbitrary file.
 if ! head -c 4 "$SRC" 2>/dev/null | grep -q $'\x7fELF'; then
   fail "source is not an ELF binary: $SRC"
 fi
 
-# Defense-in-depth: the binary's realpath must live under an allowlisted prefix
-# (the agents' project dir or the service user's home). Even though the .path
-# trigger and request file are inside the service-user-writable data dir, this
-# guards against a request pointing DEST at, say, /bin/sh.
 REAL_SRC="$(readlink -f "$SRC" 2>/dev/null || true)"
 [ -n "$REAL_SRC" ] || fail "cannot resolve realpath of $SRC"
-case "$REAL_SRC/" in
-  "$PROJECTS_DIR"/*|"$USER_HOME"/*) : ;;
-  *) fail "source binary $REAL_SRC is outside the allowlist ($PROJECTS_DIR/, $USER_HOME/)" ;;
-esac
+under_allowlist "$REAL_SRC" \
+  || fail "binary $REAL_SRC is outside the allowlist ($PROJECTS_DIR/, $USER_HOME/)"
 SRC="$REAL_SRC"
 
 # ── resolve the internal health port from config.toml (bind = "127.0.0.1:PORT")

@@ -8,33 +8,42 @@ restart.
 
 ## Why this is safe
 
-- **No bricking.** `scripts/deploy-self.sh` builds *first*. If the build fails,
-  the running service is never touched and keeps serving the old binary. The
-  root runner then backs up the current binary, installs the new one, restarts,
-  then verifies `systemctl is-active` **and** the loopback `/api/health`. If the
-  new build fails to come up, it **rolls back** to the backed-up binary and
-  restarts — prod cannot be left down. The runner streams its progress to a log
-  file in the data dir, which `deploy-self.sh` tails so you watch
-  backup/install/restart/rollback live.
+- **No bricking.** The root runner builds *first* — as the service user via
+  `runuser`, in the agent's clone. If the build fails the runner exits before
+  any install step, and the running service keeps serving the old binary. On
+  build success, the runner backs up the current binary, installs the new one,
+  restarts, then verifies `systemctl is-active` **and** the loopback
+  `/api/health`. If the new build fails to come up, it **rolls back** to the
+  backed-up binary and restarts — prod cannot be left down. The runner streams
+  its progress to a log file in the data dir, which `deploy-self.sh` tails so
+  you watch build/backup/install/restart/rollback live.
 - **Session survival.** The supermux unit uses `KillMode=process` and anchors
   `TMUX_TMPDIR` in the persistent data dir (`~/.supermux/tmux`). A
   `systemctl restart supermux` therefore leaves the tmux server (and every
   session, including the one running the deploy) alive. The new server process
   reattaches to them on boot (`reconcile_on_boot`).
-- **No sudo (it can't work anyway), no escalation.** The supermux unit is
-  hardened with `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, an empty
-  `CapabilityBoundingSet`, and a `SystemCallFilter` that drops `@privileged` —
-  **each** of which independently neuters setuid/`sudo`. Every child of the
-  service (including the agent's tmux session) inherits this, so `sudo` can
-  **never** run as root from inside supermux. Instead, `deploy-self.sh` writes a
-  small request file (zero privilege) into `$SUPERMUX_DATA_DIR/deploy/request`;
-  a root-side systemd **`.path`** unit (`supermux-deploy.path`) watches it and
+- **No sudo (it can't work anyway), no escalation, no sandboxed build.** The
+  supermux unit is hardened with `NoNewPrivileges=true`, `RestrictSUIDSGID=true`,
+  an empty `CapabilityBoundingSet`, and a `SystemCallFilter` that drops
+  `@privileged` — **each** of which independently neuters setuid/`sudo`, and
+  the syscall filter also blocks `make` from spawning `/bin/sh`, so a
+  vendored-OpenSSL release build from inside this sandbox can hit a hard wall
+  when cargo's openssl-sys cache is cold. Every child of the service (including
+  the agent's tmux session) inherits all of that, so neither sudo nor a
+  release-build from inside supermux is reliable. Instead, `deploy-self.sh`
+  writes a small request file (zero privilege) into
+  `$SUPERMUX_DATA_DIR/deploy/request` carrying `source_dir=<the clone>`. A
+  root-side systemd **`.path`** unit (`supermux-deploy.path`) watches it and
   starts a root oneshot (`supermux-deploy.service`) that runs
-  `/usr/local/sbin/supermux-deploy-runner` **outside** the sandbox. The runner
-  hardcodes the install destination + unit name, only replaces the
+  `/usr/local/sbin/supermux-deploy-runner` **outside** the supermux.service
+  sandbox. The runner builds as the service user via `runuser` (so cargo+bun
+  resolve from that user's home and the cache stays consistent with normal use,
+  but no SystemCallFilter applies — make works normally), then installs +
+  restarts. It hardcodes the install destination + unit name, only replaces the
   *unprivileged* service binary, and only restarts the *unprivileged* unit — so
   it grants the agent **no** privilege it lacks. It just bridges "the agent
-  wrote a file" → "root installs + restarts". The hardening is never relaxed.
+  wrote a file" → "root builds (as service user) + installs + restarts". The
+  hardening is never relaxed.
 
 ## One-time setup on the host
 
@@ -73,11 +82,12 @@ cd /opt/projects/supermux
 scripts/deploy-self.sh
 ```
 
-It will (optionally) `git pull --ff-only`, build, then write a deploy request
-that the root `.path` unit picks up to install+restart+verify+rollback. The
-service blips for a moment and comes back; your terminal is still attached
-(`KillMode=process` + persistent `TMUX_TMPDIR`), and the script tails the
-runner's log so you see the result live. If anything stalls, inspect:
+It will (optionally) `git pull --ff-only`, then write a deploy request that the
+root `.path` unit picks up. The runner then builds (as the service user, via
+`runuser`), backs up, installs, restarts, verifies, and rolls back if anything
+fails. The service blips for a moment and comes back; your terminal is still
+attached (`KillMode=process` + persistent `TMUX_TMPDIR`), and the script tails
+the runner's log so you see the result live. If anything stalls, inspect:
 
 ```
 journalctl -u supermux-deploy -n 50 --no-pager
