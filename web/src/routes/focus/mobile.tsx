@@ -40,6 +40,7 @@ import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useSessions } from '@/hooks/use-sessions'
 import { useTeams } from '@/hooks/use-teams'
+import { useLastActiveSession } from '@/stores/board-create-session-store'
 import type { Team, TeamMember } from '@/lib/api/teams'
 import { TeammateFocus } from '@/components/team'
 import type { ApiSession, SessionStatus } from '@/lib/api'
@@ -89,6 +90,13 @@ export function MobileFocus() {
   // the SAME source the overview TEAM CARD reads. Drives the team-aware picker +
   // the read-only teammate focus overlay.
   const { teams } = useTeams()
+  // Remember the focused session as the app-wide "last-active" pick so /files
+  // (no `:name`) lands in this session's dir on the next visit. See
+  // stores/board-create-session-store.ts.
+  const [, setLastActiveSession] = useLastActiveSession()
+  React.useEffect(() => {
+    if (name) setLastActiveSession(name)
+  }, [name, setLastActiveSession])
 
   const current =
     sessions.find((s) => s.name === name) ?? placeholderSession(name)

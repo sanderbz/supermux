@@ -36,6 +36,7 @@ import { DesktopSplit } from '@/components/focus-mode/desktop-split'
 import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
 import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
 import { useTeams } from '@/hooks/use-teams'
+import { useLastActiveSession } from '@/stores/board-create-session-store'
 import { useToast } from '@/components/ui/use-toast'
 import type { Team } from '@/lib/api/teams'
 import type { TileSession } from '@/components/session-tile/types'
@@ -57,6 +58,13 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   const navigate = useNavigateMorph()
   const qc = useQueryClient()
   const { sessions, current } = useFocusSessions(name, mockSessions)
+  // Remember the focused session as the app-wide "last-active" pick so /files
+  // (no `:name`) lands in this session's dir on the next visit. See
+  // stores/board-create-session-store.ts.
+  const [, setLastActiveSession] = useLastActiveSession()
+  React.useEffect(() => {
+    if (name) setLastActiveSession(name)
+  }, [name, setLastActiveSession])
   // Detected Agent Teams — the SAME shared `['teams']` cache the overview TEAM
   // CARD reads (GET on mount, then SSE-live). Mock injection bypasses the hook's
   // network so the /dev/focus harness can eyeball team states offline.

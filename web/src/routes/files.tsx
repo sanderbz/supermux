@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowDownUp,
   Eye,
@@ -37,6 +37,7 @@ import { Breadcrumb } from '@/components/files/breadcrumb'
 import { FileList } from '@/components/files/file-list'
 import { FileViewer } from '@/components/files/file-viewer'
 import { Dropzone } from '@/components/files/dropzone'
+import { SessionPicker } from '@/components/session/session-picker'
 import {
   HOME_PATH,
   useDeleteFile,
@@ -44,6 +45,9 @@ import {
   useSessionDir,
   useUploadFiles,
 } from '@/hooks/use-files'
+import { useSessions } from '@/hooks/use-sessions'
+import { useLastActiveSession } from '@/stores/board-create-session-store'
+import { useUI } from '@/stores/ui-store'
 import type { FsEntry } from '@/lib/api'
 
 type SortKey = 'name' | 'size' | 'modified'
@@ -56,13 +60,40 @@ interface Selected {
 
 export function Files() {
   const { name } = useParams<{ name?: string }>()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const sessionDir = useSessionDir(name)
+  // App-wide "last-active session" — the picker's persistent fallback. When the
+  // route lands without a `:name` (sidebar Files click) we follow this so the
+  // listing opens the session the user was last on instead of $HOME. See
+  // stores/board-create-session-store.ts.
+  const [lastActive, setLastActive] = useLastActiveSession()
+  const { sessions } = useSessions()
+
+  // The effective session for the listing: the explicit URL param wins; absent,
+  // the last-active session (only if it still exists in the live list — a
+  // stopped/archived session would resolve to a dead dir). Empty string = the
+  // user explicitly picked "Home" last time → stay at $HOME.
+  const lastActiveExists = lastActive
+    ? sessions.some((s) => s.name === lastActive)
+    : false
+  const effectiveName = name ?? (lastActiveExists ? lastActive! : undefined)
+  const sessionDir = useSessionDir(effectiveName)
 
   const pathParam = searchParams.get('path')
   const currentPath = pathParam ?? sessionDir.data ?? HOME_PATH
 
-  const [showHidden, setShowHidden] = React.useState(false)
+  // Mirror the URL-driven session into the shared cell so a deep link
+  // (`/files/foo`) or a focus→files breadcrumb persists the pick. The route's
+  // own redirect-from-fallback would otherwise compete with itself.
+  React.useEffect(() => {
+    if (name && name !== lastActive) setLastActive(name)
+  }, [name, lastActive, setLastActive])
+
+  // Persisted across reloads (was local React state that reset every mount —
+  // hiding `.claude` etc. the user actually wants to open from here). Default
+  // ON (see stores/ui-store.ts).
+  const showHidden = useUI((s) => s.showHidden)
+  const setShowHidden = useUI((s) => s.setShowHidden)
   const [sortKey, setSortKey] = React.useState<SortKey>('name')
   const [sortDir, setSortDir] = React.useState<SortDir>('asc')
   const [selected, setSelected] = React.useState<Selected | null>(null)
@@ -73,9 +104,24 @@ export function Files() {
   const del = useDeleteFile()
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
+  // Picker change: navigate to /files/{name} (or /files for Home) and persist
+  // the choice. Clear `?path=` so the next listing starts at the session's
+  // root rather than wherever we last drilled into.
+  const onPickSession = React.useCallback(
+    (next: string) => {
+      setLastActive(next)
+      const target = next ? `/files/${encodeURIComponent(next)}` : '/files'
+      navigate(target, { replace: true })
+    },
+    [navigate, setLastActive],
+  )
+
+  const pickerValue = name ?? (lastActiveExists ? lastActive! : '')
+
   // Resolved absolute dir the server reported (drives breadcrumb + child paths).
   const dirPath = listing.data?.path ?? currentPath
-  const sessionResolving = !!name && pathParam == null && sessionDir.isLoading
+  const sessionResolving =
+    !!effectiveName && pathParam == null && sessionDir.isLoading
 
   const navigateTo = React.useCallback(
     (path: string) => {
@@ -147,12 +193,22 @@ export function Files() {
           selected ? 'hidden md:flex' : 'flex',
         )}
       >
+        <SessionPicker
+          value={pickerValue}
+          onChange={onPickSession}
+          sessions={sessions}
+          allowEmpty
+          emptyLabel="Home"
+          ariaLabel="Files for session"
+          menuLabel="Open files for"
+          className="ml-1 mr-1 shrink-0 max-w-[8rem] sm:max-w-[12rem]"
+        />
         <Breadcrumb path={dirPath} onNavigate={navigateTo} />
 
         <div className="flex shrink-0 items-center gap-0.5">
           <ToolbarButton
             label={showHidden ? 'Hide hidden files' : 'Show hidden files'}
-            onClick={() => setShowHidden((v) => !v)}
+            onClick={() => setShowHidden(!showHidden)}
             active={showHidden}
           >
             {showHidden ? (

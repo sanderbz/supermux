@@ -44,6 +44,7 @@ import {
   type BoardIssue,
   type NewBoardIssue,
 } from '@/lib/api'
+import { useLastActiveSession } from '@/stores/board-create-session-store'
 import { BoardCard } from '@/components/board/board-card'
 import { BoardComposer } from '@/components/board/board-composer'
 import { BoardCardEditor } from '@/components/board/board-card-editor'
@@ -76,7 +77,21 @@ export function Board() {
   // Team data — needed by the composer's default-session resolver (FEAT-BOARD-
   // SESSION §B step 2): a per-team board prefers that team's lead session.
   const { teams } = useTeams()
-  const [selectedBoard, setSelectedBoard] = useSelectedBoard()
+  const [selectedBoard, setSelectedBoardRaw] = useSelectedBoard()
+  // App-wide "last-active session" — written when the user picks a per-session
+  // board (`session:<name>`) from the switcher, so /files (no `:name`) lands in
+  // that session's dir on the next visit. Picking Main / All / a team board
+  // leaves it untouched (those aren't a session selection, so the last real one
+  // stands). See stores/board-create-session-store.ts.
+  const [, setLastActiveSession] = useLastActiveSession()
+  const setSelectedBoard = useCallback(
+    (id: string) => {
+      setSelectedBoardRaw(id)
+      const { sessionFilter } = decodeBoardId(id)
+      if (sessionFilter) setLastActiveSession(sessionFilter)
+    },
+    [setSelectedBoardRaw, setLastActiveSession],
+  )
   // A persisted selection can point at a board that was since deleted (e.g. a
   // team board). Fall back to Main so the view never shows an empty/404 board.
   // `'all'` is always valid (it's synthetic, not a row).
