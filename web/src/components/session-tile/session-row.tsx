@@ -8,6 +8,8 @@ import { springs } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { StatusDot, STATUS_LABEL } from './status-dot'
 import { HostBadge } from './host-badge'
+import { Kbd } from '@/components/ui/kbd'
+import { useJumpIndex } from './jump-index-context'
 import type { TileSession } from './types'
 
 /** View Transition navigate (mirrors the tile's, kept local so this row is
@@ -57,6 +59,7 @@ export function SessionRow({ session }: SessionRowProps) {
   const navigateMorph = useNavigateMorph()
   const title = session.task_summary || session.name
   const when = relativeTime(session.updated_at)
+  const jumpIndex = useJumpIndex(session.name)
 
   const goFocus = React.useCallback(
     () => navigateMorph(`/focus/${session.name}`),
@@ -94,6 +97,16 @@ export function SessionRow({ session }: SessionRowProps) {
           )}
         </div>
       </div>
+      {/* ⌘N / Ctrl+N shortcut hint — leftmost in the right-cluster so the
+          existing badges/pills/timestamp keep their order. Hidden on touch /
+          narrow viewports (no shortcuts there). */}
+      {jumpIndex && jumpIndex <= 9 && (
+        <Kbd
+          combo={`mod+${jumpIndex}`}
+          variant="muted"
+          className="hidden shrink-0 md:inline-flex"
+        />
+      )}
       {/* Remote-host badge (RT9). Small globe + truncated host name; only
           renders when the session has a `host_id`. Muted on purpose so the
           row's status dot + waiting pill stay the primary signals. */}

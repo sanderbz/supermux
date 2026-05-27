@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
 import {
   Popover,
   PopoverContent,
@@ -228,12 +229,12 @@ function ActionRow({
         <span className="truncate text-xs text-muted-foreground">{hint}</span>
       </span>
       {shortcut && (
-        <kbd
-          aria-hidden
-          className="hidden shrink-0 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-block"
+        <Kbd
+          variant="muted"
+          className="hidden shrink-0 sm:inline-flex"
         >
           {shortcut}
-        </kbd>
+        </Kbd>
       )}
     </motion.button>
   )

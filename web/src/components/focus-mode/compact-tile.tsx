@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { TailPreview } from '@/components/session-tile/tail-preview'
+import { Kbd } from '@/components/ui/kbd'
 import type { TileSession } from '@/components/session-tile/types'
 
 const DWELL_MS = 300 // §4.4.3 — popover arms after 300ms dwell on a NON-current tile
@@ -37,12 +38,21 @@ export interface CompactTileProps {
   current: boolean
   /** Jump to this session (Cmd+1..9 mirrors a click). */
   onSelect: (name: string) => void
+  /** 1-indexed slot in the strip's `jumpSessions` list when ≤9 — used to
+   *  render a small ⌘N / Ctrl+N hint on the row so the keyboard shortcut
+   *  is discoverable. Undefined for rows past 9 (no hint). */
+  jumpIndex?: number
 }
 
 /** A single 320×56 strip row. Shared `TileSession` shape with the overview grid
  *  (`@/components/session-tile/types`) — one source for status/tokens/branch and
  *  the tail `preview_lines`, so the peek-popover never re-fetches. */
-export function CompactTile({ session, current, onSelect }: CompactTileProps) {
+export function CompactTile({
+  session,
+  current,
+  onSelect,
+  jumpIndex,
+}: CompactTileProps) {
   const reduce = useReducedMotion()
   const [peeking, setPeeking] = React.useState(false)
   const dwellRef = React.useRef<number | null>(null)
@@ -110,6 +120,17 @@ export function CompactTile({ session, current, onSelect }: CompactTileProps) {
             )}
           </span>
         </span>
+        {/* ⌘N / Ctrl+N hint — only for the first 9 jumpable rows. Right-aligned
+            inside the tile, muted so the row's status + name stay primary.
+            The keystroke itself is wired in `useKeyboardCapture` — the chip
+            is purely a discoverability cue. */}
+        {jumpIndex && jumpIndex <= 9 && (
+          <Kbd
+            combo={`mod+${jumpIndex}`}
+            variant="muted"
+            className="ml-1 shrink-0"
+          />
+        )}
       </motion.button>
 
       {/* Peek-popover — left-anchored, 380×220, 14-line tail (§4.4.3). Same

@@ -370,6 +370,15 @@ export function DesktopSplit({
     [strip.jumpSessions, name, onSelect],
   )
 
+  // Map of session name → 1-indexed ⌘N slot (≤9). Source: the same
+  // `strip.jumpSessions` list `jump()` reads above — so the visible chip on
+  // a tile matches exactly what pressing that number does.
+  const jumpIndexBySession = React.useMemo(() => {
+    const m = new Map<string, number>()
+    strip.jumpSessions.slice(0, 9).forEach((s, i) => m.set(s.name, i + 1))
+    return m
+  }, [strip.jumpSessions])
+
   // The single document-level keydown capture (PRINCIPLE). All non-shortcut keys
   // pass straight through to xterm. ⌘K is intentionally NOT routed through here
   // anymore — the global <CommandPalette> in <Layout> owns the shortcut so it
@@ -423,6 +432,7 @@ export function DesktopSplit({
                   }
                   onSelectSession={selectSession}
                   onSelectTeammate={selectTeammate}
+                  jumpIndexBySession={jumpIndexBySession}
                 />
               ))}
 
@@ -443,6 +453,7 @@ export function DesktopSplit({
                   }
                   collapsed={isCollapsed(g.groupId)}
                   onCollapsedChange={(next) => setCollapsed(g.groupId, next)}
+                  jumpIndexBySession={jumpIndexBySession}
                 />
               ))}
             </>

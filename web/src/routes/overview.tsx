@@ -33,6 +33,10 @@ import { useUI, type ViewMode } from '@/stores/ui-store'
 import { onboardingApi, type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
+import {
+  JumpIndexProvider,
+  type JumpIndexMap,
+} from '@/components/session-tile/jump-index-context'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
 import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
@@ -443,7 +447,75 @@ export function Overview() {
     return filtered
   }, [filtered, layout.mode])
 
+  // Canonical 1..9 ⌘N slot map for the overview surface. Order:
+  //   1. Each team's lead (in `filteredTeams` order) — mirrors the focus
+  //      strip's `jumpSessions` so the chip on a team-lead tile reads the
+  //      same number on both surfaces.
+  //   2. Then ordinary sessions in render order (custom layout uses the
+  //      reconciled layout walk; smart/alpha use `flatSorted`).
+  // Team-leads that already received a number are skipped in step 2 so the
+  // count never doubles up.
+  const jumpIndexBySession = React.useMemo<JumpIndexMap>(() => {
+    const m = new Map<string, number>()
+    let next = 1
+    for (const t of filteredTeams) {
+      const lead = t.lead_supermux_session
+      if (!lead) continue
+      m.set(lead, next++)
+      if (next > 9) return m
+    }
+    const sessionOrder: string[] = isCustom
+      ? reconciledCustom
+          .filter((it): it is Extract<LayoutItem, { type: 'session' }> =>
+            it.type === 'session',
+          )
+          .map((it) => it.name)
+          .filter((name) => filtered.some((s) => s.name === name))
+      : flatSorted.map((s) => s.name)
+    for (const name of sessionOrder) {
+      if (m.has(name)) continue
+      m.set(name, next++)
+      if (next > 9) return m
+    }
+    return m
+  }, [filteredTeams, isCustom, reconciledCustom, filtered, flatSorted])
+
+  // Global ⌘N / Ctrl+N keystroke handler for the overview route. Mirrors the
+  // visible chip on each tile: pressing the same number opens that session's
+  // focus route. Skips when the user is typing into an input / textarea /
+  // contenteditable (so an agent prompt or search query never gets swallowed)
+  // and when a non-modifier-combo key would otherwise route through. The
+  // /focus route owns its own ⌘N handler (`useKeyboardCapture` in
+  // desktop-split.tsx), so this listener only fires from the overview.
+  React.useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod || e.altKey || e.shiftKey) return
+      if (e.key < '1' || e.key > '9') return
+      // Don't hijack typing. `closest('[contenteditable="true"]')` covers
+      // CodeMirror + xterm + rich-text inputs; the tag check covers plain
+      // <input>/<textarea>.
+      const t = e.target as HTMLElement | null
+      if (t) {
+        const tag = t.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return
+        if (t.isContentEditable) return
+      }
+      const idx = Number(e.key)
+      for (const [name, slot] of jumpIndexBySession) {
+        if (slot === idx) {
+          e.preventDefault()
+          navigate(`/focus/${encodeURIComponent(name)}`)
+          return
+        }
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [jumpIndexBySession, navigate])
+
   return (
+    <JumpIndexProvider value={jumpIndexBySession}>
     <div
       className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6`}
     >
@@ -655,6 +727,7 @@ export function Overview() {
         onStarted={onTeamStarted}
       />
     </div>
+    </JumpIndexProvider>
   )
 }
 

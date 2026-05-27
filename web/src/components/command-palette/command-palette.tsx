@@ -76,6 +76,7 @@ import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewGroupAction } from '@/stores/new-group-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { ClaudeToolsHost } from '@/components/claude-tools/claude-tools-host'
+import { Kbd } from '@/components/ui/kbd'
 
 // ── Row shape: one normalized item the palette can render & invoke ────────────
 
@@ -862,9 +863,7 @@ export function CommandPalette() {
                 aria-label="Command palette"
                 className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground"
               />
-              <kbd className="hidden shrink-0 rounded border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground sm:inline">
-                Esc
-              </kbd>
+              <Kbd className="hidden sm:inline-flex">Esc</Kbd>
             </div>
             <div
               ref={listRef}
