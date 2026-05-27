@@ -29,6 +29,7 @@ import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import {
@@ -53,6 +54,11 @@ interface ActionItem {
   icon: LucideIcon
   onSelect: () => void
   shortcut?: string
+  /** Show a small informational chip next to the label (e.g. "Beta" for
+   *  Agent Teams — mirrors the Settings → Experimental treatment, but
+   *  inline at the choice point so the surprise lands before commit, not
+   *  after). */
+  badge?: string
 }
 
 export function NewActionMenu({
@@ -81,6 +87,7 @@ export function NewActionMenu({
         hint: 'Several agents on one shared goal',
         icon: Users,
         onSelect: onStartTeam,
+        badge: 'Beta',
       },
       {
         id: 'group',
@@ -203,7 +210,7 @@ function ActionRow({
   onSelect: () => void
   reduce: boolean
 }) {
-  const { icon: Icon, label, hint, shortcut } = item
+  const { icon: Icon, label, hint, shortcut, badge } = item
   return (
     <motion.button
       type="button"
@@ -225,7 +232,21 @@ function ActionRow({
         <Icon className="size-4" />
       </span>
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
-        <span className="text-sm font-medium text-foreground">{label}</span>
+        <span className="flex items-center gap-1.5">
+          <span className="text-sm font-medium text-foreground">{label}</span>
+          {badge && (
+            // Compact secondary chip — informational, NOT promotional. Mirrors
+            // the Settings → Experimental tone (calm, opt-in power) so the same
+            // capability reads the same way wherever it appears. `py-0` + the
+            // smaller text keeps row height unchanged at the 44pt min-target.
+            <Badge
+              variant="secondary"
+              className="h-[15px] shrink-0 px-1.5 py-0 text-[10px] font-medium tracking-normal"
+            >
+              {badge}
+            </Badge>
+          )}
+        </span>
         <span className="truncate text-xs text-muted-foreground">{hint}</span>
       </span>
       {shortcut && (
