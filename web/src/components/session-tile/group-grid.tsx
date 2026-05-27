@@ -1260,6 +1260,25 @@ function GroupSection({
   // change.
   const effectiveCollapsed = collapsed && !isDragging
 
+  // PEEK-FIX: the group-body wrapper needs `overflow-hidden` ONLY while the
+  // collapse/expand height tween is running (otherwise the tile grid paints
+  // outside the collapsing container). At REST — body fully expanded, no
+  // animation in flight — we switch to `overflow-visible` so a hover-peek tile
+  // (which absolutely-positions itself inside its IDLE_H slot and grows
+  // downward to overflow that slot) can extend BEYOND the group container
+  // instead of being clipped behind the next group's row. Other views
+  // (smart/alpha) don't wrap tiles in any clipping container, so this fix
+  // restores the same "peek floats over neighbours" behaviour custom view
+  // silently lost when per-group collapse was added.
+  //
+  // Stays `hidden` until the very first expand tween completes, then flips
+  // visible — and flips back to `hidden` on the next collapse cycle. Drag
+  // force-mounts the body via `effectiveCollapsed = false`, but that path
+  // doesn't run a tween (the body was already open), so we still resolve to
+  // `visible` for the duration of the drag — fine, dnd-kit doesn't clip.
+  const [bodyAnimating, setBodyAnimating] = React.useState(false)
+  const bodyOverflowVisible = !effectiveCollapsed && !bodyAnimating
+
   return (
     <section
       data-vr="group-section"
@@ -1349,7 +1368,14 @@ function GroupSection({
           is in flight `effectiveCollapsed` is forced false so dnd-kit's
           drop targets remain mounted — see the comment on
           `effectiveCollapsed` above. */}
-      <AnimatePresence initial={false}>
+      <AnimatePresence
+        initial={false}
+        // Track collapse animation lifecycle so the wrapper's overflow can
+        // flip to `visible` at rest (PEEK-FIX). `onExitComplete` fires after
+        // the collapse tween finishes unmounting — by then the body is gone,
+        // so no need to flip back to hidden.
+        onExitComplete={() => setBodyAnimating(false)}
+      >
         {!effectiveCollapsed && (
           <motion.div
             key="body"
@@ -1358,10 +1384,20 @@ function GroupSection({
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={reduce ? { duration: 0 } : springs.smooth}
-            // overflow-hidden so the height tween doesn't reveal content as
-            // it shrinks past the new height; the tile grid otherwise paints
-            // outside the collapsing container.
-            className="overflow-hidden"
+            // PEEK-FIX: overflow toggles between `hidden` (during the
+            // collapse/expand height tween, so the tile grid doesn't paint
+            // outside the collapsing container) and `visible` (at rest, so a
+            // hover-peek tile in the bottom row can grow downward past the
+            // group container instead of being clipped behind the next
+            // group's row). `bodyOverflowVisible` becomes true after the
+            // expand tween completes; flips back to false at the start of a
+            // collapse tween.
+            className={bodyOverflowVisible ? 'overflow-visible' : 'overflow-hidden'}
+            // Reduced-motion path runs the height change in 0ms — Framer
+            // still fires animation lifecycle callbacks, so the rest-state
+            // flip lands on the next frame regardless.
+            onAnimationStart={() => setBodyAnimating(true)}
+            onAnimationComplete={() => setBodyAnimating(false)}
           >
       <SortableContext
         items={sessionIds}
