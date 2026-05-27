@@ -71,6 +71,13 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
       onOpenChange={onOpenChange}
       title="Archived sessions"
       description={description}
+      // SD-9: bulk "Delete all" lives INLINE on the description row, right of
+      // the count — saves a whole row of vertical space vs sitting above the
+      // list, keeps the action discoverable at the same eye line as the count
+      // it modifies ("N items · delete them all").
+      descriptionTrailing={
+        count > 0 ? <DeleteAllAction recovery={recovery} /> : null
+      }
       className="sm:max-w-md"
     >
       <div className="px-2 py-2 sm:px-3">
@@ -90,20 +97,13 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
         ) : count === 0 ? (
           <EmptyArchived />
         ) : (
-          <>
-            {/* SD-9: bulk "Delete all" — only visible when there's something
-                to delete. Lives above the list (not in the sheet header) so it
-                sits at thumb height on touch and so the confirm can morph
-                in-place with the same pattern as per-row delete. */}
-            <DeleteAllRow recovery={recovery} />
-            <ul className="flex flex-col gap-1" aria-label="Archived sessions">
-              <AnimatePresence initial={false}>
-                {archived.map((s) => (
-                  <ArchivedRow key={s.name} session={s} recovery={recovery} />
-                ))}
-              </AnimatePresence>
-            </ul>
-          </>
+          <ul className="flex flex-col gap-1" aria-label="Archived sessions">
+            <AnimatePresence initial={false}>
+              {archived.map((s) => (
+                <ArchivedRow key={s.name} session={s} recovery={recovery} />
+              ))}
+            </AnimatePresence>
+          </ul>
         )}
       </div>
     </ResponsiveSheet>
@@ -115,7 +115,7 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
  *  fighting the per-row mutation otherwise). On confirm, fans out every
  *  archived row's purge in parallel; the sheet empties progressively as each
  *  request resolves. */
-function DeleteAllRow({ recovery }: { recovery: UseArchivedSessionsResult }) {
+function DeleteAllAction({ recovery }: { recovery: UseArchivedSessionsResult }) {
   const { archived, purgeAll, pending } = recovery
   const { toast } = useToast()
   const reduce = useReducedMotion()
@@ -150,46 +150,48 @@ function DeleteAllRow({ recovery }: { recovery: UseArchivedSessionsResult }) {
     }
   }, [purgeAll, toast])
 
-  return (
-    <div className="mb-1 flex items-center justify-end px-3 py-1">
-      {confirming ? (
-        <motion.div
-          initial={reduce ? false : { opacity: 0, x: 8 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={springs.snappy}
-          className="flex shrink-0 items-center gap-1"
-        >
-          <button
-            type="button"
-            onClick={() => setConfirming(false)}
-            disabled={anyPending}
-            className="flex h-11 items-center rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void onPurgeAll()}
-            disabled={anyPending}
-            className="flex h-11 items-center gap-1.5 rounded-md bg-destructive px-3 text-[13px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          >
-            <Trash2 className="size-4" aria-hidden />
-            Delete all {count} forever
-          </button>
-        </motion.div>
-      ) : (
+  // Compact inline action sized to fit ON the description row (h-7 / text-xs)
+  // so the sheet header gains zero vertical space vs the count alone. The
+  // confirm morph keeps the same height so the row never reflows.
+  if (confirming) {
+    return (
+      <motion.div
+        initial={reduce ? false : { opacity: 0, x: 8 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={springs.snappy}
+        className="flex items-center gap-1"
+      >
         <button
           type="button"
-          onClick={() => setConfirming(true)}
+          onClick={() => setConfirming(false)}
           disabled={anyPending}
-          aria-label={`Delete all ${count} archived sessions forever`}
-          className="flex h-11 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          className="flex h-7 items-center rounded-md px-2 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
-          <Trash2 className="size-4" aria-hidden />
-          Delete all
+          Cancel
         </button>
-      )}
-    </div>
+        <button
+          type="button"
+          onClick={() => void onPurgeAll()}
+          disabled={anyPending}
+          className="flex h-7 items-center gap-1 rounded-md bg-destructive px-2 text-xs font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <Trash2 className="size-3.5" aria-hidden />
+          Delete {count}
+        </button>
+      </motion.div>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      disabled={anyPending}
+      aria-label={`Delete all ${count} archived sessions forever`}
+      className="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+    >
+      <Trash2 className="size-3.5" aria-hidden />
+      Delete all
+    </button>
   )
 }
 

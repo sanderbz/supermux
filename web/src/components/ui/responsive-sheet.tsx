@@ -39,6 +39,12 @@ export interface ResponsiveSheetProps {
   /** Required title (drives `Drawer.Title`/`SheetTitle` for a11y). */
   title: React.ReactNode
   description?: React.ReactNode
+  /** Inline action rendered on the SAME row as the description, right-aligned.
+   *  Use for a single compact action (h-7/h-8) where bundling it onto the
+   *  description line saves a row and reads more efficiently than a full
+   *  `headerActions` strip. The description still truncates if long; the
+   *  trailing action is `shrink-0` so it always fits. */
+  descriptionTrailing?: React.ReactNode
   /** Action row rendered under the title (run-now/delete/toggle etc). */
   headerActions?: React.ReactNode
   /** Sticky footer (save/delete) — pinned to the bottom in both shells. */
@@ -64,6 +70,7 @@ function MobileBody({
   onOpenChange,
   title,
   description,
+  descriptionTrailing,
   headerActions,
   footer,
   children,
@@ -103,15 +110,23 @@ function MobileBody({
               {title}
             </Drawer.Title>
             {/* Always present so Radix's a11y description requirement is met;
-                renders sr-only when the consumer passes none. */}
-            <Drawer.Description
-              className={cn(
-                'truncate text-sm text-muted-foreground',
-                !description && 'sr-only',
+                renders sr-only when the consumer passes none. Wrapped in a
+                flex row so a `descriptionTrailing` action sits on the SAME
+                line, right-aligned — the bulk-action pattern (no extra row,
+                no extra height). */}
+            <div className="flex items-center justify-between gap-3">
+              <Drawer.Description
+                className={cn(
+                  'min-w-0 flex-1 truncate text-sm text-muted-foreground',
+                  !description && 'sr-only',
+                )}
+              >
+                {description}
+              </Drawer.Description>
+              {descriptionTrailing && (
+                <div className="shrink-0">{descriptionTrailing}</div>
               )}
-            >
-              {description}
-            </Drawer.Description>
+            </div>
             {headerActions && <div className="mt-2">{headerActions}</div>}
           </div>
 
@@ -135,6 +150,7 @@ function DesktopBody({
   onOpenChange,
   title,
   description,
+  descriptionTrailing,
   headerActions,
   footer,
   children,
@@ -148,10 +164,19 @@ function DesktopBody({
       >
         <SheetHeader className="border-b border-border px-5 py-4 text-left">
           <SheetTitle className="truncate pr-8">{title}</SheetTitle>
-          {description && (
-            <SheetDescription className="truncate">
-              {description}
-            </SheetDescription>
+          {(description || descriptionTrailing) && (
+            <div className="flex items-center justify-between gap-3">
+              {description ? (
+                <SheetDescription className="min-w-0 flex-1 truncate">
+                  {description}
+                </SheetDescription>
+              ) : (
+                <span className="flex-1" />
+              )}
+              {descriptionTrailing && (
+                <div className="shrink-0">{descriptionTrailing}</div>
+              )}
+            </div>
           )}
           {headerActions && <div className="mt-2">{headerActions}</div>}
         </SheetHeader>
