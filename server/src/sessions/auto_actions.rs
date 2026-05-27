@@ -836,9 +836,9 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
 }
 
 /// Phone notification on a status transition edge. Called from [`tick`] on the
-/// `committed` (flap-confirmed) transition ONLY, so it is debounced to one push
-/// per transition — never per tick. Each branch maps to ONE user-facing
-/// category the operator can independently mute in Settings → Notifications:
+/// `committed` (flap-confirmed) transition ONLY. Each branch maps to ONE
+/// user-facing category the operator can independently mute in Settings →
+/// Notifications:
 ///
 /// * `Waiting` → `agent_waiting` ("agent {name} needs you"). Blocked on the
 ///   user.
@@ -849,45 +849,125 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
 /// * Anything else (Active / Starting / Unknown) is intentionally silent — not
 ///   a user-actionable edge.
 ///
+/// **Trailing-coalesce debounce (SD-13b).** Instead of firing immediately, the
+/// send is scheduled after a quiet window — each fresh transition for this
+/// session CANCELS the prior pending send (via the abort handle in
+/// `state.pending_pushes`) and schedules a new one. At expiry the timer task
+/// re-reads the session's persisted status and only fires if it still maps to
+/// the same category. That collapses two real patterns into one notification:
+/// (1) the `Starting → Active → Idle` bootup flurry where Idle wins after a
+/// second or two, and (2) the team-lead-bouncing-through-Idle pattern where a
+/// lead orchestrating teammates pulses Idle every few seconds — we want one
+/// "team finished" ping after things actually settle, not six in a minute.
+///
 /// The body for Waiting is enriched via [`AppState::push_reason_for`] (set by
 /// `feat/hooks-be` once a blocked reason / last_error is captured); a generic
-/// fallback covers cold-start. The send is spawned so the detector tick is
-/// never blocked on the push service. `send_push_for` itself no-ops cheaply
-/// when nobody is subscribed OR the category is muted.
-fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
+/// fallback covers cold-start. `send_push_for` itself no-ops cheaply when
+/// nobody is subscribed OR the category is muted.
+pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
     use crate::db::push::NotifCategory;
-    let (cat, title, body) = match new {
-        Status::Waiting => (
-            NotifCategory::AgentWaiting,
-            format!("agent {name} needs you"),
-            state.push_reason_for(name, Status::Waiting),
-        ),
-        Status::Idle => (
-            NotifCategory::AgentFinished,
-            format!("agent {name} finished"),
-            "Turn done — ready for your review.".to_string(),
-        ),
-        Status::Stopped => (
-            NotifCategory::AgentStopped,
-            format!("agent {name} stopped"),
-            state.push_reason_for(name, Status::Stopped),
-        ),
+    let cat = match new {
+        Status::Waiting => NotifCategory::AgentWaiting,
+        Status::Idle => NotifCategory::AgentFinished,
+        Status::Stopped => NotifCategory::AgentStopped,
         _ => return,
     };
-    let state = state.clone();
-    let name = name.to_string();
-    let url = format!("/focus/{name}");
-    tokio::spawn(async move {
-        let n = crate::push::send_push_for(&state, cat, &title, &body, &url).await;
+
+    // Two timers: the default 2s quiet window handles the bootup flurry; a
+    // longer 15s window is used ONLY for "agent finished" on a team-tagged
+    // session, where the lead can legitimately bounce in and out of Idle every
+    // few seconds while it dispatches teammates. The longer window holds the
+    // ping until the lead has been idle long enough that the team is actually
+    // done. Waiting and Stopped keep the short window even on team leads —
+    // those are unambiguous "you need to act" signals and shouldn't be delayed.
+    const T_DEFAULT: Duration = Duration::from_secs(2);
+    const T_TEAM_FINISH: Duration = Duration::from_secs(15);
+
+    // Cancel any prior pending send for this session FIRST, then install the
+    // new task. Using `remove` (rather than `insert` + checking the return)
+    // lets us abort the prior handle before the new one is even spawned —
+    // there's no detector-loop concurrency for a single session, so no thread
+    // can squeeze a second insert in between.
+    if let Some((_, prev)) = state.pending_pushes.remove(name) {
+        prev.abort();
+    }
+
+    let task_state = state.clone();
+    let task_name = name.to_string();
+    let handle = tokio::spawn(async move {
+        let delay = if matches!(cat, NotifCategory::AgentFinished)
+            && db::sessions::team_name(&task_state.pool, &task_name).await.ok().flatten().is_some()
+        {
+            T_TEAM_FINISH
+        } else {
+            T_DEFAULT
+        };
+        tokio::time::sleep(delay).await;
+
+        // The timer fires only after `delay` of quiet. Re-read the persisted
+        // status: if the session has since transitioned OUT of the category
+        // this push was for, drop the send. (A later transition into a
+        // notify-worthy state will have scheduled its OWN debounce task.)
+        let still_matches = match db::sessions::runtime(&task_state.pool, &task_name).await {
+            Ok(Some(rt)) => matches!(
+                (cat, rt.last_status.as_str()),
+                (NotifCategory::AgentWaiting, "waiting")
+                    | (NotifCategory::AgentFinished, "idle")
+                    | (NotifCategory::AgentStopped, "stopped"),
+            ),
+            _ => false,
+        };
+        if !still_matches {
+            // Drop the entry once we've decided not to send, so a future
+            // transition's `remove(...).abort()` doesn't try to cancel a stale
+            // already-completed task.
+            task_state.pending_pushes.remove(&task_name);
+            return;
+        }
+
+        // Re-read the freshest reason (it may have arrived via a hook during
+        // the quiet window) so the notification body reflects whatever's
+        // current at the moment of send.
+        let (title, body) = match cat {
+            NotifCategory::AgentWaiting => (
+                format!("agent {task_name} needs you"),
+                task_state.push_reason_for(&task_name, Status::Waiting),
+            ),
+            NotifCategory::AgentFinished => (
+                format!("agent {task_name} finished"),
+                "Turn done — ready for your review.".to_string(),
+            ),
+            NotifCategory::AgentStopped => (
+                format!("agent {task_name} stopped"),
+                task_state.push_reason_for(&task_name, Status::Stopped),
+            ),
+            // Other categories are not produced by maybe_push_on_transition.
+            _ => return,
+        };
+        let url = format!("/focus/{task_name}");
+        let n = crate::push::send_push_for(&task_state, cat, &title, &body, &url).await;
         if n > 0 {
             tracing::debug!(
-                name = %name,
+                name = %task_name,
                 category = cat.as_str(),
                 devices = n,
-                "push sent for status transition",
+                "push sent after debounce settle",
             );
         }
+        // The scheduled task has completed: clear its slot so the map doesn't
+        // grow unboundedly. A new transition between the send finishing and
+        // this remove will simply overwrite the slot, which is correct.
+        task_state.pending_pushes.remove(&task_name);
     });
+
+    // Spawn → insert ordering note. We `tokio::spawn` BEFORE installing the
+    // abort handle, but the spawned task's first action is
+    // `tokio::time::sleep(delay).await` with `delay >= 2s`, so it cannot reach
+    // its `pending_pushes.remove(...)` bookkeeping until well after the insert
+    // below has completed on the calling task. Stale-slot scenarios are
+    // therefore unreachable as long as both `T_DEFAULT` and `T_TEAM_FINISH`
+    // stay well above scheduler-poll latency.
+    state.pending_pushes.insert(name.to_string(), handle.abort_handle());
 }
 
 /// Last [`PREVIEW_LINES`] lines of the (already ANSI-stripped) capture — the tile

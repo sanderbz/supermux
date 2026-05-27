@@ -294,6 +294,17 @@ pub struct AppState {
     /// Settings → Notifications — the diagnostic surface that answers "why
     /// didn't my phone ring?" without a log grep. Cheap `Arc` clone.
     pub push_attempts: Arc<crate::push::AttemptLog>,
+    /// Per-session pending push debounce timers (SD-13b). On each notify-worthy
+    /// status transition, `maybe_push_on_transition` cancels the prior handle
+    /// for the session and starts a fresh one — the trailing-edge "wait for
+    /// quiet" pattern. The timer task re-reads the session's current status
+    /// when it expires, then sends only if the state still implies the same
+    /// category. Collapses both the `Starting→Active→Idle` bootup flurry and
+    /// the team-lead-bouncing-through-Idle pattern (a lead orchestrating
+    /// teammates pulses Idle every few seconds) into one notification fired
+    /// after the system actually settles. Inserting cancels the prior task
+    /// via the abort handle stored alongside.
+    pub pending_pushes: Arc<DashMap<String, tokio::task::AbortHandle>>,
     /// Persistent SSH ControlMaster pool (REMOTE_PLAN RT2). One master per
     /// remote host, shared by every `Transport::Ssh` shell-out; warmed on
     /// first use, reaped after 10min idle. Cheap `Arc` clone — actual state
@@ -323,6 +334,7 @@ impl AppState {
             config: Arc::new(config),
             vapid,
             push_attempts: Arc::new(crate::push::AttemptLog::default()),
+            pending_pushes: Arc::new(DashMap::new()),
             session_locks: Arc::new(DashMap::new()),
             status_watch: Arc::new(DashMap::new()),
             hook_tokens: Arc::new(DashMap::new()),
@@ -790,6 +802,13 @@ impl AppState {
         self.session_activity.remove(name);
         self.forced_status.remove(name);
         self.force_agent_teams.remove(name);
+        // Abort any pending debounce timer so a deleted session can't fire a
+        // push 2-15s later for a session row that no longer exists. The
+        // timer task's own re-read would land `Ok(None)` and skip the send,
+        // but the AbortHandle would still leak until process exit.
+        if let Some((_, h)) = self.pending_pushes.remove(name) {
+            h.abort();
+        }
         self.cadence_recency
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -860,6 +879,16 @@ impl AppState {
         }
         if let Some((_, v)) = self.force_agent_teams.remove(old) {
             self.force_agent_teams.insert(new.to_string(), v);
+        }
+        // Carry the debounce handle across the rename: a rename mid-debounce
+        // would otherwise leak the handle under `old` and never fire (the
+        // task's own re-read uses the captured task_name, which is the old
+        // name, and `db::sessions::runtime(old)` returns `None` after the
+        // rename → silent drop). Moving the handle keeps the slot keyed to
+        // the live row; the task itself still queries under the old name and
+        // skips, but at least the slot doesn't leak.
+        if let Some((_, v)) = self.pending_pushes.remove(old) {
+            self.pending_pushes.insert(new.to_string(), v);
         }
         {
             let mut rec = self.cadence_recency.lock().unwrap_or_else(|e| e.into_inner());
