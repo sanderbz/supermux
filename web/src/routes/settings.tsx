@@ -56,6 +56,7 @@ import {
 } from '@/components/settings/secret-field'
 import { SnippetsSection } from '@/components/settings/snippets-section'
 import { HostsSection } from '@/components/settings/hosts-section'
+import { UpdatesPanel } from '@/components/settings/updates-panel'
 import { AuditLog } from '@/components/settings/audit-log'
 import { Button } from '@/components/ui/button'
 import {
@@ -878,6 +879,8 @@ export function Settings() {
           </Section>
 
           <NotificationsSection />
+
+          <UpdatesPanel />
 
           <Section title="Model">
             <Row
