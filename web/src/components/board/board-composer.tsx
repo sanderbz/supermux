@@ -135,12 +135,16 @@ export function BoardComposer({
   const [busy, setBusy] = useState<null | 'add' | 'start'>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // The session list now powers the PROMINENT picker, so load it eagerly the
-  // first time it's needed (mobile sheet open OR desktop dropdown open OR More
-  // open for back-compat). Cached in state — one fetch per composer mount.
-  const needSessionList = sessionSheetOpen || moreOpen
+  // The session list powers the PROMINENT picker on the composer's main row, so
+  // it must be ready BEFORE the dropdown opens — without it the dropdown only
+  // shows "(no session)" + the pre-selected board default and the user has to
+  // hunt for the open-trigger that triggers the fetch. Fetch eagerly on mount;
+  // payload is small (a `name`+`status` list) and cached for the composer's
+  // lifetime. Was previously gated on `sessionSheetOpen || moreOpen` which
+  // hid every other session until the user opened More (FEAT-BOARD-SESSION
+  // regression).
   useEffect(() => {
-    if (!needSessionList || sessions.length > 0) return
+    if (sessions.length > 0) return
     let alive = true
     void listBoardSessions().then((s) => {
       if (alive) setSessions(s)
@@ -148,7 +152,7 @@ export function BoardComposer({
     return () => {
       alive = false
     }
-  }, [needSessionList, sessions.length])
+  }, [sessions.length])
 
   const trimmedDesc = description.trim()
   const canSubmit = trimmedDesc.length > 0
