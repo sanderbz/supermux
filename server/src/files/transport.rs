@@ -251,7 +251,7 @@ set -eu
 dest="$1"
 dir=$(dirname -- "$dest")
 mkdir -p -- "$dir"
-tmp=$(mktemp -p -- "$dir" .supermux-write.XXXXXX)
+tmp=$(mktemp -p "$dir" .supermux-write.XXXXXX)
 trap 'rm -f -- "$tmp"' EXIT
 cat > "$tmp"
 chmod 0644 -- "$tmp"
