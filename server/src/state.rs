@@ -308,7 +308,7 @@ impl AppState {
         // Load (or first-run generate) the persisted VAPID keypair for web push
         // before `config` is moved into the Arc. Non-fatal on failure (push then
         // stays disabled; the rest of the server still boots).
-        let vapid = crate::push::init_vapid(&config.data_dir);
+        let vapid = crate::push::init_vapid(&config.data_dir, config.push_sub.as_deref());
         // RT2: SSH ControlMaster pool. Cheap to build (an empty DashMap + a
         // mkdir of `<data_dir>/ssh-control`); the actual ssh work happens
         // lazily when `transport_for` is first called for a host.
@@ -1022,6 +1022,7 @@ mod pending_edit_tests {
             provider_defaults: Default::default(),
             ws: Default::default(),
             remote_callback_url: None,
+            push_sub: None,
         };
         let pool = crate::db::init(&config).await.expect("init pool");
         (AppState::new(pool, config), dir)

@@ -45,6 +45,13 @@ use crate::state::AppState;
 /// Filename of the persisted raw VAPID private key (base64url of 32 bytes).
 const VAPID_KEY_FILE: &str = "vapid_private.key";
 
+/// Fallback VAPID `sub` claim when `config.push_sub` is unset. `example.com` is
+/// RFC 2606-reserved so this parses cleanly through every known push service's
+/// JWT validator (including Apple's APNs, which is the strict one), while
+/// being clearly bogus — `init_vapid` logs a warning so any real iPhone
+/// deployment notices it and sets `push_sub` to a real contact mailto.
+const DEFAULT_VAPID_SUB: &str = "mailto:noreply@example.com";
+
 /// TTL handed to the push service: how long it should hold an undelivered
 /// notification (the user's phone is offline). 4h is plenty for an "agent needs
 /// you" ping — beyond that the prompt is stale and silent expiry is fine.
@@ -61,12 +68,17 @@ pub struct Vapid {
     /// Uncompressed public point, base64url (no padding). The browser's
     /// `applicationServerKey`. Safe to serve.
     pub public_b64: String,
+    /// VAPID JWT `sub` claim used on every signed push (RFC 8292). APNs
+    /// (iPhone) rejects bogus mailtos like `@localhost` with 400 — operators
+    /// set this via `config.toml` (`push_sub = "mailto:you@example.org"`) or
+    /// the `SUPERMUX_PUSH_SUB` env override.
+    sub: String,
 }
 
 impl Vapid {
     /// Load the persisted VAPID keypair, generating + persisting one on first
     /// run (mode `0o600`). Called once from `main`/`AppState::new`.
-    pub fn load_or_generate(data_dir: &Path) -> anyhow::Result<Self> {
+    pub fn load_or_generate(data_dir: &Path, sub: String) -> anyhow::Result<Self> {
         let path = data_dir.join(VAPID_KEY_FILE);
         let private_b64 = if path.exists() {
             std::fs::read_to_string(&path)
@@ -84,6 +96,7 @@ impl Vapid {
         Ok(Self {
             private_b64,
             public_b64,
+            sub,
         })
     }
 }
@@ -133,6 +146,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/push/key", get(get_key))
         .route("/api/push/subscribe", post(subscribe))
         .route("/api/push/unsubscribe", post(unsubscribe))
+        .route("/api/push/test", post(test_push))
         .with_state(state)
 }
 
@@ -194,6 +208,28 @@ async fn unsubscribe(
 ) -> Result<Json<serde_json::Value>, AppError> {
     db::push::delete(&state.pool, &body.endpoint).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// `POST /api/push/test` — fire a "supermux push test" notification at every
+/// stored subscription. The whole point: let an operator who just enabled the
+/// Settings toggle verify the path end-to-end without scripting a Claude
+/// session into `Waiting` or triggering a board `needs-input`. The transition
+/// hooks are the only OTHER paths that call `send_push`, so before this
+/// endpoint there was literally no way for an iPhone user to confirm anything
+/// after the permission popup. Reports the number of devices the push reached
+/// — `0` here on a fresh enable is a clear signal that the VAPID `sub`
+/// (`config.push_sub`) is wrong for the user's push service (notably APNs).
+async fn test_push(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let delivered = send_push(
+        &state,
+        "supermux test",
+        "Push notifications work — tap to open the dashboard.",
+        "/",
+    )
+    .await;
+    Ok(Json(json!({ "ok": true, "data": { "delivered": delivered } })))
 }
 
 /// Notification payload delivered to the service worker. The SW reads `title` /
@@ -297,12 +333,14 @@ async fn send_one(
 ) -> Result<(), SendError> {
     let info = SubscriptionInfo::new(&sub.endpoint, &sub.p256dh, &sub.auth);
 
-    // VAPID signature for THIS endpoint. The `sub` claim is required by some
-    // push services (notably APNs/Safari) — a `mailto:` is the conventional
-    // value and identifies the application server.
+    // VAPID signature for THIS endpoint. The `sub` claim is required by every
+    // push service per RFC 8292 — Apple's APNs is strictest and rejects
+    // syntactically valid but non-routable values like `mailto:user@localhost`
+    // with 400 BadRequest. The value comes from `config.push_sub` (or the
+    // SUPERMUX_PUSH_SUB env override) and is set up in `init_vapid`.
     let mut sig_builder = VapidSignatureBuilder::from_base64(&vapid.private_b64, &info)
         .map_err(|e| SendError::Other(format!("vapid builder: {e}")))?;
-    sig_builder.add_claim("sub", "mailto:supermux@localhost");
+    sig_builder.add_claim("sub", vapid.sub.as_str());
     let signature = sig_builder
         .build()
         .map_err(|e| SendError::Other(format!("vapid sign: {e}")))?;
@@ -349,14 +387,29 @@ async fn send_one(
 /// keypair is non-fatal for the rest of the server — push simply stays disabled
 /// (the key endpoint returns an empty key and `send_push` no-ops because nobody
 /// can subscribe without one), so the dashboard still boots.
-pub fn init_vapid(data_dir: &Path) -> Arc<Vapid> {
-    match Vapid::load_or_generate(data_dir) {
+pub fn init_vapid(data_dir: &Path, push_sub: Option<&str>) -> Arc<Vapid> {
+    let sub = push_sub
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            // Operators with real iPhone subscribers should set this to a valid
+            // contact mailto. Logging at `warn` so a real deploy notices it.
+            tracing::warn!(
+                fallback = DEFAULT_VAPID_SUB,
+                "config.push_sub unset — using a placeholder VAPID `sub` claim. iPhone (APNs) \
+                 may silently reject pushes signed with this value. Set `push_sub = \
+                 \"mailto:you@example.org\"` in config.toml or export SUPERMUX_PUSH_SUB."
+            );
+            DEFAULT_VAPID_SUB.to_string()
+        });
+    match Vapid::load_or_generate(data_dir, sub) {
         Ok(v) => Arc::new(v),
         Err(e) => {
             tracing::warn!(error = %e, "VAPID keypair unavailable — web push disabled");
             Arc::new(Vapid {
                 private_b64: String::new(),
                 public_b64: String::new(),
+                sub: DEFAULT_VAPID_SUB.to_string(),
             })
         }
     }

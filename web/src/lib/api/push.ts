@@ -38,4 +38,11 @@ export const pushApi = {
       method: 'POST',
       body: JSON.stringify({ endpoint }),
     }),
+
+  /** POST `/api/push/test` — fire a test notification at every stored
+   *  subscription. Returns the number of devices the push service accepted.
+   *  `delivered: 0` immediately after a fresh enable points at the VAPID `sub`
+   *  claim being rejected by the push service (notably APNs on iPhone). */
+  test: (): Promise<{ delivered: number }> =>
+    settingsRequest('/api/push/test', { method: 'POST' }),
 }

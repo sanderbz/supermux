@@ -32,6 +32,7 @@ import {
 } from '@/stores/ui-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
+import { pushApi } from '@/lib/api'
 import { usePush } from '@/hooks/use-push'
 import {
   useAgentTeams,
@@ -418,6 +419,13 @@ function ClaudeToolsSection() {
  *  state until installed. */
 function NotificationsSection() {
   const { state, busy, error, enable, disable } = usePush()
+  // "Send test" lives next to the toggle so an operator who just enabled push
+  // can confirm the path end-to-end. Without this button the only way to fire
+  // a notification was to drive a real agent into Waiting or call a board
+  // needs-input hook — useless for QA on a fresh iPhone subscription, which
+  // is exactly the failure mode SD-7 reported.
+  const [testing, setTesting] = React.useState(false)
+  const [testResult, setTestResult] = React.useState<string | null>(null)
 
   const footnote = (() => {
     switch (state) {
@@ -435,6 +443,30 @@ function NotificationsSection() {
     if (busy || state === 'unsupported') return
     if (next) void enable()
     else void disable()
+  }
+
+  async function onSendTest() {
+    if (testing || state !== 'enabled') return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const { delivered } = await pushApi.test()
+      // `delivered: 0` is the smoking gun for a misconfigured VAPID `sub`
+      // (notably APNs / iPhone — server logs the underlying push-service
+      // status at `warn`). Surface this back so the operator knows where to
+      // look without grepping logs.
+      setTestResult(
+        delivered > 0
+          ? `Sent to ${delivered} device${delivered === 1 ? '' : 's'} — check your phone.`
+          : 'Server accepted the request but no device received the push. Check the server logs and ensure `push_sub` in config.toml is a valid contact mailto.',
+      )
+    } catch (e) {
+      setTestResult(
+        e instanceof Error ? `Test failed: ${e.message}` : 'Test failed.',
+      )
+    } finally {
+      setTesting(false)
+    }
   }
 
   return (
@@ -458,6 +490,27 @@ function NotificationsSection() {
           />
         }
       />
+      {state === 'enabled' ? (
+        <Row
+          label="Send a test notification"
+          hint="Verifies the full path: VAPID signing, push service, your service worker, your phone."
+          control={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void onSendTest()}
+              disabled={testing}
+            >
+              {testing ? 'Sending…' : 'Send test'}
+            </Button>
+          }
+        />
+      ) : null}
+      {testResult ? (
+        <Row>
+          <p className="text-[13px] text-muted-foreground">{testResult}</p>
+        </Row>
+      ) : null}
       {error ? (
         <Row>
           <p className="text-[13px] text-destructive">{error}</p>

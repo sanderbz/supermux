@@ -48,6 +48,14 @@ pub struct Config {
     /// (`ssh -R 8823:127.0.0.1:8823 host` + `SUPERMUX_REMOTE_URL=http://127.0.0.1:8823`).
     /// Local sessions are unaffected.
     pub remote_callback_url: Option<String>,
+    /// VAPID JWT `sub` claim for web push (`mailto:<contact>` URL). RFC 8292
+    /// requires this; Apple's APNs (iPhone Safari/PWA) is strict and rejects
+    /// bogus values like `mailto:user@localhost` with 400 BadRequest. When
+    /// unset, falls back to a clearly-flagged `mailto:noreply@example.com`
+    /// sentinel — fine for local dev, but `init_vapid` logs a warning so an
+    /// operator with real iPhone subscribers knows to set this. The env
+    /// override `SUPERMUX_PUSH_SUB` takes precedence.
+    pub push_sub: Option<String>,
 }
 
 /// `[ws]` config block (TECH_PLAN §3.2.7). Both knobs raised from v1 per CEO #6:
@@ -116,6 +124,9 @@ struct RawConfig {
     /// REMOTE_PLAN §RT5 — see [`Config::remote_callback_url`].
     #[serde(default)]
     remote_callback_url: Option<String>,
+    /// See [`Config::push_sub`].
+    #[serde(default)]
+    push_sub: Option<String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -162,6 +173,14 @@ pub fn load() -> Result<Config> {
         _ => raw.bind.unwrap_or_else(default_bind),
     };
 
+    // SUPERMUX_PUSH_SUB env override wins over config.toml — handy for ad-hoc
+    // deploys that don't ship a config file.
+    let push_sub = std::env::var("SUPERMUX_PUSH_SUB")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or(raw.push_sub);
+
     Ok(Config {
         data_dir,
         bind,
@@ -171,6 +190,7 @@ pub fn load() -> Result<Config> {
         provider_defaults: raw.provider_defaults,
         ws: raw.ws,
         remote_callback_url: raw.remote_callback_url,
+        push_sub,
     })
 }
 

@@ -28,6 +28,7 @@ async fn new_state() -> (AppState, PathBuf) {
         // it so the full suite compiles against the merged `Config`.
         ws: WsConfig::default(),
         remote_callback_url: None,
+            push_sub: None,
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)
