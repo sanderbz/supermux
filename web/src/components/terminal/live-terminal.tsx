@@ -294,14 +294,17 @@ function ScrollToBottomButton({ onClick }: { onClick: () => void }) {
         type="button"
         onClick={onClick}
         aria-label="Scroll to bottom"
+        // size-11 = 44×44px — Apple HIG minimum tap target. Was size-9 (36px)
+        // which the user reported as hard to aim on touch. Visual weight stays
+        // subtle via glass + muted-foreground icon; only the hit-area grew.
         className={cn(
-          'glass pointer-events-auto mb-3 grid size-9 place-items-center rounded-full',
+          'glass pointer-events-auto mb-3 grid size-11 place-items-center rounded-full',
           'border border-border/60 text-muted-foreground shadow-sm',
           'transition-colors hover:text-foreground',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         )}
       >
-        <ChevronDown className="size-4" aria-hidden />
+        <ChevronDown className="size-5" aria-hidden />
       </button>
     </motion.div>
   )
