@@ -889,10 +889,46 @@ async fn start_handler(
     //    BY DEFAULT (§2.2). The no-session case no longer 400s for a picker — it
     //    spawns a fresh session named from the card. A caller can still attach an
     //    existing session by passing `session`, or tune the spawn via `spawn`.
+    //
+    // ATTACH BRANCH AUTO-WAKE (BR1 silent-failure fix). The steering deliver
+    // loop only drains on a `waiting|idle` boundary AND only runs while the
+    // session is non-archived (`exists_active`). So an enqueue against:
+    //   - an ARCHIVED session → sits forever (loop has exited).
+    //   - a STOPPED session   → sits forever (`stopped` is not a boundary).
+    // Both surfaces the user-visible symptom of "I pressed Play and nothing
+    // happened" — the toast fires, the card moves, but the agent never sees
+    // the work. Mirror the reply_handler / scheduler contract:
+    //   - require the linked session to be LIVE (non-archived) up front,
+    //   - if the tmux pane is dead, `lifecycle::start` it BEFORE enqueueing
+    //     so the loop's next active→idle boundary actually drains.
+    // We never call `start()` when the pane is alive — that would re-run the
+    // agent launch into a running pane and corrupt the live conversation.
     let session = match input.session.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => {
-            if !session_exists(&state, s).await? {
-                return Err(AppError::BadRequest(format!("unknown session '{s}'")));
+            if !session_is_live(&state, Some(s)).await? {
+                return Err(AppError::BadRequest(format!(
+                    "session '{s}' is not live (deleted or archived) — pick another or spawn a new one"
+                )));
+            }
+            // Auto-wake a stopped session: only call `start` when its tmux pane
+            // is gone. If the pane is alive (active|waiting|idle|starting), the
+            // existing deliver-loop already drains the queue on the next
+            // boundary — calling `start` here would re-launch the agent into a
+            // live conversation, which is destructive. The wake is BEST-EFFORT
+            // (log and continue): a transient failure here still enqueues the
+            // steer, so when the session does come back the loop drains it; the
+            // alternative — propagating an error — would refuse the entire
+            // Start and leave the user with nothing.
+            let tmux = crate::sessions::tmux::Tmux::new(s);
+            if !tmux.exists().await.unwrap_or(false) {
+                if let Err(e) = crate::sessions::lifecycle::start(&state, s, None).await {
+                    tracing::warn!(
+                        session = %s,
+                        issue = %id,
+                        error = %e,
+                        "board start: auto-wake of stopped session failed; steer will queue and deliver if the session is started by other means"
+                    );
+                }
             }
             s.to_string()
         }
@@ -1980,6 +2016,45 @@ mod tests {
         )
         .await;
         assert!(matches!(bad, Err(AppError::Conflict(_))));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn start_rejects_archived_session_with_helpful_message() {
+        // BR1 silent-failure fix: attaching Start to an ARCHIVED session used to
+        // succeed silently — the steer was enqueued but the per-session deliver
+        // loop had exited (it terminates on `exists_active == false`, R1-1), so
+        // the queue grew forever and the agent never saw the work. The user saw
+        // a toast "Started X" and nothing happened in the pane. Reject the
+        // attach up-front with a clean 400 instead, so the runner surfaces an
+        // actionable error toast rather than a phantom success.
+        let (state, dir) = test_state().await;
+        seed_session(&state, "old-worker").await;
+        db::sessions::set_archived(&state.pool, "old-worker", true).await.unwrap();
+        seed_issue(&state, "S-1").await;
+
+        let bad = start_handler(
+            State(state.clone()),
+            Path("S-1".into()),
+            Json(serde_json::from_value(json!({ "session": "old-worker" })).unwrap()),
+        )
+        .await;
+        match bad {
+            Err(AppError::BadRequest(msg)) => {
+                assert!(
+                    msg.contains("not live"),
+                    "expected a 'not live' helpful message, got: {msg}"
+                );
+                assert!(msg.contains("old-worker"), "message names the session");
+            }
+            Err(other) => panic!("expected BadRequest, got error {other:?}"),
+            Ok(_) => panic!("expected BadRequest, got Ok (silent-failure regression)"),
+        }
+        // No steer should have been queued (the silent-failure path).
+        let queued = db::steering::list(&state.pool, "old-worker").await.unwrap();
+        assert!(queued.is_empty(), "no steer queued against an archived session");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
