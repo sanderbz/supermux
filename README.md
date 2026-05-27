@@ -148,6 +148,13 @@ user, ports, Tailscale, …) with smart defaults — hit Enter through it for
 the common case. Or set `SUPERMUX_DEPLOY_HOST=user@host` and run
 `scripts/setup.sh --yes` for a non-interactive deploy.
 
+**Push notifications (optional):** the PWA's iOS push works out of the box
+with the default placeholder VAPID contact. To use your real `mailto:` (so
+the push service has a real address if it needs to flag abuse), set
+`push_sub = "mailto:you@your-domain"` in `~/.supermux/config.toml` on the
+host, or export `SUPERMUX_PUSH_SUB`. The Settings page has a "Send test"
+button that confirms end-to-end delivery.
+
 ## Quickstart — develop
 
 Prerequisites: `cargo` (rustup), `bun`, and `tmux`.
