@@ -89,9 +89,26 @@ export function TeammateCard({
       </button>
 
       {/* Mini read-only live terminal — the at-a-glance live preview, like the
-          desktop session tile. Fixed height so the card grid stays tidy. */}
+          desktop session tile. Fixed height so the card grid stays tidy.
+          PEEK-DIMENSION FIX (peek-diff-audit.md, Variant D root cause).
+          `min-w-[160px]` is a width FLOOR for the xterm container: without it,
+          when the team card hosts these two-up in `sm:grid-cols-2`, the grid's
+          flex-distribution can briefly hand a cell 0–5 px width DURING the very
+          first paint — exactly when `useLiveTerm`'s mount-rAF runs `fit()`. A
+          0-width container makes FitAddon compute `cols=0`, which trips the
+          `if (term.cols <= 0) return` guard at `use-live-term.ts:643` and
+          PERMANENTLY skips the WebGL renderer attach (the ResizeObserver later
+          re-fits but NEVER re-attempts `loadAddon(new WebglAddon())`). The
+          terminal then ends up stuck on the DOM renderer at the wrong cell
+          metrics with no second-fit correction, producing the catastrophic
+          mis-render the user reported as "klopt HELEMAAL van geen kanten" —
+          1000x more broken than the normal session peek. A 160 px floor
+          guarantees ≥24 cols at fontSize=11 (cellWidth ≈ 6.6 px), which is
+          well above the fit guard's threshold, so the mount-rAF always lands
+          a real WebGL attach AND a real second fit. On the natural sm: layout
+          the grid cell is already ≥250 px so this floor is a no-op there too. */}
       <div
-        className="relative mx-2 mb-2 h-32 overflow-hidden rounded-lg"
+        className="relative mx-2 mb-2 h-32 min-w-[160px] overflow-hidden rounded-lg"
         style={{ backgroundColor: 'var(--terminal-bg)' }}
       >
         {gone ? (
