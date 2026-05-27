@@ -282,25 +282,27 @@ export function BoardCard({
           }
         : {})}
       onClick={() => {
-        // Tap routing. On a COARSE pointer (mobile) a Doing card morphs straight
-        // to the focus terminal (unchanged); To do / Done open the editor sheet.
-        // On a FINE pointer (desktop) EVERY card opens via `onOpen` — the route
-        // sends that to the mission-control detail pane (which itself has an
-        // "Open terminal" affordance), so a Doing click reads + watches + replies
-        // in-context instead of leaving the board.
-        if (isDoing && !fine) onFocus(issue)
-        else onOpen(issue)
+        // Tap routing (SS-2). Every card — Doing included, on EVERY pointer —
+        // opens via `onOpen`: the editor sheet on mobile, the mission-control
+        // detail pane on desktop. Previously a Doing-card tap on a coarse
+        // pointer morphed straight to the focus terminal, which made it
+        // impossible to edit a running task without first navigating away;
+        // the user lost board context for what is usually a small edit. The
+        // dedicated Maximize2 button on a Doing card (always visible on
+        // coarse) is the one-tap terminal affordance, so this change keeps
+        // the terminal one tap away while letting the card body always mean
+        // "open me to read or edit."
+        onOpen(issue)
       }}
       onKeyDown={(e) => {
         // Only the card ITSELF responds to Enter/Space. A keydown bubbling up
         // from a child control (the inline reply textarea, the action buttons)
         // must not trigger card-open — otherwise typing Enter or a space while
-        // replying to the agent navigates away to the terminal.
+        // replying to the agent navigates away.
         if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          if (isDoing && !fine) onFocus(issue)
-          else onOpen(issue)
+          onOpen(issue)
         }
       }}
       onHoverStart={() => setHovered(true)}
