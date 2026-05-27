@@ -21,7 +21,6 @@ import {
 } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
-import { ONBOARDING } from '@/brand/copy'
 import { useSessions, SESSIONS_KEY } from '@/hooks/use-sessions'
 import { useTeams } from '@/hooks/use-teams'
 import { splitTeamLeads } from '@/components/focus-mode/focus-strip-groups'
@@ -30,7 +29,7 @@ import { useArchivedSessions } from '@/hooks/use-archived-sessions'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useOverviewLayout } from '@/hooks/use-overview-layout'
 import { useUI, type ViewMode } from '@/stores/ui-store'
-import { onboardingApi, type ApiSession } from '@/lib/api'
+import { type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
 import {
@@ -154,7 +153,6 @@ export function Overview() {
   const [query, setQuery] = React.useState('')
   const [sheetOpen, setSheetOpen] = React.useState(false)
   const [teamSheetOpen, setTeamSheetOpen] = React.useState(false)
-  const [bootingDemo, setBootingDemo] = React.useState(false)
 
   useDevMockSeed()
 
@@ -421,17 +419,6 @@ export function Overview() {
     navigate(`/focus/${name}`)
   }
 
-  const bootDemo = async () => {
-    if (bootingDemo) return
-    setBootingDemo(true)
-    try {
-      const created = await onboardingApi.bootDemoAgent('.')
-      navigate(`/focus/${created.name}`)
-    } catch {
-      setBootingDemo(false)
-    }
-  }
-
   const containerMaxClass: Record<OverviewSize, string> = {
     1: 'lg:max-w-[82rem]',
     2: 'lg:max-w-[82rem]',
@@ -628,14 +615,6 @@ export function Overview() {
               icon={<TerminalSquare />}
               message="No agents yet. Boot your first one."
               cta={{ label: 'Boot first agent', onClick: openSheet }}
-              secondary={{
-                label: bootingDemo
-                  ? ONBOARDING.demoBooting
-                  : ONBOARDING.demoCta,
-                onClick: bootDemo,
-                busy: bootingDemo,
-                hint: ONBOARDING.demoHint,
-              }}
             />
           </div>
         ) : (!isCustom && flatSorted.length === 0 && filteredTeams.length === 0) ||
