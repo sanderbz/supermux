@@ -57,7 +57,7 @@
 //     terminal takes focus).
 //
 // SAFE-AREA:
-//   The PANEL owns `pb-[calc(env(safe-area-inset-bottom)+0.5rem)]` (the
+//   The PANEL owns `pb-[max(env(safe-area-inset-bottom),0.5rem)]` (the
 //   bottom-most-thing-in-the-panel always owns the home-indicator inset).
 //   Previously the dock owned it, which was correct in the closed state but
 //   wrong in the open state: when the pills row revealed BELOW the dock, the
@@ -65,15 +65,6 @@
 //   pills) while the pills themselves sat flush against the viewport. Hoisting
 //   the inset to the panel container gives the closed state the same total pb
 //   it had before AND gives the pills row breathing room below it when open.
-//
-//   ADDITIVE — not `max()`. On iOS PWA standalone the env inset is exactly
-//   34px = the home-indicator zone height; using `max(env, 0.5rem)` resolves
-//   to 34px which lands the pills EXACTLY at the top edge of the indicator
-//   zone — visually they read as "touching" / clipped by the indicator pill.
-//   The additive `calc(env + 0.5rem)` gives a constant 8px breathing gap
-//   ABOVE the safe-area zone on every device (42px on iPhone PWA, 8px on
-//   desktop where env=0). Matches the pattern used elsewhere in the codebase
-//   (overview/scheduler/board pt-[calc(env(safe-area-inset-top)+1rem)]).
 
 import * as React from 'react'
 import { motion, useReducedMotion, type PanInfo } from 'framer-motion'
@@ -380,13 +371,7 @@ export function MobileBottomPanel({
       // unchanged from when the dock owned this.
       className={cn(
         'glass relative shrink-0 overflow-hidden border-t border-border/60',
-        // ADDITIVE safe-area pb (see SAFE-AREA note above). On iOS PWA the
-        // env inset is exactly 34px (= home-indicator zone height); the prior
-        // `max(env, 0.5rem)` resolved to 34px and pills landed flush against
-        // the indicator. Adding 0.5rem on top guarantees a constant 8px
-        // breathing gap ABOVE the safe-area zone on every device (42px on
-        // iPhone PWA, 8px on desktop where env=0).
-        'pb-[calc(env(safe-area-inset-bottom)+0.5rem)]',
+        'pb-[max(env(safe-area-inset-bottom),0.5rem)]',
       )}
     >
       {/* The drag handle — the ONE drag region. 22pt tall hit area; visible

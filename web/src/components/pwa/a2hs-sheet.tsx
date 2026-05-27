@@ -95,31 +95,13 @@ export function A2HSInstructionsSheet() {
   return (
     <Drawer.Root open={open} onOpenChange={handleOpenChange}>
       <Drawer.Portal>
-        {/* z-[80] — above the focus-mode MobileSheet (z-50, modal=false) so
-            the A2HS prompt always wins the stacking contest when both are
-            mounted (the user can land on /focus/:name from a saved bookmark
-            and have A2HS open at boot on top). The earlier z-[70] put the
-            overlay above the focus sheet visually but other z-[70] callers
-            (mobile-compose-sheet backdrop, mobile-action-sheet) could share
-            the stratum and depending on portal mount order the click could
-            land on a sibling layer instead of A2HS. z-[80] is unambiguous. */}
-        <Drawer.Overlay className="fixed inset-0 z-[80] bg-black/40" />
+        <Drawer.Overlay className="fixed inset-0 z-[70] bg-black/40" />
         <Drawer.Content
           aria-describedby="a2hs-desc"
           className={cn(
-            'glass fixed inset-x-0 bottom-0 z-[80] flex flex-col rounded-t-[10px]',
+            'glass fixed inset-x-0 bottom-0 z-[70] flex flex-col rounded-t-[10px]',
             'border-t border-border/60 pb-safe outline-none',
           )}
-          // pointer-events:auto defensively — when the focus mobile-sheet runs
-          // with vaul `modal={false}`, vaul's mount-effect rewrites
-          // `document.body.style.pointerEvents = 'auto'`, which would normally
-          // be fine — but Radix Dialog (the modal=true A2HS) relies on a body
-          // pointer-events:none to isolate its modal. With both drawers
-          // coexisting (A2HS modal=true on top of focus modal=false), Radix's
-          // isolation can be defeated by vaul's effect, and clicks on this
-          // surface can fall through to the xterm canvas BELOW. Force-enabling
-          // pointer-events on the surface guarantees the tap lands here.
-          style={{ pointerEvents: 'auto' }}
         >
           {/* Drag indicator — 36×5, 2.5px radius, tertiary tint (Termius #11). */}
           <div className="mx-auto mt-1.5 h-[5px] w-9 shrink-0 rounded-[2.5px] bg-muted-foreground/30" />
@@ -145,12 +127,6 @@ export function A2HSInstructionsSheet() {
               </div>
               <Drawer.Close
                 aria-label="Dismiss"
-                // Same data-vaul-no-drag + touchAction:manipulation rationale
-                // as the "Got it" CTA below — make this tappable from the
-                // first finger-down even when the focus mobile-sheet is also
-                // mounted below.
-                data-vaul-no-drag
-                style={{ touchAction: 'manipulation' }}
                 className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground"
               >
                 <X className="size-5" />
@@ -173,19 +149,6 @@ export function A2HSInstructionsSheet() {
             <button
               type="button"
               onClick={() => handleOpenChange(false)}
-              // data-vaul-no-drag: vaul wires drag on every Drawer.Content
-              // descendant by default; without this opt-out, a tap STARTED on
-              // the button could be interpreted as the start of a drag-to-
-              // dismiss gesture (vaul calls preventDefault on the pointerdown,
-              // suppressing the synthetic click). Same pattern as the focus
-              // mobile-bottom-panel handle + terminal wrapper.
-              data-vaul-no-drag
-              // touchAction:manipulation defeats iOS Safari's 300ms click
-              // delay AND the dblclick-zoom heuristic — without it, a fast
-              // tap right after the sheet animates in can be swallowed by the
-              // OS's gesture disambiguator. Belt-and-suspenders alongside the
-              // data-vaul-no-drag attr.
-              style={{ touchAction: 'manipulation' }}
               className="mt-6 h-11 w-full rounded-xl bg-primary text-[15px] font-semibold text-primary-foreground active:opacity-90"
             >
               Got it
