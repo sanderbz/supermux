@@ -227,7 +227,14 @@ async fn needs_input_handler(
         tokio::spawn(async move {
             let title = format!("agent {session} needs you");
             let url = format!("/focus/{session}");
-            let _ = crate::push::send_push(&state, &title, &question, &url).await;
+            let _ = crate::push::send_push_for(
+                &state,
+                crate::db::push::NotifCategory::AgentWaiting,
+                &title,
+                &question,
+                &url,
+            )
+            .await;
         });
     }
 

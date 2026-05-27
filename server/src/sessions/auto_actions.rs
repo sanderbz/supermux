@@ -835,39 +835,57 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
     Ok(())
 }
 
-/// PUSH milestone: send a phone notification when a session transitions INTO a
-/// state that needs the user (spec TRACK 2 §4). Called from [`tick`] on the
-/// `committed` (flap-confirmed) transition edge ONLY, so it is debounced to one
-/// push per transition — never per tick.
+/// Phone notification on a status transition edge. Called from [`tick`] on the
+/// `committed` (flap-confirmed) transition ONLY, so it is debounced to one push
+/// per transition — never per tick. Each branch maps to ONE user-facing
+/// category the operator can independently mute in Settings → Notifications:
 ///
-/// * `Waiting` — the agent is blocked on the user (it asked a question / needs
-///   approval). Push `agent {name} needs you` linking to `/focus/{name}`.
+/// * `Waiting` → `agent_waiting` ("agent {name} needs you"). Blocked on the
+///   user.
+/// * `Idle` → `agent_finished` ("agent {name} finished"). Turn done, ready for
+///   review — the "groene status" the user explicitly asked to be pinged on.
+/// * `Stopped` → `agent_stopped` ("agent {name} stopped"). The tmux pane went
+///   away.
+/// * Anything else (Active / Starting / Unknown) is intentionally silent — not
+///   a user-actionable edge.
 ///
-/// The blocked REASON is generic here. A parallel worker (`feat/hooks-be`) is
-/// enriching a per-session blocked-reason / `last_error` in `state.rs`; this
-/// helper reads [`AppState::push_reason_for`] which returns that enriched reason
-/// when present and a generic fallback otherwise — so the wiring is already
-/// additive and improves automatically once that field lands.
-///
-/// The actual encrypt + HTTPS POST runs in a spawned task so the detector tick
-/// (which holds no lock here) is never blocked on the push service. `send_push`
-/// itself no-ops cheaply when nobody is subscribed.
+/// The body for Waiting is enriched via [`AppState::push_reason_for`] (set by
+/// `feat/hooks-be` once a blocked reason / last_error is captured); a generic
+/// fallback covers cold-start. The send is spawned so the detector tick is
+/// never blocked on the push service. `send_push_for` itself no-ops cheaply
+/// when nobody is subscribed OR the category is muted.
 fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
-    // Only the "needs you" transition pushes. Active/Idle/Starting/Unknown are
-    // not user-blocking; Stopped-with-error is handled by the hooks-be track's
-    // error field once it lands (read via `push_reason_for`).
-    if new != Status::Waiting {
-        return;
-    }
+    use crate::db::push::NotifCategory;
+    let (cat, title, body) = match new {
+        Status::Waiting => (
+            NotifCategory::AgentWaiting,
+            format!("agent {name} needs you"),
+            state.push_reason_for(name, Status::Waiting),
+        ),
+        Status::Idle => (
+            NotifCategory::AgentFinished,
+            format!("agent {name} finished"),
+            "Turn done — ready for your review.".to_string(),
+        ),
+        Status::Stopped => (
+            NotifCategory::AgentStopped,
+            format!("agent {name} stopped"),
+            state.push_reason_for(name, Status::Stopped),
+        ),
+        _ => return,
+    };
     let state = state.clone();
     let name = name.to_string();
+    let url = format!("/focus/{name}");
     tokio::spawn(async move {
-        let title = format!("agent {name} needs you");
-        let body = state.push_reason_for(&name, Status::Waiting);
-        let url = format!("/focus/{name}");
-        let n = crate::push::send_push(&state, &title, &body, &url).await;
+        let n = crate::push::send_push_for(&state, cat, &title, &body, &url).await;
         if n > 0 {
-            tracing::debug!(name = %name, devices = n, "push sent for waiting transition");
+            tracing::debug!(
+                name = %name,
+                category = cat.as_str(),
+                devices = n,
+                "push sent for status transition",
+            );
         }
     });
 }
