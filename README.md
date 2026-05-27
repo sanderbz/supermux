@@ -46,8 +46,9 @@ could *see* them all without `⌘+\`-juggling tabs, supermux is that. It's
 
 ### Remote hosts over SSH
 - Register any reachable machine (Tailscale, VPN, public DNS, SSH reverse
-  tunnel — all work) on the **/hosts** page; supermux multiplexes a single
-  SSH ControlMaster connection per host for low-latency PTY streaming.
+  tunnel — all work) under **Settings → Hosts** (the old `/hosts` URL still
+  works — it redirects there); supermux multiplexes a single SSH ControlMaster
+  connection per host for low-latency PTY streaming.
 - **One-click bootstrap** installs the `authorized_keys` entry and verifies
   each prereq with a per-line checklist — no manual ssh-copy-id dance.
 - Start a session on a remote host from the same "New session" sheet as a
