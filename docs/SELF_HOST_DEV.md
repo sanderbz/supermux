@@ -100,6 +100,39 @@ systemctl status supermux-deploy.path --no-pager
 - `SUPERMUX_DATA_DIR=/path` — data dir holding `deploy/request` + the runner's
   log/status (default `$HOME/.supermux`; the systemd unit exports this into the
   agent's environment, so you normally don't set it).
+- `SUPERMUX_REPO_DIR=/path` — override the auto-detected repo dir (the in-UI
+  updater looks at `/opt/projects/supermux` then walks up from CWD). Useful
+  for non-standard layouts.
+
+## In-UI updater (v0.3.0+)
+
+Settings → Updates is the UI for the same pipeline. It polls
+`/api/version` every 30 seconds while the page is open, compares the
+running binary's tag against the latest GitHub release, and offers a
+**Update now** button when an upgrade is safe to apply. Click → confirm
+the rendered release notes → live SSE progress (fetching / building /
+installing / verifying / done) → "Reload" to load the new bundle. On a
+build failure the runner rolls back (`/usr/local/bin/supermux-server.prev`
+restored, service restarted) and the modal shows the rollback step plus
+the exact `journalctl -u supermux-deploy -n 100` command to dig deeper.
+
+The preflight refuses unsafe upgrades — surfacing actionable English copy
+for each case — instead of hiding the button silently:
+
+| Scenario | UI shows |
+|---|---|
+| Dirty working tree | "The clone has N uncommitted changes. Commit or stash them before updating." |
+| Local commits ahead of origin | "The clone has N unpushed commits ahead of origin. Push or reset before updating." |
+| Branch ≠ main | "The clone is on `feat/foo`, not `main`. Switch with `git checkout main`." |
+| Detached HEAD | "You're on a detached HEAD — typically a pinned version. Run `git checkout main`." |
+| cargo / bun / git missing | "`<tool>` isn't on PATH. Install it for the supermux service user." |
+| < 2 GB free | "Only N MB free on /opt/projects/supermux. The release build needs ~2 GB." |
+| Bare binary / dev install | "Auto-update is only available on systemd installs. Run `cd <repo> && bash scripts/update.sh`." |
+| Docker | "supermux is running in a Docker container. Pull the latest image and recreate." |
+
+The 1-click button is bearer-gated by the same AUTH_TOKEN as the rest of
+`/api`. There is no auto-update — the upgrade only ever runs after an
+explicit click.
 
 ## Troubleshooting: "Claude won't render in the dev session"
 
