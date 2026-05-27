@@ -522,11 +522,20 @@ export function MobileDock({
   return (
     <div
       className={cn(
-        // pb: at least ~10px of breathing room under the row even when the device
-        // reports no safe-area inset (e.g. iPhone Air in the Vaul sheet), so the
-        // session pill + Enter never sit flush against the viewport bottom; grows
-        // to the home-indicator inset where there is one.
-        'glass relative flex shrink-0 flex-col gap-2 border-t border-border/60 px-2.5 pb-[max(env(safe-area-inset-bottom),0.625rem)] pt-2',
+        // The glass background + top hairline now live on the parent
+        // <MobileBottomPanel> so the pills row above AND the dock buttons read
+        // as ONE continuous surface (no doubled border, no gap). The dock here
+        // owns only its INNER chrome: horizontal padding, top/bottom breathing,
+        // safe-area inset for the home indicator.
+        //   • pb — at least ~10 px of breathing room under the row even when
+        //     the device reports no safe-area inset (iPhone Air in the Vaul
+        //     sheet), so the session pill + Enter never sit flush against the
+        //     viewport bottom; grows to the home-indicator inset where there
+        //     is one.
+        //   • relative — preserved for the dock's existing ComposeField morph
+        //     surface (the COMPOSE_LAYOUT_ID layoutId resolves rects against
+        //     its closest positioned ancestor, which has been this <div>).
+        'relative flex flex-col gap-2 px-2.5 pb-[max(env(safe-area-inset-bottom),0.625rem)] pt-2',
         className,
       )}
     >

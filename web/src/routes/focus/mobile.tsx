@@ -49,7 +49,7 @@ import { StatusDot } from '@/components/session-tile/status-dot'
 import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
 import { FocusHeader } from '@/components/focus-mode/focus-header'
 import { MobileDock } from '@/components/focus-mode/dock'
-import { SwipeSessionSwitcher } from '@/components/focus-mode/swipe-session-switcher'
+import { MobileBottomPanel } from '@/components/focus-mode/mobile-bottom-panel'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
@@ -104,12 +104,6 @@ export function MobileFocus() {
 
   // Imperative terminal handle — the ONE surface every key path drives.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
-  // feat/swipe-switcher — the MobileDock's wrapper element. The dock is the
-  // swipe-up gesture origin: the switcher attaches a CAPTURE-phase pointerdown
-  // here so a SWIPE-UP from this surface reveals the horizontal session strip,
-  // while regular TAPS on the dock buttons still go through (the switcher only
-  // claims the gesture after the finger crosses an 8px slop).
-  const dockRef = React.useRef<HTMLDivElement | null>(null)
   // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes
   // (hardware keyboard, or the iOS soft keyboard once the user taps in) route
   // to xterm IMMEDIATELY — the focus pane is the terminal, not the dock
@@ -454,26 +448,25 @@ export function MobileFocus() {
               and `kbdGroups` are still exposed via the "···" Specials sheet
               below. Clean removal — no orphaned import. */}
 
-          {/* feat/swipe-switcher — Termius-style horizontal session strip that
-              slides up from the dock on a SWIPE-UP (mobile only). Mounted as a
-              SIBLING above the dock so it shares the dock's bottom anchor (the
-              strip's bottom edge sits flush on top of the dock's border-top).
-              Default-hidden; gesture starts from inside the MobileDock element
-              (dockRef below). Desktop has the 320px sidebar — no parallel
+          {/* polish/swipe-integrate — the unified mobile bottom panel:
+              ONE positioned element holds the Termius-style session-pills
+              strip AND the MobileDock content. Swipe-up reveals the pills
+              above the dock buttons; swipe-down (or tap the grabber, or tap
+              outside) hides them. Single height-animation on the panel — no
+              two-sibling motion to fight each other, no second top border,
+              no opacity gate. Desktop has the 320px sidebar — no parallel
               affordance is added there.
 
-              The dock is wrapped in a `<div ref={dockRef}>` because MobileDock
-              doesn't forward refs (and forwardRef'ing it would ripple through
-              the entire dock surface for one consumer); a thin wrapper gives
-              the switcher a stable gesture-origin element without churning the
-              dock's public shape. */}
-          <SwipeSessionSwitcher
+              MobileBottomPanel owns the panel chrome (glass background, top
+              hairline, grabber, pills row, gesture state-machine). The dock
+              content is passed as children so MobileBottomPanel stays a pure
+              presentational shell that doesn't have to know the dock's many
+              props. */}
+          <MobileBottomPanel
             sessions={sessions}
             currentName={name}
             onPick={goSession}
-            dockRef={dockRef}
-          />
-          <div ref={dockRef} className="contents">
+          >
             <MobileDock
               current={current}
               prevSession={prev}
@@ -493,7 +486,7 @@ export function MobileFocus() {
               keyboardOpen={keyboardOpen}
               registerInsert={registerInsert}
             />
-          </div>
+          </MobileBottomPanel>
         </MobileSheet>
       </motion.div>
 
