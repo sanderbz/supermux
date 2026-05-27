@@ -10,7 +10,7 @@ import { springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { SessionPicker } from '@/components/session/session-picker'
 import { listBoardSessions, type BoardSession, type NewBoardIssue } from '@/lib/api'
-import { useLastCreateSession } from '@/stores/board-create-session-store'
+import { useLastActiveSession } from '@/stores/board-create-session-store'
 
 /** The agent providers a spawned session can run (mirrors the new-session sheet
  *  + the server's session providers). */
@@ -69,7 +69,7 @@ export function BoardComposer({
   // Persisted "last-used session" cell (FEAT-BOARD-SESSION §B). When the board
   // scope doesn't dictate a session (Main / All / a team without a live lead),
   // the composer falls back to this — updated on every successful submit.
-  const [lastSession, setLastSession] = useLastCreateSession()
+  const [lastSession, setLastSession] = useLastActiveSession()
 
   const [description, setDescription] = useState('')
   const [title, setTitle] = useState('')

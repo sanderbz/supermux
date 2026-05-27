@@ -63,12 +63,19 @@ interface UIStore {
    *  column count). Clamped to the mobile max tier (height-meaningful tiers
    *  only — see MAX_OVERVIEW_SIZE_MOBILE). */
   overviewSizeMobile: OverviewSize
+  /** Files route: show dotfiles (`.claude`, `.config`, …). Default `true` so
+   *  the dirs users actually want to open from the Files page are visible
+   *  without hunting for the eye toggle. Persisted so the choice survives
+   *  reloads/navigation — was previously local React state that reset on every
+   *  route mount. */
+  showHidden: boolean
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
   setOverviewPreview: (p: OverviewPreview) => void
   setOverviewSize: (s: OverviewSize) => void
   setOverviewSizeMobile: (s: OverviewSize) => void
+  setShowHidden: (v: boolean) => void
 }
 
 export const useUI = create<UIStore>()(
@@ -80,6 +87,7 @@ export const useUI = create<UIStore>()(
       overviewPreview: 'live',
       overviewSize: MIN_OVERVIEW_SIZE,
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
+      showHidden: true,
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),
@@ -88,6 +96,7 @@ export const useUI = create<UIStore>()(
         set({ overviewSize: clampOverviewSize(overviewSize) }),
       setOverviewSizeMobile: (overviewSizeMobile) =>
         set({ overviewSizeMobile: clampOverviewSizeMobile(overviewSizeMobile) }),
+      setShowHidden: (showHidden) => set({ showHidden }),
     }),
     { name: 'supermux-ui' },
   ),
