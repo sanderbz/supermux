@@ -111,6 +111,16 @@ could *see* them all without `⌘+\`-juggling tabs, supermux is that. It's
   sessions outlive supermux restarts (and even reboots if the kernel
   cooperates).
 
+## Supported platforms
+
+- **macOS** — Apple Silicon and Intel (development + local self-host).
+- **Linux** — `x86_64` and `aarch64` (the primary deploy target).
+- **Windows** — not supported. supermux relies on Unix-only primitives
+  (`tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
+
+Toolchain floor: `rustc 1.83` (see `server/Cargo.toml`'s `rust-version`) and
+a recent `bun` (1.x) for the web build. `tmux` is a runtime requirement.
+
 ## Quickstart — deploy
 
 ```bash

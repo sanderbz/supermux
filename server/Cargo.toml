@@ -3,6 +3,18 @@ name = "supermux-server"
 version = "3.0.0"
 edition = "2021"
 rust-version = "1.83"
+authors = ["Sander Zakelijk"]
+description = "Self-hosted dashboard for running a roomful of AI coding agents (Claude Code, Codex, shells) on top of tmux. Single Rust binary, embedded PWA."
+license = "MIT"
+repository = "https://github.com/sanderbz/supermux"
+homepage = "https://github.com/sanderbz/supermux"
+readme = "../README.md"
+keywords = ["tmux", "ai", "agents", "dashboard", "claude"]
+categories = ["command-line-utilities", "web-programming::http-server"]
+# `publish = false`: we ship a single self-hosted binary (see scripts/deploy.sh)
+# and have no crates.io release process yet. Flip to `true` if/when we decide to
+# publish — but the README + deploy story is self-host first, not "cargo install".
+publish = false
 
 # server/ is its own workspace root (the repo top is intentionally NOT a Cargo
 # workspace — TECH_PLAN §2). resolver "3" is MSRV-aware: it honours the
