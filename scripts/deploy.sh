@@ -663,6 +663,18 @@ fi
 GIT_SHA="$(git rev-parse "$DEPLOY_REF")"
 GIT_SHA_SHORT="$(git rev-parse --short "$DEPLOY_REF")"
 
+# ── 0e-bis. capture version metadata from the LOCAL git context ──────────────
+# Why: deploy.sh ships a `git archive` (no `.git/` on the remote), so on the
+# host `git describe --tags --always --dirty` in build.rs fails and the binary
+# falls back to "dev" — surfacing as "dev build" in Settings → Updates instead
+# of the real tag (the v0.3.0 bug). Capture the tag + SHA HERE while we still
+# have the full `.git/` and pass them through to the remote cargo build as
+# explicit env vars, so the version baked into the binary always matches the
+# committed ref we shipped — regardless of whether the host has `.git/`.
+# Values are dash-only (no spaces); single-quoting on the remote side is safe.
+VERSION_TAG="$(git describe --tags --always --dirty 2>/dev/null || echo unknown)"
+VERSION_SHA="$GIT_SHA"
+
 # ── 0f. preflight summary — show the operator what's about to happen ────────
 case "$USE_TAILSCALE" in
   1) PUBLIC_EXPOSE_DESC="tailscale serve :$PUBLIC_PORT → loopback:$INTERNAL_PORT" ;;
@@ -1012,6 +1024,12 @@ set -euo pipefail
 # clears its own skip stamps so even with the rsync-preserved caches we get a
 # truly cold rebuild (disaster-recovery path).
 export SUPERMUX_NO_CACHE='$SUPERMUX_NO_CACHE'
+# Inject version metadata from the LOCAL git context (computed in §0e-bis).
+# The remote tarball has no .git/, so build.rs's git fallback would otherwise
+# bake "dev" into the binary; these env vars take priority. Single-quoted on
+# the remote side — VERSION_TAG/SHA contain only [A-Za-z0-9.-], never spaces.
+export SUPERMUX_VERSION_TAG='$VERSION_TAG'
+export SUPERMUX_VERSION_SHA='$VERSION_SHA'
 # rustup/bun install into the user's home — make them discoverable on a
 # non-login PATH. The preflight already verified these (or installed them).
 [ -d "\$HOME/.bun/bin" ] && export PATH="\$HOME/.bun/bin:\$PATH"
