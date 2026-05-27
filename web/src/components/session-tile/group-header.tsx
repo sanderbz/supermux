@@ -147,9 +147,13 @@ export function GroupHeader({
       data-vr-drag-state={dragLifted ? 'lifted' : dragOver ? 'over' : 'idle'}
       data-vr-container-indicate={containerIndicate}
       {...(dragListeners ?? {})}
-      // touch-none so a press-and-hold initiates the drag instead of scrolling.
+      // touch-manipulation (not touch-none) so iOS Safari can still pan the
+      // page vertically when the user starts a touch on the header. The
+      // TouchSensor `delay: 300, tolerance: 5` handles tap/scroll/drag
+      // arbitration in JS — preempting it at the CSS layer with `touch-none`
+      // kills native scroll. Per dnd-kit Touch sensor docs.
       className={
-        'group/group flex h-10 items-center gap-1.5 border-b border-border/40 pl-1 pr-1.5 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring touch-none' +
+        'group/group flex h-10 items-center gap-1.5 border-b border-border/40 pl-1 pr-1.5 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring touch-manipulation' +
         (dragLifted ? ' opacity-40' : '')
       }
       style={{ cursor: dragListeners ? 'grab' : undefined }}

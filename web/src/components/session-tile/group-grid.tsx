@@ -1650,12 +1650,15 @@ function SessionTileWrapper({
       data-vr="group-tile"
       data-tour={tour}
       data-dnd-handle
-      // Whole-card hit target — listeners spread on the root. `touch-none`
-      // so a press-and-hold initiates the drag instead of scrolling. Click
+      // Whole-card hit target — listeners spread on the root. We use
+      // `touch-manipulation` (not `touch-none`): the TouchSensor's
+      // `delay: 300, tolerance: 5` arbitrates tap/scroll/drag in JS, so
+      // we MUST NOT preempt iOS Safari's gesture router at the CSS layer
+      // — `touch-none` would kill native vertical scroll on tiles. Click
       // navigation still works because <5px movement = click (distance:5
-      // sensor constraint at the DndContext).
+      // sensor constraint at the DndContext). Per dnd-kit Touch sensor docs.
       {...listeners}
-      className="relative touch-none"
+      className="relative touch-manipulation"
       style={{ cursor: 'grab' }}
     >
       <SessionTile session={toTileSession(session)} sizeTier={sizeTier} />
