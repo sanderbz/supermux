@@ -56,6 +56,25 @@ cd "$ROOT"
 # ── source local config from .env if present (gitignored; see .env.example) ─
 [ -f .env ] && set -a && . ./.env && set +a
 
+# ── operator opt-out: --no-cache forces a full rebuild on the host ──────────
+# Pre-existing behaviour was "rm -rf $REMOTE_DIR every deploy → cold rebuild".
+# We now preserve server/target and web/node_modules between deploys (huge win
+# on small code changes), and gate bun/vite/static-touch on content hashes
+# (see scripts/build.sh). --no-cache restores the old cold-build path for
+# disaster-recovery situations where the cache is suspected of being poisoned.
+SUPERMUX_NO_CACHE=0
+_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-cache) SUPERMUX_NO_CACHE=1 ;;
+    *) _ARGS+=("$arg") ;;
+  esac
+done
+# Replace positional params with the filtered set so downstream code (none today)
+# never sees --no-cache as a stray arg.
+if [ ${#_ARGS[@]} -gt 0 ]; then set -- "${_ARGS[@]}"; else set --; fi
+export SUPERMUX_NO_CACHE
+
 # ── helpers (defined early so the test hook below can short-circuit before any
 #    config requirement runs, and so they're available to every section) ──────
 # Run a quiet remote check. Returns 0/1 — never prints output. Uses $HOST,
@@ -240,6 +259,53 @@ deployer_claude_creds_home() {
 if [ "${SUPERMUX_DEPLOY_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
+
+# ── Win 2: SSH ControlMaster — multiplex every ssh/scp through one TCP+auth
+#    handshake, dropping ~5–8 s of re-handshake latency across the deploy. We
+#    override `ssh` and `scp` as bash functions so EVERY existing call site
+#    (including helpers like remote_check) inherits the multiplex transparently
+#    — no per-call-site edit. ControlPersist=60s keeps the master alive long
+#    enough to span build-time (~3–13 min); we explicitly tear it down on EXIT
+#    via the trap below so a wedged master can't outlive the script.
+#
+#    NOTE on placement: this MUST happen AFTER the SUPERMUX_DEPLOY_LIB_ONLY
+#    short-circuit above. The bash unit tests in tests/test_deploy_nonroot.sh
+#    define their OWN ssh()/scp() stubs and then source deploy.sh with
+#    LIB_ONLY=1 to load just the pure helpers. If we redefined ssh()/scp()
+#    BEFORE the short-circuit, we'd clobber the test stubs and the tests would
+#    try real SSH against the (non-existent) test host. Returning early in
+#    LIB_ONLY mode keeps the stubs intact for the test path while still
+#    multiplexing every ssh/scp on the real deploy path. ─────────────────────
+SSH_CTRL_PATH="${SUPERMUX_SSH_CTRL_PATH:-/tmp/.supermux-ssh-$$-%r@%h:%p}"
+ssh() {
+  command ssh -o ControlMaster=auto \
+              -o "ControlPath=$SSH_CTRL_PATH" \
+              -o ControlPersist=60s \
+              "$@"
+}
+scp() {
+  command scp -o ControlMaster=auto \
+              -o "ControlPath=$SSH_CTRL_PATH" \
+              -o ControlPersist=60s \
+              "$@"
+}
+# Tear down any persisted master on exit. We don't know which hosts we used,
+# so glob the control-path template's literal-prefix (everything up to the
+# first %) and `ssh -O exit` each one. Best-effort; silent on failure.
+_supermux_ssh_cleanup() {
+  local prefix="${SSH_CTRL_PATH%%%*}"
+  shopt -s nullglob
+  local m
+  for m in "${prefix}"*; do
+    # The control socket name encodes %r@%h:%p — translate back to a host arg.
+    # ssh -O exit -o ControlPath=<file> doesn't need a real hostname when the
+    # path uniquely identifies the master. Best-effort; silent on failure.
+    command ssh -o "ControlPath=$m" -O exit dummyhost 2>/dev/null || true
+    rm -f "$m" 2>/dev/null || true
+  done
+  shopt -u nullglob
+}
+trap '_supermux_ssh_cleanup' EXIT
 
 HOST="${SUPERMUX_DEPLOY_HOST:-}"
 if [ -z "$HOST" ]; then
@@ -789,22 +855,98 @@ if [ "$INSTALL_CARGO_GUARD" = "1" ]; then
   '"
 fi
 
-# ── 1. ship a pinned source snapshot to the host ────────────────────────────
+# ── 1. ship a pinned source snapshot to the host (Win 1: preserve build caches) ─
 # `git archive` emits exactly the tracked content at $GIT_SHA — no .git, no
 # build artifacts, no uncommitted edits. The host build is thus reproducible
 # from the recorded SHA.
-echo "[deploy] shipping git archive of $GIT_SHA_SHORT -> $HOST:$REMOTE_DIR"
-if ! ssh "$HOST" "sudo rm -rf '$REMOTE_DIR' && sudo mkdir -p '$REMOTE_DIR' && sudo chown '$SERVICE_USER:$SERVICE_USER' '$REMOTE_DIR'"; then
+#
+# CACHE PRESERVATION (the change vs the old `rm -rf $REMOTE_DIR`):
+#   Old behaviour wiped $REMOTE_DIR every deploy → cargo's ~1.9 GiB target/ +
+#   bun's 280 MiB node_modules/ + web/dist/ got nuked → every deploy was a
+#   from-scratch 3–11 min cargo + 30–90 s bun install. ~70 % of deploy time
+#   was rebuilding bit-for-bit identical artefacts.
+#
+#   Now we extract `git archive` into a sibling STAGING dir and rsync it into
+#   $REMOTE_DIR with --delete-excluded, EXCLUDING server/target,
+#   web/node_modules, and web/dist. Cargo / bun / vite then incrementally
+#   reuse the previous-deploy caches — `Cargo.lock` and `bun.lock` are
+#   committed (and frozen), so the caches reflect the EXACT pinned deps.
+#
+#   The build.sh hash-gates (Wins 3+5) need these caches to survive in order
+#   to skip; without Win 1 they have nothing to skip.
+#
+# SAFETY:
+#   - rsync --delete prunes any tracked file removed at $GIT_SHA (so stale
+#     committed source can't survive). The two --exclude rules keep ONLY the
+#     build caches: rsync's --delete operates on the SOURCE side, so files
+#     in the excluded paths on the DEST side are left alone.
+#   - server/static is intentionally NOT excluded: build.sh regenerates it
+#     deterministically from web/dist (which IS excluded so vite can
+#     incrementally update it). Old static/ would be wiped+recreated by
+#     build.sh's `rm -rf server/static && cp -r web/dist server/static`
+#     path, gated by the static-hash skip.
+#   - --no-cache (operator opt-out) restores the cold-rebuild path for
+#     disaster recovery: rm -rf $REMOTE_DIR before the rsync, exactly the
+#     old behaviour. This deliberately re-introduces the slow rebuild cost.
+if [ "$SUPERMUX_NO_CACHE" = "1" ]; then
+  echo "[deploy] --no-cache: wiping $REMOTE_DIR on $HOST (forces cold rebuild — old behaviour)"
+  if ! ssh "$HOST" "sudo rm -rf '$REMOTE_DIR'"; then
+    echo "[deploy] error: failed to clear $REMOTE_DIR on $HOST." >&2
+    exit 1
+  fi
+fi
+
+echo "[deploy] shipping git archive of $GIT_SHA_SHORT -> $HOST:$REMOTE_DIR (preserving target/ + node_modules/ + web/dist for incremental build)"
+# Provision $REMOTE_DIR (idempotent — no-op on subsequent deploys). Ensures the
+# dir exists, owned by the service user, before we rsync into it.
+if ! ssh "$HOST" "sudo mkdir -p '$REMOTE_DIR' && sudo chown '$SERVICE_USER:$SERVICE_USER' '$REMOTE_DIR'"; then
   echo "[deploy] error: failed to prepare $REMOTE_DIR on $HOST." >&2
   echo "[deploy]   Fix: ensure your SSH user has passwordless sudo on the host." >&2
   exit 1
 fi
-git archive --format=tar "$GIT_SHA" | ssh "$HOST" "sudo -u '$SERVICE_USER' tar -x -C '$REMOTE_DIR'"
+
+# Stage the git-archive into a sibling temp dir under the same parent as
+# $REMOTE_DIR. The temp dir MUST be on the same filesystem so rsync's hard-link
+# tricks (if it uses them) work, and so the staging cost is the cheap tar
+# extraction rather than a cross-fs copy.
+REMOTE_PARENT="$(dirname "$REMOTE_DIR")"
+REMOTE_STAGE="$REMOTE_PARENT/.supermux-deploy-stage.$GIT_SHA_SHORT.$$"
+if ! ssh "$HOST" "sudo -u '$SERVICE_USER' mkdir -p '$REMOTE_STAGE'"; then
+  echo "[deploy] error: failed to create staging dir $REMOTE_STAGE on $HOST." >&2
+  exit 1
+fi
+# Extract the pinned source into staging.
+git archive --format=tar "$GIT_SHA" | ssh "$HOST" "sudo -u '$SERVICE_USER' tar -x -C '$REMOTE_STAGE'"
+# rsync staging → $REMOTE_DIR, deleting anything tracked-removed but preserving
+# the build caches that live ONLY on the dest side.
+#   -a       : archive (perms/mtimes/symlinks — needed for cargo's mtime cache)
+#   --delete : remove dest files not in source (drops stale committed files)
+#   --exclude='/server/target' --exclude='/web/node_modules' --exclude='/web/dist'
+#            : leaf rules anchored to the rsync source root; these paths on the
+#              DEST are not touched by --delete.
+# Trailing slash on source = "copy contents", not the dir itself.
+if ! ssh "$HOST" "sudo -u '$SERVICE_USER' bash -lc 'command -v rsync >/dev/null'"; then
+  echo "[deploy] error: 'rsync' not found on $HOST. The incremental-deploy path requires rsync." >&2
+  echo "[deploy]   Fix: install rsync on the host (apt/dnf/apk install rsync), then retry." >&2
+  echo "[deploy]   Or:  re-run with --no-cache (slower; uses the cold-rebuild path)." >&2
+  ssh "$HOST" "sudo -u '$SERVICE_USER' rm -rf '$REMOTE_STAGE'" 2>/dev/null || true
+  exit 1
+fi
+if ! ssh "$HOST" "sudo -u '$SERVICE_USER' rsync -a --delete --exclude='/server/target' --exclude='/web/node_modules' --exclude='/web/dist' '$REMOTE_STAGE/' '$REMOTE_DIR/'"; then
+  echo "[deploy] error: rsync from staging dir $REMOTE_STAGE into $REMOTE_DIR failed." >&2
+  ssh "$HOST" "sudo -u '$SERVICE_USER' rm -rf '$REMOTE_STAGE'" 2>/dev/null || true
+  exit 1
+fi
+ssh "$HOST" "sudo -u '$SERVICE_USER' rm -rf '$REMOTE_STAGE'" || true
 
 # ── 2. build natively on the host (toolchains MUST be pre-provisioned) ───────
 echo "[deploy] building on $HOST (as user '$SERVICE_USER')"
 ssh "$HOST" "sudo -u '$SERVICE_USER' -H bash -s" <<REMOTE_BUILD
 set -euo pipefail
+# Propagate the cache-bypass flag to build.sh on the host. When set, build.sh
+# clears its own skip stamps so even with the rsync-preserved caches we get a
+# truly cold rebuild (disaster-recovery path).
+export SUPERMUX_NO_CACHE='$SUPERMUX_NO_CACHE'
 # rustup/bun install into the user's home — make them discoverable on a
 # non-login PATH. The preflight already verified these (or installed them).
 [ -d "\$HOME/.bun/bin" ] && export PATH="\$HOME/.bun/bin:\$PATH"
@@ -830,7 +972,7 @@ REMOTE_BUILD
 # enabled, uncomment the optional After/Wants=tailscaled lines.
 echo "[deploy] rendering systemd unit (user=$SERVICE_USER home=$USER_HOME data_dir=$DATA_DIR)"
 UNIT_TMP="$(mktemp)"
-trap 'rm -f "$UNIT_TMP"' EXIT
+trap 'rm -f "$UNIT_TMP"; _supermux_ssh_cleanup' EXIT
 sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__USER_HOME__|$USER_HOME|g" \
     -e "s|__DATA_DIR__|$DATA_DIR|g" \
@@ -883,7 +1025,7 @@ PRIMARY_PROJECT_DIR="$(printf '%s' "$PROJECT_DIRS" | cut -d: -f1)"
 DEPLOY_PATH_TMP="$(mktemp)"
 DEPLOY_SVC_TMP="$(mktemp)"
 DEPLOY_RUNNER_TMP="$(mktemp)"
-trap 'rm -f "$UNIT_TMP" "$DEPLOY_PATH_TMP" "$DEPLOY_SVC_TMP" "$DEPLOY_RUNNER_TMP"' EXIT
+trap 'rm -f "$UNIT_TMP" "$DEPLOY_PATH_TMP" "$DEPLOY_SVC_TMP" "$DEPLOY_RUNNER_TMP"; _supermux_ssh_cleanup' EXIT
 
 # supermux-deploy.path — watches the request file.
 sed -e "s|__DEPLOY_REQUEST__|$DEPLOY_REQUEST|g" \
