@@ -18,8 +18,12 @@
 //   * Restart recovery: a systemd-install update restarts supermux during the
 //     `installing` phase, which kills THIS server process (and the SSE). The
 //     real terminal `done` line is written afterwards to a log no live client
-//     can tail. So when the stream drops after we have reached `installing`,
-//     we poll the new binary back to health and synthesize a terminal `done`.
+//     can tail, and the restarted process 404s this job id. The restart often
+//     lands BEFORE the `installing` event even reaches the client (last seen
+//     step = `building`), so we cannot rely on the SSE for the terminal state.
+//     Once we reach `building` we arm a version watcher that polls
+//     /api/version and resolves the update when the running sha changes (a
+//     release is always a new commit) or the server is seen to bounce down→up.
 
 import * as React from 'react'
 
@@ -168,17 +172,23 @@ export function useVersion(): UseVersion {
   const esRef = React.useRef<EventSource | null>(null)
   // Mirror of `jobId` readable from closures without re-creating callbacks.
   const jobIdRef = React.useRef<string | null>(null)
-  // Tracks whether we have reached the `installing` step, so the SSE `onerror`
-  // handler can tell a transient blip from the install-phase service restart.
   // The systemd path-unit runner restarts supermux during `installing`, which
   // KILLS this server process (and the in-memory job registry + this SSE
-  // connection). After that the runner keeps writing `verifying` / `done` to
-  // its log, but no live SSE can deliver them: the new process has no record
-  // of this job id and 404s the reconnect. So once we have reached `installing`
-  // and the stream drops, we stop trusting the SSE for a terminal event and
-  // instead poll the server back to health, then synthesize a terminal `done`.
-  const reachedInstallRef = React.useRef(false)
-  const recoveryRef = React.useRef(false)
+  // connection) BEFORE the terminal `done` line can be delivered — often before
+  // `installing` itself reaches the client, so the last event we see is
+  // `building`. We therefore don't trust the SSE for the terminal state: once
+  // we reach `building` we arm a version watcher (`watchForRestart`) that
+  // resolves the update by polling /api/version for a sha change.
+  const reachedBuildRef = React.useRef(false)
+  const watcherStartedRef = React.useRef(false)
+  // The sha running BEFORE the update (captured in `startUpdate`) and a live
+  // mirror of the currently-running sha. The watcher compares the two: a change
+  // means the new binary is up.
+  const preUpdateShaRef = React.useRef<string | null>(null)
+  const currentShaRef = React.useRef<string | null>(null)
+  // Live mirror of `progress` so the watcher loop can see a terminal event
+  // pushed by the backstop effect (or the SSE) and stop without a stale closure.
+  const progressRef = React.useRef<UpdateEvent[]>([])
 
   const fetchSnap = React.useCallback(async () => {
     // DEV mock: short-circuit the network so the panel renders a deterministic
@@ -205,6 +215,17 @@ export function useVersion(): UseVersion {
     return () => window.clearInterval(t)
   }, [fetchSnap])
 
+  // Keep a ref mirror of the running sha so `startUpdate` can snapshot the
+  // pre-update commit without a stale closure.
+  React.useEffect(() => {
+    currentShaRef.current = snapshot?.current?.sha ?? null
+  }, [snapshot])
+
+  // Mirror `progress` into a ref for the watcher loop's terminal check.
+  React.useEffect(() => {
+    progressRef.current = progress
+  }, [progress])
+
   const refresh = React.useCallback(async () => {
     if (refreshing) return
     setRefreshing(true)
@@ -219,65 +240,108 @@ export function useVersion(): UseVersion {
     }
   }, [refreshing])
 
-  // After the install-phase restart took our SSE down, poll the server back to
-  // health on the NEW binary, then surface a terminal `done`. We push a
-  // synthetic `done` event so the progress UI reaches its terminal state
-  // (CheckCircle + "Reload now") even though the real `done` line was written
-  // to a log no live client could tail. We do NOT auto-reload silently: a
-  // forced reload could drop work in another tab, so we render the terminal
-  // state and let the existing "Reload now" button (and the user) drive the
-  // actual navigation.
-  const recoverAfterRestart = React.useCallback(async () => {
-    const deadline = Date.now() + 5 * 60_000 // 5 min ceiling, matches the runner verify window.
-    // Give the restart a moment before the first probe.
+  // Mark the update DONE iff the running binary is a NEW commit. A release is
+  // ALWAYS a new sha, and a rollback comes back on the OLD commit — so a sha
+  // change is the only signal that distinguishes a successful update from a
+  // failed-and-rolled-back one (a plain down→up bounce does NOT). Dedupe-guarded
+  // so the fast watcher AND the regular version poll can both call it without
+  // racing. Pushes a synthetic `done` so the modal reaches its terminal
+  // "Update complete" + "Reload now" state (we never auto-reload — a forced
+  // reload could drop work in another tab; the user drives navigation).
+  const resolveDoneIfNewBinary = React.useCallback(
+    (snap: PreflightStatus): boolean => {
+      const pre = preUpdateShaRef.current
+      const sha = snap.current?.sha ?? null
+      if (!sha || !pre || sha === pre) return false
+      const tag = snap.current?.tag ?? sha.slice(0, 7)
+      setProgress((prev) =>
+        prev.some((p) => p.step === 'done' || p.step === 'failed')
+          ? prev
+          : [
+              ...prev,
+              {
+                job_id: jobIdRef.current ?? '',
+                step: 'done',
+                message: `Update complete. Now running ${tag}.`,
+                ts: Math.floor(Date.now() / 1000),
+              },
+            ],
+      )
+      return true
+    },
+    [],
+  )
+
+  // Armed once the update reaches `building` (see startUpdate). Polls the server
+  // fast so the new binary's version surfaces within seconds of the restart;
+  // `resolveDoneIfNewBinary` (also wired to the 30s poll via an effect) owns the
+  // DONE transition on a sha change. INDEPENDENT of the SSE, which the
+  // install-phase restart takes down before it can deliver a terminal event. If
+  // the deadline passes without a new commit, surface a failure so the modal
+  // never spins forever (one last check first, in case a throttled background
+  // tab missed the change).
+  const watchForRestart = React.useCallback(async () => {
+    const deadline = Date.now() + 8 * 60_000
+    let sawServerDown = false
     await new Promise((r) => setTimeout(r, 1_500))
     while (Date.now() < deadline) {
+      if (progressRef.current.some((p) => p.step === 'done' || p.step === 'failed')) {
+        return
+      }
       try {
         const snap = await updatesApi.getVersion()
-        // The new binary answered. Surface a terminal `done` so the UI shows
-        // "Update complete" + the Reload button.
-        setProgress((prev) => {
-          if (prev.some((p) => p.step === 'done')) return prev
-          const tag = snap.current?.tag ?? snap.current?.sha?.slice(0, 7) ?? 'the new build'
-          return [
+        setSnapshot(snap) // keep the panel behind the modal fresh too
+        setFetchError(null)
+        if (resolveDoneIfNewBinary(snap)) return
+      } catch {
+        // A failed probe means the server is restarting / briefly unreachable.
+        sawServerDown = true
+      }
+      await new Promise((r) => setTimeout(r, 2_500))
+    }
+    // One last check before failing (covers a throttled background poll).
+    try {
+      const snap = await updatesApi.getVersion()
+      setSnapshot(snap)
+      if (resolveDoneIfNewBinary(snap)) return
+    } catch {
+      sawServerDown = true
+    }
+    setProgress((prev) =>
+      prev.some((p) => p.step === 'failed' || p.step === 'done')
+        ? prev
+        : [
             ...prev,
             {
               job_id: jobIdRef.current ?? '',
-              step: 'done',
-              message: `Update complete. Now running ${tag}.`,
+              step: 'failed',
+              message: sawServerDown
+                ? 'Could not confirm the update from this device — the server never settled on a new version. Check the version above (it may already be updated) or the supermux-deploy unit on the server.'
+                : 'The update did not complete in time. Check the version above or the supermux-deploy unit on the server.',
               ts: Math.floor(Date.now() / 1000),
             },
-          ]
-        })
-        return
-      } catch {
-        // Server still restarting / unreachable; keep probing.
-        await new Promise((r) => setTimeout(r, 2_000))
-      }
-    }
-    // Never came back healthy in time: surface a failure so the UI does not
-    // hang on a half-finished bar forever.
-    setProgress((prev) => {
-      if (prev.some((p) => p.step === 'failed' || p.step === 'done')) return prev
-      return [
-        ...prev,
-        {
-          job_id: jobIdRef.current ?? '',
-          step: 'failed',
-          message:
-            'The server did not come back after the restart. Check the supermux-deploy unit on the server.',
-          ts: Math.floor(Date.now() / 1000),
-        },
-      ]
-    })
-  }, [])
+          ],
+    )
+  }, [resolveDoneIfNewBinary])
+
+  // Backstop done-resolver: while a building+ update is in flight, ANY version
+  // poll (the fast watcher OR the 30s cadence OR a manual refresh) that shows a
+  // new commit resolves the modal. Keeps the terminal state robust even if the
+  // watcher loop is throttled (e.g. a backgrounded PWA tab).
+  React.useEffect(() => {
+    if (!watcherStartedRef.current || !snapshot) return
+    resolveDoneIfNewBinary(snapshot)
+  }, [snapshot, resolveDoneIfNewBinary])
 
   const startUpdate = React.useCallback(async (): Promise<string> => {
     setProgress([])
     setJobId(null)
     jobIdRef.current = null
-    reachedInstallRef.current = false
-    recoveryRef.current = false
+    reachedBuildRef.current = false
+    watcherStartedRef.current = false
+    // Snapshot the commit we're updating FROM so the watcher can detect the new
+    // binary by sha change.
+    preUpdateShaRef.current = currentShaRef.current
     const { job_id } = await updatesApi.start()
     setJobId(job_id)
     jobIdRef.current = job_id
@@ -290,11 +354,19 @@ export function useVersion(): UseVersion {
       try {
         const data = JSON.parse((ev as MessageEvent).data) as UpdateEvent
         if (
+          data.step === 'building' ||
           data.step === 'installing' ||
           data.step === 'verifying' ||
           data.step === 'done'
         ) {
-          reachedInstallRef.current = true
+          reachedBuildRef.current = true
+          // Arm the version watcher once: the SSE cannot deliver the terminal
+          // `done` across the install-phase restart, so the watcher owns
+          // terminal resolution from here.
+          if (!watcherStartedRef.current) {
+            watcherStartedRef.current = true
+            void watchForRestart()
+          }
         }
         setProgress((prev) => {
           // Dedupe (the server replays the latest event on subscribe, so the
@@ -319,23 +391,19 @@ export function useVersion(): UseVersion {
       }
     })
     es.onerror = () => {
-      // EventSource fires `error` on every transient disconnect too; the
-      // browser auto-reconnects. We do NOT close on a plain blip. BUT if we
-      // already reached `installing`, this drop is almost certainly the service
-      // restart taking our process down (see reachedInstallRef above). The
-      // terminal `done` will never arrive over this socket, so kick off the
-      // recovery poll: wait for the new binary to answer /api/version, then
-      // surface a synthetic terminal `done`. This is what turns "stuck after
-      // Installing" into a clean "Update complete" + Reload.
-      if (reachedInstallRef.current && !recoveryRef.current) {
-        recoveryRef.current = true
-        es.close()
-        esRef.current = null
-        void recoverAfterRestart()
+      // EventSource auto-reconnects transient blips (and the server replays the
+      // latest event on resubscribe), so a plain drop needs no action. After
+      // the install-phase restart the socket dies for good (the new process
+      // 404s this job id) — but `watchForRestart`, armed once we reach
+      // `building`, owns terminal resolution by polling the version. Arm it
+      // here too, in case `building` was the only event we got before the drop.
+      if (reachedBuildRef.current && !watcherStartedRef.current) {
+        watcherStartedRef.current = true
+        void watchForRestart()
       }
     }
     return job_id
-  }, [recoverAfterRestart])
+  }, [watchForRestart])
 
   const resetUpdate = React.useCallback(() => {
     if (esRef.current) {
@@ -343,8 +411,9 @@ export function useVersion(): UseVersion {
       esRef.current = null
     }
     jobIdRef.current = null
-    reachedInstallRef.current = false
-    recoveryRef.current = false
+    reachedBuildRef.current = false
+    watcherStartedRef.current = false
+    preUpdateShaRef.current = null
     setProgress([])
     setJobId(null)
   }, [])
