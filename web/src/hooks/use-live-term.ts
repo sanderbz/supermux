@@ -532,6 +532,51 @@ export function useLiveTerm(
     }
     viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
 
+    // ── Touch scroll-back while the agent has mouse-reporting active ─────────────
+    //
+    // ROOT CAUSE (verified in xterm 5.5, reproduced on Blink / Chrome 148). When
+    // the running agent enables mouse reporting (Claude Code's interactive TUI
+    // sends DECSET ?1000/?1002 + ?1006), xterm's OWN touch handlers on the screen
+    // element early-return: it neither scrolls the scrollback NOR forwards the
+    // touch, so the one-finger drag is left entirely to the browser's native pan
+    // of `.xterm-viewport`. iOS/WebKit's native pan rescues it; Android Chrome /
+    // Brave (both Blink) do not — so the user is stuck at the live bottom and
+    // cannot scroll up to read history. (The SAME mouse-reporting gate also
+    // disables xterm's text selection — the desktop shift+drag-to-copy story —
+    // a different surface, identical cause.)
+    //
+    // THE FIX. Attach our own one-finger touch-scroll on the SCREEN element (where
+    // touches actually land — `.xterm-viewport` is a sibling, a touch never
+    // bubbles to it) that engages ONLY while mouse-reporting is active. We then
+    // scroll the viewport with the exact `scrollTop += delta` xterm itself uses on
+    // its mouse-OFF path, and `preventDefault` so we never double up with a native
+    // pan on engines that would also fire one. Deliberately SCOPED so nothing else
+    // regresses: the common mouse-OFF path is untouched (xterm keeps handling it,
+    // we early-return), and 2-finger gestures are ignored (`touches.length === 1`)
+    // so the PageUp/PageDown recogniser is left alone. Engine-independent — the
+    // scroll is done in JS, identically on WebKit and Blink.
+    const screenEl = container.querySelector<HTMLElement>('.xterm-screen')
+    let lastTouchY = 0
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) lastTouchY = e.touches[0].clientY
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1 || !viewportEl) return
+      const t = termRef.current
+      // Only when xterm has abandoned touch-scroll (mouse-reporting on). Otherwise
+      // leave it to xterm's own handler so there's no double-scroll.
+      if (!t || t.modes.mouseTrackingMode === 'none') return
+      const y = e.touches[0].clientY
+      const dy = lastTouchY - y
+      lastTouchY = y
+      if (dy !== 0) {
+        viewportEl.scrollTop += dy
+        e.preventDefault()
+      }
+    }
+    screenEl?.addEventListener('touchstart', onTouchStart, { passive: true })
+    screenEl?.addEventListener('touchmove', onTouchMove, { passive: false })
+
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
     // keyboard (which read as a SECOND toolbar stacked over our dock). xterm owns
@@ -1434,6 +1479,8 @@ export function useLiveTerm(
         wsRef.current = null
       }
       viewportEl?.removeEventListener('scroll', syncScrolledUp)
+      screenEl?.removeEventListener('touchstart', onTouchStart)
+      screenEl?.removeEventListener('touchmove', onTouchMove)
       term.dispose()
       termRef.current = null
       fitRef.current = null
