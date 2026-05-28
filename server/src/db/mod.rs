@@ -76,6 +76,7 @@ mod tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            extra_origins: Vec::new(),
         };
         let pool = init(&config).await.expect("init pool");
         (pool, dir)
