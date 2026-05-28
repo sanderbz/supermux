@@ -532,6 +532,65 @@ export function useLiveTerm(
     }
     viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
 
+    // ── Single-finger touch scroll-back while the agent holds the mouse ──────────
+    // xterm's OWN touch-to-scroll (Viewport.handleTouchMove) early-returns whenever
+    // the program has mouse reporting ON (`coreMouseService.areMouseEventsActive` —
+    // Claude Code's TUI almost always does), forwarding the touch as a mouse report
+    // instead of panning the scrollback. So on mobile a one-finger drag can't reach
+    // history while an agent is attached (wheel + 2-finger use other paths, hence
+    // they still work — the exact reported symptom). We restore it: while mouse
+    // reporting is ON and we're in the NORMAL buffer (the only one with scrollback),
+    // a one-finger vertical drag scrolls via `term.scrollLines()` — xterm's API, so
+    // the ACTIVE renderer (WebGL/Canvas) repaints correctly. (A raw
+    // `viewport.scrollTop += dy` does NOT repaint the WebGL canvas — that is what
+    // made the earlier attempt "ruin rendering" on iOS; using scrollLines is the
+    // engine-agnostic, renderer-safe path.) A pixel accumulator gives whole-line
+    // granularity. We claim the gesture (preventDefault + stopPropagation) ONLY once
+    // we actually scroll, so a tap still reaches the agent as a click and a STILL
+    // hold still arms the long-press joystick. When mouse reporting is OFF, this is
+    // inert and xterm's own native touch-scroll handles it (unchanged).
+    const screenEl = container.querySelector<HTMLElement>('.xterm-screen')
+    let touchLastY: number | null = null
+    let touchAccumPx = 0
+    const cellHeightPx = () => {
+      const rows = term.rows || 24
+      return (viewportEl?.clientHeight ?? rows * 16) / rows
+    }
+    const wantsTouchScroll = () =>
+      term.modes.mouseTrackingMode !== 'none' &&
+      term.buffer.active.type === 'normal'
+    const onScreenTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1 && wantsTouchScroll()) {
+        touchLastY = e.touches[0].clientY
+        touchAccumPx = 0
+      } else {
+        touchLastY = null
+      }
+    }
+    const onScreenTouchMove = (e: TouchEvent) => {
+      if (touchLastY === null || e.touches.length !== 1 || !wantsTouchScroll()) return
+      const y = e.touches[0].clientY
+      // Finger UP (y decreases) → scroll DOWN (positive lines); finger DOWN → up.
+      touchAccumPx += touchLastY - y
+      touchLastY = y
+      const h = cellHeightPx()
+      if (h > 0 && Math.abs(touchAccumPx) >= h) {
+        const lines = Math.trunc(touchAccumPx / h)
+        term.scrollLines(lines)
+        touchAccumPx -= lines * h
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    const onScreenTouchEnd = () => {
+      touchLastY = null
+      touchAccumPx = 0
+    }
+    screenEl?.addEventListener('touchstart', onScreenTouchStart, { passive: true })
+    screenEl?.addEventListener('touchmove', onScreenTouchMove, { passive: false })
+    screenEl?.addEventListener('touchend', onScreenTouchEnd, { passive: true })
+    screenEl?.addEventListener('touchcancel', onScreenTouchEnd, { passive: true })
+
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
     // keyboard (which read as a SECOND toolbar stacked over our dock). xterm owns
@@ -1434,6 +1493,10 @@ export function useLiveTerm(
         wsRef.current = null
       }
       viewportEl?.removeEventListener('scroll', syncScrolledUp)
+      screenEl?.removeEventListener('touchstart', onScreenTouchStart)
+      screenEl?.removeEventListener('touchmove', onScreenTouchMove)
+      screenEl?.removeEventListener('touchend', onScreenTouchEnd)
+      screenEl?.removeEventListener('touchcancel', onScreenTouchEnd)
       term.dispose()
       termRef.current = null
       fitRef.current = null
