@@ -558,16 +558,50 @@ impl<'a> Tmux<'a> {
                 "-p",
                 "-t",
                 &self.target(),
-                "#{alternate_on},#{cursor_x},#{cursor_y}",
+                "#{alternate_on},#{cursor_x},#{cursor_y},#{pane_height}",
             ])
             .await
             .unwrap_or_default();
-        let (alt_on, provisional_x, provisional_y) = parse_pane_info(&info);
+        let (alt_on, provisional_x, provisional_y, pane_height) = parse_pane_info(&info);
 
-        // 2. Primary-screen mode: flat full capture is correct as-is.
+        // 2. Primary-screen mode (a shell prompt, OR Claude Code — its Ink TUI
+        //    renders inline on the PRIMARY screen, `alternate_on=0`). Modern
+        //    Claude is almost always here. The flat full capture lands in the
+        //    right buffer, but on its own it leaves the cursor at the END of the
+        //    dumped body — i.e. on Claude's footer row, 2-3 rows BELOW the `❯`
+        //    input — because `frame_primary_seed` never restores the cursor. So
+        //    split + frame like the alt path: history as scrollback, the visible
+        //    pane padded to full height (so the viewport-relative CUP lands
+        //    right), then a CUP to tmux's real cursor. Verified against the real
+        //    xterm.js engine: this lands the cursor on the input row, not the
+        //    footer. Falls back to the flat capture if we lack a pane height.
         if !alt_on {
-            let full = self.capture_full_ansi_joined().await?;
-            return Ok(frame_primary_seed(&full));
+            if pane_height == 0 {
+                let full = self.capture_full_ansi_joined().await?;
+                return Ok(frame_primary_seed(&full));
+            }
+            let history = self
+                .run(&[
+                    "capture-pane", "-p", "-e", "-J", "-t", &self.target(),
+                    "-S", "-", "-E", "-1",
+                ])
+                .await
+                .unwrap_or_default();
+            let visible = self
+                .run(&["capture-pane", "-p", "-e", "-t", &self.target()])
+                .await
+                .unwrap_or_default();
+            // Race-B: re-probe the cursor right after the visible capture so the
+            // CUP matches the bytes we just grabbed (same tightening as alt mode).
+            let info2 = self
+                .run(&["display-message", "-p", "-t", &self.target(), "#{cursor_x},#{cursor_y}"])
+                .await
+                .unwrap_or_default();
+            let (cursor_x, cursor_y) =
+                parse_cursor_xy(&info2).unwrap_or((provisional_x, provisional_y));
+            return Ok(frame_primary_seed_with_cursor(
+                &history, &visible, cursor_x, cursor_y, pane_height,
+            ));
         }
 
         // 3. Alt-screen mode: split + frame.
@@ -829,7 +863,7 @@ pub async fn find_pane_session(pane_id: &str) -> Result<Option<String>> {
 /// malformed input falls back to `(false, 0, 0)` so the seed degrades to a
 /// flat capture-pane rather than crashing the WS attach. Free fn so the
 /// parse contract is unit-testable without spinning up a real tmux server.
-pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32) {
+pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32, u32) {
     let mut parts = info.trim().split(',');
     let alt_on = parts.next().map(|s| s.trim() == "1").unwrap_or(false);
     let cursor_x: u32 = parts
@@ -840,7 +874,13 @@ pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32) {
         .next()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
-    (alt_on, cursor_x, cursor_y)
+    // pane_height is optional (older callers passed a 3-field format); 0 means
+    // "unknown", which routes the primary-seed path to its flat-capture fallback.
+    let pane_height: u32 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    (alt_on, cursor_x, cursor_y, pane_height)
 }
 
 /// Parse tmux's `display-message -p '#{cursor_x},#{cursor_y}'` (the Race-B
@@ -862,6 +902,41 @@ pub(crate) fn parse_cursor_xy(info: &str) -> Option<(u32, u32)> {
 pub(crate) fn frame_primary_seed(full_capture: &str) -> String {
     let body = full_capture.trim_end_matches('\n').replace('\n', "\r\n");
     format!("\x1b[2J\x1b[3J\x1b[H{body}")
+}
+
+/// PRIMARY-mode seed WITH a cursor restore (the fix for "cursor lands 2-3 rows
+/// below the `❯` input" on a Claude session, whose Ink TUI renders inline on the
+/// primary screen). `frame_primary_seed` dumps the capture and leaves the cursor
+/// at the end of the body (Claude's footer); this variant pins the cursor to
+/// tmux's real position.
+///
+/// Shape: `history` (scrollback above the visible frame) → the `visible` pane
+/// PADDED to exactly `pane_height` rows → `\x1b[<row>;<col>H`. The padding is
+/// load-bearing: a CUP in xterm is VIEWPORT-relative, so the visible body must
+/// fill the whole viewport for `cursor_y` to map onto the right row. tmux's
+/// cursor_y is 0-based; ANSI CUP is 1-based. Verified against `@xterm/headless`:
+/// the cursor lands on the input row, not the footer.
+pub(crate) fn frame_primary_seed_with_cursor(
+    history: &str,
+    visible: &str,
+    cursor_x: u32,
+    cursor_y: u32,
+    pane_height: u32,
+) -> String {
+    let row = cursor_y.saturating_add(1);
+    let col = cursor_x.saturating_add(1);
+    let history_body = history.trim_end_matches('\n').replace('\n', "\r\n");
+    // Pad/clamp the visible body to exactly `pane_height` rows so the viewport
+    // bottom aligns to the real pane bottom and the viewport-relative CUP is exact.
+    let mut rows: Vec<&str> = visible.trim_end_matches('\n').split('\n').collect();
+    let h = pane_height as usize;
+    rows.resize(h.max(rows.len()), "");
+    rows.truncate(h.max(1));
+    let visible_body = rows.join("\r\n");
+    // history + a CRLF separator (so the visible frame starts on its own row),
+    // omitted when there's no scrollback so we don't push an extra blank line.
+    let sep = if history_body.is_empty() { "" } else { "\r\n" };
+    format!("\x1b[2J\x1b[3J\x1b[H{history_body}{sep}{visible_body}\x1b[{row};{col}H")
 }
 
 /// ALT-SCREEN-mode seed: PRIMARY scrollback (history above the visible
@@ -897,28 +972,58 @@ mod seed_tests {
 
     #[test]
     fn parse_pane_info_happy_path() {
-        // Typical tmux 3.x output for an alt-screen TUI at (col=5, row=21).
-        assert_eq!(parse_pane_info("1,5,21"), (true, 5, 21));
-        assert_eq!(parse_pane_info("0,0,0"), (false, 0, 0));
-        assert_eq!(parse_pane_info("0,80,23"), (false, 80, 23));
+        // tmux 3.x output: `alternate_on,cursor_x,cursor_y,pane_height`.
+        assert_eq!(parse_pane_info("1,5,21,40"), (true, 5, 21, 40));
+        assert_eq!(parse_pane_info("0,0,0,24"), (false, 0, 0, 24));
+        assert_eq!(parse_pane_info("0,80,23,38"), (false, 80, 23, 38));
     }
 
     #[test]
     fn parse_pane_info_trims_whitespace_and_trailing_newline() {
         // tmux's `display-message -p` usually adds a trailing newline.
-        assert_eq!(parse_pane_info("1,5,21\n"), (true, 5, 21));
-        assert_eq!(parse_pane_info("  1 , 5 , 21  "), (true, 5, 21));
+        assert_eq!(parse_pane_info("1,5,21,40\n"), (true, 5, 21, 40));
+        assert_eq!(parse_pane_info("  1 , 5 , 21 , 40  "), (true, 5, 21, 40));
     }
 
     #[test]
     fn parse_pane_info_degrades_safely_on_malformed_input() {
-        // Empty / partial / non-numeric → falls back to (false, 0, 0) so the
-        // seed degrades to a flat primary capture rather than crashing.
-        assert_eq!(parse_pane_info(""), (false, 0, 0));
-        assert_eq!(parse_pane_info("1"), (true, 0, 0));
-        assert_eq!(parse_pane_info("garbage"), (false, 0, 0));
-        assert_eq!(parse_pane_info("1,x,y"), (true, 0, 0));
-        assert_eq!(parse_pane_info("2,5,21"), (false, 5, 21)); // `2` != `1` → false
+        // Empty / partial / non-numeric → falls back to 0s. A missing
+        // pane_height (0) routes the primary-seed path to its flat fallback.
+        assert_eq!(parse_pane_info(""), (false, 0, 0, 0));
+        assert_eq!(parse_pane_info("1"), (true, 0, 0, 0));
+        assert_eq!(parse_pane_info("garbage"), (false, 0, 0, 0));
+        assert_eq!(parse_pane_info("1,x,y,z"), (true, 0, 0, 0));
+        assert_eq!(parse_pane_info("2,5,21,40"), (false, 5, 21, 40)); // `2` != `1` → false
+        assert_eq!(parse_pane_info("0,5,21"), (false, 5, 21, 0)); // 3-field → height 0
+    }
+
+    #[test]
+    fn frame_primary_seed_with_cursor_restores_input_row() {
+        // The Bug-A fix: a Claude primary-screen pane where the `❯` input is on
+        // row 2 (0-based) but the captured body has a footer below it. The flat
+        // seed would leave the cursor on the footer; this framer pins it to the
+        // input row via a viewport-relative CUP. pane_height=4 so the visible
+        // body is padded to fill the viewport.
+        let seed = frame_primary_seed_with_cursor(
+            "scrollback line", // history
+            "❯ type here\n──footer──", // visible (2 lines, padded to 4)
+            2,  // cursor_x → col 3
+            2,  // cursor_y → row 3 (1-based)
+            4,  // pane_height
+        );
+        // Ends with a CUP to (row 3, col 3).
+        assert!(seed.ends_with("\x1b[3;3H"), "seed tail: {seed:?}");
+        // Clears + homes, carries the scrollback, then the visible frame.
+        assert!(seed.starts_with("\x1b[2J\x1b[3J\x1b[Hscrollback line\r\n"));
+        assert!(seed.contains("❯ type here\r\n──footer──"));
+    }
+
+    #[test]
+    fn frame_primary_seed_with_cursor_no_history_omits_leading_blank() {
+        // No scrollback → no leading CRLF before the visible frame.
+        let seed = frame_primary_seed_with_cursor("", "❯ x", 0, 0, 2);
+        assert!(seed.starts_with("\x1b[2J\x1b[3J\x1b[H❯ x"));
+        assert!(seed.ends_with("\x1b[1;1H"));
     }
 
     #[test]
