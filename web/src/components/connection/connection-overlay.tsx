@@ -121,7 +121,7 @@ function OverlayBody({ visual, status, onCta }: OverlayBodyProps) {
       className={cn(
         'fixed inset-0 z-[60] flex flex-col items-center justify-center',
         'bg-background/95 backdrop-blur-xl',
-        'px-6 py-safe',
+        'px-6 pt-safe pb-safe',
       )}
       role="alertdialog"
       aria-modal="true"

@@ -43,10 +43,11 @@ function isApiUrl(input: RequestInfo | URL): boolean {
     // Relative path — easy case.
     if (urlStr.startsWith('/api/')) return true
 
-    // Absolute URL — parse and check pathname.
+    // Absolute URL: only treat as our API when it's same-origin AND starts with /api/.
+    // Avoids classifying third-party URLs (e.g. https://example.com/foo/api/bar) as ours.
     if (/^https?:\/\//.test(urlStr)) {
       const u = new URL(urlStr)
-      return u.pathname.startsWith('/api/') || u.pathname.includes('/api/')
+      return u.origin === window.location.origin && u.pathname.startsWith('/api/')
     }
     return false
   } catch {
