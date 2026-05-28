@@ -55,6 +55,11 @@ pub fn router(state: AppState) -> Router {
         // `X-Supermux-Hook-Token` auth as the status hook, plus the scope rule
         // (an agent may only mutate its own session's issue).
         .merge(board::hook_router_for(state.clone()))
+        // Agent→scheduler hook (`/api/hook/schedule/done`) — NO bearer layer; SAME
+        // per-session `X-Supermux-Hook-Token` auth + scope (an agent may only
+        // confirm a schedule that targets its own session). The agent-confirmed
+        // finish tier for "notify me when done" schedules.
+        .merge(scheduler::hook_router_for(state.clone()))
         .merge(public::router_for(state.clone()))
         // Embedded SPA (R4-01 / §3.2 line 153) — PUBLIC, no bearer layer. Merged
         // LAST: it owns `GET /` and a catch-all `.fallback` that serves hashed

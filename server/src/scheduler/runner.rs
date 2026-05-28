@@ -220,7 +220,23 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
     } else {
         None
     };
-    for line in delivery_lines(sched) {
+    // Agent-confirmed finish: append the completion-call footer to the LAST
+    // delivered line so it lands in the SAME submission as the task prompt — the
+    // agent reads "do X, and when fully done, curl Y" as one instruction and so
+    // never fires the signal before the work is done. (A bare `/command`-only
+    // job carries the footer as trailing context, which skills ignore.)
+    let mut lines: Vec<String> = delivery_lines(sched).into_iter().map(str::to_string).collect();
+    if sched.confirm_finish == 1 {
+        let footer = confirm_footer(&sched.id);
+        match lines.last_mut() {
+            Some(last) => {
+                last.push_str("\n\n");
+                last.push_str(&footer);
+            }
+            None => lines.push(footer),
+        }
+    }
+    for line in &lines {
         if let Err(e) = sessions::lifecycle::send_text(state, &sched.session, line).await {
             return JobOutcome {
                 status: "error",
@@ -234,6 +250,23 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
         note: format!("sent to {}", sched.session),
         pre_output,
     }
+}
+
+/// The agent-confirmed-finish footer: a copy-pasteable curl the agent runs when
+/// the scheduled task is genuinely complete, so completion is agent-declared
+/// (the reliable signal) rather than inferred from idle. Uses the per-session
+/// `$SUPERMUX_*` env already in the pane (same convention as the board footer in
+/// `board::dispatch`). Idle detection remains the fallback if the agent forgets.
+fn confirm_footer(schedule_id: &str) -> String {
+    format!(
+        "— — —\n\
+         When this scheduled task is FULLY complete (not before), signal completion \
+         so I'm notified — run exactly:\n\
+         curl -fsS -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \\\n\
+         \x20 \"$SUPERMUX_URL/api/hook/schedule/done\" \\\n\
+         \x20 -d '{{\"session\":\"'$SUPERMUX_SESSION'\",\"schedule_id\":\"{schedule_id}\"}}'\n\
+         Call it only once, only when the work is genuinely done."
+    )
 }
 
 /// The ordered, non-empty lines a `tmux`/`boot` job delivers: the slash `command`
@@ -400,6 +433,7 @@ mod tests {
             watch_timeout: 120,
             done_pattern: None,
             done_action: "disable".into(),
+            confirm_finish: 0,
             created: 0,
             updated: 0,
             deleted: None,

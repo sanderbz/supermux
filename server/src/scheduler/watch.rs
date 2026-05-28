@@ -23,11 +23,18 @@
 //! Either signal triggers `done_action`:
 //!
 //! - `disable`            → set `enabled = 0`, log the run `done`.
-//! - `notify`             → SSE alert only, log the run `done`.
+//! - `notify`             → phone push (`ScheduleFinished`) + SSE alert, log `done`.
 //! - `command:<text>`     → send `<text>` to the session, then disable, log `done`.
+//!
+//! All three are deduped by a per-schedule fire-guard so the structural signal,
+//! the regex match, and the agent-confirm hook (`/api/hook/schedule/done`) can
+//! never double-fire. On timeout a `notify` schedule still pushes a "still
+//! running" heads-up rather than going silent ([`notify_timeout`]).
 //!
 //! [`StatusDetector`]: crate::sessions::status::StatusDetector
 
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -39,6 +46,34 @@ use crate::db::schedules::Schedule;
 use crate::sessions;
 use crate::state::{AppState, SseEvent};
 
+/// Per-schedule "already fired this watch cycle" guard. Completion can be
+/// observed by TWO independent paths — the watch loop's status→idle transition
+/// and the agent-confirm hook (`/api/hook/schedule/done`) — which would
+/// otherwise double-fire `done_action` (a duplicate push, or a duplicate
+/// `command:` send). This collapses them to one. `reset_fire` clears the flag at
+/// the start of each watch cycle so a recurring schedule fires again next time.
+fn fire_guard() -> &'static Mutex<HashSet<String>> {
+    static G: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    G.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Begin a fresh watch cycle for `id`: clear any prior "fired" flag.
+fn reset_fire(id: &str) {
+    if let Ok(mut g) = fire_guard().lock() {
+        g.remove(id);
+    }
+}
+
+/// Claim the single "done" for `id` this cycle. Returns `true` exactly once;
+/// later callers (the other signal) get `false` and must skip. A poisoned lock
+/// fails OPEN (fires) — a missed dedup is a duplicate ping, never a lost one.
+fn claim_fire(id: &str) -> bool {
+    match fire_guard().lock() {
+        Ok(mut g) => g.insert(id.to_string()),
+        Err(_) => true,
+    }
+}
+
 /// Spawn the background watcher for a just-fired schedule.
 pub fn spawn(state: AppState, sched: Schedule, pre_output: String) {
     tokio::spawn(async move {
@@ -46,10 +81,27 @@ pub fn spawn(state: AppState, sched: Schedule, pre_output: String) {
     });
 }
 
+/// Fire the schedule's `done_action` because the AGENT explicitly confirmed
+/// completion via `/api/hook/schedule/done` (the high-reliability tier). Shares
+/// the fire-guard with the watch loop, so confirming a schedule the watch
+/// already finished — or confirming twice — is a no-op, not a double push.
+pub async fn confirm_done(state: &AppState, sched: &Schedule) {
+    fire_done(state, sched, "agent-confirmed").await;
+}
+
 async fn poll(state: AppState, sched: Schedule, pre_output: String) {
+    // New watch cycle: clear any "fired" flag a prior fire of this (recurring)
+    // schedule left behind, so this cycle's completion can fire once.
+    reset_fire(&sched.id);
+
     let timeout = sched.watch_timeout.max(1) as u64;
     let anchor = tail_anchor(&pre_output);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    // The legacy 5s pane poll only matters when a `done_pattern` is configured;
+    // with none, the structural status→idle subscription is the whole signal and
+    // we skip the `capture-pane` shell-out entirely (lets the timeout be generous
+    // without polling cost for the common no-pattern case).
+    let need_capture = sched.done_pattern.as_deref().is_some_and(|p| !p.is_empty());
 
     // ── Structural status signal subscription (the 100x fix) ─────────────────
     // Subscribe to the session's per-session status watch channel BEFORE the
@@ -100,20 +152,25 @@ async fn poll(state: AppState, sched: Schedule, pre_output: String) {
 
         if tokio::time::Instant::now() >= deadline {
             tracing::debug!(schedule = %sched.id, "watch timed out without match");
+            // Never go dark on a `notify` schedule: tell the user it couldn't
+            // confirm completion rather than silently dropping the promise.
+            notify_timeout(&state, &sched).await;
             return;
         }
-        let capture = match sessions::lifecycle::peek(&state, &sched.session, 200).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::debug!(schedule = %sched.id, error = %e, "watch capture failed");
-                continue;
-            }
-        };
-        let new_output = delta(&capture, &anchor);
-        if let Some(pat) = sched.done_pattern.as_deref() {
-            if !pat.is_empty() && matches(&new_output, pat) {
-                fire_done(&state, &sched, "regex").await;
-                return;
+        if need_capture {
+            let capture = match sessions::lifecycle::peek(&state, &sched.session, 200).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::debug!(schedule = %sched.id, error = %e, "watch capture failed");
+                    continue;
+                }
+            };
+            let new_output = delta(&capture, &anchor);
+            if let Some(pat) = sched.done_pattern.as_deref() {
+                if !pat.is_empty() && matches(&new_output, pat) {
+                    fire_done(&state, &sched, "regex").await;
+                    return;
+                }
             }
         }
     }
@@ -157,6 +214,13 @@ fn matches(haystack: &str, pattern: &str) -> bool {
 /// legacy `done_pattern` match) so an operator can tell from the audit ledger
 /// which signal ultimately recognized the agent finished.
 async fn fire_done(state: &AppState, sched: &Schedule, signal: &str) {
+    // Dedup: the status→idle transition, the regex match, and the agent-confirm
+    // hook can all observe the same completion. Only the first fires.
+    if !claim_fire(&sched.id) {
+        tracing::debug!(schedule = %sched.id, signal, "watch: done already fired this cycle — skipping");
+        return;
+    }
+
     let action = sched.done_action.as_str();
     let mut note = format!("watch matched ({signal}): {action}");
 
@@ -166,8 +230,24 @@ async fn fire_done(state: &AppState, sched: &Schedule, signal: &str) {
         note = format!("watch matched ({signal}); sent follow-up + disabled: {text}");
     } else if action == "disable" {
         let _ = db::schedules::set_enabled(&state.pool, &sched.id, false).await;
+    } else if action == "notify" {
+        // Real phone push (the UI's "Send me notification when done" promise) —
+        // previously this path was SSE-only, so nothing reached the device. The
+        // per-schedule opt-in IS the gate; the `schedule_finished` category is a
+        // global mute, distinct from interactive "agent finished" idle pings.
+        let st = state.clone();
+        let title = sched.title.clone();
+        tokio::spawn(async move {
+            let _ = crate::push::send_push_for(
+                &st,
+                crate::db::push::NotifCategory::ScheduleFinished,
+                &format!("schedule '{title}' finished"),
+                &format!("'{title}' finished."),
+                "/scheduler",
+            )
+            .await;
+        });
     }
-    // `notify` (and any other value) is alert-only.
 
     let _ = db::schedules::insert_run(&state.pool, &sched.id, Utc::now().timestamp(), "done", &note).await;
     let _ = state.sse_tx.send(SseEvent {
@@ -178,5 +258,37 @@ async fn fire_done(state: &AppState, sched: &Schedule, signal: &str) {
             "schedule": sched.id,
             "detail": format!("Watch complete: {}", sched.title),
         }),
+    });
+}
+
+/// The watch deadline elapsed without observing completion. For a `notify`
+/// schedule, push a "still running — couldn't confirm" heads-up instead of
+/// returning silently (the old behaviour, which made long jobs feel broken).
+/// Deliberately does NOT claim the fire-guard: if the agent later calls the
+/// agent-confirm hook, the genuine "finished" push still fires.
+async fn notify_timeout(state: &AppState, sched: &Schedule) {
+    if sched.done_action != "notify" {
+        return;
+    }
+    let mins = (sched.watch_timeout / 60).max(1);
+    let _ = db::schedules::insert_run(
+        &state.pool,
+        &sched.id,
+        Utc::now().timestamp(),
+        "timeout",
+        &format!("watch timed out after {}s without confirming completion", sched.watch_timeout),
+    )
+    .await;
+    let st = state.clone();
+    let title = sched.title.clone();
+    tokio::spawn(async move {
+        let _ = crate::push::send_push_for(
+            &st,
+            crate::db::push::NotifCategory::ScheduleFinished,
+            &format!("schedule '{title}' still running"),
+            &format!("'{title}' hasn't confirmed completion after ~{mins}m — it may still be working."),
+            "/scheduler",
+        )
+        .await;
     });
 }

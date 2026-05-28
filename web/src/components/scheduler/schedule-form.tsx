@@ -74,6 +74,9 @@ export interface ScheduleFormValue {
   notify: boolean
   /** Optional regex; empty = the server's default done marker. */
   done_pattern: string
+  /** tmux + notify only: append a completion-call footer so the agent confirms
+   *  it's done itself (most reliable). Idle detection stays the fallback. */
+  confirm_finish: boolean
 }
 
 export const EMPTY_FORM: ScheduleFormValue = {
@@ -90,6 +93,10 @@ export const EMPTY_FORM: ScheduleFormValue = {
   boot_worktree: false,
   notify: false,
   done_pattern: '',
+  // Pre-ticked: when the user turns on notify for a Claude/tmux job, the
+  // most-reliable agent-confirmed finish is on by default (they still see it and
+  // can untick). Only ever sent for tmux + notify (see toCreateInput).
+  confirm_finish: true,
 }
 
 const KIND_ICON: Record<ScheduleKind, React.ReactNode> = {
@@ -114,6 +121,11 @@ export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
     watch: v.notify,
     done_pattern: v.notify ? v.done_pattern.trim() || undefined : undefined,
     done_action: v.notify ? 'notify' : undefined,
+    // Agent-confirmed finish only applies to a Claude/tmux job that wants a
+    // notification. The server also clamps it to tmux, but gate here too so the
+    // wire payload is honest for shell/boot jobs.
+    confirm_finish:
+      v.kind === 'tmux' && v.notify ? v.confirm_finish : undefined,
   }
   if (v.kind === 'tmux') {
     base.session = v.session.trim()
@@ -436,6 +448,48 @@ function NotifyField({
             transition={springs.cardExpand}
             className="overflow-hidden"
           >
+            {/* Agent-confirmed finish — Claude/tmux jobs only. Pre-ticked: the
+                agent declares "done" itself (reliable) instead of us guessing
+                from idle. We append one delimited instruction to the prompt and
+                show it verbatim below so nothing is hidden. */}
+            {value.kind === 'tmux' && (
+              <div className="mt-3">
+                <CheckRow
+                  checked={value.confirm_finish}
+                  onChange={(c) => set('confirm_finish', c)}
+                  label="Ask the agent to confirm when done (most reliable)"
+                />
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {value.confirm_finish
+                    ? 'The agent signals completion itself when the work is truly done — idle detection is the fallback.'
+                    : 'We’ll notify when the agent next goes idle (a good guess, but idle ≠ task complete).'}
+                </p>
+                <AnimatePresence initial={false}>
+                  {value.confirm_finish && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={springs.cardExpand}
+                      className="overflow-hidden"
+                    >
+                      <p className="mt-2.5 text-[11px] font-medium text-muted-foreground/80">
+                        Appended to your prompt:
+                      </p>
+                      <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-muted/40 p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+{`— — —
+When this scheduled task is FULLY complete (not before),
+signal completion so I'm notified — run exactly:
+curl -fsS -H "X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN" \\
+  "$SUPERMUX_URL/api/hook/schedule/done" \\
+  -d '{"session":"…","schedule_id":"SCHED-…"}'`}
+                      </pre>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+
             <div className="mt-3">
               <SubField label="Done pattern (optional regex)">
                 <Input

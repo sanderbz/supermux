@@ -12,6 +12,7 @@
 //! **Router-registry pattern (§3.4).** [`router_for`] returns this module's
 //! sub-router; `http::router` merges it under the shared bearer-auth layer.
 
+pub mod hook;
 pub mod parser;
 pub mod runner;
 pub mod watch;
@@ -44,6 +45,13 @@ const MISSED_WINDOW: chrono::Duration = chrono::Duration::seconds(60);
 /// post-creation tick is slightly past due — should still run a few hours late;
 /// only an egregiously stale one-shot is skip+disabled.
 const ONESHOT_GRACE: chrono::Duration = chrono::Duration::hours(6);
+/// Default watch deadline (seconds) for a "notify when done" schedule when the
+/// client doesn't specify one. The structural status→idle signal is event-driven
+/// (no polling cost while waiting), so a generous default lets long agent tasks
+/// run to completion instead of the old 120s cut-off that left long jobs
+/// silently un-notified. On timeout a `notify` schedule still pings "still
+/// running" (see [`watch::notify_timeout`]).
+const DEFAULT_WATCH_TIMEOUT: i64 = 1800;
 
 // ── tick loop (§3.2.12) ───────────────────────────────────────────────────────
 
@@ -148,6 +156,13 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
 
 // ── HTTP router ───────────────────────────────────────────────────────────────
 
+/// The agent→scheduler hook sub-router (`/api/hook/schedule/*`). Merged at the
+/// top level of `http::router` OUTSIDE the bearer layer — auth is the per-session
+/// hook token, like the board hook router.
+pub fn hook_router_for(state: AppState) -> Router {
+    hook::router_for(state)
+}
+
 /// Build the scheduler sub-router (no auth layer — applied by `http::router`).
 pub fn router_for(state: AppState) -> Router {
     use axum::routing::{get, post};
@@ -216,6 +231,11 @@ pub struct CreateScheduleInput {
     pub done_pattern: Option<String>,
     #[serde(default)]
     pub done_action: Option<String>,
+    /// Agent-confirmed finish (tmux only): append a completion-call footer to the
+    /// delivered prompt so the agent signals "done" itself. Most-reliable finish
+    /// tier; idle detection stays the fallback.
+    #[serde(default)]
+    pub confirm_finish: Option<bool>,
     /// M21 "test fire": create the schedule, run it ONCE immediately, return the
     /// run result, then delete it — so the user can prove a job works before
     /// committing it. Never persists a live schedule.
@@ -261,6 +281,10 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
             "done_action must be 'disable', 'notify', or 'command:<text>'".into(),
         ));
     }
+    // Agent-confirmed finish only applies to tmux jobs (shell finishes on process
+    // exit; boot spawns a runtime-generated session the footer can't scope to).
+    // Clamp it off for other kinds so the column never lies.
+    let confirm_finish = kind == "tmux" && input.confirm_finish.unwrap_or(false);
 
     // Determine the cadence expression.
     let expr = input
@@ -292,9 +316,10 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
         run_count: 0,
         schedule_expr: Some(expr),
         watch: input.watch.unwrap_or(false) as i64,
-        watch_timeout: input.watch_timeout.unwrap_or(120),
+        watch_timeout: input.watch_timeout.unwrap_or(DEFAULT_WATCH_TIMEOUT),
         done_pattern: input.done_pattern,
         done_action,
+        confirm_finish: confirm_finish as i64,
         created: ts,
         updated: ts,
         deleted: None,
@@ -350,6 +375,7 @@ struct PatchInput {
     watch_timeout: Option<i64>,
     done_pattern: Option<String>,
     done_action: Option<String>,
+    confirm_finish: Option<bool>,
     schedule_expr: Option<String>,
     recurrence: Option<String>,
     run_at: Option<String>,
@@ -587,6 +613,7 @@ async fn patch_handler(
         watch_timeout: input.watch_timeout,
         done_pattern: input.done_pattern,
         done_action: input.done_action,
+        confirm_finish: input.confirm_finish,
         schedule_expr: new_expr,
         next_run,
         sched_type,

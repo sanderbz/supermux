@@ -29,6 +29,7 @@ export type NotifCategory =
   | 'agent_finished'
   | 'agent_stopped'
   | 'schedule_error'
+  | 'schedule_finished'
 
 /** `GET /api/push/prefs` response — every category's on/off state. The map is
  *  COMPLETE (server fills every key with a default when absent) so the UI never

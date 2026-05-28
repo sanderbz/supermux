@@ -70,7 +70,7 @@ pub async fn count(pool: &SqlitePool) -> sqlx::Result<i64> {
 
 // ── per-category notification prefs (reuses the existing prefs k/v table) ────
 
-/// The four user-facing notification categories. Each is a discrete event the
+/// The user-facing notification categories. Each is a discrete event the
 /// user can mute independently (Settings → Notifications). Keep this list short
 /// — every new variant is a new toggle the user has to think about, and the
 /// "didn't I get a ping for X?" diagnostic surface (the attempts ring) gets
@@ -89,6 +89,11 @@ pub enum NotifCategory {
     /// A scheduled run produced `status == "error"`. Success runs intentionally
     /// do NOT push (would be noisy for periodic schedules).
     ScheduleError,
+    /// A watched schedule (the "notify me when done" opt-in) finished — either
+    /// the agent reached its turn boundary (status→idle) or it called the
+    /// agent-confirm hook. Unlike a periodic success this is an EXPLICIT
+    /// per-schedule opt-in, so pushing here is wanted, not noise.
+    ScheduleFinished,
 }
 
 impl NotifCategory {
@@ -101,16 +106,18 @@ impl NotifCategory {
             Self::AgentFinished => "agent_finished",
             Self::AgentStopped => "agent_stopped",
             Self::ScheduleError => "schedule_error",
+            Self::ScheduleFinished => "schedule_finished",
         }
     }
 
     /// The set of categories, iterated in display order (matches the Settings
     /// UI order).
-    pub const ALL: [NotifCategory; 4] = [
+    pub const ALL: [NotifCategory; 5] = [
         Self::AgentWaiting,
         Self::AgentFinished,
         Self::AgentStopped,
         Self::ScheduleError,
+        Self::ScheduleFinished,
     ];
 
     /// Parse a wire-format identifier (the JSON enum tag) — `None` is an

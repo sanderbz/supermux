@@ -39,6 +39,11 @@ pub struct Schedule {
     pub watch_timeout: i64,
     pub done_pattern: Option<String>,
     pub done_action: String,
+    /// Agent-confirmed finish (0020): when 1 (tmux only), the runner appends a
+    /// completion-call footer to the delivered prompt so the agent itself
+    /// signals "done" via `/api/hook/schedule/done`. Idle detection remains the
+    /// fallback.
+    pub confirm_finish: i64,
     pub created: i64,
     pub updated: i64,
     pub deleted: Option<i64>,
@@ -104,9 +109,9 @@ pub async fn insert(pool: &SqlitePool, s: &Schedule) -> sqlx::Result<()> {
         "INSERT INTO schedules
             (id, title, session, command, prompt, kind, boot_dir, boot_provider, boot_worktree,
              sched_type, recurrence, run_at, next_run, last_run, enabled, run_count,
-             schedule_expr, watch, watch_timeout, done_pattern, done_action,
+             schedule_expr, watch, watch_timeout, done_pattern, done_action, confirm_finish,
              created, updated, deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.title)
@@ -129,6 +134,7 @@ pub async fn insert(pool: &SqlitePool, s: &Schedule) -> sqlx::Result<()> {
     .bind(s.watch_timeout)
     .bind(&s.done_pattern)
     .bind(&s.done_action)
+    .bind(s.confirm_finish)
     .bind(s.created)
     .bind(s.updated)
     .bind(s.deleted)
@@ -240,6 +246,7 @@ pub struct SchedulePatch {
     pub watch_timeout: Option<i64>,
     pub done_pattern: Option<String>,
     pub done_action: Option<String>,
+    pub confirm_finish: Option<bool>,
     pub schedule_expr: Option<String>,
     pub next_run: Option<DateTime<Utc>>,
     pub sched_type: Option<String>,
@@ -278,6 +285,9 @@ pub async fn patch(pool: &SqlitePool, id: &str, p: &SchedulePatch) -> sqlx::Resu
     }
     if p.done_action.is_some() {
         sets.push("done_action = ?");
+    }
+    if p.confirm_finish.is_some() {
+        sets.push("confirm_finish = ?");
     }
     if p.schedule_expr.is_some() {
         sets.push("schedule_expr = ?");
@@ -321,6 +331,9 @@ pub async fn patch(pool: &SqlitePool, id: &str, p: &SchedulePatch) -> sqlx::Resu
     }
     if let Some(v) = &p.done_action {
         q = q.bind(v);
+    }
+    if let Some(v) = p.confirm_finish {
+        q = q.bind(v as i64);
     }
     if let Some(v) = &p.schedule_expr {
         q = q.bind(v);

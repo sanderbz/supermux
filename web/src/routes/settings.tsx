@@ -422,7 +422,7 @@ interface NotifTypeSpec {
   hint: string
 }
 
-/** The four categories, in display order. Kept short on purpose — every extra
+/** The categories, in display order. Kept short on purpose — every extra
  *  toggle is another decision the user has to make AND another row in the
  *  Recent activity diagnostic. Each one maps 1:1 to a distinct
  *  `send_push_for(NotifCategory::*)` call site on the server. */
@@ -446,6 +446,11 @@ const NOTIF_TYPES: NotifTypeSpec[] = [
     key: 'schedule_error',
     label: 'Scheduled task errored',
     hint: 'When a scheduled task fails. Successful runs are silent on purpose.',
+  },
+  {
+    key: 'schedule_finished',
+    label: 'Scheduled task finished',
+    hint: 'When a schedule you marked "notify me when done" completes.',
   },
 ]
 

@@ -58,6 +58,9 @@ export interface ScheduleRow {
   watch_timeout: number
   done_pattern: string | null
   done_action: string
+  /** Agent-confirmed finish (tmux only): the runner appends a completion-call
+   *  footer so the agent signals done itself. 0/1. */
+  confirm_finish: number
   created: number
   updated: number
   deleted: number | null
@@ -88,6 +91,8 @@ export interface ScheduleCreateInput {
   watch_timeout?: number
   done_pattern?: string
   done_action?: string
+  /** tmux + notify only: ask the agent to confirm completion (most reliable). */
+  confirm_finish?: boolean
 }
 
 /** PATCH payload — every field optional; unset fields stay untouched server-side. */
@@ -102,6 +107,7 @@ export interface SchedulePatchInput {
   watch_timeout?: number
   done_pattern?: string
   done_action?: string
+  confirm_finish?: boolean
   schedule_expr?: string
 }
 

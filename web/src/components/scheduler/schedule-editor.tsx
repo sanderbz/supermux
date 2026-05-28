@@ -45,6 +45,7 @@ export function rowToForm(s: ScheduleRow): ScheduleFormValue {
     boot_worktree: s.boot_worktree === 1,
     notify,
     done_pattern: s.done_pattern ?? '',
+    confirm_finish: s.confirm_finish === 1,
   }
 }
 
@@ -90,6 +91,7 @@ export function ScheduleEditor({
             watch: input.watch,
             done_pattern: input.done_pattern,
             done_action: input.done_action,
+            confirm_finish: input.confirm_finish,
           },
         },
         {
