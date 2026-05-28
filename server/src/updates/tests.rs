@@ -19,7 +19,7 @@ fn no_latest_release_surfaces_a_clear_reason() {
 
 #[test]
 fn install_mode_serialises_as_tagged_union() {
-    // The frontend switches on `kind` — pin the shape.
+    // The frontend switches on `kind`. Pin the shape.
     let mode = InstallMode::Systemd { path_unit_present: true };
     let json = serde_json::to_value(&mode).unwrap();
     assert_eq!(json["kind"], "systemd");

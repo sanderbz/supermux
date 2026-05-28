@@ -1,9 +1,9 @@
 //! Preflight: install-mode detection + every reason "Update now" can refuse.
 //!
-//! The preflight runs every time `/api/version` is fetched (cheap — a handful
+//! The preflight runs every time `/api/version` is fetched (cheap: a handful
 //! of `git`/`df`/`which`/`stat` syscalls; no shell-out for the GitHub release,
 //! which is cached separately in [`super::release`]). The UI uses
-//! `blocked_reasons` to render actionable copy verbatim — the messages here ARE
+//! `blocked_reasons` to render actionable copy verbatim. The messages here ARE
 //! the user-facing strings.
 
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ use super::version::{self, VersionInfo};
 /// preflight works whether the binary is launched from the clone (dev) or
 /// installed at `/usr/local/bin/supermux-server` (systemd).
 fn detect_repo_dir() -> Option<PathBuf> {
-    // 1. Explicit override — the operator can set `SUPERMUX_REPO_DIR=/path` in
+    // 1. Explicit override: the operator can set `SUPERMUX_REPO_DIR=/path` in
     //    the unit's `Environment=` line if their layout is non-standard.
     if let Ok(p) = std::env::var("SUPERMUX_REPO_DIR") {
         let pb = PathBuf::from(p);
@@ -59,19 +59,19 @@ pub enum InstallMode {
     /// from the "set up by hand" case (false: the operator runs the binary
     /// directly under systemd but never ran `scripts/setup.sh`).
     Systemd { path_unit_present: bool },
-    /// Running as a bare binary (no systemd ancestor) — `nohup ./supermux-server`,
+    /// Running as a bare binary (no systemd ancestor): `nohup ./supermux-server`,
     /// a launchd plist on macOS, supervised by something we don't recognise.
     BareBinary,
     /// Dev workflow: `cargo run` / `scripts/dev.sh`.
     Dev,
     /// Inside a Docker container. We don't ship Docker images yet; future scope.
     Docker,
-    /// Genuinely could not tell — show the manual fallback instructions.
+    /// Genuinely could not tell. Show the manual fallback instructions.
     Unknown,
 }
 
 impl InstallMode {
-    /// Sniff the host. Cheap — no shell-out, just a few `stat` calls + env reads.
+    /// Sniff the host. Cheap: no shell-out, just a few `stat` calls + env reads.
     pub fn detect() -> Self {
         // Docker beats everything (a containerised systemd-in-docker is still
         // a container; we want the registry-pull path, not the path-unit one).
@@ -104,12 +104,12 @@ impl InstallMode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BlockedReason {
     /// `git status --porcelain` returned a non-empty list. Showing the count is
-    /// kinder than "uncommitted changes" alone — it answers "how dirty is dirty".
+    /// kinder than "uncommitted changes" alone: it answers "how dirty is dirty".
     UncommittedChanges { count: usize, message: String },
     /// Current branch isn't `main`. The new binary builds from `origin/main`,
     /// so we refuse to clobber a feature branch.
     NotOnMain { current_branch: String, message: String },
-    /// Detached HEAD — usually the operator checked out a specific tag to pin
+    /// Detached HEAD: usually the operator checked out a specific tag to pin
     /// to a known-good version. Updating would un-pin them silently.
     DetachedHead { message: String },
     /// Local commits not on `origin/main`. Updating would `git reset --hard`
@@ -118,7 +118,7 @@ pub enum BlockedReason {
     /// A tool the build needs isn't on PATH (cargo / bun / git).
     MissingTool { name: String, message: String },
     /// Less than 2GB free on the repo's filesystem. The release build pulls
-    /// several hundred MB of cargo target/, plus the bun install — 2GB is a
+    /// several hundred MB of cargo target/, plus the bun install. 2GB is a
     /// conservative floor.
     LowDisk { available_mb: u64, message: String },
     /// The latest-release fetch failed AND no cached value exists. No update
@@ -128,18 +128,18 @@ pub enum BlockedReason {
     /// `scripts/setup.sh` provisions it; until then there's no root-side
     /// listener for the marker file the 1-click writer would drop.
     PathUnitMissing { message: String },
-    /// We're a bare-binary / dev install — refuse the auto-update and show
+    /// We're a bare-binary / dev install. Refuse the auto-update and show
     /// the exact command to run by hand.
     ManualUpdateRequired { command: String, message: String },
-    /// Docker install — future scope.
+    /// Docker install: future scope.
     DockerUpdateUnsupported { message: String },
     /// Cannot create the marker file under `<data>/deploy/` (permissions /
-    /// missing dir). Rare — the deploy bootstrap creates the dir 0775 owned by
+    /// missing dir). Rare: the deploy bootstrap creates the dir 0775 owned by
     /// the service user; surfaces if someone hand-deleted it.
     NotPrivilegedToWrite { message: String },
 }
 
-/// The aggregate snapshot returned by `/api/version`. Always 200 — a blocked
+/// The aggregate snapshot returned by `/api/version`. Always 200: a blocked
 /// state is information, not an error.
 #[derive(Debug, Clone, Serialize)]
 pub struct PreflightStatus {
@@ -169,7 +169,7 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
     let mut blocked = Vec::new();
 
     // No latest = no update path. Surface explicitly so the UI can show a
-    // calm "couldn't reach GitHub" footnote vs the optimistic "✓ Up to date".
+    // calm "couldn't reach GitHub" footnote vs the optimistic "Up to date".
     if latest.is_none() {
         blocked.push(BlockedReason::NoLatestRelease {
             message:
@@ -179,7 +179,7 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
     }
 
     // Install-mode gates. A bare-binary / dev install never gets the 1-click
-    // path — we tell the user the exact command instead.
+    // path; we tell the user the exact command instead.
     match &install_mode {
         InstallMode::Systemd { path_unit_present: false } => {
             blocked.push(BlockedReason::PathUnitMissing {
@@ -192,12 +192,12 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
             let cmd = if let Some(ref r) = repo {
                 format!("cd {} && bash scripts/update.sh", r.display())
             } else {
-                "cd <your-supermux-clone> && bash scripts/update.sh".to_string()
+                "cd <your-supermux-folder> && bash scripts/update.sh".to_string()
             };
             blocked.push(BlockedReason::ManualUpdateRequired {
                 command: cmd.clone(),
                 message: format!(
-                    "Auto-update is only available on systemd installs. Run this on the server to update manually: `{cmd}`"
+                    "Auto-update is only available on systemd installs. To update manually, run this on the server: `{cmd}`"
                 ),
             });
         }
@@ -212,31 +212,31 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
             blocked.push(BlockedReason::ManualUpdateRequired {
                 command: "bash scripts/update.sh".into(),
                 message:
-                    "Couldn't identify how supermux is installed. Update manually with `bash scripts/update.sh` in the clone."
+                    "Couldn't identify how supermux is installed. Update manually with `bash scripts/update.sh` in your supermux folder."
                         .into(),
             });
         }
         InstallMode::Systemd { path_unit_present: true } => {
-            // Eligible — fall through to the git/disk/tool checks.
+            // Eligible: fall through to the git/disk/tool checks.
         }
     }
 
     // Git-state gates. Only meaningful when we have a repo dir; without one,
     // the install-mode gate above will have already added a manual-update
-    // reason — these would be duplicates.
+    // reason. These would be duplicates.
     if let Some(ref repo) = repo {
         if let Some(state) = inspect_git(repo) {
             if state.detached_head {
                 blocked.push(BlockedReason::DetachedHead {
                     message:
-                        "You're on a detached HEAD — typically a pinned version. Run `git checkout main` in the clone to enable updates."
+                        "Your supermux folder is checked out at a specific commit (detached HEAD), usually a pinned version. Run `git checkout main` in the supermux folder to enable updates."
                             .into(),
                 });
             } else if state.branch != "main" {
                 blocked.push(BlockedReason::NotOnMain {
                     current_branch: state.branch.clone(),
                     message: format!(
-                        "The clone is on `{}`, not `main`. Switch with `git checkout main` in the clone to enable updates.",
+                        "Your supermux folder is on branch `{}` instead of `main`. Run `git checkout main` in the supermux folder to enable updates.",
                         state.branch
                     ),
                 });
@@ -245,7 +245,7 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
                 blocked.push(BlockedReason::UncommittedChanges {
                     count: state.dirty_count,
                     message: format!(
-                        "The clone has {} uncommitted change{}. Commit or stash them before updating — `git reset --hard` would lose them.",
+                        "Your supermux folder has {} uncommitted change{}. Commit or stash them before updating, otherwise they would be lost.",
                         state.dirty_count,
                         if state.dirty_count == 1 { "" } else { "s" }
                     ),
@@ -255,7 +255,7 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
                 blocked.push(BlockedReason::AheadOfRemote {
                     count: state.ahead_count,
                     message: format!(
-                        "The clone has {} unpushed commit{} ahead of origin. Push or reset before updating — they'd be discarded.",
+                        "Your supermux folder has {} local commit{} that hasn't been pushed yet. Push or reset before updating, otherwise the commits would be discarded.",
                         state.ahead_count,
                         if state.ahead_count == 1 { "" } else { "s" }
                     ),
@@ -265,14 +265,14 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
     }
 
     // Tool gates. Build runs as the service user, so we check the calling
-    // process's PATH — close enough on a real self-host (the supermux unit
+    // process's PATH (close enough on a real self-host: the supermux unit
     // exports the service user's $HOME so `~/.cargo/bin` is in PATH).
     for tool in ["git", "cargo", "bun"] {
         if which::which(tool).is_err() {
             blocked.push(BlockedReason::MissingTool {
                 name: tool.into(),
                 message: format!(
-                    "`{tool}` isn't on PATH. The build runs as the supermux service user — install {tool} for that user."
+                    "`{tool}` isn't on PATH. The build runs as the supermux service user, so install {tool} for that user."
                 ),
             });
         }
@@ -290,14 +290,14 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
             blocked.push(BlockedReason::LowDisk {
                 available_mb: free_mb,
                 message: format!(
-                    "Only {free_mb} MB free on {}. The release build needs ~2 GB; free up space before updating.",
+                    "Only {free_mb} MB free on {}. The release build needs about 2 GB. Free up some space before updating.",
                     probe_dir.display()
                 ),
             });
         }
     }
 
-    // Marker-dir writability gate (systemd-with-path-unit only — the other
+    // Marker-dir writability gate (systemd-with-path-unit only; the other
     // modes have their own user-facing message already).
     if matches!(install_mode, InstallMode::Systemd { path_unit_present: true }) {
         let data_dir = std::env::var("SUPERMUX_DATA_DIR")
@@ -351,9 +351,9 @@ fn writable_dir(dir: &Path) -> bool {
 }
 
 /// Free megabytes on the filesystem hosting `path`. `None` when we can't query
-/// (the host is exotic — the UI will simply skip the disk gate).
+/// (the host is exotic: the UI will simply skip the disk gate).
 fn free_megabytes(path: &Path) -> Option<u64> {
-    // We avoid pulling a new statvfs crate by shelling out to `df` — it's on
+    // We avoid pulling a new statvfs crate by shelling out to `df`. It's on
     // every Unix box supermux runs on. `df -Pk <path>` outputs a header line
     // and one data row; the 4th column is "Available" in 1K blocks.
     let out = Command::new("df").args(["-Pk", "."]).current_dir(path).output().ok()?;
@@ -406,7 +406,7 @@ fn inspect_git(repo: &Path) -> Option<GitSnapshot> {
         0
     };
 
-    // Ahead count vs origin/main. We do NOT fetch — that would burst out to
+    // Ahead count vs origin/main. We do NOT fetch: that would burst out to
     // GitHub on every poll. Stale "ahead" is fine here; it's the local-only
     // commits we care about, and those don't need a fetch to detect.
     let ahead_count = Command::new("git")

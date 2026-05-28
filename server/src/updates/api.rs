@@ -37,7 +37,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// `GET /api/version` — current binary identity + latest release + preflight.
+/// `GET /api/version`: current binary identity + latest release + preflight.
 ///
 /// ALWAYS 200, even when blocked: the UI distinguishes "up to date",
 /// "update available", and "update available but blocked" entirely from the
@@ -48,14 +48,14 @@ async fn get_version(State(state): State<AppState>) -> Result<Json<serde_json::V
     let cache = state.updates.release_cache.clone();
     // Use the cached value when fresh; only kick off a network fetch when the
     // cache is stale or empty. We deliberately do NOT block the response on a
-    // slow fetch — if the cache is empty AND the fetch is slow, return null
+    // slow fetch. If the cache is empty AND the fetch is slow, return null
     // and let the UI re-poll.
     let latest = cache.get_or_fetch().await;
     let snap = preflight::run_preflight(latest);
     Ok(Json(json!({ "ok": true, "data": snap })))
 }
 
-/// `POST /api/version/refresh` — force-refresh the cached latest release.
+/// `POST /api/version/refresh`: force-refresh the cached latest release.
 async fn post_refresh(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
     let cache: std::sync::Arc<ReleaseCache> = state.updates.release_cache.clone();
     let result = cache.force_refresh().await;
@@ -68,11 +68,11 @@ async fn post_refresh(State(state): State<AppState>) -> Result<Json<serde_json::
     Ok(Json(json!({ "ok": true, "data": snap, "fetch_error": fetch_error })))
 }
 
-/// `POST /api/update/start` — kick off an update.
+/// `POST /api/update/start`: kick off an update.
 ///
 /// Re-runs the preflight at call time so a stale "no blockers" snapshot from a
 /// minute ago can't sneak the update past a now-dirty working tree. Refuses
-/// (409) on any blocked reason — the response body carries the same blocked
+/// (409) on any blocked reason. The response body carries the same blocked
 /// reasons the UI already shows.
 async fn post_start(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let cache = state.updates.release_cache.clone();
@@ -84,7 +84,7 @@ async fn post_start(State(state): State<AppState>) -> Result<impl IntoResponse, 
             StatusCode::CONFLICT,
             Json(json!({
                 "ok": false,
-                "error": "update blocked — see blocked_reasons",
+                "error": "update blocked. See blocked_reasons.",
                 "blocked_reasons": snap.blocked_reasons,
             })),
         )
@@ -121,7 +121,7 @@ async fn post_start(State(state): State<AppState>) -> Result<impl IntoResponse, 
         .into_response())
 }
 
-/// `GET /api/update/progress/:job_id` — SSE stream of [`UpdateEvent`]s for the
+/// `GET /api/update/progress/:job_id`: SSE stream of [`UpdateEvent`]s for the
 /// given job. Unknown id ⇒ 404. The handler immediately replays the LATEST
 /// known event so a late-joining client sees the current state without waiting.
 async fn get_progress(

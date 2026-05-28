@@ -1,12 +1,12 @@
 // Settings → Updates (v0.3.0).
 //
 // Renders one of four states for the running supermux installation:
-//   1. Up to date           — quiet "✓ Up to date" line, no badge.
-//   2. Update available     — green badge, release-notes preview, "Update now" button.
-//   3. Update blocked       — amber badge, bulleted blocked_reasons w/ actions.
-//   4. Update in progress   — modal with live SSE progress + per-step copy.
+//   1. Up to date           : quiet "Up to date" line, no badge.
+//   2. Update available     : green badge, release-notes preview, "Update now" button.
+//   3. Update blocked       : amber badge, bulleted blocked_reasons w/ actions.
+//   4. Update in progress   : modal with live SSE progress + per-step copy.
 //
-// All copy comes from the server's `blocked_reasons[*].message` field — the
+// All copy comes from the server's `blocked_reasons[*].message` field; the
 // frontend never invents prose. This keeps server + client in sync when a new
 // blocker variant lands.
 
@@ -27,6 +27,7 @@ import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useVersion } from '@/hooks/use-version'
+import { useMarkUpdatesSeen } from '@/hooks/use-update-badge'
 import type {
   BlockedReason,
   InstallMode,
@@ -42,7 +43,7 @@ function formatBuildTime(iso: string): string {
   if (!iso) return ''
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
-  // Local time, short — the user already knows it's recent if they're looking.
+  // Local time, short; the user already knows it's recent if they're looking.
   return d.toLocaleString(undefined, {
     year: 'numeric',
     month: 'short',
@@ -71,7 +72,7 @@ function installModeLabel(mode: InstallMode | null): string {
   }
 }
 
-/** Render the version block — tag prominent, sha muted, build time tiny. */
+/** Render the version block: tag prominent, sha muted, build time tiny. */
 function VersionLine({ current }: { current: VersionInfo }) {
   const shortSha = current.sha === 'dev' ? 'dev' : current.sha.slice(0, 7)
   const tag = current.tag ?? 'dev build'
@@ -138,7 +139,7 @@ function stepMeta(step: UpdateStep | null): {
   }
 }
 
-/** Live progress modal — opens on "Update now", closes on the user's "Done". */
+/** Live progress modal: opens on "Update now", closes on the user's "Done". */
 function UpdateProgressSheet({
   open,
   onOpenChange,
@@ -156,7 +157,7 @@ function UpdateProgressSheet({
     <ResponsiveSheet
       open={open}
       onOpenChange={(o) => {
-        // Only allow dismiss after a terminal state — otherwise the user could
+        // Only allow dismiss after a terminal state. Otherwise the user could
         // close the sheet, lose the live tail, and not see if the deploy
         // succeeded. The whole point of the modal is to OWN the user's
         // attention for the ~2 minutes the install runs.
@@ -169,7 +170,7 @@ function UpdateProgressSheet({
           ? 'The previous version has been restored.'
           : meta.done
             ? 'Reload the page to see the new version.'
-            : 'Keep this window open — usually about two minutes.'
+            : 'Keep this window open. This usually takes about two minutes.'
       }
       className="sm:max-w-lg"
       footer={
@@ -202,7 +203,7 @@ function UpdateProgressSheet({
       }
     >
       <div className="flex flex-col gap-5 px-5 py-5">
-        {/* Animated progress bar — motion-spring on width transitions. */}
+        {/* Animated progress bar: motion-spring on width transitions. */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -238,14 +239,14 @@ function UpdateProgressSheet({
           </div>
         </div>
 
-        {/* Latest message line — verbatim from the server's `msg=` payload. */}
+        {/* Latest message line: verbatim from the server's `msg=` payload. */}
         {last ? (
           <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-[13px] text-foreground">
             {last.message}
           </div>
         ) : null}
 
-        {/* Step timeline — every event the server emitted, newest at the bottom. */}
+        {/* Step timeline: every event the server emitted, newest at the bottom. */}
         {v.progress.length > 1 ? (
           <div className="flex flex-col gap-1.5">
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -268,7 +269,7 @@ function UpdateProgressSheet({
                     )}
                   />
                   <span className="capitalize">{ev.step.replace('_', ' ')}</span>
-                  <span className="truncate">— {ev.message}</span>
+                  <span className="truncate">: {ev.message}</span>
                 </li>
               ))}
             </ul>
@@ -289,7 +290,7 @@ function UpdateProgressSheet({
   )
 }
 
-/** Confirmation sheet — release notes + "Yes, update". */
+/** Confirmation sheet: release notes + "Yes, update". */
 function ConfirmUpdateSheet({
   open,
   onOpenChange,
@@ -413,7 +414,7 @@ function ConfirmUpdateSheet({
           </div>
         ) : (
           <p className="text-[13px] text-muted-foreground">
-            The release notes are empty — see the GitHub link for full details.
+            The release notes are empty. See the GitHub link for full details.
           </p>
         )}
       </div>
@@ -461,6 +462,7 @@ function CurrentVersionCard({
 /** The Section that lives in the Settings route. */
 export function UpdatesSection() {
   const v = useVersion()
+  const markUpdatesSeen = useMarkUpdatesSeen()
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [progressOpen, setProgressOpen] = React.useState(false)
   const [starting, setStarting] = React.useState(false)
@@ -472,7 +474,19 @@ export function UpdatesSection() {
     if (v.jobId) setProgressOpen(true)
   }, [v.jobId])
 
-  // Loading skeleton — keep it modest, this is one of many Settings sections.
+  // Read-receipt: as soon as the panel is mounted AND we know the latest tag,
+  // mark it seen so the Settings-icon nav dot disappears for that tag (v0.3.3).
+  // A NEWER tag will bring the dot back on its own — `useUpdateBadge` compares
+  // the stored tag against `snap.latest.tag` strictly. We re-run whenever the
+  // tag changes so a brand-new release published while the panel is open also
+  // gets dismissed on the next snapshot.
+  React.useEffect(() => {
+    if (v.latest?.tag) {
+      markUpdatesSeen(v.latest.tag)
+    }
+  }, [v.latest?.tag, markUpdatesSeen])
+
+  // Loading skeleton: keep it modest, this is one of many Settings sections.
   if (!v.current) {
     return (
       <Section title="Updates">
@@ -486,7 +500,7 @@ export function UpdatesSection() {
     )
   }
 
-  // Docker / unknown installs hide the section entirely — the user has no
+  // Docker / unknown installs hide the section entirely. The user has no
   // actionable surface here.
   if (!v.manageable) {
     return (
@@ -518,7 +532,7 @@ export function UpdatesSection() {
       setConfirmOpen(false)
       // The useEffect above opens the progress sheet once `jobId` arrives.
     } catch (e) {
-      // Preflight changed under us — pull the fresh blocked_reasons through.
+      // Preflight changed under us; pull the fresh blocked_reasons through.
       const message = e instanceof Error ? e.message : 'Could not start the update.'
       setStartError(message)
       await v.refresh()
@@ -562,7 +576,7 @@ export function UpdatesSection() {
                       <ArrowUpCircle className="size-3.5" />
                     )}
                     {hasBlockers
-                      ? `Update available — action needed`
+                      ? `Update available: action needed`
                       : `Update available: ${v.latest?.tag}`}
                   </span>
                 </div>

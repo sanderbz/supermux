@@ -21,6 +21,7 @@ import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useStandaloneMode } from '@/hooks/use-standalone-mode'
 import { useSseStatus } from '@/hooks/use-sse'
 import { useSseConnectionLink } from '@/hooks/use-connection-link'
+import { useUpdateBadge, type UpdateBadgeState } from '@/hooks/use-update-badge'
 
 interface NavItem {
   to: string
@@ -30,6 +31,9 @@ interface NavItem {
   end?: boolean
   /** M27 onboarding-tour anchor id (sets `data-tour` on the nav link). */
   tour?: string
+  /** Route key the update badge should attach to (v0.3.3). The Settings icon
+   *  shows a small dot when `useUpdateBadge` reports an actionable state. */
+  badgeKind?: 'updates'
 }
 
 const NAV: NavItem[] = [
@@ -40,11 +44,34 @@ const NAV: NavItem[] = [
   // RT9 hosts registry moved into Settings → Remote hosts (rare-use config
   // doesn't need a primary-nav slot). `/hosts` redirects to /settings#hosts
   // (App.tsx) so old bookmarks land in the right section.
-  { to: '/settings', label: 'Settings', icon: SettingsIcon },
+  { to: '/settings', label: 'Settings', icon: SettingsIcon, badgeKind: 'updates' },
 ]
+
+/** Tiny notification dot rendered over a nav icon. The colour distinguishes
+ *  "available + clean" (primary tint, classic blue dot) from "available but
+ *  action needed" (amber, matches the panel's blocked-state pill). Sized so
+ *  it overlaps the icon by ~2px without obscuring it. */
+function NavBadgeDot({ state }: { state: UpdateBadgeState }) {
+  if (state === 'none') return null
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'pointer-events-none absolute h-2 w-2 rounded-full ring-2 ring-card',
+        // Position varies between rail (desktop, icon centered in 44px tile)
+        // and tab (mobile, icon centered with label below it). The shell-level
+        // wrappers below set sensible defaults via class merging.
+        state === 'available-blocked'
+          ? 'bg-amber-500'
+          : 'bg-primary',
+      )}
+    />
+  )
+}
 
 /** Desktop: 64px icon rail (≥md). Tooltip reveals each label. */
 function SideNav() {
+  const { state: updateBadge } = useUpdateBadge()
   return (
     <nav
       aria-label="Primary"
@@ -54,33 +81,44 @@ function SideNav() {
         <Logo className="h-7 w-auto" />
       </div>
       <div className="flex flex-1 flex-col items-center gap-1">
-        {NAV.map((item) => (
-          <Tooltip key={item.to}>
-            <TooltipTrigger asChild>
-              <NavLink
-                to={item.to}
-                end={item.end}
-                aria-label={item.label}
-                data-tour={item.tour}
-                className="group relative flex size-11 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:text-foreground aria-[current=page]:text-primary-foreground"
-              >
-                {({ isActive }) => (
-                  <>
-                    {isActive && (
-                      <motion.span
-                        layoutId="nav-active-desktop"
-                        transition={springs.snappy}
-                        className="absolute inset-0 rounded-xl bg-primary"
-                      />
-                    )}
-                    <item.icon className="relative size-5" />
-                  </>
-                )}
-              </NavLink>
-            </TooltipTrigger>
-            <TooltipContent side="right">{item.label}</TooltipContent>
-          </Tooltip>
-        ))}
+        {NAV.map((item) => {
+          const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
+          return (
+            <Tooltip key={item.to}>
+              <TooltipTrigger asChild>
+                <NavLink
+                  to={item.to}
+                  end={item.end}
+                  aria-label={
+                    badge !== 'none' ? `${item.label} (update available)` : item.label
+                  }
+                  data-tour={item.tour}
+                  className="group relative flex size-11 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:text-foreground aria-[current=page]:text-primary-foreground"
+                >
+                  {({ isActive }) => (
+                    <>
+                      {isActive && (
+                        <motion.span
+                          layoutId="nav-active-desktop"
+                          transition={springs.snappy}
+                          className="absolute inset-0 rounded-xl bg-primary"
+                        />
+                      )}
+                      <item.icon className="relative size-5" />
+                      {/* Desktop: place the dot at the icon's top-right corner.
+                       *  inset-y centred on the icon: top ~10px, right ~10px so
+                       *  it sits just outside the 20px icon glyph. */}
+                      <span className="pointer-events-none absolute right-[10px] top-[10px]">
+                        <NavBadgeDot state={badge} />
+                      </span>
+                    </>
+                  )}
+                </NavLink>
+              </TooltipTrigger>
+              <TooltipContent side="right">{item.label}</TooltipContent>
+            </Tooltip>
+          )
+        })}
       </div>
       <ThemeToggle />
     </nav>
@@ -109,37 +147,50 @@ function MobileTopBar(_props: { overview: boolean }) {
 
 /** Mobile: bottom tab bar, 5 icons + label, safe-area inset (≤md). */
 function BottomNav() {
+  const { state: updateBadge } = useUpdateBadge()
   return (
     <nav
       aria-label="Primary"
       className="flex shrink-0 items-stretch justify-around border-t border-border bg-card pb-safe md:hidden"
     >
-      {NAV.map((item) => (
-        <NavLink
-          key={item.to}
-          to={item.to}
-          end={item.end}
-          aria-label={item.label}
-          data-tour={item.tour}
-          className="relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-2 text-muted-foreground transition-colors aria-[current=page]:text-primary"
-        >
-          {({ isActive }) => (
-            <>
-              {isActive && (
-                <motion.span
-                  layoutId="nav-active-mobile"
-                  transition={springs.snappy}
-                  className="absolute left-1/2 top-1.5 h-1 w-8 -translate-x-1/2 rounded-full bg-primary"
-                />
-              )}
-              <item.icon className="size-5" />
-              <span className="text-[10px] font-medium leading-none">
-                {item.label}
-              </span>
-            </>
-          )}
-        </NavLink>
-      ))}
+      {NAV.map((item) => {
+        const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
+        return (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
+            aria-label={
+              badge !== 'none' ? `${item.label} (update available)` : item.label
+            }
+            data-tour={item.tour}
+            className="relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-2 text-muted-foreground transition-colors aria-[current=page]:text-primary"
+          >
+            {({ isActive }) => (
+              <>
+                {isActive && (
+                  <motion.span
+                    layoutId="nav-active-mobile"
+                    transition={springs.snappy}
+                    className="absolute left-1/2 top-1.5 h-1 w-8 -translate-x-1/2 rounded-full bg-primary"
+                  />
+                )}
+                <span className="relative">
+                  <item.icon className="size-5" />
+                  {/* Mobile: dot at the icon's top-right (the icon is the
+                   *  positioning anchor; the label sits below it). */}
+                  <span className="pointer-events-none absolute -right-1 -top-1">
+                    <NavBadgeDot state={badge} />
+                  </span>
+                </span>
+                <span className="text-[10px] font-medium leading-none">
+                  {item.label}
+                </span>
+              </>
+            )}
+          </NavLink>
+        )
+      })}
     </nav>
   )
 }

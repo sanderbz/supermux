@@ -151,7 +151,7 @@ pub fn deploy_log_path() -> PathBuf {
 /// Kick off the update for `job_id` from `source_dir`. Atomically writes the
 /// deploy request (request.tmp → mv → request) and spawns a tail task that
 /// reads the runner's log and re-emits each `[update] step=<name>` line as an
-/// SSE event. Returns immediately — the SSE endpoint is the progress surface.
+/// SSE event. Returns immediately. The SSE endpoint is the progress surface.
 pub async fn spawn_update_task(
     registry: Arc<JobRegistry>,
     job_id: String,
@@ -165,7 +165,7 @@ pub async fn spawn_update_task(
             UpdateEvent {
                 job_id: job_id.clone(),
                 step: UpdateStep::Queued,
-                message: "Update queued — waiting for the root runner to pick it up.".into(),
+                message: "Update queued. Waiting for the root runner to pick it up.".into(),
                 ts: Utc::now().timestamp(),
             },
         )
@@ -212,7 +212,7 @@ pub async fn spawn_update_task(
 /// on a `DEPLOY_RESULT=` line (or the 15-minute safety deadline). The post-
 /// terminal "forget job after 10min" sweep runs from the same task.
 async fn tail_runner_log(registry: Arc<JobRegistry>, job_id: String, log: PathBuf) {
-    // Wait up to 60s for the log to appear — the path-unit can take a few
+    // Wait up to 60s for the log to appear. The path-unit can take a few
     // seconds to fire on a busy host.
     let mut opened = None;
     for _ in 0..60 {
@@ -283,7 +283,7 @@ async fn tail_runner_log(registry: Arc<JobRegistry>, job_id: String, log: PathBu
                         "ok" => (UpdateStep::Done, "Update complete.".to_string()),
                         "failed" => (
                             UpdateStep::RolledBack,
-                            "Update failed — the previous version has been restored.".to_string(),
+                            "Update failed. The previous version has been restored.".to_string(),
                         ),
                         other => (
                             UpdateStep::Failed,
@@ -325,7 +325,7 @@ async fn tail_runner_log(registry: Arc<JobRegistry>, job_id: String, log: PathBu
 }
 
 /// Parse a `[update] step=<name> [msg=<text>]` log line into an [`UpdateEvent`].
-/// Returns `None` for lines we don't recognise (most of the runner's output —
+/// Returns `None` for lines we don't recognise (most of the runner's output is
 /// raw cargo / bun chatter we deliberately don't forward to the UI).
 fn parse_event_line(line: &str, job_id: &str) -> Option<UpdateEvent> {
     let trimmed = line.trim();
@@ -409,7 +409,7 @@ fn default_message(step: UpdateStep) -> &'static str {
         UpdateStep::Verifying => "Verifying the new build came up healthy.",
         UpdateStep::Done => "Update complete.",
         UpdateStep::Failed => "Update failed.",
-        UpdateStep::RolledBack => "Update failed — the previous version has been restored.",
+        UpdateStep::RolledBack => "Update failed. The previous version has been restored.",
     }
 }
 

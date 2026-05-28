@@ -1,7 +1,7 @@
-// useVersion — single hook backing Settings → Updates (v0.3.0).
+// useVersion: single hook backing Settings → Updates (v0.3.0).
 //
 // Owns:
-//   * 30s poll of /api/version while the consuming component is mounted —
+//   * 30s poll of /api/version while the consuming component is mounted:
 //     short enough that a fresh release surfaces in under a minute, long
 //     enough that an idle dashboard does not burn the GitHub rate limit
 //     (the server's 6h cache absorbs the per-call cost anyway).
@@ -10,7 +10,7 @@
 //   * Start action that POSTs /api/update/start and, on 202, opens an
 //     EventSource against /api/update/progress/:job_id; events stream into
 //     React state as they arrive so the UI can render a live progress bar.
-//   * Auto-reload detection — when the update SSE reports `done`, the new
+//   * Auto-reload detection: when the update SSE reports `done`, the new
 //     binary is now serving the SPA shell at the SAME bundle hash IF the
 //     deploy was a no-op, or a NEW hash if it shipped a frontend change.
 //     The component reads `reloadHint` and prompts the user; we deliberately
@@ -30,6 +30,89 @@ import {
 
 const POLL_INTERVAL_MS = 30_000
 
+/** DEV-only: parse `?mock_version=clean|blocked|uptodate|nolatest` into a fake
+ *  preflight snapshot so the panel can be QA'd without a live server. Mirrors
+ *  the same flag honoured by `useUpdateBadge` so the nav dot and the panel
+ *  agree on the rendered state. */
+function readMockSnapshot(): PreflightStatus | null {
+  if (!import.meta.env.DEV) return null
+  if (typeof window === 'undefined') return null
+  const params = new URLSearchParams(window.location.search)
+  const mock = params.get('mock_version')
+  if (!mock) return null
+  const baseCurrent = {
+    tag: 'v0.3.2',
+    sha: 'deadbeefcafe1234567890abcdef1234567890ab',
+    build_time: '2026-05-27T12:00:00Z',
+  }
+  const baseLatest = {
+    tag: 'v0.3.3',
+    sha: 'main',
+    body: '- cleaner updater copy\n- settings-icon update badge\n- no em-dashes',
+    html_url: 'https://github.com/sanderbz/supermux/releases/tag/v0.3.3',
+    published_at: '2026-05-28T01:00:00Z',
+  }
+  switch (mock) {
+    case 'clean':
+      return {
+        current: baseCurrent,
+        latest: baseLatest,
+        update_available: true,
+        blocked_reasons: [],
+        install_mode: { kind: 'systemd', path_unit_present: true },
+        manageable: true,
+      }
+    case 'blocked':
+      return {
+        current: baseCurrent,
+        latest: baseLatest,
+        update_available: true,
+        blocked_reasons: [
+          {
+            kind: 'uncommitted_changes',
+            count: 3,
+            message:
+              'Your supermux folder has 3 uncommitted changes. Commit or stash them before updating, otherwise they would be lost.',
+          },
+          {
+            kind: 'ahead_of_remote',
+            count: 1,
+            message:
+              "Your supermux folder has 1 local commit that hasn't been pushed yet. Push or reset before updating, otherwise the commits would be discarded.",
+          },
+        ],
+        install_mode: { kind: 'systemd', path_unit_present: true },
+        manageable: true,
+      }
+    case 'uptodate':
+      return {
+        current: { ...baseCurrent, tag: 'v0.3.3' },
+        latest: baseLatest,
+        update_available: false,
+        blocked_reasons: [],
+        install_mode: { kind: 'systemd', path_unit_present: true },
+        manageable: true,
+      }
+    case 'nolatest':
+      return {
+        current: baseCurrent,
+        latest: null,
+        update_available: false,
+        blocked_reasons: [
+          {
+            kind: 'no_latest_release',
+            message:
+              "Couldn't reach GitHub to check for updates. The currently running version is shown above.",
+          },
+        ],
+        install_mode: { kind: 'systemd', path_unit_present: true },
+        manageable: true,
+      }
+    default:
+      return null
+  }
+}
+
 export interface UseVersion {
   /** The running binary's identity. Always present once the first /api/version
    *  call resolves. */
@@ -40,7 +123,7 @@ export interface UseVersion {
   updateAvailable: boolean
   /** Why the "Update now" button cannot be clicked (empty when clickable). */
   blockedReasons: BlockedReason[]
-  /** What kind of install this is — drives the per-mode copy in the UI. */
+  /** What kind of install this is. Drives the per-mode copy in the UI. */
   installMode: PreflightStatus['install_mode'] | null
   /** True when the dashboard should render an Updates section at all. */
   manageable: boolean
@@ -58,7 +141,7 @@ export interface UseVersion {
   progress: UpdateEvent[]
   /** Most recent step (the one the progress bar should highlight). */
   currentStep: UpdateStep | null
-  /** True once the SSE reported `done` — the UI should suggest a reload. */
+  /** True once the SSE reported `done`. The UI should suggest a reload. */
   updateDone: boolean
   /** True if the update SSE reported `failed` / `rolled_back`. */
   updateFailed: boolean
@@ -72,7 +155,7 @@ export interface UseVersion {
  *  (only the Updates section mounts it, so we never poll on routes that don't
  *  surface the data). */
 export function useVersion(): UseVersion {
-  const [snapshot, setSnapshot] = React.useState<PreflightStatus | null>(null)
+  const [snapshot, setSnapshot] = React.useState<PreflightStatus | null>(() => readMockSnapshot())
   const [fetchError, setFetchError] = React.useState<string | null>(null)
   const [refreshing, setRefreshing] = React.useState(false)
   const [progress, setProgress] = React.useState<UpdateEvent[]>([])
@@ -80,6 +163,14 @@ export function useVersion(): UseVersion {
   const esRef = React.useRef<EventSource | null>(null)
 
   const fetchSnap = React.useCallback(async () => {
+    // DEV mock: short-circuit the network so the panel renders a deterministic
+    // state for QA / screenshots. See `readMockSnapshot` above.
+    const mock = readMockSnapshot()
+    if (mock) {
+      setSnapshot(mock)
+      setFetchError(null)
+      return
+    }
     try {
       const snap = await updatesApi.getVersion()
       setSnapshot(snap)
@@ -141,12 +232,12 @@ export function useVersion(): UseVersion {
           esRef.current = null
         }
       } catch {
-        // Malformed event — skip, the client's progress bar simply stalls
+        // Malformed event; skip, the client's progress bar simply stalls
         // until the next valid frame.
       }
     })
     es.onerror = () => {
-      // EventSource fires `error` on every transient disconnect too — the
+      // EventSource fires `error` on every transient disconnect too; the
       // browser auto-reconnects. Don't close here; only close on a terminal
       // step or in `resetUpdate`.
     }

@@ -4,7 +4,7 @@
 //!   GitHub's unauthenticated rate limit is 60 requests/hour per IP. A single
 //!   self-host typically opens Settings → Updates once a day; the panel polls
 //!   every 30s while open, but those polls hit the cache. A 6-hour TTL means
-//!   the worst case (panel left open overnight) costs four GitHub requests —
+//!   the worst case (panel left open overnight) costs four GitHub requests,
 //!   miles under the limit even if a dozen tabs/devices share an outbound IP.
 //!   Short enough that a fresh tag surfaces the same day, long enough that an
 //!   accidental loop can't burn the quota.
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-/// Cache TTL — see module doc for the trade-off.
+/// Cache TTL. See module doc for the trade-off.
 const TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Outbound request timeout. A user clicking "Refresh" must not hang the page
@@ -41,7 +41,7 @@ pub struct LatestRelease {
     /// the consumer sees `tag` because that's what the rest of the codebase
     /// calls it (`VersionInfo::tag`).
     pub tag: String,
-    /// The release's target commit — usually a branch name (`main`) for a
+    /// The release's target commit. Usually a branch name (`main`) for a
     /// freshly cut release. May be empty.
     pub sha: String,
     /// Release notes body (markdown). The UI renders it via MarkdownViewer.
@@ -82,7 +82,7 @@ impl From<GithubReleaseWire> for LatestRelease {
 ///
 /// Wrapped in `RwLock` so concurrent `/api/version` reads do not serialize
 /// against each other; only the single fetch that refills the cache takes a
-/// write lock. The `Instant` is the time the value was stored — entries older
+/// write lock. The `Instant` is the time the value was stored; entries older
 /// than `TTL` are treated as stale and re-fetched on the next read.
 pub struct ReleaseCache {
     slot: RwLock<Option<(LatestRelease, Instant)>>,
@@ -95,7 +95,7 @@ impl ReleaseCache {
 
     /// Return the cached release if fresh; otherwise fetch, cache, and return
     /// it. On any fetch failure (network, 5xx, parse) returns `None` AND keeps
-    /// whatever is currently cached — a transient outage must not blank the
+    /// whatever is currently cached. A transient outage must not blank the
     /// "Up to date" banner the user is already looking at.
     pub async fn get_or_fetch(self: &Arc<Self>) -> Option<LatestRelease> {
         if let Some((rel, t)) = self.slot.read().await.clone() {
@@ -108,7 +108,7 @@ impl ReleaseCache {
 
     /// Force a network fetch, regardless of cache freshness. Returns `Ok(Some)`
     /// on success, `Ok(None)` when the request succeeded but produced no usable
-    /// release (a brand-new repo with no published releases yet — GitHub
+    /// release (a brand-new repo with no published releases yet: GitHub
     /// answers 404), and `Err` for transport-level failures.
     pub async fn force_refresh(self: &Arc<Self>) -> Result<Option<LatestRelease>, FetchError> {
         let release = fetch_latest().await?;
@@ -119,7 +119,7 @@ impl ReleaseCache {
         Ok(release)
     }
 
-    /// The cached value WITHOUT re-fetching — used by `/api/version` so a
+    /// The cached value WITHOUT re-fetching. Used by `/api/version` so a
     /// brand-new connection sees the last good payload immediately, then the
     /// background refresh kicks in if it's stale.
     pub async fn cached(&self) -> Option<LatestRelease> {
@@ -129,8 +129,8 @@ impl ReleaseCache {
     /// Test-only helper: seed a release directly into the cache so tests can
     /// drive the `update_available` / `blocked_reasons` logic without ever
     /// touching the network. Gated on `debug_assertions` (not `cfg(test)`) so
-    /// integration tests in `tests/` — which compile against the optimised
-    /// library, not its `cfg(test)` form — can call it.
+    /// integration tests in `tests/` (which compile against the optimised
+    /// library, not its `cfg(test)` form) can call it.
     #[cfg(debug_assertions)]
     pub async fn seed(&self, release: LatestRelease) {
         let mut w = self.slot.write().await;
@@ -145,7 +145,7 @@ impl Default for ReleaseCache {
 }
 
 /// Errors from the upstream fetch. We map them all to a flat `String` for the
-/// UI — operators see "GitHub unreachable" rather than a backtrace.
+/// UI; operators see "GitHub unreachable" rather than a backtrace.
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
     #[error("network error: {0}")]
@@ -160,16 +160,16 @@ pub enum FetchError {
 /// 200 with a parseable body, `Ok(None)` on a 404 (repo with no releases yet),
 /// and `Err` on anything else.
 ///
-/// Authentication: anonymous by default (the OSS path — fine for a public
+/// Authentication: anonymous by default (the OSS path, fine for a public
 /// repo). If `SUPERMUX_GITHUB_TOKEN` is set in the process environment, send
 /// it as a Bearer token. This covers two cases:
-///   1. A user self-hosting their own private fork — without auth GitHub
+///   1. A user self-hosting their own private fork: without auth GitHub
 ///      returns 404 ("Couldn't reach GitHub" in the UI) for a private repo.
 ///   2. A shared-IP deployment that hits the 60-req/hour unauthenticated rate
 ///      limit. Authenticated requests get 5,000 req/hour, so even a noisy
 ///      caller never exhausts the quota.
-/// There is deliberately no UI for this — it's a quiet env-var-only knob;
-/// see `docs/SELF_HOST_DEV.md` "Advanced — private repos / rate limits".
+/// There is deliberately no UI for this; it's a quiet env-var-only knob.
+/// See `docs/SELF_HOST_DEV.md` "Advanced: private repos / rate limits".
 async fn fetch_latest() -> Result<Option<LatestRelease>, FetchError> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
@@ -183,7 +183,7 @@ async fn fetch_latest() -> Result<Option<LatestRelease>, FetchError> {
         // GitHub's documented "I am stable, don't return preview fields" header.
         .header("X-GitHub-Api-Version", "2022-11-28");
 
-    // Optional bearer auth — only sent when the env var is set + non-empty, so
+    // Optional bearer auth. Only sent when the env var is set + non-empty, so
     // the default behaviour (anonymous fetch against a public repo) is byte-
     // identical to v0.3.0. Lowercase `Bearer ` per GitHub's docs.
     if let Ok(token) = std::env::var("SUPERMUX_GITHUB_TOKEN") {
@@ -227,7 +227,7 @@ mod tests {
             published_at: None,
         };
         cache.seed(rel.clone()).await;
-        // `cached()` reads the slot directly — no network.
+        // `cached()` reads the slot directly. No network.
         let got = cache.cached().await.expect("cached value");
         assert_eq!(got, rel);
     }
