@@ -366,6 +366,8 @@ tmux_install_hint_local() {
 
 print_banner() {
   hdr "supermux setup"
+  note "run this from your workstation: it configures a deploy OVER SSH to a"
+  note "separate server (the SSH host you'll enter below) — not this machine."
   note "this writes a .env in the repo root with smart defaults so the"
   note "deploy step is one command. You can re-run this any time — or"
   note "hand-edit .env directly if you prefer."
@@ -511,8 +513,9 @@ TOTAL_STEPS=10
 
 step_host() {
   step 1 "$TOTAL_STEPS" "deploy target (SSH host)"
-  note "this is the host you're deploying to — a hostname, a"
-  note "user@host string, or an alias from your ~/.ssh/config."
+  note "the SEPARATE machine you're deploying to, reached over SSH — a"
+  note "hostname, a user@host string, or an alias from your ~/.ssh/config."
+  note "not this machine: deploy.sh runs from here and ships to there."
 
   # Non-interactive: the host MUST come in via env var (or existing .env). We
   # cannot prompt for a required field — so fail clearly instead of looping.

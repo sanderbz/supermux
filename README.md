@@ -88,12 +88,16 @@ Toolchain floor: `rustc 1.83` (see `server/Cargo.toml`'s `rust-version`) and a r
 
 ## Quickstart — deploy
 
+**Run this from your workstation, not on the server.** `deploy.sh` deploys *over SSH* to a separate Linux host: it ships the code, builds natively there, and installs the service. The machine you run the command from is your control box; the machine you point `SUPERMUX_DEPLOY_HOST` at is the target.
+
 ```bash
-bash scripts/setup.sh     # friendly wizard, ~30 seconds
-bash scripts/deploy.sh    # ships, builds natively on the host, starts the service
+bash scripts/setup.sh     # friendly wizard, ~30 seconds (run on your workstation)
+bash scripts/deploy.sh    # ships over SSH, builds natively on the target host, starts the service
 ```
 
 The wizard asks the handful of values `deploy.sh` needs (SSH host, service user, ports, Tailscale) with smart defaults — hit Enter through it for the common case. Or set `SUPERMUX_DEPLOY_HOST=user@host` and run `scripts/setup.sh --yes` for a non-interactive deploy.
+
+**Sitting on the box you want supermux to run on?** Deploying onto the current machine isn't a first-class flow yet — the wizard always asks for an SSH target. For local *development*, use [`scripts/dev.sh`](#quickstart--develop). For a real same-host deploy, point `SUPERMUX_DEPLOY_HOST` at an SSH alias for that box (needs `sshd` running plus key auth to itself).
 
 **Push notifications (optional):** the PWA's iOS push works out of the box with a placeholder VAPID contact. To use your own `mailto:`, set `push_sub = "mailto:you@your-domain"` in `~/.supermux/config.toml`, or export `SUPERMUX_PUSH_SUB`. Settings → Notifications has a Send test button to confirm delivery.
 
@@ -127,7 +131,7 @@ Module map and protocol details: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 <details>
 <summary><strong>Deploy guide — the full reference</strong></summary>
 
-`scripts/deploy.sh` ships a pinned `git archive` of a clean commit to a host, builds natively there (no cross-compilation), installs `/usr/local/bin/supermux-server` plus the systemd unit, and starts the service. It runs an upfront preflight and prints a one-page plan before doing anything destructive.
+`scripts/deploy.sh` runs from your workstation and ships a pinned `git archive` of a clean commit *over SSH* to a remote host (not the machine you run it on), builds natively there (no cross-compilation), installs `/usr/local/bin/supermux-server` plus the systemd unit, and starts the service. It runs an upfront preflight and prints a one-page plan before doing anything destructive.
 
 ### Defaults
 
