@@ -2,23 +2,29 @@
 // EVEN WHILE THE AGENT HOLDS THE MOUSE (DECSET ?1000/?1002/?1006 — what Claude
 // Code's TUI does almost always).
 //
-// xterm 5.5's OWN touch-scroll handler (Viewport.handleTouchMove) early-returns
-// when `coreMouseService.areMouseEventsActive` is true, forwarding the touch as a
-// mouse report instead of panning the scrollback — so on mobile, history could not
-// be scrolled by one finger while an agent was attached (wheel/2-finger use other
-// paths, so they kept working: the exact reported regression). The fix adds our
-// own single-finger touch shim on `.xterm-screen` that scrolls via
-// `term.scrollLines()` (renderer-safe — a raw `viewport.scrollTop += dy` does NOT
-// repaint the WebGL canvas) whenever mouse reporting is on and we're in the normal
-// buffer. This complements `mobile-terminal-scroll.spec.ts` (the mouse-OFF case,
-// which xterm handles natively).
+// xterm 5.5's OWN touch-scroll listeners (registered in Terminal.ts) early-return
+// when `coreMouseService.areMouseEventsActive` is true, DROPPING the touch — so on
+// mobile, history could not be scrolled by one finger while an agent was attached
+// (wheel/2-finger use other paths, so they kept working: the exact reported
+// regression). The fix adds our own single-finger touch shim on `.xterm-screen`
+// that scrolls via `term.scrollLines()` (line-granular, public API) whenever mouse
+// reporting is on and we're in the normal buffer. This complements
+// `mobile-terminal-scroll.spec.ts` (the mouse-OFF case, which xterm handles
+// natively).
 //
 // We enable mouse reporting by emitting the DECSET sequences from the shell (then
-// `sleep` so the prompt redraw can't reset them), then dispatch REAL touch events
-// on `.xterm-screen` (where the shim listens) and assert the scrollback moved.
+// `sleep` so the prompt redraw can't reset them), then drive a REAL one-finger
+// drag via the cross-engine `touchDragY` helper (so it runs on chromium AND
+// webkit — note `new Touch()` throws "Illegal constructor" on WebKit, which is why
+// the helper falls back to document.createTouch there). Two assertions make this
+// prove the SHIM specifically, not the native path:
+//   1. a sub-cell drag must NOT scroll — xterm's native handler would scroll on
+//      any pixel, so "no scroll on a tiny drag" proves native is gated (mouse
+//      reporting really is on) AND the shim's line-granular accumulator governs.
+//   2. a full drag DOES scroll — the shim fires and `scrollLines()` moves history.
 
 import { devices, expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, touchDragY, type Backend } from './harness'
 
 test.use({ ...devices['iPhone 14 Pro'] })
 
@@ -66,38 +72,31 @@ test.describe('mobile: terminal scrolls on touch even with mouse-tracking on', (
     await page.keyboard.press('Enter')
     await page.waitForTimeout(800)
 
+    // Park at the bottom.
     await viewport.evaluate((el) => {
       el.scrollTop = el.scrollHeight
     })
-    const before = await viewport.evaluate((el) => el.scrollTop)
-    expect(before, 'parked at bottom').toBeGreaterThan(0)
+    const parked = await viewport.evaluate((el) => el.scrollTop)
+    expect(parked, 'parked at bottom').toBeGreaterThan(0)
 
-    // Real one-finger DRAG-DOWN on .xterm-screen (where the shim's listener lives).
-    // Drag-down reveals history → scrollTop decreases. With mouse-tracking on,
-    // xterm's own handler is gated, so this MUST go through our shim.
-    const moved = await page.locator('.xterm-screen').evaluate(async (screen) => {
-      const vp = document.querySelector('.xterm-viewport') as HTMLElement
-      const r = screen.getBoundingClientRect()
-      const x = r.left + r.width / 2
-      const mk = (clientY: number) =>
-        new Touch({ identifier: 1, target: screen, clientX: x, clientY, pageX: x, pageY: clientY, screenX: x, screenY: clientY, radiusX: 1, radiusY: 1, rotationAngle: 0, force: 1 })
-      const fire = (type: string, clientY: number) => {
-        const t = mk(clientY)
-        screen.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, composed: true, touches: type === 'touchend' ? [] : [t], targetTouches: type === 'touchend' ? [] : [t], changedTouches: [t] }))
-      }
-      const startY = r.top + r.height * 0.3
-      const before = vp.scrollTop
-      fire('touchstart', startY)
-      for (let dy = 16; dy <= 260; dy += 16) {
-        fire('touchmove', startY + dy)
-        await new Promise((res) => setTimeout(res, 8))
-      }
-      fire('touchend', startY + 260)
-      await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)))
-      return { before, after: vp.scrollTop }
-    })
+    // (1) A sub-cell drag (6px, well under one ~13–16px cell at fontSize 13) must
+    // NOT scroll. If mouse reporting weren't actually on, xterm's native handler
+    // would move scrollTop on the very first pixel — so an unchanged scrollTop here
+    // proves native is gated AND the shim's whole-line accumulator is what governs.
+    const tiny = await touchDragY(page, '.xterm-screen', 6, 2)
+    expect(
+      tiny.after,
+      `sub-cell drag must NOT scroll under the shim (native would have); method=${tiny.method} before=${tiny.before} after=${tiny.after}`,
+    ).toBe(tiny.before)
 
-    expect(moved.after, `scrollTop must change on touch-drag with mouse-tracking on (before=${moved.before} after=${moved.after})`).not.toBe(moved.before)
+    // (2) A full drag-down on .xterm-screen (where the shim listens). With
+    // mouse-tracking on, xterm's own handler is gated, so this MUST go through our
+    // shim → scrollLines() reveals history → scrollTop decreases.
+    const moved = await touchDragY(page, '.xterm-screen', 260, 16)
+    expect(
+      moved.after,
+      `scrollTop must change on touch-drag with mouse-tracking on (method=${moved.method} before=${moved.before} after=${moved.after})`,
+    ).not.toBe(moved.before)
     expect(moved.after, 'drag-down scrolls UP into history (scrollTop decreases)').toBeLessThan(moved.before)
   })
 })

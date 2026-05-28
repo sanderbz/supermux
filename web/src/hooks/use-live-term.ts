@@ -540,11 +540,19 @@ export function useLiveTerm(
     // history while an agent is attached (wheel + 2-finger use other paths, hence
     // they still work — the exact reported symptom). We restore it: while mouse
     // reporting is ON and we're in the NORMAL buffer (the only one with scrollback),
-    // a one-finger vertical drag scrolls via `term.scrollLines()` — xterm's API, so
-    // the ACTIVE renderer (WebGL/Canvas) repaints correctly. (A raw
-    // `viewport.scrollTop += dy` does NOT repaint the WebGL canvas — that is what
-    // made the earlier attempt "ruin rendering" on iOS; using scrollLines is the
-    // engine-agnostic, renderer-safe path.) A pixel accumulator gives whole-line
+    // a one-finger vertical drag scrolls via `term.scrollLines()` — xterm's public
+    // scroll API. We deliberately use it instead of a raw `viewport.scrollTop +=
+    // dy` for three reasons: (1) it's line-granular via the accumulator below, so
+    // it never leaves a fractional-line scrollTop that xterm's `syncScrollArea`
+    // immediately snaps back — the jitter a raw per-pixel scrollTop produced; (2)
+    // it drives the renderer repaint directly through xterm's scroll pipeline
+    // (BufferService.scrollLines → onScroll → renderRows) instead of leaning on
+    // xterm's internal viewport 'scroll'-event bounce; (3) it's public API, so it
+    // survives xterm 6.x's viewport rewrite. (The earlier reverted attempt 7723be1
+    // was backed out for janky iOS *feel* — overriding the native pan, see 9c7657d
+    // — NOT a repaint failure; both scrollLines and raw scrollTop repaint. This
+    // path is still line-granular with no momentum, so the on-device feel is the
+    // thing to keep watching.) A pixel accumulator gives whole-line
     // granularity. We claim the gesture (preventDefault + stopPropagation) ONLY once
     // we actually scroll, so a tap still reaches the agent as a click and a STILL
     // hold still arms the long-press joystick. When mouse reporting is OFF, this is
