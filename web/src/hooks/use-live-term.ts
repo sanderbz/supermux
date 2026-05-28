@@ -533,10 +533,12 @@ export function useLiveTerm(
     viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
 
     // ── Single-finger touch scroll-back while the agent holds the mouse ──────────
-    // xterm's OWN touch-to-scroll (Viewport.handleTouchMove) early-returns whenever
-    // the program has mouse reporting ON (`coreMouseService.areMouseEventsActive` —
-    // Claude Code's TUI almost always does), forwarding the touch as a mouse report
-    // instead of panning the scrollback. So on mobile a one-finger drag can't reach
+    // xterm's OWN touch listeners (registered in Terminal.ts, NOT in
+    // Viewport.handleTouchMove) early-return whenever the program has mouse
+    // reporting ON (`coreMouseService.areMouseEventsActive` — Claude Code's TUI
+    // almost always does), DROPPING the touch (a bare `return`; it is NOT
+    // translated into a mouse report) instead of panning the scrollback. So on
+    // mobile a one-finger drag can't reach
     // history while an agent is attached (wheel + 2-finger use other paths, hence
     // they still work — the exact reported symptom). We restore it: while mouse
     // reporting is ON and we're in the NORMAL buffer (the only one with scrollback),
