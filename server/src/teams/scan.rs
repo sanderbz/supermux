@@ -199,10 +199,11 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
 /// rename in one of them can't re-surface the phantom chip:
 ///   (a) `agent_id == lead_agent_id` — the canonical match when Claude writes
 ///       a top-level `leadAgentId`.
-///   (b) `agent_type == "orchestrator"` (or `"leader"`) — the role marker Claude
-///       writes for the lead row even when `leadAgentId` is absent. Both spellings
-///       are accepted: older 2.1.x wrote `"orchestrator"`, newer builds write
-///       `"leader"` (teammates are `"general-purpose"`/`"claude"`).
+///   (b) `agent_type` is a lead role marker — `"team-lead"` (Claude Code 2.1.156,
+///       empirically verified from a live `config.json`), or `"orchestrator"` /
+///       `"leader"` from other builds. Catches the lead row even when
+///       `leadAgentId` is absent. Real teammates carry NO `agentType` field at
+///       all (absent → ""), so this branch never matches a genuine teammate.
 ///   (c) empty `tmux_pane_id` AND empty `backend_type` AND empty `color` —
 ///       the lead row has none of these (its pane is the lead's own window,
 ///       not a split), so a member with all three blank is structurally the
@@ -214,7 +215,10 @@ fn is_lead_entry(m: &RawMember, lead_agent_id: &str) -> bool {
         return true;
     }
     let role = m.agent_type.trim();
-    if role.eq_ignore_ascii_case("orchestrator") || role.eq_ignore_ascii_case("leader") {
+    if role.eq_ignore_ascii_case("team-lead")
+        || role.eq_ignore_ascii_case("orchestrator")
+        || role.eq_ignore_ascii_case("leader")
+    {
         return true;
     }
     // Structural fallback: the lead's roster row has no pane, no backend, no
@@ -423,9 +427,23 @@ fn classify(s: &str) -> Option<InboxSignal> {
 /// Derive a member's [`MemberStatus`] from its roster liveness + in-progress
 /// task + the latest inbox signal (§3.3):
 ///   * NeedsYou signal → `NeedsYou` (loud, attention-first — wins always).
-///   * not active OR shutdown signal → `Offline`.
-///   * active + in_progress task (and no idle signal) → `Working`.
-///   * active + idle signal, OR active with nothing to do → `Idle`.
+///   * shutdown signal → `Offline`.
+///   * idle signal → `Idle`.
+///   * in an active turn (`isActive`) or owns an in_progress task → `Working`.
+///   * otherwise alive but not working → `Idle`.
+///
+/// **`isActive` is NOT a liveness flag.** Empirically (CC 2.1.156, verified from a
+/// live `config.json` time-series): `isActive` is `true` ONLY while a teammate is
+/// mid-turn; the instant it goes idle the flag flips to `false` or the field is
+/// dropped entirely — even though its tmux pane is still alive and the teammate is
+/// available. So `!isActive` means "idle right now", NOT "offline". The earlier
+/// `!is_active → Offline` rule greyed out every idle-but-live teammate (the normal
+/// resting state after finishing a task). Offline is therefore decided ONLY by an
+/// explicit shutdown signal here, or — authoritatively — by the member's pane
+/// having vanished, which [`validate_pane_ids`] applies right after this. The
+/// teammate's idle notification goes to the LEAD's inbox (not its own), so a
+/// teammate's own-inbox `signal` is usually `None` when idle; `isActive=false`
+/// with a live pane is exactly the Idle case.
 fn derive_status(
     is_active: bool,
     has_in_progress: bool,
@@ -436,13 +454,15 @@ fn derive_status(
     if signal == Some(InboxSignal::NeedsYou) {
         return MemberStatus::NeedsYou;
     }
-    if !is_active || signal == Some(InboxSignal::Shutdown) {
+    // Offline comes from an explicit shutdown, or (later) a vanished pane — never
+    // from `isActive` alone.
+    if signal == Some(InboxSignal::Shutdown) {
         return MemberStatus::Offline;
     }
     if signal == Some(InboxSignal::Idle) {
         return MemberStatus::Idle;
     }
-    if has_in_progress {
+    if is_active || has_in_progress {
         MemberStatus::Working
     } else {
         MemberStatus::Idle
@@ -664,8 +684,44 @@ mod tests {
         assert_eq!(alice.tmux_pane_id.as_deref(), Some("%1"));
         // bob: active but inbox idle signal → Idle.
         assert_eq!(bob.status, MemberStatus::Idle);
-        // carol: isActive=false → Offline.
-        assert_eq!(carol.status, MemberStatus::Offline);
+        // carol: isActive=false but her pane %3 is still alive → Idle, NOT Offline.
+        // (CC 2.1.156 clears isActive the moment a teammate goes idle; an idle-but-
+        // live teammate is Idle. Offline is reserved for a vanished pane / shutdown.)
+        assert_eq!(carol.status, MemberStatus::Idle);
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn idle_teammate_with_live_pane_is_idle_not_offline() {
+        // Regression for the empirically-found bug: a teammate that finished its
+        // work has isActive=false (or the field dropped) but its tmux pane is still
+        // alive. It must read Idle (available) — Offline is only for a vanished
+        // pane or an explicit shutdown. Mirrors the real CC 2.1.156 resting state.
+        let base = tmp();
+        let tdir = base.join("teams").join("rest");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "L",
+            "members": [
+                { "name": "team-lead", "agentId": "team-lead@rest", "agentType": "team-lead" },
+                // Finished teammate: isActive=false, pane %5 still present.
+                { "name": "done-pane", "agentId": "done-pane@rest", "color": "green",
+                  "tmuxPaneId": "%5", "backendType": "tmux", "isActive": false }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+
+        let mut teams = scan_teams(&base);
+        let m = teams[0].members.iter().find(|m| m.name == "done-pane").unwrap();
+        assert_eq!(m.status, MemberStatus::Idle, "idle teammate with a live pane is Idle");
+
+        // And when its pane vanishes, THEN it goes Offline (pane-liveness is the
+        // authority).
+        validate_pane_ids(&mut teams[0], &[]);
+        let m = teams[0].members.iter().find(|m| m.name == "done-pane").unwrap();
+        assert_eq!(m.tmux_pane_id, None);
+        assert_eq!(m.status, MemberStatus::Offline, "vanished pane → Offline");
 
         let _ = fs::remove_dir_all(base);
     }
@@ -819,20 +875,22 @@ mod tests {
     }
 
     #[test]
-    fn lead_member_filtered_by_leader_role_when_no_lead_agent_id() {
-        // Forward-compat: newer 2.1.x writes the lead role as `"leader"` (and
-        // teammates as `"general-purpose"`) instead of `"orchestrator"`/`"claude"`.
-        // Both spellings must filter the lead row even without `leadAgentId`.
+    fn lead_member_filtered_by_team_lead_role_when_no_lead_agent_id() {
+        // Ground truth (CC 2.1.156): the lead row's agentType is "team-lead" and a
+        // real teammate carries NO agentType at all. Even without `leadAgentId`,
+        // the "team-lead" role marker must filter the lead row. (The "orchestrator"
+        // and "leader" spellings from other builds are accepted too.)
         let base = tmp();
         let tdir = base.join("teams").join("sql");
         fs::create_dir_all(tdir.join("inboxes")).unwrap();
         let config = serde_json::json!({
             "leadSessionId": "any-uuid",
             "members": [
-                { "name": "boss", "agentId": "boss@sql",
-                  "agentType": "leader", "tmuxPaneId": "" },
+                { "name": "team-lead", "agentId": "team-lead@sql",
+                  "agentType": "team-lead", "tmuxPaneId": "" },
+                // Real teammate: no agentType, has a pane + color + backendType.
                 { "name": "alice", "agentId": "alice@sql",
-                  "agentType": "general-purpose", "tmuxPaneId": "%1",
+                  "color": "blue", "tmuxPaneId": "%1",
                   "isActive": true, "backendType": "tmux" }
             ]
         });
