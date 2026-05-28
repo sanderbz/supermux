@@ -56,6 +56,19 @@ pub struct Config {
     /// operator with real iPhone subscribers knows to set this. The env
     /// override `SUPERMUX_PUSH_SUB` takes precedence.
     pub push_sub: Option<String>,
+    /// Optional GitHub Personal Access Token used ONLY by the in-UI updater
+    /// when fetching `releases/latest`. The default (anonymous) request works
+    /// for every user on the public `sanderbz/supermux` repo. Two cases need
+    /// a token:
+    ///   1. A user self-hosting their own PRIVATE fork — GitHub returns 404
+    ///      to anonymous requests, surfacing as "Couldn't reach GitHub".
+    ///   2. A shared-IP deployment hitting the 60-req/hour unauthenticated
+    ///      rate limit. Authenticated requests get 5,000 req/hour.
+    /// Resolution order: `SUPERMUX_GITHUB_TOKEN` env (preferred — never lands
+    /// in a config file), else `github_token` in `config.toml`. Quiet by
+    /// design: no UI, no warning if unset, no prompt. See
+    /// `docs/SELF_HOST_DEV.md` "Advanced — private repos / rate limits".
+    pub github_token: Option<String>,
 }
 
 /// `[ws]` config block (TECH_PLAN §3.2.7). Both knobs raised from v1 per CEO #6:
@@ -127,6 +140,9 @@ struct RawConfig {
     /// See [`Config::push_sub`].
     #[serde(default)]
     push_sub: Option<String>,
+    /// See [`Config::github_token`].
+    #[serde(default)]
+    github_token: Option<String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -181,6 +197,32 @@ pub fn load() -> Result<Config> {
         .filter(|s| !s.is_empty())
         .or(raw.push_sub);
 
+    // GitHub token for the in-UI updater (see `Config::github_token`).
+    // Env wins so an operator's PAT NEVER lands on disk inadvertently. If
+    // only `config.toml` provides it, re-export to env so `release::fetch_latest`
+    // — which reads `std::env::var` directly — sees a single source of truth
+    // without us threading an Arc<Config> through the release cache.
+    let github_token = std::env::var("SUPERMUX_GITHUB_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            raw.github_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    // Mirror config.toml → env so the release fetcher only has
+                    // one place to look. Safe: we only set the var when it
+                    // was unset (env branch above would have short-circuited).
+                    // SAFETY: `set_var` may race with concurrent reads on
+                    // platforms with non-atomic env tables; this runs once at
+                    // startup before any task is spawned.
+                    unsafe { std::env::set_var("SUPERMUX_GITHUB_TOKEN", s); }
+                    s.to_string()
+                })
+        });
+
     Ok(Config {
         data_dir,
         bind,
@@ -191,6 +233,7 @@ pub fn load() -> Result<Config> {
         ws: raw.ws,
         remote_callback_url: raw.remote_callback_url,
         push_sub,
+        github_token,
     })
 }
 

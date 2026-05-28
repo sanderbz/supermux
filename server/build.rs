@@ -51,8 +51,14 @@ fn main() {
     println!("cargo:rustc-env=SUPERMUX_BUILD_TIME={}", build_time);
 }
 
-/// Tag resolution: explicit env var wins (CI/release builds), else
-/// `git describe --tags --always --dirty`, else "dev".
+/// Tag resolution: explicit env var wins (CI/release builds AND the
+/// workstation→remote `scripts/deploy.sh` path, which captures the tag from
+/// the LOCAL `.git/` and forwards it via env — the remote tarball has no
+/// `.git/`, so a git-describe-only fallback bakes "dev" into every shipped
+/// binary), else `git describe --tags --always --dirty` (covers a normal
+/// `cargo build` from a developer's checkout), else the literal `"dev"`. The
+/// `"dev"` sentinel passes through `parse_tag()` as `None`, so the UI shows a
+/// dev-build badge — the correct surface for a truly tagless build.
 fn env_or_git_tag() -> String {
     if let Ok(v) = std::env::var("SUPERMUX_VERSION_TAG") {
         if !v.is_empty() {
@@ -62,7 +68,8 @@ fn env_or_git_tag() -> String {
     run_git(&["describe", "--tags", "--always", "--dirty"]).unwrap_or_else(|| "dev".to_string())
 }
 
-/// Commit SHA: explicit env var wins, else `git rev-parse HEAD`, else "dev".
+/// Commit SHA: explicit env var wins (same `deploy.sh` injection as the tag
+/// path above), else `git rev-parse HEAD`, else `"dev"`.
 fn env_or_git_sha() -> String {
     if let Ok(v) = std::env::var("SUPERMUX_VERSION_SHA") {
         if !v.is_empty() {

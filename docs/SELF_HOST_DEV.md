@@ -134,6 +134,34 @@ The 1-click button is bearer-gated by the same AUTH_TOKEN as the rest of
 `/api`. There is no auto-update — the upgrade only ever runs after an
 explicit click.
 
+### Advanced — private repos / rate limits
+
+The updater fetches `releases/latest` from GitHub anonymously by default. This
+works for every user on the public `sanderbz/supermux` repo. Set a token only
+if you hit one of these:
+
+- **You self-host a PRIVATE fork.** GitHub returns 404 to anonymous requests
+  against private repos, which the UI surfaces as *"Couldn't reach GitHub"*.
+- **You're behind a shared NAT** (office IP, CGNAT, big cloud egress) and
+  share the 60-req/hour unauthenticated quota with other callers.
+
+Mint a PAT at <https://github.com/settings/tokens> with scope `public_repo`
+(public fork) or `repo` (private fork), then either set the env var in the
+systemd unit (preferred — never lands on disk in your config):
+
+```
+sudo systemctl edit supermux
+# add under [Service]:
+#   Environment=SUPERMUX_GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+sudo systemctl restart supermux
+```
+
+…or add `github_token = "ghp_…"` to `$SUPERMUX_DATA_DIR/config.toml`. The env
+var wins if both are set. There is no UI surface — the value is read once at
+startup and sent as an `Authorization: Bearer <token>` header on every release
+fetch. Unset: anonymous fetch (the default). Wrong value: GitHub returns 401
+and the UI falls back to its existing *"Couldn't reach GitHub"* state.
+
 ## Troubleshooting: "Claude won't render in the dev session"
 
 Two distinct failure modes can leave the dev session showing only the shell

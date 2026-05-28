@@ -32,6 +32,7 @@ fn temp_config() -> (Config, PathBuf) {
         ws: WsConfig::default(),
         remote_callback_url: None,
             push_sub: None,
+            github_token: None,
     };
     (config, dir)
 }

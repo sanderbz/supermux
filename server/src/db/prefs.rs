@@ -281,6 +281,7 @@ mod agent_teams_pref_tests {
             ws: Default::default(),
             remote_callback_url: None,
             push_sub: None,
+            github_token: None,
         };
         let pool = crate::db::init(&config).await.expect("init pool");
         (pool, dir)
