@@ -197,6 +197,40 @@ service_user_has_claude_creds() {
   remote_check "sudo test -f '$home/.claude/.credentials.json'"
 }
 
+# ── remote helper: is the Claude Code BINARY on the service user's PATH? ──────
+# Distinct from the CREDENTIALS check above: a host can be logged in conceptually
+# (or not) but never have `claude` installed at all. supermux runs the bare
+# `claude` command in each session's tmux pane AS the service user (its login
+# shell resolves PATH), so we must probe under that exact context — a login
+# shell (`bash -lc`) with ~/.local/bin prepended (where the native installer
+# lands the binary, in case the user's rc files don't add it yet). Returns 0 if
+# found, 1 if missing.
+service_user_has_claude_bin() {
+  local user="$1" host="$2"
+  ssh "$host" "sudo -u '$user' -H bash -lc 'export PATH=\"\$HOME/.local/bin:\$PATH\"; command -v claude'" >/dev/null 2>&1
+}
+
+# ── pure helper: the copy-pasteable Claude Code install hint ──────────────────
+# Echoed in the warning when the binary is missing and we're not installing for
+# the operator. The native installer is the recommendation (no Node dependency,
+# matches supermux's "no Node at runtime" stance); npm is the fallback for hosts
+# that prefer it. Pure (no I/O) → unit-testable.
+claude_install_hint() {
+  local user="$1"
+  printf 'ssh %s sudo -u %s -H bash -lc '\''curl -fsSL https://claude.ai/install.sh | bash'\''' "$HOST" "$user"
+}
+
+# ── remote helper: install Claude Code for the service user (consent required) ─
+# Runs the OFFICIAL native installer AS the service user (never as root, never
+# silently — the caller gates on INSTALL_CLAUDE / interactive consent). The
+# installer drops the binary in ~user/.local/bin and self-updates thereafter.
+# Returns the installer's exit status so the caller can re-probe + report.
+install_claude_for_service_user() {
+  local user="$1" host="$2"
+  echo "[deploy] installing Claude Code for '$user' via the official native installer…"
+  ssh "$host" "sudo -u '$user' -H bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'"
+}
+
 # ── remote helper: copy the DEPLOYER's Claude login to the service user ──────
 # Fast path (opt-in only): if the account we're SSHing in as (often root) has a
 # valid ~/.claude/.credentials.json, copy the whole .claude dir + .claude.json
@@ -333,6 +367,16 @@ ALLOW_ROOT="${SUPERMUX_ALLOW_ROOT:-0}"
 # without prompting, for non-interactive deploys that want the fast path), or
 # "0" (never copy — just print the manual /login instructions).
 COPY_CLAUDE_CREDS="${SUPERMUX_COPY_CLAUDE_CREDS:-ask}"
+# Whether to install the Claude Code CLI for the service user when it's missing.
+# supermux launches every (non-shell) agent by running the bare `claude` binary
+# on the service user's PATH (lifecycle.rs), so a host without it can deploy +
+# pass /api/health yet fail every agent. Tri-state, mirroring COPY_CLAUDE_CREDS:
+#   ask (default) — offer to install interactively; warn+hint when no TTY
+#   1             — install automatically (hands-off / non-interactive deploys)
+#   0             — never install; just warn with the install command
+# Install uses the official native installer (no Node dependency, lands in
+# ~user/.local/bin) run AS the service user — never silently as root.
+INSTALL_CLAUDE="${SUPERMUX_INSTALL_CLAUDE:-ask}"
 PUBLIC_PORT="${SUPERMUX_PUBLIC_PORT:-443}"
 INTERNAL_PORT="${SUPERMUX_INTERNAL_PORT:-8824}"
 INSTALL_TOOLCHAINS="${SUPERMUX_INSTALL_TOOLCHAINS:-0}"
@@ -709,7 +753,11 @@ if [ "$MEMORY_DENY_WRITE_EXECUTE" = "yes" ]; then
 else
   echo "[deploy] agent builds      : enabled (W^X off)"
 fi
-echo "[deploy] claude auth       : verified after provisioning (see end of run)"
+case "$INSTALL_CLAUDE" in
+  1) echo "[deploy] claude code       : install if missing (SUPERMUX_INSTALL_CLAUDE=1), then verify login" ;;
+  0) echo "[deploy] claude code       : check only (SUPERMUX_INSTALL_CLAUDE=0), then verify login" ;;
+  *) echo "[deploy] claude code       : check + offer to install if missing, then verify login" ;;
+esac
 echo "[deploy] ───────────────────────────────────────────────────────────"
 
 # ── 0g. create + fully provision the default service user if it's missing ────
@@ -1340,67 +1388,146 @@ fi
 #      login — the fast path that reuses the subscription;
 #   3. VERIFY before declaring success and WARN loudly with the exact /login
 #      command if creds are still absent.
-echo "[deploy] checking Claude login for service user '$SERVICE_USER'"
+echo "[deploy] checking Claude Code for service user '$SERVICE_USER'"
 LOGIN_CMD="sudo -u $SERVICE_USER -i claude   # then run: /login   (uses your Claude subscription, no API key)"
 CLAUDE_AUTH_OK=0
-if service_user_has_claude_creds "$USER_HOME" "$HOST"; then
-  echo "[deploy] claude auth: ✓ '$SERVICE_USER' has $USER_HOME/.claude/.credentials.json"
-  CLAUDE_AUTH_OK=1
+
+# ── 7a. Claude Code BINARY presence (must come before the login check) ────────
+# Every non-shell session launches the bare `claude` binary on the service
+# user's PATH (lifecycle.rs); without it the service starts + /api/health = 200
+# but every agent dies with "claude: command not found" — and the /login command
+# we'd otherwise print can't even run. Probe first; install per INSTALL_CLAUDE.
+CLAUDE_BIN_OK=0
+if service_user_has_claude_bin "$SERVICE_USER" "$HOST"; then
+  echo "[deploy] claude binary: ✓ '$SERVICE_USER' has claude on PATH"
+  CLAUDE_BIN_OK=1
 else
-  echo "[deploy] claude auth: '$SERVICE_USER' has NO Claude credentials yet."
-  # Can we offer the fast path — copy the deployer's existing login?
-  DEPLOYER_HOME="$(deployer_claude_creds_home "$HOST" 2>/dev/null || true)"
-  DEPLOYER_HAS_CREDS=0
-  if [ -n "$DEPLOYER_HOME" ] && remote_check "sudo test -f '$DEPLOYER_HOME/.claude/.credentials.json'"; then
-    DEPLOYER_HAS_CREDS=1
-  fi
+  echo "[deploy] claude binary: '$SERVICE_USER' does NOT have claude installed."
+  DO_INSTALL=0
+  case "$INSTALL_CLAUDE" in
+    0)
+      echo "[deploy]   (SUPERMUX_INSTALL_CLAUDE=0 — not installing Claude Code)"
+      ;;
+    1)
+      echo "[deploy]   SUPERMUX_INSTALL_CLAUDE=1 — installing Claude Code (official native installer)."
+      DO_INSTALL=1
+      ;;
+    *)
+      # "ask" — interactive consent. No TTY → warn only (never silently
+      # fetch+exec; matches the bun/cargo/tmux discipline).
+      if [ -t 0 ]; then
+        echo "[deploy]   I can install it now for '$SERVICE_USER' via the official native"
+        echo "[deploy]   installer (no Node needed; lands in ~$SERVICE_USER/.local/bin)."
+        printf "[deploy]   Install Claude Code for '%s' now? [y/N] " "$SERVICE_USER"
+        read -r _reply || _reply=""
+        case "$_reply" in
+          y|Y|yes|YES|Yes) DO_INSTALL=1 ;;
+          *) echo "[deploy]   (skipped — install it yourself, see the command below)" ;;
+        esac
+      else
+        echo "[deploy]   (non-interactive + SUPERMUX_INSTALL_CLAUDE unset — not installing."
+        echo "[deploy]    Set SUPERMUX_INSTALL_CLAUDE=1 to install automatically.)"
+      fi
+      ;;
+  esac
 
-  DO_COPY=0
-  if [ "$DEPLOYER_HAS_CREDS" = "1" ]; then
-    case "$COPY_CLAUDE_CREDS" in
-      0)
-        echo "[deploy]   (SUPERMUX_COPY_CLAUDE_CREDS=0 — not copying the deployer's login)"
-        ;;
-      1)
-        echo "[deploy]   SUPERMUX_COPY_CLAUDE_CREDS=1 — copying the deployer's Claude login (subscription)."
-        DO_COPY=1
-        ;;
-      *)
-        # "ask" — interactive consent. If not a TTY, fall back to "don't copy".
-        if [ -t 0 ]; then
-          echo "[deploy]   The account you deployed AS ($DEPLOYER_HOME) has a valid Claude login."
-          echo "[deploy]   I can copy it to '$SERVICE_USER' (reuses your subscription — NO API key)."
-          printf "[deploy]   Copy the deployer's Claude login to '%s'? [y/N] " "$SERVICE_USER"
-          read -r _reply || _reply=""
-          case "$_reply" in
-            y|Y|yes|YES|Yes) DO_COPY=1 ;;
-            *) echo "[deploy]   (skipped — you can copy later or run /login as the service user)" ;;
-          esac
-        else
-          echo "[deploy]   (non-interactive + SUPERMUX_COPY_CLAUDE_CREDS unset — not copying."
-          echo "[deploy]    Set SUPERMUX_COPY_CLAUDE_CREDS=1 to copy automatically.)"
-        fi
-        ;;
-    esac
-  fi
-
-  if [ "$DO_COPY" = "1" ]; then
-    if copy_deployer_claude_creds "$DEPLOYER_HOME" "$USER_HOME" "$SERVICE_USER" "$HOST"; then
-      if service_user_has_claude_creds "$USER_HOME" "$HOST"; then
-        echo "[deploy] claude auth: ✓ copied — '$SERVICE_USER' now has valid Claude credentials."
-        CLAUDE_AUTH_OK=1
+  if [ "$DO_INSTALL" = "1" ]; then
+    if install_claude_for_service_user "$SERVICE_USER" "$HOST"; then
+      if service_user_has_claude_bin "$SERVICE_USER" "$HOST"; then
+        echo "[deploy] claude binary: ✓ installed — '$SERVICE_USER' now has claude on PATH."
+        CLAUDE_BIN_OK=1
+      else
+        echo "[deploy] warn: installer ran but 'claude' still isn't on PATH — check ~$SERVICE_USER/.local/bin." >&2
       fi
     else
-      echo "[deploy] warn: copying the deployer's Claude login failed — falling back to manual /login." >&2
+      echo "[deploy] warn: installing Claude Code failed — see the manual command below." >&2
     fi
   fi
 fi
 
-if [ "$CLAUDE_AUTH_OK" != "1" ]; then
-  # Left-bar-only style: the variable-length lines ($SERVICE_USER, $LOGIN_CMD)
-  # can be any length, so a fixed-width right border would render ragged. A
-  # single left rule keeps it tidy regardless of content width, and the command
-  # gets its own un-boxed indented line so it's easy to copy.
+# ── 7b. service-user Claude auth — detect, optionally copy, then VERIFY ───────
+# The #1 "it doesn't work" cause once the binary IS present: the service user
+# never ran `claude /login`. supermux uses the Claude SUBSCRIPTION (OAuth) —
+# NEVER an API key, never ANTHROPIC_API_KEY, never API billing. Only meaningful
+# when the binary exists — you can't /login a CLI that isn't installed — so this
+# whole block is gated on CLAUDE_BIN_OK.
+if [ "$CLAUDE_BIN_OK" = "1" ]; then
+  if service_user_has_claude_creds "$USER_HOME" "$HOST"; then
+    echo "[deploy] claude auth: ✓ '$SERVICE_USER' has $USER_HOME/.claude/.credentials.json"
+    CLAUDE_AUTH_OK=1
+  else
+    echo "[deploy] claude auth: '$SERVICE_USER' has NO Claude credentials yet."
+    # Can we offer the fast path — copy the deployer's existing login?
+    DEPLOYER_HOME="$(deployer_claude_creds_home "$HOST" 2>/dev/null || true)"
+    DEPLOYER_HAS_CREDS=0
+    if [ -n "$DEPLOYER_HOME" ] && remote_check "sudo test -f '$DEPLOYER_HOME/.claude/.credentials.json'"; then
+      DEPLOYER_HAS_CREDS=1
+    fi
+
+    DO_COPY=0
+    if [ "$DEPLOYER_HAS_CREDS" = "1" ]; then
+      case "$COPY_CLAUDE_CREDS" in
+        0)
+          echo "[deploy]   (SUPERMUX_COPY_CLAUDE_CREDS=0 — not copying the deployer's login)"
+          ;;
+        1)
+          echo "[deploy]   SUPERMUX_COPY_CLAUDE_CREDS=1 — copying the deployer's Claude login (subscription)."
+          DO_COPY=1
+          ;;
+        *)
+          # "ask" — interactive consent. If not a TTY, fall back to "don't copy".
+          if [ -t 0 ]; then
+            echo "[deploy]   The account you deployed AS ($DEPLOYER_HOME) has a valid Claude login."
+            echo "[deploy]   I can copy it to '$SERVICE_USER' (reuses your subscription — NO API key)."
+            printf "[deploy]   Copy the deployer's Claude login to '%s'? [y/N] " "$SERVICE_USER"
+            read -r _reply || _reply=""
+            case "$_reply" in
+              y|Y|yes|YES|Yes) DO_COPY=1 ;;
+              *) echo "[deploy]   (skipped — you can copy later or run /login as the service user)" ;;
+            esac
+          else
+            echo "[deploy]   (non-interactive + SUPERMUX_COPY_CLAUDE_CREDS unset — not copying."
+            echo "[deploy]    Set SUPERMUX_COPY_CLAUDE_CREDS=1 to copy automatically.)"
+          fi
+          ;;
+      esac
+    fi
+
+    if [ "$DO_COPY" = "1" ]; then
+      if copy_deployer_claude_creds "$DEPLOYER_HOME" "$USER_HOME" "$SERVICE_USER" "$HOST"; then
+        if service_user_has_claude_creds "$USER_HOME" "$HOST"; then
+          echo "[deploy] claude auth: ✓ copied — '$SERVICE_USER' now has valid Claude credentials."
+          CLAUDE_AUTH_OK=1
+        fi
+      else
+        echo "[deploy] warn: copying the deployer's Claude login failed — falling back to manual /login." >&2
+      fi
+    fi
+  fi
+fi
+
+# ── 7c. report what (if anything) still needs the operator's hands ────────────
+# Left-bar-only style: the variable-length lines can be any length, so a
+# fixed-width right border would render ragged. A single left rule stays tidy
+# regardless of content width, and commands get their own indented lines so
+# they're easy to copy. Two distinct stop-states:
+#   • binary missing  → install Claude Code first (the /login command can't run)
+#   • binary present, not logged in → run /login
+if [ "$CLAUDE_BIN_OK" != "1" ]; then
+  echo "[deploy] ┌─ ACTION REQUIRED ──────────────────────────────────────────────" >&2
+  echo "[deploy] │  Claude Code is NOT installed for service user '$SERVICE_USER'." >&2
+  echo "[deploy] │  Every agent will fail with 'claude: command not found' until it is." >&2
+  echo "[deploy] │  Install it on the host (no Node needed):" >&2
+  echo "[deploy] │" >&2
+  echo "[deploy] │      $(claude_install_hint "$SERVICE_USER")" >&2
+  echo "[deploy] │" >&2
+  echo "[deploy] │  …then log in (uses your Claude subscription, NO API key):" >&2
+  echo "[deploy] │" >&2
+  echo "[deploy] │      $LOGIN_CMD" >&2
+  echo "[deploy] │" >&2
+  echo "[deploy] │  Tip: re-run deploy with SUPERMUX_INSTALL_CLAUDE=1 to install it for you." >&2
+  echo "[deploy] └────────────────────────────────────────────────────────────────" >&2
+elif [ "$CLAUDE_AUTH_OK" != "1" ]; then
   echo "[deploy] ┌─ ACTION REQUIRED ──────────────────────────────────────────────" >&2
   echo "[deploy] │  service user '$SERVICE_USER' is NOT logged in to Claude." >&2
   echo "[deploy] │  Agents will fail until you log in (subscription, NO API key)." >&2
@@ -1414,8 +1541,10 @@ if [ "$CLAUDE_AUTH_OK" != "1" ]; then
 fi
 
 echo "[deploy] done — supermux (commit $GIT_SHA_SHORT) live on $HOST loopback:$INTERNAL_PORT"
-if [ "$CLAUDE_AUTH_OK" = "1" ]; then
-  echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; Claude login verified."
+if [ "$CLAUDE_BIN_OK" != "1" ]; then
+  echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; FINISH SETUP by installing Claude Code, then logging in (see above)."
+elif [ "$CLAUDE_AUTH_OK" = "1" ]; then
+  echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; Claude Code installed + login verified."
 else
   echo "[deploy]   service runs as unprivileged '$SERVICE_USER'; FINISH SETUP by logging in to Claude (see above)."
 fi

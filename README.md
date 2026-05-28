@@ -84,7 +84,7 @@ If you've spun up three Claude sessions in three terminals and wished you could 
 - **macOS** — Apple Silicon and Intel (development + local self-host).
 - **Windows** — not supported. supermux relies on Unix-only primitives (`tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
 
-Toolchain floor: `rustc 1.83` (see `server/Cargo.toml`'s `rust-version`) and a recent `bun` 1.x. `tmux` is a runtime requirement.
+Toolchain floor: `rustc 1.83` (see `server/Cargo.toml`'s `rust-version`) and a recent `bun` 1.x. `tmux` is a runtime requirement, and [Claude Code](https://code.claude.com/docs/en/setup) (the `claude` CLI) is the runtime dependency for the default agent provider — `deploy.sh` checks for it and can install it for you (`SUPERMUX_INSTALL_CLAUDE=1`).
 
 ## Quickstart — deploy
 
@@ -134,7 +134,8 @@ Module map and protocol details: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - **Non-root by default, even from a root SSH session.** Root provisions; the service drops to the unprivileged `supermux` user. Forcing root throws away the systemd sandbox and trips Claude Code's refusal to run `--dangerously-skip-permissions` as uid 0, so it's refused unless you explicitly set `SUPERMUX_ALLOW_ROOT=1`.
 - **Service user** defaults to `supermux`. If it doesn't exist, `deploy.sh` provisions it. Pick a non-default name and the script refuses rather than silently creating something unexpected.
 - **Project directories** — `SUPERMUX_PROJECT_DIRS` (default `<user-home>/projects`). Under-home dirs just work; outside-home dirs (`/opt/projects`, `/srv/work`, …) are created, `chown -R`'d, and folded into the systemd `ReadWritePaths` so the sandbox permits agent writes.
-- **Service-user Claude login** — supermux uses your Claude subscription (OAuth), never an API key. After provisioning, `deploy.sh` checks for `~supermux/.claude/.credentials.json` and offers to copy the deployer's existing login; it verifies before declaring success and prints the exact `sudo -u supermux -i claude` + `/login` command if anything's missing.
+- **Claude Code (the agent runtime)** — every non-shell session launches the `claude` binary on the service user's PATH, so it's a runtime dependency for the default provider. After provisioning, `deploy.sh` checks whether the service user has `claude` and, when missing, installs it (official native installer — no Node) per `SUPERMUX_INSTALL_CLAUDE` (`ask` = offer interactively, `1` = auto, `0` = warn only). A host without it still deploys, so this is a loud warning, not a hard stop.
+- **Service-user Claude login** — supermux uses your Claude subscription (OAuth), never an API key. After confirming the binary, `deploy.sh` checks for `~supermux/.claude/.credentials.json` and offers to copy the deployer's existing login; it verifies before declaring success and prints the exact `sudo -u supermux -i claude` + `/login` command if anything's missing.
 - **Tailscale** — auto-detected. If `tailscaled` is running, `deploy.sh` exposes the service via `tailscale serve` on port `443`. Rename once with `sudo tailscale set --hostname=supermux` for the cleanest URL. Override with `SUPERMUX_USE_TAILSCALE=0|1` or `SUPERMUX_PUBLIC_PORT`.
 - **Toolchains** — `bun` and `cargo` are required (native build). `SUPERMUX_INSTALL_TOOLCHAINS=1` opts in to automatic install via the official `bun` + `rustup` installers; otherwise missing toolchains are a hard error with manual instructions. When opted in, `deploy.sh` first provisions the system build prerequisites (`unzip` for the bun installer, plus a C toolchain, `pkg-config`, OpenSSL headers and `cmake` for the rust release build) using the host's package manager (apt/dnf/apk/pacman), so a truly fresh minimal box is turnkey.
 

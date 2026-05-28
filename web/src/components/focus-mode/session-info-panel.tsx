@@ -385,7 +385,7 @@ function NameEditor({
           }}
           disabled={rename.pending}
           aria-label="Session name"
-          className="w-full rounded-[10px] border border-input bg-transparent px-2.5 py-1.5 text-sm font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          className="w-full rounded-[10px] border border-input bg-transparent px-2.5 py-1.5 text-base md:text-sm font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         />
         <span className="text-[11px] text-muted-foreground">
           Enter to save, Esc to cancel · letters, numbers,{' '}
