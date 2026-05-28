@@ -20,9 +20,10 @@
 //! * [`api`]: the four endpoints (`GET /api/version`,
 //!   `POST /api/version/refresh`, `POST /api/update/start`,
 //!   `GET /api/update/progress/:job_id`).
-//! * [`exec`]: the tokio task that writes the path-unit marker file (systemd
-//!   install) or refuses with a clear message (bare-binary / dev / docker),
-//!   and the broadcast channel keyed by job_id that the SSE endpoint tails.
+//! * [`exec`]: the tokio task that fast-forwards the source clone to
+//!   `origin/main`, writes the path-unit marker file (so the root runner builds
+//!   the now-updated clone), and owns the broadcast channel keyed by job_id that
+//!   the SSE endpoint tails.
 //!
 //! ## Why GitHub + path-unit (not a binary delta)
 //!

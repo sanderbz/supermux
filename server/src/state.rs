@@ -1066,6 +1066,7 @@ mod pending_edit_tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
         (AppState::new(pool, config), dir)

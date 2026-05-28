@@ -1,18 +1,25 @@
 //! Update execution: spawn the update task, broadcast progress to SSE subscribers.
 //!
-//! The actual `git fetch + reset + build + install + verify + rollback`
-//! pipeline lives in `scripts/update.sh` on the host (so an OSS user can read
-//! exactly what the 1-click button runs). This module's job:
-//!   1. Refuse the request when preflight has any blocked_reason.
-//!   2. Write a marker file under `<data>/deploy/` that the root-side
-//!      `supermux-deploy.path` unit watches; that unit invokes `update.sh`.
-//!   3. Spawn a tokio task that tails the runner's log file and re-emits each
+//! The actual `build + install + verify + rollback` pipeline lives in the
+//! root-side `supermux-deploy-runner` (so an OSS user can read exactly what
+//! the 1-click button runs). This module's job:
+//!   1. Refuse the request when preflight has any blocked_reason (done in `api`).
+//!   2. Fast-forward the source clone to `origin/main` so the build is of the
+//!      target release, NOT whatever commit happens to be checked out. This is
+//!      done HERE (in the backend, as the service user) because the runner
+//!      builds the source dir as-is; without this step the in-UI update would
+//!      rebuild the currently-deployed commit and never reach the new release.
+//!   3. Write a marker file under `<data>/deploy/` that the root-side
+//!      `supermux-deploy.path` unit watches; that unit builds + installs the
+//!      now-fast-forwarded clone.
+//!   4. Spawn a tokio task that tails the runner's log file and re-emits each
 //!      structured `[update] step=<name>` line as an `UpdateEvent` on a
 //!      per-job broadcast channel the `/api/update/progress/:job_id` SSE
 //!      handler subscribes to.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -148,10 +155,28 @@ pub fn deploy_log_path() -> PathBuf {
     data.join("deploy").join("log")
 }
 
-/// Kick off the update for `job_id` from `source_dir`. Atomically writes the
-/// deploy request (request.tmp → mv → request) and spawns a tail task that
-/// reads the runner's log and re-emits each `[update] step=<name>` line as an
-/// SSE event. Returns immediately. The SSE endpoint is the progress surface.
+/// Kick off the update for `job_id` from `source_dir`.
+///
+/// Sequence (the critical ordering):
+///   1. emit `Queued`, then `Fetching` so the UI leaves "Queued" immediately;
+///   2. `git fetch origin` + `git merge --ff-only origin/main` in `source_dir`
+///      so the clone is on the TARGET release before the runner builds it
+///      (the runner builds the source dir as-is and does NOT pull). On any
+///      fetch/ff failure we emit `Failed` and return WITHOUT writing the
+///      request, so a stale checkout is never built;
+///   3. resolve the new HEAD sha and write THAT as the request `sha=` (the
+///      target the runner records), atomically (request.tmp → mv → request);
+///   4. spawn a tail task that reads the runner's log and re-emits each
+///      `[update] step=<name>` line (building/installing/verifying/done) as an
+///      SSE event. Returns immediately. The SSE endpoint is the progress surface.
+///
+/// `current_sha` is the currently-deployed commit; it is used only as a logged
+/// fallback if reading the new HEAD fails (it should not, after a clean ff).
+///
+/// NOTE: this runs as the supermux service user, the SAME uid the runner builds
+/// the clone as, so the fetch+ff touches the very tree the runner will build.
+/// `scripts/deploy-self.sh` (dev self-deploy of LOCAL commits) writes its own
+/// request and never calls this function, so that path is unaffected.
 pub async fn spawn_update_task(
     registry: Arc<JobRegistry>,
     job_id: String,
@@ -165,11 +190,60 @@ pub async fn spawn_update_task(
             UpdateEvent {
                 job_id: job_id.clone(),
                 step: UpdateStep::Queued,
-                message: "Update queued. Waiting for the root runner to pick it up.".into(),
+                message: "Update queued.".into(),
                 ts: Utc::now().timestamp(),
             },
         )
         .await;
+
+    // ── fast-forward the clone to origin/main BEFORE the build ───────────────
+    // The runner builds source_dir AS-IS; without this it would rebuild the
+    // currently-checked-out commit and never reach the new release. We emit
+    // `Fetching` first so the UI advances off "Queued" while git runs.
+    registry
+        .publish(
+            &job_id,
+            UpdateEvent {
+                job_id: job_id.clone(),
+                step: UpdateStep::Fetching,
+                message: "Fetching the latest commit from GitHub.".into(),
+                ts: Utc::now().timestamp(),
+            },
+        )
+        .await;
+
+    let target_sha = match fetch_and_fast_forward(&source_dir) {
+        Ok(sha) => sha,
+        Err(e) => {
+            // Surface a clear terminal failure and do NOT write the request:
+            // we must never trigger a build of a stale (or diverged) checkout.
+            registry
+                .publish(
+                    &job_id,
+                    UpdateEvent {
+                        job_id: job_id.clone(),
+                        step: UpdateStep::Failed,
+                        message: format!(
+                            "Could not fast-forward to origin/main, so the update was not started: {e}"
+                        ),
+                        ts: Utc::now().timestamp(),
+                    },
+                )
+                .await;
+            schedule_forget(registry, job_id, Duration::from_secs(60)).await;
+            // Return Ok: the failure is already reported on the SSE stream, and
+            // /api/update/start already handed the client a job_id. A 500 here
+            // would race the SSE event and confuse the UI.
+            return Ok(());
+        }
+    };
+
+    // Log the transition for ops; `current_sha` is the pre-update commit.
+    tracing::info!(
+        from = %current_sha,
+        to = %target_sha,
+        "update: fast-forwarded source clone to origin/main"
+    );
 
     let req_path = deploy_request_path();
     let req_dir = req_path
@@ -187,10 +261,12 @@ pub async fn spawn_update_task(
     let _ = std::fs::write(&status_path, b"");
 
     let nonce = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    // Write the TARGET sha (origin/main's HEAD we just fast-forwarded to), not
+    // the pre-update commit, so the runner records the version it actually builds.
     let body = format!(
         "source_dir={}\nsha={}\nnonce={}\n",
         source_dir.display(),
-        current_sha,
+        target_sha,
         nonce
     );
     let tmp = req_dir.join("request.tmp");
@@ -206,6 +282,57 @@ pub async fn spawn_update_task(
     });
 
     Ok(())
+}
+
+/// Fetch `origin` and fast-forward `source_dir` to `origin/main`, returning the
+/// new HEAD sha on success.
+///
+/// `--ff-only` is safe here because `/api/update/start`'s preflight (re-run at
+/// call time) already guarantees: on branch `main`, clean working tree, and NOT
+/// ahead of origin. So this can only ever fast-forward, never rewrite local
+/// commits. If the tree is already current the merge is a no-op. We still handle
+/// fetch failure (offline) and an unexpected non-ff (diverged) defensively.
+fn fetch_and_fast_forward(source_dir: &Path) -> Result<String, String> {
+    let fetch = Command::new("git")
+        .args(["fetch", "--quiet", "origin"])
+        .current_dir(source_dir)
+        .output()
+        .map_err(|e| format!("could not run git fetch: {e}"))?;
+    if !fetch.status.success() {
+        return Err(format!(
+            "git fetch origin failed (is the host offline?): {}",
+            String::from_utf8_lossy(&fetch.stderr).trim()
+        ));
+    }
+
+    let merge = Command::new("git")
+        .args(["merge", "--ff-only", "origin/main"])
+        .current_dir(source_dir)
+        .output()
+        .map_err(|e| format!("could not run git merge: {e}"))?;
+    if !merge.status.success() {
+        return Err(format!(
+            "git merge --ff-only origin/main failed (diverged history?): {}",
+            String::from_utf8_lossy(&merge.stderr).trim()
+        ));
+    }
+
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(source_dir)
+        .output()
+        .map_err(|e| format!("could not run git rev-parse: {e}"))?;
+    if !head.status.success() {
+        return Err(format!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&head.stderr).trim()
+        ));
+    }
+    let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    if sha.is_empty() {
+        return Err("git rev-parse HEAD returned an empty sha".to_string());
+    }
+    Ok(sha)
 }
 
 /// Tail the runner's log, re-emitting structured lines as SSE events. Terminates
@@ -451,5 +578,162 @@ mod tests {
     #[test]
     fn rejects_unknown_step() {
         assert!(parse_event_line("[update] step=teleporting", "j1").is_none());
+    }
+
+    #[test]
+    fn parses_every_runner_step_marker() {
+        // These are the EXACT step strings the root path-unit runner
+        // (etc/supermux-deploy-runner) emits to the log this module tails.
+        // The contract is load-bearing: if the runner's step() names and this
+        // parser ever drift, the in-UI progress bar silently sticks on
+        // "Queued" (the original bug). Pin the full set here so a rename on
+        // either side fails the build.
+        let cases: &[(&str, UpdateStep)] = &[
+            ("[update] step=fetching", UpdateStep::Fetching),
+            ("[update] step=building", UpdateStep::Building),
+            ("[update] step=installing", UpdateStep::Installing),
+            ("[update] step=verifying", UpdateStep::Verifying),
+            ("[update] step=done", UpdateStep::Done),
+            ("[update] step=failed", UpdateStep::Failed),
+            ("[update] step=rolled_back", UpdateStep::RolledBack),
+        ];
+        for (line, want) in cases {
+            let ev = parse_event_line(line, "j1")
+                .unwrap_or_else(|| panic!("runner line should parse: {line:?}"));
+            assert_eq!(ev.step, *want, "wrong step for {line:?}");
+            assert!(!ev.message.is_empty(), "empty default message for {line:?}");
+        }
+    }
+
+    #[test]
+    fn parses_runner_step_with_message() {
+        // The runner emits `[update] step=<name> msg="<text>"`; the msg must
+        // come through verbatim so the UI shows the runner's own copy.
+        let ev = parse_event_line(
+            r#"[update] step=installing msg="Installing the new binary and restarting the service.""#,
+            "j1",
+        )
+        .unwrap();
+        assert_eq!(ev.step, UpdateStep::Installing);
+        assert_eq!(ev.message, "Installing the new binary and restarting the service.");
+    }
+
+    // ── fetch + fast-forward ─────────────────────────────────────────────────
+    // These build two real git repos (a "remote" and a "clone" of it on main),
+    // advance the remote, and assert the in-UI fetch+ff lands the clone on the
+    // remote's new HEAD (the bug: it used to build the clone's OLD commit).
+
+    use std::process::Command;
+
+    /// A self-cleaning scratch dir (avoids pulling in the `tempfile` crate just
+    /// for these two tests). Removed on drop.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "supermux-ff-test-{}-{}-{}",
+                tag,
+                std::process::id(),
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Scratch(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Build a bare "remote" with one commit on `main` and a working clone of it.
+    /// Returns (remote_dir, clone_dir, scratch_guard).
+    fn make_remote_and_clone() -> (PathBuf, PathBuf, Scratch) {
+        let tmp = Scratch::new("repo");
+        let seed = tmp.path().join("seed");
+        let remote = tmp.path().join("remote.git");
+        let clone = tmp.path().join("clone");
+
+        // Seed repo on main with one commit, then push into a bare remote.
+        std::fs::create_dir(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "main"]);
+        std::fs::write(seed.join("file.txt"), b"v1\n").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-q", "-m", "v1"]);
+        git(&seed, &["clone", "-q", "--bare", ".", remote.to_str().unwrap()]);
+
+        // The clone the in-UI updater operates on; on branch main tracking origin.
+        git(
+            tmp.path(),
+            &["clone", "-q", remote.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+        git(&clone, &["checkout", "-q", "main"]);
+
+        (remote, clone, tmp)
+    }
+
+    #[test]
+    fn fast_forward_advances_clone_to_new_remote_head() {
+        let (remote, clone, _tmp) = make_remote_and_clone();
+
+        // The clone starts on v1.
+        let old = git(&clone, &["rev-parse", "HEAD"]);
+
+        // Advance the remote's main by pushing a second commit from a fresh
+        // working clone of the remote (simulates a new release landing).
+        let pusher = remote.parent().unwrap().join("pusher");
+        git(
+            remote.parent().unwrap(),
+            &["clone", "-q", remote.to_str().unwrap(), pusher.to_str().unwrap()],
+        );
+        git(&pusher, &["checkout", "-q", "main"]);
+        std::fs::write(pusher.join("file.txt"), b"v2\n").unwrap();
+        git(&pusher, &["add", "."]);
+        git(&pusher, &["commit", "-q", "-m", "v2"]);
+        git(&pusher, &["push", "-q", "origin", "main"]);
+        let remote_head = git(&pusher, &["rev-parse", "HEAD"]);
+
+        // The fix: fetch + ff lands the clone on the remote's NEW head and
+        // returns it as the target sha (this is what gets written as request sha=).
+        let target = super::fetch_and_fast_forward(&clone).expect("ff succeeds");
+        assert_eq!(target, remote_head, "target sha must be origin/main HEAD");
+        assert_ne!(target, old, "clone must have advanced past its old commit");
+        assert_eq!(
+            git(&clone, &["rev-parse", "HEAD"]),
+            remote_head,
+            "the working tree HEAD must now be origin/main"
+        );
+    }
+
+    #[test]
+    fn fast_forward_is_a_noop_when_already_current() {
+        // Mirrors deploy-self.sh's already-pulled tree: ff-only on a current
+        // tree must succeed and return the same HEAD (no error, no double-pull pain).
+        let (_remote, clone, _tmp) = make_remote_and_clone();
+        let head = git(&clone, &["rev-parse", "HEAD"]);
+        let target = super::fetch_and_fast_forward(&clone).expect("noop ff succeeds");
+        assert_eq!(target, head);
     }
 }

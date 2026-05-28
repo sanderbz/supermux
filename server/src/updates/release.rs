@@ -1,13 +1,16 @@
 //! Fetch + cache the latest GitHub release.
 //!
-//! Why a 6-hour TTL:
-//!   GitHub's unauthenticated rate limit is 60 requests/hour per IP. A single
-//!   self-host typically opens Settings → Updates once a day; the panel polls
-//!   every 30s while open, but those polls hit the cache. A 6-hour TTL means
-//!   the worst case (panel left open overnight) costs four GitHub requests,
-//!   miles under the limit even if a dozen tabs/devices share an outbound IP.
-//!   Short enough that a fresh tag surfaces the same day, long enough that an
-//!   accidental loop can't burn the quota.
+//! Why a 1-hour TTL:
+//!   GitHub's unauthenticated rate limit is 60 requests/hour per IP. supermux
+//!   makes NO other GitHub calls, so one `/releases/latest` fetch per instance
+//!   per hour is negligible against that quota even when a handful of
+//!   tabs/devices share an outbound IP. The panel polls `/api/version` every
+//!   30s while open, but those polls hit this cache; only one fetch per hour
+//!   actually reaches GitHub. The win: a freshly published release surfaces in
+//!   the UI within an hour automatically, instead of being invisible for up to
+//!   6 hours unless the user manually clicks "Check now" (which calls
+//!   force_refresh and bypasses the TTL). A short TTL is the right trade-off
+//!   for an update-notification surface; the quota headroom is enormous.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// Cache TTL. See module doc for the trade-off.
-const TTL: Duration = Duration::from_secs(6 * 60 * 60);
+const TTL: Duration = Duration::from_secs(60 * 60);
 
 /// Outbound request timeout. A user clicking "Refresh" must not hang the page
 /// for minutes if GitHub is slow / unreachable; we bail in 5s and the UI shows

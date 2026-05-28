@@ -80,8 +80,42 @@ exec > >(tee -a "$LOG") 2>&1
 
 log() { printf '[deploy-runner] %s\n' "$*"; }
 
+# step() emits the CANONICAL progress marker the supermux server's
+# `updates::exec` tail subscribes to. The server tails THIS log file
+# ($REQ_DIR/log) and re-emits each `[update] step=<name>` line as an SSE event
+# on /api/update/progress/:job_id, so the in-UI progress bar advances through
+# Fetching -> Building -> Installing -> Verifying -> Done (or Failed). The
+# string format is load-bearing: it must match the parser in
+# server/src/updates/exec.rs exactly (`[update] step=<name> [msg="<text>"]`).
+# We keep the human-readable [deploy-runner] lines too; the UI reads the step
+# markers, an operator reading the journal reads both.
+step() {
+  local name="$1"; shift
+  local msg="${*:-}"
+  if [ -n "$msg" ]; then
+    printf '[update] step=%s msg="%s"\n' "$name" "$msg"
+  else
+    printf '[update] step=%s\n' "$name"
+  fi
+}
+
 RESULT="failed"
+# Tracks whether a step marker already announced the terminal state, so the
+# EXIT trap does not double-emit (e.g. a successful done + a stray failed).
+STEP_TERMINAL=""
 finalize() {
+  # Emit a terminal step marker so the UI leaves "Queued"/intermediate state
+  # even when we exit via a non-zero path that did not call step() itself
+  # (e.g. set -e tripped, or an unexpected early return). On success the body
+  # already emitted `step=done`; on failure we emit `step=failed` here unless a
+  # more specific terminal marker (failed / rolled_back) was already sent.
+  if [ -z "$STEP_TERMINAL" ]; then
+    if [ "$RESULT" = "ok" ]; then
+      step done "Update complete."
+    else
+      step failed "Update failed. The previous version has been restored."
+    fi
+  fi
   # Final machine-readable line in the log + a one-word status file. chown both
   # so the unprivileged agent (which wrote the request) can read them back.
   printf 'DEPLOY_RESULT=%s\n' "$RESULT"
@@ -92,7 +126,16 @@ finalize() {
 }
 trap finalize EXIT
 
-fail() { log "error: $*"; RESULT="failed"; exit 1; }
+# fail() emits the canonical `step=failed` marker BEFORE exiting so the UI
+# shows the failure state immediately (not an eternal "Queued"). Set
+# STEP_TERMINAL so finalize does not emit a second terminal marker.
+fail() {
+  log "error: $*"
+  RESULT="failed"
+  step failed "$*"
+  STEP_TERMINAL="failed"
+  exit 1
+}
 
 # ── 0. read + validate the request file ───────────────────────────────────────
 [ -f "$REQUEST" ] || fail "no request file at $REQUEST"
@@ -108,6 +151,15 @@ while IFS='=' read -r k v; do
 done < "$REQUEST"
 
 log "request: source_dir=$SRC_DIR binary=$SRC sha=${SHA:0:12} nonce=$NONCE"
+
+# Tell the UI the root runner has picked up the request, so it leaves "Queued"
+# promptly instead of waiting until the build finishes. The build itself is the
+# "fetching/building" phase from the user's PoV. The source dir was already
+# fast-forwarded to the target commit BEFORE the request was written: by
+# update.sh / deploy-self.sh for the manual paths, and by the supermux server
+# itself (updates::exec) for the in-UI "Update now" path. So this runner only
+# ever builds the already-checked-out target; it does not pull.
+step fetching "Root runner picked up the request (${SHA:0:12})."
 
 # Reusable: the binary's realpath must live under an allowlisted prefix (the
 # agents' project dir or the service user's home). Even though the .path
@@ -142,6 +194,7 @@ if [ -n "$SRC_DIR" ]; then
 
   # Build as SERVICE_USER, with HOME set so build.sh's `. ~/.cargo/env` and
   # `~/.bun/bin` PATH prepend resolve to that user's installs.
+  step building "Building the new binary (this usually takes about a minute)."
   log "building (runuser -u $SERVICE_USER -- scripts/build.sh in $SRC_DIR) — the running service is untouched until this succeeds"
   if ! runuser -u "$SERVICE_USER" -- env HOME="$USER_HOME" \
       bash -c "cd '$SRC_DIR' && bash scripts/build.sh" ; then
@@ -174,6 +227,8 @@ PORT="${PORT:-$DEFAULT_PORT}"
 health_ok() {
   curl -sf -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/api/health"
 }
+
+step installing "Installing the new binary and restarting the service."
 
 # ── 1. back up the current binary (if any) so we can roll back ────────────────
 if [ -f "$DEST" ]; then
@@ -217,6 +272,8 @@ rollback() {
   fi
 }
 
+step verifying "Verifying the new build came up healthy."
+
 # Give it a few seconds to bind + reconcile sessions, polling health.
 ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -229,9 +286,17 @@ if [ "$ok" != "1" ]; then
   systemctl is-active "$UNIT" || true
   systemctl status "$UNIT" --no-pager 2>&1 | tail -20 || true
   rollback
-  fail "deploy failed; previous binary restored (no bricking)."
+  # The previous binary was restored. Tell the UI explicitly so it shows the
+  # rolled-back state (not a generic failure or an eternal "Queued").
+  step rolled_back "Update failed. The previous version has been restored."
+  STEP_TERMINAL="rolled_back"
+  log "error: deploy failed; previous binary restored (no bricking)."
+  RESULT="failed"
+  exit 1
 fi
 
 log "OK: $UNIT is active and healthy on 127.0.0.1:$PORT (commit ${SHA:0:12})"
+step done "Update complete. supermux is running ${SHA:0:12}."
+STEP_TERMINAL="done"
 RESULT="ok"
 exit 0
