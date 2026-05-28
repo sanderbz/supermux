@@ -6,18 +6,20 @@
 // scrollback couldn't scroll on mobile. The fix makes the joystick layer
 // pass-through (`pointer-events-none`) until ARMED, observing gestures via
 // non-blocking listeners on the wrapper. So:
-//   1. while UNARMED, a touch-drag inside the terminal reaches `.xterm-viewport`
-//      and scrolls the scrollback (viewport.scrollTop changes), and
+//   1. while UNARMED, a touch-drag inside the terminal reaches xterm's native
+//      touch handler and scrolls the scrollback (viewport.scrollTop changes), and
 //   2. the joystick still arms on a 350ms hold (data-armed flips) and disarms on
 //      release — the marquee interaction is preserved.
 //
-// We drive the scroll by writing enough rows to overflow the viewport, then
-// dispatching REAL touch events on the xterm root so xterm's own
-// `Viewport.handleTouchMove` runs (it reads `touchmove` directly). Asserting
-// `.xterm-viewport.scrollTop` changes proves the scrollback actually scrolled.
+// This is the mouse-reporting-OFF case (a plain shell), where xterm's OWN
+// `Viewport.handleTouchMove` does the scrolling. The mouse-reporting-ON case (an
+// agent holding the mouse) is guarded by `mobile-terminal-scroll-mouse-tracking`.
+// We drive the scroll with the cross-engine `touchDragY` helper (real touch
+// events that run on chromium AND webkit) and assert `.xterm-viewport.scrollTop`
+// changed.
 
 import { devices, expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, touchDragY, type Backend } from './harness'
 
 test.use({ ...devices['iPhone 14 Pro'] })
 
@@ -89,66 +91,16 @@ test.describe('mobile: terminal scrollback scrolls on touch', () => {
     const before = await viewport.evaluate((el) => el.scrollTop)
     expect(before, 'parked at bottom').toBeGreaterThan(0)
 
-    // Dispatch a real one-finger DRAG-DOWN on the xterm root. xterm's Viewport
-    // reads raw touchstart/touchmove and sets `.xterm-viewport.scrollTop` itself
-    // (handleTouchMove: scrollTop += lastY - curY). Dragging the finger DOWN
-    // (curY increasing) decreases scrollTop → scrolls UP into history. The
-    // joystick layer must NOT swallow these (it's pointer-events-none / unarmed),
-    // so the events reach xterm and the scrollback moves.
-    const moved: { before: number; after: number } = await viewport.evaluate(
-      async (vp) => {
-        const root =
-          (vp.closest('.xterm') as HTMLElement | null) ??
-          (vp.parentElement as HTMLElement)
-        const r = root.getBoundingClientRect()
-        const x = r.left + r.width / 2
-        const startY = r.top + r.height * 0.3
-        const before = vp.scrollTop
-        // Chromium's TouchEvent constructor requires REAL Touch instances (a cast
-        // plain object fails to convert) — build them with `new Touch(...)`.
-        const mk = (clientY: number) =>
-          new Touch({
-            identifier: 1,
-            target: root,
-            clientX: x,
-            clientY,
-            pageX: x,
-            pageY: clientY,
-            screenX: x,
-            screenY: clientY,
-            radiusX: 1,
-            radiusY: 1,
-            rotationAngle: 0,
-            force: 1,
-          })
-        const fire = (type: string, clientY: number) => {
-          const t = mk(clientY)
-          root.dispatchEvent(
-            new TouchEvent(type, {
-              bubbles: true,
-              cancelable: true,
-              composed: true,
-              touches: type === 'touchend' ? [] : [t],
-              targetTouches: type === 'touchend' ? [] : [t],
-              changedTouches: [t],
-            }),
-          )
-        }
-        fire('touchstart', startY)
-        // Move the finger DOWN in steps (each touchmove pulls history down).
-        for (let dy = 12; dy <= 240; dy += 12) {
-          fire('touchmove', startY + dy)
-          await new Promise((res) => setTimeout(res, 8))
-        }
-        fire('touchend', startY + 240)
-        return { before, after: vp.scrollTop }
-      },
-    )
+    // Real one-finger DRAG-DOWN on .xterm-screen. With mouse reporting OFF, xterm's
+    // native handler scrolls the viewport; dragging the finger DOWN reveals history
+    // → scrollTop decreases. The joystick layer must NOT swallow these (it's
+    // pointer-events-none / unarmed), so the events reach xterm.
+    const moved = await touchDragY(page, '.xterm-screen', 240, 20)
 
     // The scrollback moved (a drag-down reveals history → scrollTop decreases).
     expect(
       moved.after,
-      `scrollTop must change on touch-drag (before=${moved.before} after=${moved.after})`,
+      `scrollTop must change on touch-drag (method=${moved.method} before=${moved.before} after=${moved.after})`,
     ).not.toBe(moved.before)
     expect(
       moved.after,

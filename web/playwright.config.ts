@@ -50,5 +50,14 @@ export default defineConfig({
       name: 'chromium',
       use: { browserName: 'chromium' },
     },
+    // Opt-in WebKit project — the closest proxy to iOS Safari / WKWebView, the
+    // platform the mobile touch-scroll specs actually target. Off by default so
+    // CI (and machines without the WebKit build) stay chromium-only and green;
+    // enable with `SUPERMUX_E2E_WEBKIT=1 npx playwright test --project=webkit`
+    // (needs `npx playwright install webkit`). The mobile specs build touch
+    // events cross-engine via `touchDragY` in harness.ts, so they run on both.
+    ...(process.env.SUPERMUX_E2E_WEBKIT
+      ? [{ name: 'webkit', use: { browserName: 'webkit' as const } }]
+      : []),
   ],
 })

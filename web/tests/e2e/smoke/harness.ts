@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Page } from '@playwright/test'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // web/tests/e2e/smoke → repo root → server/target/{release,debug}/supermux-server
@@ -290,4 +291,91 @@ export function api(backend: Backend) {
       })
     },
   }
+}
+
+/**
+ * Dispatch a REAL one-finger vertical touch-drag of `totalPx` pixels (positive =
+ * finger DOWN = reveal history → scrollTop decreases) over `steps` `touchmove`s
+ * on `selector`, then return `.xterm-viewport` scrollTop before/after.
+ *
+ * CROSS-ENGINE. Blink honours `new TouchEvent({ touches: [new Touch(...)] })`,
+ * but WebKit silently drops the `touches` sequence (length 0 in the listener),
+ * so on WebKit the shim's `e.touches.length === 1` gate could never fire from a
+ * synthetic event. WebKit needs the legacy `document.createTouch` +
+ * `document.createTouchList` construction. We probe once which one actually
+ * populates `e.touches` in THIS engine and use it — so the same spec exercises
+ * the touch-scroll path on BOTH chromium and webkit. `method` is returned for
+ * diagnostics.
+ */
+export async function touchDragY(
+  page: Page,
+  selector: string,
+  totalPx: number,
+  steps = 16,
+): Promise<{ before: number; after: number; method: string }> {
+  return page.evaluate(
+    async ({ selector, totalPx, steps }) => {
+      const screen = document.querySelector(selector) as HTMLElement
+      const vp = document.querySelector('.xterm-viewport') as HTMLElement
+      const r = screen.getBoundingClientRect()
+      const x = r.left + r.width / 2
+      const startY = r.top + r.height * 0.3
+      const d = document as unknown as {
+        createTouch: (...a: unknown[]) => Touch
+        createTouchList: (...t: Touch[]) => TouchList
+      }
+      // Does `new TouchEvent({touches:[Touch]})` actually populate e.touches here?
+      // True on Blink, false on WebKit.
+      const ctorWorks = (() => {
+        try {
+          const t = new Touch({
+            identifier: 1, target: screen, clientX: 0, clientY: 0,
+            pageX: 0, pageY: 0, screenX: 0, screenY: 0,
+            radiusX: 1, radiusY: 1, rotationAngle: 0, force: 1,
+          })
+          return new TouchEvent('touchstart', { touches: [t] }).touches.length === 1
+        } catch {
+          return false
+        }
+      })()
+      const method = ctorWorks ? 'ctor' : 'createTouch'
+      const mkTouch = (py: number): Touch =>
+        ctorWorks
+          ? new Touch({
+              identifier: 1, target: screen, clientX: x, clientY: py,
+              pageX: x, pageY: py, screenX: x, screenY: py,
+              radiusX: 1, radiusY: 1, rotationAngle: 0, force: 1,
+            })
+          : d.createTouch(window, screen, 1, x, py, x, py)
+      const mkList = (touches: Touch[]): TouchList | Touch[] =>
+        ctorWorks ? touches : d.createTouchList(...touches)
+      const fire = (type: string, py: number) => {
+        const t = mkTouch(py)
+        const live = type === 'touchend' ? mkList([]) : mkList([t])
+        screen.dispatchEvent(
+          new TouchEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            touches: live as TouchList,
+            targetTouches: live as TouchList,
+            changedTouches: mkList([t]) as TouchList,
+          }),
+        )
+      }
+      const before = vp.scrollTop
+      fire('touchstart', startY)
+      const step = totalPx / steps
+      for (let i = 1; i <= steps; i++) {
+        fire('touchmove', startY + step * i)
+        await new Promise((res) => setTimeout(res, 10))
+      }
+      fire('touchend', startY + totalPx)
+      await new Promise((res) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => res(null))),
+      )
+      return { before, after: vp.scrollTop, method }
+    },
+    { selector, totalPx, steps },
+  )
 }
