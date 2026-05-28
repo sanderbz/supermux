@@ -779,7 +779,11 @@ export function EditorBody({
         }}
         rows={4}
         aria-label="Edit prompt"
-        // No placeholder — the nav-bar title is the screen affordance.
+        // Placeholder shows only while the textarea is empty — orients the user
+        // when there was nothing to seed (a fresh Ctrl+G, or the degraded
+        // fallback where the bridge buffer never arrived). On the normal seeded
+        // path the buffer fills the field, so it never shows.
+        placeholder="Type your prompt…"
         inputMode="text"
         autoCapitalize="sentences"
         autoCorrect="on"

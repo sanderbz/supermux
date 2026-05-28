@@ -218,6 +218,15 @@ export function DesktopSplit({
   }, [edit])
   const onEditSave = React.useCallback(
     (text: string) => {
+      // DEGRADED FALLBACK: the bridge buffer never arrived (timeout), so the
+      // sheet opened on an empty editable textarea with no requestId. Claude is
+      // NOT blocked (the bridge never took the tty) — write the typed text
+      // straight to the live pty instead of the (absent) external-edit submit.
+      if (edit.degraded) {
+        termRef.current?.send(text)
+        window.requestAnimationFrame(() => termRef.current?.focus())
+        return
+      }
       // Fire-and-forget the save (the Done path doesn't care when the POST
       // returns — the sheet's already closed, the user will press Enter
       // themselves). Swallow the rejection: the warn is logged inside
@@ -231,9 +240,18 @@ export function DesktopSplit({
   )
   /** Send = Save + auto-submit. The sheet awaits this promise BEFORE firing
    *  the Enter byte, so we let the rejection propagate (the sheet surfaces a
-   *  toast on failure and skips the Enter). */
+   *  toast on failure and skips the Enter).
+   *
+   *  DEGRADED FALLBACK: no bridge round-trip to await — write straight to the
+   *  pty and resolve so the sheet's Send flow queues its Enter byte. */
   const onEditSaveAndSubmit = React.useCallback(
-    (text: string) => edit.save(text),
+    (text: string) => {
+      if (edit.degraded) {
+        termRef.current?.send(text)
+        return Promise.resolve()
+      }
+      return edit.save(text)
+    },
     [edit],
   )
   /** Enter passthrough — fired by the sheet's Send button AFTER the submit POST

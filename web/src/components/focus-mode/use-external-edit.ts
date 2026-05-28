@@ -44,10 +44,15 @@ import {
 } from './external-edit-machine'
 
 /** Client-side ceiling on the bridge round-trip. If `pending` doesn't transition
- *  to `ready` within this window we synthesize a local `cancelled` + surface a
- *  toast — protects against an infinite "Loading your prompt…" when WS/SSE
- *  disconnects mid-flight (the bridge's eventual cancelled SSE can't reach us). */
-const PENDING_TIMEOUT_MS = 15_000
+ *  to `ready` within this window the buffer is never coming (SSE suspended on a
+ *  backgrounded phone, no dashboard subscriber when the bridge POSTed, or a
+ *  bridge/network fault). We DON'T close the sheet — that stranded the user with
+ *  nothing to retry into. Instead we fall the skeleton open into a DEGRADED empty
+ *  editable textarea (see the `timeout` event) so they can still type + send
+ *  straight to the live pty. 8s is snappy enough that a stuck skeleton resolves
+ *  to a usable editor quickly, while comfortably clearing a slow-but-healthy
+ *  bridge round-trip (~250ms typical, a couple of seconds on a cold phone). */
+const PENDING_TIMEOUT_MS = 8_000
 
 /** The `external-edit` SSE payload (mirrors the server's `open` broadcast).
  *  An optional `cancelled` field lets the bridge report a timed-out edit. */
@@ -76,6 +81,14 @@ export interface UseExternalEditResult {
    *  no remount, in-progress textarea state survives. Keying on buffer would
    *  cause an identical-buffer re-fire to clobber the user's edits. */
   requestId: string | null
+  /** DEGRADED FALLBACK. True when the sheet opened WITHOUT a bridge buffer —
+   *  the pending round-trip timed out (SSE suspended, no subscriber when the
+   *  bridge POSTed, bridge/network fault). The textarea is empty + editable and
+   *  there is NO `requestId`, so `save()` cannot write back through the
+   *  external-edit submit. The caller must branch on this: in degraded mode write
+   *  the text STRAIGHT to the live pty (Claude is not blocked — the bridge never
+   *  took the tty), instead of calling `save()`. False on the normal path. */
+  degraded: boolean
   /** Optimistic-open trigger — the caller invokes this on the ✎ Edit tap. It
    *  flips the machine to `pending` (sheet renders skeleton THIS frame) and the
    *  caller is expected to send Ctrl+G to the pty in the same tick (we don't
@@ -162,22 +175,25 @@ export function useExternalEdit(session: string): UseExternalEditResult {
   // itself is already open for the overview/board.
   useSse(React.useMemo(() => ({ onEvent }), [onEvent]))
 
-  // Client-side pending timeout (Fix 5 — skeleton-stuck guard). If WS/SSE
-  // disconnects while the bridge round-trip is in flight, the eventual
-  // `cancelled` SSE can never reach this client and the sheet would sit on
-  // "Loading your prompt…" forever. Mirror the cancelled path locally on a 15s
-  // ceiling: dispatch a local `cancelled` (closes the sheet) + surface a toast.
-  // Effect-cleanup clears the timer on any transition OUT of pending (ready,
-  // cancelled, close), so the on-time `arrived`/explicit-close paths cost
-  // nothing.
+  // Client-side pending timeout (skeleton-stuck guard). The buffer arrives ONLY
+  // over the bridge SSE; if that never lands — SSE suspended on a backgrounded
+  // phone, no dashboard subscriber when the bridge POSTed (the open handler then
+  // returns a requestId WITHOUT broadcasting), or a bridge/network fault — the
+  // sheet would sit on "Loading your prompt…" until the user gives up. We DON'T
+  // close it (that stranded them with nothing to retry into, and a retry hit the
+  // same dead path). Instead, fall OPEN into a DEGRADED empty editable textarea
+  // so they can still type + send straight to the live pty. A quiet toast
+  // explains why the current prompt couldn't be loaded. Effect-cleanup clears the
+  // timer on any transition OUT of pending (the on-time `arrived`/close paths
+  // cost nothing).
   const { toast } = useToast()
   React.useEffect(() => {
     if (state.phase !== 'pending') return
     const timer = window.setTimeout(() => {
-      dispatch({ type: 'cancelled' })
+      dispatch({ type: 'timeout' })
       toast({
-        message: 'Editor timed out — tap Edit again to retry.',
-        tone: 'error',
+        message: "Couldn't load your current prompt. Start a fresh one here.",
+        tone: 'default',
       })
       // VR marker — a transient attribute on <html> so the visual-regression
       // battery can assert the timeout fired. Cleared after the toast's default
@@ -265,6 +281,7 @@ export function useExternalEdit(session: string): UseExternalEditResult {
     phase: state.phase,
     buffer: state.buffer,
     requestId: state.requestId,
+    degraded: state.degraded,
     requestOpen,
     setOpen,
     save,

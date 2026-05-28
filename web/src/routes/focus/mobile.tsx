@@ -294,18 +294,37 @@ export function MobileFocus() {
   }, [edit])
   /** Done = save only (current behaviour). The user presses Enter themselves
    *  to submit. The sheet swallows any rejection — failure mode is just that
-   *  the next Enter doesn't submit, which is benign. */
+   *  the next Enter doesn't submit, which is benign.
+   *
+   *  DEGRADED FALLBACK: when the bridge buffer never arrived (timeout) the sheet
+   *  opened on an empty editable textarea with no requestId — there's no
+   *  external-edit submit to make. Claude is NOT blocked in this path (the bridge
+   *  never took the tty), so write the typed text STRAIGHT to the live pty
+   *  instead. The user still presses Enter to submit (Done = no auto-submit). */
   const onEditSave = React.useCallback(
     (text: string) => {
+      if (edit.degraded) {
+        termRef.current?.send(text)
+        return
+      }
       void edit.save(text).catch(() => undefined)
     },
     [edit],
   )
   /** Send = save AND auto-submit. The sheet awaits this Promise BEFORE firing
    *  the Enter byte, so we let the rejection propagate (sheet surfaces a toast
-   *  + skips the Enter on failure). */
+   *  + skips the Enter on failure).
+   *
+   *  DEGRADED FALLBACK: no bridge round-trip to await — write the text directly
+   *  to the pty and resolve so the sheet's Send flow queues its Enter byte. */
   const onEditSaveAndSubmit = React.useCallback(
-    (text: string) => edit.save(text),
+    (text: string) => {
+      if (edit.degraded) {
+        termRef.current?.send(text)
+        return Promise.resolve()
+      }
+      return edit.save(text)
+    },
     [edit],
   )
   /** Enter passthrough — fired by the Send button AFTER the submit POST

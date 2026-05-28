@@ -34,12 +34,23 @@ export interface EditState {
   /** The bridge request id from the SSE event — `null` until 'ready'. The submit
    *  echoes this; a stale id is rejected server-side (409, swallowed). */
   requestId: string | null
+  /** DEGRADED FALLBACK. True when we reached 'ready' WITHOUT a bridge buffer —
+   *  the pending round-trip never delivered (SSE suspended on a backgrounded
+   *  phone, no dashboard subscriber when the bridge POSTed, bridge/network
+   *  fault). Rather than strand the user on an infinite skeleton (or quietly
+   *  close), we open an EMPTY editable textarea so they can still type + send.
+   *  `requestId` is null here, so there is no external-edit submit to make: the
+   *  consumer writes the text straight to the live pty instead (Claude is NOT
+   *  blocked in this path — the bridge never took the tty). False on the normal
+   *  bridge-seeded path. */
+  degraded: boolean
 }
 
 export const initialEditState: EditState = {
   phase: 'closed',
   buffer: '',
   requestId: null,
+  degraded: false,
 }
 
 export type EditEvent =
@@ -57,6 +68,12 @@ export type EditEvent =
    *  before the sheet finished, etc.). Close the sheet politely — no error
    *  toast (the user did not initiate this, or already cancelled). */
   | { type: 'cancelled' }
+  /** The pending bridge round-trip never delivered a buffer within the client
+   *  ceiling. Rather than close (stranding the user), fall the sheet open into
+   *  a DEGRADED empty editable textarea so they can still type + send straight
+   *  to the live pty. ONLY honored from 'pending' — a buffer that lands later
+   *  is ignored (the reducer's 'arrived' guard already drops non-'pending'). */
+  | { type: 'timeout' }
   /** The user dismissed / hit Cancel / Done. The hook handles the network
    *  submit; the machine just resets to 'closed'. */
   | { type: 'close' }
@@ -69,7 +86,7 @@ export function reduceEdit(state: EditState, event: EditEvent): EditState {
       // server-side; opening a second sheet would just stack). Coming from
       // 'closed', flip to 'pending' with an empty buffer (skeleton renders).
       if (state.phase === 'closed') {
-        return { phase: 'pending', buffer: '', requestId: null }
+        return { phase: 'pending', buffer: '', requestId: null, degraded: false }
       }
       return state
 
@@ -91,14 +108,23 @@ export function reduceEdit(state: EditState, event: EditEvent): EditState {
         phase: 'ready',
         buffer: event.buffer,
         requestId: event.requestId,
+        degraded: false,
       }
+
+    case 'timeout':
+      // The bridge never delivered. Open DEGRADED rather than strand the user:
+      // an empty editable textarea (no requestId → the consumer writes straight
+      // to the pty on Done/Send). Only from 'pending' — if we already reached
+      // 'ready' the buffer arrived and there's nothing to fall back from.
+      if (state.phase !== 'pending') return state
+      return { phase: 'ready', buffer: '', requestId: null, degraded: true }
 
     case 'cancelled':
       // Quiet close. From any phase.
-      return { phase: 'closed', buffer: '', requestId: null }
+      return { phase: 'closed', buffer: '', requestId: null, degraded: false }
 
     case 'close':
-      return { phase: 'closed', buffer: '', requestId: null }
+      return { phase: 'closed', buffer: '', requestId: null, degraded: false }
 
     default: {
       // Exhaustiveness check — TS catches a missed event type at compile time;
