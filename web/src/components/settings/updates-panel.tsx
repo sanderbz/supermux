@@ -27,6 +27,7 @@ import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useVersion } from '@/hooks/use-version'
+import { useMarkUpdatesSeen } from '@/hooks/use-update-badge'
 import type {
   BlockedReason,
   InstallMode,
@@ -461,6 +462,7 @@ function CurrentVersionCard({
 /** The Section that lives in the Settings route. */
 export function UpdatesSection() {
   const v = useVersion()
+  const markUpdatesSeen = useMarkUpdatesSeen()
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [progressOpen, setProgressOpen] = React.useState(false)
   const [starting, setStarting] = React.useState(false)
@@ -471,6 +473,18 @@ export function UpdatesSection() {
   React.useEffect(() => {
     if (v.jobId) setProgressOpen(true)
   }, [v.jobId])
+
+  // Read-receipt: as soon as the panel is mounted AND we know the latest tag,
+  // mark it seen so the Settings-icon nav dot disappears for that tag (v0.3.3).
+  // A NEWER tag will bring the dot back on its own — `useUpdateBadge` compares
+  // the stored tag against `snap.latest.tag` strictly. We re-run whenever the
+  // tag changes so a brand-new release published while the panel is open also
+  // gets dismissed on the next snapshot.
+  React.useEffect(() => {
+    if (v.latest?.tag) {
+      markUpdatesSeen(v.latest.tag)
+    }
+  }, [v.latest?.tag, markUpdatesSeen])
 
   // Loading skeleton: keep it modest, this is one of many Settings sections.
   if (!v.current) {
