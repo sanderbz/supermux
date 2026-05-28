@@ -20,6 +20,7 @@ import { springs } from '@/lib/springs'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { TailPreview } from '@/components/session-tile/tail-preview'
 import { Kbd } from '@/components/ui/kbd'
+import { sessionTitle } from '@/lib/api/sessions'
 import type { TileSession } from '@/components/session-tile/types'
 
 const DWELL_MS = 300 // §4.4.3 — popover arms after 300ms dwell on a NON-current tile
@@ -57,7 +58,7 @@ export function CompactTile({
   const [peeking, setPeeking] = React.useState(false)
   const dwellRef = React.useRef<number | null>(null)
 
-  const title = session.task_summary || session.name
+  const title = sessionTitle(session)
   const tokens =
     typeof session.tokens === 'number' ? formatTokens(session.tokens) : null
 

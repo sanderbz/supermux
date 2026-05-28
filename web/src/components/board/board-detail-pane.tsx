@@ -5,6 +5,7 @@ import { Maximize2, Pencil, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { type BoardIssue } from '@/lib/api'
+import { displayLabel } from '@/lib/api/sessions'
 import { useLiveSession } from '@/hooks/use-board'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { TailPreview } from '@/components/session-tile/tail-preview'
@@ -175,7 +176,12 @@ function DetailBody({
                     )}
                   />
                 )}
-                <span className="truncate">{issue.session}</span>
+                <span className="truncate">
+                  {displayLabel({
+                    name: issue.session,
+                    display_name: live?.display_name,
+                  })}
+                </span>
               </span>
             )}
             {staleLink && (
@@ -255,6 +261,9 @@ function DetailBody({
           emphasized={issue.awaiting_input}
           onRequestOpen={() => {}}
           onReply={onReply}
+          placeholder={
+            linkLive ? undefined : 'Leave a comment for the record…'
+          }
         />
         <button
           type="button"

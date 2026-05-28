@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { type BoardIssue } from '@/lib/api'
 import { useLiveSession } from '@/hooks/use-board'
+import { displayLabel } from '@/lib/api/sessions'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   DropdownMenu,
@@ -238,6 +239,14 @@ export function BoardCard({
   const needsReview = isDoing && issue.needs_review && !issue.awaiting_input
   const question = needsInput ? awaitingQuestion(issue) : null
 
+  // A Done card whose agent is STILL active or waiting is the contradiction to
+  // surface: the agent declared the work done but kept running (or got stuck on
+  // an error). Without this the card reads as calmly finished. Idle/stopped means
+  // the turn actually ended, so no cue then. The link is severed once a card
+  // leaves `doing`, so this is the only on-card signal a done agent misbehaved.
+  const doneButBusy =
+    isDone && (liveStatus === 'active' || liveStatus === 'waiting')
+
   const tailLines = linkLive ? (live?.preview_lines ?? []) : []
   const showTail = hovered && fine && linkLive && tailLines.length > 0
 
@@ -447,8 +456,8 @@ export function BoardCard({
         </div>
       </div>
 
-      {/* Attention badges (Doing) + stale-link prompt. */}
-      {(needsInput || needsReview || staleLink) && (
+      {/* Attention badges (Doing) + stale-link prompt + done-but-busy cue. */}
+      {(needsInput || needsReview || staleLink || doneButBusy) && (
         <div className="flex flex-wrap items-center gap-1.5">
           {needsInput && (
             <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-semibold text-warning">
@@ -465,6 +474,12 @@ export function BoardCard({
           {staleLink && (
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
               Session ended
+            </span>
+          )}
+          {doneButBusy && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning/80">
+              <span className="size-1.5 shrink-0 rounded-full bg-warning/70" />
+              Agent still running
             </span>
           )}
         </div>
@@ -515,7 +530,12 @@ export function BoardCard({
                   )}
                 />
               )}
-              <span className="truncate">{issue.session}</span>
+              <span className="truncate">
+                {displayLabel({
+                  name: issue.session,
+                  display_name: live?.display_name,
+                })}
+              </span>
             </span>
           )}
           {restTags.map((tag) => (
@@ -655,12 +675,17 @@ export function ReplyComposer({
   emphasized,
   onRequestOpen,
   onReply,
+  placeholder,
 }: {
   issue: BoardIssue
   expanded: boolean
   emphasized: boolean
   onRequestOpen: () => void
   onReply: (issue: BoardIssue, text: string) => Promise<void>
+  /** Override the textarea placeholder. The detail pane sets this to a
+   *  "leave a comment" prompt when the agent session is no longer live, so the
+   *  field reads honestly as a durable note rather than a message to a dead PTY. */
+  placeholder?: string
 }) {
   const reduce = useReducedMotion()
   const fine = useMediaQuery('(pointer: fine)')
@@ -718,8 +743,10 @@ export function ReplyComposer({
         ref={inputRef}
         value={text}
         rows={1}
-        placeholder={emphasized ? 'Answer the agent…' : 'Reply to the agent…'}
-        aria-label="Reply to the agent"
+        placeholder={
+          placeholder ?? (emphasized ? 'Answer the agent…' : 'Reply to the agent…')
+        }
+        aria-label={placeholder ?? 'Reply to the agent'}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {

@@ -279,6 +279,31 @@ export function Board() {
     [board, toast],
   )
 
+  // Detail-pane composer: deliver into the agent's PTY while it's LIVE, but when
+  // it isn't (stale/ended session, or a card marked done while the agent died
+  // mid-error) a reply would vanish into a dead PTY — so route it to a durable
+  // board COMMENT instead. This is the manual-recovery path: leave a note on the
+  // card, then drag it back to Doing to re-engage the agent link.
+  const replyOrCommentIssue = useCallback(
+    async (issue: BoardIssue, text: string) => {
+      if (issue.session_live) {
+        await replyIssue(issue, text)
+        return
+      }
+      try {
+        await board.commentIssue(issue.id, text)
+        toast({ message: 'Comment added to the card', tone: 'active' })
+      } catch (e) {
+        toast({
+          message: e instanceof Error ? e.message : 'Could not add the comment',
+          tone: 'error',
+        })
+        throw e
+      }
+    },
+    [board, replyIssue, toast],
+  )
+
   // ── Discard a card → undo toast (no confirm dialog) ─────────────────────────
   const discardIssue = useCallback(
     (issue: BoardIssue) => {
@@ -587,7 +612,7 @@ export function Board() {
               onClose={() => setSelectedId(null)}
               onEdit={(i) => setEditId(i.id)}
               onFocus={openFocus}
-              onReply={replyIssue}
+              onReply={replyOrCommentIssue}
               onDiscard={discardIssue}
             />
           </div>

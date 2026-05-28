@@ -28,7 +28,10 @@ import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/use-toast'
-import { SessionPicker } from '@/components/session/session-picker'
+import {
+  SessionPicker,
+  type SessionPickerOption,
+} from '@/components/session/session-picker'
 import {
   schedulerApi,
   type ScheduleCreateInput,
@@ -143,8 +146,8 @@ export function isFormValid(v: ScheduleFormValue): boolean {
 interface ScheduleFormProps {
   value: ScheduleFormValue
   onChange: (next: ScheduleFormValue) => void
-  /** Known session names for the tmux target picker. */
-  sessions: string[]
+  /** Known sessions for the tmux target picker (carries display_name). */
+  sessions: SessionPickerOption[]
   /** Hide the test-fire button (e.g. on the edit sheet for an existing job). */
   hideTestFire?: boolean
 }
@@ -276,7 +279,7 @@ export function ScheduleForm({
             <SessionPicker
               value={value.session}
               onChange={(v) => set('session', v)}
-              sessions={sessions.map((name) => ({ name }))}
+              sessions={sessions}
               allowEmpty={false}
               ariaLabel="Target session"
               menuLabel="Target session"

@@ -99,6 +99,10 @@ export interface UseBoardResult {
   deleteIssue: (id: string) => Promise<void>
   /** BM2 §2.4: deliver `text` into the card's linked agent + clear awaiting. */
   replyIssue: (id: string, text: string) => Promise<void>
+  /** Post a durable human comment on the card (author `'user'`). Used for manual
+   *  recovery when the linked agent isn't live, so the note lands on the card
+   *  instead of a dead PTY. */
+  commentIssue: (id: string, text: string) => Promise<void>
   /** BM2 §2.6: soft-archive the card (optimistic removal). */
   discardIssue: (id: string) => Promise<void>
   /** BM2 §2.6: un-discard (undo). */
@@ -184,6 +188,9 @@ export interface LiveSession {
   preview_lines: string[]
   /** Same tail WITH SGR escapes preserved (colour-true peek), when present. */
   preview_ansi?: string[]
+  /** Mutable human label (migration 0019) for rendering the card's session pill
+   *  via `displayLabel`; the slug `issue.session` stays the key. */
+  display_name?: string
 }
 
 /** Join a board card to the LINKED session's live status + tail by name (U1).
@@ -216,6 +223,7 @@ export function useLiveSession(name: string | null | undefined): LiveSession | n
       status: row.status,
       preview_lines: row.preview_lines ?? [],
       preview_ansi: row.preview_ansi,
+      display_name: row.display_name,
     }
   }, [name, sessionsQuery.data])
 }
@@ -551,7 +559,7 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
       patchCache(qc, issuesK, (p) =>
         p.map((i) =>
           i.id === id
-            ? { ...i, awaiting_input: false, awaiting_question: null }
+            ? { ...i, awaiting_input: false, latest_question: null }
             : i,
         ),
       )
@@ -564,6 +572,16 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
       clearPending(id)
       return qc.invalidateQueries({ queryKey: [...issuesK] })
     },
+  })
+
+  // ── comment (durable human note on the card; author 'user') ────────────────
+  // The detail pane routes here instead of `reply` when the linked agent isn't
+  // live, so a manual-recovery message lands ON the card rather than into a dead
+  // PTY. The server re-publishes the board over SSE, so an invalidate confirms.
+  const comment = useMutation({
+    mutationFn: ({ id, text }: { id: string; text: string }) =>
+      boardApi.comment(id, text),
+    onSettled: () => qc.invalidateQueries({ queryKey: [...issuesK] }),
   })
 
   // ── discard (optimistic removal from the board; undo via restore) ──────────
@@ -614,6 +632,8 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
       deleteIssue: (id) => remove.mutateAsync(id).then(() => undefined),
       replyIssue: (id, text) =>
         reply.mutateAsync({ id, text }).then(() => undefined),
+      commentIssue: (id, text) =>
+        comment.mutateAsync({ id, text }).then(() => undefined),
       discardIssue: (id) => discard.mutateAsync(id).then(() => undefined),
       restoreIssue: (id) => restore.mutateAsync(id).then(() => undefined),
     }),

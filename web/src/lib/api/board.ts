@@ -432,6 +432,9 @@ export const boardApi = {
  *  fields the board's session-combo needs are typed. */
 export interface BoardSession {
   name: string
+  /** Mutable human label (migration 0019); the picker renders it via
+   *  `displayLabel` while keeping `name` as the value. */
+  display_name?: string
   status: string
 }
 
@@ -450,6 +453,8 @@ export async function listBoardSessions(): Promise<BoardSession[]> {
       .filter((s) => typeof s.name === 'string')
       .map((s) => ({
         name: String(s.name),
+        display_name:
+          typeof s.display_name === 'string' ? s.display_name : undefined,
         status: typeof s.status === 'string' ? s.status : 'idle',
       }))
   } catch {

@@ -21,7 +21,9 @@ import { EmptyStatePlaceholder } from '@/components/empty-state'
 import { EMPTY } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
 import { listSessionNames } from '@/lib/api'
+import { displayLabel } from '@/lib/api/sessions'
 import { useSchedules, useSchedulerStream } from '@/hooks/use-scheduler'
+import type { SessionPickerOption } from '@/components/session/session-picker'
 import { ScheduleDetailSheet } from '@/components/scheduler/schedule-detail-sheet'
 import { EnableToggle } from '@/components/scheduler/enable-toggle'
 import {
@@ -45,12 +47,13 @@ function SchedulerInner() {
   // data without a sync effect.
   const [creating, setCreating] = React.useState(false)
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
-  const [sessions, setSessions] = React.useState<string[]>([])
+  const [sessions, setSessions] = React.useState<SessionPickerOption[]>([])
 
-  // Load known session names once (for the tmux target picker / boot context).
+  // Load known sessions once (for the tmux target picker / boot context). Carries
+  // display_name so the picker + list rows show the friendly label, not the slug.
   React.useEffect(() => {
     let alive = true
-    listSessionNames().then((names) => alive && setSessions(names))
+    listSessionNames().then((rows) => alive && setSessions(rows))
     return () => {
       alive = false
     }
@@ -116,6 +119,7 @@ function SchedulerInner() {
         ) : (
           <ScheduleList
             list={list}
+            sessions={sessions}
             onOpen={(s) => {
               setCreating(false)
               setSelectedId(s.id)
@@ -136,9 +140,11 @@ function SchedulerInner() {
 
 function ScheduleList({
   list,
+  sessions,
   onOpen,
 }: {
   list: ScheduleRow[]
+  sessions: SessionPickerOption[]
   onOpen: (s: ScheduleRow) => void
 }) {
   const reduce = useReducedMotion()
@@ -157,9 +163,15 @@ function ScheduleList({
           <button> can nest legitimately — no invalid-HTML / hydration error. */}
       {list.map((s, i) => {
         const human = describeSchedule(s.schedule_expr)
+        const sessionLabel =
+          displayLabel({
+            name: s.session,
+            display_name: sessions.find((x) => x.name === s.session)
+              ?.display_name,
+          }) || '—'
         const target =
           s.kind === 'tmux'
-            ? `${s.session || '—'} · ${s.command}`
+            ? `${sessionLabel} · ${s.command}`
             : s.kind === 'boot'
               ? `${s.command} in ${s.boot_dir || '—'}`
               : s.command

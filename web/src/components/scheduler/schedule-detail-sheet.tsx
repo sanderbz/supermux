@@ -27,6 +27,7 @@ import {
 import { useToast } from '@/components/ui/use-toast'
 import { CONFIRM } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
+import type { SessionPickerOption } from '@/components/session/session-picker'
 import {
   useDeleteSchedule,
   useRunSchedule,
@@ -41,7 +42,7 @@ interface ScheduleDetailSheetProps {
   mode: 'create' | 'edit' | null
   schedule: ScheduleRow | null
   onClose: () => void
-  sessions: string[]
+  sessions: SessionPickerOption[]
 }
 
 export function ScheduleDetailSheet({
@@ -81,7 +82,7 @@ function CreateBody({
 }: {
   open: boolean
   onClose: () => void
-  sessions: string[]
+  sessions: SessionPickerOption[]
 }) {
   return (
     <ResponsiveSheet
@@ -108,7 +109,7 @@ function EditBody({
   open: boolean
   schedule: ScheduleRow
   onClose: () => void
-  sessions: string[]
+  sessions: SessionPickerOption[]
 }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false)
   const runs = useScheduleRuns(schedule.id)

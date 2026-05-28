@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { TOAST } from '@/brand/copy'
 import type { ScheduleRow } from '@/lib/api'
+import type { SessionPickerOption } from '@/components/session/session-picker'
 import { useCreateSchedule, usePatchSchedule } from '@/hooks/use-scheduler'
 import {
   EMPTY_FORM,
@@ -52,7 +53,7 @@ interface ScheduleEditorProps {
   mode: 'create' | 'edit'
   /** The existing row (edit mode only). */
   schedule?: ScheduleRow
-  sessions: string[]
+  sessions: SessionPickerOption[]
   /** Close the host sheet (e.g. after a successful create). */
   onClose: () => void
 }

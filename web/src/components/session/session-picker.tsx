@@ -24,6 +24,7 @@ import { Check, ChevronDown, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { displayLabel } from '@/lib/api/sessions'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,6 +39,9 @@ import {
  *  consumers' richer shapes (BoardSession etc.) satisfy this structurally. */
 export interface SessionPickerOption {
   name: string
+  /** Mutable human label (migration 0019). Rendered as the row/trigger label
+   *  via `displayLabel`; `name` stays the value/key. */
+  display_name?: string
   status?: string
 }
 
@@ -104,13 +108,14 @@ export function SessionPicker({
     }
     for (const s of sessions) {
       if (seen.has(s.name)) continue
-      out.push({ name: s.name, label: s.name })
+      out.push({ name: s.name, label: displayLabel(s) })
     }
     return out
   }, [allowEmpty, emptyLabel, sessions, value])
 
   const fallback = placeholder ?? emptyLabel
-  const triggerLabel = value || fallback
+  // Render the picked option's LABEL (honours display_name), not the raw slug.
+  const triggerLabel = options.find((o) => o.name === value)?.label || fallback
   const triggerAria = `${ariaLabel}: ${triggerLabel} — switch`
 
   const trigger = (onClick?: () => void) => (

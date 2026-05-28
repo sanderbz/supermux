@@ -224,15 +224,25 @@ export const schedulerApi = {
 /** Resolve session names for the tmux-job target combo. Hits `/api/sessions`
  *  directly (the typed `api.listSessions` is filled in by M12); returns [] if
  *  unreachable so the dialog degrades to a free-text session field. */
-export async function listSessionNames(): Promise<string[]> {
+export async function listSessionNames(): Promise<
+  Array<{ name: string; display_name?: string }>
+> {
   try {
     const body = await schedRequest<unknown>('/api/sessions')
     const arr = Array.isArray(body)
       ? body
       : ((body as { sessions?: unknown[] })?.sessions ?? [])
-    return (arr as Array<Record<string, unknown>>)
-      .map((s) => (s.name ?? s.id) as string | undefined)
-      .filter((n): n is string => typeof n === 'string')
+    const out: Array<{ name: string; display_name?: string }> = []
+    for (const raw of arr as Array<Record<string, unknown>>) {
+      const name = (raw.name ?? raw.id) as unknown
+      if (typeof name !== 'string') continue
+      out.push({
+        name,
+        display_name:
+          typeof raw.display_name === 'string' ? raw.display_name : undefined,
+      })
+    }
+    return out
   } catch {
     return []
   }
