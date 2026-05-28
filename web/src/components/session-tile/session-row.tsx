@@ -11,6 +11,7 @@ import { HostBadge } from './host-badge'
 import { Kbd } from '@/components/ui/kbd'
 import { useJumpIndex } from './jump-index-context'
 import type { TileSession } from './types'
+import { sessionTitle } from '@/lib/api'
 
 /** View Transition navigate (mirrors the tile's, kept local so this row is
  *  self-contained until M23a ships the canonical `<MorphLink>`). Morphs into the
@@ -57,7 +58,7 @@ export interface SessionRowProps {
 export function SessionRow({ session }: SessionRowProps) {
   const reduce = useReducedMotion()
   const navigateMorph = useNavigateMorph()
-  const title = session.task_summary || session.name
+  const title = sessionTitle(session)
   const when = relativeTime(session.updated_at)
   const jumpIndex = useJumpIndex(session.name)
 

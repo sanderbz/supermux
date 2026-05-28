@@ -15,6 +15,7 @@ import { springs } from '@/lib/springs'
 import { Input } from '@/components/ui/input'
 import { apiToken, apiUrl } from '@/lib/api/client'
 import {
+  displayLabel,
   projectsApi,
   sessionsApi,
   type ApiSession,
@@ -410,7 +411,7 @@ function SessionRow({
       transition={springs.buttonPress}
       onClick={disabled ? undefined : onPick}
       disabled={disabled}
-      title={`Take over ${session.name} — in ${session.dir}`}
+      title={`Take over ${displayLabel(session)} — in ${session.dir}`}
       className={cn(
         'flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors outline-none',
         selected
@@ -423,7 +424,7 @@ function SessionRow({
       <StatusDot status={session.status} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-1.5">
-          <span className="truncate text-sm font-medium">{session.name}</span>
+          <span className="truncate text-sm font-medium">{displayLabel(session)}</span>
           {running && (
             <span
               className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-wide text-amber-700 dark:text-amber-300"

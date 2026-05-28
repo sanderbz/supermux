@@ -71,7 +71,7 @@ import { motion, useReducedMotion, type PanInfo } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import type { ApiSession } from '@/lib/api'
+import { displayLabel, type ApiSession } from '@/lib/api'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { orderSessions } from '@/components/focus-mode/session-order'
 
@@ -562,7 +562,7 @@ function SessionPill({
       whileTap={{ scale: 0.94 }}
       transition={springs.buttonPress}
       onClick={() => onPick(session.name)}
-      aria-label={`Switch to ${session.name} — ${STATUS_LABEL[session.status]}${
+      aria-label={`Switch to ${displayLabel(session)} — ${STATUS_LABEL[session.status]}${
         isCurrent ? ' (current)' : ''
       }`}
       aria-current={isCurrent || undefined}
@@ -574,7 +574,7 @@ function SessionPill({
       )}
     >
       <StatusDot status={session.status} />
-      <span className="max-w-[160px] truncate">{session.name}</span>
+      <span className="max-w-[160px] truncate">{displayLabel(session)}</span>
     </motion.button>
   )
 }

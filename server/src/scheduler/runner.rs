@@ -279,6 +279,7 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
     let name = boot_session_name(sched);
     let input = sessions::CreateInput {
         name: name.clone(),
+        display_name: None,
         dir: Some(sched.boot_dir.clone()),
         desc: Some(format!("booted by schedule {}", sched.id)),
         provider: Some(sched.boot_provider.clone()),

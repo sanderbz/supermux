@@ -48,10 +48,10 @@ import {
   describeSchedule,
   formatRunTime,
 } from '@/components/scheduler/helpers'
-import { SessionError } from '@/lib/api'
+import { displayLabel } from '@/lib/api'
 import type { ApiSession, SessionMode, ScheduleRow } from '@/lib/api'
 import { useCloneSession } from './use-clone-session'
-import { useRenameSession, toSlug } from './use-rename-session'
+import { useRenameSession, cleanDisplayName } from './use-rename-session'
 
 /** Sentence-case label for each Claude permission mode (mirrors mode-menu.tsx). */
 const MODE_LABEL: Record<SessionMode, string> = {
@@ -173,10 +173,13 @@ function PanelBody({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Name — the slug IS the displayed title (the backend sends no separate
-          summary), so renaming it here is the "edit title" affordance. */}
+      {/* Name — edits the mutable DISPLAY LABEL (migration 0019). The slug below
+          is the immutable identity (URL / tmux / hooks) and is shown read-only. */}
       <PaneSection label="Name">
-        <NameEditor name={name} onNavigate={onNavigate} onClose={onClose} />
+        <NameEditor
+          name={name}
+          displayName={displayLabel(session ?? { name })}
+        />
       </PaneSection>
 
       {/* Working dir */}
@@ -305,30 +308,32 @@ function InfoRow({
 
 // ── name editor (edit-title) ────────────────────────────────────────────────
 
-/** Inline rename of the session — the slug IS the displayed title. Tap the name
- *  → an input (free typing, live-slugged: spaces become "-"); Enter / blur
- *  commits, Esc cancels. On success the panel closes and the caller navigates to
- *  the new name (the rename changes the session's identity everywhere). */
+/** Inline edit of the session's DISPLAY LABEL (migration 0019). Tap the label →
+ *  a free-text input (spaces / mixed case allowed — it's never used as a key);
+ *  Enter / blur commits, Esc cancels. The slug below stays put, so committing
+ *  does NOT navigate (the route is unchanged) — the panel stays open and the new
+ *  label flows in via the cache invalidation. An empty label resets to the slug
+ *  (server-coalesced). */
 function NameEditor({
   name,
-  onNavigate,
-  onClose,
+  displayName,
 }: {
+  /** Immutable slug — shown read-only beneath the label. */
   name: string
-  onNavigate: (name: string) => void
-  onClose: () => void
+  /** Current display label (= slug when never customised). */
+  displayName: string
 }) {
   const rename = useRenameSession()
   const { toast } = useToast()
   const [editing, setEditing] = React.useState(false)
-  const [draft, setDraft] = React.useState(name)
+  const [draft, setDraft] = React.useState(displayName)
   const inputRef = React.useRef<HTMLInputElement | null>(null)
   // Enter fires commit AND then blurs the input (→ a second commit); this guard
-  // makes the run-once. Reset on each enter-edit.
+  // makes it run-once. Reset on each enter-edit.
   const committedRef = React.useRef(false)
 
   const startEdit = () => {
-    setDraft(name)
+    setDraft(displayName)
     committedRef.current = false
     setEditing(true)
   }
@@ -343,21 +348,20 @@ function NameEditor({
   const commit = async () => {
     if (committedRef.current) return
     committedRef.current = true
-    const target = toSlug(draft)
+    const label = cleanDisplayName(draft)
     setEditing(false)
-    // No-op for an empty draft or an unchanged name — just close the editor.
-    if (!target || target === name) return
+    // Unchanged → just close the editor (no needless PATCH).
+    if (label === displayName) return
     try {
-      const newName = await rename.run(name, target)
-      toast({ message: `Renamed to ${newName}`, tone: 'active' })
-      onClose()
-      onNavigate(newName)
+      await rename.run(name, label)
+      // No navigation: the slug/route is unchanged. The panel stays open and the
+      // new label arrives via the invalidated sessions cache.
     } catch (e) {
-      const msg =
-        e instanceof SessionError && e.status === 409
-          ? `“${target}” already exists — pick another name.`
-          : `Rename failed — ${(e as Error).message}`
-      toast({ message: msg, tone: 'error', duration: 4000 })
+      toast({
+        message: `Rename failed — ${(e as Error).message}`,
+        tone: 'error',
+        duration: 4000,
+      })
     }
   }
 
@@ -372,7 +376,7 @@ function NameEditor({
         <input
           ref={inputRef}
           value={draft}
-          onChange={(e) => setDraft(toSlug(e.target.value))}
+          onChange={(e) => setDraft(e.target.value)}
           onBlur={() => void commit()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -384,36 +388,48 @@ function NameEditor({
             }
           }}
           disabled={rename.pending}
-          aria-label="Session name"
+          aria-label="Session display name"
+          // text-base on mobile (≥16px) so iOS Safari doesn't auto-zoom the
+          // viewport on focus; md:text-sm restores the compact desktop size.
           className="w-full rounded-[10px] border border-input bg-transparent px-2.5 py-1.5 text-base md:text-sm font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         />
         <span className="text-[11px] text-muted-foreground">
-          Enter to save, Esc to cancel · letters, numbers,{' '}
-          <code className="font-mono">. _ -</code> (spaces become “-”).
+          Enter to save, Esc to cancel · the URL keeps the{' '}
+          <code className="font-mono">{name}</code> id.
         </span>
       </div>
     )
   }
 
   return (
-    <button
-      type="button"
-      onClick={startEdit}
-      aria-label={`Rename session ${name}`}
-      title="Rename"
-      className={cn(
-        'group flex min-h-11 w-full items-center justify-between gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-left',
-        'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={startEdit}
+        aria-label={`Rename session ${displayName}`}
+        title="Rename"
+        className={cn(
+          'group flex min-h-11 w-full items-center justify-between gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-left',
+          'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        )}
+      >
+        <span className="min-w-0 truncate text-sm font-medium tracking-tight text-foreground">
+          {displayName}
+        </span>
+        <Pencil
+          className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
+          aria-hidden
+        />
+      </button>
+      {/* The immutable slug — the identity used by the URL, tmux + hooks. Shown
+          quietly so it's discoverable without competing with the label. Hidden
+          when it already equals the label (un-customised session). */}
+      {displayName !== name && (
+        <span className="px-2.5 text-[11px] text-muted-foreground">
+          id <code className="font-mono">{name}</code>
+        </span>
       )}
-    >
-      <span className="min-w-0 truncate text-sm font-medium tracking-tight text-foreground">
-        {name}
-      </span>
-      <Pencil
-        className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
-        aria-hidden
-      />
-    </button>
+    </div>
   )
 }
 

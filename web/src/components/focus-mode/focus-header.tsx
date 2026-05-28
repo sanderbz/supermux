@@ -242,6 +242,10 @@ export function DesktopFocusHeader({
 
 export interface FocusHeaderProps {
   name: string
+  /** Visible title text (defaults to `name`). `name` stays the view-transition
+   *  anchor + identity; this is only what's rendered. Matches the desktop
+   *  header's `title` prop. */
+  title?: string
   status: SessionStatus
   /** Live "what the agent is doing now" label (hooks-10x) — shown under the name
    *  while the agent is working. */
@@ -264,6 +268,7 @@ export interface FocusHeaderProps {
 
 export function FocusHeader({
   name,
+  title,
   status,
   activity,
   error,
@@ -273,6 +278,7 @@ export function FocusHeader({
   onTitleClick,
   className,
 }: FocusHeaderProps) {
+  const label = title ?? name
   const showActivity =
     (status === 'active' || status === 'starting') && !!activity?.trim()
   // Entry point 1, mobile (skills-mcp-manager plan §C.1): the right slot — a bare
@@ -334,20 +340,20 @@ export function FocusHeader({
             <button
               type="button"
               onClick={onTitleClick}
-              title={name}
-              aria-label={`Session info — ${name}`}
+              title={label}
+              aria-label={`Session info — ${label}`}
               aria-haspopup="dialog"
               className="min-w-0 truncate text-[15px] font-semibold tracking-tight outline-none focus-visible:underline focus-visible:decoration-dotted focus-visible:underline-offset-4"
             >
-              {name}
+              {label}
             </button>
           ) : (
             <h1
-              title={name}
-              aria-label={name}
+              title={label}
+              aria-label={label}
               className="min-w-0 truncate text-[15px] font-semibold tracking-tight"
             >
-              {name}
+              {label}
             </h1>
           )}
           {error && <ErrorBadge error={error} />}

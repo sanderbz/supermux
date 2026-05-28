@@ -38,7 +38,7 @@ import {
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import type { ApiSession } from '@/lib/api'
+import { displayLabel, type ApiSession } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useDictation } from '@/components/focus-mode/use-dictation'
 import { COMPOSE_LAYOUT_ID } from '@/components/focus-mode/mobile-compose-sheet'
@@ -884,7 +884,7 @@ function ComposeField({
           <>
             <StatusDot status={peekSession.status} />
             <span className="min-w-0 truncate text-[14px] font-medium text-muted-foreground">
-              {truncatePillName(peekSession.name)}
+              {truncatePillName(displayLabel(peekSession))}
             </span>
           </>
         )}
@@ -908,7 +908,7 @@ function ComposeField({
         // only, no session name — that lives in the top header). The current
         // session name stays as the `title` so screen-reader/hover context isn't
         // lost.
-        title={current.name}
+        title={displayLabel(current)}
         aria-label={tapLabel}
         // Transparent fill: the input-like background is the morph surface
         // (sibling above); this button only carries the swipe transform + content

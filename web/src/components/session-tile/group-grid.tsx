@@ -92,7 +92,7 @@ import {
   type GroupSortMode,
   type LayoutItem,
 } from '@/lib/overview-layout'
-import type { ApiSession } from '@/lib/api'
+import { sessionTitle, type ApiSession } from '@/lib/api'
 import { GROUP_SORT_LABEL } from '@/lib/overview-layout'
 import { useToast } from '@/components/ui/use-toast'
 import {
@@ -1112,7 +1112,7 @@ export function GroupGrid({
             >
               <div className="rounded-xl border border-border bg-card/95 px-3 py-2 text-sm shadow-2xl">
                 <div className="font-medium">
-                  {activeSession.task_summary ?? activeSession.name}
+                  {sessionTitle(activeSession)}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
                   {activeSession.name}
@@ -1725,7 +1725,7 @@ function SortableRow({
           row chrome stays calm at rest. */}
       <TileMoveToKebab
         sessionName={session.name}
-        sessionLabel={session.task_summary ?? session.name}
+        sessionLabel={sessionTitle(session)}
         sessionStatus={session.status}
         currentGroupId={currentGroupId}
         allSections={allSections}
@@ -1820,7 +1820,7 @@ function SessionTileWrapper({
           (coarse pointers) via the kebab component itself. */}
       <TileMoveToKebab
         sessionName={session.name}
-        sessionLabel={session.task_summary ?? session.name}
+        sessionLabel={sessionTitle(session)}
         sessionStatus={session.status}
         currentGroupId={currentGroupId}
         allSections={allSections}

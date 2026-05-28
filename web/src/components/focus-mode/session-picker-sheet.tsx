@@ -19,7 +19,7 @@ import { Check, Eye } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import type { ApiSession } from '@/lib/api'
+import { displayLabel, type ApiSession } from '@/lib/api'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { MemberStatusDot } from '@/components/team'
 import {
@@ -195,7 +195,7 @@ function SessionRow({
     >
       <StatusDot status={session.status} />
       <span className="min-w-0 flex-1 truncate text-[15px] font-medium">
-        {session.name}
+        {displayLabel(session)}
       </span>
       {lead && (
         <span className="shrink-0 rounded-full bg-muted/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-wide text-muted-foreground">
