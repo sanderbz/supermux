@@ -886,6 +886,66 @@ check_or_install_toolchain() {
   fi
 }
 
+# ── 0h-pre. system build prerequisites (only when INSTALL_TOOLCHAINS=1) ───────
+# The bun installer needs 'unzip', and the Rust release build of server/ needs a
+# C toolchain + headers (cc/gcc, make), pkg-config, libssl-dev (openssl-sys) and
+# cmake (aws-lc-sys / ring). A fresh minimal Ubuntu/VPS image ships none of them,
+# so a turnkey SUPERMUX_INSTALL_TOOLCHAINS=1 must provision the SYSTEM packages
+# BEFORE installing bun (needs unzip) and rust (needs cc/openssl/cmake at build).
+# These are system packages, so they go in as root via sudo (same passwordless-
+# sudo model as the rest of deploy.sh), distinct from the unprivileged service
+# user that bun/cargo install under. When INSTALL_TOOLCHAINS=0 we never touch the
+# system: this whole step is skipped. Idempotent: re-installing present packages
+# is a no-op. Detection mirrors remote_tmux_install_hint() above.
+install_system_build_deps() {
+  local mgr
+  mgr="$(ssh "$HOST" '
+    if command -v apt-get >/dev/null 2>&1; then echo apt
+    elif command -v dnf     >/dev/null 2>&1; then echo dnf
+    elif command -v apk     >/dev/null 2>&1; then echo apk
+    elif command -v pacman  >/dev/null 2>&1; then echo pacman
+    else                                          echo unknown
+    fi
+  ' 2>/dev/null || echo unknown)"
+
+  local install_cmd
+  case "$mgr" in
+    apt)
+      echo "[deploy] installing system build deps on $HOST (unzip, build-essential, pkg-config, libssl-dev, cmake)"
+      install_cmd='sudo apt-get update && sudo apt-get install -y unzip build-essential pkg-config libssl-dev cmake' ;;
+    dnf)
+      echo "[deploy] installing system build deps on $HOST (unzip, gcc, gcc-c++, make, pkgconf-pkg-config, openssl-devel, cmake)"
+      install_cmd='sudo dnf install -y unzip gcc gcc-c++ make pkgconf-pkg-config openssl-devel cmake' ;;
+    apk)
+      echo "[deploy] installing system build deps on $HOST (unzip, build-base, pkgconf, openssl-dev, cmake)"
+      install_cmd='sudo apk add unzip build-base pkgconf openssl-dev cmake' ;;
+    pacman)
+      echo "[deploy] installing system build deps on $HOST (unzip, base-devel, pkgconf, openssl, cmake)"
+      install_cmd='sudo pacman -S --needed --noconfirm unzip base-devel pkgconf openssl cmake' ;;
+    *)
+      echo "[deploy] unknown package manager on $HOST - cannot auto-install system build deps." >&2
+      echo "[deploy]   Install these before/alongside the toolchains (logical set):" >&2
+      echo "[deploy]     unzip (for the bun installer)" >&2
+      echo "[deploy]     a C toolchain: cc/gcc, make (build-essential / base-devel / build-base)" >&2
+      echo "[deploy]     pkg-config, libssl-dev (openssl headers), cmake (for the rust release build)" >&2
+      echo "[deploy]   Continuing. If bun or cargo install fails below, install the above first." >&2
+      return 0 ;;
+  esac
+
+  if ! ssh "$HOST" "$install_cmd"; then
+    echo "[deploy] error: failed to install system build deps on $HOST ($mgr)." >&2
+    echo "[deploy]   Fix: install them manually on the host, then re-run:" >&2
+    echo "[deploy]        ssh $HOST '$install_cmd'" >&2
+    exit 1
+  fi
+}
+
+# System build-deps run first (when opted in) so bun has unzip and the rust
+# release build has cc / openssl / cmake. No-op when INSTALL_TOOLCHAINS=0.
+if [ "$INSTALL_TOOLCHAINS" = "1" ]; then
+  install_system_build_deps
+fi
+
 check_or_install_toolchain bun
 check_or_install_toolchain cargo
 

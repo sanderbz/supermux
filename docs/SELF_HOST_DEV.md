@@ -71,6 +71,10 @@ normal `scripts/deploy.sh` run — there is nothing to install by hand.
 3. **Verify the dev toolchain** is present for the service user (`bun`, `cargo`,
    `node`, `git`, `gh`, `claude`, `tmux`). `scripts/deploy-self.sh` sources
    `~/.cargo/env` and prepends `~/.bun/bin`, so user-local installs resolve.
+   On a fresh box, `SUPERMUX_INSTALL_TOOLCHAINS=1` also provisions the system
+   build prerequisites first (`unzip`, a C toolchain, `pkg-config`, OpenSSL
+   headers and `cmake`) via the host package manager, so the toolchain install
+   has everything it needs.
 
 ## Daily use
 
