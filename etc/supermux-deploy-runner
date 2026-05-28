@@ -3,8 +3,9 @@
 #
 # This is a TEMPLATE. `scripts/deploy.sh` substitutes the placeholders
 # (__DEPLOY_REQUEST__, __PROJECTS_DIR__, __USER_HOME__, __UNIT__, __DATA_DIR__,
-# __SERVICE_USER__, __INTERNAL_PORT__) from the deploy environment and installs
-# the result to /usr/local/sbin/supermux-deploy-runner (root-owned, mode 0755).
+# __SERVICE_USER__, __INTERNAL_PORT__, __REMOTE_DIR__) from the deploy
+# environment and installs the result to /usr/local/sbin/supermux-deploy-runner
+# (root-owned, mode 0755).
 #
 # HOW IT IS INVOKED (no sudo anywhere):
 #   The in-service dev agent runs scripts/deploy-self.sh, which atomically writes
@@ -57,6 +58,12 @@ BACKUP="/usr/local/bin/supermux-server.prev"
 DATA_DIR="__DATA_DIR__"
 CONFIG="$DATA_DIR/config.toml"
 DEPLOYED_SHA_FILE="$DATA_DIR/DEPLOYED_SHA"   # informational
+# Canonical "what commit is installed on this host" file — the SAME path
+# scripts/deploy.sh writes ($REMOTE_DIR/DEPLOYED_SHA, e.g. /opt/supermux). The
+# workstation deploy keeps this current; the self-deploy / in-UI-update path
+# must too, or it goes stale (old sha while the running binary is new).
+REMOTE_DIR="__REMOTE_DIR__"
+REMOTE_DEPLOYED_SHA_FILE="$REMOTE_DIR/DEPLOYED_SHA"
 SERVICE_USER="__SERVICE_USER__"
 DEFAULT_PORT="__INTERNAL_PORT__"
 
@@ -243,11 +250,10 @@ fi
 install -m 0755 -o root -g root "$SRC" "$DEST" || fail "install of new binary failed"
 log "installed new binary -> $DEST ($(du -h "$DEST" | cut -f1))"
 
-# Record the deployed commit (best-effort; never fails the deploy).
-if [ -n "$SHA" ]; then
-  printf '%s\n' "$SHA" > "$DEPLOYED_SHA_FILE" 2>/dev/null || true
-  chown "$SERVICE_USER:$SERVICE_USER" "$DEPLOYED_SHA_FILE" 2>/dev/null || true
-fi
+# NOTE: DEPLOYED_SHA is written on the SUCCESS path below (after verify), NOT
+# here. Writing it pre-verify would record the new sha even when the build is
+# rolled back to the previous binary, leaving the file describing a commit that
+# is not actually running. See the success block after verify.
 
 # ── 3. restart the service ────────────────────────────────────────────────────
 log "systemctl restart $UNIT"
@@ -296,6 +302,19 @@ if [ "$ok" != "1" ]; then
 fi
 
 log "OK: $UNIT is active and healthy on 127.0.0.1:$PORT (commit ${SHA:0:12})"
+
+# Record the deployed commit ONLY now that the new binary is verified live
+# (best-effort; never fails the deploy). Write the canonical
+# $REMOTE_DIR/DEPLOYED_SHA — the same path + format scripts/deploy.sh uses
+# (printf '%s\n') — so the file stays correct after a self-deploy / in-UI
+# update, not just after a workstation deploy. Also refresh the informational
+# $DATA_DIR/DEPLOYED_SHA (chowned to the service user so the agent can read it).
+if [ -n "$SHA" ]; then
+  printf '%s\n' "$SHA" > "$REMOTE_DEPLOYED_SHA_FILE" 2>/dev/null || true
+  printf '%s\n' "$SHA" > "$DEPLOYED_SHA_FILE" 2>/dev/null || true
+  chown "$SERVICE_USER:$SERVICE_USER" "$DEPLOYED_SHA_FILE" 2>/dev/null || true
+fi
+
 step done "Update complete. supermux is running ${SHA:0:12}."
 STEP_TERMINAL="done"
 RESULT="ok"
