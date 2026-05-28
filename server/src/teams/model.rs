@@ -69,10 +69,13 @@ pub struct RawMember {
     /// `"claude"` etc. Surfaced as-is; we don't gate on it.
     #[serde(default)]
     pub backend_type: String,
-    /// Claude's role marker. `"orchestrator"` ⇒ the LEAD (already rendered as
-    /// the SessionTile, NOT a teammate chip — see FIX-TEAMS bug 1). `"claude"`
-    /// (or empty) is a real teammate. Used belt-and-braces alongside the
-    /// `agent_id == lead_agent_id` filter for forward-compat with schema drift.
+    /// Claude's role marker. `"orchestrator"` / `"leader"` ⇒ the LEAD (already
+    /// rendered as the SessionTile, NOT a teammate chip — see FIX-TEAMS bug 1).
+    /// `"claude"` / `"general-purpose"` (or empty) is a real teammate. Older
+    /// 2.1.x wrote `"orchestrator"`/`"claude"`; newer builds write
+    /// `"leader"`/`"general-purpose"` — both spellings are accepted. Used
+    /// belt-and-braces alongside the `agent_id == lead_agent_id` filter for
+    /// forward-compat with schema drift.
     #[serde(default)]
     pub agent_type: String,
 }

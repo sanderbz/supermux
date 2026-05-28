@@ -199,8 +199,10 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
 /// rename in one of them can't re-surface the phantom chip:
 ///   (a) `agent_id == lead_agent_id` — the canonical match when Claude writes
 ///       a top-level `leadAgentId`.
-///   (b) `agent_type == "orchestrator"` — the role marker Claude writes for the
-///       lead row even when `leadAgentId` is absent.
+///   (b) `agent_type == "orchestrator"` (or `"leader"`) — the role marker Claude
+///       writes for the lead row even when `leadAgentId` is absent. Both spellings
+///       are accepted: older 2.1.x wrote `"orchestrator"`, newer builds write
+///       `"leader"` (teammates are `"general-purpose"`/`"claude"`).
 ///   (c) empty `tmux_pane_id` AND empty `backend_type` AND empty `color` —
 ///       the lead row has none of these (its pane is the lead's own window,
 ///       not a split), so a member with all three blank is structurally the
@@ -211,7 +213,8 @@ fn is_lead_entry(m: &RawMember, lead_agent_id: &str) -> bool {
     if !lead_agent_id.is_empty() && aid.eq_ignore_ascii_case(lead_agent_id) {
         return true;
     }
-    if m.agent_type.trim().eq_ignore_ascii_case("orchestrator") {
+    let role = m.agent_type.trim();
+    if role.eq_ignore_ascii_case("orchestrator") || role.eq_ignore_ascii_case("leader") {
         return true;
     }
     // Structural fallback: the lead's roster row has no pane, no backend, no
@@ -805,6 +808,31 @@ mod tests {
                   "agentType": "orchestrator", "tmuxPaneId": "" },
                 { "name": "alice", "agentId": "alice@sq",
                   "agentType": "claude", "tmuxPaneId": "%1",
+                  "isActive": true, "backendType": "tmux" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+        let teams = scan_teams(&base);
+        assert_eq!(teams[0].members.len(), 1);
+        assert_eq!(teams[0].members[0].name, "alice");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn lead_member_filtered_by_leader_role_when_no_lead_agent_id() {
+        // Forward-compat: newer 2.1.x writes the lead role as `"leader"` (and
+        // teammates as `"general-purpose"`) instead of `"orchestrator"`/`"claude"`.
+        // Both spellings must filter the lead row even without `leadAgentId`.
+        let base = tmp();
+        let tdir = base.join("teams").join("sql");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "any-uuid",
+            "members": [
+                { "name": "boss", "agentId": "boss@sql",
+                  "agentType": "leader", "tmuxPaneId": "" },
+                { "name": "alice", "agentId": "alice@sql",
+                  "agentType": "general-purpose", "tmuxPaneId": "%1",
                   "isActive": true, "backendType": "tmux" }
             ]
         });
