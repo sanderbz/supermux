@@ -27,7 +27,7 @@ export interface LatestRelease {
   published_at: string | null
 }
 
-/** Tagged union — switch on `kind` to render mode-specific copy. */
+/** Tagged union: switch on `kind` to render mode-specific copy. */
 export type InstallMode =
   | { kind: 'systemd'; path_unit_present: boolean }
   | { kind: 'bare_binary' }
@@ -36,8 +36,8 @@ export type InstallMode =
   | { kind: 'unknown' }
 
 /** Tagged union of every reason "Update now" can be disabled. The `message`
- *  field on each variant is the actionable English copy the UI renders verbatim
- *  — no client-side string interpolation needed. */
+ *  field on each variant is the actionable English copy the UI renders verbatim.
+ *  No client-side string interpolation needed. */
 export type BlockedReason =
   | { kind: 'uncommitted_changes'; count: number; message: string }
   | { kind: 'not_on_main'; current_branch: string; message: string }
@@ -83,11 +83,11 @@ export interface UpdateEvent {
 }
 
 export const updatesApi = {
-  /** GET /api/version — current + latest + preflight. ALWAYS 200; a blocked
+  /** GET /api/version: current + latest + preflight. ALWAYS 200; a blocked
    *  state is information, not an error. */
   getVersion: (): Promise<PreflightStatus> => settingsRequest('/api/version'),
 
-  /** POST /api/version/refresh — force a GitHub fetch even if the cache is
+  /** POST /api/version/refresh: force a GitHub fetch even if the cache is
    *  fresh. Response carries the new snapshot + an optional `fetch_error`. */
   refresh: async (): Promise<{ snapshot: PreflightStatus; fetch_error: string | null }> => {
     type Wire = PreflightStatus & { fetch_error?: string | null }
@@ -115,7 +115,7 @@ export const updatesApi = {
     }
   },
 
-  /** POST /api/update/start — kick off the install. Returns `{ job_id }` on
+  /** POST /api/update/start: kick off the install. Returns `{ job_id }` on
    *  202 or throws with the blocked_reasons on 409. */
   start: async (): Promise<{ job_id: string }> => {
     const res = await fetch(

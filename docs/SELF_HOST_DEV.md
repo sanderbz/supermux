@@ -116,25 +116,25 @@ build failure the runner rolls back (`/usr/local/bin/supermux-server.prev`
 restored, service restarted) and the modal shows the rollback step plus
 the exact `journalctl -u supermux-deploy -n 100` command to dig deeper.
 
-The preflight refuses unsafe upgrades — surfacing actionable English copy
-for each case — instead of hiding the button silently:
+The preflight refuses unsafe upgrades, surfacing actionable English copy
+for each case instead of hiding the button silently:
 
 | Scenario | UI shows |
 |---|---|
-| Dirty working tree | "The clone has N uncommitted changes. Commit or stash them before updating." |
-| Local commits ahead of origin | "The clone has N unpushed commits ahead of origin. Push or reset before updating." |
-| Branch ≠ main | "The clone is on `feat/foo`, not `main`. Switch with `git checkout main`." |
-| Detached HEAD | "You're on a detached HEAD — typically a pinned version. Run `git checkout main`." |
+| Dirty working tree | "Your supermux folder has N uncommitted changes. Commit or stash them before updating." |
+| Local commits ahead of origin | "Your supermux folder has N local commits that haven't been pushed yet. Push or reset before updating." |
+| Branch ≠ main | "Your supermux folder is on branch `feat/foo` instead of `main`. Run `git checkout main`." |
+| Detached HEAD | "Your supermux folder is checked out at a specific commit (detached HEAD). Run `git checkout main`." |
 | cargo / bun / git missing | "`<tool>` isn't on PATH. Install it for the supermux service user." |
-| < 2 GB free | "Only N MB free on /opt/projects/supermux. The release build needs ~2 GB." |
+| < 2 GB free | "Only N MB free on /opt/projects/supermux. The release build needs about 2 GB." |
 | Bare binary / dev install | "Auto-update is only available on systemd installs. Run `cd <repo> && bash scripts/update.sh`." |
 | Docker | "supermux is running in a Docker container. Pull the latest image and recreate." |
 
 The 1-click button is bearer-gated by the same AUTH_TOKEN as the rest of
-`/api`. There is no auto-update — the upgrade only ever runs after an
+`/api`. There is no auto-update; the upgrade only ever runs after an
 explicit click.
 
-### Advanced — private repos / rate limits
+### Advanced: private repos / rate limits
 
 The updater fetches `releases/latest` from GitHub anonymously by default. This
 works for every user on the public `sanderbz/supermux` repo. Set a token only
@@ -147,7 +147,7 @@ if you hit one of these:
 
 Mint a PAT at <https://github.com/settings/tokens> with scope `public_repo`
 (public fork) or `repo` (private fork), then either set the env var in the
-systemd unit (preferred — never lands on disk in your config):
+systemd unit (preferred; never lands on disk in your config):
 
 ```
 sudo systemctl edit supermux
@@ -157,7 +157,7 @@ sudo systemctl restart supermux
 ```
 
 …or add `github_token = "ghp_…"` to `$SUPERMUX_DATA_DIR/config.toml`. The env
-var wins if both are set. There is no UI surface — the value is read once at
+var wins if both are set. There is no UI surface; the value is read once at
 startup and sent as an `Authorization: Bearer <token>` header on every release
 fetch. Unset: anonymous fetch (the default). Wrong value: GitHub returns 401
 and the UI falls back to its existing *"Couldn't reach GitHub"* state.

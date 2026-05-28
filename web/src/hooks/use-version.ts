@@ -1,7 +1,7 @@
-// useVersion — single hook backing Settings → Updates (v0.3.0).
+// useVersion: single hook backing Settings → Updates (v0.3.0).
 //
 // Owns:
-//   * 30s poll of /api/version while the consuming component is mounted —
+//   * 30s poll of /api/version while the consuming component is mounted:
 //     short enough that a fresh release surfaces in under a minute, long
 //     enough that an idle dashboard does not burn the GitHub rate limit
 //     (the server's 6h cache absorbs the per-call cost anyway).
@@ -10,7 +10,7 @@
 //   * Start action that POSTs /api/update/start and, on 202, opens an
 //     EventSource against /api/update/progress/:job_id; events stream into
 //     React state as they arrive so the UI can render a live progress bar.
-//   * Auto-reload detection — when the update SSE reports `done`, the new
+//   * Auto-reload detection: when the update SSE reports `done`, the new
 //     binary is now serving the SPA shell at the SAME bundle hash IF the
 //     deploy was a no-op, or a NEW hash if it shipped a frontend change.
 //     The component reads `reloadHint` and prompts the user; we deliberately
@@ -40,7 +40,7 @@ export interface UseVersion {
   updateAvailable: boolean
   /** Why the "Update now" button cannot be clicked (empty when clickable). */
   blockedReasons: BlockedReason[]
-  /** What kind of install this is — drives the per-mode copy in the UI. */
+  /** What kind of install this is. Drives the per-mode copy in the UI. */
   installMode: PreflightStatus['install_mode'] | null
   /** True when the dashboard should render an Updates section at all. */
   manageable: boolean
@@ -58,7 +58,7 @@ export interface UseVersion {
   progress: UpdateEvent[]
   /** Most recent step (the one the progress bar should highlight). */
   currentStep: UpdateStep | null
-  /** True once the SSE reported `done` — the UI should suggest a reload. */
+  /** True once the SSE reported `done`. The UI should suggest a reload. */
   updateDone: boolean
   /** True if the update SSE reported `failed` / `rolled_back`. */
   updateFailed: boolean
@@ -141,12 +141,12 @@ export function useVersion(): UseVersion {
           esRef.current = null
         }
       } catch {
-        // Malformed event — skip, the client's progress bar simply stalls
+        // Malformed event; skip, the client's progress bar simply stalls
         // until the next valid frame.
       }
     })
     es.onerror = () => {
-      // EventSource fires `error` on every transient disconnect too — the
+      // EventSource fires `error` on every transient disconnect too; the
       // browser auto-reconnects. Don't close here; only close on a terminal
       // step or in `resetUpdate`.
     }
