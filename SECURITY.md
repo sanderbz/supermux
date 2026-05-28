@@ -2,32 +2,20 @@
 
 ## Supported versions
 
-supermux is a single-binary self-hosted app with no release tags yet. Only
-the **latest `main`** is supported. If you're running an older checkout,
-please pull `main` and re-deploy before filing a security report.
-
-| Version       | Supported |
-| ------------- | --------- |
-| `main` (HEAD) | Yes       |
-| Anything else | No        |
+Only the **latest release** and the current `main` are supported. If you're running an older build, pull the latest tag (or `main`) and re-deploy before filing a security report.
 
 ## Reporting a vulnerability
 
-Please **do not** open public GitHub issues for security problems. Instead,
-email the maintainer directly:
+Please **don't** open a public GitHub issue. Use GitHub's private vulnerability reporting:
 
-- **security@supermux.app** (preferred), or
-- the maintainer listed in the repo's GitHub profile
+- **[Report a vulnerability](https://github.com/sanderbz/supermux/security/advisories/new)** — preferred.
 
-Include: a description, reproduction steps, the commit SHA you tested
-against, and (if known) a suggested fix or mitigation.
+Include a description, reproduction steps, the commit SHA you tested against, and (if you have one) a suggested fix.
 
-You can expect:
+What to expect:
 
-- An acknowledgement within **5 working days**.
-- A coordinated-disclosure window of up to **90 days** before public
-  disclosure, extendable by mutual agreement if a fix needs more time.
-- Credit in the release notes when the fix ships, unless you'd rather
-  stay anonymous.
+- Acknowledgement within **5 working days**.
+- A coordinated-disclosure window of up to **90 days**, extendable by mutual agreement if a fix needs more time.
+- Credit in the release notes unless you'd rather stay anonymous.
 
 Thanks for helping keep supermux users safe.
