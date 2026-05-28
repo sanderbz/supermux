@@ -840,6 +840,7 @@ fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         || host.ends_with(".ts.net")
         || is_private_lan(&host)
         || matches_bind_host(state, &host)
+        || state.config.extra_origins.iter().any(|o| o == &host)
 }
 
 /// Private-range IPv4 (RFC1918) or link-local — i.e. a LAN address. (Loopback is

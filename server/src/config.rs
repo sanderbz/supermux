@@ -69,6 +69,14 @@ pub struct Config {
     /// design: no UI, no warning if unset, no prompt. See
     /// `docs/SELF_HOST_DEV.md` "Advanced — private repos / rate limits".
     pub github_token: Option<String>,
+    /// Extra hostnames to allow as WebSocket `Origin` headers (§6.2). The
+    /// built-in allowlist covers `localhost`, private-LAN IPs, `*.ts.net`, and
+    /// the server's own bind IPs. Add entries here for reverse-proxy deployments
+    /// where the browser-facing hostname is none of the above — e.g.
+    /// `extra_origins = ["myhost.internal", "supermux.corp.example.com"]`.
+    /// Exact hostname match only (no wildcards). The scheme is ignored; only
+    /// the host part of the `Origin` header is compared.
+    pub extra_origins: Vec<String>,
 }
 
 /// `[ws]` config block (TECH_PLAN §3.2.7). Both knobs raised from v1 per CEO #6:
@@ -143,6 +151,9 @@ struct RawConfig {
     /// See [`Config::github_token`].
     #[serde(default)]
     github_token: Option<String>,
+    /// See [`Config::extra_origins`].
+    #[serde(default)]
+    extra_origins: Vec<String>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -234,6 +245,7 @@ pub fn load() -> Result<Config> {
         remote_callback_url: raw.remote_callback_url,
         push_sub,
         github_token,
+        extra_origins: raw.extra_origins,
     })
 }
 
