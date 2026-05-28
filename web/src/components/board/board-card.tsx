@@ -242,8 +242,10 @@ export function BoardCard({
   // A Done card whose agent is STILL active or waiting is the contradiction to
   // surface: the agent declared the work done but kept running (or got stuck on
   // an error). Without this the card reads as calmly finished. Idle/stopped means
-  // the turn actually ended, so no cue then. The link is severed once a card
-  // leaves `doing`, so this is the only on-card signal a done agent misbehaved.
+  // the turn actually ended, so no cue then. The server's attention reactions
+  // (Review?/Needs-input) only fire for `doing` cards (doing_issue_for_session),
+  // so a Done card gets no server-side badge — this client cue is the only
+  // on-card signal that a "done" agent is still churning.
   const doneButBusy =
     isDone && (liveStatus === 'active' || liveStatus === 'waiting')
 

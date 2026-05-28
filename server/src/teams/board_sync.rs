@@ -579,7 +579,7 @@ mod tests {
     }
 
     /// Resource hygiene (AT-G follow-up): evicting a team's teammate pane streams
-    /// drops ONLY the `{lead}/{member}` keys from the PtyStreamer — a bare SESSION
+    /// drops ONLY the `{team}/{member}` keys from the PtyStreamer — a bare SESSION
     /// stream (owned by the session lifecycle) is left untouched. This pins the
     /// fix for "teammate pane streams are cached forever, growing the registry
     /// unbounded across many team starts."
@@ -587,7 +587,7 @@ mod tests {
     async fn forget_teammate_stream_evicts_pane_keys_only() {
         let (state, dir) = test_state().await;
 
-        // Seed two teammate pane streams under `{lead}/{member}` keys + one bare
+        // Seed two teammate pane streams under `{team}/{member}` keys + one bare
         // session stream (the registry slots a real run would create on attach).
         let _ = state.pty.for_pane("lead-x/worker-1", "%11");
         let _ = state.pty.for_pane("lead-x/worker-2", "%12");
