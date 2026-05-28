@@ -41,6 +41,10 @@ export default defineConfig({
         'icon-512.png',
         'apple-touch-icon.png',
         'splash/*.png',
+        // V034: branded offline shell, precached so the SW can serve it on the
+        // cold-start-with-no-server path (first visit while offline). See
+        // workbox.runtimeCaching below for the navigation-fallback wiring.
+        'offline.html',
       ],
       manifest: {
         name: 'supermux',
@@ -85,6 +89,13 @@ export default defineConfig({
             // 3s timeout means a live token always wins; the cache is only a
             // brief offline-shell fallback. Cache name `supermux-html` is the one
             // Settings → Rotate token drops on rotation (M22 contract).
+            //
+            // V034: when BOTH the network and the cached HTML doc fail (cold
+            // first-visit while offline / server down), Workbox tries
+            // `precache(offline.html)` — that file is precached above so it's
+            // guaranteed to be available. The user gets a branded
+            // "Couldn't reach the supermux server" page instead of the
+            // browser's generic "site can't be reached" chrome.
             urlPattern: ({ request, url }) =>
               request.mode === 'navigate' &&
               !url.pathname.startsWith('/api/') &&
@@ -94,6 +105,7 @@ export default defineConfig({
               cacheName: 'supermux-html',
               networkTimeoutSeconds: 3,
               expiration: { maxEntries: 4, maxAgeSeconds: 60 * 60 * 24 },
+              precacheFallback: { fallbackURL: '/offline.html' },
             },
           },
           {
