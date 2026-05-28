@@ -1240,6 +1240,9 @@ sed -e "s|__DEPLOY_REQUEST__|$DEPLOY_REQUEST|g" \
     etc/systemd/supermux-deploy.service > "$DEPLOY_SVC_TMP"
 
 # supermux-deploy-runner — the root install+restart+verify+rollback logic.
+# __REMOTE_DIR__ lets the runner write the SAME canonical DEPLOYED_SHA file
+# this script writes ($REMOTE_DIR/DEPLOYED_SHA) on a successful self-deploy /
+# in-UI update, so it does not go stale after the workstation deploy.
 sed -e "s|__DEPLOY_REQUEST__|$DEPLOY_REQUEST|g" \
     -e "s|__PROJECTS_DIR__|$PRIMARY_PROJECT_DIR|g" \
     -e "s|__USER_HOME__|$USER_HOME|g" \
@@ -1247,6 +1250,7 @@ sed -e "s|__DEPLOY_REQUEST__|$DEPLOY_REQUEST|g" \
     -e "s|__DATA_DIR__|$DATA_DIR|g" \
     -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
     -e "s|__INTERNAL_PORT__|$INTERNAL_PORT|g" \
+    -e "s|__REMOTE_DIR__|$REMOTE_DIR|g" \
     etc/supermux-deploy-runner > "$DEPLOY_RUNNER_TMP"
 
 for rendered in "$DEPLOY_PATH_TMP" "$DEPLOY_SVC_TMP" "$DEPLOY_RUNNER_TMP"; do
@@ -1364,6 +1368,28 @@ if [ "$USE_TAILSCALE" = "1" ]; then
     else
       SERVE_URL="https://$TS_DNSNAME:$PUBLIC_PORT/"
     fi
+  fi
+  # ── pre-provision the Let's Encrypt HTTPS cert NOW (avoid first-visit error) ─
+  # 'tailscale serve' only registers the proxy; it fetches the LE cert LAZILY on
+  # the FIRST https hit. The browser races ahead of the cert being issued + CT-
+  # logged, so the very first visitor sees ERR_CERTIFICATE_TRANSPARENCY_REQUIRED.
+  # 'tailscale cert <host>' provisions it explicitly (a real CT-logged cert), so
+  # the first visit is clean. Conditional: ONLY on the Tailscale-expose path
+  # (this whole branch is gated on USE_TAILSCALE=1 — a reverse-proxy operator
+  # never reaches here). Best-effort: a failure here does NOT fail the deploy —
+  # the cert still provisions lazily (just with the possible first-visit hiccup).
+  if [ -n "$TS_DNSNAME" ]; then
+    echo "[deploy] pre-provisioning Tailscale HTTPS cert for $TS_DNSNAME (can take a few seconds) ..."
+    if ! timeout 60 ssh "$HOST" "sudo tailscale cert '$TS_DNSNAME'" >/dev/null 2>&1; then
+      echo "[deploy] warn: could not pre-provision the Tailscale cert for $TS_DNSNAME." >&2
+      echo "[deploy]       Continuing: the cert will still be issued lazily on the first" >&2
+      echo "[deploy]       https visit (that first hit may briefly show a cert error)." >&2
+    else
+      echo "[deploy] Tailscale HTTPS cert ready for $TS_DNSNAME"
+    fi
+  else
+    echo "[deploy] warn: could not resolve the Tailscale hostname to pre-provision the cert." >&2
+    echo "[deploy]       Continuing: the cert will be issued lazily on the first https visit." >&2
   fi
 else
   echo "[deploy] skipping 'tailscale serve' — front loopback:$INTERNAL_PORT with your own reverse proxy"
