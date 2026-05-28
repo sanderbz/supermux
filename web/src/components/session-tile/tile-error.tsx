@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/sheet'
 import { ERROR } from '@/brand/copy'
 import type { TileSession } from './types'
+import { sessionTitle } from '@/lib/api'
 
 export interface TileErrorProps {
   session: TileSession
@@ -34,7 +35,7 @@ export function TileError({
 }: TileErrorProps) {
   const reduce = useReducedMotion()
   const [open, setOpen] = React.useState(false)
-  const title = session.task_summary || session.name
+  const title = sessionTitle(session)
 
   return (
     <>

@@ -43,7 +43,7 @@ import { useTeams } from '@/hooks/use-teams'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
 import type { Team, TeamMember } from '@/lib/api/teams'
 import { TeammateFocus } from '@/components/team'
-import type { ApiSession, SessionStatus } from '@/lib/api'
+import { displayLabel, sessionTitle, type ApiSession, type SessionStatus } from '@/lib/api'
 import { springs } from '@/lib/springs'
 import { StatusDot } from '@/components/session-tile/status-dot'
 
@@ -374,6 +374,7 @@ export function MobileFocus() {
               the only "dots" left is the bottom Specials/Quick-keys trigger. */}
           <FocusHeader
             name={current.name}
+            title={sessionTitle(current)}
             status={current.status}
             activity={current.activity}
             error={current.error}
@@ -587,7 +588,7 @@ function PeekOfNext({ session }: { session: ApiSession }) {
     >
       <StatusDot status={session.status} />
       <span className="max-w-[40vw] truncate text-[13px] font-medium">
-        {session.name}
+        {displayLabel(session)}
       </span>
     </motion.div>
   )

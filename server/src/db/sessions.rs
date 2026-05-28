@@ -14,6 +14,11 @@ use sqlx::SqlitePool;
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct Session {
     pub name: String,
+    /// Mutable human label (migration 0019). Empty on rows created before the
+    /// column existed / via the test-only `insert_minimal`; callers fall back to
+    /// `name`. The slug `name` stays the immutable identity.
+    #[serde(default)]
+    pub display_name: String,
     pub dir: String,
     pub desc: String,
     pub provider: String,
@@ -242,6 +247,9 @@ pub async fn exists_active(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> 
 #[derive(Debug, Clone)]
 pub struct NewSession {
     pub name: String,
+    /// Human label shown in the UI (migration 0019). The create path defaults it
+    /// to the slug when the client doesn't supply one.
+    pub display_name: String,
     pub dir: String,
     pub desc: String,
     pub provider: String,
@@ -264,11 +272,12 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO sessions
-            (name, dir, desc, provider, creator, flags, tags, branch, mcp,
+            (name, display_name, dir, desc, provider, creator, flags, tags, branch, mcp,
              worktree, worktree_repo, host_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.name)
+    .bind(&s.display_name)
     .bind(&s.dir)
     .bind(&s.desc)
     .bind(&s.provider)
@@ -288,18 +297,21 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
 
 /// Copy a session's CONFIG (not its runtime/counters) under `new_name`. Pinned
 /// is reset and `created_at` refreshed; the caller seeds a fresh runtime row.
+/// The clone's `display_name` is set to its own new slug (not the source's
+/// label) so two sessions never share a confusing identical title.
 pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Result<()> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO sessions
-            (name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
+            (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
              host_id, created_at)
-         SELECT ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
+         SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
                 host_id, ?
          FROM sessions WHERE name = ?",
     )
+    .bind(new_name)
     .bind(new_name)
     .bind(now)
     .bind(src)
@@ -344,6 +356,10 @@ pub async fn rename(pool: &SqlitePool, old: &str, new: &str) -> sqlx::Result<()>
 /// Set the human description.
 pub async fn set_desc(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
     set_text_field(pool, name, "desc", value).await
+}
+/// Set the mutable display label (migration 0019). The slug `name` is unchanged.
+pub async fn set_display_name(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {
+    set_text_field(pool, name, "display_name", value).await
 }
 /// Set the work directory.
 pub async fn set_dir(pool: &SqlitePool, name: &str, value: &str) -> sqlx::Result<()> {

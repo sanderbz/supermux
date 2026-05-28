@@ -942,6 +942,7 @@ async fn start_handler(
             let name = derive_session_name(&state, &issue).await?;
             let create_input = crate::sessions::CreateInput {
                 name: name.clone(),
+                display_name: None,
                 dir: spawn.dir,
                 desc: None,
                 provider: spawn.provider,

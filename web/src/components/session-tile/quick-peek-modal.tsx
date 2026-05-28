@@ -16,6 +16,7 @@ import { StartTeamSheet } from './start-team-sheet'
 import { StatusDot } from './status-dot'
 import { TailPreview } from './tail-preview'
 import type { TileSession } from './types'
+import { sessionTitle } from '@/lib/api'
 
 export interface QuickPeekModalProps {
   session: TileSession
@@ -126,7 +127,7 @@ export function QuickPeekModal({
           <div className="flex items-center gap-2 px-4 py-3">
             <StatusDot status={session.status} />
             <Drawer.Title className="min-w-0 flex-1 truncate text-sm font-medium">
-              {session.task_summary || session.name}
+              {sessionTitle(session)}
             </Drawer.Title>
 
             {/* Session actions — Restart + a state-dependent secondary (the two

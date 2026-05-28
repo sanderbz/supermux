@@ -21,6 +21,7 @@ import { springs } from '@/lib/springs'
 import { useSessions } from '@/hooks/use-sessions'
 import {
   boardApi,
+  displayLabel,
   type AcceptanceItem,
   type BoardIssue,
   type BoardIssuePatch,
@@ -180,7 +181,7 @@ function EditorForm({
               <option value="">None — spawn on start</option>
               {sessions.map((s) => (
                 <option key={s.name} value={s.name}>
-                  {s.name}
+                  {displayLabel(s)}
                 </option>
               ))}
             </select>

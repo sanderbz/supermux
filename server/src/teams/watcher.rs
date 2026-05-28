@@ -606,6 +606,7 @@ mod tests {
             &state,
             crate::sessions::CreateInput {
                 name: "ipc-astro".into(),
+                display_name: None,
                 dir: Some("/opt/projects/ipc-astro".into()),
                 desc: None,
                 provider: Some("claude".into()),
@@ -647,6 +648,7 @@ mod tests {
             &state,
             crate::sessions::CreateInput {
                 name: "team-alpha-lead".into(),
+                display_name: None,
                 dir: Some("/opt/projects/alpha".into()),
                 desc: Some("Team lead — alpha".into()),
                 provider: Some("claude".into()),

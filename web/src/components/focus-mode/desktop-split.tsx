@@ -22,6 +22,7 @@ import { StoppedSession } from '@/components/terminal/stopped-session'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import type { TileSession } from '@/components/session-tile/types'
 import type { Team, TeamMember } from '@/lib/api/teams'
+import { sessionTitle } from '@/lib/api'
 import { TeamStripGroup } from './team-strip-group'
 import { TeammatePane } from './teammate-pane'
 import { useGroupedStrip } from './use-grouped-strip'
@@ -390,7 +391,7 @@ export function DesktopSplit({
   })
 
   const status = current?.status ?? 'starting'
-  const title = current?.task_summary || name
+  const title = current ? sessionTitle(current) : name
 
   return (
     <div className="flex h-full w-full bg-background" data-testid="desktop-split">

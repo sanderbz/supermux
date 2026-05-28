@@ -70,6 +70,18 @@ function suggestName(stem: string): string {
   return `${stem}-${suffix}`
 }
 
+/** Derive the immutable slug from the free-typed display name (migration 0019):
+ *  whitespace → `-`, drop anything outside the server's `valid_name` charset
+ *  (`[A-Za-z0-9_.-]`), bound to 100. The user types a human label; this is the
+ *  URL/tmux/identity key created from it. */
+function toSlug(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Za-z0-9_.-]/g, '')
+    .slice(0, 100)
+}
+
 interface FormState {
   name: string
   /** The "Where" selection. FEAT-NEWSES-WHERE replaced the old `dir: string`
@@ -188,7 +200,10 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
 
   // A blank directory must NOT block creation: the server defaults an empty/
   // omitted `dir` to the home directory. Only the name is truly required.
-  const canSubmit = form.name.trim().length > 0
+  // The typed text is the display LABEL; the slug is derived from it. Require a
+  // non-empty slug (a label of only spaces/emoji slugifies to "" → not valid).
+  const slug = toSlug(form.name)
+  const canSubmit = slug.length > 0
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -204,7 +219,8 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
       // the old DirectoryField path did. Empty string is OK — the server
       // defaults to the home directory.
       const created = await sessionsApi.create({
-        name: form.name.trim(),
+        name: slug,
+        display_name: form.name.trim(),
         dir: form.where.dir.trim(),
         provider: form.provider,
         worktree: form.worktree,
@@ -214,7 +230,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
         // update). Only sent when the user picked a remote host.
         host_id: form.hostId ?? undefined,
       })
-      const name = created?.name ?? form.name.trim()
+      const name = created?.name ?? slug
       // Boot tmux + send the initial prompt. Non-fatal — the row exists either
       // way; focus can retry the start.
       try {
@@ -225,7 +241,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
       onCreated(name)
     } catch (err) {
       if (err instanceof SessionError && err.status === 409) {
-        setError(`A session named “${form.name.trim()}” already exists.`)
+        setError(`The id “${slug}” is taken — tweak the name and try again.`)
       } else if (err instanceof SessionError && err.status === 0) {
         setError('Can’t reach supermux-server. Check it’s running, then try again.')
       } else {
@@ -285,10 +301,18 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
                   id="ns-name"
                   value={form.name}
                   onChange={(e) => set('name', e.target.value)}
-                  placeholder="my-agent"
+                  placeholder="My agent"
                   autoComplete="off"
                   spellCheck={false}
                 />
+                {/* The slug is the immutable id derived from the name (URL /
+                    tmux / hooks). Shown only when it differs from what was typed
+                    so the user understands the “My agent → my-agent” mapping. */}
+                {slug && slug !== form.name.trim() && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    id <code className="font-mono">{slug}</code>
+                  </p>
+                )}
               </Field>
 
               {/* FEAT-NEWSES-WHERE: the Projects list + "Use another folder"

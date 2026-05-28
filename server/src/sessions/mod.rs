@@ -136,6 +136,10 @@ fn ok<T: Serialize>(data: T) -> Json<Envelope<T>> {
 #[derive(Debug, Serialize)]
 pub struct SessionView {
     pub name: String,
+    /// Mutable human label (migration 0019). Always non-empty: the slug `name`
+    /// when the user hasn't set one. The frontend shows this; `name` stays the
+    /// key for routes/API/SSE.
+    pub display_name: String,
     pub status: String,
     pub dir: String,
     pub provider: String,
@@ -204,6 +208,11 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
     let updated_ts = s.last_send.max(s.last_started).max(s.created_at);
     SessionView {
         name: s.name.clone(),
+        display_name: if s.display_name.is_empty() {
+            s.name.clone()
+        } else {
+            s.display_name.clone()
+        },
         status: normalize_status(last_status),
         dir: s.dir.clone(),
         provider: s.provider.clone(),
@@ -414,6 +423,10 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
 #[derive(Debug, Deserialize)]
 pub struct CreateInput {
     pub name: String,
+    /// Human label for the UI (migration 0019). Free-form; the immutable slug
+    /// `name` is derived/validated separately. Defaults to the slug when absent.
+    #[serde(default)]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub dir: Option<String>,
     #[serde(default)]
@@ -466,8 +479,14 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
                 .unwrap_or_else(|| ".".into())
         });
     let tags = input.tags.unwrap_or_default();
+    let display_name = input
+        .display_name
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| name.clone());
     let new = NewSession {
         name: name.clone(),
+        display_name,
         dir,
         desc: input.desc.unwrap_or_default(),
         provider,
@@ -580,6 +599,15 @@ pub async fn duplicate(
 /// with the lifecycle work in M3.
 #[derive(Debug, Deserialize)]
 pub struct ConfigInput {
+    /// Edit the mutable display label (migration 0019). This is the user-facing
+    /// "rename": it changes ONLY the label, never the slug — so the route, the
+    /// tmux session, $SUPERMUX_SESSION, and the per-pane hook token all stay put
+    /// and a running pane can never go stale. Free-form text.
+    pub display_name: Option<String>,
+    /// Low-level slug rename. Retained as an internal capability (kept out of the
+    /// UI): mutating the slug rewrites the PK + every FK + the tmux name, and a
+    /// running pane's frozen env can't follow — which is exactly the staleness
+    /// the `display_name` split exists to avoid. Prefer `display_name`.
     pub rename: Option<String>,
     pub desc: Option<String>,
     pub dir: Option<String>,
@@ -633,6 +661,14 @@ pub async fn config_patch(
             }
             current = target.to_string();
         }
+        changed = true;
+    }
+    if let Some(v) = patch.display_name {
+        // The user-facing rename: relabel only. An empty/whitespace value resets
+        // the label to the slug (so the UI never shows a blank title).
+        let label = v.trim();
+        let value = if label.is_empty() { current.as_str() } else { label };
+        db::sessions::set_display_name(&state.pool, &current, value).await?;
         changed = true;
     }
     if let Some(v) = patch.desc {

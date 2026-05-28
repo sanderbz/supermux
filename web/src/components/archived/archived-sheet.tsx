@@ -28,7 +28,7 @@ import {
   useArchivedSessions,
   type UseArchivedSessionsResult,
 } from '@/hooks/use-archived-sessions'
-import type { ApiSession } from '@/lib/api'
+import { displayLabel, type ApiSession } from '@/lib/api'
 
 export interface ArchivedSheetProps {
   open: boolean
@@ -228,7 +228,7 @@ function ArchivedRow({
   const reduce = useReducedMotion()
   const [confirming, setConfirming] = React.useState(false)
   const busy = pending.has(session.name)
-  const label = session.task_summary || session.name
+  const label = displayLabel(session)
 
   const onRestore = React.useCallback(() => {
     restore(session.name)
@@ -268,7 +268,7 @@ function ArchivedRow({
         <StatusDot status="stopped" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[14px] font-medium text-foreground">
-            {session.name}
+            {displayLabel(session)}
           </p>
           <p className="truncate text-[12px] text-muted-foreground">
             {whenArchived(session.updated_at)}
@@ -309,7 +309,7 @@ function ArchivedRow({
               type="button"
               onClick={onRestore}
               disabled={busy}
-              aria-label={`Restore ${session.name}`}
+              aria-label={`Restore ${displayLabel(session)}`}
               title="Restore"
               className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
@@ -319,7 +319,7 @@ function ArchivedRow({
               type="button"
               onClick={() => setConfirming(true)}
               disabled={busy}
-              aria-label={`Delete ${session.name} forever`}
+              aria-label={`Delete ${displayLabel(session)} forever`}
               title="Delete forever"
               className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >

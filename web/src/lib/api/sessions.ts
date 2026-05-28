@@ -53,6 +53,9 @@ export type SessionMode = 'normal' | 'accept_edits' | 'plan' | 'bypass'
 /** Per-tile summary. SSE `sessions` events use this same shape (deltas). §3.4 */
 export interface SessionSummary {
   name: string
+  /** Mutable human label (migration 0019); the server sends it (= `name` when
+   *  unset). Use `displayLabel(s)`/`sessionTitle(s)` for UI; `name` is the key. */
+  display_name?: string
   status: SessionStatus
   dir: string
   provider: string
@@ -197,7 +200,12 @@ export const api = {
  *  (§3.6) the detector populates when it has them. Mirrors `TileSession` but
  *  lives here so the API layer owns the wire shape. */
 export interface ApiSession {
+  /** Immutable slug — the identity used for routes, API calls, SSE filters,
+   *  tmux, hooks. Never changes after creation. Use `displayLabel(s)` for UI. */
   name: string
+  /** Mutable human label (migration 0019). The server always sends it (= `name`
+   *  when unset). Edited by the "rename" action; the slug `name` is untouched. */
+  display_name?: string
   status: SessionStatus
   dir: string
   provider: string
@@ -273,6 +281,29 @@ export interface ApiSession {
   host_id?: number | null
 }
 
+/** The human label to show for a session: its `display_name` when set, else the
+ *  slug `name`. Use this for EVERY user-facing title; keep `name` for routes,
+ *  API calls, query keys and SSE filters (it's the immutable identity). The
+ *  server already coalesces to `name`, so the `?? name` is belt-and-braces for
+ *  older payloads / optimistic rows that omit `display_name`. */
+export function displayLabel(s: { name: string; display_name?: string }): string {
+  return s.display_name?.trim() ? s.display_name : s.name
+}
+
+/** The title for the big surfaces (overview tile + focus header). A user-set
+ *  `display_name` (one that differs from the slug) ALWAYS wins, so a rename is
+ *  immediately visible; otherwise fall back to Claude's live auto chat-title
+ *  (`task_summary`), then the slug. Compact switchers (picker, dock pill) use
+ *  the plainer [`displayLabel`] instead — a long chat-title is noise in a list. */
+export function sessionTitle(s: {
+  name: string
+  display_name?: string
+  task_summary?: string
+}): string {
+  if (s.display_name?.trim() && s.display_name !== s.name) return s.display_name
+  return s.task_summary?.trim() ? s.task_summary : s.name
+}
+
 /** A past Claude conversation for a session's working dir (feat-resume-picker).
  *  Surfaced by `GET /api/sessions/{name}/resumable`; picking one resumes it via
  *  `claude --resume <id>`. */
@@ -312,6 +343,11 @@ export interface GitInfo {
  *  IDENTITY (its slug = its displayed title), so the server also renames the live
  *  tmux session + rebuilds the pty stream — a running session survives it. */
 export interface SessionConfigPatch {
+  /** Edit the mutable display label (migration 0019) — the user-facing rename.
+   *  Changes ONLY the label; the slug `name` (route/identity) is untouched. */
+  display_name?: string
+  /** Low-level slug rename (kept out of the UI — mutating the slug is what made
+   *  a running pane's hooks go stale). Prefer `display_name`. */
   rename?: string
   desc?: string
   dir?: string
@@ -340,6 +376,10 @@ export interface SetModeResult {
  *  omitted = LOCAL (the historical behaviour). */
 export interface NewSession {
   name: string
+  /** Human display label (migration 0019). Free-form; defaults to the slug
+   *  `name` server-side when omitted. The create sheet derives `name` (slug)
+   *  from this typed text. */
+  display_name?: string
   dir: string
   provider?: 'claude' | 'shell'
   desc?: string
@@ -547,10 +587,20 @@ export const sessionsApi = {
       body: JSON.stringify(patch),
     }),
 
-  /** `PATCH .../config { rename }` — rename a session. Its slug IS its displayed
-   *  title, so this is the "edit title" op; it changes the session's identity
-   *  everywhere (URL / tiles / board), so the caller navigates to the new name on
-   *  success. Resolves to the renamed row. */
+  /** `PATCH .../config { display_name }` — the user-facing "rename": set the
+   *  session's display label. The slug `name` (URL / identity / SSE key) is
+   *  unchanged, so the caller does NOT navigate. Resolves to the updated row. */
+  setDisplayName: (name: string, displayName: string): Promise<ApiSession> =>
+    sessReq(`/api/sessions/${encodeURIComponent(name)}/config`, {
+      method: 'PATCH',
+      body: JSON.stringify({ display_name: displayName } satisfies SessionConfigPatch),
+    }),
+
+  /** `PATCH .../config { rename }` — low-level SLUG rename (kept for internal /
+   *  programmatic use; not wired to the UI). Mutating the slug changes the
+   *  session's identity everywhere AND can't update a running pane's frozen env,
+   *  which is exactly the staleness the display_name split avoids. Prefer
+   *  `setDisplayName`. Resolves to the renamed row. */
   rename: (name: string, target: string): Promise<ApiSession> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}/config`, {
       method: 'PATCH',

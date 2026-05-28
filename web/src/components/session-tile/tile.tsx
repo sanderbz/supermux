@@ -5,7 +5,7 @@ import { Archive, GitBranch, X } from 'lucide-react'
 
 import { springs, eases } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
-import { sessionsApi, type ApiSession } from '@/lib/api'
+import { displayLabel, sessionsApi, sessionTitle, type ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
 import { useToast } from '@/components/ui/use-toast'
@@ -450,10 +450,9 @@ export function SessionTile({
     if (archiving) return
     setArchiveConfirm(false)
     setArchiving(true)
-    // The toast label uses the same title the tile shows (chat summary, else
-    // the session name) — computed inline so this callback doesn't depend on
-    // the `title` const declared after the missing-tile early return.
-    const label = session.task_summary || session.name
+    // Same title the tile shows — computed inline so this callback doesn't
+    // depend on the `title` const declared after the missing-tile early return.
+    const label = sessionTitle(session)
     sessionsApi
       .archive(session.name)
       .then(() => {
@@ -471,7 +470,7 @@ export function SessionTile({
         setArchiving(false)
         toast({ message: 'Couldn’t archive session', tone: 'error' })
       })
-  }, [qc, archiving, session.task_summary, session.name, toast, undoArchive])
+  }, [qc, archiving, session, toast, undoArchive])
 
   const onArchiveClick = React.useCallback(
     (e: React.MouseEvent | React.KeyboardEvent) => {
@@ -647,7 +646,7 @@ export function SessionTile({
     )
   }
 
-  const title = session.task_summary || session.name
+  const title = sessionTitle(session)
   const tokens =
     typeof session.tokens === 'number' ? formatTokens(session.tokens) : null
   // Stopped UX (polish-pass): a stopped tile is visually distinct AT A GLANCE
@@ -1027,7 +1026,7 @@ export function SessionTile({
                   aria-hidden
                   className="size-1.5 rounded-full bg-status-active"
                 />
-                <span className="truncate">Typing → {session.name}</span>
+                <span className="truncate">Typing → {displayLabel(session)}</span>
                 <span className="opacity-70">· Esc to close</span>
               </motion.div>
             )}

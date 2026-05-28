@@ -287,6 +287,7 @@ pub async fn start_team(
         state,
         CreateInput {
             name: name.clone(),
+            display_name: None,
             dir: input.dir,
             desc: Some(format!("Team lead — {}", short_desc(&task))),
             provider: Some("claude".into()),
@@ -661,6 +662,7 @@ mod tests {
             &state,
             CreateInput {
                 name: "alpha".into(),
+                display_name: None,
                 dir: None,
                 desc: None,
                 provider: Some("claude".into()),
@@ -696,6 +698,7 @@ mod tests {
             &state,
             CreateInput {
                 name: "beta".into(),
+                display_name: None,
                 dir: None,
                 desc: None,
                 provider: Some("claude".into()),
@@ -738,6 +741,7 @@ mod tests {
             &state,
             CreateInput {
                 name: "shellone".into(),
+                display_name: None,
                 dir: None,
                 desc: None,
                 provider: Some("shell".into()),
