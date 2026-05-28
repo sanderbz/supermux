@@ -501,6 +501,16 @@ export function useLiveTerm(
       // stores lines compactly; 50k lines is a modest memory cost per terminal.
       scrollback: 50000,
       disableStdin: readOnly,
+      // ⌥-drag forces a LOCAL text selection even while the program holds the
+      // mouse (DECSET ?1000/?1002 — Claude Code's TUI, and tmux `mouse on`,
+      // almost always do). Without this, macOS xterm has NO modifier to bypass
+      // mouse reporting, so a plain drag is forwarded to the pty (tmux grabs it →
+      // "copied … to tmux buffer") and the user can't select+copy in the browser.
+      // With it, ⌥-drag selects locally (xterm does NOT forward those events), so
+      // the ⌘C handler below copies it. Plain drag is unchanged → the agent still
+      // gets its mouse events. (Linux/Windows already get Shift-drag by default;
+      // this option only affects macOS.)
+      macOptionClickForcesSelection: true,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -870,6 +880,26 @@ export function useLiveTerm(
       // during IME composition (`isComposing` / keyCode 229) so a CJK
       // candidate-commit Enter still reaches the composer normally.
       term.attachCustomKeyEventHandler((e) => {
+        // ⌘C (macOS) / Ctrl+Shift+C (Linux/Windows) copies the CURRENT selection
+        // to the system clipboard. With the GPU renderer there is no DOM text for
+        // the browser's native copy to grab, so we copy via xterm's selection API.
+        // We act ONLY on the copy chord AND only when something is selected, and we
+        // NEVER touch a plain Ctrl+C — so SIGINT still interrupts the agent. Pairs
+        // with `macOptionClickForcesSelection` (⌥-drag to select while the agent
+        // holds the mouse). Swallow the matching keypress too so no stray "c"
+        // reaches the pty after we've copied.
+        const isCopyChord =
+          (e.key === 'c' || e.key === 'C') &&
+          (e.metaKey || (e.ctrlKey && e.shiftKey)) &&
+          !e.altKey
+        if (isCopyChord && term.hasSelection()) {
+          if (e.type === 'keydown') {
+            const sel = term.getSelection()
+            if (sel) void navigator.clipboard?.writeText(sel)
+            e.preventDefault()
+          }
+          return false
+        }
         const isNewlineEnter =
           e.key === 'Enter' &&
           (e.shiftKey || e.altKey) &&
