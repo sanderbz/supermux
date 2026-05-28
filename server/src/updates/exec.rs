@@ -452,4 +452,42 @@ mod tests {
     fn rejects_unknown_step() {
         assert!(parse_event_line("[update] step=teleporting", "j1").is_none());
     }
+
+    #[test]
+    fn parses_every_runner_step_marker() {
+        // These are the EXACT step strings the root path-unit runner
+        // (etc/supermux-deploy-runner) emits to the log this module tails.
+        // The contract is load-bearing: if the runner's step() names and this
+        // parser ever drift, the in-UI progress bar silently sticks on
+        // "Queued" (the original bug). Pin the full set here so a rename on
+        // either side fails the build.
+        let cases: &[(&str, UpdateStep)] = &[
+            ("[update] step=fetching", UpdateStep::Fetching),
+            ("[update] step=building", UpdateStep::Building),
+            ("[update] step=installing", UpdateStep::Installing),
+            ("[update] step=verifying", UpdateStep::Verifying),
+            ("[update] step=done", UpdateStep::Done),
+            ("[update] step=failed", UpdateStep::Failed),
+            ("[update] step=rolled_back", UpdateStep::RolledBack),
+        ];
+        for (line, want) in cases {
+            let ev = parse_event_line(line, "j1")
+                .unwrap_or_else(|| panic!("runner line should parse: {line:?}"));
+            assert_eq!(ev.step, *want, "wrong step for {line:?}");
+            assert!(!ev.message.is_empty(), "empty default message for {line:?}");
+        }
+    }
+
+    #[test]
+    fn parses_runner_step_with_message() {
+        // The runner emits `[update] step=<name> msg="<text>"`; the msg must
+        // come through verbatim so the UI shows the runner's own copy.
+        let ev = parse_event_line(
+            r#"[update] step=installing msg="Installing the new binary and restarting the service.""#,
+            "j1",
+        )
+        .unwrap();
+        assert_eq!(ev.step, UpdateStep::Installing);
+        assert_eq!(ev.message, "Installing the new binary and restarting the service.");
+    }
 }

@@ -4,7 +4,7 @@
 //   * 30s poll of /api/version while the consuming component is mounted:
 //     short enough that a fresh release surfaces in under a minute, long
 //     enough that an idle dashboard does not burn the GitHub rate limit
-//     (the server's 6h cache absorbs the per-call cost anyway).
+//     (the server's 1h cache absorbs the per-call cost anyway).
 //   * Force-refresh action that bypasses the server cache + ALSO bypasses
 //     the 30s polling cadence (so "Refresh" feels instant).
 //   * Start action that POSTs /api/update/start and, on 202, opens an
@@ -15,6 +15,11 @@
 //     deploy was a no-op, or a NEW hash if it shipped a frontend change.
 //     The component reads `reloadHint` and prompts the user; we deliberately
 //     do NOT auto-reload (the user might be mid-typing in another tab).
+//   * Restart recovery: a systemd-install update restarts supermux during the
+//     `installing` phase, which kills THIS server process (and the SSE). The
+//     real terminal `done` line is written afterwards to a log no live client
+//     can tail. So when the stream drops after we have reached `installing`,
+//     we poll the new binary back to health and synthesize a terminal `done`.
 
 import * as React from 'react'
 
@@ -161,6 +166,19 @@ export function useVersion(): UseVersion {
   const [progress, setProgress] = React.useState<UpdateEvent[]>([])
   const [jobId, setJobId] = React.useState<string | null>(null)
   const esRef = React.useRef<EventSource | null>(null)
+  // Mirror of `jobId` readable from closures without re-creating callbacks.
+  const jobIdRef = React.useRef<string | null>(null)
+  // Tracks whether we have reached the `installing` step, so the SSE `onerror`
+  // handler can tell a transient blip from the install-phase service restart.
+  // The systemd path-unit runner restarts supermux during `installing`, which
+  // KILLS this server process (and the in-memory job registry + this SSE
+  // connection). After that the runner keeps writing `verifying` / `done` to
+  // its log, but no live SSE can deliver them: the new process has no record
+  // of this job id and 404s the reconnect. So once we have reached `installing`
+  // and the stream drops, we stop trusting the SSE for a terminal event and
+  // instead poll the server back to health, then synthesize a terminal `done`.
+  const reachedInstallRef = React.useRef(false)
+  const recoveryRef = React.useRef(false)
 
   const fetchSnap = React.useCallback(async () => {
     // DEV mock: short-circuit the network so the panel renders a deterministic
@@ -201,11 +219,68 @@ export function useVersion(): UseVersion {
     }
   }, [refreshing])
 
+  // After the install-phase restart took our SSE down, poll the server back to
+  // health on the NEW binary, then surface a terminal `done`. We push a
+  // synthetic `done` event so the progress UI reaches its terminal state
+  // (CheckCircle + "Reload now") even though the real `done` line was written
+  // to a log no live client could tail. We do NOT auto-reload silently: a
+  // forced reload could drop work in another tab, so we render the terminal
+  // state and let the existing "Reload now" button (and the user) drive the
+  // actual navigation.
+  const recoverAfterRestart = React.useCallback(async () => {
+    const deadline = Date.now() + 5 * 60_000 // 5 min ceiling, matches the runner verify window.
+    // Give the restart a moment before the first probe.
+    await new Promise((r) => setTimeout(r, 1_500))
+    while (Date.now() < deadline) {
+      try {
+        const snap = await updatesApi.getVersion()
+        // The new binary answered. Surface a terminal `done` so the UI shows
+        // "Update complete" + the Reload button.
+        setProgress((prev) => {
+          if (prev.some((p) => p.step === 'done')) return prev
+          const tag = snap.current?.tag ?? snap.current?.sha?.slice(0, 7) ?? 'the new build'
+          return [
+            ...prev,
+            {
+              job_id: jobIdRef.current ?? '',
+              step: 'done',
+              message: `Update complete. Now running ${tag}.`,
+              ts: Math.floor(Date.now() / 1000),
+            },
+          ]
+        })
+        return
+      } catch {
+        // Server still restarting / unreachable; keep probing.
+        await new Promise((r) => setTimeout(r, 2_000))
+      }
+    }
+    // Never came back healthy in time: surface a failure so the UI does not
+    // hang on a half-finished bar forever.
+    setProgress((prev) => {
+      if (prev.some((p) => p.step === 'failed' || p.step === 'done')) return prev
+      return [
+        ...prev,
+        {
+          job_id: jobIdRef.current ?? '',
+          step: 'failed',
+          message:
+            'The server did not come back after the restart. Check the supermux-deploy unit on the server.',
+          ts: Math.floor(Date.now() / 1000),
+        },
+      ]
+    })
+  }, [])
+
   const startUpdate = React.useCallback(async (): Promise<string> => {
     setProgress([])
     setJobId(null)
+    jobIdRef.current = null
+    reachedInstallRef.current = false
+    recoveryRef.current = false
     const { job_id } = await updatesApi.start()
     setJobId(job_id)
+    jobIdRef.current = job_id
     // Open SSE for live progress. EventSource auto-reconnects on transport
     // hiccups (and the server replays the LATEST event on each subscribe), so
     // even a fast reconnect picks up the current step.
@@ -214,6 +289,13 @@ export function useVersion(): UseVersion {
     es.addEventListener('update', (ev) => {
       try {
         const data = JSON.parse((ev as MessageEvent).data) as UpdateEvent
+        if (
+          data.step === 'installing' ||
+          data.step === 'verifying' ||
+          data.step === 'done'
+        ) {
+          reachedInstallRef.current = true
+        }
         setProgress((prev) => {
           // Dedupe (the server replays the latest event on subscribe, so the
           // first event we hear may be the same one we got just before a
@@ -238,17 +320,31 @@ export function useVersion(): UseVersion {
     })
     es.onerror = () => {
       // EventSource fires `error` on every transient disconnect too; the
-      // browser auto-reconnects. Don't close here; only close on a terminal
-      // step or in `resetUpdate`.
+      // browser auto-reconnects. We do NOT close on a plain blip. BUT if we
+      // already reached `installing`, this drop is almost certainly the service
+      // restart taking our process down (see reachedInstallRef above). The
+      // terminal `done` will never arrive over this socket, so kick off the
+      // recovery poll: wait for the new binary to answer /api/version, then
+      // surface a synthetic terminal `done`. This is what turns "stuck after
+      // Installing" into a clean "Update complete" + Reload.
+      if (reachedInstallRef.current && !recoveryRef.current) {
+        recoveryRef.current = true
+        es.close()
+        esRef.current = null
+        void recoverAfterRestart()
+      }
     }
     return job_id
-  }, [])
+  }, [recoverAfterRestart])
 
   const resetUpdate = React.useCallback(() => {
     if (esRef.current) {
       esRef.current.close()
       esRef.current = null
     }
+    jobIdRef.current = null
+    reachedInstallRef.current = false
+    recoveryRef.current = false
     setProgress([])
     setJobId(null)
   }, [])
