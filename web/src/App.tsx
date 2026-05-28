@@ -8,6 +8,7 @@ import { ToastProvider } from '@/components/ui/toast'
 import { Layout } from '@/components/layout'
 import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
+import { ConnectionOverlay } from '@/components/connection/connection-overlay'
 import { Overview } from '@/routes/overview'
 import { Focus } from '@/routes/focus'
 import { Board } from '@/routes/board'
@@ -124,6 +125,11 @@ export default function App() {
           </TooltipProvider>
         </QueryClientProvider>
       </ThemeProvider>
+      {/* V034: app-root branded overlay for hard outages — offline / server
+       *  unreachable / auth-invalid. Mounted OUTSIDE the providers so it can
+       *  render even if a provider crashed (e.g. QueryClient fetching during a
+       *  network drop). Renders nothing while the connection is healthy. */}
+      <ConnectionOverlay />
     </BrowserRouter>
   )
 }
