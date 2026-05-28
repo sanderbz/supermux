@@ -291,6 +291,27 @@ detect_tmux_remote() {
   ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" 'command -v tmux' >/dev/null 2>&1
 }
 
+detect_claude_remote() {
+  # detect_claude_remote HOST USER -> 0 if the `claude` binary is on USER's
+  # PATH on HOST. supermux launches every agent by running the bare `claude`
+  # command as the service user (server/src/sessions/lifecycle.rs), so a host
+  # without it deploys + passes /api/health yet fails EVERY session — the same
+  # late silent-failure cliff as a missing tmux. We surface it in the WIZARD so
+  # the operator knows before they deploy.
+  #
+  # Uses NON-interactive sudo (`-n`) so a host without passwordless sudo fails
+  # fast instead of hanging on a password prompt; deploy.sh's authoritative
+  # check (with full sudo, after it provisions the user) runs later. Probes a
+  # login shell with ~/.local/bin prepended — where the native installer lands
+  # the binary. Returns non-zero if the user doesn't exist yet (deploy.sh will
+  # create + re-check it) or claude isn't found.
+  local host="$1" user="$2"
+  command -v ssh >/dev/null 2>&1 || return 1
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" \
+    "sudo -n -u '$user' -H bash -lc 'export PATH=\"\$HOME/.local/bin:\$PATH\"; command -v claude'" \
+    >/dev/null 2>&1
+}
+
 tmux_install_hint_remote() {
   # tmux_install_hint_remote HOST -> echoes a single-line install command
   # tailored to the host's package manager. Used by step_tmux below to give a
@@ -402,6 +423,9 @@ V_USE_TAILSCALE=""
 V_ALLOW_ROOT=""
 V_AUTO_INSTALL=""
 V_COPY_CLAUDE_CREDS=""
+# Whether deploy.sh should install Claude Code for the service user when it's
+# missing: "ask" (offer interactively), "1" (auto), "0" (never — warn only).
+V_INSTALL_CLAUDE=""
 # Strict memory hardening (W^X). Default 0 (dev-friendly) so agents can run
 # build tools; 1 = strict (blocks V8 JIT/WASM builds).
 V_HARDENED="0"
@@ -428,6 +452,9 @@ D_AUTO_INSTALL="Y"
 # Claude-credential copy preference: "ask" (deploy-time interactive consent),
 # "1" (copy the deployer's login non-interactively) or "0" (never copy).
 D_COPY_CLAUDE_CREDS="ask"
+# Claude Code install preference: "ask" (deploy offers interactively when the
+# binary is missing), "1" (deploy installs automatically), "0" (never).
+D_INSTALL_CLAUDE="ask"
 # Strict memory hardening (W^X). Default 0 (dev-friendly): agents can run build
 # tools. 1 = strict (blocks V8 JIT/WASM builds). Most coding-agent users want 0.
 D_HARDENED="0"
@@ -442,6 +469,7 @@ derive_defaults_from_existing() {
     v=$(read_env_value SUPERMUX_USE_TAILSCALE "$ENV_FILE");  [ -n "$v" ] && D_USE_TAILSCALE="$v"
     v=$(read_env_value SUPERMUX_DEPLOY_REF "$ENV_FILE");     [ -n "$v" ] && D_DEPLOY_REF="$v"
     v=$(read_env_value SUPERMUX_COPY_CLAUDE_CREDS "$ENV_FILE"); [ -n "$v" ] && D_COPY_CLAUDE_CREDS="$v"
+    v=$(read_env_value SUPERMUX_INSTALL_CLAUDE "$ENV_FILE"); [ -n "$v" ] && D_INSTALL_CLAUDE="$v"
     v=$(read_env_value SUPERMUX_HARDENED "$ENV_FILE");          [ -n "$v" ] && D_HARDENED="$v"
     # Carry forward operator-customized path overrides if present in the
     # existing .env, and mark them as customized so write_env preserves them.
@@ -576,6 +604,33 @@ step_tmux_preflight() {
     note "  Install it on the host BEFORE running deploy.sh:"
     note "    ssh $V_HOST '$(tmux_install_hint_remote "$V_HOST")'"
     note "  (deploy.sh also hard-fails its own tmux preflight before the build.)"
+  fi
+}
+
+step_claude_preflight() {
+  # Soft preflight (no own numbered step — folds into the host-validation phase,
+  # right after we know the service user). Like the tmux preflight: Claude Code
+  # is the runtime dependency for the only OFFERED provider, so a host missing it
+  # deploys fine but fails every agent with "claude: command not found". We warn
+  # here; deploy.sh does the authoritative check + (per the step-9 preference)
+  # offers/auto-installs after it provisions the user.
+  if [ -z "$V_HOST" ]; then return 0; fi
+  hdr "preflight: Claude Code"
+  note "supermux runs each agent as the bare 'claude' binary on the service"
+  note "user's PATH — it's the runtime dependency for the default provider."
+  printf "  %schecking claude for '%s' on %s…%s " "$c_dim" "$V_USER" "$V_HOST" "$c_reset"
+  if detect_claude_remote "$V_HOST" "$V_USER"; then
+    printf "\n"
+    ok "claude found for '$V_USER' on $V_HOST."
+  else
+    printf "\n"
+    warn "claude NOT found for '$V_USER' on $V_HOST (or the user isn't created yet)."
+    note "  without it, supermux deploys + /api/health = 200, but every session"
+    note "  fails with 'claude: command not found'. Two ways to fix:"
+    note "    1) let deploy.sh install it — choose 'install' at the Claude step below;"
+    note "    2) install it yourself on the host (no Node needed):"
+    note "         ssh $V_HOST sudo -u $V_USER -H bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'"
+    note "  (deploy.sh re-checks after provisioning and won't hard-fail the deploy.)"
   fi
 }
 
@@ -808,6 +863,33 @@ step_claude_login() {
     3) V_COPY_CLAUDE_CREDS="0" ;;
     *) V_COPY_CLAUDE_CREDS="ask" ;;
   esac
+
+  # The login above presupposes the `claude` BINARY exists. If it doesn't,
+  # deploy.sh can install it (official native installer, no Node, runs as the
+  # service user). Capture the preference here; deploy.sh acts on it AFTER it
+  # provisions the user (the user may not exist yet at wizard time, so the
+  # wizard can't install it itself).
+  note ""
+  note "and if Claude Code itself isn't installed on the host yet:"
+  note "  install = deploy installs it for you (official installer, no API key, no Node)"
+  note "  ask     = deploy asks at deploy time when it's missing"
+  note "  no      = never install; deploy just prints the install command"
+  local default_install="1"
+  case "$D_INSTALL_CLAUDE" in
+    1) default_install="1" ;;
+    0) default_install="3" ;;
+    *) default_install="2" ;;
+  esac
+  ask_choice "install Claude Code on the host if it's missing?" "$default_install" \
+    "yes, install automatically" \
+    "ask me at deploy time" \
+    "no, I'll install it myself"
+  case "$ANS" in
+    1) V_INSTALL_CLAUDE="1" ;;
+    2) V_INSTALL_CLAUDE="ask" ;;
+    3) V_INSTALL_CLAUDE="0" ;;
+    *) V_INSTALL_CLAUDE="1" ;;
+  esac
 }
 
 step_deploy_ref_default() {
@@ -819,6 +901,9 @@ step_deploy_ref_default() {
   # step somehow left it empty (e.g. a future code path that skips it).
   if [ -z "$V_COPY_CLAUDE_CREDS" ]; then
     V_COPY_CLAUDE_CREDS="$D_COPY_CLAUDE_CREDS"
+  fi
+  if [ -z "$V_INSTALL_CLAUDE" ]; then
+    V_INSTALL_CLAUDE="$D_INSTALL_CLAUDE"
   fi
 }
 
@@ -851,6 +936,7 @@ step_summary_and_confirm() {
   printf "  %sgit ref to deploy      %s%s\n" "$c_dim" "$c_reset" "$V_DEPLOY_REF"
   printf "  %sauto-install toolchain %s%s\n" "$c_dim" "$c_reset" "$V_AUTO_INSTALL"
   printf "  %scopy Claude login      %s%s\n" "$c_dim" "$c_reset" "$V_COPY_CLAUDE_CREDS"
+  printf "  %sinstall Claude Code    %s%s\n" "$c_dim" "$c_reset" "$V_INSTALL_CLAUDE"
   if [ "$V_HARDENED" = "1" ]; then
     printf "  %sstrict W^X hardening   %s%s1 — agent builds DISABLED (npm/React/Vite/Jest will fail)%s\n" "$c_dim" "$c_reset" "$c_red" "$c_reset"
   else
@@ -914,6 +1000,10 @@ write_env() {
     # ask (interactive consent) / 1 (copy automatically) / 0 (never). Writing it
     # explicitly lets a non-interactive deploy pick the fast path without a TTY.
     printf "SUPERMUX_COPY_CLAUDE_CREDS=%s\n" "$V_COPY_CLAUDE_CREDS"
+    # Whether deploy.sh installs Claude Code for the service user when it's
+    # missing: ask (offer interactively) / 1 (auto) / 0 (never, warn only).
+    # Captured here; deploy.sh acts on it AFTER provisioning the user.
+    printf "SUPERMUX_INSTALL_CLAUDE=%s\n" "$V_INSTALL_CLAUDE"
     # Strict memory hardening (W^X): 0 (default, dev-friendly) keeps agent build
     # tools working (V8 JIT/WASM — npm/React/Vite/Next/Jest); 1 enables strict
     # W^X, which blocks those builds. All other sandboxing stays on either way.
@@ -965,6 +1055,7 @@ main() {
   step_host
   step_tmux_preflight
   step_user
+  step_claude_preflight
   step_project_dirs
   step_ports
   step_tailscale

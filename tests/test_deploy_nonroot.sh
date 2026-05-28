@@ -186,6 +186,34 @@ mkdir -p "$(sbx /home/supermux/.claude)"
 printf '{"fake":true}\n' > "$(sbx /home/supermux/.claude/.credentials.json)"
 service_user_has_claude_creds "/home/supermux" "fakehost"; assert_rc "present creds → 0" 0 $?
 
+echo "── remote: service_user_has_claude_bin (binary probe) ───────────────"
+# This helper is a thin wrapper: it ssh's a probe that runs `command -v claude`
+# AS the service user (login shell, ~/.local/bin prepended) and passes the rc
+# through. Rather than depend on whether the REAL test box has claude on PATH
+# (flaky), use a capturing ssh stub that returns a controlled rc and records the
+# probe string — so we assert BOTH the contract (ssh rc → return rc) and the
+# probe shape (runs as the user, prepends ~/.local/bin, uses `command -v
+# claude`). The copy-creds block below redefines `ssh` again for its own case.
+_CAP_CMD=""
+_SSH_RC=0
+ssh() { shift; _CAP_CMD="$*"; return "$_SSH_RC"; }
+_SSH_RC=0
+service_user_has_claude_bin "supermux" "fakehost"; assert_rc "binary present (ssh rc 0) → 0" 0 $?
+_SSH_RC=1
+service_user_has_claude_bin "supermux" "fakehost"; assert_rc "binary missing (ssh rc 1) → 1" 1 $?
+case "$_CAP_CMD" in
+  *"command -v claude"*) pass "probe uses 'command -v claude'" ;;
+  *) fail "probe must use 'command -v claude' (got: $_CAP_CMD)" ;;
+esac
+case "$_CAP_CMD" in
+  *".local/bin"*) pass "probe prepends ~/.local/bin to PATH" ;;
+  *) fail "probe must prepend ~/.local/bin (got: $_CAP_CMD)" ;;
+esac
+case "$_CAP_CMD" in
+  *"sudo -u 'supermux'"*) pass "probe runs as the service user" ;;
+  *) fail "probe must sudo -u the service user (got: $_CAP_CMD)" ;;
+esac
+
 echo "── remote: copy_deployer_claude_creds (fast path) ───────────────────"
 # This helper runs `ssh host "sudo bash -s" <<HEREDOC`, i.e. a REAL inner bash
 # reading the script from stdin. So we exercise it against REAL sandbox paths
