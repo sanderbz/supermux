@@ -33,7 +33,7 @@ pub struct VersionInfo {
     /// The tag, when this binary was built from a tagged commit. `None` for a
     /// "dev" build (untagged sha) so the UI can render it differently.
     pub tag: Option<String>,
-    /// The commit sha (or "dev"). Always present — the UI shows it as a muted
+    /// The commit sha (or "dev"). Always present; the UI shows it as a muted
     /// monospace string beside the tag.
     pub sha: String,
     /// ISO-8601 UTC build time. Empty when unavailable.
@@ -43,7 +43,7 @@ pub struct VersionInfo {
 impl VersionInfo {
     /// The running binary's [`VersionInfo`], read off the compile-time consts.
     /// A tag string that looks like a git short sha (no `v`-prefix, no `-dirty`
-    /// suffix) reads as "no tag" — we ONLY treat `vN.M.P[-suffix]` patterns as
+    /// suffix) reads as "no tag"; we ONLY treat `vN.M.P[-suffix]` patterns as
     /// a tag, so a fresh checkout's `git describe --tags --always` returning a
     /// bare sha does not falsely advertise itself as a release.
     pub fn current() -> Self {
@@ -57,7 +57,7 @@ impl VersionInfo {
 }
 
 /// `Some("v0.3.0")` for a tagged build; `None` for a dev sha-only describe.
-/// Matches `v\d+(\.\d+){2}(-.*)?` — we accept `-dirty`, `-rc1`, etc. as suffixes.
+/// Matches `v\d+(\.\d+){2}(-.*)?`; we accept `-dirty`, `-rc1`, etc. as suffixes.
 fn parse_tag(s: &str) -> Option<String> {
     if s == "dev" || s.is_empty() {
         return None;
@@ -68,7 +68,7 @@ fn parse_tag(s: &str) -> Option<String> {
     let major = parts.next()?;
     let minor = parts.next()?;
     let patch = parts.next()?;
-    // Each component must be all-digits — guards against `valpha` being misread.
+    // Each component must be all-digits; guards against `valpha` being misread.
     if [major, minor, patch].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
     {
         Some(s.to_string())
@@ -87,7 +87,7 @@ fn parse_tag(s: &str) -> Option<String> {
 pub fn is_newer(current: Option<&str>, latest: Option<&str>) -> bool {
     let Some(latest) = latest else { return false };
     let Some(current) = current else {
-        // A dev build with a real release available — we still don't auto-tag
+        // A dev build with a real release available; we still don't auto-tag
         // it as "update available" because the dev probably has uncommitted
         // changes; the preflight will produce a clear `NotOnMain` / `Uncommitted`
         // reason anyway. Returning false here keeps the cosmetic state honest.
@@ -99,7 +99,7 @@ pub fn is_newer(current: Option<&str>, latest: Option<&str>) -> bool {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
         // Same core (e.g. v0.3.0 vs v0.3.0-rc1). Per semver §11, a release
-        // ranks ABOVE its pre-releases — `v0.3.0` is newer than `v0.3.0-rc1`.
+        // ranks ABOVE its pre-releases: `v0.3.0` is newer than `v0.3.0-rc1`.
         std::cmp::Ordering::Equal => match (cpre.is_empty(), lpre.is_empty()) {
             (true, true) => false,        // identical
             (true, false) => false,       // current=release, latest=pre → not newer

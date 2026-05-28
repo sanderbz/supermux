@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# update.sh — pull origin/main + redeploy supermux on the local host (v0.3.0).
+# update.sh: pull origin/main + redeploy supermux on the local host (v0.3.0).
 #
 # WHO RUNS THIS:
 #   * The in-UI "Update now" button (via the supermux-deploy.path systemd
-#     trigger — same pipeline as scripts/deploy-self.sh).
+#     trigger: same pipeline as scripts/deploy-self.sh).
 #   * Operators by hand on a bare-binary or dev install:
 #       cd <supermux-clone> && bash scripts/update.sh
 #
 # WHAT IT DOES:
 #   1. Fetch origin/main, verify the working tree is clean, fast-forward to
 #      origin/main (HARD requirement: refuses to clobber local commits or
-#      uncommitted changes — those are surfaced by the preflight upstream).
+#      uncommitted changes; those are surfaced by the preflight upstream).
 #   2. Hand off to scripts/deploy-self.sh, which writes the deploy request
 #      that the root-side runner picks up. The runner builds + installs +
 #      restarts + verifies + auto-rolls-back on failure.
@@ -26,7 +26,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 step() {
-  # `[update] step=<name> msg="<text>"` — consumed by the SSE tail in the server.
+  # `[update] step=<name> msg="<text>"`: consumed by the SSE tail in the server.
   local name="$1"; shift
   local msg="${*:-}"
   if [ -n "$msg" ]; then
@@ -50,18 +50,18 @@ step fetching "Fetching the latest changes from GitHub …"
 git fetch --quiet origin || die "git fetch failed"
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-[ "$BRANCH" = "main" ] || die "must be on branch 'main' (currently '$BRANCH')"
+[ "$BRANCH" = "main" ] || die "Your supermux folder must be on branch 'main' (currently '$BRANCH'). Run 'git checkout main' to switch."
 
 DIRTY="$(git status --porcelain | wc -l | tr -d ' ')"
-[ "$DIRTY" = "0" ] || die "$DIRTY uncommitted change(s) — commit/stash before updating"
+[ "$DIRTY" = "0" ] || die "Your supermux folder has $DIRTY uncommitted change(s). Commit or stash them before updating."
 
 AHEAD="$(git rev-list --count origin/main..HEAD)"
-[ "$AHEAD" = "0" ] || die "$AHEAD unpushed local commit(s) ahead of origin — push/reset first"
+[ "$AHEAD" = "0" ] || die "Your supermux folder has $AHEAD unpushed local commit(s). Push or reset before updating."
 
 LOCAL_SHA="$(git rev-parse HEAD)"
 REMOTE_SHA="$(git rev-parse origin/main)"
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-  step done "Already on the latest commit (${LOCAL_SHA:0:12}) — nothing to do."
+  step done "Already on the latest commit (${LOCAL_SHA:0:12}). Nothing to do."
   exit 0
 fi
 
@@ -80,10 +80,10 @@ step building "Building the new binary (this usually takes about a minute) …"
 # SUPERMUX_SELF_NO_PULL=1: we already pulled above; deploy-self.sh should not
 # re-pull (idempotent, but skipping the extra round-trip is tidier).
 if ! SUPERMUX_SELF_NO_PULL=1 bash scripts/deploy-self.sh; then
-  die "deploy-self.sh failed — see the log above. The previous version is restored."
+  die "deploy-self.sh failed. See the log above. The previous version has been restored."
 fi
 
 # scripts/deploy-self.sh blocks until DEPLOY_RESULT=ok or fails; on success
 # the server has already restarted on the new binary.
-step done "Update complete — supermux is running ${NEW_SHA:0:12}."
+step done "Update complete. supermux is running ${NEW_SHA:0:12}."
 exit 0
