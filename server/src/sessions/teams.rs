@@ -130,13 +130,16 @@ pub struct ResolvedPane {
     pub pane_id: String,
 }
 
-impl ResolvedPane {
-    /// The pane-unique STREAM KEY for the registry + FIFO/log basenames:
-    /// `{lead}/{member}`. Distinct per teammate, stable across the team's life,
-    /// and (after the streamer's sanitize) a safe flat filename.
-    pub fn stream_key(&self, member: &str) -> String {
-        format!("{}/{}", self.lead_session, member)
-    }
+/// The pane-unique STREAM KEY for the registry + FIFO/log basenames:
+/// `{team}/{member}`. Keyed by the STABLE team directory name (NOT the lead
+/// session identifier) so the live WS create path and the end-of-team evict
+/// path (`teams::board_sync::evict_teammate_streams`) compose the IDENTICAL
+/// key. `leadSessionId` is often a Claude UUID, so keying on it left evict
+/// unable to match the live entry and leaked the registry. Distinct per
+/// teammate, stable across the team's life, and (after the streamer's sanitize)
+/// a safe flat filename.
+pub fn teammate_stream_key(team: &str, member: &str) -> String {
+    format!("{team}/{member}")
 }
 
 /// Resolve `(team, member)` → a live, validated [`ResolvedPane`] (Agent Teams
@@ -353,12 +356,8 @@ mod tests {
     }
 
     #[test]
-    fn stream_key_is_lead_slash_member() {
-        let rp = ResolvedPane {
-            lead_session: "teamA".into(),
-            pane_id: "%9".into(),
-        };
-        assert_eq!(rp.stream_key("worker-1"), "teamA/worker-1");
+    fn teammate_stream_key_is_team_slash_member() {
+        assert_eq!(teammate_stream_key("teamA", "worker-1"), "teamA/worker-1");
     }
 
     #[test]

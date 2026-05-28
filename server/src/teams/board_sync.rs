@@ -251,9 +251,9 @@ fn board_prefix(team_name: &str) -> String {
 ///
 /// Also EVICTS the team's teammate pane-stream entries from the [`PtyStreamer`]
 /// (resource hygiene): each teammate WS caches a per-pane `PtyStream` keyed by
-/// `{lead}/{member}` (Agent Teams §3.5) that is otherwise NEVER removed, so the
+/// `{team}/{member}` (Agent Teams §3.5) that is otherwise NEVER removed, so the
 /// registry would grow unbounded across many team starts. We compute the SAME
-/// `{lead}/{member}` keys the WS uses and `forget` them — best-effort (a missing
+/// `{team}/{member}` keys the WS uses and `forget` them — best-effort (a missing
 /// config / already-gone key is a clean no-op) and scoped to teammate keys only,
 /// so bare-session streams are untouched.
 ///
@@ -283,11 +283,12 @@ pub async fn deregister_team(state: &crate::state::AppState, team_name: &str) ->
 
 /// Evict the teammate pane-stream entries for an ended team from the PtyStreamer
 /// (resource hygiene; see [`deregister_team`]). Reads the team's on-disk config
-/// FRESH to recover its lead session + member keys, then forgets each
-/// `{lead}/{member}` stream key — the EXACT key the WS builds via
-/// `ResolvedPane::stream_key` (`crate::sessions::teams`). Best-effort: a deleted
-/// / unreadable config (the common case for an ended team) just means nothing to
-/// evict, and never panics. Only teammate `{lead}/{member}` keys are touched —
+/// FRESH to recover its member keys, then forgets each `{team}/{member}` stream
+/// key — the EXACT key the WS builds via `teams::teammate_stream_key`. Keying on
+/// the stable team name (not the lead's `leadSessionId`, often a Claude UUID)
+/// is what makes evict actually match the live entry. Best-effort: a deleted /
+/// unreadable config (the common case for an ended team) just means nothing to
+/// evict, and never panics. Only teammate `{team}/{member}` keys are touched —
 /// the lead IS a normal session whose stream is owned by the session lifecycle.
 fn evict_teammate_streams(state: &crate::state::AppState, team_name: &str) {
     let cfg = match crate::sessions::teams::read_team_config(team_name) {
@@ -298,13 +299,10 @@ fn evict_teammate_streams(state: &crate::state::AppState, team_name: &str) {
             return;
         }
     };
-    let Some(lead) = cfg.lead_session() else {
-        return;
-    };
     for member in &cfg.members {
         if let Some(key) = member.key() {
-            // SAME shape as ResolvedPane::stream_key(&member): `{lead}/{member}`.
-            let stream_key = format!("{lead}/{key}");
+            // SAME key the WS builds via `teams::teammate_stream_key`: `{team}/{member}`.
+            let stream_key = crate::sessions::teams::teammate_stream_key(team_name, key);
             state.forget_teammate_stream(&stream_key);
         }
     }

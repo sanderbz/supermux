@@ -162,10 +162,10 @@ async fn handle_team_socket(
             return;
         }
     };
-    let stream_key = resolved.stream_key(&member);
+    let stream_key = teams::teammate_stream_key(&team, &member);
 
     // 3. Ensure the per-pane reader is running + enforce the subscriber cap. The
-    //    stream is keyed by `{lead}/{member}` with its own FIFO/log, so it never
+    //    stream is keyed by `{team}/{member}` with its own FIFO/log, so it never
     //    clobbers the lead's session stream.
     let stream = match state.pty_for_pane(&stream_key, &resolved.pane_id).await {
         Ok(s) => s,

@@ -342,6 +342,9 @@ pub async fn rename(pool: &SqlitePool, old: &str, new: &str) -> sqlx::Result<()>
         "UPDATE delegations SET from_session = ? WHERE from_session = ?",
         "UPDATE delegations SET to_session = ? WHERE to_session = ?",
         "UPDATE share_tokens SET session = ? WHERE session = ?",
+        // schedules.session has NO foreign key (migrations/0003), so deferred-FK
+        // does not auto-migrate it — a rename would otherwise orphan every job.
+        "UPDATE schedules SET session = ? WHERE session = ?",
     ] {
         sqlx::query(stmt)
             .bind(new)
