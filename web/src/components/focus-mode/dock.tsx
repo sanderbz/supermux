@@ -24,6 +24,7 @@ import {
   Square,
   Settings2,
   ChevronDown,
+  ClipboardPaste,
   CornerDownLeft,
   Keyboard,
   Ellipsis,
@@ -79,6 +80,10 @@ export interface DesktopDockProps {
   /** 📎 attach — picked files go to the upload+inject flow (parent's
    *  `useAttachmentUpload.handleFiles`). Drives the desktop file picker. */
   onAttach?: (files: File[]) => void
+  /** Paste — read the OS clipboard and stream it into the pty (no Enter). Cmd+V
+   *  already pastes into xterm; this is the explicit, consistent affordance.
+   *  Reuses the terminal text send path. */
+  onPaste?: () => void
   /** DEPRECATED (DOCK): the "/" slash button was removed — slash commands now
    *  run from the Claude Tools sheet's Commands tab. Kept optional + unused so
    *  DesktopSplit's existing call site still type-checks; safe to drop later. */
@@ -159,6 +164,7 @@ export function DesktopDock({
   onSendKey,
   onSnippets,
   onAttach,
+  onPaste,
   onEdit,
   onDetach,
   onStop,
@@ -216,6 +222,13 @@ export function DesktopDock({
             icon={Paperclip}
             label="Attach a file"
             onClick={() => fileInputRef.current?.click()}
+          />
+        )}
+        {onPaste && (
+          <IconButton
+            icon={ClipboardPaste}
+            label="Paste from clipboard"
+            onClick={onPaste}
           />
         )}
         {/* Hidden picker for the 📎 button. Drag-drop onto the terminal + image
@@ -368,6 +381,10 @@ export interface MobileDockProps {
   /** Send a named key (Esc/Tab/Ctrl-C/arrows) — the accessory strip drives this,
    *  the SAME path the desktop send-row + joystick use. */
   onSendKey: (key: string) => void
+  /** Read the OS clipboard and stream it into the pty (no Enter) — the control
+   *  strip's Paste chip drives this. Reuses `onSend`; supplied by the route so the
+   *  clipboard read runs inside the tap gesture (iOS transient-activation rule). */
+  onPaste: () => void
   /** Focus the terminal (summon the keyboard) — the ⌨ toggle + the strip's
    *  show-keyboard tap call this so xterm is the unambiguous keyboard owner. */
   onFocusTerm: () => void
@@ -404,6 +421,7 @@ export function MobileDock({
   onSwitchSession,
   onSend,
   onSendKey,
+  onPaste,
   onFocusTerm,
   onBlurTerm,
   keyboardOpen = false,
@@ -574,6 +592,13 @@ export function MobileDock({
               <Glyph className="size-[18px]" strokeWidth={1.75} aria-hidden />
             </AccessoryChip>
           ))}
+          <span className="h-5 w-px shrink-0 bg-border/50" aria-hidden />
+          {/* Paste — reads the OS clipboard into the prompt in ONE tap (a soft
+              keyboard has no Cmd/Ctrl+V). Same accessory-chip style + focus-
+              preservation as the keys; the clipboard read runs inside this tap. */}
+          <AccessoryChip label="Paste from clipboard" onTap={onPaste}>
+            <ClipboardPaste className="size-[18px]" strokeWidth={1.75} aria-hidden />
+          </AccessoryChip>
           <div className="ml-auto shrink-0">
             <DockIcon label="Hide keyboard" onClick={onBlurTerm}>
               <ChevronDown className="size-5" strokeWidth={1.75} />
@@ -628,6 +653,13 @@ export function MobileDock({
 
         <DockIcon label="Specials" onClick={onOpenSpecials}>
           <Ellipsis className="size-5" strokeWidth={1.75} />
+        </DockIcon>
+
+        {/* Paste — one-tap clipboard → prompt, always visible (not keyboard-gated
+            like the accessory strip) so pasting a token is reachable whether or
+            not the soft keyboard is up. Reuses the terminal text send path. */}
+        <DockIcon label="Paste from clipboard" onClick={onPaste}>
+          <ClipboardPaste className="size-5" strokeWidth={1.75} />
         </DockIcon>
 
         {onOpenSnippets && (

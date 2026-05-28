@@ -8,6 +8,8 @@
 //   • kind 'text'  → term.send(payload + '\r')    (a typed reply + Enter)
 //   • kind 'slash' → term.send(payload + '\r')    (run a slash command)
 //   • kind 'snippet'→term.send(payload + '\r')    (run a snippet body)
+//   • kind 'paste' → read the clipboard, term.send(clipboard) (no Enter; payload
+//                    is unused — the dock supplies the clipboard read)
 //
 // The STATIC half (Control + Replies) lives here as constants. The DYNAMIC half
 // (Slash + Snippets) is merged in at render from the live query hooks, so the
@@ -23,6 +25,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ClipboardPaste,
   CornerDownLeft,
   CornerDownRight,
   Delete,
@@ -37,7 +40,7 @@ import {
 
 import type { SlashCommand, SnippetRow } from '@/lib/api'
 
-export type QuickKind = 'key' | 'text' | 'slash' | 'snippet'
+export type QuickKind = 'key' | 'text' | 'slash' | 'snippet' | 'paste'
 
 export type QuickGroup = 'control' | 'replies' | 'slash' | 'snippets'
 
@@ -81,6 +84,10 @@ export const CONTROL_ENTRIES: QuickEntry[] = [
   { id: 'key:BackTab', label: 'Cycle mode (⇧⇥)', kind: 'key', payload: 'BackTab', icon: Repeat, group: 'control' },
   { id: 'key:Tab', label: 'Autocomplete', kind: 'key', payload: 'Tab', icon: CornerDownRight, group: 'control' },
   { id: 'key:Enter', label: 'Enter', kind: 'key', payload: 'Enter', icon: CornerDownLeft, group: 'control' },
+  // Paste reads the OS clipboard and streams it into the prompt (no Enter) — a
+  // soft keyboard has no Cmd/Ctrl+V, so pasting a token is otherwise awkward.
+  // payload is unused; the dock supplies the clipboard read on tap.
+  { id: 'paste:clipboard', label: 'Paste', kind: 'paste', payload: '', icon: ClipboardPaste, group: 'control' },
   // Newline-without-submit: a literal LF (Ctrl+J) inserts a line break in
   // Claude Code's prompt without sending it — there is no Shift+Enter byte over
   // a pty, so the soft keyboard cannot compose a multi-line prompt at all.
@@ -126,6 +133,7 @@ export const STATIC_ENTRIES: QuickEntry[] = [...CONTROL_ENTRIES, ...REPLY_ENTRIE
 export const DEFAULT_QUICK_SELECTION: string[] = [
   'key:Esc',
   'key:Ctrl-C',
+  'paste:clipboard', // one-tap paste of a token from the OS clipboard
   'key:BackTab', // mode-cycle (Shift+Tab) — was the wrong plain-Tab `key:Tab`
   'key:Up',
   'key:Down',

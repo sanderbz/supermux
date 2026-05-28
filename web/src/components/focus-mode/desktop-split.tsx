@@ -36,6 +36,7 @@ import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { Dropzone } from '@/components/files/dropzone'
 import { AttachmentRow } from './attachment-chip'
 import { useAttachmentUpload } from './use-attachment-upload'
+import { usePasteToTerminal } from './use-paste-to-terminal'
 import { useExternalEdit } from './use-external-edit'
 import { MobileComposeSheet } from './mobile-compose-sheet'
 import { SessionInfoPanel } from './session-info-panel'
@@ -196,6 +197,9 @@ export function DesktopSplit({
   )
   const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
   const attach = useAttachmentUpload(sendToTerm, focusTerm)
+  // Paste = OS clipboard → pty via the SAME `sendToTerm` path (no Enter). Cmd+V
+  // already pastes into xterm; the dock button is the explicit, consistent twin.
+  const pasteToTerm = usePasteToTerminal(sendToTerm)
 
   // "Edit in native editor" (feat-edit-in-native-editor). The dock's ✎ Edit button
   // sends Ctrl+G; Claude lifts its current `❯` input into the supermux bridge, and
@@ -553,6 +557,7 @@ export function DesktopSplit({
             setSnippetsOpen(true)
           }}
           onAttach={attach.handleFiles}
+          onPaste={pasteToTerm}
           // "Edit in native editor" relies on Claude's Ctrl+G ($EDITOR bridge),
           // so it's a no-op on codex/shell panes — hide it for non-Claude sessions.
           onEdit={current?.provider === 'claude' ? onEdit : undefined}

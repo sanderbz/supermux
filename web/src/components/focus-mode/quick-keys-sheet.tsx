@@ -44,17 +44,25 @@ export interface QuickKeysSheetProps {
   /** Send literal text to the pty (LiveTerminal.send) — text/slash/snippet add
    *  their own '\r' (handled here per the send-path table). */
   onSend: (text: string) => void
+  /** Read the OS clipboard and stream it into the pty (no Enter) — the 'paste'
+   *  kind. Reuses `onSend` under the hood; supplied by the route so the read runs
+   *  inside the tap gesture. */
+  onPaste: () => void
 }
 
 /** Resolve what a tap on an entry should send, using ONLY the existing handles.
- *  'key' → sendKey(payload); the other three → send(payload + '\r'). */
+ *  'key' → sendKey(payload); 'paste' → onPaste(); the rest → send(payload +
+ *  '\r'). */
 function sendEntry(
   entry: QuickEntry,
   onKey: (name: string) => void,
   onSend: (text: string) => void,
+  onPaste: () => void,
 ) {
   if (entry.kind === 'key') {
     onKey(entry.payload)
+  } else if (entry.kind === 'paste') {
+    onPaste()
   } else {
     // text / slash / snippet — a reply/command/body + Enter (the SAME path the
     // snippet "run" already uses at routes/focus/mobile.tsx).
@@ -67,6 +75,7 @@ export function QuickKeysSheet({
   onOpenChange,
   onKey,
   onSend,
+  onPaste,
 }: QuickKeysSheetProps) {
   const { selected: selectedIds, setSelected } = useQuickKeys()
   const { data: slashCmds = [] } = useSlashCommands()
@@ -96,10 +105,10 @@ export function QuickKeysSheet({
 
   const onTapSend = React.useCallback(
     (entry: QuickEntry) => {
-      sendEntry(entry, onKey, onSend)
+      sendEntry(entry, onKey, onSend, onPaste)
       handleOpenChange(false)
     },
-    [onKey, onSend, handleOpenChange],
+    [onKey, onSend, onPaste, handleOpenChange],
   )
 
   const onToggle = React.useCallback(

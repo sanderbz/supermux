@@ -54,6 +54,7 @@ import { MobileBottomPanel } from '@/components/focus-mode/mobile-bottom-panel'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
+import { usePasteToTerminal } from '@/components/focus-mode/use-paste-to-terminal'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
 import { useExternalEdit } from '@/components/focus-mode/use-external-edit'
@@ -233,6 +234,10 @@ export function MobileFocus() {
     (text: string) => termRef.current?.send(text),
     [],
   )
+  // Paste = read the OS clipboard and stream it through the SAME `sendToTerm`
+  // path (no Enter). The dock's Paste control + the quick-keys Paste entry both
+  // call this; the read runs inside the tap gesture (iOS transient activation).
+  const pasteToTerm = usePasteToTerminal(sendToTerm)
 
   const [pickerOpen, setPickerOpen] = React.useState(false)
   // Read-only teammate focus overlay (AT-H2). Held by team+agent_id so it stays
@@ -490,6 +495,7 @@ export function MobileFocus() {
               onSwitchSession={goSession}
               onSend={sendToTerm}
               onSendKey={(key) => termRef.current?.sendKey(key)}
+              onPaste={pasteToTerm}
               onFocusTerm={focusTerm}
               onBlurTerm={blurTerm}
               keyboardOpen={keyboardOpen}
@@ -519,6 +525,7 @@ export function MobileFocus() {
         onOpenChange={setSpecialsOpen}
         onKey={(key) => termRef.current?.sendKey(key)}
         onSend={(text) => termRef.current?.send(text)}
+        onPaste={pasteToTerm}
       />
 
       <SnippetPanel
