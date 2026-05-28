@@ -154,8 +154,11 @@ log "request: source_dir=$SRC_DIR binary=$SRC sha=${SHA:0:12} nonce=$NONCE"
 
 # Tell the UI the root runner has picked up the request, so it leaves "Queued"
 # promptly instead of waiting until the build finishes. The build itself is the
-# "fetching/building" phase from the user's PoV (the source dir was already
-# fast-forwarded by deploy-self.sh / update.sh before the request was written).
+# "fetching/building" phase from the user's PoV. The source dir was already
+# fast-forwarded to the target commit BEFORE the request was written: by
+# update.sh / deploy-self.sh for the manual paths, and by the supermux server
+# itself (updates::exec) for the in-UI "Update now" path. So this runner only
+# ever builds the already-checked-out target; it does not pull.
 step fetching "Root runner picked up the request (${SHA:0:12})."
 
 # Reusable: the binary's realpath must live under an allowlisted prefix (the
