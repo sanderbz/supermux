@@ -23,6 +23,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -298,6 +299,54 @@ export function Board() {
     [board, editId, toast],
   )
 
+  // ── Clear the whole Done lane → one batched undo toast ─────────────────────
+  // SD-CLEAR-DONE. The Done column accumulates and becomes noisy; clearing it
+  // is a one-tap bulk version of the per-card Discard. We fan out the existing
+  // `discardIssue` mutations in parallel (Promise.allSettled so one failing row
+  // never short-circuits the rest) and post a SINGLE undo toast at the end —
+  // tapping Undo restores every successfully-discarded card. Mirrors the
+  // archive sheet's bulk-purge pattern, but uses soft-discard so Undo works.
+  const clearDoneLane = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return
+      if (editId && ids.includes(editId)) setEditId(null)
+      const results = await Promise.allSettled(
+        ids.map((id) => board.discardIssue(id)),
+      )
+      const discarded: string[] = []
+      let failed = 0
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') discarded.push(ids[i])
+        else failed += 1
+      })
+      if (discarded.length === 0) {
+        toast({ message: 'Couldn’t clear the Done column', tone: 'error' })
+        return
+      }
+      const noun = discarded.length === 1 ? 'task' : 'tasks'
+      const message =
+        failed === 0
+          ? `Cleared ${discarded.length} ${noun}`
+          : `Cleared ${discarded.length} ${noun}, ${failed} couldn’t be cleared`
+      toast({
+        message,
+        tone: failed === 0 ? 'default' : 'error',
+        duration: 5000,
+        action: {
+          label: 'Undo',
+          // Restore in parallel; ignore individual failures so a partially
+          // restorable batch still puts most of the work back.
+          onClick: () => {
+            void Promise.allSettled(
+              discarded.map((id) => board.restoreIssue(id)),
+            )
+          },
+        },
+      })
+    },
+    [board, editId, toast],
+  )
+
   const openFocus = useCallback(
     (issue: BoardIssue) => {
       if (!issue.session) {
@@ -488,6 +537,15 @@ export function Board() {
                   selectedId={selectedId}
                   showAllDone={showAllDone}
                   onShowAllDone={() => setShowAllDone(true)}
+                  onClearLane={
+                    // Only on the Done lane on a writable (non-team / non-All)
+                    // board. The "All" overview spans multiple boards (a bulk
+                    // discard there would be ambiguous), and team boards mirror
+                    // on-disk task files — a discard wouldn't persist.
+                    lane.id === 'done' && !isAll && !readThrough
+                      ? clearDoneLane
+                      : undefined
+                  }
                   onDeselect={() => setSelectedId(null)}
                   composer={
                     // The "All" overview AND team boards are read-through — the
@@ -593,6 +651,7 @@ function LaneColumn({
   selectedId,
   showAllDone,
   onShowAllDone,
+  onClearLane,
   onDeselect,
   composer,
   hint,
@@ -613,6 +672,11 @@ function LaneColumn({
   selectedId: string | null
   showAllDone: boolean
   onShowAllDone: () => void
+  /** When set, render a "Clear all" action in the lane header (left of the
+   *  count). Receives every visible card id in the lane. The lane decides
+   *  *whether* to surface the affordance (e.g. Done only); the route owns the
+   *  batched mutation + undo toast. */
+  onClearLane?: (ids: string[]) => void | Promise<void>
   onDeselect: () => void
   composer: React.ReactNode
   /** A calm read-only note shown in place of the composer on a team board. */
@@ -672,6 +736,13 @@ function LaneColumn({
     >
       <header className="flex items-center gap-2 px-3 py-2.5">
         <h2 className="flex-1 text-sm font-semibold tracking-tight">{label}</h2>
+        {onClearLane && count > 0 && (
+          <ClearLaneAction
+            count={list.length}
+            label={label}
+            onConfirm={() => void onClearLane(list.map((i) => i.id))}
+          />
+        )}
         <span className="rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums text-muted-foreground">
           {count}
         </span>
@@ -761,6 +832,78 @@ function LaneColumn({
         )}
       </div>
     </section>
+  )
+}
+
+/** SD-CLEAR-DONE — inline "Clear all" affordance that lives in a lane header,
+ *  left of the count badge. Matches the archive sheet's `DeleteAllAction`
+ *  shape (h-7, text-xs, Trash2 icon, ghost → destructive on confirm) so the
+ *  vocabulary stays consistent: a stray tap can't sweep the lane, but one
+ *  intentional confirmation does. Stays icon-only on the narrowest mobile
+ *  widths (the label tucks behind `sm:`) so the lane header keeps its rhythm
+ *  alongside the count badge on 320pt phones.
+ *
+ *  Local-only `confirming` state: a leaf widget so its morph doesn't rerender
+ *  the rest of the column. The route owns the actual mutation (`onConfirm`).
+ */
+function ClearLaneAction({
+  count,
+  label,
+  onConfirm,
+}: {
+  count: number
+  /** Lane label — drives the aria description (e.g. "Clear all 8 Done tasks"). */
+  label: string
+  onConfirm: () => void
+}) {
+  const reduce = useReducedMotion()
+  const [confirming, setConfirming] = useState(false)
+
+  if (confirming) {
+    return (
+      <motion.div
+        initial={reduce ? false : { opacity: 0, x: 4 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={springs.snappy}
+        className="flex items-center gap-1"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="flex h-7 items-center rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setConfirming(false)
+            onConfirm()
+          }}
+          className="flex h-7 items-center gap-1 rounded-md bg-destructive px-2 text-xs font-medium text-destructive-foreground transition-colors hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Trash2 className="size-3.5" aria-hidden />
+          Clear {count}
+        </button>
+      </motion.div>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation()
+        setConfirming(true)
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      aria-label={`Clear all ${count} ${label} tasks`}
+      title="Clear all"
+      className="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Trash2 className="size-3.5" aria-hidden />
+      <span className="hidden sm:inline">Clear all</span>
+    </button>
   )
 }
 
