@@ -39,6 +39,7 @@ async fn test_pool() -> (SqlitePool, PathBuf) {
         ws: Default::default(),
             remote_callback_url: None,
             push_sub: None,
+            github_token: None,
     };
     let pool = db::init(&config).await.expect("db init");
     (pool, dir)

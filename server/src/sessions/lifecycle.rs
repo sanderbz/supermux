@@ -1373,6 +1373,7 @@ mod link_liveness_tests {
             ws: Default::default(),
             remote_callback_url: None,
             push_sub: None,
+            github_token: None,
         };
         let pool = crate::db::init(&config).await.expect("init pool");
         (AppState::new(pool, config), dir)

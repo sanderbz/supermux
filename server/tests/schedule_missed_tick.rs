@@ -29,6 +29,7 @@ async fn new_state() -> (AppState, PathBuf) {
         ws: WsConfig::default(),
         remote_callback_url: None,
             push_sub: None,
+            github_token: None,
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)

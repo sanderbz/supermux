@@ -90,6 +90,7 @@ fn config_round_trips_remote_callback_url() {
         ws: WsConfig::default(),
         remote_callback_url: Some("https://supermux.tailnet.ts.net:8823".to_string()),
         push_sub: None,
+        github_token: None,
     };
     let c2 = cfg.clone();
     assert_eq!(
@@ -111,6 +112,7 @@ fn config_round_trips_remote_callback_url() {
         ws: WsConfig::default(),
         remote_callback_url: None,
         push_sub: None,
+        github_token: None,
     };
     assert!(cfg_none.remote_callback_url.is_none());
 }
@@ -150,6 +152,7 @@ fn effective_remote_callback_url_resolution_order() {
         ws: WsConfig::default(),
         remote_callback_url: remote.map(|s| s.to_string()),
         push_sub: None,
+        github_token: None,
     };
 
     // (a) explicit remote_callback_url wins
@@ -220,6 +223,7 @@ async fn spawn_server(remote_callback_url: Option<String>) -> Fixture {
         ws: WsConfig::default(),
         remote_callback_url,
         push_sub: None,
+        github_token: None,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

@@ -75,6 +75,7 @@ mod tests {
             ws: Default::default(),
             remote_callback_url: None,
             push_sub: None,
+            github_token: None,
         };
         let pool = init(&config).await.expect("init pool");
         (pool, dir)

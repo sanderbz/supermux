@@ -36,6 +36,7 @@ async fn test_app() -> (axum::Router, AppState, std::path::PathBuf) {
         ws: Default::default(),
             remote_callback_url: None,
             push_sub: None,
+            github_token: None,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

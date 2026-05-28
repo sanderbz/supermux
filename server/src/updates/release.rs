@@ -159,6 +159,17 @@ pub enum FetchError {
 /// One GET request to the latest-release endpoint. Returns `Ok(Some)` on a
 /// 200 with a parseable body, `Ok(None)` on a 404 (repo with no releases yet),
 /// and `Err` on anything else.
+///
+/// Authentication: anonymous by default (the OSS path — fine for a public
+/// repo). If `SUPERMUX_GITHUB_TOKEN` is set in the process environment, send
+/// it as a Bearer token. This covers two cases:
+///   1. A user self-hosting their own private fork — without auth GitHub
+///      returns 404 ("Couldn't reach GitHub" in the UI) for a private repo.
+///   2. A shared-IP deployment that hits the 60-req/hour unauthenticated rate
+///      limit. Authenticated requests get 5,000 req/hour, so even a noisy
+///      caller never exhausts the quota.
+/// There is deliberately no UI for this — it's a quiet env-var-only knob;
+/// see `docs/SELF_HOST_DEV.md` "Advanced — private repos / rate limits".
 async fn fetch_latest() -> Result<Option<LatestRelease>, FetchError> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
@@ -166,11 +177,23 @@ async fn fetch_latest() -> Result<Option<LatestRelease>, FetchError> {
         .build()
         .map_err(|e| FetchError::Network(e.to_string()))?;
 
-    let resp = client
+    let mut req = client
         .get("https://api.github.com/repos/sanderbz/supermux/releases/latest")
         .header("Accept", "application/vnd.github+json")
         // GitHub's documented "I am stable, don't return preview fields" header.
-        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+
+    // Optional bearer auth — only sent when the env var is set + non-empty, so
+    // the default behaviour (anonymous fetch against a public repo) is byte-
+    // identical to v0.3.0. Lowercase `Bearer ` per GitHub's docs.
+    if let Ok(token) = std::env::var("SUPERMUX_GITHUB_TOKEN") {
+        let token = token.trim();
+        if !token.is_empty() {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
