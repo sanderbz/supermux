@@ -8,6 +8,11 @@
 //   • kind 'text'  → term.send(payload + '\r')    (a typed reply + Enter)
 //   • kind 'slash' → term.send(payload + '\r')    (run a slash command)
 //   • kind 'snippet'→term.send(payload + '\r')    (run a snippet body)
+//   • kind 'paste' → term.send(clipboard text)    (no Enter — paste, then the
+//                                                   user submits; e.g. the
+//                                                   Anthropic OAuth code on a
+//                                                   phone where there is no
+//                                                   on-keyboard paste)
 //
 // The STATIC half (Control + Replies) lives here as constants. The DYNAMIC half
 // (Slash + Snippets) is merged in at render from the live query hooks, so the
@@ -23,6 +28,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ClipboardPaste,
   CornerDownLeft,
   CornerDownRight,
   Delete,
@@ -37,7 +43,7 @@ import {
 
 import type { SlashCommand, SnippetRow } from '@/lib/api'
 
-export type QuickKind = 'key' | 'text' | 'slash' | 'snippet'
+export type QuickKind = 'key' | 'text' | 'slash' | 'snippet' | 'paste'
 
 export type QuickGroup = 'control' | 'replies' | 'slash' | 'snippets'
 
@@ -74,6 +80,11 @@ export const GROUP_ORDER: QuickGroup[] = ['control', 'replies', 'slash', 'snippe
 export const CONTROL_ENTRIES: QuickEntry[] = [
   { id: 'key:Esc', label: 'Interrupt', kind: 'key', payload: 'Esc', icon: Square, group: 'control' },
   { id: 'key:Ctrl-C', label: 'Stop', kind: 'key', payload: 'Ctrl-C', icon: Square, group: 'control' },
+  // Paste the device clipboard into the pty (no Enter). The soft keyboard has no
+  // paste affordance on a raw terminal screen, so pasting e.g. the Anthropic
+  // OAuth code on a phone is otherwise impossible. Reads `navigator.clipboard`
+  // at tap time (a user gesture); a denied/empty clipboard is a silent no-op.
+  { id: 'paste:clipboard', label: 'Paste', kind: 'paste', payload: '', icon: ClipboardPaste, group: 'control' },
   // Mode-cycle is Shift+Tab (BackTab → CSI Z) in Claude Code — default →
   // acceptEdits → plan. Plain Tab is autocomplete, NOT mode-cycle (the old
   // `key:Tab` "Cycle mode" was wrong). One unambiguous cycle chip lives here;
@@ -118,14 +129,16 @@ export const REPLY_ENTRIES: QuickEntry[] = [
 /** The static (always-available) half of the catalog. */
 export const STATIC_ENTRIES: QuickEntry[] = [...CONTROL_ENTRIES, ...REPLY_ENTRIES]
 
-/** Default selection — useful with ZERO setup (noob-proof). 12 chips covering
- *  the most common phone actions: interrupt a runaway agent, accept/cycle modes,
- *  nav a menu, answer a yes/no or numbered prompt, continue. Slash/snippets
- *  start empty (discoverable via Edit; snippets may not exist on a fresh
- *  install). Lives here next to the catalog. */
+/** Default selection — useful with ZERO setup (noob-proof). 13 chips covering
+ *  the most common phone actions: interrupt a runaway agent, paste (e.g. the
+ *  Anthropic OAuth code on first connect), accept/cycle modes, nav a menu,
+ *  answer a yes/no or numbered prompt, continue. Slash/snippets start empty
+ *  (discoverable via Edit; snippets may not exist on a fresh install). Lives
+ *  here next to the catalog. */
 export const DEFAULT_QUICK_SELECTION: string[] = [
   'key:Esc',
   'key:Ctrl-C',
+  'paste:clipboard', // paste the OAuth code (and anything else) on a phone
   'key:BackTab', // mode-cycle (Shift+Tab) — was the wrong plain-Tab `key:Tab`
   'key:Up',
   'key:Down',

@@ -47,14 +47,26 @@ export interface QuickKeysSheetProps {
 }
 
 /** Resolve what a tap on an entry should send, using ONLY the existing handles.
- *  'key' → sendKey(payload); the other three → send(payload + '\r'). */
-function sendEntry(
+ *  'key' → sendKey(payload); 'paste' → send(clipboard text, NO Enter); the
+ *  others → send(payload + '\r'). */
+async function sendEntry(
   entry: QuickEntry,
   onKey: (name: string) => void,
   onSend: (text: string) => void,
 ) {
   if (entry.kind === 'key') {
     onKey(entry.payload)
+  } else if (entry.kind === 'paste') {
+    // Read the clipboard at tap time (the tap is the user gesture clipboard
+    // access requires) and send it verbatim — NO trailing Enter, so the user
+    // reviews then submits. A denied / empty / unsupported clipboard is a
+    // silent no-op (nothing to paste).
+    try {
+      const text = await navigator.clipboard?.readText()
+      if (text) onSend(text)
+    } catch {
+      /* clipboard unavailable or permission denied */
+    }
   } else {
     // text / slash / snippet — a reply/command/body + Enter (the SAME path the
     // snippet "run" already uses at routes/focus/mobile.tsx).
@@ -96,7 +108,10 @@ export function QuickKeysSheet({
 
   const onTapSend = React.useCallback(
     (entry: QuickEntry) => {
-      sendEntry(entry, onKey, onSend)
+      // Fire-and-forget: 'paste' resolves the clipboard read asynchronously, the
+      // others send synchronously. The send fires regardless of the sheet
+      // closing (onSend is the parent's handle). Close the sheet either way.
+      void sendEntry(entry, onKey, onSend)
       handleOpenChange(false)
     },
     [onKey, onSend, handleOpenChange],
