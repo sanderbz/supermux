@@ -1380,7 +1380,7 @@ if [ "$USE_TAILSCALE" = "1" ]; then
   # the cert still provisions lazily (just with the possible first-visit hiccup).
   if [ -n "$TS_DNSNAME" ]; then
     echo "[deploy] pre-provisioning Tailscale HTTPS cert for $TS_DNSNAME (can take a few seconds) ..."
-    if ! ssh "$HOST" "sudo tailscale cert '$TS_DNSNAME'" >/dev/null 2>&1; then
+    if ! timeout 60 ssh "$HOST" "sudo tailscale cert '$TS_DNSNAME'" >/dev/null 2>&1; then
       echo "[deploy] warn: could not pre-provision the Tailscale cert for $TS_DNSNAME." >&2
       echo "[deploy]       Continuing: the cert will still be issued lazily on the first" >&2
       echo "[deploy]       https visit (that first hit may briefly show a cert error)." >&2
