@@ -379,7 +379,9 @@ fn parse_signal(text: &str) -> Option<InboxSignal> {
             .or_else(|| v.get("event"))
             .and_then(|x| x.as_str());
         if let Some(k) = kind {
-            if let Some(sig) = classify(k) {
+            // The JSON `type`/`signal` value IS a control field — trust the weak
+            // attention words (blocked/waiting/awaiting) here.
+            if let Some(sig) = classify(k, true) {
                 return Some(sig);
             }
         }
@@ -390,22 +392,34 @@ fn parse_signal(text: &str) -> Option<InboxSignal> {
     if t.len() > SHORT_SIGNAL_LEN {
         return None;
     }
-    classify(t)
+    // Free-text fallback: NOT a control field, so the weak attention words only
+    // count when the line STARTS with them (control-shaped), never mid-sentence.
+    classify(t, false)
 }
 
-/// Map a raw kind/keyword string to an [`InboxSignal`] (case-insensitive,
-/// substring). Order matters: `needs`/`input`/`waiting`/`approval` → NeedsYou
-/// takes precedence (it's the attention-first state), then shutdown, then idle.
-fn classify(s: &str) -> Option<InboxSignal> {
+/// Map a raw kind/keyword string to an [`InboxSignal`] (case-insensitive).
+/// Order matters: NeedsYou takes precedence (attention-first), then shutdown,
+/// then idle.
+///
+/// `from_structured` distinguishes a CONTROL field (the JSON `type`/`signal`
+/// value) from FREE TEXT. The strong attention tokens (`needs_input`, …) match
+/// by substring in both. The weak words (`blocked` / `waiting` / `awaiting`) are
+/// ordinary English that appears in benign lines ("waiting for tests", "task 3
+/// blocked by task 1"), so in free text they only count when the line STARTS
+/// with the keyword; in a structured control field they match by substring.
+fn classify(s: &str, from_structured: bool) -> Option<InboxSignal> {
     let l = s.to_ascii_lowercase();
+    let weak_attention = if from_structured {
+        l.contains("awaiting") || l.contains("waiting") || l.contains("blocked")
+    } else {
+        l.starts_with("awaiting") || l.starts_with("waiting") || l.starts_with("blocked")
+    };
     if l.contains("needs_input")
         || l.contains("needs-you")
         || l.contains("needs_you")
         || l.contains("need_input")
-        || l.contains("awaiting")
-        || l.contains("waiting")
         || l.contains("approval")
-        || l.contains("blocked")
+        || weak_attention
     {
         Some(InboxSignal::NeedsYou)
     } else if l.contains("shutdown") || l.contains("shut_down") || l.contains("terminated") {
@@ -916,6 +930,39 @@ mod tests {
         assert_eq!(
             parse_signal("{\"type\":\"shutdown\"}"),
             Some(InboxSignal::Shutdown),
+        );
+    }
+
+    /// Regression: bare `blocked` / `waiting` / `awaiting` in a benign short
+    /// free-text line is NOT an attention signal — these are ordinary English.
+    /// They only classify as NeedsYou from a structured `type`/`signal` field,
+    /// or when the line STARTS with the keyword (control-shaped).
+    #[test]
+    fn weak_attention_words_only_count_when_control_shaped() {
+        // Benign mid-sentence mentions → no signal (the false-positive we fix):
+        // the keyword is NOT at the start and it is not a structured field.
+        assert_eq!(parse_signal("task 3 blocked by task 1"), None);
+        assert_eq!(parse_signal("the build is waiting on CI"), None);
+        assert_eq!(parse_signal("I am awaiting nothing here"), None);
+
+        // Control-shaped free text (line STARTS with the keyword) still fires.
+        assert_eq!(
+            parse_signal("blocked: needs your approval"),
+            Some(InboxSignal::NeedsYou),
+        );
+        assert_eq!(
+            parse_signal("awaiting your review"),
+            Some(InboxSignal::NeedsYou),
+        );
+
+        // Structured control field still fires by substring (the wire format).
+        assert_eq!(
+            parse_signal(r#"{"signal":"blocked"}"#),
+            Some(InboxSignal::NeedsYou),
+        );
+        assert_eq!(
+            parse_signal(r#"{"type":"awaiting_input"}"#),
+            Some(InboxSignal::NeedsYou),
         );
     }
 }

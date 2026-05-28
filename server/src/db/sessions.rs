@@ -342,6 +342,9 @@ pub async fn rename(pool: &SqlitePool, old: &str, new: &str) -> sqlx::Result<()>
         "UPDATE delegations SET from_session = ? WHERE from_session = ?",
         "UPDATE delegations SET to_session = ? WHERE to_session = ?",
         "UPDATE share_tokens SET session = ? WHERE session = ?",
+        // schedules.session is plain TEXT (no FK), so defer_foreign_keys won't
+        // re-point it; do it explicitly or a renamed session's schedules 404.
+        "UPDATE schedules SET session = ? WHERE session = ?",
     ] {
         sqlx::query(stmt)
             .bind(new)
@@ -537,6 +540,69 @@ pub async fn set_last_capture(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::db::init;
+
+    async fn test_pool() -> (SqlitePool, std::path::PathBuf) {
+        let dir = std::env::temp_dir()
+            .join(format!("supermux-rename-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            extra_origins: Vec::new(),
+        };
+        let pool = init(&config).await.expect("init pool");
+        (pool, dir)
+    }
+
+    /// rename must re-point a session's schedules. `schedules.session` is plain
+    /// TEXT with no FK, so deferred-FK migration does NOT carry it across — the
+    /// explicit UPDATE in `rename` is what stops a renamed session's schedules
+    /// from silently 404-ing on next fire.
+    #[tokio::test]
+    async fn rename_repoints_schedules() {
+        let (pool, dir) = test_pool().await;
+
+        insert_minimal(&pool, "old-slug", "/tmp/work", "claude")
+            .await
+            .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO schedules (id, title, session, command, created, updated)
+             VALUES ('SCHED-1', 't', 'old-slug', 'echo hi', ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        rename(&pool, "old-slug", "new-slug").await.unwrap();
+
+        let session: String =
+            sqlx::query_scalar("SELECT session FROM schedules WHERE id = 'SCHED-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(session, "new-slug", "schedule must re-point to the new slug");
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 /// Set the live status + timestamp in `session_runtime`. The detector (M5) is the

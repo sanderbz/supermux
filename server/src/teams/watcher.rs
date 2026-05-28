@@ -253,6 +253,13 @@ async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
             return None;
         }
     };
+    // Collect ALL live claude sessions whose dir matches a member cwd. If more
+    // than one matches (a worktree pair / duplicate session sharing a dir), the
+    // host is ambiguous — return None (unmapped, a calm UI state) rather than
+    // guessing the first, mirroring discriminate_lead_pane's fail-open rule.
+    // Pane-intersection (signal 3) already wins when panes exist, so this only
+    // tightens the last-resort cwd fallback.
+    let mut matches: Vec<&str> = Vec::new();
     for s in &sessions {
         if s.provider != "claude" {
             continue;
@@ -262,8 +269,11 @@ async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
             continue;
         }
         if cwds.iter().any(|c| c.trim_end_matches('/').eq_ignore_ascii_case(s_dir)) {
-            return Some(s.name.clone());
+            matches.push(&s.name);
         }
+    }
+    if matches.len() == 1 {
+        return Some(matches[0].to_string());
     }
     None
 }

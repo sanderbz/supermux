@@ -262,7 +262,7 @@ pub async fn deregister_team(state: &crate::state::AppState, team_name: &str) ->
     match db::boards::get_by_team(&state.pool, team_name).await {
         Ok(Some(board)) => match db::boards::delete(&state.pool, &board.id).await {
             Ok(true) => {
-                evict_teammate_streams(state, team_name);
+                evict_teammate_streams(state, team_name).await;
                 emit_boards(state).await;
                 crate::board::emit_board(state).await;
                 true
@@ -283,13 +283,17 @@ pub async fn deregister_team(state: &crate::state::AppState, team_name: &str) ->
 
 /// Evict the teammate pane-stream entries for an ended team from the PtyStreamer
 /// (resource hygiene; see [`deregister_team`]). Reads the team's on-disk config
-/// FRESH to recover its lead session + member keys, then forgets each
-/// `{lead}/{member}` stream key — the EXACT key the WS builds via
-/// `ResolvedPane::stream_key` (`crate::sessions::teams`). Best-effort: a deleted
-/// / unreadable config (the common case for an ended team) just means nothing to
-/// evict, and never panics. Only teammate `{lead}/{member}` keys are touched —
-/// the lead IS a normal session whose stream is owned by the session lifecycle.
-fn evict_teammate_streams(state: &crate::state::AppState, team_name: &str) {
+/// FRESH to recover its member panes, RESOLVES each pane's live host session via
+/// `tmux::find_pane_session` (exactly as the WS attach path does in
+/// `resolve_member_pane`), then forgets each `{resolved_host}/{member}` stream
+/// key — the EXACT key the WS builds via `ResolvedPane::stream_key`
+/// (`{ResolvedPane::lead_session}/{member}`). Keying off the resolved host (not
+/// the raw `leadSessionId`, which is commonly a Claude UUID that never matches
+/// the live key) is what makes evict-key == create-key. Best-effort: a deleted /
+/// unreadable config or a pane already gone just means nothing to evict, and
+/// never panics. Only teammate `{host}/{member}` keys are touched — the lead IS
+/// a normal session whose stream is owned by the session lifecycle.
+async fn evict_teammate_streams(state: &crate::state::AppState, team_name: &str) {
     let cfg = match crate::sessions::teams::read_team_config(team_name) {
         Ok(c) => c,
         Err(e) => {
@@ -298,15 +302,28 @@ fn evict_teammate_streams(state: &crate::state::AppState, team_name: &str) {
             return;
         }
     };
-    let Some(lead) = cfg.lead_session() else {
-        return;
-    };
     for member in &cfg.members {
-        if let Some(key) = member.key() {
-            // SAME shape as ResolvedPane::stream_key(&member): `{lead}/{member}`.
-            let stream_key = format!("{lead}/{key}");
-            state.forget_teammate_stream(&stream_key);
+        let (Some(key), Some(pane)) = (member.key(), member.tmux_pane_id.as_deref()) else {
+            continue;
+        };
+        let pane = pane.trim();
+        if pane.is_empty() {
+            continue;
         }
+        // Resolve the pane's live host slug the SAME way the WS attach path does
+        // (resolve_member_pane → find_pane_session), so the evicted key is the
+        // byte-identical `{ResolvedPane::lead_session}/{member}`.
+        let host = match crate::sessions::tmux::find_pane_session(pane).await {
+            Ok(Some(h)) => h,
+            Ok(None) => continue, // pane gone → its stream is already torn down.
+            Err(e) => {
+                tracing::debug!(team = %team_name, pane = %pane, error = %e, "evict: pane resolve failed");
+                continue;
+            }
+        };
+        // SAME shape as ResolvedPane::stream_key(member): `{host}/{member}`.
+        let stream_key = format!("{host}/{key}");
+        state.forget_teammate_stream(&stream_key);
     }
 }
 
