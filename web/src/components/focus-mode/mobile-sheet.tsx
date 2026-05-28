@@ -120,16 +120,28 @@ export function MobileSheet({
           // bottom edge lands at the keyboard TOP rather than behind it.
           // `transition` springs both as the keyboard animates in/out (honored
           // unless the user prefers reduced motion — handled by globals.css).
-          style={
-            contentHeight != null
+          style={{
+            // Override Vaul's `[data-vaul-drawer]{touch-action:none}` (set
+            // statically by vaul 1.x) so a vertical touch-drag inside the
+            // terminal reaches the nested `.xterm-viewport` scrollback. An
+            // ancestor `touch-action:none` blocks touch-panning of ALL
+            // descendant scrollers in Chromium/WebKit, which is why the
+            // `.xterm-viewport { touch-action: pan-y }` rule alone could never
+            // restore mobile scroll (wheel is ungated, hence 2-finger worked).
+            // Vaul's own drag handle uses `pan-y`, so drag-to-dismiss is
+            // unaffected; `overscroll-behavior: contain` on the viewport stops
+            // the pan chaining out to the sheet at the scrollback ends. Inline
+            // beats Vaul's injected stylesheet rule with no specificity battle.
+            touchAction: 'pan-y',
+            ...(contentHeight != null
               ? {
                   height: contentHeight,
                   bottom: keyboardInset,
                   transition:
                     'height 0.28s cubic-bezier(0.32, 0.72, 0, 1), bottom 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
                 }
-              : undefined
-          }
+              : {}),
+          }}
           className={cn(
             'fixed inset-x-0 bottom-0 z-50 flex h-dvh flex-col',
             // 10px continuous top corners (Apple Maps), glass regularMaterial.
