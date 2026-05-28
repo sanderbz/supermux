@@ -12,8 +12,11 @@ playwright-report/
 .DS_Store
 *.log
 .gstack/
-# Local deploy config (see .env.example)
+# Local deploy config (see .env.example) — ignore every .env variant (incl.
+# *.bak / per-host copies) but keep the tracked template.
 .env
+.env.*
+!.env.example
 # Deploy artifact written by deploy.sh / deploy-self.sh (records the live SHA)
 DEPLOYED_SHA
 # Per-session Claude Code state (worktrees, etc.)
