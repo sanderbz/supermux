@@ -33,6 +33,7 @@ async fn test_app(data_dir: &Path) -> axum::Router {
         data_dir: data_dir.to_path_buf(),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),

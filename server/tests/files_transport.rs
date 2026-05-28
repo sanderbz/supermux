@@ -154,6 +154,7 @@ async fn make_pool() -> (Arc<HostPool>, sqlx::SqlitePool, PathBuf) {
         data_dir: dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: Default::default(),
         auth_token: "rt6-test".to_string(),
         provider_defaults: Default::default(),

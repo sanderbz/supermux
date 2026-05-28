@@ -21,6 +21,7 @@ async fn new_state() -> (AppState, PathBuf) {
         data_dir: dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: "missed-test-token".to_string(),
         provider_defaults: ProviderDefaults::default(),

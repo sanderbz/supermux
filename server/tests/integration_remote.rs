@@ -84,6 +84,7 @@ fn config_round_trips_remote_callback_url() {
         data_dir: PathBuf::from("/tmp/rt10-cfg-test"),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: "tok".to_string(),
         provider_defaults: ProviderDefaults::default(),
@@ -106,6 +107,7 @@ fn config_round_trips_remote_callback_url() {
         data_dir: PathBuf::from("/tmp/rt10-cfg-test-none"),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: "tok".to_string(),
         provider_defaults: ProviderDefaults::default(),
@@ -146,6 +148,7 @@ fn effective_remote_callback_url_resolution_order() {
             .into_iter()
             .map(|s| s.parse().expect("extra_binds parse"))
             .collect(),
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: "tok".to_string(),
         provider_defaults: ProviderDefaults::default(),
@@ -217,6 +220,7 @@ async fn spawn_server(remote_callback_url: Option<String>) -> Fixture {
         data_dir: dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),

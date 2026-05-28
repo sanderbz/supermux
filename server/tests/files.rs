@@ -34,6 +34,7 @@ async fn setup() -> TestEnv {
         data_dir: data_dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),

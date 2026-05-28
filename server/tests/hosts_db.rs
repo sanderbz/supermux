@@ -28,6 +28,7 @@ async fn test_pool() -> (SqlitePool, std::path::PathBuf) {
         data_dir: dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: "hosts-db-test".to_string(),
         provider_defaults: ProviderDefaults::default(),

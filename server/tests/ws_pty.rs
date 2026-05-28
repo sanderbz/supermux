@@ -45,6 +45,7 @@ async fn spawn_server(ws: WsConfig) -> (AppState, SocketAddr, PathBuf) {
         data_dir: dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         extra_binds: vec![],
+        extra_origins: vec![],
         tls: TlsConfig::default(),
         auth_token: TOKEN.to_string(),
         provider_defaults: ProviderDefaults::default(),
@@ -144,6 +145,7 @@ async fn make_session(state: &AppState, name: &str) {
         state,
         CreateInput {
             name: name.to_string(),
+            display_name: None,
             dir: Some("/tmp".to_string()),
             desc: None,
             provider: Some("shell".to_string()),
