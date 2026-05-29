@@ -33,6 +33,13 @@ jobs:
     # exceed 10m on a cache miss, which cancels the gating job mid-`cargo test`.
     # Give headroom. Debug only — CLAUDE.md forbids --release (OOM on small hosts).
     timeout-minutes: 20
+    env:
+      # Drop debug info on the dev profile so the lld link of the many
+      # integration test binaries fits in the runner's memory ceiling. Without
+      # this, the link of e.g. `status_detector` SIGBUSes (`ld: signal 7`) on
+      # GitHub-hosted ubuntu-latest. Tests still run + pass; we only lose
+      # file:line in panic backtraces in CI logs, which is fine.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     defaults:
       run:
         working-directory: server
