@@ -24,6 +24,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 
 import { authToken, wsUrl } from '@/env'
 import { claim as claimPrewarm } from '@/hooks/peek-prewarm-store'
+import { disableXtermMouseTracking } from '@/lib/disable-xterm-mouse'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
 // session's pty is gone (not running) — there is nothing to reconnect to, so we
@@ -511,6 +512,12 @@ export function useLiveTerm(
       // Pairs with the ⌘C handler below. Cheap, additive, no downside.
       macOptionClickForcesSelection: true,
     })
+    // Refuse to enter mouse-tracking mode no matter what the agent emits — this
+    // is what keeps xterm's native one-finger touch-scroll alive (mobile) and a
+    // drag selecting text (desktop). MUST run before any pty bytes are written.
+    // See lib/disable-xterm-mouse.ts for the full why (Claude 2.1.156 ignores the
+    // server-side CLAUDE_CODE_DISABLE_MOUSE env and still sends ?1000h/?1002h/…).
+    disableXtermMouseTracking(term)
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon())
@@ -541,14 +548,16 @@ export function useLiveTerm(
     }
     viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
 
-    // NOTE (mobile one-finger touch-scroll): supermux disables Claude Code's mouse
-    // reporting at the source (`CLAUDE_CODE_DISABLE_MOUSE=1`, server
-    // sessions/lifecycle.rs), so xterm's OWN native touch-scroll handler is active
-    // and pans the scrollback on a one-finger drag — the pre-Claude-v2.1.150
-    // behaviour. We deliberately do NOT layer a custom touch shim on top: a JS
-    // `{passive:false}` touchmove handler competes with xterm's native handler and
-    // (per the reverted 7723be1/9c7657d/d2810cb attempts) regressed iOS feel
-    // without ever being device-proven. `.xterm-viewport { touch-action: pan-y }`
+    // NOTE (mobile one-finger touch-scroll): xterm's OWN touchstart/touchmove
+    // listeners early-return while `coreMouseService.areMouseEventsActive` is
+    // true, so the scrollback can only be panned while mouse tracking is OFF.
+    // `disableXtermMouseTracking(term)` above swallows the mouse-tracking DECSET
+    // sequences so that flag never flips — making xterm's native one-finger pan
+    // work even though Claude keeps emitting ?1000h/?1002h/?1006h (it ignores the
+    // server-side CLAUDE_CODE_DISABLE_MOUSE env). We deliberately do NOT layer a
+    // custom touch shim on top: a JS `{passive:false}` touchmove handler competes
+    // with xterm's native handler and (per the reverted 7723be1/9c7657d/d2810cb
+    // attempts) regressed iOS feel. `.xterm-viewport { touch-action: pan-y }`
     // (globals.css) is what lets the native pan through inside the Vaul sheet.
 
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
