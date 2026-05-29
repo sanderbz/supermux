@@ -1,4 +1,4 @@
-//! Skills row access (TECH_PLAN §3.3 `skills`, feature-extract §5.4; M9).
+//! Skills row access (`skills` table).
 //!
 //! Skills are markdown files persisted in the `skills` table and ALSO synced to
 //! `~/.supermux/skills/<name>.md` and `~/.claude/commands/<name>.md` so Claude

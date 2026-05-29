@@ -405,7 +405,7 @@ export function writeGroupSortMode(groupId: string, mode: GroupSortMode): void {
   }
 }
 
-/** Drop the persisted per-group sort mode for a deleted group (M4 fix-up).
+/** Drop the persisted per-group sort mode for a deleted group.
  *  Group ids are random per-creation — without this, heavy users accumulate
  *  one dead localStorage row per deleted group forever. Best-effort: any
  *  removal failure is swallowed (the key just sits there, harmless). */

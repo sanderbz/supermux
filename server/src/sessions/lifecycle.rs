@@ -1,11 +1,10 @@
-//! Session lifecycle: the tmux-backed half of the sessions API (TECH_PLAN
-//! §3.2.5, §3.5; feature-extract §1.4, §1.5).
+//! Session lifecycle: the tmux-backed half of the sessions API.
 //!
 //! Each mutating op acquires the per-session `tokio::sync::Mutex` from
 //! [`AppState::lock_for`] so concurrent sends/starts/stops never race tmux
-//! commands. Read-only ops (`peek`) skip the lock per the §3.2.5 detector rule.
+//! commands. Read-only ops (`peek`) skip the lock per the detector rule.
 //!
-//! **Hook-token rotation (§6.5).** Every `start` mints a fresh `SUPERMUX_HOOK_TOKEN`
+//! **Hook-token rotation.** Every `start` mints a fresh `SUPERMUX_HOOK_TOKEN`
 //! (32 bytes, OsRng) and injects it — with `SUPERMUX_SESSION`/`SUPERMUX_URL`/
 //! `TMUX_SESSION_NAME` — into the tmux pane env. The dashboard bearer is NEVER
 //! placed in the session environment.
@@ -71,8 +70,8 @@ fn user_shell() -> String {
         .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
-/// Resolve the URL a REMOTE session's hook `curl` should dial back to
-/// (REMOTE_PLAN RT5). Resolution order:
+/// Resolve the URL a REMOTE session's hook `curl` should dial back to.
+/// Resolution order:
 ///
 /// 1. `$SUPERMUX_REMOTE_URL` env override — handy for ad-hoc reverse tunnels
 ///    in shell smoke tests. Trimmed; empty is treated as unset.
@@ -110,10 +109,10 @@ pub fn effective_remote_callback_url(config: &crate::config::Config, scheme: &st
     format!("{scheme}://{}", config.bind)
 }
 
-/// Per-session tmux env (§6.5). Excludes the dashboard bearer by construction.
+/// Per-session tmux env. Excludes the dashboard bearer by construction.
 ///
-/// `agent_teams` gates the experimental Claude Code Agent Teams feature (AT-B
-/// §3.1): when ON **and** the provider is `claude`, inject
+/// `agent_teams` gates the experimental Claude Code Agent Teams feature:
+/// when ON **and** the provider is `claude`, inject
 /// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` so a lead session can spawn teammate
 /// panes. Default OFF — it carries the ~7× token cost of N real Claude
 /// processes, so it is only injected when the global `experimental.agent_teams`
@@ -135,7 +134,7 @@ fn build_env(
     let mut env = HashMap::new();
     env.insert("SUPERMUX_SESSION".to_string(), name.to_string());
     env.insert("TMUX_SESSION_NAME".to_string(), name.to_string());
-    // REMOTE_PLAN RT5: a session running on a different machine cannot reach
+    // A session running on a different machine cannot reach
     // the orchestrator at `127.0.0.1:8823` — its hook curl would just hit its
     // OWN loopback. For remote sessions, route `SUPERMUX_URL` through the
     // configured `remote_callback_url` (Tailscale hostname, reverse-tunnel,
@@ -148,7 +147,7 @@ fn build_env(
     };
     env.insert("SUPERMUX_URL".to_string(), callback_url);
     env.insert("SUPERMUX_HOOK_TOKEN".to_string(), hook_token.to_string());
-    // AT-B §3.1: gated, Claude-only opt-in for Agent Teams.
+    // Gated, Claude-only opt-in for Agent Teams.
     if agent_teams && provider == "claude" {
         env.insert(
             "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
@@ -258,8 +257,7 @@ fn build_env(
 
 /// Build the agent launch command sent into the freshly-spawned shell. Profiles
 /// are sourced first so `claude`/`codex` are on PATH in a non-login pane.
-/// Resume strategy per feature-extract §1.5: `cc_session_name` → `cc_conversation_id`
-/// → fresh `--name`.
+/// Resume strategy: `cc_session_name` → `cc_conversation_id` → fresh `--name`.
 fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
     let agent = match s.provider.as_str() {
         // Codex is no longer an OFFERED provider (Claude-only). The validator
@@ -289,7 +287,7 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
             parts.join(" ")
         }
     };
-    // "Edit in native editor" (feat-edit-in-native-editor): point `$EDITOR`/
+    // "Edit in native editor": point `$EDITOR`/
     // `$VISUAL` at the supermux bridge wrapper so Claude's built-in Ctrl+G
     // (`chat:externalEditor`) opens the browser editor sheet instead of a
     // terminal editor. Exported AFTER the profile sources (a user `~/.zprofile`
@@ -345,7 +343,7 @@ async fn settle_shell(tmux: &Tmux<'_>) -> bool {
 }
 
 /// Poll `capture-pane` for up to 10s for the agent UI; one resume-picker escape
-/// fallback (Escape Escape C-c + clear cc ids) per feature-extract §1.5, and one
+/// fallback (Escape Escape C-c + clear cc ids), and one
 /// trust-dialog auto-accept (Enter on the default "Yes, I trust this folder") so
 /// a first-launch in a never-seen project dir does not hang forever.
 async fn wait_for_agent_ready(tmux: &Tmux<'_>, state: &AppState, name: &str) -> bool {
@@ -358,7 +356,7 @@ async fn wait_for_agent_ready(tmux: &Tmux<'_>, state: &AppState, name: &str) -> 
             // trust dialog and the resume picker draw a numbered menu whose cursor
             // is `❯` — the exact glyph `agent_ui_visible` keys on — so a ready-check
             // first would declare the session "ready" with a modal still up. Two
-            // costs we actually hit in prod (SD-1):
+            // costs we actually hit in prod:
             //   1. the steering deliver then sends the dispatched task INTO the modal
             //      (a bare Enter just picks "Yes, I trust" / a stale conversation),
             //      so the agent "never got the message"; and
@@ -488,30 +486,30 @@ pub async fn start(
     let s = require_session(state, name).await?;
     let tmux = Tmux::new(name);
 
-    // Rotate the hook token on every start (§6.5: avoid long-lived env secrets).
+    // Rotate the hook token on every start to avoid long-lived env secrets.
     let hook_token = super::gen_hook_token();
     db::sessions::ensure_runtime(&state.pool, name, &hook_token).await?;
     state.hook_tokens.insert(name.to_string(), hook_token.clone());
 
-    // AT-B §3.1: the global experimental Agent Teams gate (default OFF). Read
+    // The global experimental Agent Teams gate (default OFF). Read
     // once here; it both injects the env var and writes `teammateMode:"tmux"`.
     // FAIL CLOSED — a read failure reads OFF inside `agent_teams_enabled`.
     //
-    // AT-D ("Start a team"): a session that was explicitly spun up as a team LEAD
+    // A session that was explicitly spun up as a team LEAD
     // carries a per-session override flag — it gets the Agent Teams env even when
     // the global pref is OFF (an explicit opt-in beats the conservative default).
-    // We OR the two so this NEVER fights AT-B's gating: global ON enables it for
+    // We OR the two so this NEVER fights the global gating: global ON enables it for
     // every Claude session as before; the override only WIDENS it for one flagged
     // lead. The Claude-only guard still lives in `build_env`/the settings install.
     let agent_teams =
         db::prefs::agent_teams_enabled(&state.pool).await || state.force_agent_teams(name);
 
-    // M5b: install the Claude SettingsHook events so the agent reports real status
-    // signals (§3.5). Idempotent + non-destructive; failure is non-fatal — the
+    // Install the Claude SettingsHook events so the agent reports real status
+    // signals. Idempotent + non-destructive; failure is non-fatal — the
     // detector still classifies off the regex bank + pty heartbeat. Only Claude
     // reads `~/.claude/settings.json`, so skip it for codex/shell sessions.
     //
-    // REMOTE_PLAN RT5: when the session is remote (s.host_id is Some), resolve
+    // When the session is remote (s.host_id is Some), resolve
     // a SshFileTransport from the host pool so the hooks land in the REMOTE
     // host's `~/.claude/settings.json`. Local sessions get a LocalFileTransport
     // (the v1 behaviour, byte-for-byte). The transport's atomic-rename
@@ -526,7 +524,7 @@ pub async fn start(
         {
             tracing::warn!(name = %name, error = %e, "install_hooks failed; status falls back to regex/heartbeat");
         }
-        // AT-B §3.1: when teams is enabled, also force `teammateMode:"tmux"` so a
+        // When teams is enabled, also force `teammateMode:"tmux"` so a
         // lead spawns teammates as split-panes on supermux's socket (not the
         // invisible in-process backend). Gated + Claude-only; non-fatal on error.
         if agent_teams {
@@ -569,7 +567,7 @@ pub async fn start(
         tmux.new_session(&dir, &env, &shell).await?;
     }
 
-    // BOOTING window (§3.2.8 — overview UX): mark the session `starting` before
+    // BOOTING window (overview UX): mark the session `starting` before
     // we shell-launch the agent so the tile renders the neutral "booting…"
     // affordance instead of flashing `unknown`/`stopped`/`active` while the TUI
     // is still printing its splash. The detector loop replaces this with the
@@ -645,7 +643,7 @@ pub async fn start(
 /// Graceful stop (provider exit) → BRIEF grace → hard kill → tmux teardown.
 /// Returns once the session is `stopped`; the caller answers 202.
 ///
-/// SUPERMUX-38: Stop felt broken because the old grace polled up to 15s before
+/// Stop felt broken because the old grace polled up to 15s before
 /// the (always-definitive) `kill_session`, so the tmux session lingered in
 /// `tmux ls` + the overview for that whole window. We now nudge the agent, give
 /// it only the SHORT [`STOP_GRACE_CAP`] to persist + exit, then tear tmux down
@@ -688,7 +686,7 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     //    or pane dead), polling on a tight cadence so a clean exit is observed
     //    near-instantly rather than on a coarse 500ms tick. Caps at
     //    `STOP_GRACE_CAP` — teardown happens regardless, so there is no value in
-    //    waiting longer (SUPERMUX-38).
+    //    waiting longer.
     let mut graceful = false;
     let deadline = tokio::time::Instant::now() + STOP_GRACE_CAP;
     while tokio::time::Instant::now() < deadline {
@@ -723,7 +721,7 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     state.pty_invalidate(name);
 
     db::sessions::set_last_status(&state.pool, name, "stopped").await?;
-    // SUPERMUX-38: publish `stopped` ourselves (status watch + SSE). The detector
+    // Publish `stopped` ourselves (status watch + SSE). The detector
     // can't be relied on for this edge — it reseeds `prev` from the row we just
     // wrote, so its next tick sees `new == prev` and emits nothing, leaving the
     // tile's dot stuck on the pre-stop status until a full refetch. Broadcasting
@@ -738,7 +736,7 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Send literal text followed by Enter. Auto-wakes a stopped session (§1.9).
+/// Send literal text followed by Enter. Auto-wakes a stopped session.
 pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), AppError> {
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
@@ -757,7 +755,7 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
     Ok(())
 }
 
-/// Send a single named tmux key, enforcing the REST allowlist (§1.4).
+/// Send a single named tmux key, enforcing the REST allowlist.
 pub async fn send_keys(state: &AppState, name: &str, key: &str) -> Result<(), AppError> {
     if !KEY_ALLOWLIST.contains(key) {
         return Err(AppError::BadRequest(format!("key '{key}' not in allowlist")));
@@ -815,7 +813,7 @@ pub async fn peek(state: &AppState, name: &str, lines: usize) -> Result<String, 
     Ok(tmux.capture_pane(lines).await?)
 }
 
-/// Archive (async-job-shaped, §3.2.5): returns a `job_id` immediately; the
+/// Archive (async-job-shaped): returns a `job_id` immediately; the
 /// scrollback dump + teardown run in the background, completion via SSE `alerts`.
 ///
 /// The DB flip to `archived = 1` and the SSE `sessions` delta announcing the
@@ -837,7 +835,7 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     // can never be re-overwritten by a stale list refetch).
     db::sessions::set_archived(&state.pool, name, true).await?;
 
-    // SYNCHRONOUS: audit row per ARCHITECTURE §3.3 — every destructive HTTP
+    // SYNCHRONOUS: audit row — every destructive HTTP
     // call records a `session.archive` entry. Uses `?` (not `let _ =`) so a
     // failed audit-insert fails the request rather than silently dropping the
     // forensic trail (same pattern as board/mod.rs:401, files/mod.rs:262,
@@ -901,7 +899,7 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
             String::new()
         };
 
-        // Filesystem-bound dump runs on the blocking pool (§3.2.5).
+        // Filesystem-bound dump runs on the blocking pool.
         let archive_dir = state.config.data_dir.join("archives");
         let ts = chrono::Utc::now().timestamp();
         let path = archive_dir.join(format!("{name}-{ts}.log"));
@@ -928,7 +926,7 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
             tx.send_replace(cur);
         }
 
-        // R1-2: `forget_session` must be the LAST thing — a still-running loop's
+        // `forget_session` must be the LAST thing — a still-running loop's
         // `or_insert_with` (`status_watch_for`, `detector_wake_for`, …) would
         // otherwise re-create the very DashMap entries we just dropped. Wait for
         // every per-session loop to actually stop (the task-guard count → 0),
@@ -1059,7 +1057,7 @@ fn cycle_steps(from: Mode, to: Mode) -> Option<u8> {
 }
 
 /// Read the session's CURRENT parsed mode from a fresh capture (mode-shift). Read-
-/// only — no lock (mirrors the §3.2.5 detector rule for `capture-pane`). Falls
+/// only — no lock (mirrors the detector rule for `capture-pane`). Falls
 /// back to `Normal` when the pane can't be captured.
 async fn read_mode(tmux: &Tmux<'_>) -> Mode {
     match tmux.capture_pane(status::CAPTURE_LINES).await {
@@ -1245,7 +1243,7 @@ pub async fn clone(
     super::duplicate(state, src, new_name).await
 }
 
-// ── REST send_keys allowlist (feature-extract §1.4) ──────────────────────────
+// ── REST send_keys allowlist ─────────────────────────────────────────────────
 
 static KEY_ALLOWLIST: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     let mut s: HashSet<&'static str> = [
@@ -1283,7 +1281,7 @@ mod agent_ready_heuristics_tests {
         // That collision is exactly why `wait_for_agent_ready` must check the trust
         // gate BEFORE readiness: otherwise the session is declared ready with the
         // modal up, the dispatched task is sent into it, and the detector reads the
-        // `❯ 1.` menu as WAITING (SD-1). Pin both predicates so a future edit can't
+        // `❯ 1.` menu as WAITING. Pin both predicates so a future edit can't
         // silently reintroduce the ordering hazard.
         assert!(
             agent_ui_visible(cap),
@@ -1389,7 +1387,7 @@ mod mode_cycle_tests {
 
 #[cfg(test)]
 mod stop_grace_tests {
-    //! SUPERMUX-38: the stop grace must stay SHORT (tmux is torn down regardless,
+    //! The stop grace must stay SHORT (tmux is torn down regardless,
     //! so a long grace only delays a teardown that happens anyway and makes Stop
     //! feel broken) yet poll on a TIGHT cadence (so a clean exit is observed
     //! near-instantly). These invariants are config-only, so they're pinned here
@@ -1410,7 +1408,7 @@ mod stop_grace_tests {
         );
         assert!(
             STOP_GRACE_CAP * 5 <= OLD_GRACE,
-            "the new cap must be far below the old 15s grace that caused SUPERMUX-38",
+            "the new cap must be far below the old 15s grace that caused the bug",
         );
     }
 

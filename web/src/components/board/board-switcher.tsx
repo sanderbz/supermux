@@ -1,4 +1,4 @@
-// board-switcher.tsx — the multi-board switcher (AT-C, plan §5.5).
+// board-switcher.tsx — the multi-board switcher.
 //
 // The single Board became MULTIPLE boards (Main + one per Claude Code team + an
 // optional "All" overview). This is the dropdown that toggles between them —
@@ -42,8 +42,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
-/** A switcher option: a real board (main/team), a synthetic per-session filter
- *  (FEAT-BOARD-SESSION), or the synthetic "All" aggregate. */
+/** A switcher option: a real board (main/team), a synthetic per-session filter,
+ *  or the synthetic "All" aggregate. */
 export interface BoardOption {
   id: string
   name: string
@@ -55,13 +55,13 @@ export interface BoardSwitcherProps {
   /** The currently-selected board id (or {@link ALL_BOARD_ID}). */
   selected: string
   onSelect: (id: string) => void
-  /** Show the "All" cross-board overview option (plan §5.5 — optional). */
+  /** Show the "All" cross-board overview option (optional). */
   showAll?: boolean
   className?: string
 }
 
 /** Build the ordered option list: Main → team boards → per-session boards
- *  (FEAT-BOARD-SESSION) → "All". `useBoards` already returns the synthetic
+ *  → "All". `useBoards` already returns the synthetic
  *  per-session entries (kind:'session') inline with the real boards in the
  *  desired order, so a single pass over `boards` preserves that ordering.
  *  The "All" overview is only relevant when ≥1 OTHER REAL board exists (i.e.

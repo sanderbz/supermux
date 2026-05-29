@@ -1,11 +1,11 @@
-//! Cross-session delegation (TECH_PLAN §3.4, §3.3 0005, feature-extract §5.7; M9).
+//! Cross-session delegation.
 //!
 //! `POST /api/agents/delegate {from, to, prompt}` lets one agent hand work to
 //! another: it sends `prompt` to the `to` session via the same lifecycle path a
 //! human `send` uses, then records a delegation edge so the UI can draw the
 //! orchestration graph (`GET /api/agents/delegations?session=X`).
 //!
-//! **Audit (§6.4).** A delegation is a side-effecting cross-session action, so it
+//! **Audit.** A delegation is a side-effecting cross-session action, so it
 //! writes an `audit_log` row with `actor=agent:<from>, action=session.delegate,
 //! target=<to>`. The prompt text is NOT logged (it is application content, kept
 //! out of the audit detail per the secret-hygiene rule).
@@ -53,13 +53,13 @@ pub async fn delegate(
         return Err(AppError::NotFound(format!("session '{to}'")));
     }
 
-    // Deliver the prompt (auto-wakes a stopped target, per §1.9).
+    // Deliver the prompt (auto-wakes a stopped target).
     lifecycle::send_text(&state, to, &input.prompt).await?;
 
     // Record the edge for the graph view (indices idx_delegations_from/to).
     let id = db::audit::record_delegation(&state.pool, from, to, &input.prompt).await?;
 
-    // Audit the cross-session action (prompt body intentionally omitted, §6.4).
+    // Audit the cross-session action (prompt body intentionally omitted).
     db::audit::log(
         &state.pool,
         &format!("agent:{from}"),

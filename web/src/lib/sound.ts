@@ -1,4 +1,4 @@
-// sound.ts (M28) — the "needs input" audio cue.
+// sound.ts — the "needs input" audio cue.
 //
 // A single, deliberately subtle one-shot tone that plays when a session
 // transitions into `waiting` (the agent is blocked on you). One octave pitch
@@ -9,10 +9,10 @@
 // (CONFIG `MISC.soundsToggleLabel`). The preference persists in localStorage so
 // it survives reloads without needing the backend.
 //
-// Wiring for later milestones (M12/M14 SSE handler, M22 settings):
+// Wiring for later milestones (SSE handler, settings):
 //   - On a status delta into 'waiting', call `playNeedsInput()`. It self-gates
 //     on the stored preference, so callers don't need to check first. The
-//     `if (sounds) …` guard from the §M28 spec lives inside this module.
+//     `if (sounds) …` guard lives inside this module.
 //   - Bind the Settings toggle to `getSoundsEnabled()` / `setSoundsEnabled()`.
 //   - Call `primeAudio()` from the first real user gesture (a tap/click) so iOS
 //     Safari unlocks the AudioContext; without a gesture, mobile stays silent.

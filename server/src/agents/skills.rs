@@ -1,15 +1,15 @@
-//! Skills + slash-commands (TECH_PLAN §3.4, feature-extract §5.2–§5.4; M9).
+//! Skills + slash-commands.
 //!
 //! Skills are markdown files persisted in the `skills` table and, on write, ALSO
 //! synced to two filesystem locations so Claude Code picks them up as native
-//! `/<name>` slash commands (feature-extract §5.2):
+//! `/<name>` slash commands:
 //!   * `~/.supermux/skills/<name>.md`  — supermux's own copy
 //!   * `~/.claude/commands/<name>.md` — what Claude reads
 //!
 //! `GET /api/skills` parses each skill's YAML frontmatter for `description` and
-//! `argument-hint` (the convention from §5.4). `GET /api/slash-commands` merges
-//! the verbatim claude/codex built-in command list (§5.3) with the user skills,
-//! returning `[{cmd, desc}]` for the "/" autocomplete menu.
+//! `argument-hint`. `GET /api/slash-commands` merges the verbatim claude/codex
+//! built-in command list with the user skills, returning `[{cmd, desc}]` for the
+//! "/" autocomplete menu.
 //!
 //! **Path safety.** A skill `name` is constrained to a slug (`[A-Za-z0-9_.-]+`)
 //! so a malicious name can never traverse out of the skills directories — there
@@ -28,8 +28,8 @@ use crate::db;
 use crate::error::AppError;
 use crate::state::AppState;
 
-/// Verbatim built-in claude/codex slash commands (feature-extract §5.3,
-/// `_BUILTIN_SLASH_COMMANDS`). Ported in order, no leading slash dropped.
+/// Verbatim built-in claude/codex slash commands
+/// (`_BUILTIN_SLASH_COMMANDS`). Ported in order, no leading slash dropped.
 pub const BUILTIN_SLASH_COMMANDS: &[&str] = &[
     "/add-dir",
     "/agents",
@@ -88,7 +88,7 @@ pub const BUILTIN_SLASH_COMMANDS: &[&str] = &[
     "/voice",
 ];
 
-// ── supermux-managed commands (auto-installed on boot; board-integration §C.2) ──
+// ── supermux-managed commands (auto-installed on boot) ──
 //
 // These are commands supermux OWNS and writes to the service user's
 // `~/.claude/commands/` automatically — no manual install. They coexist with the
@@ -103,10 +103,10 @@ pub const MANAGED_MARKER: &str = "supermux-managed: true";
 
 /// The `/supermux-task` command — the agent's natural surface for writing back to
 /// its OWN board issue. Each verb expands to a scoped `curl` against the
-/// hook-token board endpoints (board-integration §C.2, server `board/hook.rs`),
-/// authed by the per-session `$SUPERMUX_HOOK_TOKEN` and scoped to the issue
-/// linked to `$SUPERMUX_SESSION`. This const is the SOURCE OF TRUTH that gets
-/// synced to disk on boot (and re-synced on version change — it's idempotent).
+/// hook-token board endpoints (server `board/hook.rs`), authed by the
+/// per-session `$SUPERMUX_HOOK_TOKEN` and scoped to the issue linked to
+/// `$SUPERMUX_SESSION`. This const is the SOURCE OF TRUTH that gets synced to
+/// disk on boot (and re-synced on version change — it's idempotent).
 pub const SUPERMUX_TASK_NAME: &str = "supermux-task";
 pub const SUPERMUX_TASK_SKILL: &str = include_str!("supermux-task.md");
 
@@ -134,13 +134,13 @@ fn valid_skill_name(name: &str) -> bool {
 #[derive(Debug, Default, Serialize)]
 struct Frontmatter {
     description: String,
-    /// `argument-hint` in YAML → `hint` in the API shape (§5.4).
+    /// `argument-hint` in YAML → `hint` in the API shape.
     hint: String,
 }
 
 /// Extract `description` and `argument-hint` from a `--- … ---` frontmatter
 /// block. A hand-rolled scan (not a full YAML parser) keeps the dependency
-/// surface minimal and covers the exact `key: value` convention from §5.4.
+/// surface minimal and covers the exact `key: value` convention used.
 fn parse_frontmatter(content: &str) -> Frontmatter {
     let mut fm = Frontmatter::default();
     let trimmed = content.trim_start();
@@ -293,7 +293,7 @@ pub async fn seed_managed_commands() {
 
 // ── handlers ──────────────────────────────────────────────────────────────────
 
-/// One skill in the list view (§5.4): name + frontmatter-derived fields.
+/// One skill in the list view: name + frontmatter-derived fields.
 #[derive(Debug, Serialize)]
 pub struct SkillListItem {
     pub name: String,
@@ -373,7 +373,7 @@ pub struct SlashCommand {
     pub desc: String,
 }
 
-/// `GET /api/slash-commands` — built-ins (§5.3) merged with user skills, for the
+/// `GET /api/slash-commands` — built-ins merged with user skills, for the
 /// "/" autocomplete menu. Built-ins first (with empty desc), then skills as
 /// `/<name>` with their frontmatter description.
 pub async fn slash_commands(
@@ -439,7 +439,7 @@ mod tests {
         assert!(BUILTIN_SLASH_COMMANDS.contains(&"/voice"));
     }
 
-    // ── managed-command seeding (AB3) ──────────────────────────────────────────
+    // ── managed-command seeding ────────────────────────────────────────────────
 
     fn cmd_temp_dir() -> PathBuf {
         let d = std::env::temp_dir().join(format!("supermux-cmd-seed-{}", uuid::Uuid::new_v4()));
@@ -475,7 +475,7 @@ mod tests {
         ] {
             assert!(md.contains(ep), "template must wrap {ep}");
         }
-        // The two terminal actions (board-redesign §3) are both shown.
+        // The two terminal actions are both shown.
         assert!(md.contains("\"status\":\"done\""), "must show the done curl");
         assert!(md.contains("\"question\""), "must show the needs-input curl");
         // The decision rule leads the doc; no review/arbitrary-status guidance.

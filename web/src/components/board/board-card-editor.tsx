@@ -38,7 +38,7 @@ export interface BoardCardEditorProps {
 }
 
 /**
- * The card editor (BM2 §2.3) — a bottom sheet (mobile) / right popover-style
+ * The card editor — a bottom sheet (mobile) / right popover-style
  * sheet (desktop) in the app's existing `ResponsiveSheet` style. Edits the
  * description (primary, autofocus), title, linked session, acceptance, tags and
  * due. There is NO owner selector and NO column dropdown (lane is driven by the

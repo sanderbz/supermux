@@ -16,7 +16,7 @@ import {
   type NewWhereSelection,
 } from './where-picker'
 
-// ── Quick-start preset boot configs (M12 acceptance) ────────────────────────
+// ── Quick-start preset boot configs ─────────────────────────────────────────
 // Each preset prefills the whole form: a name stem, a provider, and the initial
 // prompt (`command`) that boots the agent into the right role. The user can
 // still edit anything in the Advanced tab before submitting.
@@ -84,7 +84,7 @@ function toSlug(raw: string): string {
 
 interface FormState {
   name: string
-  /** The "Where" selection. FEAT-NEWSES-WHERE replaced the old `dir: string`
+  /** The "Where" selection. Replaced the old `dir: string`
    *  with the richer WherePicker selection so the user sees the Projects list
    *  (and the "Create a new folder" affordance) up front — same picker the
    *  Start-a-team sheet uses, narrowed to `'new'` picks only via
@@ -94,7 +94,7 @@ interface FormState {
   provider: NonNullable<NewSession['provider']>
   command: string
   worktree: boolean
-  /** Remote host (RT9). `null` = LOCAL, the default for every existing
+  /** Remote host. `null` = LOCAL, the default for every existing
    *  session and the most common pick — the picker collapses to just "Local"
    *  when the user has no remote hosts registered. */
   hostId: number | null
@@ -118,8 +118,8 @@ const EMPTY_FORM = (defaultDir: string | undefined): FormState => ({
 export interface NewSessionSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Pre-filled working directory (§4.11: "pre-filled with cwd + provider=
-   *  claude"). When omitted it falls back to the server's home directory
+  /** Pre-filled working directory (pre-filled with cwd + provider=
+   *  claude). When omitted it falls back to the server's home directory
    *  (`window._SUPERMUX_HOME_DIR`) so a session can be created in one click. */
   defaultDir?: string
   /** Called after a successful create with the new session's name so the route
@@ -127,7 +127,7 @@ export interface NewSessionSheetProps {
   onCreated: (name: string) => void
 }
 
-/** The boot affordance (§M12). Two tabs: "Quick start" (3 preset boot configs)
+/** The boot affordance. Two tabs: "Quick start" (3 preset boot configs)
  *  and "Advanced" (full fields). On submit it POSTs `/api/sessions` + boots,
  *  then hands the new name to the route to navigate into focus.
  *
@@ -140,7 +140,7 @@ export function NewSessionSheet({
   defaultDir,
   onCreated,
 }: NewSessionSheetProps) {
-  // FEAT-NEWSES-WHERE: the working dir is now picked via <WherePicker> rather
+  // The working dir is now picked via <WherePicker> rather
   // than a single free-text field, so the initial value is the picker's
   // structured default: `projectsDir()` → Projects list opens immediately;
   // falls back to homeDir() when SUPERMUX_PROJECT_DIRS is unset; an explicit
@@ -225,7 +225,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
         provider: form.provider,
         worktree: form.worktree,
         command: form.command.trim() || undefined,
-        // RT9: omit when LOCAL so the wire stays clean for the historical
+        // Omit when LOCAL so the wire stays clean for the historical
         // path (server treats missing/null both as LOCAL — no host_id column
         // update). Only sent when the user picked a remote host.
         host_id: form.hostId ?? undefined,
@@ -315,7 +315,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
                 )}
               </Field>
 
-              {/* FEAT-NEWSES-WHERE: the Projects list + "Use another folder"
+              {/* The Projects list + "Use another folder"
                   + "Create a new folder" affordances from Start-a-team —
                   narrowed for the New-Session context. `showSessions={false}`
                   suppresses the take-over section (a brand-new session can't
@@ -356,7 +356,7 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
                 </div>
               </fieldset>
 
-              {/* RT9: run-on picker. Defaults to "Local" (the historical
+              {/* Run-on picker. Defaults to "Local" (the historical
                   behaviour); registered remote hosts surface as additional
                   options. The picker shows a muted "No remote hosts yet"
                   hint when the list is empty, so it stays calm for the

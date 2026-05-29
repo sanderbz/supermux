@@ -33,7 +33,7 @@ function readStored(): Theme {
   } catch {
     /* localStorage unavailable (private mode / Capacitor) — fall through */
   }
-  return 'dark' // dark default (§M10)
+  return 'dark' // dark default
 }
 
 /** Apply the resolved theme to <html>: toggle the `.dark`/`.light` class that

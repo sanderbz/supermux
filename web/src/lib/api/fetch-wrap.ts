@@ -1,4 +1,4 @@
-// Global fetch wrapper (V034) — observes every /api/* call and feeds the
+// Global fetch wrapper — observes every /api/* call and feeds the
 // `useApiStatus` connection-state machine.
 //
 // WHY MONKEY-PATCH. There are ~12 per-feature client modules (sessions, board,
@@ -15,7 +15,7 @@
 // non-API requests (the woff2 font, the OpenAI proxy, anything) are passed
 // through untouched and do NOT affect connection state. SSE (EventSource) and
 // WebSocket are NOT touched here — they have their own per-link state machinery
-// feeding `useConnection` (M23a).
+// feeding `useConnection`.
 //
 // SAFETY:
 //   - Idempotent: a second `installFetchInstrumentation()` is a no-op.

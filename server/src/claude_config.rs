@@ -1,30 +1,29 @@
-//! Claude Code `~/.claude/settings.json` hook installer (TECH_PLAN §3.5, §3.6,
-//! §6.5; M5b; REMOTE_PLAN §RT5 — transport-aware).
+//! Claude Code `~/.claude/settings.json` hook installer (transport-aware).
 //!
 //! supermux drives its multi-signal status detector partly off Claude Code
 //! `SettingsHook` events: on each tool call / notification / turn end, Claude runs
 //! a tiny `curl` that POSTs to `/api/_internal/hook`. [`install_hooks`] writes
 //! those hook entries into the user's global `~/.claude/settings.json`.
 //!
-//! **Three invariants (§3.5 — atomic + non-destructive):**
+//! **Three invariants — atomic + non-destructive:**
 //! 1. **Idempotent.** Every supermux command carries the literal marker
 //!    [`MARKER`]; re-installing replaces the marked entry in place rather than
 //!    appending a duplicate.
 //! 2. **Coexistence-safe.** Only entries that are ours (matcher `"*"` AND a
-//!    command containing the marker) are touched — a user's own hooks and any v2
-//!    `supermux`/cmux hooks pass through unchanged.
+//!    command containing the marker) are touched — a user's own hooks and any
+//!    foreign `supermux`/cmux hooks pass through unchanged.
 //! 3. **Atomic.** We write a sibling temp file, then `rename(2)` over the
 //!    original (atomic on POSIX same-fs; SFTP RENAME is required atomic per
 //!    RFC 5; for SshFileTransport's shell-out `mv` is atomic on the same
 //!    filesystem) — a crash mid-write never leaves a truncated settings file.
 //!
-//! **Transport-aware (RT5).** The merge + atomic-write core funnels through a
+//! **Transport-aware.** The merge + atomic-write core funnels through a
 //! [`FileTransport`] so both the local `~/.claude/settings.json` AND a remote
 //! host's `~/.claude/settings.json` (over the [`HostPool`]'s ControlMaster) are
 //! served by the same code path. The invariants above hold for both — both
 //! transports implement `rename` atomically and `write` to a temp sibling first.
 //!
-//! **Security (§6.5).** The per-session token is delivered to the command through
+//! **Security.** The per-session token is delivered to the command through
 //! the tmux pane env (`$SUPERMUX_HOOK_TOKEN`), never written into this world-shared
 //! file. The command references `$SUPERMUX_HOOK_TOKEN` / `$SUPERMUX_SESSION` / `$SUPERMUX_URL`,
 //! all resolved at fire time inside the session's own pane.
@@ -36,7 +35,7 @@ use serde_json::{json, Value};
 
 use crate::files::transport::FileTransport;
 
-/// Identifiability marker injected into every supermux hook command (§3.5). Its
+/// Identifiability marker injected into every supermux hook command. Its
 /// presence is how a re-install finds the entry it owns.
 const MARKER: &str = "supermux-hook";
 
@@ -48,7 +47,7 @@ const MARKER: &str = "supermux-hook";
 /// before any tool call — so the turn state machine in
 /// [`crate::sessions::status`] can mark the session `Active` for the whole turn,
 /// not just while a tool is running (the "busy while thinking" fix).
-/// `SessionStart`/`SessionEnd`/`StopFailure` (hooks-10x TRACK 1) extend the set
+/// `SessionStart`/`SessionEnd`/`StopFailure` extend the set
 /// for the lifecycle + error-badge features: `SessionStart` clears a stale
 /// stopped/error, `SessionEnd` forces `Stopped` + clears activity, `StopFailure`
 /// records the agent error (`rate_limit`/`billing_error`/…).
@@ -69,7 +68,7 @@ const EVENTS: [(&str, &str); 9] = [
 /// `session_name` is for diagnostics; `hook_token` is the per-session secret —
 /// taken to make the caller's mint→install ordering explicit and to refuse a
 /// session that would start firing unauthenticated hooks. The token is
-/// deliberately NOT written into the global settings file (§6.5); it travels via
+/// deliberately NOT written into the global settings file; it travels via
 /// `$SUPERMUX_HOOK_TOKEN` in the pane env.
 ///
 /// `transport` is the [`FileTransport`] to use — `LocalFileTransport` for a
@@ -189,8 +188,8 @@ async fn read_settings_or_empty(transport: &dyn FileTransport, path: &Path) -> R
 }
 
 /// Atomic write: serialize `root`, write to a temp sibling, then rename over
-/// the original (§3.5 — atomic on POSIX same-fs; SFTP RENAME atomic per
-/// RFC 5; SshFileTransport's shell-out `mv` is atomic on the same fs).
+/// the original — atomic on POSIX same-fs; SFTP RENAME atomic per
+/// RFC 5; SshFileTransport's shell-out `mv` is atomic on the same fs.
 ///
 /// The transport's `write` impls both create parent dirs as needed, so we
 /// don't have to pre-create `~/.claude` ourselves.
@@ -214,7 +213,7 @@ async fn atomic_write_settings(
 
 /// Compute the sibling temp path used by the atomic write — same directory
 /// as `path` so `rename(2)` is same-filesystem (and therefore atomic). The
-/// fixed `.supermux-tmp` suffix is deliberate: it matches the v1 file name
+/// fixed `.supermux-tmp` suffix is deliberate: it matches the legacy file name
 /// so a crash-recovery cleanup script can still find leftover temps.
 fn sibling_tmp(path: &Path) -> PathBuf {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -228,7 +227,7 @@ fn sibling_tmp(path: &Path) -> PathBuf {
 /// Write Claude Code's `teammateMode` setting + the
 /// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env entry into the user's
 /// `~/.claude/settings.json` so that, when the experimental Agent Teams
-/// feature is enabled (AT-B §3.1), a LEAD session spawns its teammates as
+/// feature is enabled, a LEAD session spawns its teammates as
 /// **tmux split-panes in the lead's own window** (`"tmux"`) — landing them
 /// on supermux's process-pinned socket where we can address/stream them —
 /// rather than the `in-process` backend (invisible: no pane to render).
@@ -350,7 +349,7 @@ fn merge_supermux_hooks(root: &mut Value) {
 }
 
 /// One Claude hook matcher block firing supermux's command. `blocking:false` +
-/// `--max-time 1` + `|| true` (§6.5) guarantee a down supermux-server never stalls a
+/// `--max-time 1` + `|| true` guarantee a down supermux-server never stalls a
 /// Claude tool call.
 fn supermux_entry(event_token: &str) -> Value {
     json!({
@@ -359,7 +358,7 @@ fn supermux_entry(event_token: &str) -> Value {
     })
 }
 
-/// The shell command Claude runs for an event (hooks-10x v2). The leading
+/// The shell command Claude runs for an event. The leading
 /// `: supermux-hook;` is a no-op that embeds the [`MARKER`] for idempotent
 /// detection without affecting execution.
 ///
@@ -377,7 +376,7 @@ fn supermux_entry(event_token: &str) -> Value {
 /// **Robustness.** `--max-time 1` + `|| true` (and `blocking:false` upstream)
 /// guarantee a down/slow supermux-server never stalls a Claude tool call.
 ///
-/// **Security (§6.5).** Uses `$SUPERMUX_HOOK_TOKEN` (the per-session secret, NOT
+/// **Security.** Uses `$SUPERMUX_HOOK_TOKEN` (the per-session secret, NOT
 /// the dashboard `$SUPERMUX_TOKEN`) and `$SUPERMUX_URL` (so a reconfigured bind
 /// doesn't break hooks). The payload is held in-memory only server-side and is
 /// never persisted.
@@ -400,7 +399,7 @@ fn hook_command(event_token: &str) -> String {
 }
 
 /// Is `entry` one supermux installed? Matcher `"*"` AND a first command carrying the
-/// marker — the §3.5 idempotency predicate.
+/// marker — the idempotency predicate.
 fn is_supermux_entry(entry: &Value) -> bool {
     let matcher_ok = entry.get("matcher").and_then(Value::as_str) == Some("*");
     let command_marked = entry
@@ -432,7 +431,7 @@ mod tests {
 
     /// Local-transport convenience wrapper for tests: drive
     /// [`install_hooks_at_path`] against a temp dir's settings.json with the
-    /// real [`LocalFileTransport`]. Mirrors the v1 `install_hooks_at(dir)`
+    /// real [`LocalFileTransport`]. Mirrors the legacy `install_hooks_at(dir)`
     /// helper so the existing golden snapshots stay byte-for-byte stable.
     async fn install_hooks_at(dir: &Path) -> Result<()> {
         let path = dir.join("settings.json");
@@ -463,7 +462,7 @@ mod tests {
                 "{event} must send Content-Type: application/json or the Json extractor 415s it"
             );
             assert!(cmd.contains(&format!("\\\"event\\\":\\\"{token}\\\"")), "{event} token");
-            // hooks-10x v2: forward Claude's STDIN JSON as `payload`, size-capped,
+            // Forward Claude's STDIN JSON as `payload`, size-capped,
             // defaulting to `{}` when empty so the body stays valid JSON.
             assert!(cmd.contains("head -c 16384"), "{event} must size-cap the payload");
             assert!(cmd.contains("D='{}'"), "{event} must default empty stdin to {{}}");

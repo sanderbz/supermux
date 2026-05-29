@@ -1,4 +1,4 @@
-// AddMcpForm — add an MCP server, two ways (skills-mcp-manager plan §C.3):
+// AddMcpForm — add an MCP server, two ways:
 //   • Guided form (default): name · transport (stdio/http/sse segmented) · then
 //     command + args + env key/value pairs (stdio) OR url + header pairs
 //     (http/sse). Env/header VALUES are write-only inputs — never echoed back.

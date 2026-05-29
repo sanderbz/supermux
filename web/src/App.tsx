@@ -16,7 +16,7 @@ import { Files } from '@/routes/files'
 import { Scheduler } from '@/routes/scheduler'
 import { Settings } from '@/routes/settings'
 
-// DEV-only verification pages (M11 /dev/tiles, M13 /dev/term/:name, …). Lazy so
+// DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
 // neither the route component nor its mock data lands in the production bundle.
 const DevTiles = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-tiles'))
@@ -24,17 +24,17 @@ const DevTiles = import.meta.env.DEV
 const DevTerm = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-term'))
   : null
-// M14 desktop focus-mode review page (split + strip + dock + peek-popover).
+// Desktop focus-mode review page (split + strip + dock + peek-popover).
 const DevFocus = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-focus'))
   : null
-// AT-F-FRONT: TEAM CARD / teammate-chip / density-toggle verification harness.
+// TEAM CARD / teammate-chip / density-toggle verification harness.
 const DevTeams = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-teams'))
   : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
-// (no polling — see use-sse.ts). Defaults per §M10 / §4.1.
+// (no polling — see use-sse.ts).
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -47,22 +47,22 @@ const queryClient = new QueryClient({
 export default function App() {
   return (
     // basename uses BASE_URL so the Capacitor `capacitor://localhost` origin
-    // works unchanged (§4.10).
+    // works unchanged.
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <ThemeProvider>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider delayDuration={200}>
-            {/* App-root toast scope (M28). Mounted here so any route — overview
+            {/* App-root toast scope. Mounted here so any route — overview
                 archive Undo, board, scheduler — can fire toasts from one
                 provider. Routes that previously self-wrapped (scheduler) no
                 longer need their own. */}
             <ToastProvider>
-            {/* M23b: "Add to Home Screen" coaching sheet — self-gates to the
+            {/* "Add to Home Screen" coaching sheet — self-gates to the
                 first iOS-Safari (non-standalone) load, then remembers dismiss. */}
             <A2HSInstructionsSheet />
-            {/* M27: first-60-seconds unboxing — welcome banner + 4-step tour
-                (step 4 = Agent Teams explainer, FEAT-ONBOARDING-TEAMS) for
-                migrated v2 users; self-gates to the first launch only. */}
+            {/* First-60-seconds unboxing — welcome banner + 4-step tour
+                (step 4 = Agent Teams explainer) for migrated v2 users;
+                self-gates to the first launch only. */}
             <OnboardingHost />
             <Routes>
               <Route element={<Layout />}>

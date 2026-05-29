@@ -1,10 +1,10 @@
-// PWA boot wiring — M23b (TECH_PLAN §4.9 / §10).
+// PWA boot wiring.
 //
 // Registers the vite-plugin-pwa service worker and injects the iOS launch-
 // splash <link> tags. Called once from main.tsx. Everything here is a no-op in
 // environments without a service worker (dev, SSR, old browsers).
 //
-// SAFETY CONTRACT (Codex #13/#20):
+// SAFETY CONTRACT:
 //   - The service worker caches ONLY the static app shell (fingerprinted JS/CSS
 //     + icons + a 3s-timeout NetworkFirst copy of the HTML doc). It is NOT a
 //     data layer — `/api/*` and `/ws/*` are never intercepted, so the bearer
@@ -33,7 +33,7 @@ export function initPWA(): void {
   registerSW({
     immediate: true,
     onRegisteredSW(_url, registration) {
-      // Token-rotation invalidation (M22 contract): Settings → Rotate token
+      // Token-rotation invalidation: Settings → Rotate token
       // posts `{type:'token-rotated'}` to the controlling SW. The SW has no
       // custom message handler in the generated Workbox build, so the cache
       // drop happens here in the page (caches.delete is page-accessible) and

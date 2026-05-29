@@ -109,7 +109,7 @@ function toTileSession(s: ApiSession): TileSession {
 
 export function Overview() {
   const { sessions: allSessions, isLoading, isError, refetch } = useSessions()
-  // Agent Teams (AT-F-FRONT). The TEAM CARD owns its lead + teammates and renders
+  // Agent Teams. The TEAM CARD owns its lead + teammates and renders
   // pinned above the session grid in EVERY sort mode. The lead IS a normal
   // supermux session, so we must EXCLUDE it from the standalone grid (it renders
   // as the team card's full tile) to avoid double-rendering; teammates are NOT in

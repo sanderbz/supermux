@@ -1,4 +1,4 @@
-// Scheduler shared helpers (M21): formatting + preset recipes + expression
+// Scheduler shared helpers: formatting + preset recipes + expression
 // helper patterns. Pure functions only, no React — so both the route and the
 // dialog/sheet import without circular deps.
 

@@ -278,7 +278,7 @@ fn mk_entry(
     }
 }
 
-/// Account-global claude.ai REMOTE connectors (SUPERMUX-37). These are hosted
+/// Account-global claude.ai REMOTE connectors. These are hosted
 /// claude.ai integrations authenticated server-side via the user's Claude account
 /// — NOT local processes — so they live in `~/.claude.json` under the
 /// `claudeAiMcpEverConnected` array (a list of connector display names), never in
@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn cloud_connectors_listed_readonly() {
         // claude.ai remote connectors come from `claudeAiMcpEverConnected`, are
-        // read-only, and surface as `cloud` provenance (SUPERMUX-37).
+        // read-only, and surface as `cloud` provenance.
         let cj = json!({
             "claudeAiMcpEverConnected": ["claude.ai Example", "   ", "Other"]
         });

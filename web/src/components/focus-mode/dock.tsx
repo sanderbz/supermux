@@ -1,8 +1,8 @@
 // focus-mode/dock.tsx — the focus-mode docks for BOTH viewports.
 //
-//   • DesktopDock — M14 (TECH_PLAN §4.4.3): the full desktop dock (left cluster /
-//     editable 4-chip send-row / right cluster). Imported by DesktopSplit.
-//   • MobileDock  — M15 (TECH_PLAN §4.4.1) → LIVE-TYPE rework: the accessory bar
+//   • DesktopDock — the full desktop dock (left cluster / editable 4-chip
+//     send-row / right cluster). Imported by DesktopSplit.
+//   • MobileDock  — LIVE-TYPE rework: the accessory bar
 //     inside the Vaul sheet (session-pill / ⌨ toggle / slash / specials /
 //     snippets / dictate + a keyboard-pinned Esc/Tab/^C/arrows strip). NO text
 //     composer — you type straight into the terminal. Imported by focus/mobile.tsx.
@@ -48,7 +48,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 
-// ── DesktopDock (M14, TECH_PLAN §4.4.3 — full desktop dock, pixel spec) ────────
+// ── DesktopDock (full desktop dock, pixel spec) ────────────────────────────────
 //
 //   ┌─[⌘K]─[+]─┃─[Esc][Tab][^C][^U]⚙─┃─[Detach ⌘D]─[Stop ⌘W]─┐
 //   │  left cluster   editable 4-chip send-row    right cluster     │
@@ -63,14 +63,14 @@ import {
 // VISUAL: iOS-native — SF Mono chips, 8px continuous corners, ≥44pt hit targets,
 // Title-Case tooltips, spring button-press, no `transition: all`.
 
-/** Default send-row chips — Esc / Tab / Ctrl-C / Ctrl-U (§4.4.3). Each maps to
+/** Default send-row chips — Esc / Tab / Ctrl-C / Ctrl-U. Each maps to
  *  a `keyToBytes` name understood by `LiveTerminal.sendKey`. */
 const DEFAULT_SEND_CHIPS = ['Esc', 'Tab', 'Ctrl-C', 'Ctrl-U'] as const
 
 export interface DesktopDockProps {
-  /** Tap a send-row chip → emit that key into the pty (§4.4.3). */
+  /** Tap a send-row chip → emit that key into the pty. */
   onSendKey: (label: string) => void
-  /** "+" snippet-drawer toggle — opens the M18 snippet side-sheet. */
+  /** "+" snippet-drawer toggle — opens the snippet side-sheet. */
   onSnippets?: () => void
   /** ✎ Edit — lift Claude's current `❯` input into the native editor sheet
    *  (feat-edit-in-native-editor). The caller sends Ctrl+G; the sheet opens on the
@@ -127,7 +127,7 @@ function IconButton({
 }
 
 /** A SF-Mono send-row chip — 28px tall, 8px corner, tap = sendKey. Tooltip shows
- *  the underlying tmux key name (§4.4.3). */
+ *  the underlying tmux key name. */
 function SendChip({
   label,
   onSend,
@@ -176,8 +176,8 @@ export function DesktopDock({
   )
   // The send-row is "editable via gear icon": clicking the gear cycles to an
   // editable state where each chip is a text input. Persistent storage is the
-  // M16 `/api/kbd-groups` table — here we keep an in-memory edit (single source
-  // for THIS dock); M16's manage-sheet supersedes it.
+  // the `/api/kbd-groups` table — here we keep an in-memory edit (single source
+  // for THIS dock); the manage-sheet supersedes it.
   const [chips, setChips] = React.useState<string[]>([...DEFAULT_SEND_CHIPS])
   const [editing, setEditing] = React.useState(false)
 
@@ -290,7 +290,7 @@ export function DesktopDock({
 
 export default DesktopDock
 
-// ── MobileDock (M15 → M-mobile-livetype LIVE-TYPE rework) ─────────────────────
+// ── MobileDock (LIVE-TYPE rework) ─────────────────────────────────────────────
 //
 // The bar pinned below the terminal inside the Vaul sheet. LIVE-TYPE model: you
 // type DIRECTLY into the terminal (xterm's hidden helper textarea is the single
@@ -337,7 +337,7 @@ export default DesktopDock
 // icon stroke weight (1.75) at one 20px size, and `text-primary` only for the
 // active/toggled state. One coherent rhythm with the overview/settings surfaces.
 //
-// iOS haptics caveat (§4.4): chip presses use a 0.92 scale (CSS-only feedback);
+// iOS haptics caveat: chip presses use a 0.92 scale (CSS-only feedback);
 // navigator.vibrate(8) is gated by `'vibrate' in navigator` (Android only).
 
 /** Accessory-strip keys, in Termius order. Each label maps to a `keyToBytes`
@@ -376,7 +376,7 @@ export interface MobileDockProps {
   /** True when the soft keyboard is open (from `useKeyboardViewport`). Shows the
    *  accessory key strip + flips the ⌨ toggle to "hide". */
   keyboardOpen?: boolean
-  /** Open the M18 snippet panel (in-place slide-up). */
+  /** Open the snippet panel (in-place slide-up). */
   onOpenSnippets?: () => void
   /** Tap the bottom-left Edit field → lift Claude's current `❯` input into the
    *  native editor sheet (feat-edit-in-native-editor). The caller sends Ctrl+G to
@@ -389,7 +389,7 @@ export interface MobileDockProps {
    *  the field doesn't double-render the id). */
   editOpen?: boolean
   /** Registration hook the parent calls with this dock's imperative
-   *  `insert(text)` once mounted, so the route-level M18 snippet panel can drop
+   *  `insert(text)` once mounted, so the route-level snippet panel can drop
    *  a snippet body straight into the terminal (tap-to-insert sends it live). */
   registerInsert?: (insert: ((text: string) => void) | null) => void
   className?: string
@@ -504,7 +504,7 @@ export function MobileDock({
     return () => flushTranscriptRef.current()
   }, [])
 
-  // M18 snippet-panel tap-to-insert: with no composer, "insert" now sends the
+  // Snippet-panel tap-to-insert: with no composer, "insert" now sends the
   // snippet body straight to the terminal (live-type model — the body lands at
   // the shell prompt exactly as if typed). The parent's onRun path appends '\r'.
   const insert = React.useCallback(

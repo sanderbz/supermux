@@ -1,4 +1,4 @@
-//! Multi-board HTTP surface (AT-C, plan §5.5). The single Kanban board became
+//! Multi-board HTTP surface. The single Kanban board became
 //! MULTIPLE boards selectable via a switcher; this module is the boards-entity
 //! CRUD + the team-board register endpoint.
 //!
@@ -7,7 +7,7 @@
 //!   - `GET    /api/boards`                — list boards (switcher options).
 //!   - `POST   /api/boards`                — create a board.
 //!   - `POST   /api/boards/register-team`  — UPSERT a `kind='team'` board for an
-//!                                           on-disk team (the AT-D/AT-F3 hook).
+//!                                           on-disk team (the team-watcher hook).
 //!   - `PATCH  /api/boards/{id}`           — rename a board (main is fixed).
 //!   - `DELETE /api/boards/{id}`           — delete a board + CASCADE its cards
 //!                                           (main is fixed).
@@ -17,7 +17,7 @@
 //! The fixed `main` board ([`db::boards::MAIN_BOARD_ID`]) is non-renameable and
 //! non-deletable — those two paths 409 for it.
 //!
-//! ## How AT-D / AT-F3 create + populate a TEAM board (design intent)
+//! ## How the team-watcher creates + populates a TEAM board (design intent)
 //! A team's tasks live on a `kind='team'` board whose `team_name` is the on-disk
 //! team id under `~/.claude/teams/{team}/` + `~/.claude/tasks/{team}/`. The flow:
 //!   1. `POST /api/boards/register-team { team_name, name? }` — idempotent UPSERT:
@@ -117,7 +117,7 @@ async fn create_handler(
     Ok((StatusCode::CREATED, ok(board)))
 }
 
-// ── register team (idempotent UPSERT — the AT-D/AT-F3 entry point) ──────────────
+// ── register team (idempotent UPSERT — the team-watcher entry point) ───────────
 
 #[derive(Debug, Deserialize)]
 struct RegisterTeamInput {
@@ -129,7 +129,7 @@ struct RegisterTeamInput {
 }
 
 /// Idempotent: return the existing team board, or create one. Safe to call on
-/// every team-detect tick (AT-D/AT-F3) — never duplicates a team's board.
+/// every team-detect tick — never duplicates a team's board.
 async fn register_team_handler(
     State(state): State<AppState>,
     Json(input): Json<RegisterTeamInput>,
@@ -212,7 +212,7 @@ async fn cards_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<super::Envelope<Vec<IssueView>>>, AppError> {
-    // The "all" aggregate is a read-through across every board (plan §5.5). The
+    // The "all" aggregate is a read-through across every board. The
     // card view carries `board_id`, so the client groups by board for the
     // overview.
     if id == ALL_BOARD_ID {
@@ -239,7 +239,7 @@ fn normalize_team(team: Option<&str>) -> Option<String> {
 /// slug of the team name / display name (so it's stable across register-team
 /// calls when derived from `team_name`), suffixed if a slug already exists.
 ///
-/// `pub(crate)` so the AT-G teams watcher can register a team board IN-PROCESS
+/// `pub(crate)` so the teams watcher can register a team board IN-PROCESS
 /// (never self-HTTP) on each detect tick — the idempotency is handled by the
 /// caller checking [`db::boards::get_by_team`] first (the UNIQUE `team_name`
 /// index is the backstop).
@@ -325,7 +325,7 @@ mod tests {
 
     /// register-team is idempotent: the first call creates a team board, a second
     /// call for the SAME team returns that same board (no duplicate). This is the
-    /// AT-D/AT-F3 per-tick entry point, so it MUST be safe to call repeatedly.
+    /// per-tick entry point, so it MUST be safe to call repeatedly.
     #[tokio::test]
     async fn register_team_is_idempotent() {
         let (state, dir) = test_state().await;
@@ -351,8 +351,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A team-board id is a STABLE slug of the team name (so AT-D/AT-F3 can derive
-    /// it deterministically), reserving the `main` id.
+    /// A team-board id is a STABLE slug of the team name (so the team watcher can
+    /// derive it deterministically), reserving the `main` id.
     #[tokio::test]
     async fn team_board_id_is_a_stable_slug() {
         let (state, dir) = test_state().await;

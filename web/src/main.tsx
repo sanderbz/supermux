@@ -9,7 +9,7 @@ import { installFetchInstrumentation } from '@/lib/api/fetch-wrap'
 // FIRST /api/* call is observed by the connection-state machine. Idempotent.
 installFetchInstrumentation()
 
-// M23b: register the service worker (offline app-shell cache) + inject the iOS
+// Register the service worker (offline app-shell cache) + inject the iOS
 // launch-splash <link> tags. No-op in dev / non-PWA environments.
 initPWA()
 

@@ -19,14 +19,14 @@ export interface EmptyStateProps {
   message: string
   /** Optional single primary call-to-action. */
   cta?: EmptyStateCta
-  /** Optional secondary action below the primary — used by the M27 first-run
+  /** Optional secondary action below the primary — used by the first-run
    *  empty state to offer a one-tap demo agent. Rendered as a quiet link-style
    *  button with an optional one-line hint. */
   secondary?: EmptyStateCta & { hint?: string }
   className?: string
 }
 
-/** Shared empty-state surface (§4.11). Springs in via `springs.cardExpand`;
+/** Shared empty-state surface. Springs in via `springs.cardExpand`;
  *  honours Reduce Motion by rendering statically. Every route's empty/no-match
  *  state composes this. */
 export function EmptyStatePlaceholder({
@@ -63,7 +63,7 @@ export function EmptyStatePlaceholder({
             size="sm"
             variant="ghost"
             disabled={secondary.busy}
-            // M27: a real first-run CTA — kept at the 44pt HIG floor (`h-11`),
+            // A real first-run CTA — kept at the 44pt HIG floor (`h-11`),
             // not the compact `h-9` secondary-button size.
             className="h-11"
           >

@@ -3,7 +3,7 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 /** Consistent route scaffold: a Title-Case (never UPPERCASE) heading over a
- *  centered content area. Used by every route's placeholder in M10. */
+ *  centered content area. Used by every route's placeholder. */
 export function Page({
   title,
   children,

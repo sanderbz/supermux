@@ -1,4 +1,4 @@
-// M23b — iOS PWA launch-splash <link> injection (TECH_PLAN §4.9 / §10).
+// iOS PWA launch-splash <link> injection.
 //
 // iOS Safari ignores the manifest `background_color` for the launch screen of a
 // home-screen PWA: it requires per-device `<link rel="apple-touch-startup-image">`
@@ -8,7 +8,7 @@
 //
 // The PNGs are pre-rendered by scripts/build-splash.mjs into public/splash/ and
 // share the EXACT #0a0a0a field of globals.css `--background`, so the splash →
-// first-frame-paint transition has no flash of a wrong color (M23b acceptance).
+// first-frame-paint transition has no flash of a wrong color.
 // The device table here MUST stay in sync with that script's DEVICES list.
 
 interface SplashDevice {

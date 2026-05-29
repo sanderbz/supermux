@@ -1,20 +1,21 @@
-//! Session HTTP surface — the tmux-free CRUD subset (TECH_PLAN §3.2.5, §3.4, M2).
+//! Session HTTP surface — the tmux-free CRUD subset.
 //!
-//! **Router-registry pattern (§3.4).** [`router_for`] returns this module's
+//! **Router-registry pattern.** [`router_for`] returns this module's
 //! sub-router; `http::router` merges it (plus board/files/scheduler/agents in
 //! later milestones) and applies the bearer-auth layer once. Adding a backend
 //! milestone is one new module + one `.merge(...)` line — no shared edits here.
 //!
 //! **Scope.** Only the parts that need no live tmux: list/create/get/delete/
 //! duplicate/config_patch, plus the DB-backed tracked-files and steering-queue
-//! endpoints. `start/stop/send/keys/paste/clone/archive/wake/peek` land in M3.
+//! endpoints. `start/stop/send/keys/paste/clone/archive/wake/peek` are wired in
+//! the lifecycle handlers below.
 //!
-//! **HTTP envelope (§3.4).** Successful responses are `{ ok: true, data: T }`;
+//! **HTTP envelope.** Successful responses are `{ ok: true, data: T }`;
 //! errors are `{ ok: false, error: "..." }` via [`crate::error::AppError`].
 //!
-//! **M3 — tmux lifecycle.** [`lifecycle`] wires the live operations
+//! **tmux lifecycle.** [`lifecycle`] wires the live operations
 //! (start/stop/send/keys/paste/peek/archive/wake/clone) onto [`tmux`]; their
-//! handlers are merged into [`router_for`] alongside the M2 CRUD routes.
+//! handlers are merged into [`router_for`] alongside the CRUD routes.
 
 pub mod activity;
 pub mod auto_actions;
@@ -38,7 +39,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 // Routing constructors are fully-qualified (`axum::routing::get`) to avoid a name
-// clash with this module's public `get`/`delete` API functions (§3.2.5).
+// clash with this module's public `get`/`delete` API functions.
 use axum::{Json, Router};
 use base64::Engine;
 use once_cell::sync::Lazy;
@@ -69,7 +70,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/purge", axum::routing::delete(purge_handler))
         .route("/api/sessions/{name}/duplicate", post(duplicate_handler))
         .route("/api/sessions/{name}/config", patch(config_handler))
-        // ── M3 tmux lifecycle ──
+        // ── tmux lifecycle ──
         .route("/api/sessions/{name}/start", post(start_handler))
         .route("/api/sessions/{name}/stop", post(stop_handler))
         .route("/api/sessions/{name}/send", post(send_handler))
@@ -80,24 +81,24 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
         .route("/api/sessions/{name}/clone", post(clone_handler))
-        // ── mode-shift: switch the Claude permission mode from the ⋯ menu ──
+        // ── switch the Claude permission mode from the ⋯ menu ──
         .route("/api/sessions/{name}/mode", post(mode_handler))
-        // ── feat-resume-picker: reopen a past Claude conversation for the dir ──
+        // ── reopen a past Claude conversation for the dir ──
         .route(
             "/api/sessions/{name}/resumable",
             get(resumable_handler),
         )
         .route("/api/sessions/{name}/resume", post(resume_handler))
-        // feat-edit-in-native-editor: the dashboard "Done"/"Cancel" of the native
-        // editor sheet resolves the session's in-flight edit. Bearer-gated (a
-        // dashboard→server call); the bridge-side open/result are hook-token-authed
-        // on the `external_edit` router merged at the top level.
+        // The dashboard "Done"/"Cancel" of the native editor sheet resolves the
+        // session's in-flight edit. Bearer-gated (a dashboard→server call); the
+        // bridge-side open/result are hook-token-authed on the `external_edit`
+        // router merged at the top level.
         .route(
             "/api/sessions/{name}/external-edit/submit",
             post(external_edit_submit_handler),
         )
-        // feat-session-info: live git status for the session's working dir (real
-        // branch / dirty / ahead-behind) — read lazily when the info panel opens.
+        // Live git status for the session's working dir (real branch / dirty /
+        // ahead-behind) — read lazily when the info panel opens.
         .route("/api/sessions/{name}/git", get(git_handler))
         .route(
             "/api/sessions/{name}/tracked-files",
@@ -131,7 +132,7 @@ fn ok<T: Serialize>(data: T) -> Json<Envelope<T>> {
 
 /// The session shape returned to clients (superset of the frontend
 /// `SessionSummary`/`Session` types). `status`/`preview_lines` are populated by
-/// the status detector (M5); until then a session reads as `stopped` with no
+/// the status detector; until then a session reads as `stopped` with no
 /// preview lines.
 #[derive(Debug, Serialize)]
 pub struct SessionView {
@@ -153,15 +154,15 @@ pub struct SessionView {
     pub mcp: String,
     pub worktree: bool,
     pub creator: String,
-    /// Last 6 lines of `last_capture`, ANSI-stripped (§3.4).
+    /// Last 6 lines of `last_capture`, ANSI-stripped.
     pub preview_lines: Vec<String>,
     /// Same last 6 lines, with SGR escape sequences preserved — the colour-true
     /// tile preview source (overview tile preview feature). Empty until the
     /// first capture; the client falls back to `preview_lines` when so.
     pub preview_ansi: Vec<String>,
-    /// Live "current activity" line derived from the latest `PreToolUse` hook
-    /// (hooks-10x): a short, emoji-prefixed label like `✎ tile.tsx` / `⚡ npm
-    /// test`. In-memory only (never persisted); `None` when the agent isn't
+    /// Live "current activity" line derived from the latest `PreToolUse` hook:
+    /// a short, emoji-prefixed label like `✎ tile.tsx` / `⚡ npm test`.
+    /// In-memory only (never persisted); `None` when the agent isn't
     /// mid-tool (cleared on `Stop`/`SessionEnd`). The UI shows it under the
     /// status dot while the session is working, falling back to the spinner.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,14 +172,14 @@ pub struct SessionView {
     /// style without re-parsing the emoji. `None` whenever `activity` is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_kind: Option<String>,
-    /// The latest unrecovered agent error from a `StopFailure` hook (hooks-10x):
+    /// The latest unrecovered agent error from a `StopFailure` hook:
     /// `{type, message}` (e.g. `rate_limit` / `billing_error`). In-memory only;
     /// cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
     /// error badge on the card.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorInfo>,
     /// The Claude Code permission MODE parsed from the persistent status bar in
-    /// `last_capture` (mode-shift): `normal` / `accept_edits` / `plan` / `bypass`.
+    /// `last_capture`: `normal` / `accept_edits` / `plan` / `bypass`.
     /// `None` until the first capture (the menu then defaults to `normal`). Drives
     /// the ⋯ mode menu's live-checked radio — the menu reflects the TRUE mode, not
     /// an optimistic guess. Cheap (a pure string scan over the held capture).
@@ -188,7 +189,7 @@ pub struct SessionView {
     pub updated_at: String,
 }
 
-/// The `SessionView.error` shape (hooks-10x): a `StopFailure`-derived error class
+/// The `SessionView.error` shape: a `StopFailure`-derived error class
 /// plus a human message. Both are size-capped and secret-conscious upstream (see
 /// [`activity::error_info`]); in-memory only, never persisted.
 #[derive(Debug, Clone, Serialize)]
@@ -234,8 +235,8 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
             error_type,
             message,
         })),
-        // mode-shift: parse the permission mode from the held capture. `None`
-        // before the first capture (the UI defaults the menu to Normal then).
+        // Parse the permission mode from the held capture. `None` before the
+        // first capture (the UI defaults the menu to Normal then).
         mode: if last_capture.is_empty() {
             None
         } else {
@@ -268,7 +269,7 @@ fn to_rfc3339(ts: i64) -> String {
 /// Strip CSI escape sequences (covers SGR colour codes and cursor moves).
 static ANSI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").unwrap());
 
-/// Last N lines of `capture`, ANSI-stripped (§3.4 SessionSummary.preview_lines).
+/// Last N lines of `capture`, ANSI-stripped (drives `SessionSummary.preview_lines`).
 /// Sized to 20 so the Settings → Expanded-text hover mode has the full tail to
 /// reveal; the static tile still only renders the bottom ~6 (CSS-clipped by the
 /// idle container height + the top fade mask), so no compactness regression.
@@ -299,7 +300,7 @@ fn last_n_lines(capture: &str, n: usize) -> Vec<String> {
 static NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9_.-]+$").unwrap());
 const PROVIDERS: [&str; 3] = ["claude", "codex", "shell"];
 
-/// Session-name slug rule (§1.2 of feature-extract): `[a-zA-Z0-9_.-]+`, bounded.
+/// Session-name slug rule: `[a-zA-Z0-9_.-]+`, bounded.
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 100 && NAME_RE.is_match(name)
 }
@@ -323,7 +324,7 @@ async fn ensure_session(state: &AppState, name: &str) -> Result<(), AppError> {
     }
 }
 
-// ── public API (reused by M3 lifecycle) ──────────────────────────────────────
+// ── public API (reused by the lifecycle module) ──────────────────────────────
 
 pub async fn list(state: &AppState) -> Result<Vec<SessionView>, AppError> {
     let sessions = db::sessions::list(&state.pool).await?;
@@ -388,11 +389,11 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
 
-    // R2-011: audit row per ARCHITECTURE §3.3 — every destructive HTTP call
-    // records an entry. `purge` is the hardest-destructive session op (the row
-    // AND its archived scrollback are gone), so it MUST leave a forensic trace.
-    // `?` (not `let _ =`) so a failed audit-insert fails the request, matching
-    // the `session.delete`/`session.archive` patterns.
+    // Audit row — every destructive HTTP call records an entry. `purge` is the
+    // hardest-destructive session op (the row AND its archived scrollback are
+    // gone), so it MUST leave a forensic trace. `?` (not `let _ =`) so a failed
+    // audit-insert fails the request, matching the
+    // `session.delete`/`session.archive` patterns.
     db::audit::log(&state.pool, "user", "session.purge", name, json!({})).await?;
 
     // Best-effort: remove the scrollback dump(s) this session wrote on archive
@@ -503,11 +504,11 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
     let hook_token = gen_hook_token();
     db::sessions::ensure_runtime(&state.pool, &name, &hook_token).await?;
     state.hook_tokens.insert(name.clone(), hook_token);
-    // M5a: start this session's 2s status detector loop (the loop self-terminates
+    // Start this session's 2s status detector loop (the loop self-terminates
     // when the session is deleted). Boot-time sessions are wired by
     // `auto_actions::spawn_all`; this covers sessions created in-process.
     auto_actions::spawn_status_loop(state.clone(), name.clone());
-    // M9: start this session's steering delivery loop (mirrors the detector
+    // Start this session's steering delivery loop (mirrors the detector
     // lifecycle — self-terminates on delete; boot-time sessions are wired by
     // `steering::deliver_loop::spawn_all`).
     steering::deliver_loop::spawn(state.clone(), name.clone());
@@ -516,7 +517,7 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
 
 pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     ensure_session(state, name).await?;
-    // R2: capture whether any board card links to this session BEFORE the delete.
+    // Capture whether any board card links to this session BEFORE the delete.
     // The `issues.session` FK is `ON DELETE SET NULL`, so after the row is gone
     // the link is already nulled and `issues_for_session` would find nothing — we
     // must check first, then re-publish the board AFTER so open boards drop the
@@ -529,12 +530,12 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     let _ = tmux::Tmux::new(name).kill_session().await;
     db::sessions::delete(&state.pool, name).await?;
 
-    // R2-011: audit row per ARCHITECTURE §3.3 — every destructive HTTP call
-    // records an entry. `delete` is harder-destructive than `archive` (the row
-    // is gone, not just soft-archived), so it MUST leave a forensic trace.
-    // Uses `?` (not `let _ =`) so a failed audit-insert fails the request,
-    // matching board/mod.rs:401, files/mod.rs:262, scheduler/runner.rs:92,
-    // agents/delegate.rs:63, and the archive fix at lifecycle.rs:454.
+    // Audit row — every destructive HTTP call records an entry. `delete` is
+    // harder-destructive than `archive` (the row is gone, not just
+    // soft-archived), so it MUST leave a forensic trace. Uses `?` (not
+    // `let _ =`) so a failed audit-insert fails the request, matching
+    // board/mod.rs, files/mod.rs, scheduler/runner.rs, agents/delegate.rs, and
+    // the archive path in lifecycle.rs.
     db::audit::log(&state.pool, "user", "session.delete", name, json!({})).await?;
 
     // Nudge the per-session background loops to re-check their `exists_active`
@@ -547,7 +548,7 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
         tx.send_replace(cur);
     }
 
-    // R1-2: `forget_session` must be the LAST thing — wait for every per-session
+    // `forget_session` must be the LAST thing — wait for every per-session
     // loop to stop (task-guard count → 0) before dropping the DashMap entries,
     // otherwise a still-running loop's `or_insert_with` re-creates them.
     for _ in 0..100 {
@@ -556,11 +557,11 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    // §3.2.5 lock-map lifecycle: drop every per-session in-memory map entry so
+    // Lock-map lifecycle: drop every per-session in-memory map entry so
     // session churn does not leak DashMap entries.
     state.forget_session(name);
 
-    // R2: if any card linked to this (now-deleted) session, re-publish the board
+    // If any card linked to this (now-deleted) session, re-publish the board
     // so open boards reflect the FK-nulled, now-stale link immediately.
     if had_linked_issues {
         crate::board::emit_board(state).await;
@@ -587,16 +588,16 @@ pub async fn duplicate(
     let hook_token = gen_hook_token();
     db::sessions::ensure_runtime(&state.pool, new_name, &hook_token).await?;
     state.hook_tokens.insert(new_name.to_string(), hook_token);
-    // M5a/M9: a duplicated session is a real session — give it the same detector
+    // A duplicated session is a real session — give it the same detector
     // and steering delivery loops a created one gets.
     auto_actions::spawn_status_loop(state.clone(), new_name.to_string());
     steering::deliver_loop::spawn(state.clone(), new_name.to_string());
     get(state, new_name).await
 }
 
-/// Config patch — the tmux-free fields (§1.1 `PATCH .../config`). `model`,
-/// `toggle_yolo`, and `new_conversation` involve flags/resume mechanics and land
-/// with the lifecycle work in M3.
+/// Config patch — the tmux-free fields of `PATCH .../config`. `model`,
+/// `toggle_yolo`, and `new_conversation` involve flags/resume mechanics and live
+/// with the lifecycle handlers below.
 #[derive(Debug, Deserialize)]
 pub struct ConfigInput {
     /// Edit the mutable display label (migration 0019). This is the user-facing
@@ -707,7 +708,7 @@ pub async fn config_patch(
     get(state, &current).await
 }
 
-// ── git status (feat-session-info) ─────────────────────────────────────────────
+// ── git status ───────────────────────────────────────────────────────────────
 
 /// Live git status for a session's working dir, surfaced by
 /// `GET /api/sessions/{name}/git`. The stored `branch` label is set once at
@@ -860,7 +861,7 @@ async fn config_handler(
     Ok(ok(config_patch(&state, &name, input).await?))
 }
 
-// ── M3 lifecycle handlers ─────────────────────────────────────────────────────
+// ── lifecycle handlers ───────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct StartInput {
@@ -889,7 +890,7 @@ async fn stop_handler(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     lifecycle::stop(&state, &name).await?;
-    // §3.2.5: stop is async-shaped → 202 Accepted.
+    // Stop is async-shaped → 202 Accepted.
     Ok((StatusCode::ACCEPTED, Json(json!({ "ok": true }))))
 }
 
@@ -909,7 +910,7 @@ async fn send_handler(
 
 #[derive(Debug, Deserialize)]
 struct KeysInput {
-    /// Accept either `{keys}` (canonical, §1.1) or `{key}` for a single key.
+    /// Accept either `{keys}` (canonical) or `{key}` for a single key.
     #[serde(default)]
     keys: Option<String>,
     #[serde(default)]
@@ -984,7 +985,7 @@ async fn archive_handler(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let job_id = lifecycle::archive(&state, &name).await?;
-    // §3.2.5: archive returns 202 + job_id immediately.
+    // Archive returns 202 + job_id immediately.
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({ "ok": true, "job_id": job_id })),
@@ -1018,7 +1019,7 @@ async fn clone_handler(
     Ok((StatusCode::CREATED, ok(v)))
 }
 
-// ── mode-shift ─────────────────────────────────────────────────────────────────
+// ── permission mode ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct ModeInput {
@@ -1026,11 +1027,11 @@ struct ModeInput {
     mode: String,
 }
 
-/// `POST /api/sessions/{name}/mode {mode}` — switch the Claude permission mode
-/// (mode-shift). `normal`/`accept_edits`/`plan` cycle in place via targeted
-/// Shift+Tab (re-reading the capture, capped retries); `bypass` does a clean
-/// relaunch (stop → add the flag → resume). Returns the mode ACTUALLY in effect
-/// after the op (the UI reflects truth) + whether it converged / relaunched.
+/// `POST /api/sessions/{name}/mode {mode}` — switch the Claude permission mode.
+/// `normal`/`accept_edits`/`plan` cycle in place via targeted Shift+Tab
+/// (re-reading the capture, capped retries); `bypass` does a clean relaunch
+/// (stop → add the flag → resume). Returns the mode ACTUALLY in effect after
+/// the op (the UI reflects truth) + whether it converged / relaunched.
 async fn mode_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -1046,7 +1047,7 @@ async fn mode_handler(
     Ok(Json(json!({ "ok": true, "data": result })))
 }
 
-// ── feat-resume-picker ─────────────────────────────────────────────────────────
+// ── resume picker ────────────────────────────────────────────────────────────
 
 /// `GET /api/sessions/{name}/resumable` — past Claude conversations for the
 /// session's working dir, newest-first. Empty list when the dir has no project

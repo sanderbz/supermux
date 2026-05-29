@@ -114,7 +114,7 @@ import type { OverviewSize } from '@/lib/overview-size'
 import type { TileSession } from './types'
 
 /** Duration of the post-drop "flash" highlight on the just-dropped tile.
- *  Spec §4 (Atlassian motion language) calls for a brief background-color
+ *  The Atlassian motion language calls for a brief background-color
  *  flash so the eye locks onto the landing. 700ms ease-out. Skipped under
  *  `useReducedMotion`. */
 const DROP_FLASH_MS = 700
@@ -302,8 +302,8 @@ function useGroupSortModes(
       next.set(id, mode)
       return next
     })
-    // Persist via the shared helper (M4 — consolidate localStorage keying so
-    // every key flows through `groupSortKey()`).
+    // Persist via the shared helper — consolidate localStorage keying so
+    // every key flows through `groupSortKey()`.
     writeGroupSortMode(id, mode)
   }, [])
 
@@ -894,7 +894,7 @@ export function GroupGrid({
         // pointerWithin first (more forgiving over container droppables),
         // then closest-center as a fallback for edge hovers.
         //
-        // M2 — Cross-context collision FILTER. dnd-kit's collision strategy
+        // Cross-context collision FILTER. dnd-kit's collision strategy
         // runs across EVERY droppable in the context. When dragging a GROUP
         // HEADER, the pointer often lands inside a tile sortable (tile bodies
         // are much larger than the 40px header row) and `over.id` becomes
@@ -1040,8 +1040,8 @@ export function GroupGrid({
                         // Remove the group header; sessions inside it survive
                         // (the reconciler floats them into Ungrouped). Also
                         // drop the per-group sort-mode + collapsed
-                        // localStorage rows so dead keys don't accumulate (M4
-                        // hygiene + the matching collapse-row cleanup).
+                        // localStorage rows so dead keys don't accumulate
+                        // (hygiene + the matching collapse-row cleanup).
                         removeGroupSortMode(section.groupId)
                         removeCollapsed('overview', section.groupId)
                         const next = layoutItems.filter(
@@ -1291,9 +1291,9 @@ function GroupSection({
       // Container indication — a smart-sort dest gets a tinted outline + bg;
       // a custom-sort dest gets a quieter outline (the inter-tile line owns
       // the precision). Duration + easing source-of-truth is
-      // `tweens.containerIndicate` in @/lib/springs (S10 — Tailwind classes
+      // `tweens.containerIndicate` in @/lib/springs (Tailwind classes
       // mirror that token: 350ms ease-out). Under prefers-reduced-motion the
-      // tween is dropped (M3) — the colour swap is instant.
+      // tween is dropped — the colour swap is instant.
       className={`relative rounded-lg transition-[background-color,box-shadow,border-color] duration-[350ms] ease-out motion-reduce:transition-none ${
         containerIndicate === 'smart'
           ? 'bg-primary/5 outline outline-2 outline-primary/40'
@@ -1739,7 +1739,7 @@ function SortableRow({
   )
 }
 
-// Tile wrapper — WHOLE-CARD drag hit target (M1).
+// Tile wrapper — WHOLE-CARD drag hit target.
 //
 // Listeners are spread on the ROOT so any pixel of the tile can initiate a
 // drag — the Trello/Linear/Notion pattern. Click-vs-drag is differentiated
@@ -1902,7 +1902,7 @@ function TileMoveToKebab({
   // item; the hook decides whether to RUN it.
   const { busy, stop, archive } = useSessionActions(sessionName)
 
-  // FEAT-SESSION-INFO — the SAME panel the focus-page title-click opens,
+  // Session info — the SAME panel the focus-page title-click opens,
   // hosted here for overview parity. Desktop = anchored Popover (we pass
   // `infoAnchorRef` as the trigger), mobile = bottom Sheet (the panel forks
   // internally; no anchor needed for the touch path through the kebab).
@@ -1930,7 +1930,7 @@ function TileMoveToKebab({
   const triggerClassName =
     variant === 'tile'
       ? // Overlay on the top-right of the tile (the drag affordance is
-        // decorative-only since M1; the kebab is the only INTERACTIVE button
+        // decorative-only — the kebab is the only INTERACTIVE button
         // in the corner). Same hover-reveal pattern: invisible at rest on
         // fine pointers, always visible on coarse. ≥44pt touch target.
         'absolute right-1 top-1 z-20 flex size-9 items-center justify-center rounded-md bg-card/80 text-muted-foreground/60 backdrop-blur-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100 touch-none [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:opacity-100 [@media(pointer:fine)]:opacity-0'
@@ -2039,7 +2039,7 @@ function TileMoveToKebab({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* FEAT-SESSION-INFO — same component as the focus-page title-click.
+      {/* Session info — same component as the focus-page title-click.
           Desktop forks to an anchored Popover (positions against the kebab
           trigger), mobile forks to the bottom Sheet. Cloning navigates to the
           new focus route via the morph navigation helper so the View

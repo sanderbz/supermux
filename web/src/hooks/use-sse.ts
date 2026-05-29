@@ -1,5 +1,4 @@
-// useSse — the single source of real-time truth for the dashboard (TECH_PLAN
-// §M12; §3.6 hero data flow). M10 shipped this as a typed stub; M12 fills it in.
+// useSse — the single source of real-time truth for the dashboard.
 //
 // ONE EventSource to `/api/events`, fanned out to per-event-type callbacks. SSE
 // is the only live channel for metadata + status — there is NO polling fallback
@@ -13,11 +12,11 @@
 // Earlier versions opened one EventSource INSIDE each hook call's effect, so
 // `useSessions` + `useBoard` + `useScheduler` + the always-mounted
 // `<CommandPalette>` each held their own SSE channel against `/api/events` and
-// the server fan-out scaled linearly with mount points. R3-202 collapsed all of
+// the server fan-out scaled linearly with mount points. A consolidation collapsed all of
 // those onto a single shared client; the public hook API (`useSse(handlers) →
 // {status,lastDataAt}`) is unchanged, the change is purely internal.
 //
-// Reliability (Eng P1 #5): auto-reconnect with 300ms × 2^n backoff capped at
+// Reliability: auto-reconnect with 300ms × 2^n backoff capped at
 // 30s, plus ±20% decorrelated jitter from day one (no thundering herd on a
 // server restart). A staleness watchdog declares the stream dead after 18s of
 // silence and forces a reconnect (some proxies hold a half-open SSE connection
@@ -39,26 +38,26 @@
 // uses the auth layer's `?_token=` fallback (server/src/auth.rs accepts it).
 // The subagent prompt asked for `Authorization: Bearer`, but that is physically
 // impossible for the browser `EventSource` API — the `?_token=` query is the
-// documented, server-supported equivalent and is what the M19 board hook uses
+// documented, server-supported equivalent and is what the board hook uses
 // too. The token is read from `window` at runtime — NEVER embedded in source.
 
 import * as React from 'react'
 
 export type SseStatus = 'connecting' | 'open' | 'closed'
 
-/** Known SSE event types (§3.4). The payload shape is event-specific; callers
+/** Known SSE event types. The payload shape is event-specific; callers
  *  parse it. `ping` is a 10s keep-alive — it only resets the staleness clock. */
 export type SseEventType =
   | 'sessions'
   | 'board'
-  // AT-C: the boards list (switcher options) — re-published when a board is
+  // The boards list (switcher options) — re-published when a board is
   // created / renamed / deleted / registered for a team.
   | 'boards'
   | 'schedules'
   | 'alerts'
   | 'status'
   | 'prefs'
-  // AT-B: experimental settings toggles (e.g. `experimental.agent_teams`) —
+  // Experimental settings toggles (e.g. `experimental.agent_teams`) —
   // payload `{ key, enabled }`, routed by `use-settings.ts`.
   | 'settings'
   | 'teams'
@@ -93,7 +92,7 @@ const RESYNC_MS = 4_000 // refetch on focus if data older than this
 // cheap (one extra GET) and the only deterministic way to recover a zombie one.
 const WAKE_RECONNECT_IF_SILENT_MS = 2_000
 
-/** Decorrelated ±20% jitter (Eng P1 #5) so simultaneous clients don't reconnect
+/** Decorrelated ±20% jitter so simultaneous clients don't reconnect
  *  in lockstep after a server bounce. */
 function jitter(ms: number): number {
   const spread = ms * 0.2
@@ -430,7 +429,7 @@ export function useSse(handlers: SseHandlers = {}): UseSseResult {
  * Read-only view of the shared SSE connection state. Use this when you only
  * need the status (e.g. registering with the global connection-store at the
  * shell level) and don't want to add another subscriber that holds the channel
- * open. Mount once at `<Layout>` for the ReconnectBanner link (R3-202).
+ * open. Mount once at `<Layout>` for the ReconnectBanner link.
  */
 export function useSseStatus(): UseSseResult {
   const [snapshot, setSnapshot] = React.useState<UseSseResult>(() => ({

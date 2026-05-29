@@ -1,8 +1,7 @@
-//! Prefs / snippets / kbd_groups row access (TECH_PLAN §3.3).
+//! Prefs / snippets / kbd_groups row access.
 //!
-//! M1 declared the structs; M9 attaches the CRUD queries used by the snippet
-//! picker (§4.4.1) and the swipeable kbd accessory bar (§4.4.2). Runtime-checked
-//! queries — see the note in [`super::sessions`].
+//! CRUD queries used by the snippet picker and the swipeable kbd accessory bar.
+//! Runtime-checked queries — see the note in [`super::sessions`].
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -30,7 +29,7 @@ pub struct Snippet {
 pub struct KbdGroup {
     pub id: i64,
     pub name: String,
-    /// JSON array `[{label,key}, …]`, length 4 (§3.3).
+    /// JSON array `[{label,key}, …]`, length 4.
     pub keys: String,
     pub position: i64,
 }
@@ -59,7 +58,7 @@ pub async fn put_pref(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result
     Ok(())
 }
 
-/// The `prefs` key holding the global experimental "Agent Teams" toggle (AT-B).
+/// The `prefs` key holding the global experimental "Agent Teams" toggle.
 /// Stored in the existing `prefs` k/v table so no migration is needed; value is
 /// the literal string `"on"` (any other value, or an absent row, reads OFF).
 /// Default OFF — Agent Teams is experimental AND carries the ~7× token cost of N
@@ -221,11 +220,11 @@ pub async fn update_kbd_group(
     Ok(affected)
 }
 
-/// Replace the WHOLE ordered `kbd_groups` list in one transaction (M24b
-/// integration fix — the M16 manage-sheet's reorder / add / remove collapse to
-/// a single canonical PUT so the table is never left half-written). Each input
-/// is `(name, keys_json)`; `position` is the slice index. The table is cleared
-/// and re-inserted atomically — a failure rolls back to the prior state.
+/// Replace the WHOLE ordered `kbd_groups` list in one transaction — the
+/// manage-sheet's reorder / add / remove collapse to a single canonical PUT so
+/// the table is never left half-written. Each input is `(name, keys_json)`;
+/// `position` is the slice index. The table is cleared and re-inserted
+/// atomically — a failure rolls back to the prior state.
 pub async fn replace_kbd_groups(
     pool: &SqlitePool,
     groups: &[(String, String)],
@@ -252,7 +251,7 @@ pub async fn delete_kbd_group(pool: &SqlitePool, id: i64) -> sqlx::Result<u64> {
     Ok(res.rows_affected())
 }
 
-/// Count rows in `kbd_groups` (used to decide first-GET default seeding §M9).
+/// Count rows in `kbd_groups` (used to decide first-GET default seeding).
 pub async fn count_kbd_groups(pool: &SqlitePool) -> sqlx::Result<i64> {
     let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM kbd_groups")
         .fetch_one(pool)
@@ -262,9 +261,8 @@ pub async fn count_kbd_groups(pool: &SqlitePool) -> sqlx::Result<i64> {
 
 #[cfg(test)]
 mod agent_teams_pref_tests {
-    //! AT-B §3.1: the Agent-Teams gate MUST default OFF and fail closed — the
-    //! whole cost-control guarantee rides on this. Pin the default + the
-    //! round-trip.
+    //! The Agent-Teams gate MUST default OFF and fail closed — the whole
+    //! cost-control guarantee rides on this. Pin the default + the round-trip.
     use super::*;
     use crate::config::Config;
 

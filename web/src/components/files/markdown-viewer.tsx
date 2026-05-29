@@ -63,7 +63,7 @@ function parentDir(absPath: string): string {
  *  parent dir. Absolute URLs (`http(s):`, `mailto:`, `data:`) pass through;
  *  anchors (`#foo`) and absolute paths (`/abs/...`) pass through; everything
  *  else is joined to `base`. Path traversal segments (`..`, `.`) are folded so
- *  the resolved path stays canonical — the M7 backend then re-validates the
+ *  the resolved path stays canonical — the backend then re-validates the
  *  result with its own path-safety check before serving any bytes. */
 function resolveHref(href: string | undefined, base: string): string | undefined {
   if (!href) return href

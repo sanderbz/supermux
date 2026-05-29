@@ -5,7 +5,7 @@ import type { UseLiveTermResult } from '@/hooks/use-live-term'
 //
 // On hover, a tile swaps its static tail for a LIVE terminal: the agent's REAL
 // pty, real ANSI colours, updating live — "the full window but smaller —
-// readable at a glance" (the user's exact ask). It REUSES the M13
+// readable at a glance" (the user's exact ask). It REUSES the existing
 // <LiveTerminal> verbatim (read-only embed: no keystrokes) — xterm is not
 // reimplemented.
 //
@@ -38,7 +38,7 @@ import type { UseLiveTermResult } from '@/hooks/use-live-term'
 const ZOOM_FONT_SIZE = 12
 
 export interface TileLiveTerminalProps {
-  /** Session name → the M4 WS route `/ws/sessions/:name`. */
+  /** Session name → the WS route `/ws/sessions/:name`. */
   name: string
   /** Tile content width in px — retained for API stability; the terminal now
    *  fits itself to the container so this is informational only. */
@@ -57,7 +57,7 @@ export interface TileLiveTerminalProps {
   onSettled?: () => void
   /** Type-on-hover: capture the imperative handle (`send`/`sendKey`) so the
    *  parent's document-level keydown listener can pipe keystrokes through the
-   *  existing M13 wire. The terminal stays `readOnly` (no DOM-level stdin, no
+   *  existing live-terminal wire. The terminal stays `readOnly` (no DOM-level stdin, no
    *  global-banner registration, no xterm focus surprises) — the new
    *  `allowProgrammaticInput` flag lets the parent send anyway. */
   onReady?: (term: UseLiveTermResult) => void
@@ -69,7 +69,7 @@ export interface TileLiveTerminalProps {
  *  gates it on hover).
  *
  *  Stays `readOnly` so xterm's own stdin/tabindex/banner-registration paths
- *  stay disabled. When the parent wires `onReady`, the M13
+ *  stay disabled. When the parent wires `onReady`, the
  *  `allowProgrammaticInput` flag opens the `send`/`sendKey` imperative surface
  *  for the type-on-hover keydown listener WITHOUT changing any of the other
  *  readOnly side-effects (Steve-Jobs bar: change one thing at a time). The

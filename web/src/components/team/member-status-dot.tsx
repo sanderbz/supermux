@@ -1,7 +1,7 @@
-// MemberStatusDot — the leading status indicator for a teammate (AT-F-FRONT).
+// MemberStatusDot — the leading status indicator for a teammate.
 //
 // The teammate analogue of <StatusDot> (session-tile/status-dot.tsx), mapping the
-// AT-B derived MemberStatus → the SAME visual language the rest of the app uses,
+// derived MemberStatus → the SAME visual language the rest of the app uses,
 // so a teammate reads at a glance next to the lead's session tile:
 //   working  → amber spinner (reuses the `sm-status-spinner` keyframe — "busy,
 //              hang on", the only dot that moves; spins even under Reduce Motion

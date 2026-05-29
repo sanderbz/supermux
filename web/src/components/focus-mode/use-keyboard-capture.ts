@@ -1,8 +1,8 @@
-// useKeyboardCapture — M14 (TECH_PLAN §4.4 desktop, "Keyboard capture").
+// useKeyboardCapture — desktop keyboard capture.
 //
-// PRINCIPLE critic — REAL keyboard capture: a single document-level `keydown`
-// listener, registered in a useEffect on mount and removed on unmount. It
-// intercepts the focus-route-only global shortcut bank:
+// REAL keyboard capture: a single document-level `keydown` listener, registered
+// in a useEffect on mount and removed on unmount. It intercepts the focus-
+// route-only global shortcut bank:
 //
 //   ⌘/Ctrl+D  → Detach (navigate to overview, session kept alive)
 //   ⌘/Ctrl+W  → Stop session, then leave
@@ -12,7 +12,7 @@
 // <Layout> owns that shortcut so it works on every route, not just /focus.
 //
 // EVERY other key flows through to xterm: we do NOT preventDefault, so xterm's
-// own `onData` (the M13 hook) carries Ctrl-C, arrows, Tab, Shift+Tab/BTab, Esc,
+// own `onData` hook carries Ctrl-C, arrows, Tab, Shift+Tab/BTab, Esc,
 // printable text, IME composition — all of it — straight to the pty. Capturing
 // Ctrl-C/Tab here would break the terminal, which is the whole point.
 

@@ -1,4 +1,4 @@
-// useLongPress — press-and-hold detector (TECH_PLAN §4.3, 350ms).
+// useLongPress — press-and-hold detector (350ms).
 //
 // Powers the mobile tile's long-press → quick-peek. Cancels if the pointer
 // drifts past `moveTolerance`px so it never fires mid-scroll. A short press
@@ -11,7 +11,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 export interface LongPressOptions {
   onLongPress: () => void
   onClick?: () => void
-  /** Hold duration before long-press fires. §4.3 = 350ms. */
+  /** Hold duration before long-press fires. Default 350ms. */
   ms?: number
   /** Drift (px) that cancels the press — treats it as a scroll. */
   moveTolerance?: number

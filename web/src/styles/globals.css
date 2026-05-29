@@ -1,14 +1,14 @@
 /* Tailwind v4 — CSS-first config (wired via @tailwindcss/vite, see vite.config.ts).
-   Semantic design tokens land here per TECH_PLAN §M10 / §4.8. The palette is
+   Semantic design tokens land here. The palette is
    grounded in iOS system colors (HIG): true-black OLED background in dark,
    systemBlue brand tint, systemGreen/Blue/Red status colors, opaqueSeparator
    borders. Dark is the default theme; `.dark` is applied to <html> by
    <ThemeProvider> before first paint.
 
-   The *brand* layer (M28) lives alongside the semantic palette: a single amber
+   The *brand* layer lives alongside the semantic palette: a single amber
    brand tint (`--brand`), the status-color story, and the splash/background.
    Brand values are stored as bare HSL triples (no hsl() wrapper) so callers can
-   add an alpha channel: `hsl(var(--brand) / 0.5)` — exactly as §4.3 expects.
+   add an alpha channel: `hsl(var(--brand) / 0.5)`.
    web/src/brand/tokens.ts mirrors these for TS consumers. Note: shadcn's
    semantic `--accent` (subtle hover fill) is distinct from the `--brand` amber. */
 @import "tailwindcss";
@@ -44,7 +44,7 @@
 
 /* ── Light theme (iOS light system colors) ───────────────────────────────── */
 :root {
-  --radius: 0.75rem; /* 12px — matches the session-tile rounded-xl spec (§4.3) */
+  --radius: 0.75rem; /* 12px — matches the session-tile rounded-xl spec */
 
   --background: #ffffff;            /* systemBackground */
   --foreground: #000000;           /* label */
@@ -72,11 +72,11 @@
 
   --warning: #ff9500;              /* systemOrange — reconnecting banner tint */
 
-  /* Terminal surface (read by useLiveTerm at mount, §4.5) */
+  /* Terminal surface (read by useLiveTerm at mount). */
   --terminal-bg: #ffffff;
   --terminal-fg: #1d1d1f;
 
-  /* ── Brand (M28) — theme-independent, inherited by .dark ──────────────────
+  /* ── Brand — theme-independent, inherited by .dark ──────────────────
      Single source of truth: web/src/brand/tokens.ts mirrors these values for
      TS consumers. Stored as bare HSL triples (no hsl() wrapper) so callers can
      add an alpha channel: hsl(var(--brand) / 0.5). */
@@ -86,13 +86,13 @@
   --brand: 38 92% 58%; /* #f6ae31 */
 
   /* Status story (user-vision.md: running / waiting / ready / error / stopped).
-     M28 owns these values — consumed as hsl(var(--status-*)) by <Toast/> and
+     Consumed as hsl(var(--status-*)) by <Toast/> and
      tiles. Five tokens, one per Status enum variant (server/src/sessions/status.rs):
      active/waiting/ready map to running/needs-input/idle-but-alive, and the
      muted grey is reserved for STOPPED — so the dot actually differentiates the
      "agent is alive but quiet" state from "agent is off". */
   --status-active: 38 92% 58%;   /* amber pulse — same family as --brand */
-  --status-waiting: 214 95% 60%; /* calm blue — "needs input" (§4.3) */
+  --status-waiting: 214 95% 60%; /* calm blue — needs input */
   --status-ready: 152 60% 45%;   /* calm green — idle-but-ready (turn ended) */
   --status-error: 24 90% 56%;    /* calm orange, never alarmist red */
   --status-idle: 0 0% 45%;       /* dim neutral — stopped / unknown */
@@ -100,7 +100,7 @@
 
 /* ── Dark theme (iOS dark system colors; the default) ─────────────────────── */
 .dark {
-  --background: #0a0a0a;           /* brand splash (M28) — matches manifest
+  --background: #0a0a0a;           /* brand splash — matches manifest
                                       background_color + index.html theme-color
                                       so the PWA splash has no flash of white */
   --foreground: #ffffff;           /* label */
@@ -131,7 +131,7 @@
   --terminal-bg: #000000;
   --terminal-fg: #e5e5e7;
 
-  /* --brand and --status-* are theme-independent (M28); inherited from :root. */
+  /* --brand and --status-* are theme-independent; inherited from :root. */
 }
 
 /* ── Map CSS variables → Tailwind color/utility namespace (v4 @theme) ──────── */
@@ -158,7 +158,7 @@
 
   --color-warning: var(--warning);
 
-  /* Brand + status story (M28): bare-triple vars wrapped here so the Tailwind
+  /* Brand + status story: bare-triple vars wrapped here so the Tailwind
      namespace (bg-brand, bg-status-active, …) yields valid colors, while the
      raw triples stay available to hsl(var(--…) / α) callers. */
   --color-brand: hsl(var(--brand));
@@ -173,7 +173,7 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* SF Pro / SF Mono with system fallbacks (iOS-native typography, §spec).
+  /* SF Pro / SF Mono with system fallbacks (iOS-native typography).
      --font-mono leads with the embedded Nerd Font (Powerline + icon coverage
      — see the @font-face block above and /fonts/NOTICE.md) so the live
      terminal AND the static tile ANSI preview render shell-prompt glyphs as
@@ -186,7 +186,7 @@
     "Liberation Mono", monospace;
 }
 
-/* ── Safe-area utilities (PWA / Capacitor, §4.8 — no extra plugin needed) ──── */
+/* ── Safe-area utilities (PWA / Capacitor — no extra plugin needed) ──── */
 @utility pt-safe {
   padding-top: env(safe-area-inset-top);
 }
@@ -234,7 +234,7 @@
   overscroll-behavior: contain;
 }
 
-/* ── Glass material (M20 — iOS-native bars; termius-ios-native-spec §Material) ─
+/* ── Glass material (iOS-native bars; termius-ios-native-spec §Material) ─
    Regular Liquid-Glass analogue for toolbars/headers above content: a
    translucent surface (mixed from the semantic --card token so it tracks the
    theme) plus a backdrop blur + saturation lift. The blur is what reads as
@@ -311,7 +311,7 @@
     -moz-osx-font-smoothing: grayscale;
     /* Prevent overscroll bounce revealing white behind the app shell. */
     overscroll-behavior: none;
-    /* Safe-area support (§4.8) — HORIZONTAL ONLY (SD-6). Every route, nav, sheet
+    /* Safe-area support — HORIZONTAL ONLY. Every route, nav, sheet
        and the focus header already owns its OWN top/bottom inset (pt-safe /
        pb-safe), so insetting top/bottom HERE too stacked a second band on top of
        theirs (and with the reconnect-banner row, a third at the top) — a big
@@ -324,15 +324,15 @@
   }
 }
 
-/* ── M15: focus-mode mobile sheet — detent snap timing (APPENDED) ─────────────
+/* ── Focus-mode mobile sheet — detent snap timing (APPENDED) ─────────────
    The Vaul drag-detent sheet (components/focus-mode/mobile-sheet.tsx) is the
    marquee mobile interaction. Vaul applies its snap as an inline
    `transition: transform .5s cubic-bezier(.32,.72,0,1)`; we retune it to Apple's
    sheet feel `.spring(response:0.45, dampingFraction:0.82)` — response 0.45s with
    the established iOS-detent curve (near-critical, no overshoot, matching damping
    ~0.82). `!important` is required because Vaul writes the transition inline.
-   Appended at the file tail (never the shared token blocks) so the parallel
-   M9/M12/M14 agents editing globals.css never conflict. */
+   Appended at the file tail (never the shared token blocks) so parallel
+   agents editing globals.css never conflict. */
 [data-vaul-drawer][data-vaul-snap-points='true'] {
   transition: transform 0.45s cubic-bezier(0.32, 0.72, 0, 1) !important;
 }
@@ -343,7 +343,7 @@
   }
 }
 
-/* ── M23a: View Transitions — route-morph physics (APPENDED) ───────────────────
+/* ── View Transitions — route-morph physics (APPENDED) ───────────────────
    `navigateMorph()` (components/view-transitions/morph.tsx) wraps route changes
    in `document.startViewTransition`. The browser generates a `::view-transition`
    pseudo-tree; these rules tune its motion to the iOS-native feel.
@@ -354,8 +354,8 @@
    `view-transition-name` as the focus header — see `vtSessionName()`) are
    tweened position+size by the UA; we just give them a matching duration +
    curve so the tile→header morph reads as one continuous motion, never longer
-   than 400 ms (criterion #19). Appended at the file tail so the parallel
-   M9/M12/M14 agents editing the shared token blocks never conflict. */
+   than 400 ms (criterion #19). Appended at the file tail so parallel
+   agents editing the shared token blocks never conflict. */
 ::view-transition-group(*) {
   animation-duration: 0.28s;
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
@@ -394,7 +394,7 @@
   animation: sm-status-spin 0.9s linear infinite;
 }
 
-/* ── Edit sheet (feat-mobile-edit-refit Stage 1) ──────────────────────────────
+/* ── Edit sheet ──────────────────────────────
    The MobileComposeSheet's textarea is prose for an LLM, not code — system font
    (not mono), with the iOS systemBlue accent for the caret + selection so the
    surface reads as a native iOS edit screen. The class is scoped to the sheet's
@@ -419,7 +419,7 @@
   background-color: color-mix(in srgb, var(--primary) 28%, transparent);
 }
 
-/* ── Rendered Markdown syntax-highlight palette (M-MD) ────────────────────────
+/* ── Rendered Markdown syntax-highlight palette ────────────────────────
    The MarkdownViewer pipes fenced code blocks through `rehype-highlight`
    (lowlight + highlight.js core), which tags spans with `.hljs-*` class names.
    Instead of importing a stock highlight.js stylesheet (which would lock the

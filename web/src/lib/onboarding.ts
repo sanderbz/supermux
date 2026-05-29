@@ -1,11 +1,11 @@
-// First-launch / onboarding state (M27 — Time to Wow).
+// First-launch / onboarding state — Time to Wow.
 //
 // The whole "first 60 seconds" experience keys off ONE localStorage flag:
 // `supermux-first-launch`. Absent → this is a brand-new install and the
 // unboxing surfaces (welcome banner + tour, or the demo-agent CTA) are eligible
 // to show. Present → the user has been here; everything stays quiet.
 //
-// Two branches are decided at runtime by the OnboardingHost (§M27):
+// Two branches are decided at runtime by the OnboardingHost:
 //   1. v2 data was migrated  — sessions exist AND the flag is absent → a
 //      non-blocking "welcome back" banner + a 4-step tour overlay.
 //   2. fresh, no sessions yet — the overview's own empty state carries the

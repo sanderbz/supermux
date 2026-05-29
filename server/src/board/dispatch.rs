@@ -1,4 +1,4 @@
-//! Board→agent dispatch payload (TECH_PLAN board-integration §C.1; S3).
+//! Board→agent dispatch payload.
 //!
 //! When an agent-owned issue is claimed for (or assigned to) a session, we inject
 //! the issue's full context into that session via the existing steering
@@ -6,7 +6,7 @@
 //! `lifecycle::send_text`). The payload assembled here is a self-describing
 //! message: it carries the issue title + acceptance items + description + linked
 //! branch/files + recent comments, and a footer that teaches the agent how to
-//! report back through the agent→board hook endpoints (AB1). No new delivery
+//! report back through the agent→board hook endpoints. No new delivery
 //! machinery — we only build the text the deliver-loop will send.
 
 use sqlx::SqlitePool;
@@ -80,8 +80,8 @@ pub async fn build_payload(
 /// are the agent→board hook router (`/api/hook/board/*`), which scope every write
 /// to the authenticated session's own issue.
 ///
-/// It LEADS with the two terminal actions and the explicit decision rule
-/// (board-redesign §3): when you stop you are in exactly one of two situations —
+/// It LEADS with the two terminal actions and the explicit decision rule:
+/// when you stop you are in exactly one of two situations —
 /// `done` or `needs-input`. There is no `review` column and no arbitrary status.
 fn footer(id: &str) -> String {
     format!(

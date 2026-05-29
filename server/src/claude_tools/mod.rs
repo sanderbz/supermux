@@ -1,10 +1,10 @@
-//! Claude tools manager — MCP servers, skills, slash-commands (skills-mcp-manager
-//! plan §C). The READ side parses Claude's config FILES directly (fast, no process
-//! spawning, fully under our atomic-write control so we can mask secrets); the
-//! `claude` CLI is shelled out to ONLY for the opt-in live health/connected badge
+//! Claude tools manager — MCP servers, skills, slash-commands. The READ side
+//! parses Claude's config FILES directly (fast, no process spawning, fully
+//! under our atomic-write control so we can mask secrets); the `claude` CLI is
+//! shelled out to ONLY for the opt-in live health/connected badge
 //! (`POST /api/claude/mcp/{name}/check`), never on a plain list-read.
 //!
-//! **Three MCP scopes, two files** (plan §A.1, verified against this host's
+//! **Three MCP scopes, two files** (verified against this host's
 //! `~/.claude.json`):
 //!   * `user`    → `~/.claude.json` top-level `mcpServers` (all projects)
 //!   * `local`   → `~/.claude.json` → `projects[<cwd>].mcpServers` (that cwd only)
@@ -12,7 +12,7 @@
 //! Plus read-only sources surfaced for honesty: plugin skills/commands, supermux-
 //! managed commands, and Claude's built-in slash commands.
 //!
-//! **Secret hygiene (load-bearing, plan §C.4).** Every MCP `env`/`headers` VALUE
+//! **Secret hygiene (load-bearing).** Every MCP `env`/`headers` VALUE
 //! is replaced with a masked sentinel before serialization — raw secret values
 //! never reach the client or the logs. Reveal re-fetches the masked preview only;
 //! secrets are write-only on the way IN.
@@ -24,7 +24,7 @@
 //! session's working dir via [`crate::files::path_safe::resolve_safe`]; the
 //! git-tracked `.mcp.json` requires an explicit confirm flag.
 //!
-//! **Router-registry pattern (§3.4).** [`router_for`] returns this module's
+//! **Router-registry pattern.** [`router_for`] returns this module's
 //! sub-router; `http::router` merges it into the bearer-protected router — one
 //! module + one `.merge` line, no shared-file conflict.
 
@@ -66,7 +66,7 @@ impl Scope {
 }
 
 /// Build the claude-tools sub-router (bearer-protected; the layer is applied by
-/// `http::router`). One module + one `.merge` line — the §3.4 registry pattern.
+/// `http::router`). One module + one `.merge` line — the registry pattern.
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         // READ: parse files directly, mask secrets, group by scope+provenance.

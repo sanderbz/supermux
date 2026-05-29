@@ -1,5 +1,5 @@
 //! Web push notifications — VAPID keypair, subscription endpoints, and the
-//! server-side `send_push` fan-out (PUSH milestone; spec TRACK 2).
+//! server-side `send_push` fan-out.
 //!
 //! **What this gives the user.** Their phone (or any installed PWA / desktop
 //! browser) gets a notification the moment an agent needs them — it transitions

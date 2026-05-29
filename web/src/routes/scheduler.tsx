@@ -1,4 +1,4 @@
-// Scheduler route — the schedule list on the M8 backend. Columns: title /
+// Scheduler route — the schedule list backend. Columns: title /
 // human schedule / next-run / last-run / enable-toggle. The `+` button and the
 // row click both open the SAME <ScheduleDetailSheet> (a full-height right Sheet)
 // — `create` mode (combined prompt field with inline `/` autocomplete +

@@ -1,4 +1,4 @@
-//! Watch-mode poller (TECH_PLAN §3.8; feature-extract §4.6).
+//! Watch-mode poller.
 //!
 //! After a `watch=1` tmux schedule fires, [`spawn`] watches the target session
 //! for the agent finishing its turn via TWO complementary signals — whichever
@@ -117,7 +117,7 @@ async fn poll(state: AppState, sched: Schedule, pre_output: String) {
     loop {
         // Race the 5s legacy poll against any structural status transition.
         // `status_rx.changed()` fires the moment the detector commits ANY new
-        // status (M5b: flap-debounced, DB-first then watch send), so an idle
+        // status (flap-debounced, DB-first then watch send), so an idle
         // transition reaches us within ~50ms of being decided — orders of
         // magnitude faster than the legacy 5s poll, and works with ZERO
         // configured `done_pattern`.

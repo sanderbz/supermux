@@ -1,11 +1,11 @@
-//! Session row access (TECH_PLAN §3.3 `sessions` + `session_runtime`).
+//! Session row access (`sessions` + `session_runtime` tables).
 //!
 //! Queries are runtime-checked (`sqlx::query_as::<_, T>`) rather than the
 //! compile-time `query_as!` macro: the macro requires a live `DATABASE_URL` (or
 //! a committed `.sqlx` offline cache) at build time, which would make the
 //! orchestrator's hermetic `cargo build`/`cargo test` non-deterministic and add
-//! a hidden coupling for every downstream milestone that adds a query. The
-//! `FromRow` structs still give us typed rows.
+//! a hidden coupling for every downstream query addition. The `FromRow`
+//! structs still give us typed rows.
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -50,10 +50,9 @@ pub struct Session {
     /// config to / from `~/.claude/teams/.archived/` so an archived team can't
     /// shadow a new team that lands in the same cwd.
     pub team_name: Option<String>,
-    /// FK into `hosts(id)` for remote sessions, `NULL` for local (RT4 of the
-    /// remote-ssh plan, migration 0018). The entire pre-RT4 fleet backfills to
-    /// `NULL` so existing call sites that don't yet pass a host_id keep their
-    /// local-only semantics.
+    /// FK into `hosts(id)` for remote sessions, `NULL` for local (migration
+    /// 0018). The entire pre-remote-host fleet backfills to `NULL` so existing
+    /// call sites that don't yet pass a host_id keep their local-only semantics.
     pub host_id: Option<i64>,
 }
 
@@ -72,7 +71,7 @@ pub struct SessionRuntime {
     /// preview source — see migration 0008). Empty until the first capture.
     #[serde(default)]
     pub last_capture_ansi: String,
-    /// Per-session hook auth token (§6.5). Never the dashboard bearer.
+    /// Per-session hook auth token. Never the dashboard bearer.
     pub hook_token: String,
 }
 
@@ -102,10 +101,10 @@ pub async fn list_archived(pool: &SqlitePool) -> sqlx::Result<Vec<Session>> {
 }
 
 /// Live (non-archived) session name → last_status, for the board's per-card
-/// status dot (board-redesign §4). One query joins `sessions` (the liveness
-/// filter) with `session_runtime` (the status), so the board loader gets every
-/// card's dot in O(1) round-trips instead of one probe per card. Sessions with
-/// no runtime row default to `unknown`.
+/// status dot. One query joins `sessions` (the liveness filter) with
+/// `session_runtime` (the status), so the board loader gets every card's dot
+/// in O(1) round-trips instead of one probe per card. Sessions with no runtime
+/// row default to `unknown`.
 pub async fn live_statuses(
     pool: &SqlitePool,
 ) -> sqlx::Result<std::collections::HashMap<String, String>> {
@@ -140,7 +139,7 @@ pub async fn runtime(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<Sessi
 }
 
 /// Insert a minimal session row (used by tests and as a building block for the
-/// full `sessions::create` landing in M2). `created_at` is set to now.
+/// full `sessions::create` path). `created_at` is set to now.
 pub async fn insert_minimal(
     pool: &SqlitePool,
     name: &str,
@@ -219,7 +218,7 @@ pub async fn list_runtimes(pool: &SqlitePool) -> sqlx::Result<Vec<SessionRuntime
 ///
 /// NOTE: an *archived* row still satisfies this (it is not DELETEd by
 /// `archive`). Per-session background loops MUST use [`exists_active`] for their
-/// lifetime check so an archived session terminates them (R1-1).
+/// lifetime check so an archived session terminates them.
 pub async fn exists(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> {
     let row = sqlx::query("SELECT 1 FROM sessions WHERE name = ?")
         .bind(name)
@@ -232,8 +231,8 @@ pub async fn exists(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> {
 /// for per-session background tasks (the 2s status detector and the steering
 /// deliver loop): `archive` sets `archived = 1` without DELETEing the row, so a
 /// guard on bare [`exists`] would never see an archived session as gone and the
-/// loops would tick forever (R1-1). Filtering on `archived = 0` makes an
-/// archived session terminate its loops just like a deleted one.
+/// loops would tick forever. Filtering on `archived = 0` makes an archived
+/// session terminate its loops just like a deleted one.
 pub async fn exists_active(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> {
     let row = sqlx::query("SELECT 1 FROM sessions WHERE name = ? AND archived = 0")
         .bind(name)
@@ -242,7 +241,7 @@ pub async fn exists_active(pool: &SqlitePool, name: &str) -> sqlx::Result<bool> 
     Ok(row.is_some())
 }
 
-/// Config fields for a brand-new session (the tmux-free create path, M2). Runtime
+/// Config fields for a brand-new session (the tmux-free create path). Runtime
 /// counters and timestamps default to 0; `created_at` is set by [`create`].
 #[derive(Debug, Clone)]
 pub struct NewSession {
@@ -255,7 +254,7 @@ pub struct NewSession {
     pub provider: String,
     pub creator: String,
     pub flags: String,
-    /// JSON-array string (the `tags` column is a JSON array, §3.3).
+    /// JSON-array string (the `tags` column is a JSON array).
     pub tags: String,
     pub branch: String,
     pub mcp: String,
@@ -448,7 +447,7 @@ pub async fn toggle_auto_continue(pool: &SqlitePool, name: &str) -> sqlx::Result
     Ok(())
 }
 
-// ── lifecycle mutations (M3) ──────────────────────────────────────────────────
+// ── lifecycle mutations ──────────────────────────────────────────────────────
 
 /// Record a successful start: bump `start_count`, stamp `last_started = now`.
 pub async fn bump_start(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
@@ -485,7 +484,7 @@ pub async fn set_archived(pool: &SqlitePool, name: &str, archived: bool) -> sqlx
 }
 
 /// Clear the Claude resume identifiers (used by the resume-picker fallback when
-/// `--resume` gets stuck — §1.5 of feature-extract).
+/// `--resume` gets stuck).
 pub async fn clear_cc(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
     sqlx::query("UPDATE sessions SET cc_session_name = '', cc_conversation_id = '' WHERE name = ?")
         .bind(name)
@@ -521,10 +520,10 @@ pub async fn set_hibernated(pool: &SqlitePool, name: &str, hibernated: bool) -> 
 }
 
 /// Write `session_runtime.last_capture` (+ the parallel ANSI-preserved capture) —
-/// the canonical tile-tail-preview source (CEO #1). The M5a detector loop calls
-/// this EVERY 2s tick (classification or not). `capture` is ANSI-stripped (the
-/// status detector regex bank reads it); `capture_ansi` keeps the SAME tail with
-/// its SGR escapes intact so `SessionView.preview_ansi` can render colour-true.
+/// the canonical tile-tail-preview source. The detector loop calls this EVERY
+/// 2s tick (classification or not). `capture` is ANSI-stripped (the status
+/// detector regex bank reads it); `capture_ansi` keeps the SAME tail with its
+/// SGR escapes intact so `SessionView.preview_ansi` can render colour-true.
 pub async fn set_last_capture(
     pool: &SqlitePool,
     name: &str,
@@ -542,9 +541,10 @@ pub async fn set_last_capture(
     Ok(())
 }
 
-/// Set the live status + timestamp in `session_runtime`. The detector (M5) is the
-/// usual writer; M3 sets `active`/`stopped` on start/stop so the API reflects the
-/// lifecycle before the detector lands. Status must be a `last_status` CHECK value.
+/// Set the live status + timestamp in `session_runtime`. The detector is the
+/// usual writer; the lifecycle path sets `active`/`stopped` on start/stop so
+/// the API reflects the lifecycle before the detector lands. Status must be a
+/// `last_status` CHECK value.
 pub async fn set_last_status(pool: &SqlitePool, name: &str, status: &str) -> sqlx::Result<()> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(

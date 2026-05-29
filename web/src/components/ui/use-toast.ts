@@ -1,4 +1,4 @@
-// Toast context + hook (M28). Split out of toast.tsx so that component file can
+// Toast context + hook. Split out of toast.tsx so that component file can
 // export only components (keeps React Fast Refresh happy). Import the provider
 // from ./toast and the hook from here:
 //   import { ToastProvider } from './ui/toast'

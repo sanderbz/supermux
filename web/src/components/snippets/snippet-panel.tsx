@@ -1,5 +1,5 @@
-// SnippetPanel — M18 (TECH_PLAN §M18, research/termius-ios-native-spec.md
-// §"Snippet picker" #5).
+// SnippetPanel — see research/termius-ios-native-spec.md
+// §"Snippet picker" #5.
 //
 // R5 panels-unify: the hand-rolled framer-motion slide-up + bespoke tap-catcher
 // backdrop were replaced by the shared `<MobileActionSheet>` Vaul shell, so the
@@ -14,7 +14,7 @@
 //   • Swipe-left   → reveals Edit / Delete actions; a full-swipe past 50% of the
 //     row width auto-deletes with a medium haptic.
 //
-// Snippets come from the M9 `/api/snippets` endpoint via use-commands; if the
+// Snippets come from the `/api/snippets` endpoint via use-commands; if the
 // table is empty the panel shows three default seeds (`continue`, `/compact`,
 // `/status`) as one-tap "create this" rows so the panel is never empty on a
 // fresh install. A "+" header button opens the SnippetEditor for a new snippet.
@@ -40,7 +40,7 @@ import type { SnippetRow } from '@/lib/api'
 import { MobileActionSheet } from '@/components/focus-mode/mobile-action-sheet'
 import { SnippetEditor } from './snippet-editor'
 
-/** The three default snippets seeded on a fresh install (§M18 subagent prompt).
+/** The three default snippets seeded on a fresh install.
  *  Shown as one-tap "create" rows when the table is empty so the panel is never
  *  bare; tapping one persists it via `/api/snippets`. */
 const DEFAULT_SNIPPETS: ReadonlyArray<{ title: string; body: string }> = [
@@ -186,7 +186,7 @@ function DefaultSeeds({
 
 // ── one snippet row — tap insert / long-press run / swipe-left actions ────────
 
-/** Long-press threshold (ms) for run-immediately (§M18 spec #5). */
+/** Long-press threshold (ms) for run-immediately (spec #5). */
 const LONG_PRESS_MS = 500
 /** Resting reveal width when a swipe-left settles open (Edit + Delete buttons). */
 const ACTIONS_WIDTH = 132

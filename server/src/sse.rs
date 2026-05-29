@@ -1,4 +1,4 @@
-//! Server-Sent Events endpoint (TECH_PLAN §3.4; M27).
+//! Server-Sent Events endpoint.
 //!
 //! `GET /api/events` is the dashboard's single live channel for metadata +
 //! status (the anti-vision is "WebSocket-only — no 3s polling", so SSE is the
@@ -19,7 +19,7 @@
 //! `use-sse.ts` registers one listener per known event name. A 10s `ping` event
 //! keeps the connection (and the client's 18s staleness watchdog) alive even when
 //! no real event is flowing — important on a brand-new server with no sessions,
-//! which is exactly the cold-load case M27 fixes.
+//! which is exactly the cold-load case this fixes.
 
 use std::convert::Infallible;
 use std::time::Duration;

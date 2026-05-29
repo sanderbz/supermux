@@ -1,11 +1,11 @@
-// Session ordering for focus-mode navigation (M15).
+// Session ordering for focus-mode navigation.
 //
 // The mobile focus mode steps prev/next through sessions in the SAME
-// "pinned-then-active" order the overview grid uses (research/amux-feature-extract
-// §1.2): pinned first, then by status priority (active|waiting before idle), then
-// by most-recent activity. Keeping this ONE helper means the edge-swipe nav, the
-// session-pill swipe, and the picker sheet all agree on what "the next session"
-// is — there is no second source of truth.
+// "pinned-then-active" order the overview grid uses: pinned first, then by
+// status priority (active|waiting before idle), then by most-recent activity.
+// Keeping this ONE helper means the edge-swipe nav, the session-pill swipe,
+// and the picker sheet all agree on what "the next session" is — there is no
+// second source of truth.
 
 import type { ApiSession, SessionStatus } from '@/lib/api'
 import type { Team, TeamMember } from '@/lib/api/teams'
@@ -55,7 +55,7 @@ export function neighborSession<T extends Orderable>(
   return ordered[next] ?? null
 }
 
-// ── Team-aware ordering (AT-H2) ───────────────────────────────────────────────
+// ── Team-aware ordering ───────────────────────────────────────────────────────
 // The mobile session picker is team-aware consistently with the overview: a
 // detected team's LEAD + its TEAMMATES group together under the team, with the
 // non-team sessions in the usual pinned-then-active order below. Teammates are

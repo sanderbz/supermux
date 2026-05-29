@@ -1,4 +1,4 @@
-//! Agent→board hook endpoints (board-integration §C.2; AB1).
+//! Agent→board hook endpoints.
 //!
 //! The missing reverse edge: these routes let an agent report progress back onto
 //! its own issue card. They are mounted OUTSIDE the bearer layer (alongside
@@ -54,7 +54,7 @@ pub fn router_for(state: AppState) -> Router {
 // ── auth + scope ──────────────────────────────────────────────────────────────
 
 /// Constant-time validate the presented hook token against `session`'s stored
-/// token (DB is the source of truth, §6.5). 401 on any mismatch / missing row.
+/// token (DB is the source of truth). 401 on any mismatch / missing row.
 /// Identical to `crate::hooks::hook_handler`'s check, factored for reuse.
 async fn authenticate(
     state: &AppState,
@@ -169,7 +169,7 @@ async fn status_handler(
     Ok(Json(json!({ "ok": true, "issue": issue.id, "status": status })))
 }
 
-// ── needs-input (the BLOCKED terminal action, §3) ─────────────────────────────
+// ── needs-input (the BLOCKED terminal action) ─────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct NeedsInputBody {
@@ -178,7 +178,7 @@ struct NeedsInputBody {
 }
 
 /// `POST /api/hook/board/needs-input` — the agent is BLOCKED and needs a human
-/// decision (board-redesign §3). This is one of the two terminal actions. It:
+/// decision. This is one of the two terminal actions. It:
 ///   * sets the card's `awaiting_input` flag (the "Needs your input" state);
 ///   * appends `question` as a comment (author [`NEEDS_INPUT_AUTHOR`]) so the card
 ///     can surface the latest question above its reply composer;
@@ -531,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn needs_input_sets_flag_and_comment_no_column_move() {
-        // board-redesign §3 + BM1 acceptance #3: needs-input sets awaiting_input,
+        // needs-input sets awaiting_input,
         // appends the question as a comment, and does NOT move the column.
         let (state, dir) = test_state().await;
         seed_agent_with_issue(&state, "worker-a", "tok-a", "A-1").await;
@@ -598,7 +598,7 @@ mod tests {
 
     #[tokio::test]
     async fn done_status_hook_moves_card_to_done() {
-        // BM1 acceptance #4: the `done` status hook moves the card to the done
+        // The `done` status hook moves the card to the done
         // column (auto-Done). (Re-stated here next to needs-input for the
         // done-vs-needs-input contrast.)
         let (state, dir) = test_state().await;

@@ -3,10 +3,9 @@
 // canonical copy of each shared helper.
 //
 // This file is the result of splitting the formerly-monolithic lib/api.ts into
-// per-feature modules (TECH_PLAN §29 dep-graph fix): future frontend milestones
-// each touch their own feature file instead of all appending to one api.ts,
-// ending the recurring api.ts merge-conflict class. Pure structural refactor —
-// ZERO behavior change.
+// per-feature modules: future frontend changes each touch their own feature file
+// instead of all appending to one api.ts, ending the recurring api.ts
+// merge-conflict class. Pure structural refactor — ZERO behavior change.
 
 import { authToken, baseUrl } from '@/env'
 

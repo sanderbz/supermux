@@ -1,4 +1,4 @@
-// Midpoint `pos` computation for board drag-and-drop (TECH_PLAN §M19 / §2.4).
+// Midpoint `pos` computation for board drag-and-drop.
 //
 // Issues carry a REAL `pos`; the column renders them ascending. To drop a card at
 // index `i` within a (target) column we set its `pos` to the MIDPOINT between the

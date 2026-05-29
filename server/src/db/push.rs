@@ -1,4 +1,4 @@
-//! Web push subscription row access (PUSH milestone).
+//! Web push subscription row access.
 //!
 //! Backs the `/api/push/*` endpoints and the server-side `send_push` fan-out
 //! (see [`crate::push`]). One row per subscribed device, keyed by the browser-
@@ -79,7 +79,7 @@ pub async fn count(pool: &SqlitePool) -> sqlx::Result<i64> {
 #[serde(rename_all = "snake_case")]
 pub enum NotifCategory {
     /// Agent transitioned to Waiting OR posted a board needs-input — the user
-    /// is being asked a question. The original PUSH-milestone trigger.
+    /// is being asked a question. The original push trigger.
     AgentWaiting,
     /// Agent went from Active/Waiting → Idle (turn finished, ready for
     /// review). The "groene status" the user explicitly asked for.

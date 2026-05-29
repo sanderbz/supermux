@@ -1,6 +1,6 @@
-// M16 — keyboard-accessory groups data hook.
+// Keyboard-accessory groups data hook.
 //
-// TanStack Query wrapper around `kbdApi` (`/api/kbd-groups`). The backend M9
+// TanStack Query wrapper around `kbdApi` (`/api/kbd-groups`). The backend
 // table is the single canonical store; this hook just reads/writes it. Until a
 // build has that handler wired, the GET 404/501s — `retry: false` surfaces it
 // immediately and the hook falls back to the local `DEFAULT_KBD_GROUPS` seed

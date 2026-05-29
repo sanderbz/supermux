@@ -1,8 +1,8 @@
-//! Typed request errors (TECH_PLAN §3.2.1, §3.4).
+//! Typed request errors.
 //!
 //! Every handler returns `Result<_, AppError>`. The [`IntoResponse`] impl maps
 //! each variant to a status code and a `{ ok: false, error: "..." }` JSON body,
-//! matching the HTTP envelope in §3.4.
+//! matching the documented HTTP envelope.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

@@ -29,7 +29,7 @@ import { FireLog } from './fire-log'
 
 /** Map an existing row back into the editable form shape (edit mode seed).
  *  The `notify` flag is reconstructed from the row's watch+done_action pair:
- *  the friendly UI says "Send me notification when done" but the M8 wire shape
+ *  the friendly UI says "Send me notification when done" but the wire shape
  *  is still `watch=true` + `done_action='notify'`. */
 export function rowToForm(s: ScheduleRow): ScheduleFormValue {
   const notify = s.watch === 1 && s.done_action === 'notify'

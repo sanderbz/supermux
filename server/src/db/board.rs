@@ -1,4 +1,4 @@
-//! Board row access (TECH_PLAN §3.3 `issues` + `statuses`, feature-extract §2).
+//! Board row access (`issues` + `statuses` tables).
 //!
 //! Runtime-checked queries — see the note in [`super::sessions`]. Higher-level
 //! orchestration (validation, the HTTP envelope, the atomic claim transaction)
@@ -26,21 +26,21 @@ pub struct Issue {
     pub pos: f64,
     pub notified: i64,
     /// Set by the auto_actions idle side-effect when the owning agent finished
-    /// its turn (migration 0011, R1). 0/1. FLAG only — the card is not moved.
+    /// its turn (migration 0011). 0/1. FLAG only — the card is not moved.
     pub needs_review: i64,
     /// Set by the auto_actions sustained-`waiting` side-effect when the owning
-    /// agent is blocked on the user (migration 0011, R1). 0/1.
+    /// agent is blocked on the user (migration 0011). 0/1.
     pub awaiting_input: i64,
     /// Soft discard (migration 0013). 1 = archived: the card is hidden from the
     /// default board list but its row + history are preserved (restorable).
     /// Distinct from `deleted` (hard delete).
     pub archived: i64,
-    /// Which board this card lives on (migration 0015, AT-C). Always set —
+    /// Which board this card lives on (migration 0015). Always set —
     /// existing cards were backfilled to the fixed `main` board; new cards default
     /// to `main` unless created on a team board.
     pub board_id: String,
     /// Stable backlink to the on-disk team task this card mirrors (migration
-    /// 0016, AT-G). `None` for an ordinary card; `Some(task_id)` for a team card,
+    /// 0016). `None` for an ordinary card; `Some(task_id)` for a team card,
     /// unique within its board so the read-through mirror upserts (never
     /// duplicates) across detect ticks.
     pub team_task_id: Option<String>,
@@ -109,8 +109,8 @@ pub async fn rename_status(pool: &SqlitePool, id: &str, label: &str) -> sqlx::Re
     Ok(res.rows_affected() > 0)
 }
 
-/// Delete a custom column and reassign its issues back to `todo` (feature-extract
-/// §2.1). Done in one transaction so no issue is ever orphaned in a gone column.
+/// Delete a custom column and reassign its issues back to `todo`. Done in one
+/// transaction so no issue is ever orphaned in a gone column.
 pub async fn delete_status(pool: &SqlitePool, id: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query("UPDATE issues SET status = 'todo' WHERE status = ?")
@@ -141,12 +141,12 @@ pub async fn reorder_statuses(pool: &SqlitePool, order: &[String]) -> sqlx::Resu
 // ── issues ───────────────────────────────────────────────────────────────────
 
 /// List non-deleted, non-archived issues ACROSS ALL boards, with `done`-column
-/// items capped at `done_limit` (feature-extract §2.1; 0 = unlimited). Sort:
-/// pinned-desc, then reordered (`pos != 0`) ascending, then unreordered by
-/// `updated`-desc (§2.2). Archived (soft-discarded) cards are excluded.
+/// items capped at `done_limit` (0 = unlimited). Sort: pinned-desc, then
+/// reordered (`pos != 0`) ascending, then unreordered by `updated`-desc.
+/// Archived (soft-discarded) cards are excluded.
 ///
-/// This is the "All" aggregate (AT-C plan §5.5) — the cross-board overview. Per-
-/// board scoping uses [`list_issues_for_board`].
+/// This is the "All" aggregate — the cross-board overview. Per-board scoping
+/// uses [`list_issues_for_board`].
 pub async fn list_issues(pool: &SqlitePool, done_limit: i64) -> sqlx::Result<Vec<Issue>> {
     // Stable composite sort matching v2's `_load_board`.
     let order = "ORDER BY pinned DESC, (pos = 0) ASC, pos ASC, updated DESC";
@@ -177,9 +177,9 @@ pub async fn list_issues(pool: &SqlitePool, done_limit: i64) -> sqlx::Result<Vec
     Ok(issues)
 }
 
-/// List non-deleted, non-archived issues SCOPED to one board (migration 0015,
-/// AT-C plan §5.5). Same sort + `done_limit` semantics as [`list_issues`], just
-/// filtered by `board_id` (indexed by `idx_issues_board`).
+/// List non-deleted, non-archived issues SCOPED to one board (migration 0015).
+/// Same sort + `done_limit` semantics as [`list_issues`], just filtered by
+/// `board_id` (indexed by `idx_issues_board`).
 pub async fn list_issues_for_board(
     pool: &SqlitePool,
     board_id: &str,
@@ -220,7 +220,7 @@ pub async fn list_issues_for_board(
 }
 
 /// Every non-deleted card on `board_id` that mirrors an on-disk team task
-/// (`team_task_id IS NOT NULL`), keyed for the AT-G read-through reconcile. The
+/// (`team_task_id IS NOT NULL`), keyed for the read-through reconcile. The
 /// watcher diffs this set against the team's current task files each tick:
 /// upsert the survivors, hard-delete the cards whose task vanished. Archived
 /// cards are INCLUDED (a reconcile may need to revive or finally remove one).
@@ -256,7 +256,7 @@ pub async fn get_team_card(
 }
 
 /// Hard-delete a card by id (its comments/acceptance/links/tags CASCADE). Used by
-/// the AT-G reconcile to remove a team card whose on-disk task disappeared — a
+/// the team reconcile to remove a team card whose on-disk task disappeared — a
 /// soft delete would leave a dangling `team_task_id` row that re-collides on the
 /// unique index if the task id is ever reused. Returns false if not found.
 pub async fn hard_delete(pool: &SqlitePool, id: &str) -> sqlx::Result<bool> {
@@ -277,9 +277,9 @@ pub async fn get_issue(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Issue
 
 /// The non-deleted issue a session currently OWNS in the `doing` column, if any
 /// (`WHERE session = <name> AND status = 'doing'`). Two consumers share it:
-///   - AB1 agent→board hook scope rule: an agent may only mutate the issue
+///   - the agent→board hook scope rule: an agent may only mutate the issue
 ///     linked to its OWN session and currently in `doing` (its active task);
-///   - R1 session→board reaction: resolves "the issue linked to this session"
+///   - the session→board reaction: resolves "the issue linked to this session"
 ///     for the idle/waiting side-effects.
 /// Strict `status = 'doing'` is the correct tight scope for both — an agent
 /// can't touch an issue it already finished, and the reaction only fires on the
@@ -313,7 +313,7 @@ pub async fn get_issue_any(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<I
 
 /// Every non-deleted issue linked to a session (any status). Used by the
 /// lifecycle paths (archive/unarchive/stop/delete) to decide whether a session
-/// change should re-publish the board (R2). Cheap — indexed by `idx_issues_session`.
+/// change should re-publish the board. Cheap — indexed by `idx_issues_session`.
 pub async fn issues_for_session(pool: &SqlitePool, session: &str) -> sqlx::Result<Vec<Issue>> {
     sqlx::query_as::<_, Issue>(
         "SELECT * FROM issues WHERE session = ? AND deleted IS NULL",
@@ -323,7 +323,7 @@ pub async fn issues_for_session(pool: &SqlitePool, session: &str) -> sqlx::Resul
     .await
 }
 
-/// Issues with a `due` date set (for the iCal feed, feature-extract §2.7).
+/// Issues with a `due` date set (for the iCal feed).
 pub async fn issues_with_due(pool: &SqlitePool) -> sqlx::Result<Vec<Issue>> {
     sqlx::query_as::<_, Issue>(
         "SELECT * FROM issues WHERE deleted IS NULL AND due IS NOT NULL AND due != ''
@@ -347,11 +347,11 @@ pub struct NewIssue {
     pub owner_type: String,
     pub pos: f64,
     pub notified: i64,
-    /// Which board the new card lands on (migration 0015, AT-C). Defaults to
+    /// Which board the new card lands on (migration 0015). Defaults to
     /// `main` at the API layer when the client doesn't scope a board.
     pub board_id: String,
     /// Stable backlink to the on-disk team task this card mirrors (migration
-    /// 0016, AT-G). `None` for an ordinary card; the team watcher sets it so the
+    /// 0016). `None` for an ordinary card; the team watcher sets it so the
     /// read-through mirror can upsert on `(board_id, team_task_id)`.
     pub team_task_id: Option<String>,
 }
@@ -387,7 +387,7 @@ pub async fn insert_issue(pool: &SqlitePool, i: &NewIssue) -> sqlx::Result<()> {
 }
 
 /// The smallest `pos` currently in `status` (for "place new card at top"). New
-/// cards get `min_pos - 1024.0` (feature-extract §2.4).
+/// cards get `min_pos - 1024.0`.
 pub async fn min_pos_in_status(pool: &SqlitePool, status: &str) -> sqlx::Result<f64> {
     let min: Option<f64> =
         sqlx::query_scalar("SELECT MIN(pos) FROM issues WHERE status = ? AND deleted IS NULL")
@@ -432,16 +432,16 @@ pub enum IssueField {
     Pos(f64),
     /// Reset the notify flag (set when the assignee changes).
     Notified(i64),
-    /// "needs review" flag (R1 idle side-effect). 0/1.
+    /// "needs review" flag (idle side-effect). 0/1.
     NeedsReview(i64),
-    /// "awaiting input" flag (R1 sustained-waiting side-effect). 0/1.
+    /// "awaiting input" flag (sustained-waiting side-effect). 0/1.
     AwaitingInput(i64),
     /// Soft discard flag (migration 0013). 1 = archived/hidden, 0 = restored.
     Archived(i64),
-    /// Move a card to a different board (migration 0015, AT-C). The board must
+    /// Move a card to a different board (migration 0015). The board must
     /// exist (FK); the API guards this.
     BoardId(String),
-    /// Set/clear the on-disk team-task backlink (migration 0016, AT-G). `None`
+    /// Set/clear the on-disk team-task backlink (migration 0016). `None`
     /// detaches the card from its mirror; `Some(id)` links it (unique per board).
     TeamTaskId(Option<String>),
 }
@@ -560,7 +560,7 @@ pub async fn soft_delete(pool: &SqlitePool, id: &str) -> sqlx::Result<bool> {
 }
 
 /// Soft-delete every `done` issue. Returns the count of remaining non-deleted
-/// issues (feature-extract §2.1 returns `{ok, remaining}`).
+/// issues (the API returns `{ok, remaining}`).
 pub async fn clear_done(pool: &SqlitePool) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().timestamp();
     let mut tx = pool.begin().await?;
@@ -606,8 +606,8 @@ pub async fn set_tags(pool: &SqlitePool, id: &str, tags: &[String]) -> sqlx::Res
     tx.commit().await
 }
 
-/// Aggregate done-status for a tag (feature-extract §2.1 `tag-completion`).
-/// Returns `(total, done)` over non-deleted issues carrying `tag`.
+/// Aggregate done-status for a tag (`tag-completion`). Returns `(total, done)`
+/// over non-deleted issues carrying `tag`.
 pub async fn tag_completion(pool: &SqlitePool, tag: &str) -> sqlx::Result<(i64, i64)> {
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM issues i
@@ -856,7 +856,7 @@ pub async fn delete_link(pool: &SqlitePool, link_id: i64) -> sqlx::Result<bool> 
     Ok(res.rows_affected() > 0)
 }
 
-// batch loaders (avoid N+1 when building the whole board, plan S2) ─────────────
+// batch loaders (avoid N+1 when building the whole board) ────────────────────
 
 use std::collections::HashMap;
 
@@ -1095,8 +1095,8 @@ mod tests {
 
     #[tokio::test]
     async fn migration_0013_relocations_preserve_every_card() {
-        // BM1 acceptance #2: the 0013 relocation rules leave only todo/doing/done,
-        // relocate backlog/review/discarded per §5, and never lose a card row.
+        // The 0013 relocation rules leave only todo/doing/done, relocate
+        // backlog/review/discarded, and never lose a card row.
         //
         // A fresh test DB has already run 0013, so legacy columns are gone. We
         // simulate a PRE-0013 seeded DB by inserting raw rows in the legacy

@@ -1,7 +1,7 @@
-//! Wire a detected team's on-disk tasks onto its OWN board (AT-G, plan §5.5).
+//! Wire a detected team's on-disk tasks onto its OWN board.
 //!
-//! AT-C built the boards entity + the idempotent register-team UPSERT; AT-B
-//! detects teams + parses their `~/.claude/tasks/{team}/NN.json` files into
+//! The boards entity + the idempotent register-team UPSERT exist elsewhere;
+//! detection parses each team's `~/.claude/tasks/{team}/NN.json` files into
 //! [`Team::tasks`]. This module is the missing wire between the two: every detect
 //! tick it (1) registers a `kind='team'` board for each detected team and (2)
 //! mirrors the team's task files onto that board as cards — a READ-THROUGH
@@ -21,8 +21,7 @@
 //!   * a task whose card exists → PATCH only the fields that drifted
 //!     (status/lane, title, description, assignee colour tag);
 //!   * a card whose task vanished from the files → HARD-DELETE the card.
-//! Re-running the same files is therefore a no-op (no duplicate cards) — the
-//! property AT-G is graded on.
+//! Re-running the same files is therefore a no-op (no duplicate cards).
 //!
 //! ## Lane mapping (task status → board lane)
 //! The board's three fixed lanes are `todo|doing|done` (migration 0013). Tasks
@@ -74,7 +73,7 @@ fn card_title(task: &TeamTask) -> String {
 }
 
 /// The tag set carried onto a team card so the existing BoardCard renders the
-/// assignee tinted by the teammate colour (plan §5.5) with no special-casing.
+/// assignee tinted by the teammate colour with no special-casing.
 /// We piggy-back on the existing `issue_tags` surface: a `team:<assignee>` tag
 /// and a `color:<color>` tag, derived from the task's assignee + that member's
 /// configured colour. Empty values are dropped (no blank tags).
@@ -83,7 +82,7 @@ fn card_tags(team: &Team, task: &TeamTask) -> Vec<String> {
     let assignee = task.assigned_to.trim();
     if !assignee.is_empty() {
         tags.push(format!("team:{assignee}"));
-        // Carry the teammate's colour so the card can tint by member (§5.5).
+        // Carry the teammate's colour so the card can tint by member.
         if let Some(color) = member_color(team, assignee) {
             if !color.trim().is_empty() {
                 tags.push(format!("color:{}", color.trim()));
@@ -124,7 +123,7 @@ async fn reconcile_team_inner(
     state: &crate::state::AppState,
     team: &Team,
 ) -> Result<bool, crate::error::AppError> {
-    // 1. Register the team board IDEMPOTENTLY (the AT-D/AT-F3 entry point, run
+    // 1. Register the team board IDEMPOTENTLY (the start-team entry point, run
     //    in-process). get_by_team is the dedupe key (UNIQUE team_name backstop);
     //    a brand-new team gets a board whose id is a stable slug of its name.
     let mut changed = false;
@@ -251,7 +250,7 @@ fn board_prefix(team_name: &str) -> String {
 ///
 /// Also EVICTS the team's teammate pane-stream entries from the [`PtyStreamer`]
 /// (resource hygiene): each teammate WS caches a per-pane `PtyStream` keyed by
-/// `{team}/{member}` (Agent Teams §3.5) that is otherwise NEVER removed, so the
+/// `{team}/{member}` that is otherwise NEVER removed, so the
 /// registry would grow unbounded across many team starts. We compute the SAME
 /// `{team}/{member}` keys the WS uses and `forget` them — best-effort (a missing
 /// config / already-gone key is a clean no-op) and scoped to teammate keys only,
@@ -308,9 +307,9 @@ fn evict_teammate_streams(state: &crate::state::AppState, team_name: &str) {
     }
 }
 
-// ── write-back follow-up (OUT OF SCOPE for AT-G) ──────────────────────────────
+// ── write-back follow-up (OUT OF SCOPE) ──────────────────────────────
 //
-// AT-G mirrors file → board. The reverse (a user edits a team card on the board
+// This module mirrors file → board. The reverse (a user edits a team card on the board
 // and supermux rewrites the agent's `~/.claude/tasks/{team}/NN.json`) is a
 // DOCUMENTED FOLLOW-UP, not built here: it needs a safe write path into Claude's
 // task files (lock-aware, schema-faithful, conflict-aware against the agent's
@@ -348,7 +347,7 @@ mod tests {
         (AppState::new(pool, config), dir)
     }
 
-    /// Build a minimal Team fixture (the parsed AT-B shape) for the sync tests.
+    /// Build a minimal Team fixture (the parsed detector shape) for the sync tests.
     fn team_fixture(name: &str, tasks: Vec<TeamTask>) -> Team {
         use super::super::model::{Member, MemberStatus};
         Team {
@@ -396,7 +395,7 @@ mod tests {
 
     /// First reconcile creates the board + one card per task with the right lane;
     /// a SECOND reconcile of the SAME files is a no-op (no duplicate cards) — the
-    /// idempotency AT-G is graded on.
+    /// idempotency property of this module.
     #[tokio::test]
     async fn reconcile_creates_then_is_idempotent() {
         let (state, dir) = test_state().await;
@@ -578,7 +577,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Resource hygiene (AT-G follow-up): evicting a team's teammate pane streams
+    /// Resource hygiene: evicting a team's teammate pane streams
     /// drops ONLY the `{team}/{member}` keys from the PtyStreamer — a bare SESSION
     /// stream (owned by the session lifecycle) is left untouched. This pins the
     /// fix for "teammate pane streams are cached forever, growing the registry

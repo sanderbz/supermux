@@ -20,7 +20,7 @@
 // Back-compat: `useSendToAgent` is an alias of `useStartAgent`, and the returned
 // `sendToAgent(...)` keeps the legacy options (incl. a custom `claim` runner +
 // `deliver`) so the not-yet-migrated card/sheet/route keep compiling and working
-// until BR2–BR4 move them onto `startAgent`. NOTE: "claim" survives only as an
+// until later refactors move them onto `startAgent`. NOTE: "claim" survives only as an
 // internal symbol — it never appears in any user-facing string.
 
 import { useCallback } from 'react'

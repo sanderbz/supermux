@@ -1,4 +1,4 @@
-// EnableToggle (M21) — the per-schedule enable/disable switch. Spring-physics
+// EnableToggle — the per-schedule enable/disable switch. Spring-physics
 // thumb (springs.toggleSnap) with an optimistic flip; on error it reverts and
 // reports. ≥44pt hit target. Used in both the list row and the detail header.
 

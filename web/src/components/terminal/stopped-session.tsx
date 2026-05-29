@@ -7,7 +7,7 @@
 // hang. Detecting `stopped` up front from the session object avoids opening that
 // WS at all.
 //
-// The primary action calls `POST /api/sessions/:name/start` (the existing M2
+// The primary action calls `POST /api/sessions/:name/start` (the existing
 // endpoint). On success the SSE `status` delta flips the session to `starting`/
 // `active` and the focus route swaps this surface for the live terminal — no
 // manual refresh, no remount churn.
@@ -55,7 +55,7 @@ export interface StoppedSessionActionsProps {
    *  focus pane uses the default. Compact still respects the 44pt hit-target
    *  floor — only the spacing tightens. */
   compact?: boolean
-  /** FEAT-CONVERT-TEAM: show the "Make it a team" ghost button. The focus
+  /** Show the "Make it a team" ghost button. The focus
    *  pane <StoppedSession> turns it on; the overview hover-peek leaves it off
    *  (mobile users still get it via the quick-peek modal — no missing path). */
   showMakeTeam?: boolean
@@ -244,7 +244,7 @@ export function StoppedSessionActions({
         </Button>
       )}
 
-      {/* FEAT-CONVERT-TEAM — "Make it a team": ghost button (secondary
+      {/* "Make it a team": ghost button (secondary
           intent — not the primary Start path). Hidden when the session is
           already a team lead (no-op) or when the host (overview hover-peek)
           doesn't enable it. The action restarts the session with the Agent
@@ -334,7 +334,7 @@ export function StoppedSessionActions({
         />
       )}
 
-      {/* FEAT-CONVERT-TEAM convert sheet — mounted lazily; the action restarts
+      {/* Convert sheet — mounted lazily; the action restarts
           this session as a team lead via POST /api/teams/start-from-existing.
           On success the SSE `status` delta flips the row to running and the
           parent route's <StoppedSession> swaps to <LiveTerminal>. */}
@@ -360,12 +360,12 @@ export function StoppedSessionActions({
 
 /** Calm "this session is stopped" surface with Resume + Archive actions
  *  (polish-pass #1). Rendered in the focus pane in place of the live terminal
- *  while `session.status === 'stopped'` (§4.5 terminal state).
+ *  while `session.status === 'stopped'`.
  *
  *  Resume calls the existing `/start` endpoint; the SSE `status` delta flips
  *  the session to running, the focus route swaps back to <LiveTerminal>, no
- *  manual refresh. Archive calls `/archive` — the R1 fix makes that correctly
- *  terminate per-session loops + forget the session — then we remove the row
+ *  manual refresh. Archive calls `/archive` — which correctly
+ *  terminates per-session loops + forgets the session — then we remove the row
  *  from the cached overview and navigate back so the user lands somewhere sane
  *  (the row is gone from the next refetch anyway). A small inline confirm
  *  guards the destructive action — matches how the desktop dock's stop uses a
@@ -398,7 +398,7 @@ export function StoppedSession({ name, className }: StoppedSessionProps) {
         </p>
 
         {/* Action row — Resume primary, Archive secondary, Make team (when
-            eligible — FEAT-CONVERT-TEAM). Both ≥44pt; spring button-press
+            eligible). Both ≥44pt; spring button-press
             inherited from <Button>'s shadcn baseline. */}
         <StoppedSessionActions name={name} showMakeTeam />
       </motion.div>

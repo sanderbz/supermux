@@ -100,7 +100,7 @@ function displayHeading(issue: BoardIssue): { text: string; muted: boolean } {
   return { text: issue.id, muted: true }
 }
 
-/** Compact acceptance progress pill — "▣▣▢ 2/3" (§6 BM2). */
+/** Compact acceptance progress pill — "▣▣▢ 2/3". */
 function AcceptancePill({ acceptance }: { acceptance: BoardIssue['acceptance'] }) {
   const total = acceptance.length
   const done = acceptance.reduce((n, a) => n + (a.done ? 1 : 0), 0)
@@ -130,7 +130,7 @@ function AcceptancePill({ acceptance }: { acceptance: BoardIssue['acceptance'] }
 }
 
 /** The latest "needs your input" question. Prefers the dedicated payload field
- *  (BM1 §4 `latest_question`); falls back to the most-recent agent comment so
+ *  (`latest_question`); falls back to the most-recent agent comment so
  *  the question still shows before the backend ships the field. */
 function awaitingQuestion(issue: BoardIssue): string | null {
   if (issue.latest_question && issue.latest_question.trim()) {
@@ -177,7 +177,7 @@ export interface BoardCardProps {
 const SWIPE_THRESHOLD = 96
 
 /**
- * A board card, redesigned for BM2 (§1, §2). It is ALWAYS an agent task — the
+ * A board card. It is ALWAYS an agent task — the
  * affordances are chosen by the LANE:
  *
  *   - **To do** → ▶ Start (spawn-by-default); tap opens the editor.

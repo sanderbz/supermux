@@ -1,14 +1,13 @@
-// joystick.tsx — M17. The Termius "hold-anywhere arrow joystick" + 2-finger
+// joystick.tsx — the Termius "hold-anywhere arrow joystick" + 2-finger
 // scrollback gesture, layered over the terminal.
 //
-// TECH_PLAN §4.4 (mobile gestures + iOS haptics caveat), §M17 subagent prompt.
-// research/termius-ios-native-spec.md §"Hold-anywhere arrow joystick",
+// See research/termius-ios-native-spec.md §"Hold-anywhere arrow joystick",
 // §"Two-finger PageUp / PageDown", v3 acceptance criteria #2, #3, #4, #7, #13.
 //
 // THE interaction. Hold ≥350ms anywhere on the terminal → joystick ARMS:
 //   • arm haptic — navigator.vibrate(8) (Android) PLUS a 60ms scale 0.96→1.0
 //     micro-press on the rose origin (iOS Safari has no navigator.vibrate;
-//     §4.4 haptics caveat — documented in web/ACCEPTANCE.md).
+//     haptics caveat documented in the web acceptance notes).
 //   • a faint translucent "rose" fades in at the touch point: 88px circle,
 //     1px tertiary stroke, 0 fill, 80ms ease-in (criterion #3).
 //   • drag → radial distance from the press origin picks a SPEED TIER and
@@ -65,7 +64,7 @@ type Dir = 'Up' | 'Down' | 'Left' | 'Right'
 export interface JoystickProps {
   /** Emit a named arrow / scrollback key into the pty — the LiveTerminal handle. */
   sendKey(name: string): void
-  /** Master on/off — the M16 accessory bar "Gesture" toggle flips this via the
+  /** Master on/off — the accessory bar "Gesture" toggle flips this via the
    *  `onGestureToggle` prop. When off the overlay is inert (long-press will
    *  later trigger Apple-style selection — a NEXT-milestone item). */
   enabled?: boolean
@@ -110,7 +109,7 @@ export function Joystick({
   // (timers, origin, repeat loop) lives in refs to avoid re-render churn.
   const [armed, setArmed] = React.useState(false)
   const [origin, setOrigin] = React.useState({ x: 0, y: 0 })
-  // Micro-press on the rose origin = the iOS-Safari haptic fallback (§4.4).
+  // Micro-press on the rose origin = the iOS-Safari haptic fallback.
   const [pressPulse, setPressPulse] = React.useState(false)
 
   const overlayRef = React.useRef<HTMLDivElement | null>(null)

@@ -1,4 +1,4 @@
-//! Claude Code **Agent Teams** detection (AT-B §3.2–§3.4).
+//! Claude Code **Agent Teams** detection.
 //!
 //! A LEAD Claude session spawns N TEAMMATE sessions as tmux split-panes inside
 //! the lead's window on supermux's process-pinned socket. Claude Code writes the
@@ -6,7 +6,7 @@
 //! `tasks/<team>/NN.json`, `teams/<team>/inboxes/<member>.json`) REGARDLESS of
 //! supermux. Teammate panes are NOT supermux-created → they have no hook token /
 //! DB row, so their status CANNOT come from supermux hooks (they'd 401) — it is
-//! derived entirely from those files (§3.3/§3.4).
+//! derived entirely from those files.
 //!
 //! This module:
 //!   * [`model`] — the on-disk schema + the supermux [`Team`]/[`Member`]/
@@ -44,18 +44,18 @@ use crate::state::{AppState, SseEvent};
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/api/teams", get(list_teams))
-        // AT-D "Start a team": create + boot a Claude LEAD with Agent Teams
+        // "Start a team": create + boot a Claude LEAD with Agent Teams
         // enabled for it + a seed prompt that forms the team. DISTINCT path from
-        // `GET /api/teams` (AT-B's list) so the two never collide.
+        // `GET /api/teams` (the detected-teams list) so the two never collide.
         .route("/api/teams/start", post(start_team_handler))
-        // FEAT-CONVERT-TEAM: convert an EXISTING session into a team lead in
+        // Convert an EXISTING session into a team lead in
         // place. Distinct path from `/api/teams/start` so each endpoint has one
         // unambiguous contract (start = new lead row; convert = reuse a row).
         .route(
             "/api/teams/start-from-existing",
             post(convert_to_team_handler),
         )
-        // The single global experimental gate (§3.1). GET reads the current
+        // The single global experimental gate. GET reads the current
         // value; PUT flips it. Default OFF (experimental + ~7× token cost).
         .route(
             "/api/settings/experimental/agent-teams",
@@ -76,11 +76,11 @@ async fn list_teams(State(state): State<AppState>) -> Result<Json<serde_json::Va
     Ok(Json(json!({ "ok": true, "data": teams })))
 }
 
-/// `POST /api/teams/start` (AT-D) — create + boot a Claude LEAD session with
+/// `POST /api/teams/start` — create + boot a Claude LEAD session with
 /// Agent Teams enabled for it and a seed prompt that instructs the lead to form a
 /// team of N teammates working on the given goal. Returns 201 with the LEAD
 /// `SessionView` so the UI can navigate to `/focus/<name>`; the TEAM CARD then
-/// appears via AT-B detection once the lead has spawned its panes.
+/// appears via detection once the lead has spawned its panes.
 ///
 /// Body: `{ task, teammates?, model?, dir?, name? }` (see [`start::StartTeamInput`]).
 /// `task` (the goal) is required; everything else is optional + defensively
@@ -93,7 +93,7 @@ async fn start_team_handler(
     Ok((StatusCode::CREATED, Json(json!({ "ok": true, "data": result }))))
 }
 
-/// `POST /api/teams/start-from-existing` (FEAT-CONVERT-TEAM) — turn the
+/// `POST /api/teams/start-from-existing` — turn the
 /// EXISTING session named in the body into a team lead in place. Returns 201
 /// with the LEAD `SessionView` (the same supermux name; conversation context is
 /// fresh because the env+settings only take effect at process launch).

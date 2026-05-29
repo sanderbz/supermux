@@ -1,19 +1,19 @@
-// useLiveTerm — M13. The live terminal hook (TECH_PLAN §4.5, §5.2).
+// useLiveTerm — the live terminal hook.
 //
-// Drives an xterm.js Terminal bound to the M4 WebSocket pty stream:
+// Drives an xterm.js Terminal bound to the WebSocket pty stream:
 //   • Renders replay + live pty bytes (binary frames → term.write).
 //   • Sends user keystrokes back (term.onData → {type:'input'} text frames).
 //   • Resizes via FitAddon + a debounced ResizeObserver, telling the server the
 //     new {cols,rows} so the pty geometry tracks the viewport.
 //   • Reconnects with exponential backoff + decorrelated jitter, honouring the
-//     v2 close-code semantics (§4.5).
+//     v2 close-code semantics.
 //
 // PRINCIPLE: WebSocket-ONLY. There is no polling here — bytes arrive over the WS
-// the M4 backend already fans out. The auth token is NEVER put in the URL
-// (Codex #7): we connect token-less and send {type:'auth',token} as the first
-// frame, then wait for {type:'auth_ok'} before declaring ourselves `live`. The
-// token is read from `window._SUPERMUX_AUTH_TOKEN` at runtime (env.ts) — never
-// embedded in source.
+// the backend already fans out. The auth token is NEVER put in the URL: we
+// connect token-less and send {type:'auth',token} as the first frame, then wait
+// for {type:'auth_ok'} before declaring ourselves `live`. The token is read
+// from `window._SUPERMUX_AUTH_TOKEN` at runtime (env.ts) — never embedded in
+// source.
 
 import * as React from 'react'
 import { Terminal } from '@xterm/xterm'
@@ -56,14 +56,14 @@ export interface UseLiveTermResult {
   ready: boolean
   /** Send literal text to the pty (e.g. a pasted snippet, a slash command). */
   send(text: string): void
-  /** Send a named key (Up/Down/Left/Right/PageUp/Enter/…) — see §4.4 gestures. */
+  /** Send a named key (Up/Down/Left/Right/PageUp/Enter/…). */
   sendKey(name: string): void
   /** Force a fit + resize round-trip (callers rarely need this — the
    *  ResizeObserver handles it — but the dock/joystick may after a layout flip). */
   resize(cols: number, rows: number): void
   /** Copy the whole scrollback buffer to the clipboard. */
   copyAll(): void
-  /** Manual retry for the permanent (`offline`) state — "Tap to retry" (§4.12). */
+  /** Manual retry for the permanent (`offline`) state — "Tap to retry". */
   retry(): void
   /** Programmatically focus xterm's input. The focus route calls this on mount
    *  so keystrokes go to the terminal IMMEDIATELY — no second click required. */
@@ -81,7 +81,7 @@ export interface UseLiveTermResult {
   scrollToBottom(): void
 }
 
-// ── Tunables (TECH_PLAN §4.5) ─────────────────────────────────────────────────
+// ── Tunables ─────────────────────────────────────────────────────────────────
 const BASE_BACKOFF_MS = 300
 const MAX_BACKOFF_MS = 30_000
 const MAX_ATTEMPTS = 6 // 1011 server-error path then permanent
@@ -105,7 +105,7 @@ const KEYBOARD_OPEN_THRESHOLD = 80
 // "a bit" (~a row or two) does. Measured on `.xterm-viewport.scrollTop`.
 const SCROLL_TO_BOTTOM_SLACK_PX = 24
 
-// Close codes with explicit v2 semantics (§4.5).
+// Close codes with explicit v2 semantics.
 const CLOSE_AUTH = 1008 // auth/origin reject — permanent
 const CLOSE_SERVER = 1011 // server error — backoff, then permanent
 const CLOSE_TOO_SLOW = 1013 // subscriber overflow — silent reconnect on visible
@@ -138,7 +138,7 @@ const ANSI_PALETTE = {
   brightWhite: '#f5f5f7',
 } as const
 
-/** Read the live terminal theme from the CSS custom properties (§4.5). This runs
+/** Read the live terminal theme from the CSS custom properties. This runs
  *  at mount so the terminal tracks whichever theme `<ThemeProvider>` applied to
  *  <html> before first paint — no hardcoded hex for bg/fg (Termius criterion
  *  #15). The 16-colour ANSI palette IS hardcoded: those bytes ARE the terminal's
@@ -167,9 +167,9 @@ function themeFromCss(): import('@xterm/xterm').ITheme {
 }
 
 /** Map a named key to the literal control bytes the pty expects. Keeps the
- *  `{type:'input'}` wire shape (§5.2) — the M4 backend forwards input verbatim
- *  via `tmux send-keys -l`, so we resolve the byte sequence client-side. Used by
- *  the dock send-row + the joystick (M14/M15/M17) through `sendKey`. */
+ *  `{type:'input'}` wire shape — the backend forwards input verbatim via
+ *  `tmux send-keys -l`, so we resolve the byte sequence client-side. Used by
+ *  the dock send-row + the joystick through `sendKey`. */
 function keyToBytes(name: string): string {
   switch (name) {
     case 'Up':
@@ -247,8 +247,8 @@ function keyToBytes(name: string): string {
 }
 
 /** Exponential backoff with ±20% decorrelated jitter, from the FIRST retry
- *  (Eng P1 #5 — avoids the reconnect-storm during a Tailscale server restart).
- *  Formula per §4.5: delay = base*2^n; jittered = delay/2 + random(delay). */
+ *  (avoids the reconnect-storm during a Tailscale server restart).
+ *  Formula: delay = base*2^n; jittered = delay/2 + random(delay). */
 function backoffDelay(attempt: number): number {
   const delay = Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS)
   return delay / 2 + Math.random() * delay
@@ -261,15 +261,15 @@ export function useLiveTerm(
     fontSize?: number
     /** Allow imperative `send` / `sendKey` even when `readOnly` is true. The
      *  type-on-hover peek (overview live-zoom) sets this so its document-level
-     *  keydown handler can pipe keystrokes through the existing M13 wire while
+     *  keydown handler can pipe keystrokes through the existing wire while
      *  keeping the xterm DOM stdin disabled (no focus surprises, no global
      *  reconnect-banner subscription). Without this flag `send`/`sendKey` are
-     *  silenced for readOnly embeds — the original M11 contract. */
+     *  silenced for readOnly embeds. */
     allowProgrammaticInput?: boolean
     /** Pre-warm fast-path: when true, the mount effect first attempts to adopt
      *  an already-open, already-authed WS + buffered bytes from the peek-
      *  prewarm registry (`peek-prewarm-store`) — so the overview hover-zoom
-     *  hydrates INSTANTLY instead of waiting for a fresh M4 handshake +
+     *  hydrates INSTANTLY instead of waiting for a fresh handshake +
      *  first-frame round-trip. Falls back to normal connect if no pre-warm
      *  exists (cap was full, tile only just became visible, etc.). Off by
      *  default so the focus terminal + quick-peek modal keep their existing
@@ -287,9 +287,9 @@ export function useLiveTerm(
     onSettled?: () => void
     /** Override the WebSocket path the terminal connects to. Defaults to the
      *  session route `/ws/sessions/{name}`. The Agent Teams teammate terminal
-     *  (AT-F2) passes the read-only teammate route
+     *  passes the read-only teammate route
      *  `/ws/teams/{team}/{member}[?pane_id=%id]` here — the handshake / replay /
-     *  close-code contract is byte-for-byte identical (AT-E), so the ENTIRE WS
+     *  close-code contract is byte-for-byte identical, so the ENTIRE WS
      *  client machinery (auth-first, replay_done reveal, backoff, 4404 stop,
      *  1013 backoff) is reused verbatim; only the URL changes. The path must
      *  already be query-encoded by the caller. When omitted the historical
@@ -301,17 +301,17 @@ export function useLiveTerm(
   const allowProgrammaticInput = opts?.allowProgrammaticInput ?? false
   // The overview hover-zoom embed renders fewer, larger rows so the shrunk pane
   // stays legible at a glance (it passes an explicit fontSize). The focus
-  // terminal and quick-peek omit it and keep the M13 default.
+  // terminal and quick-peek omit it and keep the default.
   const fontSize = opts?.fontSize ?? 13
   // When true, the mount effect first attempts to adopt an already-open,
   // already-authed WS + buffered bytes from the peek-prewarm registry — so the
-  // overview hover-zoom hydrates INSTANTLY instead of waiting for a fresh M4
+  // overview hover-zoom hydrates INSTANTLY instead of waiting for a fresh
   // handshake + first-frame round-trip. Falls back to normal connect if no
   // pre-warm exists (cap was full, tile only just became visible, etc.). Off
   // by default so the focus terminal + quick-peek modal keep their existing
   // single-WS lifecycle.
   const prewarmSeed = opts?.prewarmSeed ?? false
-  // Optional WS path override (AT-F2 teammate route). Read once into the mount
+  // Optional WS path override (teammate route). Read once into the mount
   // effect's deps so changing it (e.g. switching teammate inside a strip)
   // re-subscribes to the new pane, exactly like changing `name`.
   const wsPath = opts?.wsPath
@@ -478,7 +478,7 @@ export function useLiveTerm(
     const container = containerRef.current
     if (!container) return
 
-    // 1. Terminal + addons (§4.5). Canvas renderer for desktop perf; FitAddon
+    // 1. Terminal + addons. Canvas renderer for desktop perf; FitAddon
     //    snaps the geometry to the container; WebLinks makes URLs clickable.
     const term = new Terminal({
       // Lead with the self-hosted Nerd Font (see globals.css @font-face +
@@ -756,7 +756,7 @@ export function useLiveTerm(
       /* CSS Font Loading API unsupported — fallback chain handles it. */
     }
 
-    // 2. Local echo path: pipe xterm keystrokes back to the pty (§5.2). The
+    // 2. Local echo path: pipe xterm keystrokes back to the pty. The
     //    server echoes them via the broadcast stream, so we do NOT write locally.
     //
     //    PHANTOM-ENTER GUARD (root-cause fix). `term.onData` fires for two very
@@ -879,7 +879,7 @@ export function useLiveTerm(
       })
     }
 
-    // 3. WebSocket connect with first-frame auth (§4.5). No `?_token=` in URL.
+    // 3. WebSocket connect with first-frame auth. No `?_token=` in URL.
     const clearReconnectTimer = () => {
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current)
@@ -1166,7 +1166,7 @@ export function useLiveTerm(
         }
         // Binary frame = pty bytes (replay buffer first, then live stream). The
         // FIRST pty byte is the proof the connection is genuinely useful — only
-        // now is it safe to reset the reconnect backoff (Eng P1 #5).
+        // now is it safe to reset the reconnect backoff.
         attemptRef.current = 0
         const term = termRef.current
         if (!term) return
@@ -1214,12 +1214,12 @@ export function useLiveTerm(
             return
           case CLOSE_AUTH:
           case CLOSE_REVOKED:
-            // Permanent: auth/origin reject or explicit revocation (§4.5).
+            // Permanent: auth/origin reject or explicit revocation.
             setLiveState('offline')
             return
           case CLOSE_TOO_SLOW:
             // 1013 = subscriber overflow. NOT permanent: stay `reconnecting`
-            // and silently retry on the NEXT visibilitychange→visible (§4.5).
+            // and silently retry on the NEXT visibilitychange→visible.
             visibilityPendingRef.current = true
             setLiveState('reconnecting')
             return
@@ -1241,10 +1241,10 @@ export function useLiveTerm(
       resetReady()
 
       const base = wsUrl().replace(/\/$/, '')
-      // AT-F2: a `wsPath` override (the read-only teammate route) connects there
-      // instead of the session route — handshake/replay/close contract identical
-      // (AT-E), so everything below is reused verbatim. The override is already
-      // query-encoded by the caller.
+      // A `wsPath` override (the read-only teammate route) connects there
+      // instead of the session route — handshake/replay/close contract is
+      // identical, so everything below is reused verbatim. The override is
+      // already query-encoded by the caller.
       const url = wsPath
         ? `${base}${wsPath.startsWith('/') ? '' : '/'}${wsPath}`
         : `${base}/ws/sessions/${encodeURIComponent(name)}`
@@ -1290,7 +1290,7 @@ export function useLiveTerm(
     }
 
     /** Adopt an already-open, already-authed WebSocket + buffered bytes from
-     *  the peek-prewarm registry. Skips the M4 handshake entirely: state goes
+     *  the peek-prewarm registry. Skips the handshake entirely: state goes
      *  straight to `live`, the buffer is written into xterm on the next
      *  microtask (after the first FitAddon `fit()` runs — see the rAF above —
      *  so the cols/rows reflow the buffered ANSI correctly), and the SAME WS
@@ -1374,7 +1374,7 @@ export function useLiveTerm(
       connect()
     }
 
-    // 4. ResizeObserver → debounced fit + resize round-trip (§4.5).
+    // 4. ResizeObserver → debounced fit + resize round-trip.
     let resizeTimer: number | null = null
     const ro = new ResizeObserver(() => {
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
@@ -1393,7 +1393,7 @@ export function useLiveTerm(
     ro.observe(container)
 
     // 5. 1013 silent-reconnect: on visibilitychange→visible (debounced ≥2s),
-    //    re-establish the subscription without a banner state flip (§4.5).
+    //    re-establish the subscription without a banner state flip.
     const onVisibility = () => {
       if (document.visibilityState !== 'visible') return
       if (!visibilityPendingRef.current || disposedRef.current) return
@@ -1453,7 +1453,7 @@ export function useLiveTerm(
     }
 
     // 6. Teardown — dispose terminal + close WS so the mount/unmount cycle test
-    //    (100 iterations, §4.5 / §11) returns WS count to zero, no leaks.
+    //    (100 iterations) returns WS count to zero, no leaks.
     return () => {
       disposedRef.current = true
       window.cancelAnimationFrame(raf)
@@ -1493,7 +1493,7 @@ export function useLiveTerm(
     // belong in deps. `prewarmSeed` is read once at mount (it's a boolean
     // capability, not a per-render input) so it's omitted from the deps to
     // avoid re-subscribing if a parent toggles it on/off.
-    // `wsPath` IS in the deps: changing the target pane (AT-F2 teammate switch)
+    // `wsPath` IS in the deps: changing the target pane (teammate switch)
     // must re-subscribe just like changing `name`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, readOnly, fontSize, wsPath])

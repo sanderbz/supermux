@@ -1,5 +1,4 @@
-// useQuickKeys — the account-wide quick-keys selection state hook
-// (R5 quick-keys, see skill/review/quick-keys-library.plan.md).
+// useQuickKeys — the account-wide quick-keys selection state hook.
 //
 // ONE TanStack query against `/api/prefs/quick_keys`, ONE optimistic mutation
 // that PUTs the same key. The pref is opaque to the server — we serialize the

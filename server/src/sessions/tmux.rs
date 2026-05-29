@@ -1,9 +1,8 @@
-//! Thin `tokio::process` wrappers around the `tmux` CLI (TECH_PLAN §3.2.6, §3.5).
+//! Thin `tokio::process` wrappers around the `tmux` CLI.
 //!
-//! **Naming (§3.5).** Every supermux session lives in a tmux session named
-//! `supermux-<name>` (the `supermux-` prefix keeps v2's `amux-<name>` sessions from
-//! colliding during the side-by-side dogfooding window — v3 also refuses to
-//! adopt any session that is not `supermux-` prefixed).
+//! **Naming.** Every supermux session lives in a tmux session named
+//! `supermux-<name>` (v3 refuses to adopt any session that is not `supermux-`
+//! prefixed).
 //!
 //! **Large pastes (the cmux lesson).** [`Tmux::send_text`] sends literal text via
 //! `send-keys -l` for short input but switches to `load-buffer`/`paste-buffer`
@@ -40,7 +39,7 @@ fn tmux_bin() -> Result<&'static Path> {
         .ok_or_else(|| anyhow!("tmux not found on PATH (install tmux)"))
 }
 
-/// What a [`Tmux`] handle addresses (Agent Teams, AT-E §3.5). A supermux session
+/// What a [`Tmux`] handle addresses. A supermux session
 /// is one tmux SESSION (`supermux-<name>`); a Claude agent-team **teammate** is a
 /// split-window PANE inside the lead's window, addressed by its tmux pane id
 /// (`%id`). Generalizing the target lets `capture_pane*` / `pipe_pane_to_fifo` /
@@ -59,7 +58,7 @@ pub enum TmuxTarget {
 impl TmuxTarget {
     /// The `-t` argument tmux receives: `supermux-<name>` for a session, the raw
     /// `%id` for a pane. This is the ONE place the `supermux-` prefix is applied,
-    /// so session-targeting stays identical to the pre-AT-E behaviour.
+    /// so session-targeting stays identical to the previous behaviour.
     pub fn arg(&self) -> String {
         match self {
             TmuxTarget::Session(name) => format!("supermux-{name}"),
@@ -80,18 +79,18 @@ impl TmuxTarget {
 /// `supermux-` prefix is applied internally exactly as before. [`Tmux::for_pane`]
 /// builds a pane-targeted handle for agent-team teammate streaming.
 ///
-/// **Transport (REMOTE_PLAN §RT1).** Every shell-out goes through the
+/// **Transport.** Every shell-out goes through the
 /// `transport: &'a Transport` — `Tmux::new(name)` defaults to a static
 /// `&LOCAL` (zero-cost, no behaviour change for today's callers);
 /// `Tmux::new_on(transport, name)` threads in an SSH transport for remote-host
-/// sessions (wired up by `HostPool` in RT2). Local + remote share the same
+/// sessions (wired up by `HostPool`). Local + remote share the same
 /// argv-building code below; only the spawn step differs.
 pub struct Tmux<'a> {
     /// Bare session name for a `Session` handle; the pane id for a `Pane` handle.
     /// Retained for log lines / paste-buffer naming.
     name: &'a str,
     target: TmuxTarget,
-    /// Where to run tmux: local or via an SSH ControlMaster (RT1).
+    /// Where to run tmux: local or via an SSH ControlMaster.
     transport: &'a Transport,
 }
 
@@ -105,7 +104,7 @@ impl<'a> Tmux<'a> {
     }
 
     /// Like [`Tmux::new`] but with an explicit `transport` (for remote-host
-    /// sessions in RT2+).
+    /// sessions).
     pub fn new_on(transport: &'a Transport, name: &'a str) -> Self {
         Self {
             name,
@@ -122,7 +121,7 @@ impl<'a> Tmux<'a> {
         Self::for_pane_on(&LOCAL, name, pane_id)
     }
 
-    /// Like [`Tmux::for_pane`] but with an explicit `transport` (RT2+).
+    /// Like [`Tmux::for_pane`] but with an explicit `transport`.
     pub fn for_pane_on(
         transport: &'a Transport,
         name: &'a str,
@@ -149,8 +148,8 @@ impl<'a> Tmux<'a> {
     // ── command helpers ──────────────────────────────────────────────────────
 
     /// The program string to hand to [`Transport::spawn_command`]. LOCAL uses
-    /// the cached absolute path from `which::which("tmux")` (matches the
-    /// pre-RT1 behaviour — one PATH lookup at first use, never re-walked);
+    /// the cached absolute path from `which::which("tmux")` (one PATH lookup at
+    /// first use, never re-walked);
     /// SSH uses the bare `"tmux"` and lets the remote shell resolve it via
     /// the remote PATH (the remote `tmux` install lives wherever the remote
     /// user's `which` says — we don't get to cache it from here).
@@ -230,7 +229,7 @@ impl<'a> Tmux<'a> {
     /// pane stays capturable for status/archive), a generous `history-limit` (so
     /// scrollback history exists to replay/scroll), and disables auto-rename.
     ///
-    /// `env` MUST NOT contain the dashboard bearer token (§6.5) — only the
+    /// `env` MUST NOT contain the dashboard bearer token — only the
     /// narrow `SUPERMUX_HOOK_TOKEN`/`SUPERMUX_SESSION`/`SUPERMUX_URL`.
     pub async fn new_session(
         &self,
@@ -375,7 +374,7 @@ impl<'a> Tmux<'a> {
         Ok(ok)
     }
 
-    /// Is the addressed PANE still alive (Agent Teams §3.5)? `list-panes -t %id`
+    /// Is the addressed PANE still alive? `list-panes -t %id`
     /// succeeds (exit 0, ≥1 line) only while the pane exists; once the teammate
     /// pane is killed tmux exits non-zero. This is the pane analogue of
     /// [`exists`](Self::exists) (which is `has-session`, meaningless for a `%id`),
@@ -421,7 +420,7 @@ impl<'a> Tmux<'a> {
     // ── capture ──────────────────────────────────────────────────────────────
 
     /// `tmux capture-pane -p -S -<lines>` — the last `lines` rows, plain text.
-    /// Read-only: never acquires the per-session lock (§3.2.5 detector rule).
+    /// Read-only: never acquires the per-session lock (detector rule).
     pub async fn capture_pane(&self, lines: usize) -> Result<String> {
         let start = format!("-{lines}");
         self.run(&[
@@ -703,7 +702,7 @@ impl<'a> Tmux<'a> {
 
     /// `tmux resize-window -x <cols> -y <rows>`. Bounds enforced by callers.
     /// Window-scoped — the supermux-session happy path. For a teammate PANE use
-    /// [`resize_pane`](Self::resize_pane) instead (Agent Teams §3.5).
+    /// [`resize_pane`](Self::resize_pane) instead.
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let (c, r) = (cols.to_string(), rows.to_string());
         self.run(&[
@@ -719,8 +718,8 @@ impl<'a> Tmux<'a> {
         .map(|_| ())
     }
 
-    /// `tmux resize-pane -t <target> -x <cols> -y <rows>` — resize a SINGLE pane
-    /// (Agent Teams §3.5), distinct from [`resize`](Self::resize)'s
+    /// `tmux resize-pane -t <target> -x <cols> -y <rows>` — resize a SINGLE pane,
+    /// distinct from [`resize`](Self::resize)'s
     /// whole-window `resize-window`. Provided for completeness; teammate streaming
     /// is read-only by default precisely because tmux splits SHARE the window's
     /// geometry — resizing one teammate reflows its siblings — so callers should
@@ -742,7 +741,7 @@ impl<'a> Tmux<'a> {
     }
 
     /// On-disk log capture: `pipe-pane -O -t <target> 'cat >> <path>'`. Replaces
-    /// any existing pipe (idempotent). M4 supersedes this with the `tee … > fifo`
+    /// any existing pipe (idempotent). Superseded by the `tee … > fifo`
     /// form once a WS client subscribes; this gives plain logging meanwhile.
     pub async fn pipe_pane(&self, target_path: &Path) -> Result<()> {
         let cmd = format!("cat >> {}", shell_escape::escape(target_path.to_string_lossy()));
@@ -751,7 +750,7 @@ impl<'a> Tmux<'a> {
             .map(|_| ())
     }
 
-    /// M4 live-stream pipe: `pipe-pane -O -t <target> 'tee -a <log> > <fifo>'`.
+    /// Live-stream pipe: `pipe-pane -O -t <target> 'tee -a <log> > <fifo>'`.
     /// Pane output is appended to the on-disk `log` (durable) AND mirrored into
     /// the named `fifo` that [`crate::sessions::pty::PtyStream`] reads. `-O`
     /// captures pane→outside only; `pipe-pane` replaces any existing pipe, so a
@@ -769,7 +768,7 @@ impl<'a> Tmux<'a> {
     }
 
     /// List the tmux pane ids (`%1`, `%2`, …) currently present in this session
-    /// (`supermux-<name>`). Used by the Agent-Teams detector (AT-B §3.2) to
+    /// (`supermux-<name>`). Used by the Agent-Teams detector to
     /// VALIDATE that a teammate's `tmuxPaneId` from `config.json` still exists in
     /// the lead's window before trusting its live status — tmux pane ids are a
     /// server-global REUSED counter, so a freed `%1` can be re-handed to an
@@ -798,8 +797,8 @@ impl<'a> Tmux<'a> {
 
 }
 
-/// Does pane `pane_id` (`%id`) currently exist in the lead session's window
-/// (Agent Teams §3.2)? Free function (takes the LEAD's bare session name + the
+/// Does pane `pane_id` (`%id`) currently exist in the lead session's window?
+/// Free function (takes the LEAD's bare session name + the
 /// candidate pane id) because the validation crosses targets: we list the LEAD
 /// session's panes and check membership. Returns `Ok(false)` when the session is
 /// gone or the id is absent — NEVER errors on "not found", only on a tmux fault.
@@ -812,8 +811,8 @@ pub async fn pane_in_session(lead_session: &str, pane_id: &str) -> Result<bool> 
 }
 
 /// Find the BARE supermux session name whose window currently contains
-/// `pane_id` (`%id`), scanning every live `supermux-*` tmux session (Agent
-/// Teams / FIX-TEAMS bug 3). This is the tmux-level fallback used by the
+/// `pane_id` (`%id`), scanning every live `supermux-*` tmux session. This is
+/// the tmux-level fallback used by the
 /// teammate WS resolver when the team config's `leadSessionId` is a Claude
 /// UUID (not the supermux name): the pane really IS live, just not in the
 /// session the lead-id naively pointed at. Returns `None` when the pane is
@@ -1191,7 +1190,7 @@ mod sync_feature_tests {
 
 #[cfg(test)]
 mod target_tests {
-    //! Target-string formatting (Agent Teams §3.5). Pins that a `Session` target
+    //! Target-string formatting. Pins that a `Session` target
     //! keeps emitting `-t supermux-<name>` byte-for-byte (NO regression) while a
     //! `Pane` target emits the raw `%id`, so threading the target through every
     //! tmux verb can't silently change the session happy-path argument.
@@ -1200,7 +1199,7 @@ mod target_tests {
 
     #[test]
     fn session_target_keeps_the_supermux_prefix() {
-        // The pre-AT-E behaviour, unchanged: a bare name → `supermux-<name>`.
+        // The previous behaviour, unchanged: a bare name → `supermux-<name>`.
         assert_eq!(TmuxTarget::Session("myproj".into()).arg(), "supermux-myproj");
         assert_eq!(Tmux::new("myproj").target(), "supermux-myproj");
     }

@@ -1,5 +1,4 @@
-//! "Start a team" — spin up a Claude Agent-Teams LEAD session from supermux
-//! (AT-D, plan §10d / §11-D).
+//! "Start a team" — spin up a Claude Agent-Teams LEAD session from supermux.
 //!
 //! ## Why this is lead-driven (the research finding)
 //! Claude Code (v2.1.x, the version supermux ships against) has **no CLI flag or
@@ -14,17 +13,17 @@
 //! So the robust mechanism that works **today** is: create a normal Claude LEAD
 //! session with Agent Teams ENABLED for it, boot it, and send a **seed prompt**
 //! that instructs the lead to form a team of N teammates (with the requested
-//! goal and, optionally, a per-teammate model). Detection (AT-B) then picks the
-//! team up from the on-disk files and the TEAM CARD (AT-F1) renders it. This
+//! goal and, optionally, a per-teammate model). Detection then picks the
+//! team up from the on-disk files and the TEAM CARD renders it. This
 //! module owns ONLY the start flow; it never writes team files itself.
 //!
-//! ## How the per-session enable works (coordinating with AT-B's gating)
-//! AT-B gates the env injection on the GLOBAL `experimental.agent_teams` pref.
+//! ## How the per-session enable works (coordinating with the detector's gating)
+//! The detector gates the env injection on the GLOBAL `experimental.agent_teams` pref.
 //! "Start a team" is an EXPLICIT opt-in, so we set a per-session override flag
 //! ([`AppState::set_force_agent_teams`]) BEFORE booting the lead; `lifecycle::start`
 //! reads `global_pref OR force_flag`, so the lead gets
 //! `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode:"tmux"` even while the
-//! global pref is OFF — without duplicating or fighting AT-B's mechanism.
+//! global pref is OFF — without duplicating or fighting the detector's mechanism.
 
 use serde::{Deserialize, Serialize};
 
@@ -303,7 +302,7 @@ pub async fn start_team(
     .await?;
 
     // 2. Per-session opt-in: this lead gets the Agent Teams env at boot even if
-    //    the global `experimental.agent_teams` pref is OFF (AT-D explicit opt-in;
+    //    the global `experimental.agent_teams` pref is OFF (explicit opt-in;
     //    `lifecycle::start` ORs this flag with the global pref). Set BEFORE start.
     state.set_force_agent_teams(&lead.name);
 
@@ -364,11 +363,11 @@ pub struct ConvertToTeamInput {
 /// that tells the lead to form the team. Reuses the EXISTING session row — same
 /// name, same dir, same tags / pin / branch / mcp / desc-fields — only the desc
 /// is refreshed to read as a team lead and the `team` tag is added (idempotent)
-/// so the row presents itself as a team lead even before AT-B detects it.
+/// so the row presents itself as a team lead even before detection picks it up.
 ///
 /// Errors:
 ///   * 404 — no session with that name.
-///   * 409 — the session is ALREADY a detected team lead (AT-B sees it).
+///   * 409 — the session is ALREADY a detected team lead.
 ///   * 422 — the session is archived (archived sessions must be unarchived first).
 ///   * 400 — empty / oversize task.
 ///
@@ -413,7 +412,7 @@ pub async fn convert_to_team(
         )));
     }
 
-    // 2. Refuse if AT-B already sees this session as a team lead (no double
+    // 2. Refuse if the detector already sees this session as a team lead (no double
     //    conversion). Cheapest signal: ask the watcher to scan + enrich now and
     //    look for a team mapped to this supermux session.
     let teams = crate::teams::scan_and_enrich(state).await;
@@ -432,18 +431,18 @@ pub async fn convert_to_team(
         lifecycle::stop(state, name).await?;
     }
 
-    // 4. Per-session opt-in flag — same mechanism AT-D uses, so this lead boots
+    // 4. Per-session opt-in flag — same mechanism start_team uses, so this lead boots
     //    with the Agent Teams env even if the global pref is OFF. MUST be set
     //    BEFORE the start() call (start reads it via `force_agent_teams`).
     state.set_force_agent_teams(name);
 
     // 5. Refresh the row's identity bits so the existing session presents as a
-    //    team lead BEFORE AT-B detects the on-disk team files. Mirrors what
+    //    team lead BEFORE detection picks up the on-disk team files. Mirrors what
     //    `sessions::create` writes for a fresh start_team:
     //      - desc → "Team lead — <short_desc(task)>"
     //      - tags → existing ∪ {"team"} (idempotent add, no duplicates)
     //    Failures here are non-fatal: the row stays as it was; the lead still
-    //    boots and AT-B picks it up once the on-disk files exist.
+    //    boots and detection picks it up once the on-disk files exist.
     let new_desc = format!("Team lead — {}", short_desc(&task));
     if let Err(e) = db::sessions::set_desc(&state.pool, name, &new_desc).await {
         tracing::warn!(name = %name, error = %e, "convert_to_team: failed to refresh desc");
@@ -603,7 +602,7 @@ mod tests {
         assert!(!slug.ends_with('-'));
     }
 
-    // ── FEAT-CONVERT-TEAM tests ────────────────────────────────────────────────
+    // ── convert-to-team tests ────────────────────────────────────────────────
 
     use crate::config::Config;
     use crate::sessions::CreateInput;

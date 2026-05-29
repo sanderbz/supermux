@@ -1,6 +1,6 @@
-// File-type helpers shared across the Files route (M20).
+// File-type helpers shared across the Files route.
 //
-// `WRITABLE_EXTS` mirrors the M7 backend whitelist (server/src/files/mod.rs) so
+// `WRITABLE_EXTS` mirrors the backend whitelist (server/src/files/mod.rs) so
 // the editor only offers Save for files the server will actually accept on PUT —
 // keeping the affordance honest rather than letting a save 403 after the fact.
 
@@ -19,7 +19,7 @@ import type { Extension } from '@codemirror/state'
 
 import type { FsEntry } from '@/lib/api'
 
-/** Mirror of M7's `WRITABLE_EXTS` (server/src/files/mod.rs §3.3). */
+/** Mirror of the backend's `WRITABLE_EXTS` (server/src/files/mod.rs). */
 const WRITABLE_EXTS = new Set([
   'md', 'markdown', 'mdx', 'txt', 'json', 'yml', 'yaml', 'toml', 'ini', 'cfg',
   'sh', 'bash', 'zsh', 'py', 'js', 'ts', 'jsx', 'tsx', 'mjs', 'cjs', 'css',
@@ -39,14 +39,14 @@ export function extOf(name: string): string {
 }
 
 /** Is this a Markdown / MDX file? Drives the FileViewer's Preview ↔ Source
- *  toggle in the M-MD rendered-markdown surface. Mirrors the backend's
- *  `is_markdown` test (server/src/files/mod.rs §3.2). */
+ *  toggle in the rendered-markdown surface. Mirrors the backend's
+ *  `is_markdown` test (server/src/files/mod.rs). */
 export function isMarkdown(name: string): boolean {
   const ext = extOf(name)
   return ext === 'md' || ext === 'markdown' || ext === 'mdx'
 }
 
-/** Does M7 accept a PUT to this filename? */
+/** Does the backend accept a PUT to this filename? */
 export function isWritable(name: string): boolean {
   const ext = extOf(name)
   if (ext === '') {
@@ -86,7 +86,7 @@ export function iconForEntry(entry: FsEntry): LucideIcon {
 }
 
 /** Lazy-loaded CodeMirror language extensions, keyed by extension. Dynamic
- *  imports keep each grammar out of the initial bundle (perf budget, M29). */
+ *  imports keep each grammar out of the initial bundle (perf budget). */
 const LANG_LOADERS: Record<string, () => Promise<Extension>> = {
   md: async () => (await import('@codemirror/lang-markdown')).markdown(),
   markdown: async () => (await import('@codemirror/lang-markdown')).markdown(),

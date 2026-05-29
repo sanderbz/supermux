@@ -1,4 +1,4 @@
-// MobileSheet — M15 HERO interaction (TECH_PLAN §4.4 mobile, §4.4.1;
+// MobileSheet — mobile HERO interaction (see
 // research/termius-ios-native-spec.md §"Apple Maps — Detail card pull-up",
 // §"v3 finish acceptance criteria" #8/#9/#10/#11).
 //
@@ -8,8 +8,7 @@
 // dampingFraction:0.82)` (= our `springs.sheetDetent`, stiffness 280 / damping
 // 30); the over-drag above full rubber-bands via Apple's bungee formula
 // `(x·d·c)/(d+c·x)` with `c=0.55`; a downward fling > 1200 px/s dismisses; and a
-// drag-down past peek dismisses to the overview (CEO M15 amplification — v1 only
-// went to peek).
+// drag-down past peek dismisses to the overview (v1 only went to peek).
 //
 // Detent state is CONTROLLED (`activeSnapPoint`/`setActiveSnapPoint`) so we can
 // implement the layered drag-down semantics:
@@ -50,7 +49,7 @@ export function MobileSheet({
   keyboardInset = 0,
   children,
 }: MobileSheetProps) {
-  // Open at the FULL detent (§4.4 "Default detent on open: full").
+  // Open at the FULL detent ("Default detent on open: full").
   const [snap, setSnap] = React.useState<number | string | null>(FULL)
 
   // Track the last pointer to compute a downward velocity for the fling-dismiss
@@ -91,7 +90,7 @@ export function MobileSheet({
       // from the lowest detent, which is exactly the "drag-down past peek =
       // overview" semantics we want.
       snapToSequentialPoint
-      // Dismiss past the lowest (peek) detent → overview (§4.4 amplification).
+      // Dismiss past the lowest (peek) detent → overview.
       dismissible
       // Don't lock the rest of the app — terminal stays interactive (Apple Maps
       // `.presentationBackgroundInteraction(.enabled(upThrough:.medium))`).

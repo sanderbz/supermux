@@ -1,4 +1,4 @@
-// useFiles — TanStack Query bindings for the M7 file browser (TECH_PLAN §M20).
+// useFiles — TanStack Query bindings for the file browser.
 //
 // Files is NOT a live-streaming surface, so there is no SSE/polling here — the
 // cache is the source of truth and mutations (save / upload / delete) invalidate
@@ -14,7 +14,7 @@ import {
 import { filesApi, getSessionDir } from '@/lib/api'
 import type { FileMeta, FsListing } from '@/lib/api'
 
-/** The home-directory sentinel the M7 backend expands to $HOME. */
+/** The home-directory sentinel the backend expands to $HOME. */
 export const HOME_PATH = '~'
 
 const lsKey = (path: string, hidden: boolean) =>

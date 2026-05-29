@@ -1,11 +1,11 @@
-// LiveTerminal — M13. Thin React wrapper over `useLiveTerm` (TECH_PLAN §4.5).
+// LiveTerminal — thin React wrapper over `useLiveTerm`.
 //
 // Renders the xterm container full-bleed. Connection health surfaces TWO ways:
 //   • A normal (read-write) terminal registers its WS with the global
-//     `useConnection` store via `useTerminalConnectionLink` (§M23a); the
+//     `useConnection` store via `useTerminalConnectionLink`; the
 //     app-wide <ReconnectBanner> is then THE connection surface — worst-state
 //     aggregated across the SSE stream + every open terminal.
-//   • A read-only embed (the M11 quick-peek modal) does NOT register — its WS
+//   • A read-only embed (the quick-peek modal) does NOT register — its WS
 //     blips shouldn't drive the global banner — so it keeps the small in-place
 //     <ConnectionPill> below as its own scoped indicator.
 //
@@ -28,12 +28,12 @@ import { useSession } from '@/hooks/use-sessions'
 import { TailPreview } from '@/components/session-tile/tail-preview'
 
 export interface LiveTerminalProps {
-  /** Session name — maps to the M4 WS route `/ws/sessions/:name`. */
+  /** Session name — maps to the WS route `/ws/sessions/:name`. */
   name: string
-  /** Read-only embed (e.g. the M11 quick-peek modal): no keystrokes sent. */
+  /** Read-only embed (e.g. the quick-peek modal): no keystrokes sent. */
   readOnly?: boolean
   className?: string
-  /** xterm base font size in px. Omit for the M13 default (13). The overview
+  /** xterm base font size in px. Omit for the default (13). The overview
    *  hover-zoom embed passes a larger value so its small pane shows fewer,
    *  legible rows (FitAddon then sizes the geometry to the container). */
   fontSize?: number
@@ -44,7 +44,7 @@ export interface LiveTerminalProps {
    *  overview hover-zoom embed only — the focus terminal + quick-peek modal
    *  keep their existing single-WS lifecycle. */
   prewarmSeed?: boolean
-  /** Receive the imperative handle so a parent dock/joystick (M14/M15/M17) can
+  /** Receive the imperative handle so a parent dock/joystick can
    *  drive `sendKey` / `copyAll` without re-subscribing. */
   onReady?: (term: UseLiveTermResult) => void
   /** Fires ONCE when xterm has written its first real pty data frame (replay
@@ -65,9 +65,9 @@ export interface LiveTerminalProps {
   onStateChange?: (state: UseLiveTermResult['state']) => void
   /** Allow imperative `send` / `sendKey` even while `readOnly` is true. The
    *  overview type-on-hover peek sets this so a document-level keydown
-   *  listener can pipe quick interjections through the existing M13 wire
+   *  listener can pipe quick interjections through the existing wire
    *  while xterm's own DOM stdin stays disabled (the peek user never focuses
-   *  the xterm element). Default false preserves the M11 readOnly contract. */
+   *  the xterm element). Default false preserves the readOnly contract. */
   allowProgrammaticInput?: boolean
   /** The session's already-cached last-screen capture WITH SGR escapes (the
    *  same `SessionView.preview_ansi` the overview cards render via
@@ -84,9 +84,9 @@ export interface LiveTerminalProps {
    *  available. Same fallback-to-`useSessions` behaviour as `previewAnsi`. */
   previewLines?: string[]
   /** Override the WebSocket path the terminal connects to (default:
-   *  `/ws/sessions/{name}`). The Agent Teams teammate terminal (AT-F2) passes the
+   *  `/ws/sessions/{name}`). The Agent Teams teammate terminal passes the
    *  read-only teammate route here; the handshake / replay / close contract is
-   *  identical (AT-E) so the whole WS client is reused. Already query-encoded by
+   *  identical so the whole WS client is reused. Already query-encoded by
    *  the caller. When set, `name` is used only for the aria-label + the cached-tail
    *  fallback lookup (which simply misses for a teammate — harmless). */
   wsPath?: string
@@ -135,7 +135,7 @@ export function LiveTerminal({
   // Skip the lookup entirely when the overlay is suppressed (the peek owns its
   // own crossfade) or when explicit preview props were supplied.
   // Skip the session-cache fallback entirely when a `wsPath` override is in play
-  // (a teammate terminal — AT-F2): teammates have no `/api/sessions` row, so a
+  // (a teammate terminal): teammates have no `/api/sessions` row, so a
   // by-name lookup would either miss (wasteful) or, worse, collide with a real
   // session of the same name. The caller passes explicit preview props instead.
   const wantFallback =
@@ -177,10 +177,10 @@ export function LiveTerminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Register this terminal's WebSocket as a connection link in the global store
-  // (§M23a). The <ReconnectBanner> aggregates it with the SSE stream + any other
+  // Register this terminal's WebSocket as a connection link in the global store.
+  // The <ReconnectBanner> aggregates it with the SSE stream + any other
   // open terminals — worst-state wins, so the banner never flickers between two
-  // terminals reconnecting out of phase (Codex #16). A read-only embed (e.g. the
+  // terminals reconnecting out of phase. A read-only embed (e.g. the
   // quick-peek modal) does NOT register: its blips shouldn't drive the global
   // banner. The local <ConnectionPill> below stays as the in-terminal surface.
   useTerminalConnectionLink(readOnly ? '' : name, state, retry)
@@ -188,7 +188,7 @@ export function LiveTerminal({
   return (
     <div
       className={cn(
-        // Terminal surface tracks the theme token (iOS-native, §4.5). The pill
+        // Terminal surface tracks the theme token (iOS-native). The pill
         // overlays the top-center, glass material, never UPPERCASE.
         'relative h-full w-full overflow-hidden bg-[var(--terminal-bg)]',
         className,
@@ -219,7 +219,7 @@ export function LiveTerminal({
           'transition-opacity duration-150 ease-out motion-reduce:transition-none',
           showTerm ? 'opacity-100' : 'opacity-0',
         )}
-        // xterm focuses on click; expose to the keyboard-capture layer (M14).
+        // xterm focuses on click; expose to the keyboard-capture layer.
         tabIndex={readOnly ? -1 : 0}
         aria-label={`Live terminal for ${name}`}
         role="application"
@@ -253,7 +253,7 @@ export function LiveTerminal({
         </div>
       )}
 
-      {/* Jump-to-bottom button (SD-2) — appears once the user scrolls up from the
+      {/* Jump-to-bottom button — appears once the user scrolls up from the
           live bottom and pins back on tap. Focus terminal only (`!readOnly`): the
           read-only embeds are the tiny hover-peek tiles + quick-peek modal, where
           a floating control would just be clutter. Gated on `showTerm` so it never
@@ -268,14 +268,14 @@ export function LiveTerminal({
           quick-peek modal), which do NOT register with the global connection
           store and so have no other surface. A normal focus terminal registers
           its WS as a link via `useTerminalConnectionLink`, and the global
-          <ReconnectBanner> (§M23a) is then THE connection surface — showing a
+          <ReconnectBanner> is then THE connection surface — showing a
           second pill here would be redundant (Steve-Jobs bar: one surface). */}
       {readOnly && <ConnectionPill state={state} onRetry={retry} />}
     </div>
   )
 }
 
-// ── Jump-to-bottom button (SD-2) ──────────────────────────────────────────────
+// ── Jump-to-bottom button ─────────────────────────────────────────────────────
 
 // A subtle, glass-material circular control that fades+rises in at the bottom
 // centre when the user has scrolled up, mirroring the top-centre <ConnectionPill>
@@ -310,7 +310,7 @@ function ScrollToBottomButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-// ── Status pill (placeholder for the M23a reconnect banner) ───────────────────
+// ── Status pill (placeholder for the reconnect banner) ───────────────────────
 
 const PILL: Record<
   Exclude<LiveTermState, 'live'>,
@@ -351,7 +351,7 @@ function ConnectionPill({
   state: LiveTermState
   onRetry: () => void
 }) {
-  // `live` shows nothing — the M23a banner owns the green "Connected" flash.
+  // `live` shows nothing — the banner owns the green "Connected" flash.
   const cfg = state === 'live' ? null : PILL[state]
 
   return (

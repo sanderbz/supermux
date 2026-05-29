@@ -6,7 +6,7 @@
 // over the live sessions list) for tmux, the recurrence composer with a live
 // English render + debounced next-5-runs preview (POST /api/schedules/preview),
 // a one-shot datetime picker, an opt-in "Send me notification when done"
-// checkbox (the M8 watch + done_action='notify' path with a friendlier label
+// checkbox (the watch + done_action='notify' path with a friendlier label
 // and dynamic permission hint), and the test-fire button.
 //
 // Animations come from springs.ts (no `transition: all`). Default kind is the
@@ -109,9 +109,9 @@ const KINDS: ScheduleKind[] = ['tmux', 'boot', 'shell']
 
 /** Build the API payload from form state (only the fields the kind needs). The
  *  combined PromptField text is split into `command` + `prompt` at the wire
- *  boundary so the M8 schema stays unchanged. Shell jobs run the command text
+ *  boundary so the wire schema stays unchanged. Shell jobs run the command text
  *  literally so a prompt has no meaning there. The notify checkbox serializes
- *  to the M8 `watch=true` + `done_action='notify'` path. */
+ *  to the `watch=true` + `done_action='notify'` path. */
 export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
   const base: ScheduleCreateInput = {
     title: v.title.trim(),
@@ -140,7 +140,7 @@ export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
   return base
 }
 
-/** Client-side validity gate (mirrors the M8 server checks) — drives the
+/** Client-side validity gate (mirrors the server checks) — drives the
  *  Save + Test-fire enabled states. A shell job requires a command; boot/tmux
  *  accept a command and/or a prompt (at least one). */
 export function isFormValid(v: ScheduleFormValue): boolean {
@@ -375,7 +375,7 @@ export function ScheduleForm({
       />
 
       {/* Notification opt-in (top-level, friendlier than the old "watch mode"
-          jargon). Maps to M8 watch + done_action='notify'. The hint surfaces
+          jargon). Maps to watch + done_action='notify'. The hint surfaces
           the live Notification.permission + push subscription state so the
           user knows whether the ping will actually reach them. */}
       <NotifyField value={value} set={set} />
@@ -813,7 +813,7 @@ function NextRunsPreview({ state }: { state: PreviewState }) {
   )
 }
 
-// One-shot date+time → relative "in <N>m" expression the M8 parser accepts.
+// One-shot date+time → relative "in <N>m" expression the parser accepts.
 function OneShotPicker({ onPick }: { onPick: (expr: string) => void }) {
   const onChange = (v: string) => {
     if (!v) return

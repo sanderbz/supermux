@@ -1,4 +1,4 @@
-// A2HSInstructionsSheet — M23b (TECH_PLAN §4.9 / §10).
+// A2HSInstructionsSheet.
 //
 // iOS Safari has no `beforeinstallprompt` event and no install button: the only
 // way to install a PWA is the manual Share → "Add to Home Screen" flow. This
@@ -6,7 +6,7 @@
 // iOS-Safari load that is NOT already standalone; the dismissal is remembered in
 // localStorage so it never nags.
 //
-// Voice + visuals follow the M28 brand: sentence case, builder-to-builder, no
+// Voice + visuals follow the brand: sentence case, builder-to-builder, no
 // cheerleading. The two steps use the actual iOS Share + Add icons rendered
 // inline (monochrome, currentColor) — no screenshot images to ship or break.
 

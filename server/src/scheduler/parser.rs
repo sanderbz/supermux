@@ -1,5 +1,4 @@
-//! Schedule-expression grammar + cron parsing (TECH_PLAN §3.8; feature-extract
-//! §4.3).
+//! Schedule-expression grammar + cron parsing.
 //!
 //! [`parse`] turns a free-text expression into a [`Parsed`] carrying the FIRST
 //! `next_run` (computed from "now") plus the [`Recurrence`] needed to recompute

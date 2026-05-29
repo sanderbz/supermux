@@ -1,17 +1,17 @@
-//! File-driven Agent-Teams scanner (AT-B §3.2/§3.3).
+//! File-driven Agent-Teams scanner.
 //!
 //! Reads the on-disk team files Claude Code writes under `~/.claude` and builds
 //! the in-memory [`Team`] model. Two layers, split so the PURE file→Team parse
 //! is unit-testable against a temp dir with no tmux/DB:
 //!
 //! 1. [`scan_teams`] — pure: list `teams/*/config.json`, parse config + tasks +
-//!    inboxes, derive each member's `status` (§3.3). NO `%id` validation, NO
+//!    inboxes, derive each member's `status`. NO `%id` validation, NO
 //!    lead→supermux mapping (those need live tmux / the session set).
 //! 2. [`validate_pane_ids`] / [`map_lead_session`] — the live enrichment the
 //!    watcher applies each tick: drop a member's `%id` (→ Offline) the instant it
 //!    is gone from the lead's window, and resolve the hosting supermux session.
 //!
-//! **Defensive everywhere (§3 / §6).** Any missing/partial file or parse error
+//! **Defensive everywhere.** Any missing/partial file or parse error
 //! skips ONLY that team/member and is logged at debug — never a panic, never a
 //! blanked snapshot. An experimental Claude feature WILL drift; we tolerate it.
 
@@ -282,7 +282,7 @@ fn read_tasks(dir: &Path) -> Vec<RawTask> {
 }
 
 /// Resolve one roster member into the supermux [`Member`], deriving its live
-/// status (§3.3) from `is_active` + its in-progress task + the idle/shutdown
+/// status from `is_active` + its in-progress task + the idle/shutdown
 /// /needs-input signal in its inbox.
 fn resolve_member(raw: RawMember, inbox_dir: &Path, tasks: &[RawTask]) -> Member {
     let pane = if raw.tmux_pane_id.trim().is_empty() {
@@ -333,7 +333,7 @@ fn read_inbox(path: &Path) -> Vec<RawInboxMessage> {
         .unwrap_or_default()
 }
 
-/// A coarse control signal decoded from an inbox message's `text` (§3.3: the
+/// A coarse control signal decoded from an inbox message's `text` (the
 /// idle/shutdown/needs-input signals are JSON ENCODED INSIDE `text`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InboxSignal {
@@ -425,7 +425,7 @@ fn classify(s: &str) -> Option<InboxSignal> {
 }
 
 /// Derive a member's [`MemberStatus`] from its roster liveness + in-progress
-/// task + the latest inbox signal (§3.3):
+/// task + the latest inbox signal:
 ///   * NeedsYou signal → `NeedsYou` (loud, attention-first — wins always).
 ///   * shutdown signal → `Offline`.
 ///   * idle signal → `Idle`.
@@ -472,7 +472,7 @@ fn derive_status(
 /// Validate each member's `%id` against `live_pane_ids` (the lead window's panes
 /// THIS tick). Any `%id` not present is DROPPED (`tmux_pane_id = None`) and the
 /// member's live status is demoted to `Offline` — a freed pane id may have been
-/// re-handed to an unrelated pane, so we must never trust a stale one (§3.2).
+/// re-handed to an unrelated pane, so we must never trust a stale one.
 ///
 /// `NeedsYou` is preserved even with a dropped pane: the attention signal came
 /// from the inbox file, not the pane, and we don't want to swallow "needs you"
@@ -493,7 +493,7 @@ pub fn validate_pane_ids(team: &mut Team, live_pane_ids: &[String]) {
     }
 }
 
-/// Record the hosting supermux session for a team's lead (§3.2). Maps via, in
+/// Record the hosting supermux session for a team's lead. Maps via, in
 /// order: an exact `supermux-<name>` derivation, the `leadSessionId`, or a cwd
 /// match — whichever `resolver` returns first. Left `None` when unmapped (the
 /// team is still surfaced, just without a clickable lead session).

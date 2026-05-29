@@ -1,9 +1,9 @@
-// teammate-pane.tsx — AT-H2.
+// teammate-pane.tsx
 //
 // The desktop focus MAIN-PANE view for a selected teammate. When a teammate row
 // in the team-aware strip is clicked, the right pane swaps from the focused
 // session's editable terminal to THIS: a read-only live terminal of the
-// teammate's tmux pane (AT-E `/ws/teams/{team}/{member}`), with a header that
+// teammate's tmux pane (`/ws/teams/{team}/{member}`), with a header that
 // clearly reads as READ-ONLY (the teammate WS ignores client input — steering is
 // a later slice).
 //

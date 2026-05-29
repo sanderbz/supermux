@@ -1,9 +1,9 @@
-// useScheduler — TanStack Query bindings for the M8 scheduler backend (M21).
+// useScheduler — TanStack Query bindings for the scheduler backend.
 //
 // Real-time, not polled (anti-vision: "WebSocket-only — no 3s polling"). The
 // scheduler tick pushes `alerts` SSE events (server/src/scheduler/runner.rs)
 // when a job fires; `useSchedulerStream` subscribes to the SHARED `use-sse.ts`
-// stream (M12) — the one app-wide EventSource — and invalidates the schedules +
+// stream — the one app-wide EventSource — and invalidates the schedules +
 // runs caches on each scheduler event, so the list's next_run / last_run / run
 // history refresh live the moment a fire lands — no interval, ever, and no
 // second connection.
@@ -127,8 +127,8 @@ function invalidateScheduler(qc: QueryClient) {
 }
 
 /**
- * Subscribe the schedules cache to the SHARED live event stream (`use-sse.ts`,
- * M12 — the one app-wide EventSource). Mount once on the Scheduler route. On any
+ * Subscribe the schedules cache to the SHARED live event stream (`use-sse.ts`
+ * — the one app-wide EventSource). Mount once on the Scheduler route. On any
  * scheduler-sourced event (the tick fires a job → an `alerts` event with
  * `source:"scheduler"`, plus `schedules` deltas), invalidate the caches so the
  * UI reflects the new run/next_run live. Pure push — there is NO interval here,

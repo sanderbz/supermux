@@ -1,4 +1,4 @@
-// Web push subscription hook (PUSH milestone — spec TRACK 2 §3).
+// Web push subscription hook.
 //
 // Owns the "Enable phone notifications" lifecycle for the Settings toggle:
 //   - support detection (SW + PushManager + Notification; iOS needs the PWA

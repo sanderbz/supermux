@@ -1,7 +1,7 @@
 // Last-active session — one shared cell across the app.
 //
-// Originally a "last-used session in the board composer" cell (FEAT-BOARD-
-// SESSION §B; that's why the file + persist key still carry the `board-create`
+// Originally a "last-used session in the board composer" cell (that's why the
+// file + persist key still carry the `board-create`
 // name). Now widened: it's the session the user was last on, written by every
 // surface that scopes to one session and read as the default for the Files page
 // (so /files lands in the dir of the session you just dogfooded instead of
@@ -9,7 +9,7 @@
 //
 // Writers:
 //   • board composer — on every successful card create (defaults the next
-//     card to the same session, original FEAT-BOARD-SESSION §B behaviour).
+//     card to the same session, previous behaviour).
 //   • board switcher — when the user picks a `session:<name>` board.
 //   • files route    — when the user opens `/files/:name`.
 //   • focus route    — on mount of `/focus/:name`.

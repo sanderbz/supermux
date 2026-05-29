@@ -2,7 +2,7 @@
 //!
 //! Exposes the persistence, auth, config, and HTTP layers as a library so the
 //! binary (`main.rs`) and the integration tests (`tests/`) share one
-//! definition. Modules map 1:1 to TECH_PLAN §3.2.
+//! definition.
 
 pub mod agents;
 pub mod audit;

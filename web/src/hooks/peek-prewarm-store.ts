@@ -1,12 +1,12 @@
 // peek-prewarm-store — viewport-aware connection pre-warm for the overview
-// hover-zoom live peek (TECH_PLAN polish-pass).
+// hover-zoom live peek.
 //
 // WHY this exists. The overview tile's hover-zoom opens a fresh WebSocket on
-// hover-enter; the M4 first-frame auth handshake + first pty replay frame costs
+// hover-enter; the first-frame auth handshake + first pty replay frame costs
 // ~50-300ms during which the live-zoom is empty. We want INSTANT.
 //
 // HOW. While a tile is visible in the viewport (IntersectionObserver), open the
-// same `/ws/sessions/<name>` WS that the live terminal would, perform the M4
+// same `/ws/sessions/<name>` WS that the live terminal would, perform the
 // first-frame auth, and buffer the most recent pty bytes in a small per-session
 // ring (we do NOT allocate an xterm renderer — that's the expensive part). On
 // hover-enter the tile component claims the subscription: it mounts xterm,
@@ -16,8 +16,8 @@
 //
 // BOUNDED. A global cap of `MAX_CONCURRENT` pre-warms keeps the resource cost
 // flat regardless of how many tiles are visible — beyond the cap, the extra
-// visible tiles fall through to the existing on-hover-connect path (which is
-// the polish-pass crossfade — already a graceful fallback). Eviction is LRU on
+// visible tiles fall through to the existing on-hover-connect path (the
+// crossfade — already a graceful fallback). Eviction is LRU on
 // the warmed-at timestamp: the most recently visible tiles win.
 //
 // LIFECYCLE.
@@ -41,7 +41,7 @@ import { authToken, wsUrl } from '@/env'
 
 // ── Tunables ─────────────────────────────────────────────────────────────────
 
-/** Max number of pre-warmed WebSockets at any moment (TECH_PLAN polish-pass).
+/** Max number of pre-warmed WebSockets at any moment.
  *  Tiles beyond this cap fall through to on-hover-connect — the existing
  *  crossfade is the graceful fallback, so the user never sees a hard error. */
 export const MAX_CONCURRENT_PREWARMS = 12
@@ -53,12 +53,12 @@ export const MAX_CONCURRENT_PREWARMS = 12
  *  ≈ 64 KB; at the 12-concurrent cap that's ≤ 768 KB total — negligible. */
 export const RING_BUFFER_BYTES = 64 * 1024
 
-/** Mirror of the live-terminal hook's auth grace (TECH_PLAN §4.5). The headless
+/** Mirror of the live-terminal hook's auth grace. The headless
  *  subscriber uses the same generous window — if `auth_ok` never arrives we
  *  give up on this pre-warm slot and free it for someone else. */
 const AUTH_GRACE_MS = 4_000
 
-/** The M4 WS close codes the live-terminal hook reacts to (TECH_PLAN §4.5).
+/** The WS close codes the live-terminal hook reacts to.
  *  Mirrored here so the headless subscriber treats them consistently: a
  *  permanent close (auth reject / pty gone / revocation) frees the slot
  *  immediately rather than spinning. We do NOT reconnect a pre-warm on its own
@@ -232,8 +232,8 @@ export function requestWarm(name: string): boolean {
     if (registry.size >= MAX_CONCURRENT_PREWARMS) return false
   }
 
-  // Open the WS. Mirror the live-terminal hook's first-frame auth (TECH_PLAN
-  // §4.5): connect token-less, send {type:'auth',token} on open, wait for
+  // Open the WS. Mirror the live-terminal hook's first-frame auth:
+  // connect token-less, send {type:'auth',token} on open, wait for
   // {type:'auth_ok'} before declaring ourselves usefully warm. We do NOT
   // attach reconnect logic — a pre-warm that drops just frees its slot.
   const base = wsUrl().replace(/\/$/, '')

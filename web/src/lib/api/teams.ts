@@ -1,7 +1,7 @@
-// Agent Teams data types + API client (AT-F-FRONT; backend contract AT-B).
+// Agent Teams data types + API client.
 //
 // A "team" = a LEAD Claude session that spawned N TEAMMATE Claude sessions as
-// sibling tmux panes inside the lead's window. The backend (AT-B) watches the
+// sibling tmux panes inside the lead's window. The backend watches the
 // on-disk team files (~/.claude/teams/*/config.json + tasks/ + inboxes/), derives
 // each member's live status, re-validates each teammate's %id every tick, and
 // broadcasts the snapshot two ways:
@@ -10,7 +10,7 @@
 // Both carry the SAME shape. `useTeams` GETs on mount then patches from SSE,
 // exactly like `useSessions`/`useBoard` (no polling — WebSocket/SSE only).
 //
-// The TYPES mirror AT-B's wire shape byte-for-byte (snake_case status tokens).
+// The TYPES mirror the backend wire shape byte-for-byte (snake_case status tokens).
 // The status semantics drive the whole TEAM CARD attention model:
 //   needs_you  → THE loud, attention-first state (blue `needs you` pill). Wins
 //                over everything (even survives a dropped %id — it comes from the
@@ -21,7 +21,7 @@
 
 import { ApiError, apiToken, apiUrl } from './client'
 
-/** DERIVED live status for a teammate (snake_case wire tokens from AT-B). */
+/** DERIVED live status for a teammate (snake_case wire tokens from the backend). */
 export type MemberStatus = 'working' | 'idle' | 'needs_you' | 'offline'
 
 /** One teammate in a team. NOT a supermux session — there is NO `/api/sessions`
@@ -92,7 +92,7 @@ export function needsYouCount(team: Team): number {
 }
 
 /** Tasks assigned to a given member (matched by name OR agent_id, drift-tolerant —
- *  AT-B says `assigned_to` may be either). Drives the chip's muted task-count. */
+ *  the backend says `assigned_to` may be either). Drives the chip's muted task-count. */
 export function tasksForMember(team: Team, member: TeamMember): TeamTask[] {
   return team.tasks.filter(
     (t) => t.assigned_to === member.name || t.assigned_to === member.agent_id,
@@ -100,8 +100,8 @@ export function tasksForMember(team: Team, member: TeamMember): TeamTask[] {
 }
 
 /** Defensive coercion of an unknown wire value into a Team[] — tolerant of the
- *  experimental backend's schema drift (AT-B watches an experimental Claude Code
- *  feature). Drops anything missing the identity field; fills sane defaults so a
+ *  experimental backend's schema drift (the backend watches an experimental
+ *  Claude Code feature). Drops anything missing the identity field; fills sane defaults so a
  *  partial member/task never crashes the render. */
 export function coerceTeams(raw: unknown): Team[] {
   if (!Array.isArray(raw)) return []

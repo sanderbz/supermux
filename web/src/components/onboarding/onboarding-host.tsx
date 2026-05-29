@@ -1,4 +1,4 @@
-// OnboardingHost (M27 — Time to Wow).
+// OnboardingHost — Time to Wow.
 //
 // The orchestrator for the first-60-seconds unboxing. Mounted once near the app
 // root (inside the Router + QueryClient). It owns the first-launch decision and
@@ -11,7 +11,7 @@
 //
 //   • First-launch flag absent + ZERO sessions
 //        → the fresh-install branch. The host stays silent — the overview's own
-//          empty state (M12) carries the primary CTA, and M27 adds the
+//          empty state carries the primary CTA, and the host adds the
 //          secondary "boot a demo agent" button there. The host marks
 //          first-launch complete once the empty state is shown so the unboxing
 //          isn't re-armed every load while the user has no sessions yet; the

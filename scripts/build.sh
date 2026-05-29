@@ -6,7 +6,7 @@
 # the deploy host itself (deploy.sh builds there to avoid cross-compilation).
 # Requires `bun` and `cargo` on PATH (provision them once on the host).
 #
-# INCREMENTAL FAST-PATH (see scripts/deploy.sh §1):
+# INCREMENTAL FAST-PATH:
 #   - On the workstation path, deploy.sh PRESERVES $REMOTE_DIR/server/target
 #     and $REMOTE_DIR/web/node_modules between deploys (via rsync --exclude),
 #     so cargo's incremental cache + bun's symlink tree survive. This file then

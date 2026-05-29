@@ -1,11 +1,10 @@
-//! Atomic claim — the multi-agent coordination primitive (TECH_PLAN §3.2.10,
-//! feature-extract §2.5).
+//! Atomic claim — the multi-agent coordination primitive.
 //!
 //! The claim is a single `UPDATE ... RETURNING` guarded by the WHERE clause
 //! `status IN ('todo','backlog') AND owner_type='agent' AND deleted IS NULL`, so
 //! exactly one of N racing callers can flip an issue to `doing`.
 //!
-//! **Contention hardening (Codex #1).** The pool already sets
+//! **Contention hardening.** The pool already sets
 //! `busy_timeout = 5000` (`db::init`). On top of that, the claim runs inside a
 //! `BEGIN IMMEDIATE` transaction so any write contention waits *inside* SQLite
 //! (up to the busy timeout) and resolves to the "no row updated" → 409 path,

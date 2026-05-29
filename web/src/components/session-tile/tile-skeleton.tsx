@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 
-/** Initial-load placeholder (§4.12). Mirrors the tile's shape to suppress
+/** Initial-load placeholder. Mirrors the tile's shape to suppress
  *  layout shift; three pulse stripes stand in for title / meta / preview.
  *  Shown only until the SSE `sessions` event lands (≤200ms in practice). */
 export function TileSkeleton({ className }: { className?: string }) {

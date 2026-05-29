@@ -71,7 +71,7 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
       onOpenChange={onOpenChange}
       title="Archived sessions"
       description={description}
-      // SD-9: bulk "Delete all" lives INLINE on the description row, right of
+      // Bulk "Delete all" lives INLINE on the description row, right of
       // the count — saves a whole row of vertical space vs sitting above the
       // list, keeps the action discoverable at the same eye line as the count
       // it modifies ("N items · delete them all").
@@ -110,7 +110,7 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
   )
 }
 
-/** SD-9 "Delete all" row — irreversible, inline-confirm matching the per-row
+/** "Delete all" row — irreversible, inline-confirm matching the per-row
  *  delete pattern. Disabled while any individual purge is in flight (we'd be
  *  fighting the per-row mutation otherwise). On confirm, fans out every
  *  archived row's purge in parallel; the sheet empties progressively as each

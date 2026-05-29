@@ -1,7 +1,7 @@
 // useApiStatus — the V034 connection-status state machine (PWA offline / server-
 // down branded UX).
 //
-// THE PROBLEM. The existing `useConnection` store (M23a) aggregates WS + SSE
+// THE PROBLEM. The existing `useConnection` store aggregates WS + SSE
 // link states for the in-flow <ReconnectBanner>. It does NOT model:
 //   • REST API health (5xx / network errors / 401 from arbitrary fetch calls)
 //   • `navigator.onLine` (true device offline)

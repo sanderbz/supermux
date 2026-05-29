@@ -1,18 +1,18 @@
-// useBoard — the kanban data layer (TECH_PLAN §M19; M6 backend contract).
+// useBoard — the kanban data layer.
 //
-// TanStack Query against the M6 board endpoints, invalidated by the SSE `board`
+// TanStack Query against the board endpoints, invalidated by the SSE `board`
 // event — NEVER polled (anti-vision: "WebSocket-only — no 3s polling fallback").
 //
-// SSE wiring: the shared `use-sse.ts` hook (M12) opens ONE authenticated
+// SSE wiring: the shared `use-sse.ts` hook opens ONE authenticated
 // EventSource to `/api/events` and fans events out to per-event-type callbacks —
 // it is the single live channel for the whole app. The board no longer opens its
 // own EventSource; instead `useBoardSse` subscribes to the shared stream's
 // `board` event through `useSse`'s `onEvent` callback. One connection, app-wide.
 //
 // Mutations (create / patch / claim / delete) apply OPTIMISTIC updates against the
-// `['board']` cache and ROLL BACK on error (§4 board reference: "optimistic update
-// + rollback"). The atomic claim surfaces a 409 visibly via the thrown
-// `BoardError` (§3.2.10).
+// `['board']` cache and ROLL BACK on error (optimistic update
+// + rollback). The atomic claim surfaces a 409 visibly via the thrown
+// `BoardError`.
 
 import {
   useCallback,
@@ -50,7 +50,7 @@ import {
 import { useSse, type SseEventType } from '@/hooks/use-sse'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
 
-// The issues cache is keyed by the selected board (AT-C, plan §5.5) so each
+// The issues cache is keyed by the selected board so each
 // board's view is cached independently; `'all'` holds the cross-board aggregate.
 const issuesKey = (boardId: string) => ['board', 'issues', boardId] as const
 const STATUSES_KEY = ['board', 'statuses'] as const
@@ -58,12 +58,12 @@ const STATUSES_KEY = ['board', 'statuses'] as const
 export interface ClaimArgs {
   id: string
   session: string
-  /** Auto-send the work to the agent (S3). Defaults to true (user decision).
+  /** Auto-send the work to the agent. Defaults to true (user decision).
    *  Pass `false` for "Claim only" — flip the link without dispatching. */
   deliver?: boolean
 }
 
-/** Args for the unified Start-agent action (BR1). Either attach an existing live
+/** Args for the unified Start-agent action. Either attach an existing live
  *  `session`, OR pass `spawn` to create a NEW agent for the issue. */
 export interface StartArgs {
   id: string
@@ -85,32 +85,32 @@ export interface UseBoardResult {
   // Mutations (each optimistic + rollback). Promises reject with `BoardError`.
   createIssue: (input: NewBoardIssue) => Promise<BoardIssue>
   patchIssue: (id: string, patch: BoardIssuePatch) => Promise<BoardIssue>
-  /** ATOMIC claim (§3.2.10) that also auto-sends the work to the agent (S3).
+  /** ATOMIC claim that also auto-sends the work to the agent.
    *  Resolves to `{ issue, delivered, steer_id }` — use `steer_id` with
    *  `boardApi.unsend` for the Undo toast. Rejects with a `BoardError` (status
    *  409) on a lost race / not-claimable so the UI can show the conflict. */
   claimIssue: (args: ClaimArgs) => Promise<ClaimResult>
-  /** Unified Start-agent action (BR1): make the issue agent-owned, attach an
+  /** Unified Start-agent action: make the issue agent-owned, attach an
    *  existing session or spawn a new one, then claim + deliver. Optimistic (card
    *  slides to `doing`), rolls back on error, surfaces 409 like `claimIssue`.
    *  Resolves to `{ issue, delivered, steer_id }` — use `steer_id` with
    *  `boardApi.unsend` for the Undo toast. */
   startIssue: (args: StartArgs) => Promise<ClaimResult>
   deleteIssue: (id: string) => Promise<void>
-  /** BM2 §2.4: deliver `text` into the card's linked agent + clear awaiting. */
+  /** Deliver `text` into the card's linked agent + clear awaiting. */
   replyIssue: (id: string, text: string) => Promise<void>
   /** Post a durable human comment on the card (author `'user'`). Used for manual
    *  recovery when the linked agent isn't live, so the note lands on the card
    *  instead of a dead PTY. */
   commentIssue: (id: string, text: string) => Promise<void>
-  /** BM2 §2.6: soft-archive the card (optimistic removal). */
+  /** Soft-archive the card (optimistic removal). */
   discardIssue: (id: string) => Promise<void>
-  /** BM2 §2.6: un-discard (undo). */
+  /** Un-discard (undo). */
   restoreIssue: (id: string) => Promise<void>
 }
 
 /** Sort a column's issues for display: pinned first, then ascending `pos`. The
- *  midpoint-`pos` scheme means smaller `pos` = nearer the top (§2.4). */
+ *  midpoint-`pos` scheme means smaller `pos` = nearer the top. */
 export function sortIssues(issues: BoardIssue[]): BoardIssue[] {
   return [...issues].sort((a, b) => {
     if (a.pinned !== b.pinned) return b.pinned - a.pinned
@@ -177,13 +177,13 @@ function reconcileBoard(
   return merged
 }
 
-/** The live state of the session a card is linked to (U1). `null` when the card
+/** The live state of the session a card is linked to. `null` when the card
  *  has no linked session. The board joins this onto each card by `issue.session`
  *  so the card renders the real overview `StatusDot` + tail-peek instead of a
  *  hard-coded dot. */
 export interface LiveSession {
   status: ApiSession['status']
-  /** Last ~6 lines of the session's `last_capture`, ANSI-stripped (§3.6) — the
+  /** Last ~6 lines of the session's `last_capture`, ANSI-stripped — the
    *  same source as the overview `TailPreview`. */
   preview_lines: string[]
   /** Same tail WITH SGR escapes preserved (colour-true peek), when present. */
@@ -193,7 +193,7 @@ export interface LiveSession {
   display_name?: string
 }
 
-/** Join a board card to the LINKED session's live status + tail by name (U1).
+/** Join a board card to the LINKED session's live status + tail by name.
  *
  *  Reads the SHARED `['sessions']` TanStack cache — the exact source the overview
  *  tiles render from — so live `status`/`sessions` SSE deltas (merged into that
@@ -229,7 +229,7 @@ export function useLiveSession(name: string | null | undefined): LiveSession | n
 }
 
 /** Subscribe the board cache to the SHARED SSE stream's `board` event. No
- *  standalone EventSource — `useSse` owns the one app-wide connection (M12).
+ *  standalone EventSource — `useSse` owns the one app-wide connection.
  *  No polling.
  *
  *  `pendingRef` holds the ids of cards with an in-flight optimistic move. A
@@ -255,8 +255,8 @@ function useBoardSse(
         return
       }
       if (type !== 'board') return
-      // The `board` event payload IS the full board ACROSS ALL boards (M6/AT-C
-      // `emit_board`). Prefer the pushed payload over a refetch round-trip; fall
+      // The `board` event payload IS the full board ACROSS ALL boards
+      // (`emit_board`). Prefer the pushed payload over a refetch round-trip; fall
       // back to invalidation.
       const board = Array.isArray(payload)
         ? (payload as BoardIssue[])
@@ -266,7 +266,7 @@ function useBoardSse(
       if (board) {
         // Scope the all-boards push to THIS view. Three shapes:
         //   • `all`          → keep the whole snapshot.
-        //   • `session:<name>` (FEAT-BOARD-SESSION) → keep Main's cards filtered
+        //   • `session:<name>` → keep Main's cards filtered
         //     to the named session (per-session boards are a virtual filter on
         //     Main; team-board cards live under their team board).
         //   • a real board id → keep only that board's cards.
@@ -284,7 +284,7 @@ function useBoardSse(
         qc.setQueryData<BoardIssue[]>([...issuesK], (prev) =>
           reconcileBoard(prev ?? [], scoped, pendingRef.current),
         )
-        // FEAT-BOARD-SESSION: ALSO update the Main-cards cache the switcher reads
+        // ALSO update the Main-cards cache the switcher reads
         // to compute per-session entries — so a new card linked to a session
         // appears in the switcher live, even when the user is currently on a
         // team / all / per-session view. Skip when THIS view already wrote into
@@ -321,7 +321,7 @@ export const BOARDS_KEY = ['boards'] as const
 
 export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
   const qc = useQueryClient()
-  // The issues cache key for THIS board (AT-C). Each board view caches
+  // The issues cache key for THIS board. Each board view caches
   // independently; `'all'` holds the cross-board aggregate.
   const issuesK = useMemo(() => issuesKey(boardId), [boardId])
   // Ids of cards with an in-flight optimistic move. The SSE `board` reconciler
@@ -349,7 +349,7 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
     // non-array, so the array guarantee is established here, once, for all of
     // them.
     queryFn: async () => {
-      // A `session:<name>` (FEAT-BOARD-SESSION) board is a virtual filter on
+      // A `session:<name>` board is a virtual filter on
       // Main's cards — fetch Main, filter client-side. Otherwise hit the real
       // board endpoint (real id or the `all` aggregate, both handled server-side).
       const { fetchBoardId, sessionFilter } = decodeBoardId(boardId)
@@ -389,28 +389,28 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
         due_time: input.due_time ?? null,
         created: Math.floor(Date.now() / 1000),
         updated: Math.floor(Date.now() / 1000),
-        // BM2: every card is an agent task — owner_type is fixed server-side.
+        // Every card is an agent task — owner_type is fixed server-side.
         owner_type: 'agent',
         pinned: 0,
         // New cards sit at the top of their column (negative pos).
         pos: Math.min(0, ...prev.map((i) => i.pos)) - 1024,
         tags: input.tags ?? [],
-        // A brand-new card has no relations yet (S1/S2: always-present arrays).
+        // A brand-new card has no relations yet (always-present arrays).
         // Acceptance lines are created server-side; they arrive on the refetch.
         comments: [],
         acceptance: [],
         links: [],
-        // R1/R2 flags default off; a freshly-created card with a live session
+        // Review/awaiting flags default off; a freshly-created card with a live session
         // link reads live until the server says otherwise (session_live true so
         // the optimistic card shows the live dot, not a stale-link badge).
         needs_review: false,
         awaiting_input: false,
         session_live: input.session != null,
         latest_question: null,
-        // AT-C: the card lands on the board it's created for (the input's
+        // The card lands on the board it's created for (the input's
         // board_id when set; otherwise the board this view is scoped to —
         // `'all'` falls back to `main`, since the aggregate isn't a real board).
-        // FEAT-BOARD-SESSION: a `session:<name>` board is a virtual filter on
+        // A `session:<name>` board is a virtual filter on
         // Main, so cards created from it land on Main too (with `session` set).
         board_id:
           input.board_id ??
@@ -493,7 +493,7 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
   })
 
   // ── start agent (optimistic move → doing, rollback shows the 409) ──────────
-  // The unified BR1 action. Optimistically links the card to the chosen session
+  // The unified action. Optimistically links the card to the chosen session
   // and slides it to `doing`; a spawn (no session yet) just slides to `doing`
   // and lets the server-confirmed payload fill in the freshly-created session
   // name. Same rollback-on-error contract as `claim`.
@@ -545,7 +545,7 @@ export function useBoard(boardId: string = ALL_BOARD_ID): UseBoardResult {
   })
 
   // ── reply (deliver text into the linked agent; clear awaiting_input) ────────
-  // BM2 §2.4: the inline board reply. Optimistically clears the card's
+  // The inline board reply. Optimistically clears the card's
   // `awaiting_input` + `latest_question` so the amber "Needs your input" state
   // resolves the moment the human hits Send; the SSE `board` push reconciles the
   // real state once the agent receives the text. Rolls back on error.
@@ -662,7 +662,7 @@ export interface UseBoardsResult {
  *  `boards` event (invalidated by `useBoardSse`); cached app-wide under
  *  {@link BOARDS_KEY}. The Main board is always first (server order).
  *
- *  FEAT-BOARD-SESSION: appends one synthetic `kind:'session'` board per session
+ *  Appends one synthetic `kind:'session'` board per session
  *  that currently has ≥1 card on Main. These entries are CLIENT-SIDE virtual
  *  filters — they share Main's cards (and write back to Main) via `decodeBoardId`
  *  in `useBoard`/the SSE reconciler. Derived from a lightweight Main-cards query

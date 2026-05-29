@@ -1,4 +1,4 @@
-// FloatingTip (M27 — Time to Wow tour).
+// FloatingTip — Time to Wow tour.
 //
 // A single coach-mark card in the 4-step unboxing tour. Each tip is anchored to
 // a real onboarding target by a CSS selector — at mount it measures that

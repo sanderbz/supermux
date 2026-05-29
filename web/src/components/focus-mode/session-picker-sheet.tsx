@@ -1,12 +1,12 @@
-// SessionPickerSheet — M15 (TECH_PLAN §4.4.1 "Session pill → open session picker
-// sheet (full list, selectable)").
+// SessionPickerSheet — session pill → open session picker sheet (full list,
+// selectable).
 //
 // A Vaul half-sheet listing every session in the shared pinned-then-active order
 // (session-order.ts). Tapping a row switches focus to that session and closes the
 // sheet. The current session is marked with an accent rail + check. Glass material
 // (regularMaterial), 36×5 drag indicator, ≥44pt rows.
 //
-// AT-H2 — TEAM-AWARE: detected Agent Teams render as GROUPED sections at the top
+// TEAM-AWARE: detected Agent Teams render as GROUPED sections at the top
 // (a team header with the same attention-first roll-up the overview TEAM CARD
 // uses, then the lead session row, then the teammate rows). Tapping a teammate
 // opens its READ-ONLY terminal (via the shared TeammateFocus overlay the mobile
@@ -36,7 +36,7 @@ export interface SessionPickerSheetProps {
   sessions: ApiSession[]
   current: string
   onPick: (name: string) => void
-  /** Detected Agent Teams (AT-B) — rendered as grouped sections. Optional →
+  /** Detected Agent Teams — rendered as grouped sections. Optional →
    *  empty = today's flat session list. */
   teams?: Team[]
   /** Tap a teammate → open its read-only terminal (the mobile route hosts the
@@ -141,7 +141,7 @@ export function SessionPickerSheet({
   )
 }
 
-// ── Team header roll-up (mirrors the overview TeamCard §5.2 language) ──────────
+// ── Team header roll-up (mirrors the overview TeamCard language) ──────────────
 
 function TeamPickerHeader({ team }: { team: Team }) {
   const needs = needsYouCount(team)

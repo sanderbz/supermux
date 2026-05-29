@@ -1,12 +1,11 @@
-//! Audit-log and delegation row access (TECH_PLAN §3.3 `audit_log`,
-//! `delegations`).
+//! Audit-log and delegation row access (`audit_log`, `delegations` tables).
 //!
-//! Stub for M1 — structs mirror the tables so M6/M8/M9 can attach queries.
+//! Structs mirror the tables so callers can attach queries.
 //! Runtime-checked queries — see the note in [`super::sessions`].
 
 use serde::Serialize;
 
-/// A row of the `audit_log` table (§6.4).
+/// A row of the `audit_log` table.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct AuditEntry {
     pub id: i64,
@@ -14,11 +13,11 @@ pub struct AuditEntry {
     pub actor: String,
     pub action: String,
     pub target: String,
-    /// JSON string; never contains secrets (§6.4).
+    /// JSON string; never contains secrets.
     pub detail: String,
 }
 
-/// A row of the `delegations` table (cross-session edges; §3.3 0005).
+/// A row of the `delegations` table (cross-session edges; migration 0005).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct Delegation {
     pub id: i64,

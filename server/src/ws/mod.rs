@@ -1,11 +1,11 @@
-//! WebSocket pty endpoint (TECH_PLAN §3.2.9, §3.4, §6.2; M4).
+//! WebSocket pty endpoint.
 //!
 //! Mounted at `/ws/sessions/{name}` and deliberately NOT wrapped by the bearer
 //! middleware — auth is **in-band first-frame** (`{"type":"auth","token":...}`),
-//! so the token never lands in a URL, access log, or screenshot (Codex T0 / #7).
+//! so the token never lands in a URL, access log, or screenshot.
 //!
-//! Handshake (§3.2.9):
-//!   1. **Origin allowlist** (§6.2) — bad Origin → close 1008.
+//! Handshake:
+//!   1. **Origin allowlist** — bad Origin → close 1008.
 //!   2. **First-frame auth** within 2s — missing/invalid → close 1008.
 //!   3. `{"type":"auth_ok"}`, then per-session subscriber cap → 33rd closes 1013
 //!      (recoverable: the client silently reconnects on next visibility).
@@ -60,14 +60,14 @@ const CLOSE_NOT_RUNNING: u16 = 4404;
 /// The WS sub-router. Merged at the top level of `http::router` (no bearer layer).
 ///
 /// `/ws/sessions/{name}` is the read/write SESSION terminal (unchanged). The
-/// Agent-Teams routes add READ-ONLY teammate PANE streaming (AT-E §3.5): a
+/// Agent-Teams routes add READ-ONLY teammate PANE streaming: a
 /// teammate is a tmux split-window pane, not a `sessions` row, so it gets an
 /// ephemeral virtual stream and (for this slice) no client→pane input.
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/ws/sessions/{name}", get(handle_ws))
         // Resolve `%id` from `~/.claude/teams/{team}/config.json` members[] and
-        // validate it against the lead's window before streaming (AT-E). The
+        // validate it against the lead's window before streaming. The
         // frontend opens this; an optional `?pane_id=%id` query lets a caller that
         // already has the id (e.g. from the team SSE model) skip config parsing —
         // validation still runs either way.
@@ -77,7 +77,7 @@ pub fn router_for(state: AppState) -> Router {
 
 /// Upgrade handler. The Origin decision is made on the pre-upgrade request and
 /// carried into the socket task (a real WS close frame can only be sent after the
-/// upgrade, so a bad Origin still upgrades and is closed 1008 — §6.2).
+/// upgrade, so a bad Origin still upgrades and is closed 1008).
 async fn handle_ws(
     ws: WebSocketUpgrade,
     Path(name): Path<String>,
@@ -91,14 +91,14 @@ async fn handle_ws(
 /// Optional query for the teammate-pane WS: `?pane_id=%17`. When present (and
 /// non-empty) the handler skips reading `tmuxPaneId` out of `config.json` and uses
 /// this id — but STILL validates it against the lead's window (the lead name comes
-/// from config either way). Lets AT-F2 pass an id it already has from the team SSE.
+/// from config either way). Lets the caller pass an id it already has from the team SSE.
 #[derive(Debug, serde::Deserialize, Default)]
 struct PaneQuery {
     #[serde(default)]
     pane_id: Option<String>,
 }
 
-/// Upgrade handler for a teammate PANE stream (Agent Teams §3.5, AT-E). Resolves
+/// Upgrade handler for a teammate PANE stream. Resolves
 /// `(team, member)` → a live `%id` (re-read from config + validated against the
 /// lead's window) and opens a READ-ONLY live terminal of that pane. Read-only is
 /// acceptable for this slice; write/steer can come later.
@@ -349,7 +349,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         }
     };
     if stream.subscriber_count() >= state.config.ws.subscribers_per_session {
-        // Recoverable, NOT permanent (Eng P1 #4): the client reconnects silently
+        // Recoverable, NOT permanent: the client reconnects silently
         // on its next visibility-visible event.
         close(&mut socket, close_code::AGAIN, "subscriber limit").await;
         return;
@@ -403,7 +403,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    parsed `ClientMsg`s are handed to a dedicated drain task over an mpsc
     //    queue: the recv branch does a non-blocking `send` and immediately loops
     //    back to service the echo. The drain task applies messages in ARRIVAL
-    //    ORDER under the per-session lock (preserving §5.2 ordering) and coalesces
+    //    ORDER under the per-session lock (preserving keystroke ordering) and coalesces
     //    runs of `Input` into ONE `send-keys` (N forks → 1 during fast typing /
     //    key-repeat / paste bursts). The channel is unbounded: input frames are
     //    tiny and already rate-limited by the human at the keyboard; an unbounded
@@ -578,7 +578,7 @@ async fn peek_initial_resize(
     match cmd {
         ClientMsg::Resize { cols, rows } => {
             // Apply the resize INLINE under the per-session lock — matches the
-            // contract `apply_one` follows on the live input path (§5.2). No
+            // contract `apply_one` follows on the live input path. No
             // input drain task exists yet, so taking the lock here cannot
             // deadlock against it. A failure is logged and ignored so the
             // attach still proceeds (the seed degrades to tmux's current size
@@ -745,8 +745,8 @@ async fn input_drain_loop(
     }
 }
 
-/// Apply a single planned op to tmux under the per-session lock (§5.2 keystroke
-/// path "acquire session lock"). A coalesced `Text` batch routes through the
+/// Apply a single planned op to tmux under the per-session lock (acquire session
+/// lock). A coalesced `Text` batch routes through the
 /// existing [`Tmux::send_text`] (which keeps the ≤[`PASTE_THRESHOLD`] literal
 /// `send-keys` path and the paste-buffer fallback for large merges); a `Ctrl`
 /// boundary applies the named key / resize / no-op as before.
@@ -764,14 +764,14 @@ async fn input_drain_loop(
 ///   and pane-scoped collapse to the same op.
 /// - **Team lead (`Some(%id)`):** `tmux.resize_pane` → `resize-pane -t %id`.
 ///   The lead's xterm shows ONLY the lead pane (teammates render through their
-///   own AT-E WS), so the client's `cols×rows` is the LEAD PANE's viewport, not
+///   own teammate WS), so the client's `cols×rows` is the LEAD PANE's viewport, not
 ///   the whole window's. Using `resize-window` here distributes the window cols
 ///   across all N split panes — the lead lands at ≈ `cols/N`, content renders
 ///   at ~50% width on mobile (the bug `.claude/team-lead-mobile-width-audit.md`
 ///   diagnosed). `resize-pane` keeps tmux managing the joint window geometry
 ///   (siblings reflow to make room) and ensures the LEAD owns the client's
 ///   reported size. Teammates each carry their own per-pane geometry via the
-///   AT-E teammate WS (see [`handle_team_socket`]'s `Resize` arm) and reclaim
+///   teammate WS (see [`handle_team_socket`]'s `Resize` arm) and reclaim
 ///   their viewport on their next ResizeObserver tick — same idempotent
 ///   contract, just with the lead/teammate panes correctly addressed.
 ///
@@ -806,7 +806,7 @@ async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op:
     }
 }
 
-/// Constant-time validation of the first-frame auth message (§6.1).
+/// Constant-time validation of the first-frame auth message.
 fn verify_auth_frame(state: &AppState, text: &str) -> bool {
     match serde_json::from_str::<ClientMsg>(text) {
         Ok(ClientMsg::Auth { token }) => constant_time_eq::constant_time_eq(
@@ -817,7 +817,7 @@ fn verify_auth_frame(state: &AppState, text: &str) -> bool {
     }
 }
 
-/// Origin allowlist (§6.2): `localhost`, `127.0.0.1`/`::1`, the bind/extra-bind
+/// Origin allowlist: `localhost`, `127.0.0.1`/`::1`, the bind/extra-bind
 /// IPs, private-LAN IPv4, and Tailscale MagicDNS (`*.ts.net`). A *missing* Origin
 /// header means a non-browser client (native app / curl) — allowed; browsers
 /// always send Origin, so cross-site requests are caught.
@@ -845,7 +845,7 @@ fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
 
 /// Private-range IPv4 (RFC1918) or link-local — i.e. a LAN address. (Loopback is
 /// matched by string above; we deliberately avoid `is_loopback`-style bypasses on
-/// the auth path — §6.1.)
+/// the auth path.)
 fn is_private_lan(host: &str) -> bool {
     match host.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_link_local(),

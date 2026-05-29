@@ -1,24 +1,24 @@
-// M18 — slash-commands + snippets client.
+// Slash-commands + snippets client.
 //
-// Consumes the M9 backend endpoints the composer needs:
-//   * `GET  /api/slash-commands` — built-ins (§5.3) merged with user skills, for
+// Consumes the backend endpoints the composer needs:
+//   * `GET  /api/slash-commands` — built-ins merged with user skills, for
 //     the "/" autocomplete menu. Returns `{ ok, data: [{cmd, desc}, …] }`.
-//   * `GET    /api/snippets`      — saved-command picker (§4.4.1).
+//   * `GET    /api/snippets`      — saved-command picker.
 //   * `POST   /api/snippets`      — create (returns `{ ok, id }`).
 //   * `PATCH  /api/snippets/{id}` — edit title / body / position.
 //   * `DELETE /api/snippets/{id}` — remove.
 //
-// These mirror the M9 wire contract EXACTLY (server/src/agents/skills.rs::
+// These mirror the backend wire contract EXACTLY (server/src/agents/skills.rs::
 // SlashCommand, server/src/prefs.rs snippet handlers, db::prefs::Snippet) — the
-// M0 `Snippet` stub in ./settings.ts predates this contract and is left alone.
+// stub `Snippet` in ./settings.ts predates this contract and is left alone.
 //
 // Auth: every request rides the dashboard bearer read from `window
 // ._SUPERMUX_AUTH_TOKEN` at call time via the shared `apiToken()` (client.ts) —
-// NEVER hard-coded. These are the M9 authed routes; no new unauthed surface.
+// NEVER hard-coded. These are the authed routes; no new unauthed surface.
 
 import { ApiError, apiToken, apiUrl } from './client'
 
-// ── wire types (mirror the M9 backend) ───────────────────────────────────────
+// ── wire types (mirror the backend) ──────────────────────────────────────────
 
 /** One row of `GET /api/slash-commands` (skills.rs::SlashCommand). Built-ins
  *  carry an empty `desc`; user skills carry their frontmatter description. */
@@ -52,7 +52,7 @@ export interface SnippetPatchInput {
 
 // ── envelope-aware request ────────────────────────────────────────────────────
 //
-// The M9 success envelope varies: list/`slash-commands` wrap the payload in
+// The success envelope varies: list/`slash-commands` wrap the payload in
 // `data`, but `POST /api/snippets` returns `{ ok, id }` (no `data`). This helper
 // returns the WHOLE parsed envelope so callers can pick `data` or `id` as the
 // endpoint dictates — never crashing on a shape it didn't expect.

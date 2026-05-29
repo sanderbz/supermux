@@ -1,4 +1,4 @@
-//! Single-flight, exactly-once steering delivery (TECH_PLAN §3.9; M9).
+//! Single-flight, exactly-once steering delivery.
 //!
 //! One task per session subscribes to the session's status
 //! [`watch`](tokio::sync::watch) channel (the same channel the detector drives
@@ -7,12 +7,12 @@
 //! [`db::steering::pop_oldest`] pop and sends it through `sessions::send_text`,
 //! then drains the remaining backlog one-per-boundary on subsequent ticks.
 //!
-//! **Event-driven, not polling (§6 cross-cutting).** Delivery is woken by the
-//! watch channel, not a busy poll. A low-frequency 60s safety tick (§3.9) covers
+//! **Event-driven, not polling.** Delivery is woken by the
+//! watch channel, not a busy poll. A low-frequency 60s safety tick covers
 //! the case where a message is queued while the session is *already* idle (no
 //! transition fires), so a steer is never stranded.
 //!
-//! **Exactly-once (Eng concurrency #3).** [`db::steering::pop_oldest`] runs the
+//! **Exactly-once.** [`db::steering::pop_oldest`] runs the
 //! `SELECT id … LIMIT 1 / DELETE WHERE id=?` pair inside one transaction, so a
 //! message is removed before it is sent and can never be delivered twice. The
 //! loop is single-flight: it awaits each `send_text` before the next iteration,
@@ -27,7 +27,7 @@ use crate::sessions::lifecycle;
 use crate::state::AppState;
 
 /// Safety re-check interval — catches messages queued while already at a turn
-/// boundary (no watch transition fires in that case). §3.9 lists 60s.
+/// boundary (no watch transition fires in that case). 60s.
 const SAFETY_TICK: Duration = Duration::from_secs(60);
 
 /// Status values that mark an agent turn boundary (deliverable window).
@@ -36,13 +36,13 @@ fn is_boundary(status: &str) -> bool {
 }
 
 /// Spawn the per-session delivery loop. Idempotent at the system level: the loop
-/// self-terminates the moment the session row is gone OR archived (R1-1 —
-/// `exists_active` filters `archived = 0`), and when the watch sender is dropped
+/// self-terminates the moment the session row is gone OR archived
+/// (`exists_active` filters `archived = 0`), and when the watch sender is dropped
 /// (`forget_session`), so churn never leaks tasks. Safe to call once per session
 /// (boot via [`spawn_all`], create via `sessions::create`).
 pub fn spawn(state: AppState, name: String) {
     tokio::spawn(async move {
-        // R1-1/R1-2: register as a live per-session task; the guard decrements
+        // Register as a live per-session task; the guard decrements
         // on loop exit so `archive`/`delete` can sequence `forget_session`
         // after every loop has actually stopped.
         let _task = state.session_task_guard(&name);
@@ -57,7 +57,7 @@ pub fn spawn(state: AppState, name: String) {
         }
 
         loop {
-            // Stop when the session is deleted OR archived (R1-1: the *live*
+            // Stop when the session is deleted OR archived (the *live*
             // row is the lifetime anchor — `exists_active` filters
             // `archived = 0`, so an archived session terminates this loop and
             // the steering task is not leaked forever).
@@ -65,7 +65,7 @@ pub fn spawn(state: AppState, name: String) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
-                    // R1-9: throttle the Err path. Without this sleep a
+                    // Throttle the Err path. Without this sleep a
                     // persistent DB error (busy SQLite under contention, a
                     // transient pool error, a corrupted file) would put this
                     // loop into a tight CPU-burn — `continue` here returns

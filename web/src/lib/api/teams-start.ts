@@ -1,8 +1,8 @@
-// "Start a team" (AT-D) API client — the START flow only.
+// "Start a team" API client — the START flow only.
 //
-// Distinct file from the team DETECTION client (`teams.ts`, owned by AT-F-FRONT
-// which consumes `GET /api/teams` + the SSE `teams` event) so the two frontend
-// slices never collide. This module owns exactly ONE endpoint:
+// Distinct file from the team DETECTION client (`teams.ts`, which consumes
+// `GET /api/teams` + the SSE `teams` event) so the two frontend slices never
+// collide. This module owns exactly ONE endpoint:
 //   POST /api/teams/start  → create + boot a Claude LEAD with Agent Teams
 //   enabled for it + a seed prompt that forms the team of N teammates.
 //
@@ -28,7 +28,7 @@ export interface StartTeamInput {
   name?: string
 }
 
-/** Body for `POST /api/teams/start-from-existing` (FEAT-CONVERT-TEAM). The
+/** Body for `POST /api/teams/start-from-existing`. The
  *  existing session's `dir` is authoritative — there is no `dir` field. */
 export interface ConvertToTeamInput {
   /** The existing session's name. Required. */
@@ -97,7 +97,7 @@ export const teamsStartApi = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  /** `POST /api/teams/start-from-existing` (FEAT-CONVERT-TEAM) — convert an
+  /** `POST /api/teams/start-from-existing` — convert an
    *  EXISTING session into a team lead in place. The session keeps its name,
    *  dir, tags / pin / branch / mcp; only the desc is refreshed and a `team`
    *  tag is added. The Claude agent is restarted (fresh conversation) because

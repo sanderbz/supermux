@@ -1,11 +1,11 @@
-// Settings data hooks (M22).
+// Settings data hooks.
 //
 // TanStack Query wrappers around `settingsApi` (web/src/lib/api.ts). The prefs /
 // audit / snippets backend handlers ship in a later backend milestone, so every
 // query uses `retry: false` — a 404/501 surfaces immediately as `isError` and
 // the route renders a calm "not wired yet" inline state instead of spinning or
 // crashing. The localStorage-backed settings (theme, view, default model) work
-// regardless, which is what the M22 acceptance bar checks.
+// regardless, which is what the Settings acceptance bar checks.
 
 import * as React from 'react'
 import {
@@ -55,7 +55,7 @@ export function usePatchDefaultModel() {
   })
 }
 
-/** Last 200 audit rows (§6.4). */
+/** Last 200 audit rows. */
 export function useAuditLog(limit = 200): UseQueryResult<AuditEntry[]> {
   return useQuery({
     queryKey: [...AUDIT_KEY, limit],
@@ -66,8 +66,8 @@ export function useAuditLog(limit = 200): UseQueryResult<AuditEntry[]> {
 }
 
 // NOTE: snippet hooks (`useSnippets` / `useCreateSnippet` / `useDeleteSnippet`)
-// were removed here (review R3-003). Snippets are owned by `use-commands.ts`,
-// which speaks the M9 wire contract (`{title, body, position}`, integer ids) and
+// were removed here. Snippets are owned by `use-commands.ts`,
+// which speaks the wire contract (`{title, body, position}`, integer ids) and
 // uses the `['snippets']` query key. The Settings snippets manager imports those
 // hooks directly so it shares ONE client + cache with the focus snippet panel.
 
@@ -77,7 +77,7 @@ export function useRegenerateToken() {
   })
 }
 
-// ── Experimental: Agent Teams (AT-B) ──────────────────────────────────────────
+// ── Experimental: Agent Teams ────────────────────────────────────────────────
 //
 // The toggle state lives server-side (default OFF) and is kept live by the SSE
 // `settings` event — never polled, mirroring `useTeams`. An older server build
@@ -97,7 +97,7 @@ export function useAgentTeams(): UseQueryResult<AgentTeamsSetting> {
     staleTime: 60_000,
   })
 
-  // The ONE place the `settings` SSE event lands for this key. AT-B emits
+  // The ONE place the `settings` SSE event lands for this key. The server emits
   // `{ key, enabled }`; route only our key into the cache (mirrors the `prefs`
   // routing in use-sessions.ts). setQueryData (not invalidate) updates the
   // toggle in place without a refetch round-trip.

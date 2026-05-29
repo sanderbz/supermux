@@ -1,9 +1,9 @@
-// CompactTile — M14 (TECH_PLAN §4.4.3, desktop session-strip).
+// CompactTile — desktop session-strip.
 //
 // The dense session-strip row for the desktop focus mode: 320px × 56px, status
 // dot + name + token count + branch chip (matches the cmux sidebar density).
 // The CURRENT session is highlighted via a SPRING scale 1.02 + accent border —
-// NOT a class flip (§4.4.3). Hovering a NON-current tile for ≥300ms expands a
+// NOT a class flip. Hovering a NON-current tile for ≥300ms expands a
 // 14-line tail-preview popover (left-anchored, 380×220) sourced from that
 // session's existing tail data — NO new fetch (single source of truth, the same
 // `preview_lines` the overview grid renders).
@@ -23,7 +23,7 @@ import { Kbd } from '@/components/ui/kbd'
 import { sessionTitle } from '@/lib/api/sessions'
 import type { TileSession } from '@/components/session-tile/types'
 
-const DWELL_MS = 300 // §4.4.3 — popover arms after 300ms dwell on a NON-current tile
+const DWELL_MS = 300 // popover arms after 300ms dwell on a NON-current tile
 const POPOVER_W = 380
 const POPOVER_H = 220
 
@@ -69,7 +69,7 @@ export function CompactTile({
     }
   }, [])
 
-  // Hover dwell → arm the peek-popover. Only for NON-current rows (§4.4.3).
+  // Hover dwell → arm the peek-popover. Only for NON-current rows.
   const onEnter = () => {
     if (current) return
     clearDwell()
@@ -91,7 +91,7 @@ export function CompactTile({
         onHoverEnd={onLeave}
         aria-current={current ? 'true' : undefined}
         aria-label={`${title} — ${STATUS_LABEL[session.status]}`}
-        // Current row: spring scale 1.02 (NOT a class flip) — §4.4.3. Reduce
+        // Current row: spring scale 1.02 (NOT a class flip). Reduce
         // Motion gets the same resting scale instantly, no spring.
         animate={current && !reduce ? { scale: 1.02 } : { scale: 1 }}
         transition={springs.cardExpand}
@@ -134,7 +134,7 @@ export function CompactTile({
         )}
       </motion.button>
 
-      {/* Peek-popover — left-anchored, 380×220, 14-line tail (§4.4.3). Same
+      {/* Peek-popover — left-anchored, 380×220, 14-line tail. Same
           content as the overview hover, scaled down. springs.cardExpand. */}
       <AnimatePresence>
         {peeking && !current && (

@@ -1,7 +1,7 @@
-//! Per-session steering queue (TECH_PLAN §3.3 `steering_queue`, M2/M9).
+//! Per-session steering queue (`steering_queue` table).
 //!
-//! Steering messages are queued by the user (M2 CRUD) and delivered at the
-//! agent's next turn boundary by the M9 deliver loop
+//! Steering messages are queued by the user and delivered at the agent's next
+//! turn boundary by the deliver loop
 //! ([`crate::sessions::steering::deliver_loop`]). Rows cascade-delete with the
 //! owning session.
 
@@ -57,8 +57,8 @@ pub async fn clear_one(pool: &SqlitePool, session: &str, id: i64) -> sqlx::Resul
     Ok(res.rows_affected())
 }
 
-/// Atomically pop the oldest queued message for `session` (TECH_PLAN §3.9 deliver
-/// loop). Opens a transaction whose `DELETE WHERE id=?` is gated on the row still
+/// Atomically pop the oldest queued message for `session` (the deliver loop's
+/// dequeue). Opens a transaction whose `DELETE WHERE id=?` is gated on the row still
 /// being present, so a message is dequeued **exactly once** even if two deliver
 /// passes race for the same row: only one `DELETE` reports `rows_affected == 1`;
 /// the loser sees `0` and reports empty rather than re-delivering a row it never
@@ -92,9 +92,9 @@ pub async fn pop_oldest(pool: &SqlitePool, session: &str) -> sqlx::Result<Option
 /// (261). `BUSY_SNAPSHOT` fires when a deferred read transaction tries to
 /// upgrade to a write after another connection committed: `busy_timeout` does
 /// NOT retry it (the snapshot is stale by design), so the whole transaction
-/// must be rolled back and retried. M24b integration fix: `BEGIN IMMEDIATE` in
-/// `pop_oldest_once` avoids the read→write upgrade entirely, and this broadened
-/// predicate catches the extended busy codes as a belt-and-braces guard.
+/// must be rolled back and retried. `BEGIN IMMEDIATE` in `pop_oldest_once`
+/// avoids the read→write upgrade entirely, and this broadened predicate catches
+/// the extended busy codes as a belt-and-braces guard.
 fn is_locked(e: &sqlx::Error) -> bool {
     if let sqlx::Error::Database(db) = e {
         // SQLITE_BUSY = 5, SQLITE_LOCKED = 6; extended: BUSY_SNAPSHOT = 517,
@@ -116,8 +116,8 @@ async fn pop_oldest_once(pool: &SqlitePool, session: &str) -> sqlx::Result<Optio
     // fails with `SQLITE_BUSY_SNAPSHOT` (517) if another connection committed in
     // between, and `busy_timeout` will not retry it. Acquiring a connection and
     // opening the txn with `BEGIN IMMEDIATE` makes the dequeue a single,
-    // properly-serialized writer (M24b integration fix). On any early return the
-    // connection is dropped, which rolls back the open transaction.
+    // properly-serialized writer. On any early return the connection is
+    // dropped, which rolls back the open transaction.
     let mut conn = pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
 

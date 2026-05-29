@@ -46,8 +46,8 @@ import type { TileSession } from './types'
 
 // Idle geometry (px) — the slot reserves exactly the idle tile height so the
 // card can be absolutely positioned inside that slot and its hover-growth can
-// overflow downward over the next row WITHOUT reflowing the grid (Codex #8:
-// container-only morph, not canvas).
+// overflow downward over the next row WITHOUT reflowing the grid
+// (container-only morph, not canvas).
 const HEADER_H = 12 + 32 + 16 + 4 // pt-3 + title row + meta row + mt-1
 const TAIL_LINE_H = 14
 const TAIL_PAD = 8
@@ -83,7 +83,7 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}m`
 }
 
-/** Animated status border overlay (§4.3) — the CARD-level "attention" glow.
+/** Animated status border overlay — the CARD-level "attention" glow.
  *  The pulse lives HERE on the card, not on the status dot (the dot is a static
  *  colour indicator). Model:
  *
@@ -176,7 +176,7 @@ export interface SessionTileProps {
   jumpIndex?: number
 }
 
-/** The hero surface (§4.3). One tile = one agent: title (Claude chat summary),
+/** The hero surface. One tile = one agent: title (Claude chat summary),
  *  status, tail-preview, hover-peek (desktop) / long-press quick-peek (mobile),
  *  click → focus with a View Transition.
  *
@@ -270,7 +270,7 @@ export function SessionTile({
 
   // ── Type-on-hover wiring (v2 pattern, ported per user spec) ────────────────
   // Document-level keydown listener forwards quick interjections ("go on",
-  // "stop", Enter, Esc) into the peeked session's pty via the SAME M13 wire
+  // "stop", Enter, Esc) into the peeked session's pty via the SAME live-terminal wire
   // the focus terminal uses. Safety filters live in `usePeekType` — never
   // hijack inputs, browser shortcuts, or pre-engagement Tab/arrows.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
@@ -367,7 +367,7 @@ export function SessionTile({
     [clearStickyTimer, clearLeaveGrace],
   )
 
-  // One-shot haptic on transition into "waiting" (§4.3), debounced via ref so a
+  // One-shot haptic on transition into "waiting", debounced via ref so a
   // re-render with the same status never re-fires.
   React.useEffect(() => {
     if (session.status === 'waiting' && prevStatus.current !== 'waiting') {
@@ -816,7 +816,7 @@ export function SessionTile({
                 <Kbd combo={`mod+${resolvedJumpIndex}`} variant="muted" />
               </motion.span>
             )}
-            {/* Remote-host badge (RT9). Globe + truncated host name; only
+            {/* Remote-host badge. Globe + truncated host name; only
                 renders when the session has a `host_id` (local = no badge,
                 zero space). Sits BEFORE the error/state pills so the title
                 row's right edge stays calm — the badge is muted on purpose

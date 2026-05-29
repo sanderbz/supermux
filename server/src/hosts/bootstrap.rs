@@ -1,4 +1,4 @@
-//! Per-host bootstrap probe (REMOTE_PLAN.md RT8).
+//! Per-host bootstrap probe.
 //!
 //! Drives the small "is this host ready to run remote Claude sessions?"
 //! checklist that `POST /api/hosts/{id}/bootstrap` returns to the frontend. We

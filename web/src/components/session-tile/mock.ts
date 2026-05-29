@@ -97,14 +97,14 @@ export const MOCK_TILES: TileSession[] = [
   },
   {
     name: 'docs-writer',
-    task_summary: 'Draft the M11 acceptance notes',
+    task_summary: 'Draft the upcoming acceptance notes',
     status: 'active',
     dir: '/opt/projects/supermux',
     provider: 'claude',
     tokens: 6400,
     branch: 'main',
-    preview_lines: claudeBoot('Writing ACCEPTANCE.md for the tile component'),
-    preview_ansi: claudeBootAnsi('Writing ACCEPTANCE.md for the tile component'),
+    preview_lines: claudeBoot('Writing acceptance notes for the tile component'),
+    preview_ansi: claudeBootAnsi('Writing acceptance notes for the tile component'),
     updated_at: new Date().toISOString(),
   },
   {
@@ -116,7 +116,7 @@ export const MOCK_TILES: TileSession[] = [
     tokens: 31900,
     branch: 'audit/ws-auth',
     preview_lines: [
-      '● Found: token passed in the WS query string (§3.2.9).',
+      '● Found: token passed in the WS query string.',
       '  This leaks to access logs and browser history.',
       '',
       '  Recommend first-frame {type:"auth"} instead.',

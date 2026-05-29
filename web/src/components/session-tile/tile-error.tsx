@@ -23,7 +23,7 @@ export interface TileErrorProps {
   className?: string
 }
 
-/** Tile for a session whose tmux backing is gone (§4.3 error state). Calm
+/** Tile for a session whose tmux backing is gone (error state). Calm
  *  destructive border + "(missing)" prefix — never an alarmist full-red fill.
  *  Click opens a recovery sheet (Reattach / Remove from supermux); the destructive
  *  action is explicit, never auto-fired. */

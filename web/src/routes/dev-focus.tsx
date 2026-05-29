@@ -1,16 +1,16 @@
-// /dev/focus/:name — M14 verification page (DEV-only; lazy-loaded so neither
+// /dev/focus/:name — verification page (DEV-only; lazy-loaded so neither
 // this route nor the mock data ships in production, matching /dev/tiles).
 //
 // Renders the REAL desktop focus mode (DesktopFocus → DesktopSplit) with the 12
 // mocked sessions so the visual critic can review the two-column split, the
 // 320px session-strip with the current-row spring highlight, the compact-tile
 // peek-popover (hover a non-current row ≥300ms), the 44px FocusHeader, and the
-// §4.4.3 DesktopDock — all at the 375/390/1024/1440 breakpoints — WITHOUT a live
+// DesktopDock — all at the 375/390/1024/1440 breakpoints — WITHOUT a live
 // backend. The LiveTerminal shows its "Connecting…" pill (expected without a
 // server); against a running supermux-server with a session named in the route it
 // streams live, and the keyboard-capture echo can be filmed.
 //
-// AT-H2 — also seeds a mock Agent Team so the team-aware strip grouping (team
+// Also seeds a mock Agent Team so the team-aware strip grouping (team
 // header + lead row + teammate rows, needs_you / working / idle / offline states)
 // is reviewable offline. The mock team's lead maps to one of the mock sessions so
 // it renders as a grouped lead; clicking a teammate row shows the read-only

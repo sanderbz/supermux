@@ -1,8 +1,8 @@
-// useCommands — TanStack Query bindings for the M18 composer surfaces.
+// useCommands — TanStack Query bindings for the composer surfaces.
 //
-// Two caches, both backed by the M9 authed endpoints:
+// Two caches, both backed by the authed endpoints:
 //   * `useSlashCommands()` — `GET /api/slash-commands`, cached 60s (the command
-//     set rarely changes mid-session; §M18 subagent prompt). Powers the "/"
+//     set rarely changes mid-session). Powers the "/"
 //     slash menu.
 //   * `useSnippets()` + mutations — `GET/POST/PATCH/DELETE /api/snippets`,
 //     powers the snippet panel + editor. Mutations invalidate the list so the

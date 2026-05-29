@@ -1,4 +1,4 @@
-/** Board loading skeleton: 5 columns of 3 cards (TECH_PLAN §4.12). */
+/** Board loading skeleton: 5 columns of 3 cards. */
 export function BoardSkeleton() {
   return (
     <div className="flex h-full gap-3 overflow-hidden">

@@ -1,7 +1,7 @@
 // Typed accessors for the runtime config the server injects into index.html as
-// `window._SUPERMUX_*` globals (TECH_PLAN §2, §4.10). Keeping auth-critical data on
-// `window` (NOT localStorage) preserves a clean Capacitor wrap path — the native
-// WebView injects these via a bootstrap script.
+// `window._SUPERMUX_*` globals. Keeping auth-critical data on `window` (NOT
+// localStorage) preserves a clean Capacitor wrap path — the native WebView
+// injects these via a bootstrap script.
 
 declare global {
   interface Window {

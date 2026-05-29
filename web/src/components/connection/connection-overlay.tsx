@@ -11,7 +11,7 @@
 //             fade-out when the connection restores" requirement)
 //   • countdown — pure text update; no chrome motion
 //
-// BRAND (M28 voice — see brand/copy.ts + brand/BRAND.md):
+// BRAND (voice — see brand/copy.ts + brand/BRAND.md):
 //   • One short headline, no jargon, sentence case.
 //   • One sub-line of what happened + what we'll do.
 //   • One primary action ("Try now" / "Reload"). 44pt hit target.

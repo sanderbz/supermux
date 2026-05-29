@@ -12,17 +12,17 @@ import {
   type WhereSelection,
 } from './where-picker'
 
-// "Start a team" (AT-D, plan §10d / §11-D). Reuses the iOS-style ResponsiveSheet
+// "Start a team". Reuses the iOS-style ResponsiveSheet
 // (Vaul drag-detent bottom sheet on touch, right-side dialog on desktop) — the
 // exact pattern <NewSessionSheet> uses — so the affordance feels native to the
 // app. Fields: goal/task (textarea), # teammates (stepper), optional model.
 //
 // On submit it POSTs /api/teams/start, which creates + boots a Claude LEAD with
 // Agent Teams enabled for it and a seed prompt that tells it to form the team;
-// then we navigate to the lead's focus view. The TEAM CARD (AT-F1) appears via
+// then we navigate to the lead's focus view. The TEAM CARD appears via
 // detection once the lead spawns its teammate panes.
 //
-// FEAT-CONVERT-TEAM (mode='convert'). Same sheet, "Make <name> a team" variant —
+// Convert mode (mode='convert'). Same sheet, "Make <name> a team" variant —
 // converts an EXISTING session into a team lead in place. The directory field
 // is hidden (we never move a converted session — it reuses the existing row's
 // dir); shown instead as a muted footnote so the user sees WHERE the team will
@@ -31,7 +31,7 @@ import {
 // take effect at process launch — Claude has to be restarted (fresh
 // conversation) for the team flag to apply.
 //
-// FEAT-WHERE-PICKER. The create-mode directory field is replaced by the
+// Where picker. The create-mode directory field is replaced by the
 // <WherePicker>: a three-section list (Your sessions / Projects / Use another
 // folder) the user can scroll without a `+N more` cap. Picking a SESSION row
 // morphs the sheet into a take-over flow on the fly: title, description and
@@ -45,7 +45,7 @@ const MIN_TEAMMATES = 1
 const MAX_TEAMMATES = 8
 const DEFAULT_TEAMMATES = 3
 
-/** Calm cost framing (plan §8): N agents == the multiplier, never alarmist. The
+/** Calm cost framing: N agents == the multiplier, never alarmist. The
  *  total processes = lead + teammates. The convert/take-over variant prepends
  *  a calm one-liner spelling out the restart (the Agent Teams env+settings only
  *  take effect at process launch, so we MUST restart — the user sees this
@@ -61,7 +61,7 @@ function costNote(teammates: number, takeoverName?: string): string {
   return runsLine
 }
 
-/** create = new session + new team (the original AT-D flow).
+/** create = new session + new team (the original flow).
  *  convert = take an EXISTING session and turn it into a team lead in place. */
 export type SheetMode = 'create' | 'convert'
 
@@ -95,7 +95,7 @@ export function StartTeamSheet({
   defaultDir,
   onStarted,
 }: StartTeamSheetProps) {
-  // FEAT-WHERE-PICKER: in create mode the user can morph this sheet into a
+  // In create mode the user can morph this sheet into a
   // take-over flow by picking a session row in the WherePicker. We lift the
   // current selection up to the sheet so the title/description morph live —
   // see <StartTeamForm> for the actual selection logic + endpoint switch.
@@ -327,7 +327,7 @@ function StartTeamForm({
         />
       </Field>
 
-      {/* Calm cost note (plan §8) — muted, informational, never a red banner.
+      {/* Calm cost note — muted, informational, never a red banner.
           The take-over path prepends the restart-fact so the user sees it
           before the click, not after. */}
       <p className="flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">

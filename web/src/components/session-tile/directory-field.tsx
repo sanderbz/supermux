@@ -6,21 +6,21 @@ import { Input } from '@/components/ui/input'
 import { sessionsApi } from '@/lib/api'
 import { springs } from '@/lib/springs'
 
-// ── Shared Directory field (AT-H1 + FEAT-DIR-CHIPS) ─────────────────────────
+// ── Shared Directory field ──────────────────────────────────────────────────
 // The SHARED working-dir picker for the New-session flow (Start-a-team uses
-// the richer <WherePicker> from FEAT-WHERE-PICKER instead). The user wanted
+// the richer <WherePicker> instead). The user wanted
 // the options VISIBLE up front (a hidden-until-focus native <datalist> hid
 // the project list behind a click).
 //
 // Behavior:
 //  • Controlled: `value` / `onChange` own the path string.
-//  • Suggestion-chip grid BELOW the input, sourced from the M7 autocomplete
+//  • Suggestion-chip grid BELOW the input, sourced from the autocomplete
 //    endpoint (`GET /api/autocomplete/dir?q=&hidden=0` → matching subdirs
 //    minus dotfiles, capped server-side at 10). The chips REUSE the visual
 //    language of the New-session preset cards (rounded-xl, border-border,
 //    bg-card, motion press) — tighter so they fit two per row on desktop /
 //    one on phone, with 44pt touch targets.
-//  • All chips shown — FEAT-WHERE-PICKER removed the `+N more — keep typing
+//  • All chips shown — we removed the `+N more — keep typing
 //    to filter` cap so suggestions scroll naturally with the form. The
 //    server still caps the result list at 10 (a reasonable upper bound that
 //    fits a sheet without overrun).
@@ -82,7 +82,7 @@ export function DirectoryField({
       setSuggestions([])
       return
     }
-    // FEAT-WHERE-PICKER: hidden=0 drops `.git` / `.cache` / `.next` noise.
+    // hidden=0 drops `.git` / `.cache` / `.next` noise.
     const next = await sessionsApi.autocompleteDir(q, /* noHidden */ true)
     // A newer fetch started after us — drop this stale result.
     if (mySeq.current !== seq) return

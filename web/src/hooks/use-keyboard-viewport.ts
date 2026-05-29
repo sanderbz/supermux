@@ -1,5 +1,5 @@
-// useKeyboardViewport — M-mobile-livetype (TECH_PLAN §4.4 mobile, the
-// "page slides weirdly" root-cause fix; mobile-terminal-input.plan.md Step 2).
+// useKeyboardViewport — mobile live-type
+// "page slides weirdly" root-cause fix.
 //
 // Observes `window.visualViewport` so the focus layout can lay itself out AROUND
 // the soft keyboard instead of letting the browser scroll the whole page up.

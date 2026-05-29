@@ -1,6 +1,6 @@
-//! supermux server entry point (TECH_PLAN §3.2.1).
+//! supermux server entry point.
 //!
-//! M1 startup sequence: init tracing, load config (creating `~/.supermux` and the
+//! Startup sequence: init tracing, load config (creating `~/.supermux` and the
 //! mode-0o600 `auth_token`), open the SQLite pool + run migrations, build the
 //! router with auth on `/api/*`, and serve. TLS bind, background tasks, and
 //! session reattach join in later milestones. Module definitions live in
@@ -12,7 +12,7 @@ use supermux_server::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // "Edit in native editor" bridge (feat-edit-in-native-editor). When Claude's
+    // "Edit in native editor" bridge. When Claude's
     // built-in Ctrl+G spawns `$EDITOR`, supermux points `$EDITOR` at THIS binary's
     // hidden `__edit` subcommand: it relays Claude's input buffer to a browser
     // editor sheet and writes the edited text back. Checked BEFORE init_tracing /
@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     // disables the edit-in-native-editor affordance (logged), never the server.
     external_edit::install_bridge_script(&config.data_dir);
 
-    // Session survival across restarts/deploys (§3.5). tmux keeps its control
+    // Session survival across restarts/deploys. tmux keeps its control
     // socket under $TMUX_TMPDIR (default `/tmp`). Under the systemd hardening
     // `PrivateTmp=true`, `/tmp` is recreated fresh on every (re)start, so a new
     // instance cannot reach the PREVIOUS tmux server — every session would read
@@ -66,22 +66,22 @@ async fn main() -> anyhow::Result<()> {
     // the overview correct from the first paint.
     sessions::auto_actions::reconcile_on_boot(&state).await;
 
-    // Background tasks (§3.9). M8 adds the scheduler tick.
+    // Background tasks. The scheduler tick runs here.
     scheduler::spawn(state.clone());
-    // M5a: resume per-session status detection on boot (cold-start init §3.2.8).
+    // Resume per-session status detection on boot (cold-start init).
     sessions::auto_actions::spawn_all(&state).await;
-    // M9: resume per-session steering delivery on boot (§3.9 deliver loop).
+    // Resume per-session steering delivery on boot.
     sessions::steering::deliver_loop::spawn_all(&state).await;
-    // AT-B (§3.2): file-driven Agent-Teams detector. Watches `~/.claude/teams`
+    // File-driven Agent-Teams detector. Watches `~/.claude/teams`
     // (+ slow safety poll), re-validates teammate `%id`s each tick, broadcasts
     // the team snapshot over SSE. Cheap no-op while no team files exist.
     teams::spawn(state.clone());
-    // AB3 (board-integration §C.2): auto-install supermux-managed commands (e.g.
+    // Auto-install supermux-managed commands (e.g.
     // `/supermux-task`) into the service user's `~/.claude/commands/` so the
     // agent's board-write surface is present with no manual step. Idempotent +
     // non-clobbering (preserves a co-located user command of the same name).
     agents::skills::seed_managed_commands().await;
-    // RT2 (REMOTE_PLAN §RT2): start the HostPool reaper. Sweeps every 60s,
+    // Start the HostPool reaper. Sweeps every 60s,
     // tears down SSH ControlMasters that have been idle > 10min AND have no
     // live session row pointing at them. Cheap no-op while no remote hosts
     // are registered.
@@ -102,7 +102,7 @@ fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    // §3.4 (Codex #24): the redaction layer is installed BEFORE the formatter so
+    // The redaction layer is installed BEFORE the formatter so
     // an Authorization/Cookie header or a `?_token=` query never reaches the
     // log output in clear — defense-in-depth ahead of any future TraceLayer.
     tracing_subscriber::registry()

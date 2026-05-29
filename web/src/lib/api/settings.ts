@@ -1,6 +1,6 @@
-// M22 — Settings client.
+// Settings client.
 //
-// Envelope: HTTP responses are `{ ok, data?, error? }` (§3.4). We unwrap `data`
+// Envelope: HTTP responses are `{ ok, data?, error? }`. We unwrap `data`
 // on success and throw `ApiError` (carrying the status code) otherwise — the
 // settings hooks turn a 404/501 into a graceful "backend not wired yet" state
 // rather than a crash, since the prefs/audit handlers land in a later backend
@@ -12,7 +12,7 @@
 
 import { settingsRequest } from './client'
 
-// ── M0 stub domain types (legacy skeleton) ────────────────────────────────────
+// ── Stub domain types (legacy skeleton) ───────────────────────────────────────
 
 export interface Snippet {
   id: string
@@ -26,7 +26,7 @@ export interface KbdGroup {
   keys: string[]
 }
 
-/** Audit-log row (§6.4). Field shape mirrors the server serializer exactly
+/** Audit-log row. Field shape mirrors the server serializer exactly
  *  (`server/src/db/runtime_state.rs` `AuditEntry`, serialized verbatim with no
  *  `serde(rename)`): `ts` is epoch **seconds** as a number — NOT `at`/string.
  *  Reading `row.at` here used to yield `undefined`, corrupting the timestamp
@@ -41,9 +41,9 @@ export interface AuditEntry {
   detail?: string
 }
 
-// ── M22 settings wire types ───────────────────────────────────────────────────
+// ── Settings wire types ───────────────────────────────────────────────────────
 
-/** API-key settings — values arrive MASKED from the server (§1.8); never raw. */
+/** API-key settings — values arrive MASKED from the server; never raw. */
 export interface MaskedEnv {
   /** e.g. `sk-ant-…last4`, or `''` when unset. */
   ANTHROPIC_API_KEY?: string
@@ -58,7 +58,7 @@ export interface RegenerateTokenResult {
   token: string
 }
 
-/** Experimental Agent Teams toggle (AT-B). Server default is OFF; the change
+/** Experimental Agent Teams toggle. Server default is OFF; the change
  *  takes effect on the NEXT session start. */
 export interface AgentTeamsSetting {
   enabled: boolean
@@ -70,7 +70,7 @@ export interface AgentTeamsSetting {
 export const AGENT_TEAMS_PREF_KEY = 'experimental.agent_teams'
 
 export const settingsApi = {
-  /** GET `/api/settings/env` — returns MASKED key previews (§1.8). */
+  /** GET `/api/settings/env` — returns MASKED key previews. */
   getEnv: (): Promise<MaskedEnv> => settingsRequest('/api/settings/env'),
   /** PATCH `/api/settings/env` — write `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. */
   patchEnv: (patch: MaskedEnv): Promise<MaskedEnv> =>
@@ -87,18 +87,18 @@ export const settingsApi = {
       method: 'PATCH',
       body: JSON.stringify({ model }),
     }),
-  /** GET `/api/audit?limit=N` — last N audit rows (§6.4). */
+  /** GET `/api/audit?limit=N` — last N audit rows. */
   getAudit: (limit = 200): Promise<AuditEntry[]> =>
     settingsRequest(`/api/audit?limit=${limit}`),
-  // NOTE: snippet CRUD lives in `./commands.ts` (`commandsApi`), the M9 wire
+  // NOTE: snippet CRUD lives in `./commands.ts` (`commandsApi`), the live wire
   // contract (`{title, body, position}`, integer ids). The legacy `label/command`
-  // snippet methods that used to live here were removed (review R3-003) so the
-  // Settings manager and the focus snippet panel share ONE client + cache key.
+  // snippet methods that used to live here were removed so the Settings manager
+  // and the focus snippet panel share ONE client + cache key.
   /** POST `/api/settings/regenerate-token` — rotate the dashboard bearer. */
   regenerateToken: (): Promise<RegenerateTokenResult> =>
     settingsRequest('/api/settings/regenerate-token', { method: 'POST' }),
 
-  /** GET `/api/settings/experimental/agent-teams` — current toggle state (AT-B).
+  /** GET `/api/settings/experimental/agent-teams` — current toggle state.
    *  Default OFF. An older server build (404/501) surfaces as `isError` and the
    *  Settings UI shows a calm "not supported yet" state. */
   getAgentTeams: (): Promise<AgentTeamsSetting> =>

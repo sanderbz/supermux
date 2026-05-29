@@ -1,5 +1,4 @@
-// useEdgeGestures — M15 edge-swipe navigation (TECH_PLAN §4.4 "Edge-swipe
-// gestures", user-vision.md "Gestures").
+// useEdgeGestures — edge-swipe navigation.
 //
 //   • Edge-swipe-RIGHT (from the LEFT edge, ≥40px inward, velocity ≥800 px/s)
 //     → back to overview.

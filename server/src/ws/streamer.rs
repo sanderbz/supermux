@@ -1,4 +1,4 @@
-//! Per-session [`PtyStream`] registry (TECH_PLAN §3.2.9, M4 scope).
+//! Per-session [`PtyStream`] registry.
 //!
 //! Owns a `DashMap<String, Arc<PtyStream>>` so every WebSocket subscriber for a
 //! session shares ONE FIFO reader + broadcast fan-out. [`PtyStreamer::for_session`]
@@ -67,7 +67,7 @@ impl PtyStreamer {
     }
 
     /// Get (creating, or replacing-if-dead) the stream for a teammate PANE keyed
-    /// by `stream_key` (Agent Teams §3.5). `stream_key` is a PANE-UNIQUE id
+    /// by `stream_key`. `stream_key` is a PANE-UNIQUE id
     /// (`%id` or `{lead}/{member}`) so the teammate stream gets its OWN registry
     /// slot + FIFO + log instead of clobbering the lead's (whose key is the bare
     /// session name). `pane_id` is the tmux `%id` the reader pipes. Does NOT start
@@ -240,7 +240,7 @@ impl PtyStreamer {
     }
 }
 
-/// Make a stream key filename-safe (Agent Teams §3.5). Keeps `[A-Za-z0-9._-]`
+/// Make a stream key filename-safe. Keeps `[A-Za-z0-9._-]`
 /// verbatim — so a VALID session name (`^[A-Za-z0-9_.-]+$`, see
 /// `sessions::valid_name`) is returned UNCHANGED and existing FIFO/log filenames
 /// stay byte-for-byte (no regression) — and maps every other byte (e.g. the `%`
@@ -364,7 +364,7 @@ mod lead_session_tests {
 
 #[cfg(test)]
 mod sanitize_tests {
-    //! Stream-key → filename mapping (Agent Teams §3.5). Pins that a valid SESSION
+    //! Stream-key → filename mapping. Pins that a valid SESSION
     //! name is the identity (no FIFO/log filename regression) while teammate keys
     //! (`%id`, `{lead}/{member}`) become distinct, filename-safe basenames.
 
@@ -373,7 +373,7 @@ mod sanitize_tests {
     #[test]
     fn valid_session_name_is_unchanged() {
         // Every char a session name may contain (`^[A-Za-z0-9_.-]+$`) survives, so
-        // the pre-AT-E `"<name>.fifo"` / `"<name>.log"` paths are byte-for-byte.
+        // the legacy `"<name>.fifo"` / `"<name>.log"` paths are byte-for-byte.
         for n in ["proj", "my-proj", "my_proj", "v1.2.3", "ABC-123_x.y"] {
             assert_eq!(sanitize_key(n), n, "session name {n} must be identity");
         }

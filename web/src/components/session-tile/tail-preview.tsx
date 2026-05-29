@@ -10,13 +10,13 @@ const PAD_Y = 8 // px — breathing room above the bottom edge
 const MAX_RENDER = 22 // expanded ceiling; render this many, clip the rest by height
 
 export interface TailPreviewProps {
-  /** Tail lines, ANSI-stripped server-side (§3.6). Newest last. */
+  /** Tail lines, ANSI-stripped server-side. Newest last. */
   lines: string[]
   /** Same tail WITH SGR escapes preserved (`SessionView.preview_ansi`). When
    *  present each line renders with its real terminal colours; when absent the
    *  plain `lines` render in the default tail tint. */
   ansiLines?: string[]
-  /** Visible line count: 6 idle → 14 hover → 20 expanded (§4.3). Ignored when
+  /** Visible line count: 6 idle → 14 hover → 20 expanded. Ignored when
    *  `fill`. */
   visibleLines?: number
   /** Fill the parent height instead of sizing to `visibleLines` (quick-peek). */
@@ -63,7 +63,7 @@ function TailLine({ text, ansi }: { text: string; ansi: string | null }) {
   return <>{text || ' '}</>
 }
 
-/** The live tail of a session's pty (§4.3). Pre-formatted mono block, last N
+/** The live tail of a session's pty. Pre-formatted mono block, last N
  *  lines anchored to the bottom, top-fade mask. New lines slide up via `layout`
  *  (instant under Reduce Motion). The container height springs 6→14→20 so the
  *  peek expands within one frame without a scroll jump. Renders the agent's real

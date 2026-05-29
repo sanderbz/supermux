@@ -1,10 +1,10 @@
-//! Schedule row access (TECH_PLAN §3.3 `schedules`, §3.8 scheduler).
+//! Schedule row access (`schedules` table and the scheduler tick).
 //!
-//! The [`Schedule`] struct mirrors the `schedules` table 1:1 (M1 stub); M8 adds
-//! the query surface the tick loop, runner, and HTTP handlers need. Runtime-
+//! The [`Schedule`] struct mirrors the `schedules` table 1:1, and the query
+//! surface is what the tick loop, runner, and HTTP handlers need. Runtime-
 //! checked queries (`query`/`query_as`) — see the note in [`super::sessions`].
 //!
-//! **Idempotency (§3.8 / Codex #6).** [`claim_run_key`] inserts the
+//! **Idempotency.** [`claim_run_key`] inserts the
 //! `(schedule_id, scheduled_for_ts)` tuple BEFORE a dispatch; a UNIQUE collision
 //! (returned as `Ok(false)`) means the schedule already fired for that fire-time
 //! — the caller skips, so a restart never double-fires.
@@ -182,7 +182,7 @@ pub async fn record_fire(
 }
 
 /// Manual "run now": bump `last_run`/`run_count` but DO NOT touch `next_run`
-/// (feature-extract §4.7 — the tick still owns the schedule's cadence).
+/// — the tick still owns the schedule's cadence.
 pub async fn record_manual(pool: &SqlitePool, id: &str, fired_at: DateTime<Utc>) -> sqlx::Result<()> {
     let now = Utc::now().timestamp();
     sqlx::query(

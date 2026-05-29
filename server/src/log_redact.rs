@@ -1,15 +1,15 @@
-//! Tracing redaction layer (TECH_PLAN §3.4 line 715, Codex #24 — R4-03).
+//! Tracing redaction layer.
 //!
-//! §3.4 mandates: *"Configure `tracing-subscriber` with a layer that redacts the
+//! The contract: *"Configure `tracing-subscriber` with a layer that redacts the
 //! `Authorization` header, the `Cookie` header, and any query key matching
 //! `_token|token|key` to `<redacted>` before the JSON formatter sees them."*
 //!
 //! This is **defense-in-depth**: there is no `tower-http` `TraceLayer` active
 //! today, so the server does not currently write request URLs to the journal.
-//! But §3.4 expects a `TraceLayer` as a natural ops improvement, and the moment
-//! one is added every `/api/events?_token=<tok>` request line would land in the
-//! journal in clear. Installing the redactor *now* means that landmine is
-//! defused before it is ever armed.
+//! But a `TraceLayer` is a natural ops improvement, and the moment one is added
+//! every `/api/events?_token=<tok>` request line would land in the journal in
+//! clear. Installing the redactor *now* means that landmine is defused before
+//! it is ever armed.
 //!
 //! **How it works.** `tracing` events/spans carry typed fields. This layer is a
 //! [`tracing_subscriber::Layer`] that, as each event/span is recorded, rewrites
@@ -134,7 +134,7 @@ where
         event.record(&mut v);
         // In debug builds, surface a developer error if a span/event recorded a
         // raw Authorization/Cookie value or an un-redacted secret query — this
-        // makes the §3.4 contract self-policing.
+        // makes the redaction contract self-policing.
         debug_assert!(
             !v.saw_raw_secret,
             "log_redact: a raw secret-bearing value reached the tracing layer; \
@@ -144,7 +144,7 @@ where
 }
 
 /// Visitor that flags whether any recorded field carried a raw secret — the
-/// self-policing half of the §3.4 contract.
+/// self-policing half of the redaction contract.
 #[derive(Default)]
 struct RedactCheckVisitor {
     saw_raw_secret: bool,

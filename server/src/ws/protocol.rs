@@ -1,9 +1,9 @@
-//! WebSocket control-frame wire protocol (TECH_PLAN §3.4).
+//! WebSocket control-frame wire protocol.
 //!
 //! Text frames carry these JSON control messages; binary frames carry raw pty
 //! bytes (server→client only). The first text frame a client sends MUST be
 //! [`ClientMsg::Auth`] — the in-band first-frame auth that keeps the token out of
-//! URLs/logs/screenshots (Codex T0 / #7). All variants use an internally-tagged
+//! URLs/logs/screenshots. All variants use an internally-tagged
 //! `{"type": "...", ...}` shape.
 
 use serde::Deserialize;

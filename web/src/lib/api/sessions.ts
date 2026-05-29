@@ -1,14 +1,14 @@
-// Sessions (M12) — the real client for the M2 sessions CRUD + the §3.6 hero data
+// Sessions — the real client for the sessions CRUD + the hero data
 // flow (preview_lines off `last_capture`).
 //
-// This module ALSO carries the M0 legacy skeleton (`notImplemented` + the typed
-// `api` stub object). The M0 `api` object aggregates one method per §3.4
-// endpoint across every feature; it predates the per-feature clients below and
+// This module ALSO carries the legacy skeleton (`notImplemented` + the typed
+// `api` stub object). The legacy `api` object aggregates one method per endpoint
+// across every feature; it predates the per-feature clients below and
 // is kept verbatim so the public surface is byte-for-byte identical. It imports
 // the non-session stub domain types from their sibling feature modules.
 //
-// Envelope: M2 wraps success bodies in `{ ok:true, data }` and errors in
-// `{ ok:false, error }` (§3.4). Some handlers return a bare array. `sessReq`
+// Envelope: the backend wraps success bodies in `{ ok:true, data }` and errors in
+// `{ ok:false, error }`. Some handlers return a bare array. `sessReq`
 // unwraps `data` when present, tolerates a bare body, and lifts `error` into a
 // typed `SessionError` (carrying the HTTP status) so the route can branch 409
 // (duplicate name) vs 404 (gone) vs 0 (server unreachable) without crashing.
@@ -24,17 +24,17 @@ import type { FileEntry, FileContent } from './files'
 import type { Snippet, KbdGroup, AuditEntry } from './settings'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// M0 legacy skeleton — typed stub `api` client (one method per §3.4 endpoint).
+// Legacy skeleton — typed stub `api` client (one method per endpoint).
 // Bodies throw `not yet implemented`; the real per-feature clients live below
 // and in the sibling modules. Never imported by consumers, but exported to keep
 // the public surface identical.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function notImplemented(method: string, ..._args: unknown[]): never {
-  throw new Error(`api.${method}() — not yet implemented (M0 stub)`)
+  throw new Error(`api.${method}() — not yet implemented (stub)`)
 }
 
-// ── Domain types (minimal; extended by later milestones) ──────────────────────
+// ── Domain types (minimal; extended later) ────────────────────────────────────
 
 export type SessionStatus =
   | 'starting'
@@ -50,7 +50,7 @@ export type SessionStatus =
  *  and requires a clean relaunch. Matches the backend `Mode` snake_case wire. */
 export type SessionMode = 'normal' | 'accept_edits' | 'plan' | 'bypass'
 
-/** Per-tile summary. SSE `sessions` events use this same shape (deltas). §3.4 */
+/** Per-tile summary. SSE `sessions` events use this same shape (deltas). */
 export interface SessionSummary {
   name: string
   /** Mutable human label (migration 0019); the server sends it (= `name` when
@@ -59,7 +59,7 @@ export interface SessionSummary {
   status: SessionStatus
   dir: string
   provider: string
-  /** Last 6 lines of `last_capture`, ANSI-stripped. §3.4 */
+  /** Last 6 lines of `last_capture`, ANSI-stripped. */
   preview_lines: string[]
   /** Same 6 lines with SGR escape sequences preserved — the colour-true tile
    *  preview source. Empty until the first capture; the UI falls back to
@@ -69,7 +69,7 @@ export interface SessionSummary {
    *  the first capture; the ⋯ menu defaults the live-checked radio to `normal`. */
   mode?: SessionMode
   updated_at: string
-  /** Remote host the session runs on (RT9). `null` / undefined = LOCAL. Carried
+  /** Remote host the session runs on. `null` / undefined = LOCAL. Carried
    *  on the tile so <HostBadge> can render without an extra fetch. */
   host_id?: number | null
 }
@@ -95,7 +95,7 @@ export interface PeekResult {
 
 export type AgentState = 'idle' | 'active' | 'waiting'
 
-/** §3.7 — `{ reached, status }`. */
+/** Wait-state result — `{ reached, status }`. */
 export interface WaitResult {
   reached: boolean
   status: SessionStatus
@@ -129,7 +129,7 @@ export const api = {
     notImplemented('deleteSession', name),
   startSession: (name: string): Promise<Session> =>
     notImplemented('startSession', name),
-  // NOTE: start/stop are LIVE in `focusApi` (./focus). These M0 stubs are dead
+  // NOTE: start/stop are LIVE in `focusApi` (./focus). These stubs are dead
   // (no consumer imports this `api` object) and kept only so the frozen public
   // surface stays byte-for-byte identical — use `focusApi.stopSession` /
   // `focusApi.startSession` for the real control-plane calls.
@@ -192,12 +192,12 @@ export const api = {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// M12 — real sessions client.
+// Real sessions client.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The fields the SSE `sessions` delta / the `GET /api/sessions` list carry for
  *  a tile. A superset of `SessionSummary` with the optional hero display fields
- *  (§3.6) the detector populates when it has them. Mirrors `TileSession` but
+ *  the detector populates when it has them. Mirrors `TileSession` but
  *  lives here so the API layer owns the wire shape. */
 export interface ApiSession {
   /** Immutable slug — the identity used for routes, API calls, SSE filters,
@@ -209,7 +209,7 @@ export interface ApiSession {
   status: SessionStatus
   dir: string
   provider: string
-  /** Last 6 lines of `last_capture`, ANSI-stripped (§3.6). */
+  /** Last 6 lines of `last_capture`, ANSI-stripped. */
   preview_lines: string[]
   /** Same 6 lines with SGR escape sequences preserved — the colour-true tile
    *  preview source. Empty until the first capture; the UI falls back to
@@ -245,11 +245,11 @@ export interface ApiSession {
   desc?: string
   /** Tags (searchable). */
   tags?: string[]
-  /** Pin + activity drive the sort (feature-extract §1.2). */
+  /** Pin + activity drive the sort. */
   pinned?: boolean
   /** tmux session alive AND a child process exists. */
   running?: boolean
-  /** Epoch seconds — last send / last started (feature-extract §1.2). */
+  /** Epoch seconds — last send / last started. */
   last_activity?: number
   /** True when the underlying tmux session is gone → tile renders `<TileError>`. */
   missing?: boolean
@@ -274,10 +274,10 @@ export interface ApiSession {
    *  cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
    *  error badge on the card (Track 3). */
   error?: { type: string; message: string }
-  /** Remote host the session runs on (REMOTE_PLAN.md RT4/RT9). FK into the
-   *  `hosts` table; `null` means LOCAL (the historical default + the in-flight
-   *  behaviour for every existing row). The session tile renders a small globe
-   *  badge when this is set; the new-session sheet picks it via <HostPicker>. */
+  /** Remote host the session runs on. FK into the `hosts` table; `null` means
+   *  LOCAL (the historical default + the in-flight behaviour for every existing
+   *  row). The session tile renders a small globe badge when this is set; the
+   *  new-session sheet picks it via <HostPicker>. */
   host_id?: number | null
 }
 
@@ -304,7 +304,7 @@ export function sessionTitle(s: {
   return s.task_summary?.trim() ? s.task_summary : s.name
 }
 
-/** A past Claude conversation for a session's working dir (feat-resume-picker).
+/** A past Claude conversation for a session's working dir.
  *  Surfaced by `GET /api/sessions/{name}/resumable`; picking one resumes it via
  *  `claude --resume <id>`. */
 export interface ResumableConversation {
@@ -318,7 +318,7 @@ export interface ResumableConversation {
   message_count: number
 }
 
-/** Live git status for a session's working dir (feat-session-info), from
+/** Live git status for a session's working dir, from
  *  `GET /api/sessions/{name}/git`. The stored `branch` label goes stale; this is
  *  read on demand when the info panel opens so it shows the TRUTH. Every field
  *  defaults to "no repo" server-side, so a non-git dir degrades cleanly (the
@@ -370,9 +370,9 @@ export interface SetModeResult {
   relaunched: boolean
 }
 
-/** Body for `POST /api/sessions` (§5.1). `command` carries the initial prompt
+/** Body for `POST /api/sessions`. `command` carries the initial prompt
  *  the Quick-start presets prefill; `worktree` requests an isolated git worktree.
- *  `host_id` (RT9) picks the remote host the session runs on — `null` /
+ *  `host_id` picks the remote host the session runs on — `null` /
  *  omitted = LOCAL (the historical behaviour). */
 export interface NewSession {
   name: string
@@ -411,7 +411,7 @@ async function sessReq<T>(path: string, init?: RequestInit): Promise<T> {
     res = await fetch(apiUrl(path), { ...init, headers })
   } catch {
     // Network down / server restarting. Status 0 lets the route show the
-    // "Can't reach supermux-server. Retrying…" state (§4.12) instead of crashing.
+    // "Can't reach supermux-server. Retrying…" state instead of crashing.
     throw new SessionError('Can’t reach supermux-server.', 0)
   }
   const text = await res.text()
@@ -436,8 +436,8 @@ async function sessReq<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
-/** Normalise whatever the list endpoint returns into `ApiSession[]`. M2 returns
- *  `SessionSummary[]`; this defends against the envelope being `{ data:[…] }`. */
+/** Normalise whatever the list endpoint returns into `ApiSession[]`. The backend
+ *  returns `SessionSummary[]`; this defends against the envelope being `{ data:[…] }`. */
 function asSessions(body: unknown): ApiSession[] {
   const arr = Array.isArray(body)
     ? body
@@ -450,7 +450,7 @@ function asSessions(body: unknown): ApiSession[] {
 }
 
 export const sessionsApi = {
-  /** `GET /api/sessions` — the tile list incl. `preview_lines` (§3.6). */
+  /** `GET /api/sessions` — the tile list incl. `preview_lines`. */
   list: async (): Promise<ApiSession[]> =>
     asSessions(await sessReq<unknown>('/api/sessions')),
 
@@ -460,7 +460,7 @@ export const sessionsApi = {
   listArchived: async (): Promise<ApiSession[]> =>
     asSessions(await sessReq<unknown>('/api/sessions/archived')),
 
-  /** `POST /api/sessions` — create the row (§5.1). The route then sends the
+  /** `POST /api/sessions` — create the row. The route then sends the
    *  initial prompt via `start` if a `command` is set. */
   create: (input: NewSession): Promise<ApiSession> =>
     sessReq('/api/sessions', {
@@ -475,12 +475,12 @@ export const sessionsApi = {
       body: JSON.stringify(prompt ? { prompt } : {}),
     }),
 
-  /** `DELETE /api/sessions/{name}` — drop the session row from supermux (§3.4).
-   *  Used by the M27 demo-replay flow to remove the one demo agent it booted. */
+  /** `DELETE /api/sessions/{name}` — drop the session row from supermux.
+   *  Used by the demo-replay flow to remove the one demo agent it booted. */
   remove: (name: string): Promise<void> =>
     sessReq(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
-  /** `POST /api/sessions/{name}/archive` — archive the session (§3.2.5). The
+  /** `POST /api/sessions/{name}/archive` — archive the session. The
    *  R1 fix has `archive()` correctly terminate per-session loops + forget the
    *  session, so once this returns the next SSE `sessions` refetch drops the
    *  row from the overview. Returns 202 + job_id; callers don't need either. */
@@ -509,7 +509,7 @@ export const sessionsApi = {
     }),
 
   /** `GET /api/sessions/{name}/resumable` — past Claude conversations for the
-   *  session's working dir, newest-first (feat-resume-picker). Empty array when
+   *  session's working dir, newest-first. Empty array when
    *  the dir has no conversations → the UI hides Resume. */
   resumable: async (name: string): Promise<ResumableConversation[]> => {
     const body = await sessReq<unknown>(
@@ -560,7 +560,7 @@ export const sessionsApi = {
     }),
 
   /** `POST /api/sessions/{name}/external-edit/submit` — resolve an in-flight
-   *  "edit in native editor" handoff (feat-edit-in-native-editor). The native
+   *  "edit in native editor" handoff. The native
    *  editor sheet posts the edited `text` on Done/Save, or `cancelled:true` on
    *  dismiss; the server then wakes the `$EDITOR` bridge's long-poll so Claude's
    *  input buffer is replaced (or left unchanged on cancel). DOES NOT submit the
@@ -614,7 +614,7 @@ export const sessionsApi = {
 
 
   /** `GET /api/autocomplete/dir?q=…[&hidden=0]` — directory typeahead for the
-   *  Advanced tab (M7). FEAT-WHERE-PICKER: pass `noHidden:true` to filter the
+   *  Advanced tab. Pass `noHidden:true` to filter the
    *  dotfile subdirs (`.git`, `.cache`, …) out of the typeahead — the new
    *  "Where" picker does this so the suggestions never surface noise the user
    *  has to scroll past. Default (`false`) preserves the legacy contract.
@@ -635,7 +635,7 @@ export const sessionsApi = {
   },
 }
 
-// ── FEAT-WHERE-PICKER: project repos endpoint ────────────────────────────────
+// ── Project repos endpoint ───────────────────────────────────────────────────
 
 /** One entry from `GET /api/projects/repos` — a subdir of the first
  *  `SUPERMUX_PROJECT_DIRS` entry, with git-repo metadata. The "Where" picker

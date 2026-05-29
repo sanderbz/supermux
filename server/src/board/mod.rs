@@ -1,15 +1,15 @@
-//! Kanban board HTTP surface (TECH_PLAN §3.2.10, §3.4, M6; feature-extract §2).
+//! Kanban board HTTP surface.
 //!
-//! **Router-registry pattern (§3.4).** [`router_for`] returns the protected
+//! **Router-registry pattern.** [`router_for`] returns the protected
 //! sub-router (merged by `http::router` under the bearer-auth layer);
 //! [`public_router_for`] returns the single PUBLIC route — the iCal feed — which
 //! is merged OUTSIDE that layer.
 //!
-//! Endpoints (feature-extract §2.1): list/create/clear-done/patch/delete issues,
+//! Endpoints: list/create/clear-done/patch/delete issues,
 //! the atomic [`claim`], statuses CRUD + reorder, tag-completion, and the iCal
-//! export. Every mutation re-publishes the board over SSE (§2.8) so clients never
+//! export. Every mutation re-publishes the board over SSE so clients never
 //! poll (anti-vision: WebSocket/SSE only). `delete` and `claim` also append an
-//! `audit_log` row (§6.4 / M6 prompt).
+//! `audit_log` row.
 
 pub mod boards;
 pub mod claim;
@@ -47,7 +47,7 @@ pub fn router_for(state: AppState) -> Router {
             delete(delete_status_handler).patch(rename_status_handler),
         )
         .route("/api/board/tag-completion", get(tag_completion_handler))
-        // AB2 — human-side (bearer) comment + acceptance + link CRUD.
+        // Human-side (bearer) comment + acceptance + link CRUD.
         .route("/api/board/{id}/comment", post(comment_handler))
         .route(
             "/api/board/{id}/acceptance",
@@ -68,30 +68,30 @@ pub fn router_for(state: AppState) -> Router {
         )
         .route("/api/board/{id}", patch(patch_handler).delete(delete_handler))
         .route("/api/board/{id}/claim", post(claim_handler))
-        // Board rework (BR1) — the unified "Start agent" action. Makes the issue
+        // The unified "Start agent" action. Makes the issue
         // agent-owned, optionally spawns+boots a session, then atomic-claims +
         // delivers via the SAME steering path as `/claim`. Returns a
         // `ClaimResult` so the frontend Undo (unsend) keeps working unchanged.
         .route("/api/board/{id}/start", post(start_handler))
-        // Board redesign (BM1) — inline reply to a running agent (§4): delivers
+        // Inline reply to a running agent: delivers
         // text into the card's linked session and clears `awaiting_input`.
         .route("/api/board/{id}/reply", post(reply_handler))
-        // Soft discard + restore (§4 / §2.6). Discarded cards leave the default
+        // Soft discard + restore. Discarded cards leave the default
         // board list but their rows + history are preserved.
         .route("/api/board/{id}/discard", post(discard_handler))
         .route("/api/board/{id}/restore", post(restore_handler))
         .with_state(state.clone())
-        // AT-C — multi-board entity CRUD + per-board cards + team-board register.
+        // Multi-board entity CRUD + per-board cards + team-board register.
         .merge(boards::router_for(state))
 }
 
-/// Build the agent→board hook sub-router (AB1). Re-export of [`hook::router_for`]
+/// Build the agent→board hook sub-router. Re-export of [`hook::router_for`]
 /// so `http::router` mounts it OUTSIDE the bearer layer alongside the status hook.
 pub fn hook_router_for(state: AppState) -> Router {
     hook::router_for(state)
 }
 
-/// Build the public board sub-router (iCal feed; no auth — feature-extract §2.7).
+/// Build the public board sub-router (iCal feed; no auth).
 pub fn public_router_for(state: AppState) -> Router {
     use axum::routing::get;
     Router::new()
@@ -111,7 +111,7 @@ pub(crate) fn ok<T: Serialize>(data: T) -> Json<Envelope<T>> {
     Json(Envelope { ok: true, data })
 }
 
-// ── view model (feature-extract §2.2 issue response shape) ────────────────────
+// ── view model (issue response shape) ────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct IssueView {
@@ -135,20 +135,20 @@ pub struct IssueView {
     pub comments: Vec<IssueComment>,
     pub acceptance: Vec<AcceptanceItem>,
     pub links: Vec<IssueLink>,
-    /// R1 session→board reaction flags (migration 0011). `needs_review` is set
+    /// Session→board reaction flags (migration 0011). `needs_review` is set
     /// when the owning agent went idle (turn finished); `awaiting_input` is set
     /// when it is blocked waiting on the user. The board badges the card off
     /// these; a human clears them.
     pub needs_review: bool,
     pub awaiting_input: bool,
-    /// R2 link liveness — computed at load time (NOT stored). `true` when this
+    /// Link liveness — computed at load time (NOT stored). `true` when this
     /// issue's `session` points to a session row that still exists and is NOT
     /// archived; `false` when the link is dangling (no session) or points at an
     /// archived/deleted session. The card uses this to show "session archived —
     /// reassign?" instead of a confidently-wrong live dot. An issue with no
     /// `session` is reported `false` (there is no live link to show).
     pub session_live: bool,
-    /// Live status of the linked session for the card's status dot (§4): one of
+    /// Live status of the linked session for the card's status dot: one of
     /// `active`/`idle`/`waiting`/`starting`/`stopped`/`unknown`, or `null` when
     /// there is no linked (live) session. Read from `session_runtime.last_status`
     /// at load time — not stored on the issue.
@@ -157,11 +157,11 @@ pub struct IssueView {
     /// default board, so this is `false` on every card the list returns — exposed
     /// for completeness and the restore path's view.
     pub archived: bool,
-    /// The latest "needs your input" question the agent asked (§4) — the body of
+    /// The latest "needs your input" question the agent asked — the body of
     /// the most recent `needs-input` comment (author [`NEEDS_INPUT_AUTHOR`]), or
     /// `null` when none. The card displays this above the inline reply composer.
     pub latest_question: Option<String>,
-    /// Which board this card lives on (migration 0015, AT-C). The "All" aggregate
+    /// Which board this card lives on (migration 0015). The "All" aggregate
     /// groups cards by this; a scoped board view filters on it server-side.
     pub board_id: String,
 }
@@ -215,9 +215,9 @@ impl IssueView {
     }
 }
 
-/// R2 link liveness: is `session` a live (existing, non-archived) session? An
+/// Link liveness: is `session` a live (existing, non-archived) session? An
 /// unassigned issue (`None`) is never "live". Computed from the sessions table at
-/// load time — no schema impact (plan §C.3).
+/// load time — no schema impact.
 async fn session_is_live(state: &AppState, session: Option<&str>) -> Result<bool, AppError> {
     match session {
         Some(name) if !name.is_empty() => {
@@ -264,7 +264,7 @@ async fn session_live_status(
 }
 
 /// Load the full board ACROSS ALL boards (used by `GET /api/board`, the SSE
-/// re-publish, and the AT-C "All" aggregate). The 0010 relations are batch-loaded
+/// re-publish, and the "All" aggregate). The 0010 relations are batch-loaded
 /// in three grouped queries keyed by `issue_id` (not one query per issue) so a
 /// big board stays O(1) round-trips per relation.
 async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>, AppError> {
@@ -272,7 +272,7 @@ async fn load_board(state: &AppState, done_limit: i64) -> Result<Vec<IssueView>,
     views_for_issues(state, issues).await
 }
 
-/// Load ONE board's cards (AT-C, plan §5.5) — same view-assembly as [`load_board`]
+/// Load ONE board's cards — same view-assembly as [`load_board`]
 /// but scoped to `board_id`. Powers the board-switcher's per-board view.
 pub(crate) async fn load_board_scoped(
     state: &AppState,
@@ -296,10 +296,10 @@ async fn views_for_issues(
     let mut acceptance = db::board::acceptance_for_issues(&state.pool, &ids).await?;
     let mut links = db::board::links_for_issues(&state.pool, &ids).await?;
 
-    // R2 link liveness + live status dot, batched: one map of live (non-archived)
+    // Link liveness + live status dot, batched: one map of live (non-archived)
     // session name → last_status, then an O(1) lookup per card — no per-issue
-    // session probe. Membership in the map == the link is live (§4 session_live);
-    // the value is the dot's status (§4 session_status).
+    // session probe. Membership in the map == the link is live (session_live);
+    // the value is the dot's status (session_status).
     let live_statuses = db::sessions::live_statuses(&state.pool).await?;
 
     let mut out = Vec::with_capacity(issues.len());
@@ -319,10 +319,10 @@ async fn views_for_issues(
     Ok(out)
 }
 
-/// Re-publish the board over SSE after a mutation (§2.8). Best-effort: a send
+/// Re-publish the board over SSE after a mutation. Best-effort: a send
 /// error just means no SSE subscribers are connected.
 ///
-/// `pub(crate)` so the session lifecycle (R2) and the auto_actions reaction (R1)
+/// `pub(crate)` so the session lifecycle and the auto_actions reaction
 /// can re-publish the board when a session change makes an open board stale —
 /// e.g. archiving a session that owns a `doing` issue flips that card's
 /// `session_live` to false, and the board must reflect it without a manual refetch.
@@ -335,7 +335,7 @@ pub(crate) async fn emit_board(state: &AppState) {
     }
 }
 
-/// Surface an `alerts` SSE event (used by the auto-notify-on-assign path, §2.6).
+/// Surface an `alerts` SSE event (used by the auto-notify-on-assign path).
 fn emit_alert(state: &AppState, session: &str, detail: &str) {
     let _ = state.sse_tx.send(SseEvent {
         event: "alerts".to_string(),
@@ -357,11 +357,10 @@ async fn session_exists(state: &AppState, name: &str) -> Result<bool, AppError> 
     Ok(db::sessions::exists(&state.pool, name).await?)
 }
 
-/// Auto-send-on-assign (S3; feature-extract §2.6). When an agent-owned issue is
+/// Auto-send-on-assign. When an agent-owned issue is
 /// assigned to a session via PATCH, deliver the work to that session — the same
-/// auto-send the claim does, but on the assignment path. This replaces the dead
-/// `notified` TODO ("the literal tmux send_text lands with M3"): the send now
-/// actually exists, via the steering deliver-loop. `notified` is kept purely as
+/// auto-send the claim does, but on the assignment path. The send is
+/// implemented via the steering deliver-loop. `notified` is kept purely as
 /// the dedupe latch so one assignment dispatches at most once.
 ///
 /// Returns the enqueued steer id when a dispatch fired (so a future UI could
@@ -396,7 +395,7 @@ async fn maybe_notify_assignee(state: &AppState, id: &str) -> Result<Option<i64>
 
 #[derive(Debug, Deserialize)]
 struct ListQuery {
-    /// `done` items cap; 0 (or omitted-as-100) per feature-extract §2.1.
+    /// `done` items cap; 0 (or omitted-as-100).
     done_limit: Option<i64>,
 }
 
@@ -427,24 +426,24 @@ struct CreateInput {
     creator: Option<String>,
     #[serde(default)]
     desc: Option<String>,
-    /// §4 contract alias for `desc` — the description-first composer sends
+    /// Contract alias for `desc` — the description-first composer sends
     /// `description`. Either key works; `description` wins when both are present.
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     tags: Option<Vec<String>>,
-    /// Acceptance criteria, one item per entry (§2.1 "one per line"). Seeded as
+    /// Acceptance criteria, one item per entry ("one per line"). Seeded as
     /// checklist items on the new card.
     #[serde(default)]
     acceptance: Option<Vec<String>>,
     #[serde(default)]
     pos: Option<f64>,
-    /// Which board the card lands on (migration 0015, AT-C). Omitted → the fixed
-    /// `main` board. AT-D/AT-F3 pass a team board's id to populate it from the
-    /// team's on-disk task files.
+    /// Which board the card lands on (migration 0015). Omitted → the fixed
+    /// `main` board. The team-board flow passes a team board's id to populate it
+    /// from the team's on-disk task files.
     #[serde(default)]
     board_id: Option<String>,
-    // NB: `owner_type` is intentionally NOT accepted anymore (§4). Every card is
+    // NB: `owner_type` is intentionally NOT accepted anymore. Every card is
     // an agent task; a client that still sends the key is ignored, not rejected.
 }
 
@@ -456,7 +455,7 @@ async fn create_handler(
     // are empty. An empty title is stored as the empty string (never NULL); the
     // card surfaces the description (or the id) as its heading instead.
     let title = input.title.trim().to_string();
-    // §4: `description` is the contract key; `desc` is the legacy alias. Prefer
+    // `description` is the contract key; `desc` is the legacy alias. Prefer
     // `description` when present so the new composer and old clients both work.
     let desc = input
         .description
@@ -470,7 +469,7 @@ async fn create_handler(
     if !valid_status(&state, &status).await? {
         return Err(AppError::BadRequest(format!("unknown status '{status}'")));
     }
-    // §1: every card is an agent task — owner_type is no longer accepted from the
+    // Every card is an agent task — owner_type is no longer accepted from the
     // client. Always 'agent' so the claim/start CAS precondition holds with no
     // manual toggle.
     let owner_type = "agent".to_string();
@@ -486,7 +485,7 @@ async fn create_handler(
         }
     };
 
-    // Scope the card to a board (migration 0015, AT-C). Default to the fixed
+    // Scope the card to a board (migration 0015). Default to the fixed
     // `main` board; a provided board_id must exist (the FK would reject it
     // otherwise — fail with a clean 400 instead of a 500).
     let board_id = match input.board_id.as_deref().map(str::trim) {
@@ -505,7 +504,7 @@ async fn create_handler(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     // New cards sit at the top of their column within their own board: min(pos) of
-    // the (board, status) - 1024 (§2.4, board-scoped per 0015).
+    // the (board, status) - 1024 (board-scoped per 0015).
     let pos = match input.pos {
         Some(p) => p,
         None => {
@@ -527,14 +526,14 @@ async fn create_handler(
         notified: 0,
         board_id,
         // Ordinary (user/agent-created) cards have no on-disk team task to mirror;
-        // only the AT-G team-board watcher sets `team_task_id`.
+        // only the team-board watcher sets `team_task_id`.
         team_task_id: None,
     };
     db::board::insert_issue(&state.pool, &new).await?;
     if let Some(tags) = input.tags {
         db::board::set_tags(&state.pool, &id, &tags).await?;
     }
-    // Seed acceptance criteria (§2.1 "one per line") as checklist items in order,
+    // Seed acceptance criteria ("one per line") as checklist items in order,
     // skipping blank lines.
     if let Some(items) = input.acceptance {
         for body in items {
@@ -627,7 +626,7 @@ async fn patch_handler(
     if let Some(v) = input.creator {
         fields.push(IssueField::Creator(v));
     }
-    // Re-assigning resets the notify flag so the new assignee gets pinged (§2.6).
+    // Re-assigning resets the notify flag so the new assignee gets pinged.
     if session_changed {
         fields.push(IssueField::Notified(0));
     }
@@ -656,7 +655,7 @@ async fn delete_handler(
     if !deleted {
         return Err(AppError::NotFound(format!("issue '{id}'")));
     }
-    // Audit (§6.4 / M6 prompt): record the soft-delete.
+    // Audit: record the soft-delete.
     db::audit::log(&state.pool, "user", "issue.delete", &id, json!({})).await?;
     emit_board(&state).await;
     Ok(Json(json!({ "ok": true, "deleted": id })))
@@ -675,7 +674,7 @@ async fn clear_done_handler(
 #[derive(Debug, Deserialize)]
 struct ClaimInput {
     session: String,
-    /// Auto-send the work to the agent (S3, user default = true). When true, the
+    /// Auto-send the work to the agent (user default = true). When true, the
     /// claim enqueues the issue's dispatch payload into the session via the
     /// existing steering deliver-loop (auto-wakes a stopped session). Set false
     /// for "Claim only" — flip the DB link without dispatching.
@@ -717,7 +716,7 @@ async fn claim_handler(
 
     match claim::claim(&state.pool, &id, &session).await {
         Ok(issue) => {
-            // Audit (§6.4 / M6 prompt): record the claim.
+            // Audit: record the claim.
             db::audit::log(
                 &state.pool,
                 &format!("agent:{session}"),
@@ -727,7 +726,7 @@ async fn claim_handler(
             )
             .await?;
 
-            // S3 — board→agent: auto-send the work via the steering deliver-loop
+            // Board→agent: auto-send the work via the steering deliver-loop
             // (the default). The loop delivers at the agent's next turn boundary
             // and auto-wakes a stopped session — no new delivery machinery.
             let steer_id = if input.deliver {
@@ -766,9 +765,9 @@ async fn claim_handler(
     }
 }
 
-// ── unified "Start agent" (BR1) ───────────────────────────────────────────────
+// ── unified "Start agent" ─────────────────────────────────────────────────────
 //
-// The board-rework primary action. One call: make the issue agent-owned (so the
+// The primary board action. One call: make the issue agent-owned (so the
 // claim CAS precondition holds without a manual owner toggle), optionally
 // spawn+boot a session, then atomic-claim + deliver through the SAME steering
 // path `/claim` uses. Returns the `ClaimResult` shape so the frontend Undo
@@ -867,7 +866,7 @@ async fn derive_session_name(state: &AppState, issue: &Issue) -> Result<String, 
     )))
 }
 
-/// `POST /api/board/{id}/start` — the unified Start-agent action (BR1).
+/// `POST /api/board/{id}/start` — the unified Start-agent action.
 async fn start_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -886,11 +885,11 @@ async fn start_handler(
     }
 
     // 3. Resolve the target session: attach an existing one, or SPAWN A NEW ONE
-    //    BY DEFAULT (§2.2). The no-session case no longer 400s for a picker — it
+    //    BY DEFAULT. The no-session case no longer 400s for a picker — it
     //    spawns a fresh session named from the card. A caller can still attach an
     //    existing session by passing `session`, or tune the spawn via `spawn`.
     //
-    // ATTACH BRANCH AUTO-WAKE (BR1 silent-failure fix). The steering deliver
+    // ATTACH BRANCH AUTO-WAKE (silent-failure fix). The steering deliver
     // loop only drains on a `waiting|idle` boundary AND only runs while the
     // session is non-archived (`exists_active`). So an enqueue against:
     //   - an ARCHIVED session → sits forever (loop has exited).
@@ -1009,7 +1008,7 @@ async fn start_handler(
     }))
 }
 
-// ── inline reply to a running agent (BM1, §2.4 + §4) ──────────────────────────
+// ── inline reply to a running agent ───────────────────────────────────────────
 //
 // The headline steering UX: answer a question / nudge a running agent straight
 // from its card, no terminal navigation. Delivers `text` into the card's linked
@@ -1068,7 +1067,7 @@ async fn reply_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
-// ── soft discard + restore (BM1, §2.6 + §4) ───────────────────────────────────
+// ── soft discard + restore ────────────────────────────────────────────────────
 
 /// `POST /api/board/{id}/discard` — soft-archive the card. The row + all its
 /// history are preserved; it just leaves the default board list (the undo toast
@@ -1100,12 +1099,12 @@ async fn restore_handler(
     Ok(Json(json!({ "ok": true, "restored": id })))
 }
 
-// ── human-side comment + acceptance + link CRUD (bearer, AB2) ────────────────
+// ── human-side comment + acceptance + link CRUD (bearer) ─────────────────────
 //
 // These run UNDER the bearer layer (dashboard token). Agent-side equivalents
 // live in `board::hook` (hook-token scoped). All emit_board + audit (actor=user).
 
-/// Resolve an issue id to 404 early, shared by the AB2 sub-resource handlers.
+/// Resolve an issue id to 404 early, shared by the sub-resource handlers.
 async fn require_issue(state: &AppState, id: &str) -> Result<Issue, AppError> {
     db::board::get_issue(&state.pool, id)
         .await?
@@ -1400,7 +1399,7 @@ async fn tag_completion_handler(
     })))
 }
 
-// ── iCal export (PUBLIC, feature-extract §2.7) ───────────────────────────────
+// ── iCal export (PUBLIC) ──────────────────────────────────────────────────────
 
 async fn calendar_handler(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let issues = db::board::issues_with_due(&state.pool).await?;
@@ -1411,7 +1410,7 @@ async fn calendar_handler(State(state): State<AppState>) -> Result<impl IntoResp
 mod ical {
     use super::Issue;
 
-    /// Render an iCalendar feed from issues with a `due` date (§2.7).
+    /// Render an iCalendar feed from issues with a `due` date.
     pub fn render(issues: &[Issue]) -> String {
         let mut lines = vec![
             "BEGIN:VCALENDAR".to_string(),
@@ -1433,7 +1432,7 @@ mod ical {
                 lines.push(format!("DESCRIPTION:{}", escape(&issue.desc)));
             }
             match issue.due_time.as_deref().and_then(time_to_basic) {
-                // Timed event → 1-hour block (§2.7).
+                // Timed event → 1-hour block.
                 Some((h, m)) => {
                     lines.push(format!("DTSTART:{date_basic}T{h:02}{m:02}00"));
                     let (eh, em) = add_hour(h, m);
@@ -1452,7 +1451,7 @@ mod ical {
         lines.join("\r\n") + "\r\n"
     }
 
-    /// `todo→NEEDS-ACTION`, `doing→IN-PROCESS`, `done→COMPLETED` (§2.7); others
+    /// `todo→NEEDS-ACTION`, `doing→IN-PROCESS`, `done→COMPLETED`; others
     /// map to the closest sensible value.
     fn map_status(status: &str) -> &'static str {
         match status {
@@ -1766,7 +1765,7 @@ mod tests {
             .expect("insert session");
     }
 
-    // ── S3: claim auto-sends the work to the agent via steering ────────────────
+    // ── claim auto-sends the work to the agent via steering ───────────────────
 
     #[tokio::test]
     async fn claim_enqueues_steer_by_default() {
@@ -1860,7 +1859,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // ── BR1: unified "Start agent" endpoint ────────────────────────────────────
+    // ── unified "Start agent" endpoint ─────────────────────────────────────────
 
     #[tokio::test]
     async fn start_attaches_existing_session_and_delivers() {
@@ -1914,12 +1913,12 @@ mod tests {
 
     #[tokio::test]
     async fn start_without_session_spawns_by_default_name_from_card() {
-        // BM1 §2.2: the no-session path no longer 400s for a picker — it spawns a
+        // The no-session path no longer 400s for a picker — it spawns a
         // new session named from the card. The full spawn shells out to tmux
         // (`lifecycle::start`), which a unit test can't drive, so we assert the
         // spawn DECISION instead: a unique, name-safe session name is derived from
-        // the issue (the seed of spawn-by-default). The end-to-end spawn is proven
-        // live by the orchestrator (§7).
+        // the issue (the seed of spawn-by-default). The end-to-end spawn is
+        // covered by the integration suite.
         let (state, dir) = test_state().await;
         db::board::insert_issue(
             &state.pool,
@@ -2027,9 +2026,9 @@ mod tests {
 
     #[tokio::test]
     async fn start_rejects_archived_session_with_helpful_message() {
-        // BR1 silent-failure fix: attaching Start to an ARCHIVED session used to
+        // Silent-failure fix: attaching Start to an ARCHIVED session used to
         // succeed silently — the steer was enqueued but the per-session deliver
-        // loop had exited (it terminates on `exists_active == false`, R1-1), so
+        // loop had exited (it terminates on `exists_active == false`), so
         // the queue grew forever and the agent never saw the work. The user saw
         // a toast "Started X" and nothing happened in the pane. Reject the
         // attach up-front with a clean 400 instead, so the runner surfaces an
@@ -2074,13 +2073,13 @@ mod tests {
         assert!(session_slug(&"a".repeat(200)).len() <= 60);
     }
 
-    // ── BM1: reply / discard / restore / create ────────────────────────────────
+    // ── reply / discard / restore / create ─────────────────────────────────────
 
     #[tokio::test]
     async fn reply_400_when_no_linked_live_session() {
-        // §4: reply 400s when the card has no linked live session — there is
+        // Reply 400s when the card has no linked live session — there is
         // nowhere to deliver. (The happy path delivers via `lifecycle::send_text`,
-        // which shells out to tmux; it is proven live by the orchestrator §7.)
+        // which shells out to tmux; the integration suite covers it end-to-end.)
         let (state, dir) = test_state().await;
 
         // Unlinked card → 400.
@@ -2150,7 +2149,7 @@ mod tests {
 
     #[tokio::test]
     async fn discard_hides_card_and_restore_brings_it_back() {
-        // §2.6 / §4: discard soft-archives (row preserved, excluded from list);
+        // Discard soft-archives (row preserved, excluded from list);
         // restore un-archives.
         let (state, dir) = test_state().await;
         seed_issue(&state, "D-1").await;
@@ -2183,7 +2182,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_ignores_owner_type_and_seeds_acceptance() {
-        // §1/§4: owner_type is no longer accepted — every card is an agent task,
+        // owner_type is no longer accepted — every card is an agent task,
         // even when the client still sends owner_type=human. Acceptance criteria
         // sent on create are seeded as checklist items (blank lines skipped).
         let (state, dir) = test_state().await;
@@ -2217,7 +2216,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // ── AB2: human-side comment + acceptance CRUD (bearer) ─────────────────────
+    // ── human-side comment + acceptance CRUD (bearer) ──────────────────────────
 
     #[tokio::test]
     async fn human_comment_appends_as_user() {

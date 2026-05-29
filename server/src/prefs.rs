@@ -1,15 +1,15 @@
-//! Snippets + keyboard-accessory groups CRUD (TECH_PLAN §3.4, §3.3; M9).
+//! Snippets + keyboard-accessory groups CRUD.
 //!
 //! Two table-backed CRUDs consumed by the mobile composer:
-//!   * `/api/snippets`    — saved-command picker (§4.4.1).
-//!   * `/api/kbd-groups`  — the swipeable accessory bar (§4.4.2). Table-backed
-//!     ONLY (the v1 "prefs-blob" alternative is removed — Codex contradiction E).
+//!   * `/api/snippets`    — saved-command picker.
+//!   * `/api/kbd-groups`  — the swipeable accessory bar. Table-backed ONLY
+//!     (the legacy "prefs-blob" alternative is removed).
 //!
-//! **First-GET seeding (§M9).** On the very first `GET /api/kbd-groups` (empty
+//! **First-GET seeding.** On the very first `GET /api/kbd-groups` (empty
 //! table), the four default groups are inserted AND returned, so the frontend
 //! never has to ship a hardcoded default that could drift from the backend.
 //!
-//! **Router-registry pattern (§3.4).** [`router_for`] returns this module's
+//! **Router-registry pattern.** [`router_for`] returns this module's
 //! sub-router; `http::router` merges it under the bearer layer additively.
 
 use axum::extract::{Path, State};
@@ -32,7 +32,7 @@ pub fn router_for(state: AppState) -> Router {
             patch(snippets_patch).delete(snippets_delete),
         )
         // GET (list/seed), POST (add one), PUT (replace the whole ordered list —
-        // the M16 manage-sheet's single canonical write; M24b integration fix).
+        // the manage-sheet's single canonical write).
         .route(
             "/api/kbd-groups",
             get(kbd_list).post(kbd_create).put(kbd_replace),
@@ -41,11 +41,10 @@ pub fn router_for(state: AppState) -> Router {
         // Bare DELETE on the collection path is not exposed; deletions are by id.
         //
         // Generic key/value prefs. Account-wide settings that need to follow the
-        // user across devices (e.g. overview sort + custom groups, feat-sort-
-        // and-groups). The key set is curated by [`is_known_pref_key`] so a
-        // typo or hostile client can't fill the table with junk. PUT emits an
-        // `sse:prefs` event so other tabs / devices reconcile live without a
-        // poll (anti-vision: WebSocket-only).
+        // user across devices (e.g. overview sort + custom groups). The key set
+        // is curated by [`is_known_pref_key`] so a typo or hostile client can't
+        // fill the table with junk. PUT emits an `sse:prefs` event so other tabs
+        // / devices reconcile live without a poll (anti-vision: WebSocket-only).
         .route(
             "/api/prefs/{key}",
             get(pref_get).put(pref_put),
@@ -201,7 +200,7 @@ async fn snippets_delete(
 
 // ── kbd_groups ───────────────────────────────────────────────────────────────
 
-/// The four default accessory groups seeded on first GET (§M9 / §4.4.2). Each is
+/// The four default accessory groups seeded on first GET. Each is
 /// `(name, [(label, tmux-key), …])`. `key` is the tmux `send-keys` token.
 fn default_kbd_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
@@ -236,7 +235,7 @@ async fn seed_default_kbd_groups(state: &AppState) -> Result<(), AppError> {
 }
 
 async fn kbd_list(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
-    // First read on an empty table seeds the defaults, then returns them (§M9).
+    // First read on an empty table seeds the defaults, then returns them.
     if db::prefs::count_kbd_groups(&state.pool).await? == 0 {
         seed_default_kbd_groups(&state).await?;
     }
@@ -289,7 +288,7 @@ struct KbdReplace {
 }
 
 /// `PUT /api/kbd-groups` — replace the WHOLE ordered list in one transaction.
-/// The M16 manage-sheet funnels reorder / add / remove through this single
+/// The manage-sheet funnels reorder / add / remove through this single
 /// canonical write so the table is never observed half-edited. Returns the new
 /// list (same envelope as `kbd_list`) so the client can reconcile its cache.
 async fn kbd_replace(

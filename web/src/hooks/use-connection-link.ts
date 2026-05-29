@@ -1,7 +1,7 @@
 // useConnectionLink — registers one live connection (SSE stream or a terminal
-// WebSocket) with the global `useConnection` store (TECH_PLAN §M23a).
+// WebSocket) with the global `useConnection` store.
 //
-// This is the additive plumbing M23a owns: the SSE hook (`use-sse.ts`) and the
+// The SSE hook (`use-sse.ts`) and the
 // live-terminal hook (`use-live-term.ts`) each expose their own per-link state
 // enum; this hook normalises that enum onto the store's `LinkState` vocabulary
 // and pushes it whenever it changes. The store then aggregates the worst case
@@ -46,7 +46,7 @@ function fromLiveTerm(state: LiveTermState): LinkState {
 }
 
 /** Register the SSE stream as a connection link. MUST be called exactly once
- *  (R3-202: the shell-level `<Layout>` owns the registration so the store never
+ *  (the shell-level `<Layout>` owns the registration so the store never
  *  sees racing `'sse'` reports from the many `useSse(...)` subscribers). */
 export function useSseConnectionLink(status: SseStatus): void {
   const report = useConnection((s) => s.report)

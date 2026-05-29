@@ -1,11 +1,11 @@
-// /dev/tiles — M11 verification page (DEV-only; lazy-loaded so neither this
+// /dev/tiles — verification page (DEV-only; lazy-loaded so neither this
 // route nor the mock data ships in production). Renders 12 mocked sessions in
 // the real tile grid plus toggles for skeleton / error / reduced-motion so the
 // visual critic can check every state and the alt (Reduce Motion) path.
 //
 // Reduce Motion is forced via <MotionConfig reducedMotion="always"> (Framer's
-// override of the OS media query) and persisted in the URL (?reduce=1) per the
-// M11 verification spec. Skeleton and error toggles are URL-backed too, so a
+// override of the OS media query) and persisted in the URL (?reduce=1).
+// Skeleton and error toggles are URL-backed too, so a
 // reviewer can deep-link any state.
 
 import * as React from 'react'

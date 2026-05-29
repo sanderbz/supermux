@@ -1,8 +1,8 @@
-// SnippetEditor — M18 (TECH_PLAN §M18, research/termius-ios-native-spec.md
-// §"Snippet editor — in-place vs modal").
+// SnippetEditor — see research/termius-ios-native-spec.md
+// §"Snippet editor — in-place vs modal".
 //
 // A Vaul modal full-sheet for creating / editing one snippet: a title input and
-// a body textarea, with Save / Cancel. Persists through the M9 `/api/snippets`
+// a body textarea, with Save / Cancel. Persists through the `/api/snippets`
 // CRUD (create when `snippet` is null, patch otherwise) via the use-commands
 // mutations — which invalidate the snippet list so the panel reflects the write.
 //

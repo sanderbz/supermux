@@ -1,4 +1,4 @@
-//! Persistent SSH ControlMaster pool (REMOTE_PLAN §RT2).
+//! Persistent SSH ControlMaster pool.
 //!
 //! **What this is.** One [`HostPool`] lives in [`AppState`], shared by every
 //! sessions/files/git path that needs a [`Transport`] for a remote host. The
@@ -40,7 +40,7 @@
 //! 3. Each warm-up attempt that fails bumps `failures` and sleeps an
 //!    exponentially-growing backoff (`100ms, 500ms, 2s, 10s`) BETWEEN
 //!    attempts before returning Err. Reaching `failures >= 4` flips
-//!    `hosts.status` to `unreachable` so the FE picker / RT8 endpoints
+//!    `hosts.status` to `unreachable` so the FE picker / host-check endpoints
 //!    surface the dead host.
 //!
 //! **The reaper.** A `tokio::spawn`ed task (started from `main.rs`) wakes
@@ -107,7 +107,7 @@ const BACKOFFS: &[Duration] = &[
 ];
 
 /// Consecutive failed warm-ups after which the host row is flipped to
-/// [`HostStatus::Unreachable`] so the FE / RT8 surface the dead host. The
+/// [`HostStatus::Unreachable`] so the FE / host-check endpoint surfaces the dead host. The
 /// counter resets on the first successful `-O check`.
 const MAX_FAILURES: u32 = 4;
 
@@ -323,7 +323,7 @@ impl HostPool {
 
     /// Explicit health check: runs `ssh -O check`, updates the host's status
     /// row accordingly (`reachable` on success, `unreachable` on failure),
-    /// returns `Ok(())` IFF the master is up. Used by the RT8
+    /// returns `Ok(())` IFF the master is up. Used by the
     /// `POST /api/hosts/{id}/check` endpoint.
     ///
     /// Unlike [`transport_for`], `verify` does NOT spawn a master — if the

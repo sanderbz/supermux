@@ -1,11 +1,11 @@
-//! Issue-ID generation (feature-extract §2.3, TECH_PLAN M6 prompt).
+//! Issue-ID generation.
 //!
 //! The id is `<PREFIX>-<N>` where `PREFIX` derives from the assignee session
 //! name and `N` comes from an atomic per-prefix counter.
 
 use sqlx::SqlitePool;
 
-/// Derive the id prefix from a session name (feature-extract §2.3):
+/// Derive the id prefix from a session name:
 ///
 /// * no session → `SUPERMUX`
 /// * single word (no separators) → first 5 uppercase alphanumeric chars
@@ -49,10 +49,10 @@ pub fn prefix_from_session(session: Option<&str>) -> String {
 
 /// Allocate the next sequential id for `prefix`, atomically.
 ///
-/// Per the M6 prompt: `INSERT OR IGNORE` seeds `next_n = 1` for a brand-new
-/// prefix, then a single `UPDATE ... RETURNING` increments and returns the
-/// number to assign. Wrapped in a transaction so two concurrent creates with the
-/// same prefix never collide on the counter.
+/// `INSERT OR IGNORE` seeds `next_n = 1` for a brand-new prefix, then a single
+/// `UPDATE ... RETURNING` increments and returns the number to assign. Wrapped
+/// in a transaction so two concurrent creates with the same prefix never
+/// collide on the counter.
 pub async fn next_id(pool: &SqlitePool, prefix: &str) -> sqlx::Result<String> {
     let mut tx = pool.begin().await?;
     sqlx::query("INSERT OR IGNORE INTO issue_counters (prefix, next_n) VALUES (?, 1)")

@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 import type { SessionStatus } from '@/lib/api'
 
-/** Status → semantic status color (M28 brand tokens in globals.css).
+/** Status → semantic status color (brand tokens in globals.css).
  *
  *  Five distinct colours + one neutral booting tint, one per `Status` enum
  *  variant (`server/src/sessions/status.rs`): the dot must DIFFERENTIATE
@@ -48,7 +48,7 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'Error',
 }
 
-/** Decorative status indicator (§4.3). The "attention" pulse lives on the CARD
+/** Decorative status indicator. The "attention" pulse lives on the CARD
  *  (`<StatusBorder>`), NOT here — the dot is a static colour indicator. The one
  *  exception is the LOADING states (`starting` + `active`), where a tiny spinner
  *  replaces the disc because that IS the loading/working affordance (the

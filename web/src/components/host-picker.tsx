@@ -1,6 +1,6 @@
-// HostPicker (REMOTE_PLAN.md RT9) — reusable dropdown that lists the
-// registered remote hosts plus a "Local" option (id = null). Surfaces in the
-// new-session sheet so the user picks where the agent runs. Default selection
+// HostPicker — reusable dropdown that lists the registered remote hosts plus a
+// "Local" option (id = null). Surfaces in the new-session sheet so the user
+// picks where the agent runs. Default selection
 // is Local (null) — preserves the historical behaviour for every existing
 // session and keeps the picker invisible-by-default for users who have no
 // remote hosts registered.

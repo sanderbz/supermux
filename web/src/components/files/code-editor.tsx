@@ -33,7 +33,7 @@ export interface CodeEditorProps {
   onChange?: (value: string) => void
 }
 
-/** CodeMirror 6 editor (TECH_PLAN §M20). Loads the language grammar lazily and
+/** CodeMirror 6 editor. Loads the language grammar lazily and
  *  themes to match the active light/dark mode. */
 export function CodeEditor({ name, value, editable, onChange }: CodeEditorProps) {
   const { resolvedTheme } = useTheme()

@@ -1,13 +1,13 @@
-// ReconnectBanner — the global connection-status surface (TECH_PLAN §M23a;
-// research/termius-ios-native-spec.md §"Reconnect banner / connection status
+// ReconnectBanner — the global connection-status surface
+// (research/termius-ios-native-spec.md §"Reconnect banner / connection status
 // surface", §"v3 finish acceptance criteria" #8 / #20).
 //
 // One glass pill, 8px below the safe-area top, 36px tall, full-pill radius. It
 // renders the AGGREGATED `useConnection` verdict — the worst current state
 // across the SSE stream + every live terminal — so it never flickers between
-// two out-of-phase terminals (Codex #16).
+// two out-of-phase terminals.
 //
-// LAYOUT (M27): the banner is an IN-FLOW row at the top of the content column,
+// LAYOUT: the banner is an IN-FLOW row at the top of the content column,
 // NOT an absolutely-positioned overlay. When visible it reserves its own
 // vertical space and pushes the route below it down, so it can never render on
 // top of a route's own header chrome (the Overview view-toggle / search /
@@ -52,7 +52,7 @@ interface BannerVisual {
 
 /** The states that paint a banner. The initial `connecting` handshake is NOT
  *  one of them — a fresh cold load must open calm, never greeting a new user
- *  with an amber worried pill before any genuine disconnect (M27). The banner
+ *  with an amber worried pill before any genuine disconnect. The banner
  *  only appears once a REAL disconnect (`reconnecting` / `offline`) occurs, or
  *  for the transient green recovery flash. */
 type VisibleState = 'reconnecting' | 'offline' | 'connected'
@@ -139,7 +139,7 @@ export function ReconnectBanner() {
     // future transitions drive the flash. (`showSuccess` starts false, which is
     // correct: a fresh mount never owes a success flash.)
     //
-    // M27: the initial `connecting` handshake does NOT count as "unhealthy" —
+    // The initial `connecting` handshake does NOT count as "unhealthy" —
     // a cold load reaching `connected` for the first time is not a recovery, so
     // it must not flash green. Only a REAL disconnect (`reconnecting` /
     // `offline`) arms the success flash, so the unboxing opens calm.
@@ -178,7 +178,7 @@ export function ReconnectBanner() {
   // What the banner should render right now: a REAL degraded state
   // (`reconnecting` / `offline`), or the transient success flash, or nothing.
   // The initial `connecting` handshake deliberately paints NOTHING so the
-  // first cold-load paint is calm (M27).
+  // first cold-load paint is calm.
   const visibleState: VisibleState | null =
     state === 'reconnecting' || state === 'offline'
       ? state
@@ -192,12 +192,12 @@ export function ReconnectBanner() {
   return (
     <div
       aria-live="polite"
-      // In-flow row at the top of the content column (M27): it reserves its own
+      // In-flow row at the top of the content column: it reserves its own
       // vertical space when a banner is visible — pushing the route's own header
       // down — and collapses to zero height when there is none. It is NEVER an
       // overlay, so it can never render on top of route header chrome.
       //
-      // SD-6: the `pt-safe` notch inset is applied ONLY when a banner is visible.
+      // The `pt-safe` notch inset is applied ONLY when a banner is visible.
       // Every route already owns its own top safe-area inset, so keeping pt-safe
       // on this always-present row added the inset a SECOND time — a doubled empty
       // band at the very top, glaringly visible in the iOS standalone PWA where

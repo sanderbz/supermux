@@ -1,4 +1,4 @@
-// View Transitions — the route-morph helper (TECH_PLAN §M23a; §4.3).
+// View Transitions — the route-morph helper.
 //
 // `navigateMorph(to)` wraps a react-router `navigate()` in the browser's View
 // Transitions API: `document.startViewTransition(() => flushSync(() => navigate))`.
@@ -95,7 +95,7 @@ export interface MorphLinkProps
  *
  * Renders a real `<a>` so middle-click / cmd-click / "open in new tab" still
  * work (the browser handles those natively); only a plain left-click is
- * intercepted and routed through `navigateMorph`. This is the canonical M23a
+ * intercepted and routed through `navigateMorph`. This is the canonical
  * shared-element entry point — the session tile uses `useNavigateMorph()`
  * directly (it is a `role="button"`, not an anchor), and routes that want a
  * real link use this component.

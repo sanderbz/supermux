@@ -1,6 +1,6 @@
-// useDictation — M18 (TECH_PLAN §M18: "wire dictation … uses `webkitSpeech-
-// Recognition` (`SpeechRecognition` polyfill); on result, set input value.
-// Gracefully degrade if not supported").
+// useDictation — wire dictation using `webkitSpeechRecognition`
+// (`SpeechRecognition` polyfill); on result, set input value. Gracefully
+// degrades if not supported.
 //
 // A thin hook around the Web Speech API. `supported` is false on browsers that
 // expose neither `SpeechRecognition` nor `webkitSpeechRecognition` (so the dock
@@ -8,7 +8,7 @@
 // recognition session; interim + final transcripts stream to `onTranscript`,
 // which the composer appends to its input value. `stop()` ends the session.
 //
-// R5 FIX — DON'T GATE THE FLUSH ON `onend`. iOS Safari / WKWebView fire
+// DON'T GATE THE FLUSH ON `onend`. iOS Safari / WKWebView fire
 // `webkitSpeechRecognition`'s `onend` unreliably (`continuous=true` is ignored,
 // sessions auto-end or error without a clean end event), so a consumer that only
 // flushed the buffered transcript on listening→idle would silently drop dictation.

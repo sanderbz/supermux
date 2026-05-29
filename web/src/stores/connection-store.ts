@@ -1,5 +1,5 @@
 // useConnection — the single global source of truth for live-link health
-// (TECH_PLAN §M23a; research/termius-ios-native-spec.md §"Reconnect banner /
+// (research/termius-ios-native-spec.md §"Reconnect banner /
 // connection status surface", §"v3 finish acceptance criteria" #8).
 //
 // The app holds N live connections at once: exactly one SSE stream (`/api/events`,
@@ -8,7 +8,7 @@
 // pushes its own state; the store AGGREGATES them into ONE worst-case verdict
 // that the <ReconnectBanner> renders.
 //
-// Why a store and not "the last event wins": Codex finding #16 — if the banner
+// Why a store and not "the last event wins": if the banner
 // just mirrors whichever connection updated last, two terminals reconnecting out
 // of phase make it flicker amber↔green. Aggregating the WORST current state
 // across all registered links means the banner only goes green when EVERYTHING
@@ -36,7 +36,7 @@ export type ConnectionState =
 interface LinkRecord {
   state: LinkState
   /** Epoch ms the link first entered a non-connected state. 0 while healthy.
-   *  Used for the "Offline if any offline > 30s" rule (§M23a). */
+   *  Used for the "Offline if any offline > 30s" rule. */
   degradedSince: number
 }
 
@@ -60,14 +60,14 @@ interface ConnectionStore {
 }
 
 /** Offline grace: a link must be un-connected for this long before it can drag
- *  the aggregate to `offline` (§M23a — "Offline if any offline > 30s"). Until
+ *  the aggregate to `offline` ("Offline if any offline > 30s"). Until
  *  then a dead link still reads as `reconnecting` so a brief blip never shows
  *  the alarmist red surface. */
 const OFFLINE_GRACE_MS = 30_000
 
 /** Pure reducer: fold every link record into one banner verdict. Worst-state
  *  wins so the banner reflects the unhealthiest link, never the last-updated
- *  one (Codex #16). Precedence: offline > reconnecting/connecting > connected. */
+ *  one. Precedence: offline > reconnecting/connecting > connected. */
 function aggregate(links: Record<string, LinkRecord>): {
   state: ConnectionState
   justRecovered: boolean

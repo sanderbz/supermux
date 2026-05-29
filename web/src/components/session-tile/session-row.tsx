@@ -14,7 +14,7 @@ import type { TileSession } from './types'
 import { sessionTitle } from '@/lib/api'
 
 /** View Transition navigate (mirrors the tile's, kept local so this row is
- *  self-contained until M23a ships the canonical `<MorphLink>`). Morphs into the
+ *  self-contained until the canonical `<MorphLink>` ships). Morphs into the
  *  focus header on Chromium; plain navigate elsewhere. */
 function useNavigateMorph() {
   const navigate = useNavigate()
@@ -50,7 +50,7 @@ export interface SessionRowProps {
   session: TileSession
 }
 
-/** Compact list row (§4.2 `<SessionRow>`). The list-view counterpart of the
+/** Compact list row (`<SessionRow>`). The list-view counterpart of the
  *  hero tile: status dot + title + branch + last-activity, click → focus. Shares
  *  the same `TileSession` data source as the tile (single source of truth) — no
  *  per-row polling. The overview wraps it in `<motion.div layout layoutId>` so
@@ -108,7 +108,7 @@ export function SessionRow({ session }: SessionRowProps) {
           className="hidden shrink-0 md:inline-flex"
         />
       )}
-      {/* Remote-host badge (RT9). Small globe + truncated host name; only
+      {/* Remote-host badge. Small globe + truncated host name; only
           renders when the session has a `host_id`. Muted on purpose so the
           row's status dot + waiting pill stay the primary signals. */}
       {typeof session.host_id === 'number' && (

@@ -1,6 +1,6 @@
 // Thin shim. The API client was split from this single monolith into per-feature
 // modules under `./api/` (client + files/settings/board/scheduler/focus/sessions
-// + a barrel) to end the recurring api.ts merge-conflict class (TECH_PLAN §29):
+// + a barrel) to end the recurring api.ts merge-conflict class:
 // future frontend milestones each touch their own feature file instead of all
 // appending here. Pure structural refactor — ZERO behavior change.
 //

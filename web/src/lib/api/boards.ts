@@ -1,4 +1,4 @@
-// Boards (AT-C, plan §5.5) — the multi-board client. The single Kanban board
+// Boards — the multi-board client. The single Kanban board
 // became MULTIPLE boards selectable via a switcher; this module lists boards and
 // loads a single board's cards (or the cross-board "All" aggregate).
 //
@@ -17,7 +17,7 @@ export const MAIN_BOARD_ID = 'main'
  *  the cards endpoint special-cases it to a read-through across every board. */
 export const ALL_BOARD_ID = 'all'
 
-/** The synthetic prefix for per-session board ids (FEAT-BOARD-SESSION). NOT a real
+/** The synthetic prefix for per-session board ids. NOT a real
  *  board row — a per-session "board" is a CLIENT-SIDE FILTER on Main's cards
  *  scoped to one session name. `session:<name>` is the id used by the switcher,
  *  the route, and the SSE reconciler; `decodeBoardId` translates it back to the
@@ -55,7 +55,7 @@ export function decodeBoardId(boardId: string): {
 
 /** A board row (server/src/db/boards.rs `Board`).
  *
- *  FEAT-BOARD-SESSION extends the union with a synthetic `'session'` kind: the
+ *  Extends the union with a synthetic `'session'` kind: the
  *  switcher list includes one entry per session that has ≥1 card on Main. These
  *  are NOT persisted server-side — they're a CLIENT-SIDE virtual filter on
  *  Main's cards, scoped by `session` name. `useBoards` injects them. */
@@ -127,9 +127,9 @@ export const boardsApi = {
       body: JSON.stringify(input),
     }),
 
-  /** `POST /api/boards/register-team` — idempotent UPSERT of a team's board (the
-   *  AT-D/AT-F3 entry point). Returns the existing board for `team_name` or a new
-   *  one. Safe to call on every team-detect tick. */
+  /** `POST /api/boards/register-team` — idempotent UPSERT of a team's board.
+   *  Returns the existing board for `team_name` or a new one. Safe to call on
+   *  every team-detect tick. */
   registerTeam: (team_name: string, name?: string): Promise<Board> =>
     boardsRequest('/api/boards/register-team', {
       method: 'POST',

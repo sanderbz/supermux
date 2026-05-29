@@ -1,4 +1,4 @@
-// Onboarding / demo-agent API (M27 — Time to Wow).
+// Onboarding / demo-agent API.
 //
 // Additive per-feature module: it composes the existing `sessionsApi` (create +
 // start) — it never re-implements the request layer. The barrel re-exports it

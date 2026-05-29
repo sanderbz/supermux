@@ -1,12 +1,11 @@
-//! Audit-log writer (TECH_PLAN §6.4, migration `0007_audit.sql`).
+//! Audit-log writer (migration `0007_audit.sql`).
 //!
-//! Every destructive HTTP call records a row. M7 writes `file.put` and
-//! `file.delete`; later milestones reuse [`log`] for `session.delete`,
-//! `schedule.run`, etc. The `actor` is `user` for HTTP-originated calls,
-//! `scheduler` for tick-originated calls, and `agent:<name>` for cross-session
-//! calls.
+//! Every destructive HTTP call records a row. Callers write `file.put` and
+//! `file.delete`, and reuse [`log`] for `session.delete`, `schedule.run`, etc.
+//! The `actor` is `user` for HTTP-originated calls, `scheduler` for
+//! tick-originated calls, and `agent:<name>` for cross-session calls.
 //!
-//! **Secret hygiene (§6.4).** `detail` must never contain secret values — only
+//! **Secret hygiene.** `detail` must never contain secret values — only
 //! metadata (path, byte count, which env var). Callers are responsible for
 //! keeping secrets out of the JSON they pass here.
 
@@ -35,8 +34,8 @@ pub async fn log(
     Ok(())
 }
 
-/// The most-recent `limit` audit rows, newest first (`GET /api/audit?limit=N`,
-/// §3.4). Backed by `idx_audit_ts`.
+/// The most-recent `limit` audit rows, newest first (`GET /api/audit?limit=N`).
+/// Backed by `idx_audit_ts`.
 pub async fn list(pool: &SqlitePool, limit: i64) -> sqlx::Result<Vec<AuditEntry>> {
     sqlx::query_as::<_, AuditEntry>(
         "SELECT id, ts, actor, action, target, detail FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?",
@@ -46,7 +45,7 @@ pub async fn list(pool: &SqlitePool, limit: i64) -> sqlx::Result<Vec<AuditEntry>
     .await
 }
 
-// ── delegations (§3.3 0005) ──────────────────────────────────────────────────
+// ── delegations (migration 0005) ─────────────────────────────────────────────
 
 /// Record a cross-session delegation edge (`from` sent `prompt` to `to`).
 /// Returns the new row id. `from`/`to` are FK-checked against `sessions(name)`.

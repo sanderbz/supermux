@@ -25,7 +25,7 @@ import { useSessions } from '@/hooks/use-sessions'
 import { homeDir, projectsDir } from '@/env'
 import { StatusDot, STATUS_LABEL } from './status-dot'
 
-// ── FEAT-WHERE-PICKER ────────────────────────────────────────────────────────
+// ── Where picker ─────────────────────────────────────────────────────────────
 // The "Where" picker (replaces the old "Directory" field) handles the three
 // distinct flows the user explicitly asked for, in a single scrollable list:
 //

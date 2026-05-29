@@ -1,4 +1,4 @@
-//! Per-session tracked-files list (TECH_PLAN §3.3 `tracked_files`, M2).
+//! Per-session tracked-files list (`tracked_files` table).
 //!
 //! The set of file paths a session is "watching". Rows cascade-delete with the
 //! owning session via the FK in the schema.

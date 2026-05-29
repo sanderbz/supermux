@@ -1,4 +1,4 @@
-// Microcopy (M28) — every empty / error / confirm string in one place, in one
+// Microcopy — every empty / error / confirm string in one place, in one
 // voice. Later milestones import from here instead of inlining strings, so the
 // voice stays consistent and a single edit fixes it everywhere.
 //
@@ -185,7 +185,7 @@ export const TOAST = {
   needsInput: 'Needs input',
 } as const
 
-// ── Onboarding / first-60-seconds (M27) ───────────────────────────────────────
+// ── Onboarding / first-60-seconds ─────────────────────────────────────────────
 
 export const ONBOARDING = {
   /** Returning v2 user — `{n}` is replaced with the migrated session count. */

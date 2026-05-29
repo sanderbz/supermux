@@ -28,7 +28,7 @@ import { useFileContent, useSaveFile } from '@/hooks/use-files'
 import { extOf, isMarkdown, isWritable } from './file-types'
 
 // Lazy-load the CodeMirror editor (and its core bundle) so it only ships when a
-// text file is actually opened — keeps the initial route bundle lean (M29).
+// text file is actually opened — keeps the initial route bundle lean.
 const CodeEditor = React.lazy(() =>
   import('./code-editor').then((m) => ({ default: m.CodeEditor })),
 )
@@ -49,7 +49,7 @@ export interface FileViewerProps {
   onRequestDelete: (path: string) => void
 }
 
-/** Type-aware file viewer / editor (§M20). Render with a `key={path}` so editor
+/** Type-aware file viewer / editor. Render with a `key={path}` so editor
  *  draft state resets cleanly when a new file is opened. */
 export function FileViewer({
   path,
@@ -95,7 +95,7 @@ export function FileViewer({
           state hides the files toolbar (which used to carry the safe-area inset),
           so this viewer header owns the top inset via `pt-safe` (reset at `sm`
           once the desktop SideNav owns the chrome) to clear the notch. */}
-      {/* SD-6: min-h (not h) so the notch inset (pt-safe) ADDS to the bar height
+      {/* min-h (not h) so the notch inset (pt-safe) ADDS to the bar height
           rather than eating into a fixed 56px — otherwise the back button, filename
           and actions are squished under the Dynamic Island in the iOS standalone
           PWA. Desktop resets pt-safe (sm:pt-0), where min-h-14 == h-14. */}

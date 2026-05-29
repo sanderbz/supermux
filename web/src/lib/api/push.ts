@@ -1,4 +1,4 @@
-// Web push API client (PUSH milestone — spec TRACK 2 §3).
+// Web push API client.
 //
 // Talks to the bearer-gated `/api/push/*` endpoints. The dashboard bearer token
 // is read from `window._SUPERMUX_AUTH_TOKEN` at call time (via the shared

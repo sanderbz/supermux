@@ -477,7 +477,7 @@ fi
 # service user already owns its own home, the zero-config path needs no chown
 # and no group juggling — it just works ("noob-proof"). Advanced users point
 # elsewhere (e.g. /opt/projects:/srv/work) via SUPERMUX_PROJECT_DIRS and
-# deploy.sh wires the perms + ReadWritePaths for them (see §0c-bis below).
+# deploy.sh wires the perms + ReadWritePaths for them.
 #
 # Colon-separated, matching the SUPERMUX_READ_WRITE_PATHS convention.
 if [ "$SERVICE_USER" = "root" ]; then

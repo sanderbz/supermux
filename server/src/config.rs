@@ -1,11 +1,11 @@
-//! Runtime configuration (TECH_PLAN §3.2.2).
+//! Runtime configuration.
 //!
 //! Loaded once at startup and passed everywhere via `Arc<Config>` in
 //! [`crate::state::AppState`]. Resolution order:
 //!   1. Built-in defaults.
 //!   2. `SUPERMUX_DATA_DIR` env var (else `~/.supermux`) — where `config.toml`,
-//!      `data.db`, and `auth_token` live. The deploy systemd unit (§8.3) sets
-//!      this; the e2e smoke harness (M24a) sets it for isolation so a test run
+//!      `data.db`, and `auth_token` live. The deploy systemd unit sets
+//!      this; the e2e smoke harness sets it for isolation so a test run
 //!      never touches the real user's `~/.supermux`.
 //!   3. `<data_dir>/config.toml` (partial override, all keys optional).
 //!   4. `SUPERMUX_BIND` env var overrides the `bind` address (e.g. `127.0.0.1:0`
@@ -36,9 +36,9 @@ pub struct Config {
     pub auth_token: String,
     /// Per-provider default flags.
     pub provider_defaults: ProviderDefaults,
-    /// Live-stream WebSocket tuning (§3.2.7/§3.2.9).
+    /// Live-stream WebSocket tuning.
     pub ws: WsConfig,
-    /// REMOTE_PLAN §RT5: URL the REMOTE host's Claude `SettingsHook` curl
+    /// URL the REMOTE host's Claude `SettingsHook` curl
     /// dials back to. `127.0.0.1:8823` is the local-session default and is
     /// useless for a Claude process running on a different machine — it would
     /// just hit the REMOTE's own loopback. When unset, the lifecycle resolver
@@ -69,7 +69,7 @@ pub struct Config {
     /// design: no UI, no warning if unset, no prompt. See
     /// `docs/SELF_HOST_DEV.md` "Advanced — private repos / rate limits".
     pub github_token: Option<String>,
-    /// Extra hostnames to allow as WebSocket `Origin` headers (§6.2). The
+    /// Extra hostnames to allow as WebSocket `Origin` headers. The
     /// built-in allowlist covers `localhost`, private-LAN IPs, `*.ts.net`, and
     /// the server's own bind IPs. Add entries here for reverse-proxy deployments
     /// where the browser-facing hostname is none of the above — e.g.
@@ -79,9 +79,9 @@ pub struct Config {
     pub extra_origins: Vec<String>,
 }
 
-/// `[ws]` config block (TECH_PLAN §3.2.7). Both knobs raised from v1 per CEO #6:
-/// a single multi-device PWA user (phone + laptop + tabs + Capacitor + TV +
-/// collaborator) easily exceeds the old caps of 8/256.
+/// `[ws]` config block. Both knobs are sized so a single multi-device PWA user
+/// (phone + laptop + tabs + Capacitor + TV + collaborator) easily fits — the
+/// older caps of 8/256 were too tight.
 #[derive(Debug, Clone, Deserialize)]
 pub struct WsConfig {
     /// Per-session pty `broadcast::Sender` capacity (slow-subscriber buffer).
@@ -142,7 +142,7 @@ struct RawConfig {
     provider_defaults: ProviderDefaults,
     #[serde(default)]
     ws: WsConfig,
-    /// REMOTE_PLAN §RT5 — see [`Config::remote_callback_url`].
+    /// See [`Config::remote_callback_url`].
     #[serde(default)]
     remote_callback_url: Option<String>,
     /// See [`Config::push_sub`].
@@ -169,7 +169,7 @@ fn default_bind() -> SocketAddr {
 /// Load and resolve configuration, creating `data_dir` and the auth-token file
 /// if needed.
 pub fn load() -> Result<Config> {
-    // `SUPERMUX_DATA_DIR` (deploy unit §8.3 + e2e isolation) wins over the default,
+    // `SUPERMUX_DATA_DIR` (deploy unit + e2e isolation) wins over the default,
     // so `config.toml`/`auth_token` are read from there before anything else.
     let provisional_data_dir = env_path("SUPERMUX_DATA_DIR").unwrap_or_else(default_data_dir);
     let cfg_path = provisional_data_dir.join("config.toml");

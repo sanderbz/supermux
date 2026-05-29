@@ -1,5 +1,4 @@
-//! Claude Code **Agent Teams** on-disk config reader (Agent Teams plan §3.2/§3.5,
-//! milestone AT-E).
+//! Claude Code **Agent Teams** on-disk config reader.
 //!
 //! A Claude "agent team" is a LEAD session that spawns N teammate Claude sessions
 //! as sibling tmux split-window PANES inside the lead's window. Claude Code writes
@@ -26,8 +25,8 @@ use serde::Deserialize;
 
 use super::tmux;
 
-/// One teammate as recorded in `config.json` `members[]`. Only the fields AT-E
-/// needs are typed; the rest of the (drift-prone) schema is ignored.
+/// One teammate as recorded in `config.json` `members[]`. Only the fields
+/// needed are typed; the rest of the (drift-prone) schema is ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TeamMember {
     /// The member's stable name/id within the team (matches the `{member}` URL
@@ -56,7 +55,7 @@ impl TeamMember {
     }
 }
 
-/// The shape of `~/.claude/teams/{team}/config.json` AT-E reads. Drift-tolerant:
+/// The shape of `~/.claude/teams/{team}/config.json` this module reads. Drift-tolerant:
 /// unknown top-level fields are ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TeamConfig {
@@ -142,8 +141,7 @@ pub fn teammate_stream_key(team: &str, member: &str) -> String {
     format!("{team}/{member}")
 }
 
-/// Resolve `(team, member)` → a live, validated [`ResolvedPane`] (Agent Teams
-/// §3.2/§3.5, FIX-TEAMS bug 3). Steps, in order:
+/// Resolve `(team, member)` → a live, validated [`ResolvedPane`]. Steps, in order:
 ///   1. Read `config.json` FRESH (never cached — pane ids are reused).
 ///   2. Resolve the member's `tmuxPaneId` (or the caller's override).
 ///   3. Locate the BARE supermux session whose window currently contains the
@@ -151,7 +149,7 @@ pub fn teammate_stream_key(team: &str, member: &str) -> String {
 ///      in one tmux roundtrip. A `%id` not present anywhere is a true stale id
 ///      (refused, never streamed) — fail-closed so a re-handed pane can't leak.
 ///
-/// **Why we don't trust `leadSessionId` for validation any more (FIX-TEAMS).**
+/// **Why we don't trust `leadSessionId` for validation any more.**
 /// Ground truth from `~/.claude/teams/viral-news-hunt/config.json` shows Claude
 /// records `leadSessionId` as a Claude session UUID (`8a7e1f9e-…`), NOT the
 /// supermux session name. The old code did `pane_in_session(leadSessionId, %id)`
@@ -159,7 +157,7 @@ pub fn teammate_stream_key(team: &str, member: &str) -> String {
 /// → frontend reconnects forever. Finding the pane's CURRENT session directly
 /// removes that whole brittleness without losing the staleness guard.
 ///
-/// `pane_override` lets a caller (e.g. AT-F2's frontend, which already has the
+/// `pane_override` lets a caller (e.g. the frontend, which already has the
 /// `%id` from the team model/SSE) skip config parsing for the pane id while still
 /// going through validation. The lead-session field is populated from whichever
 /// `supermux-*` window actually owns the pane (the validated answer, not the
@@ -181,8 +179,8 @@ pub async fn resolve_member_pane(
             })?,
     };
 
-    // Locate the host supermux session by scanning live panes — the FIX-TEAMS
-    // bug 3 fix. Returns the BARE session name (the supermux key), so the stream
+    // Locate the host supermux session by scanning live panes.
+    // Returns the BARE session name (the supermux key), so the stream
     // key + diagnostics stay consistent with the session model.
     let host = tmux::find_pane_session(&pane_id)
         .await
@@ -249,7 +247,7 @@ pub async fn resolve_lead_pane(session_name: &str) -> Option<String> {
     // 3. Walk `~/.claude/teams/*/config.json` and collect every teammate `%id`
     //    across every team. We deliberately don't try to match team→session
     //    first: a team's `leadSessionId` is often a Claude UUID, not the
-    //    supermux name (see FIX-TEAMS bug 3), so the cheapest reliable signal
+    //    supermux name, so the cheapest reliable signal
     //    is "any teammate %id that lives in THIS window means the team is
     //    hosted here, and the lead is the leftover pane."
     let teams_root = claude_config_dir().join("teams");

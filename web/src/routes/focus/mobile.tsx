@@ -1,11 +1,11 @@
-// MobileFocus — M15 focus-mode mobile route (TECH_PLAN §4.4 mobile, §4.4.1).
+// MobileFocus — focus-mode mobile route.
 //
-// Composes the hero mobile interaction around the M13 LiveTerminal:
+// Composes the hero mobile interaction around the LiveTerminal:
 //   <MobileSheet>            ← Vaul drag-detent sheet (peek 40% / full 100%),
 //                              its height driven by useKeyboardViewport so it
 //                              shrinks to sit ABOVE the soft keyboard (no page slide)
 //     <FocusHeader minimal />← 44px top bar
-//     <LiveTerminal />       ← the M13 terminal (flex-1) — REUSED, the LIVE-TYPE
+//     <LiveTerminal />       ← the terminal (flex-1) — REUSED, the LIVE-TYPE
 //                              keystroke-capture (tap focuses it → keyboard up)
 //     <MobileDock />         ← accessory bar: session-pill + ⌨ + slash + specials
 //                              + snippets + dictate + keyboard-pinned key strip
@@ -19,7 +19,7 @@
 //                              Claude Tools sheet's Commands tab.)
 //   edge-of-next peek         ← left-edge drag reveals the next session
 //
-// Edge gestures (CEO M15 amplification): left-edge swipe-right → overview;
+// Edge gestures: left-edge swipe-right → overview;
 // right-edge swipe-left → next session (pinned-then-active order). The left-edge
 // drag renders a live peek-of-next that springs back below 40% width.
 //
@@ -62,7 +62,7 @@ import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
 
 /** Synthesize a minimal session from the route param so the terminal mounts even
- *  before the (M12) sessions query has delivered this row. */
+ *  before the sessions query has delivered this row. */
 function placeholderSession(name: string): ApiSession {
   return {
     name,
@@ -74,12 +74,12 @@ function placeholderSession(name: string): ApiSession {
   }
 }
 
-// Self-contained route component (reads the `:name` param like M14's
+// Self-contained route component (reads the `:name` param like
 // <DesktopFocus />) so the focus.tsx fork can call it with no props.
 export function MobileFocus() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
-  // View-Transition navigate (§M23a): used by the discrete back-button tap so
+  // View-Transition navigate: used by the discrete back-button tap so
   // it plays the reverse tile↔header morph. The left-edge SWIPE keeps the plain
   // `navigate` — its own peek-of-next drag IS the iOS-native back transition,
   // and a View Transition would fight the live drag transform.
@@ -231,7 +231,7 @@ export function MobileFocus() {
   const onTermPointerCancel = React.useCallback(() => {
     tapRef.current = null
   }, [])
-  // M18: the dock registers its `insert` here so the snippet panel can
+  // The dock registers its `insert` here so the snippet panel can
   // tap-to-insert a snippet body without prop-drilling. Post LIVE-TYPE the dock's
   // `insert` sends the body STRAIGHT to the terminal (no composer buffer).
   const composerInsert = React.useRef<((text: string) => void) | null>(null)
@@ -250,7 +250,7 @@ export function MobileFocus() {
   )
 
   const [pickerOpen, setPickerOpen] = React.useState(false)
-  // Read-only teammate focus overlay (AT-H2). Held by team+agent_id so it stays
+  // Read-only teammate focus overlay. Held by team+agent_id so it stays
   // resolved across SSE snapshot replaces (member identity changes each tick). We
   // route teammate focus through the SHARED <TeammateFocus> overlay (the single
   // teammate-focus UI app-wide — the overview uses the same one) rather than a
@@ -335,10 +335,10 @@ export function MobileFocus() {
   const [infoOpen, setInfoOpen] = React.useState(false)
   // DOCK — the slash panel was removed: slash commands now run from the Claude
   // Tools sheet's Commands tab (tap a command → it runs in the focused terminal).
-  // M17 — joystick on/off. The M16 accessory bar's "Gesture" toggle flips this
+  // Joystick on/off. The accessory bar's "Gesture" toggle flips this
   // via `onGestureToggle`; default ON (joystick wins, per the Termius spec).
   const [gestureOn, setGestureOn] = React.useState(true)
-  void setGestureOn // wired by M16's accessory bar; kept for the toggle handoff
+  void setGestureOn // wired by the accessory bar; kept for the toggle handoff
 
   const goSession = React.useCallback(
     (target: string) => navigate(`/focus/${encodeURIComponent(target)}`),
@@ -399,7 +399,7 @@ export function MobileFocus() {
             onTitleClick={() => setInfoOpen(true)}
           />
 
-          {/* M17 — the LiveTerminal with the joystick + 2-finger gesture
+          {/* The LiveTerminal with the joystick + 2-finger gesture
               layered on top. `relative` so the joystick's absolute layer scopes
               to the terminal viewport (excludes header/dock). The joystick
               drives the SAME `termRef` handle the dock uses — no second WS.
@@ -463,7 +463,7 @@ export function MobileFocus() {
             )}
           </div>
 
-          {/* The M16 swipeable kbd-accessory bar (formerly mounted here) was
+          {/* The swipeable kbd-accessory bar (formerly mounted here) was
               removed in the mobile-finishing pass: it sat ABOVE the MobileDock
               as a second toolbar, and its Pager chips no-op'd silently because
               the terminal imperative handle wasn't registered until after the
@@ -571,7 +571,7 @@ export function MobileFocus() {
         onNavigate={goSession}
       />
 
-      {/* AT-H2 — read-only teammate focus. The SAME full-screen <TeammateFocus>
+      {/* Read-only teammate focus. The SAME full-screen <TeammateFocus>
           overlay the overview uses (one teammate-focus UI app-wide): glass
           header, read-only terminal, the member strip to switch teammates inside
           the team. Opened from the team-aware session picker. */}

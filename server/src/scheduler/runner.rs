@@ -1,8 +1,8 @@
-//! Schedule execution (TECH_PLAN §3.8; feature-extract §4.5).
+//! Schedule execution.
 //!
 //! [`run`] dispatches one due (or manually-triggered) schedule. For a tick
 //! dispatch it FIRST claims the `(schedule_id, scheduled_for_ts)` idempotency key
-//! so a restart can't double-fire (Codex #6); a duplicate is logged and skipped.
+//! so a restart can't double-fire; a duplicate is logged and skipped.
 //! Three job kinds — `tmux` (send to a session), `shell` (`bash -c`, 600s cap),
 //! and `boot` (spawn a fresh session, with a dirty-worktree pre-flight). Every
 //! run records a `schedule_runs` row and an `audit_log` entry, then recomputes

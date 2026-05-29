@@ -1,4 +1,4 @@
-// useTeams — the Agent Teams data layer (AT-F-FRONT; AT-B backend contract).
+// useTeams — the Agent Teams data layer.
 //
 // TanStack Query against `GET /api/teams`, kept live by the SSE `teams` event —
 // NEVER polled (anti-vision: "WebSocket/SSE-only — no 3s polling"), mirroring
@@ -6,7 +6,7 @@
 //
 // SSE wiring: the shared `use-sse.ts` singleton (one EventSource for the whole
 // app) fans the `teams` event out to this hook's `onEvent`. Unlike the `sessions`
-// event (per-row deltas), AT-B sends the `teams` event as the FULL snapshot (a
+// event (per-row deltas), the server sends the `teams` event as the FULL snapshot (a
 // bare `Team[]`, CHANGE-ONLY — re-sent only when the snapshot diffs). So we do a
 // GET on mount for the first paint, then REPLACE the cache wholesale on each
 // `teams` push. (`coerceTeams` keeps a drifting/partial experimental payload
@@ -29,7 +29,7 @@ export interface UseTeamsResult {
   refetch: () => void
 }
 
-/** Unwrap the `teams` SSE payload to a `Team[]`. AT-B sends the BARE array, but
+/** Unwrap the `teams` SSE payload to a `Team[]`. The server sends the BARE array, but
  *  tolerate a `{ payload: [...] }` / `{ data: [...] }` envelope too (other SSE
  *  events on this app wrap that way) so a future server shape still merges. */
 function teamsFromSse(payload: unknown): Team[] | null {

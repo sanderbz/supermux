@@ -1,4 +1,4 @@
-// TeammateCard — the CARDS density variant of a teammate (AT-F-FRONT / F5).
+// TeammateCard — the CARDS density variant of a teammate.
 //
 // When a TEAM CARD's per-team density toggle is set to Cards, teammates render as
 // these richer cards (vs the compact 44pt chips) — each with a mini read-only

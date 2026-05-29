@@ -1,4 +1,4 @@
-//! HTTP Range + ETag helpers for `GET /api/file/raw` (feature-extract §3.7).
+//! HTTP Range + ETag helpers for `GET /api/file/raw`.
 //!
 //! A single byte range only — multipart/byte-range responses are intentionally
 //! unsupported (no client needs them; `<video>`/`<audio>` send single ranges).

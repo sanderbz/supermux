@@ -1,18 +1,18 @@
-// Scheduler (M21) — real client for the M8 backend (cron / boot / send / shell
+// Scheduler — real client for the backend (cron / boot / send / shell
 // jobs, idempotent fires, run history, preview, test-fire).
 //
-// Envelope: M8 success bodies are wrapped (`{ ok:true, data }`); errors use
-// `{ ok:false, error }` (§3.4). `schedRequest` unwraps `data` on success and
+// Envelope: success bodies are wrapped (`{ ok:true, data }`); errors use
+// `{ ok:false, error }`. `schedRequest` unwraps `data` on success and
 // lifts `error` on a non-2xx so the UI surfaces parse failures (400
 // "invalid time …") gracefully — never a crash.
 //
-// The `Schedule`/`CreateScheduleInput` stub types pre-date the M8 contract and
-// are intentionally left untouched; the types below mirror what M8 returns
+// The `Schedule`/`CreateScheduleInput` stub types pre-date the live contract and
+// are intentionally left untouched; the types below mirror what the backend returns
 // (server/src/db/schedules.rs::Schedule, schedule_runs).
 
 import { apiToken, apiUrl } from './client'
 
-// ── M0 stub domain types (legacy skeleton) ────────────────────────────────────
+// ── Stub domain types (legacy skeleton) ───────────────────────────────────────
 
 export interface Schedule {
   id: string
@@ -24,12 +24,12 @@ export interface Schedule {
 
 export interface CreateScheduleInput {
   name: string
-  /** Free-text or cron expression; the backend parses it (§3.8). */
+  /** Free-text or cron expression; the backend parses it. */
   when: string
   command: string
 }
 
-// ── M8 wire types ─────────────────────────────────────────────────────────────
+// ── Wire types ────────────────────────────────────────────────────────────────
 
 /** Job kinds (server/src/scheduler/mod.rs::create validates these three). */
 export type ScheduleKind = 'boot' | 'tmux' | 'shell'
@@ -75,7 +75,7 @@ export interface ScheduleRunRow {
   note: string
 }
 
-/** Create / test-fire payload. Field set matches CreateScheduleInput on M8. */
+/** Create / test-fire payload. Field set matches the backend CreateScheduleInput. */
 export interface ScheduleCreateInput {
   title: string
   command: string
@@ -164,7 +164,7 @@ async function schedRequest<T>(path: string, init?: RequestInit): Promise<T> {
         : `Request failed (${res.status}).`
     throw new SchedError(message, res.status)
   }
-  // M8 wraps success bodies in `{ ok, data }`; unwrap to `data`.
+  // The backend wraps success bodies in `{ ok, data }`; unwrap to `data`.
   if (body && typeof body === 'object' && 'data' in body) {
     return (body as { data: T }).data
   }
@@ -228,7 +228,7 @@ export const schedulerApi = {
 }
 
 /** Resolve session names for the tmux-job target combo. Hits `/api/sessions`
- *  directly (the typed `api.listSessions` is filled in by M12); returns [] if
+ *  directly (the typed `api.listSessions` is filled in elsewhere); returns [] if
  *  unreachable so the dialog degrades to a free-text session field. */
 export async function listSessionNames(): Promise<
   Array<{ name: string; display_name?: string }>

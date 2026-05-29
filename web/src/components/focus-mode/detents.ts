@@ -1,4 +1,4 @@
-// Detent constants + the rubber-band helper for the mobile focus sheet (M15).
+// Detent constants + the rubber-band helper for the mobile focus sheet.
 //
 // Kept out of mobile-sheet.tsx (a component module) so Fast-Refresh stays happy
 // and the bungee math is independently importable/testable.
@@ -6,7 +6,7 @@
 // Detent snap points as NUMERIC screen fractions: peek (40%) and full (100%).
 // Vaul treats numbers 0–1 as fractions of the viewport height and STRINGS as px
 // (node_modules/vaul `isPx = typeof snapPoint === 'string'`), so these must stay
-// numbers for "40% / 100%" detents to mean what the spec says (§4.4).
+// numbers for "40% / 100%" detents to mean what the spec says.
 export const PEEK = 0.4
 export const FULL = 1
 export const SNAP_POINTS = [PEEK, FULL]

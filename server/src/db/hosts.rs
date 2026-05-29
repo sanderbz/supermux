@@ -1,4 +1,4 @@
-//! Host row access (REMOTE_PLAN.md RT4, migration `0017_hosts.sql`).
+//! Host row access (migration `0017_hosts.sql`).
 //!
 //! Mirrors the pattern in [`crate::db::sessions`]: runtime-checked
 //! `sqlx::query_as::<_, T>` rather than the compile-time `query_as!` macro, so
@@ -7,9 +7,9 @@
 //! struct still gives typed rows.
 //!
 //! `host_id` on `sessions` is NULLable; a session with `host_id IS NULL` is
-//! LOCAL — the entire pre-RT4 behavior. Soft-deleted hosts keep their row so
-//! historical sessions can still resolve their host name, but `list()` filters
-//! them out (RT8 wires the HTTP layer).
+//! LOCAL — the entire pre-remote-host behavior. Soft-deleted hosts keep their
+//! row so historical sessions can still resolve their host name, but `list()`
+//! filters them out.
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -146,8 +146,8 @@ pub async fn create(
 }
 
 /// Update a host's reachability `status`. When `status == Reachable` we also
-/// bump `last_seen` to now — the reachability probe (RT8
-/// `POST /api/hosts/{id}/check`) is the canonical writer. Other transitions
+/// bump `last_seen` to now — the reachability probe
+/// (`POST /api/hosts/{id}/check`) is the canonical writer. Other transitions
 /// leave `last_seen` alone so the UI can still show "last reachable Xm ago"
 /// after a host goes down.
 pub async fn update_status(

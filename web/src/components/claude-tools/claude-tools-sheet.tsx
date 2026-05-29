@@ -1,9 +1,9 @@
-// ClaudeToolsSheet — the Claude tools manager (skills-mcp-manager plan §C.2).
+// ClaudeToolsSheet — the Claude tools manager.
 //
 // One <ResponsiveSheet> (Vaul bottom-sheet on touch / right-side dialog on
 // desktop) listing MCP servers · skills · slash commands, grouped by SCOPE, each
 // row carrying a provenance badge (incl. read-only cloud / plugin / managed
-// sources). Affordances per the plan:
+// sources). Affordances:
 //   • MCP — remove (its file), disable/enable (project .mcp.json trust), add
 //     (guided form + raw JSON), an OPT-IN per-row health "Check" (the probe
 //     spawns servers, so it never auto-runs on list open), and "Reconnect" which

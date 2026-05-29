@@ -1,5 +1,5 @@
 // use-peek-prewarm — per-tile React glue for the viewport-aware peek pre-warm
-// (TECH_PLAN polish-pass — "instant hover-zoom").
+// ("instant hover-zoom").
 //
 // One call per tile: `usePeekPrewarm(name, ref)` registers an
 // IntersectionObserver on the element pointed to by `ref`. While the element

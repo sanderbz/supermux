@@ -1,4 +1,4 @@
-// CommandPalette — global ⌘K / Ctrl+K spotlight (TECH_PLAN §4.4, §M9, §M50).
+// CommandPalette — global ⌘K / Ctrl+K spotlight.
 //
 // Mounted ONCE in the root <Layout> so the shortcut works on EVERY route — the
 // previous implementation (a stubbed `console.info` inside the focus route) was
@@ -13,7 +13,7 @@
 //   • Skills     — `~/.claude/skills/*` + project + plugin skills (sources the
 //                  slash-command list does NOT cover). Pick → activate `/<name>`
 //                  in the freshest session, like a command.
-//   • Commands   — `useSlashCommands()` (M9 `/api/slash-commands`) MERGED with the
+//   • Commands   — `useSlashCommands()` (`/api/slash-commands`) MERGED with the
 //                  registry's file commands. Pick → navigate to the most-recently-
 //                  active session's focus route AND POST `/api/sessions/{name}/send`
 //                  `{ text: "/cmd\r" }` so the command runs in that session. If no

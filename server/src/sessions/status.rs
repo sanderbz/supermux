@@ -1,4 +1,4 @@
-//! Multi-signal status detector — CORE (TECH_PLAN §3.2.8, §3.6; M5a).
+//! Multi-signal status detector — CORE.
 //!
 //! This is the crown-jewel reliability module: when the UI says "waiting", the
 //! agent is actually waiting. The classifier is a **pure function** of its inputs
@@ -6,10 +6,10 @@
 //! fixtures (`tests/fixtures/status/*.txt`) and never silently regresses when the
 //! regex bank evolves.
 //!
-//! **M5a / M5b / STATUS split (§3.6).** M5a shipped the fusion order *regex bank
-//! → PTY heartbeat → idle timeout*, the cold-start init, and the `last_capture`
-//! writeback. **M5b** wired the hook-event branch in. **STATUS** ("busy while
-//! thinking" fix) replaces the 3s single-hook fast-path with a TURN STATE MACHINE
+//! **Evolution.** The fusion order started as *regex bank → PTY heartbeat → idle
+//! timeout*, with cold-start init and a `last_capture` writeback. A later pass
+//! wired the hook-event branch in. The "busy while thinking" fix then replaced
+//! the 3s single-hook fast-path with a TURN STATE MACHINE
 //! ([`TurnState`]): the per-session newest instant of EACH turn-relevant hook,
 //! fed by `/api/_internal/hook` →
 //! [`AppState::record_hook`](crate::state::AppState::record_hook) →
@@ -44,7 +44,7 @@ use serde::Serialize;
 const PTY_ACTIVE_WINDOW: Duration = Duration::from_millis(1500);
 /// Silent for at least this long (and previously known) ⇒ `Idle`.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-/// A hook event newer than this is the classic <3s fresh-hook fast-path (M5b).
+/// A hook event newer than this is the classic <3s fresh-hook fast-path.
 /// The turn state machine (below) GENERALISES it: it trusts the per-turn hook
 /// timestamps for a much longer [`TURN_SAFETY`] window, so a silent "thinking"
 /// gap between tool calls (routinely 10–60s, sometimes minutes) keeps the
@@ -57,14 +57,14 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const HOOK_FRESH: Duration = Duration::from_secs(3);
 /// Generous upper bound on how long the turn state machine trusts the newest
 /// turn-relevant hook before it gives up and falls through to the content bank +
-/// heartbeat (the "busy while thinking" fix; spec §B). A real turn can think
+/// heartbeat (the "busy while thinking" fix). A real turn can think
 /// silently for many seconds to a couple of minutes, so this is intentionally
 /// large — but bounded, so a *missed* `Stop` hook (the curl raced a server
 /// restart, the network blipped, …) can never pin a session `Active` forever.
 /// Once the newest hook is older than this, the detector behaves exactly as it
 /// did pre-fix: regex bank → PTY heartbeat → idle timeout.
 const TURN_SAFETY: Duration = Duration::from_secs(15 * 60);
-/// capture-pane skip optimization window (§3.6 [P2] #7).
+/// capture-pane skip optimization window.
 const SKIP_WINDOW: Duration = Duration::from_secs(2);
 /// Upper bound on how stale the live preview tail may get while we are skipping
 /// captures for a streaming-`Active` session. The skip keeps the status `Active`
@@ -74,7 +74,7 @@ const SKIP_WINDOW: Duration = Duration::from_secs(2);
 /// the card doesn't update" bug). Capping the skip at this staleness forces a
 /// re-capture so the hero live-preview keeps refreshing.
 ///
-/// **Adaptive cadence (M-CADENCE).** This is now the *coarse* upper bound used
+/// **Adaptive cadence.** This is now the *coarse* upper bound used
 /// only when a per-tier bound is not supplied. The detector loop binds the
 /// effective staleness to the session's CURRENT cadence tier
 /// ([`cadence_for`]) — so a 1s-tier (hot, working) session re-captures within
@@ -82,7 +82,7 @@ const SKIP_WINDOW: Duration = Duration::from_secs(2);
 /// bound. See [`should_skip_capture_within`].
 pub const MAX_PREVIEW_STALENESS: Duration = Duration::from_secs(4);
 
-// ── adaptive overview-preview cadence (M-CADENCE) ────────────────────────────
+// ── adaptive overview-preview cadence ────────────────────────────────────────
 //
 // Per session, the next capture/broadcast cadence is chosen by the live status
 // and recency so the at-rest card preview feels ~1s WHERE IT MATTERS without
@@ -112,7 +112,7 @@ pub const CADENCE_WAITING: Duration = Duration::from_secs(5);
 /// `Stopped`) — the original fixed detector tick, a safe middle ground.
 pub const CADENCE_DEFAULT: Duration = Duration::from_secs(2);
 
-/// The adaptive cadence for the NEXT tick, by `status` + hotness (M-CADENCE).
+/// The adaptive cadence for the NEXT tick, by `status` + hotness.
 ///
 /// Pure function (no clock, no I/O) so the tier table is unit-tested directly:
 /// `(status, is_hot) -> Duration`.
@@ -139,10 +139,10 @@ pub fn cadence_for(status: Status, is_hot: bool) -> Duration {
 /// How many trailing scroll-back lines the detector classifies + stores.
 pub const CAPTURE_LINES: usize = 30;
 /// Cold-start sentinel: a freshly-booted server pretends the last PTY byte was 5
-/// minutes ago so the first tick never spuriously reads `Active` (§3.2.8).
+/// minutes ago so the first tick never spuriously reads `Active`.
 pub const COLD_START_IDLE: Duration = Duration::from_secs(300);
 
-/// The live-status states surfaced to the UI (§3.2.8).
+/// The live-status states surfaced to the UI.
 ///
 /// Serialises lower-case (`"active"`, …) to match the `last_status` CHECK values
 /// and the frontend `Session.status` union.
@@ -248,8 +248,8 @@ pub fn parse_mode(capture: &str) -> Mode {
     }
 }
 
-/// Claude Code `SettingsHook` event kinds (§3.6). Consumed by the fusion rule in
-/// [`StatusDetector::classify`]; fed in by M5b's `/api/_internal/hook` endpoint
+/// Claude Code `SettingsHook` event kinds. Consumed by the fusion rule in
+/// [`StatusDetector::classify`]; fed in by the `/api/_internal/hook` endpoint
 /// via [`AppState::record_hook`](crate::state::AppState::record_hook).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
@@ -269,8 +269,8 @@ pub enum HookEvent {
 }
 
 impl HookEvent {
-    /// Parse the `event` field of an `/api/_internal/hook` POST body (§3.6 event
-    /// types). Accepts the snake_case wire form supermux's hook command emits
+    /// Parse the `event` field of an `/api/_internal/hook` POST body. Accepts
+    /// the snake_case wire form supermux's hook command emits
     /// (`user_prompt`, `pre_tool`, `post_tool`, `notification`, `stop`,
     /// `subagent_stop`) plus the PascalCase Claude SettingsHook names, so either
     /// spelling is robust. Unknown kinds return `None` (the endpoint treats them
@@ -291,7 +291,7 @@ impl HookEvent {
 }
 
 /// A per-session snapshot of the LATEST instant each turn-relevant hook fired
-/// (spec §B — the turn state machine, the core reliability win). Unlike the old
+/// (the turn state machine — the core reliability win). Unlike the old
 /// single "last hook" `(Instant, HookEvent)`, this remembers each event TYPE's
 /// most recent time independently, so a `PreToolUse` followed by a long silent
 /// think still has a `turn_start` newer than any `turn_end` — keeping the
@@ -300,7 +300,7 @@ impl HookEvent {
 ///
 /// Built in [`crate::state::AppState`] from the per-session per-event timestamp
 /// map and passed *into* [`StatusDetector::detect`] so the classifier stays a
-/// pure function of its inputs (golden-testable; v2 lesson #4). All fields are
+/// pure function of its inputs (golden-testable). All fields are
 /// `Option<Instant>` because a session may not have seen every event yet.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TurnState {
@@ -359,7 +359,7 @@ impl TurnState {
     }
 
     /// Classify purely from the turn timestamps, when the newest is within
-    /// [`TURN_SAFETY`] (spec §B):
+    /// [`TURN_SAFETY`]:
     /// * `Notification` newest AND a turn is IN PROGRESS ⇒ `Waiting` (a genuine
     ///   permission/question prompt — Claude paused mid-turn to ask the user);
     /// * `Notification` newest but the turn already ENDED (a `Stop`/`SubagentStop`
@@ -418,7 +418,7 @@ impl TurnState {
 /// Per-session classifier. Holds only the last classification so the fusion
 /// fallback can "hold current status" when no signal is decisive; the live PTY
 /// heartbeat and hook events are passed *in* to keep [`detect`](Self::detect) a
-/// pure function of its inputs (single source of truth — v2 lesson #4).
+/// pure function of its inputs (single source of truth).
 pub struct StatusDetector {
     last_status: Status,
 }
@@ -432,8 +432,8 @@ impl Default for StatusDetector {
 impl StatusDetector {
     /// Cold-start a detector. Begins `Unknown`; the heartbeat it will be fed on
     /// the first tick is the cold-start sentinel ([`AppState::last_pty`] returns
-    /// `now - 5min` until M4's reader records a real byte), so the first tick
-    /// reads `Unknown` rather than a spurious `Active`/`Idle` (§3.2.8).
+    /// `now - 5min` until the PTY reader records a real byte), so the first tick
+    /// reads `Unknown` rather than a spurious `Active`/`Idle`.
     ///
     /// [`AppState::last_pty`]: crate::state::AppState::last_pty
     pub fn new() -> Self {
@@ -457,10 +457,10 @@ impl StatusDetector {
     ///
     /// * `capture` — last [`CAPTURE_LINES`] of `tmux capture-pane`, ANSI-stripped.
     /// * `last_pty` — instant the live reader last saw a byte (cold-start
-    ///   sentinel until M4 wires the reader).
+    ///   sentinel until the PTY reader wires up).
     /// * `turn` — the per-session [`TurnState`] (the newest instant of each
     ///   turn-relevant hook). The PRIMARY signal: a turn in progress reads
-    ///   `Active` for the whole turn, even during a silent think (spec §B).
+    ///   `Active` for the whole turn, even during a silent think.
     /// * `has_hooks` — whether this session has LIVE Claude Code hooks (we have
     ///   received at least one hook POST from it, so the runtime is authoritative
     ///   about turn boundaries). When `true`, the raw PTY-heartbeat "bytes flowing
@@ -502,7 +502,7 @@ impl StatusDetector {
             return Status::Waiting;
         }
 
-        // ── 1. hook TURN STATE MACHINE (the multi-signal apex; spec §B) ────────
+        // ── 1. hook TURN STATE MACHINE (the multi-signal apex) ───────────────
         // The per-turn hook timestamps come straight from the agent runtime — the
         // most authoritative signal we have — so they OUTRANK the regex bank and
         // the PTY heartbeat. Unlike the old <3s single-hook fast-path (which the
@@ -522,7 +522,7 @@ impl StatusDetector {
             return s;
         }
 
-        // ── 2. capture-pane regex bank (v2 §1.3) ─────────────────────────────
+        // ── 2. capture-pane regex bank ───────────────────────────────────────
         if ACTIVE_BANK.is_match(capture) {
             return Status::Active;
         }
@@ -553,7 +553,7 @@ impl StatusDetector {
         // (`Unknown`) session stays `Unknown` until a positive signal (capture
         // marker or a real PTY byte) arrives — without this guard a cold-started
         // server's first tick would read `Idle` off the cold-start sentinel,
-        // contradicting §3.2.8 ("observe Unknown until capture confirms…").
+        // contradicting the rule "observe Unknown until capture confirms…".
         if silent >= IDLE_TIMEOUT && self.last_status != Status::Unknown {
             return Status::Idle;
         }
@@ -563,7 +563,7 @@ impl StatusDetector {
     }
 }
 
-/// Should the 2s tick skip the `tmux capture-pane` shell-out (§3.6 [P2] #7)?
+/// Should the 2s tick skip the `tmux capture-pane` shell-out?
 ///
 /// When PTY bytes flowed in the last 2s **and** we are already `Active`, the
 /// heartbeat alone keeps the session `Active` — so the shell-out is overhead for
@@ -583,7 +583,7 @@ pub fn should_skip_capture(
     should_skip_capture_within(last_pty, last_status, last_capture_elapsed, MAX_PREVIEW_STALENESS)
 }
 
-/// Tier-bounded variant of [`should_skip_capture`] (M-CADENCE).
+/// Tier-bounded variant of [`should_skip_capture`].
 ///
 /// Identical skip logic, but the max-staleness is the caller-supplied
 /// `max_staleness` (the session's CURRENT cadence tier) instead of the fixed
@@ -608,7 +608,7 @@ pub fn should_skip_capture_within(
 
 /// Strip CSI escape sequences (SGR colour, cursor moves, …). `capture-pane -p`
 /// is already plain, but the detector strips defensively so `last_capture` (the
-/// canonical preview source, CEO #1) never carries stray escapes.
+/// canonical preview source) never carries stray escapes.
 static ANSI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").unwrap());
 
 /// ANSI-strip `raw` and keep only its last [`CAPTURE_LINES`] lines — the exact
@@ -617,7 +617,7 @@ static ANSI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~
 ///
 /// Trailing blank lines are dropped first: `tmux capture-pane` pads the capture
 /// to the full pane height, and those blanks would otherwise crowd the live
-/// content out of the 6-line tile preview (CEO #1) and push a bare prompt off
+/// content out of the 6-line tile preview and push a bare prompt off
 /// the end where the IDLE `$`-anchored patterns expect it.
 pub fn prepare_capture(raw: &str) -> String {
     let stripped = ANSI_RE.replace_all(raw, "");
@@ -646,9 +646,9 @@ pub fn prepare_capture_ansi(raw: &str) -> String {
     lines[start..].join("\n")
 }
 
-// ── the regex bank (v2 §1.3, ported verbatim per the M5a spec) ───────────────
+// ── the regex bank ───────────────────────────────────────────────────────────
 //
-// Patterns are the literal strings from the milestone spec. The IDLE bank adds
+// Patterns are the literal strings ported verbatim from the spec. The IDLE bank adds
 // the `m` (multi-line) flag so its `$` anchors (`❯\s*$`, `\$ $`) match a bare
 // prompt at the end of *any* line of a multi-line capture, replicating Python
 // `re`'s lenient `$` (the Rust default anchors only at end-of-haystack). ACTIVE
@@ -661,7 +661,7 @@ pub fn prepare_capture_ansi(raw: &str) -> String {
 /// `✻ Thinking… (esc to interrupt · 12s · ↑ 2.1k tokens)`), so it survives every
 /// spinner glyph frame. Plus a glyph CLASS + ellipsis (Claude cycles the spinner
 /// glyph ✻ ✶ ✳ ✢ ✽ ✺ ❋ ⚹ ∗ · * across frames, so anchoring on `✻` alone misses
-/// most captured frames — the spec §C fix), and the `running...` / `reading N
+/// most captured frames), and the `running...` / `reading N
 /// files` verbs.
 ///
 /// **Line-start anchor (the boot false-positive fix).** The spinner-glyph branch
@@ -699,7 +699,7 @@ static INTERRUPT_MARKER: Lazy<Regex> =
 /// IDLE markers: a COMPLETED spinner or a bare shell/agent prompt.
 ///
 /// The persistent status-bar / mode indicators `⏵⏵`, `bypass permissions`, and
-/// `plan mode` were REMOVED (spec §D — the primary smoking gun): those are shown
+/// `plan mode` were REMOVED (the primary smoking gun): those are shown
 /// the WHOLE time a session is open (a mode the user picked), NOT idle signals,
 /// so a busy session whose spinner frame happened not to match read "done". The
 /// bottom status bar ALONE must never yield Idle. What remains are genuine
@@ -826,7 +826,7 @@ mod tests {
 
     #[test]
     fn status_bar_mode_indicators_are_not_idle() {
-        // spec §D (primary smoking gun): the persistent bottom status-bar mode
+        // Primary smoking gun: the persistent bottom status-bar mode
         // indicators are shown the WHOLE time a session is open — they are the
         // user's chosen mode, NOT an idle signal. With no other marker a fresh
         // detector must NOT read Idle off them (it stays Unknown here); when a
@@ -891,8 +891,8 @@ mod tests {
 
     #[test]
     fn fresh_hook_outranks_regex_and_heartbeat() {
-        // Multi-signal apex (§3.6 acceptance: "a fresh hook event outranks the
-        // regex bank and the pty heartbeat"). Each capture below carries a marker
+        // Multi-signal apex: a fresh hook event outranks the
+        // regex bank and the pty heartbeat. Each capture below carries a marker
         // AND a just-now heartbeat, yet the fresh turn-state hook decides — the
         // <3s fast-path is now a strict subset of the turn state machine.
         let mut d = StatusDetector::new();
@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn user_prompt_submit_then_silent_think_is_active() {
-        // The headline fix (spec §B): a UserPromptSubmit with NO subsequent tool
+        // The headline fix: a UserPromptSubmit with NO subsequent tool
         // call and NO PTY bytes (the model is thinking silently) must read Active.
         // Empty capture + neutral heartbeat would otherwise hold/idle.
         let mut d = StatusDetector::new();
@@ -989,7 +989,7 @@ mod tests {
 
     #[test]
     fn missed_stop_after_safety_bound_falls_through() {
-        // The safety valve (spec §B): a turn_start older than TURN_SAFETY with no
+        // The safety valve: a turn_start older than TURN_SAFETY with no
         // Stop (the Stop curl was lost) must NOT pin Active forever — it falls
         // through to the content bank + heartbeat. Here the capture is empty and
         // the heartbeat is long-silent, so a previously-known session reads Idle.
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn cycling_spinner_glyph_frames_are_active() {
-        // spec §C: Claude cycles the spinner glyph across frames, so every frame
+        // Claude cycles the spinner glyph across frames, so every frame
         // (not just ✻) + an ellipsis must read Active — even while the persistent
         // status bar (which used to win as Idle) is on screen.
         for glyph in ['✻', '✶', '✳', '✢', '✽', '✺', '·', '*'] {

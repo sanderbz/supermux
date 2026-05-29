@@ -1,13 +1,13 @@
-//! Agent-Teams watcher loop (AT-B §3.2): keeps the live [`Team`] snapshot fresh
+//! Agent-Teams watcher loop: keeps the live [`Team`] snapshot fresh
 //! and broadcasts it over the existing SSE channel.
 //!
-//! **Why both a watcher AND a slow safety poll (§3 / §8).** FSEvents can be
+//! **Why both a watcher AND a slow safety poll.** FSEvents can be
 //! missed (debounced, dropped under churn) and the experimental Claude schema
 //! WILL drift; a slow unconditional re-scan guarantees the snapshot self-heals.
 //! When the `notify` crate is available we wake on `~/.claude/teams` changes for
 //! sub-second freshness; the periodic tick runs regardless.
 //!
-//! **`%id` validation EVERY tick (§3.2).** tmux pane ids are a server-global
+//! **`%id` validation EVERY tick.** tmux pane ids are a server-global
 //! reused counter, so config.json's `tmuxPaneId` is re-read and re-validated
 //! against the lead window's live panes on every tick — never cached across
 //! ticks. A `%id` absent from the live set is dropped immediately. We also use
@@ -36,7 +36,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const FS_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// How many CONSECUTIVE ticks a previously-detected team must be absent before
-/// supermux deregisters its board (AT-G §3). FSEvents can be dropped and a
+/// supermux deregisters its board. FSEvents can be dropped and a
 /// half-written `config.json` can momentarily fail to parse — a team that
 /// flickers absent for a tick or two is almost certainly a transient glitch, not
 /// an ended team. Only after `DEREGISTER_AFTER_ABSENT_TICKS` straight misses (≈
@@ -47,7 +47,7 @@ const DEREGISTER_AFTER_ABSENT_TICKS: u32 = 3;
 /// Spawn the teams watcher (fire-and-forget). Idempotent to call once at boot.
 /// Does NOT gate on the `experimental.agent_teams` setting: the on-disk files
 /// exist (and should be surfaced) whenever Claude wrote them; the setting only
-/// controls whether supermux ENABLES the feature for new sessions (§3.1). When
+/// controls whether supermux ENABLES the feature for new sessions. When
 /// no team files exist, each tick is a cheap empty scan and broadcasts nothing.
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
@@ -57,7 +57,7 @@ pub fn spawn(state: AppState) {
         let _watcher = arm_fs_watcher(fs_wake.clone());
 
         let mut last_payload: Option<serde_json::Value> = None;
-        // AT-G deregister safety: per team, how many CONSECUTIVE ticks it has been
+        // Deregister safety: per team, how many CONSECUTIVE ticks it has been
         // absent from the detected set. Reset to 0 the instant a team reappears;
         // a team is only torn down after DEREGISTER_AFTER_ABSENT_TICKS straight
         // misses (guards against a transient FS glitch / missed FSEvents).
@@ -81,7 +81,7 @@ pub fn spawn(state: AppState) {
             let teams = scan_and_enrich(&state).await;
             let payload = serde_json::to_value(&teams).unwrap_or(serde_json::Value::Null);
 
-            // AT-G — wire the detected teams onto their OWN boards: register each
+            // Wire the detected teams onto their OWN boards: register each
             // team's board idempotently + mirror its on-disk tasks as cards, then
             // (conservatively) deregister boards whose team has ended. Runs every
             // tick regardless of the SSE change-detection below (a team's task
@@ -99,7 +99,7 @@ pub fn spawn(state: AppState) {
                 crate::board::emit_board(&state).await;
             }
 
-            // Change-only broadcast (keep it cheap — spec §4 cadence rule). The
+            // Change-only broadcast (keep it cheap). The
             // first non-empty scan always publishes; thereafter only on a diff.
             if last_payload.as_ref() != Some(&payload) {
                 let _ = state.sse_tx.send(SseEvent {
@@ -124,7 +124,7 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
 
     // Build `supermux-<name> → live pane ids` ONCE per tick for the live claude
     // sessions, so a team's panes can be located + validated against the right
-    // window. We never cache this across ticks (the whole point of §3.2).
+    // window. We never cache this across ticks (the whole point of pane-id reuse).
     let pane_map = live_pane_map(state).await;
 
     for team in &mut teams {
@@ -132,7 +132,7 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
         // the (common) state where no teammate has a tmuxPaneId yet: lead just
         // booted but hasn't invoked Spawn, in-process teammates, half-written
         // config.json mid-write, transient pane churn between watcher ticks.
-        // Pane-id intersection (the docstring's original promise; AT-B v1) is
+        // Pane-id intersection (the docstring's original promise) is
         // kept as the strongest signal AND the final fallback.
         let host = resolve_host_session(state, team, &pane_map).await;
 
@@ -142,7 +142,7 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
             .map(Vec::as_slice)
             .unwrap_or(&[]);
 
-        // §3.2: re-validate every `%id` against the host's live panes THIS tick.
+        // Re-validate every `%id` against the host's live panes THIS tick.
         scan::validate_pane_ids(team, live_ids);
         scan::map_lead_session(team, |_| host.clone());
 
@@ -268,7 +268,7 @@ async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
     None
 }
 
-/// Tear down team boards whose team has ENDED (AT-G §3), conservatively. For
+/// Tear down team boards whose team has ENDED, conservatively. For
 /// every `kind='team'` board in the DB whose `team_name` is NOT in this tick's
 /// detected set, bump a per-team consecutive-absence counter; once a team has
 /// been absent for [`DEREGISTER_AFTER_ABSENT_TICKS`] straight ticks, delete its

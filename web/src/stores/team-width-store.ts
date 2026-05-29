@@ -1,4 +1,4 @@
-// Per-team TEAM CARD width preference (FEAT-RESIZE).
+// Per-team TEAM CARD width preference.
 //
 // On desktop, the overview lays TEAM CARDs out in a flex-wrap row. By default
 // each card takes the full row (current behavior — zero regression for users

@@ -1,13 +1,13 @@
-//! The `wait` primitive (TECH_PLAN §3.7, §3.2.13; M5b).
+//! The `wait` primitive.
 //!
 //! `GET /api/agents/{name}/wait?state=<s>&timeout=<secs>` long-polls until the
 //! session reaches the requested status, or the timeout elapses:
 //! `{ "reached": true, "status": "idle" }` / `{ "reached": false, "status": "active" }`.
 //!
-//! **Race-free by construction (Eng P0 #2).** v1 used `Notify::notified()`, which
+//! **Race-free by construction.** v1 used `Notify::notified()`, which
 //! drops a transition that fires between reading the current status and
 //! registering the waiter. v2 uses the per-session
-//! [`watch::Sender`](tokio::sync::watch) seeded by the detector (§3.2.8): we
+//! [`watch::Sender`](tokio::sync::watch) seeded by the detector: we
 //! `subscribe()` FIRST, then read the persisted baseline. Because the detector
 //! writes the DB status *before* `send_replace` (see `auto_actions::tick`), a
 //! waiter that subscribes late still observes the latest committed status as its
@@ -24,8 +24,8 @@ use crate::db;
 use crate::error::AppError;
 use crate::state::AppState;
 
-/// Max long-poll a single request may hold (§3.7 — capped to fit under
-/// Tailscale's 300s idle-connection kill, Codex #9).
+/// Max long-poll a single request may hold — capped to fit under
+/// Tailscale's 300s idle-connection kill.
 const MAX_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Debug, Deserialize)]

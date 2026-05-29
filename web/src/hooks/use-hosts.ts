@@ -1,7 +1,7 @@
-// useHosts — TanStack-Query data layer for the remote-hosts surface
-// (REMOTE_PLAN.md RT9). Hosts CRUD is on-demand only: the data is fetched when
+// useHosts — TanStack-Query data layer for the remote-hosts surface.
+// Hosts CRUD is on-demand only: the data is fetched when
 // the /hosts route mounts AND when the new-session sheet opens its host
-// picker. No SSE deltas (RT8 doesn't broadcast host changes — they're rare and
+// picker. No SSE deltas for hosts (they're rare and
 // user-driven), so this is a vanilla TanStack Query against `GET /api/hosts`
 // with mutations invalidating the cache. `useHostsLight` is a thinner variant
 // for the host-picker dropdown — same cache key, same fetch, just so the read

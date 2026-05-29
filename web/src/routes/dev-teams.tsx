@@ -1,5 +1,5 @@
-// /dev/teams — DEV-only verification page for the Agent Teams overview surface
-// (AT-F-FRONT). Lazy-loaded + DEV-guarded so neither this route nor its mock data
+// /dev/teams — DEV-only verification page for the Agent Teams overview surface.
+// Lazy-loaded + DEV-guarded so neither this route nor its mock data
 // ships in production (mirrors /dev/tiles). Seeds the shared ['teams'] + ['sessions']
 // caches with mocks so the TEAM CARD, roll-up, chips, density toggle, peek, and
 // full-screen focus can be eyeballed across states (needs_you / working / idle /

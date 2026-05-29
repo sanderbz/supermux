@@ -1,10 +1,10 @@
-// useFocusSessions — M14.
+// useFocusSessions
 //
-// SINGLE SOURCE OF TRUTH (PRINCIPLE critic): the desktop focus session-strip
-// reads the SAME `useSessions()` store the overview tile grid reads — there is
-// NO second fetch and NO per-session polling for the strip. The compact tiles
-// and their peek-popovers render the very `preview_lines` the tile grid renders
-// (both consume `TileSession`). When M12 wires `useSessions()` to the SSE-driven
+// SINGLE SOURCE OF TRUTH: the desktop focus session-strip reads the SAME
+// `useSessions()` store the overview tile grid reads — there is NO second fetch
+// and NO per-session polling for the strip. The compact tiles and their
+// peek-popovers render the very `preview_lines` the tile grid renders (both
+// consume `TileSession`). When `useSessions()` is wired to the SSE-driven
 // TanStack cache, this strip updates live for free.
 //
 // Returns the ordered list plus the current session resolved from the route
@@ -19,7 +19,7 @@ import type { TileSession } from '@/components/session-tile/types'
 /** Coerce the wire shape to the tile's `TileSession` (the tile requires a string
  *  `updated_at`; the API leaves it optional for partial deltas). Mirrors the same
  *  boundary coercion the overview route applies to the shared `useSessions()`
- *  list — M12 returns `ApiSession`, the strip tiles consume `TileSession`. */
+ *  list — the store returns `ApiSession`, the strip tiles consume `TileSession`. */
 function toTileSession(s: ApiSession): TileSession {
   return { ...s, updated_at: s.updated_at ?? '' }
 }

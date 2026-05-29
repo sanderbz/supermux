@@ -1,11 +1,11 @@
-// routes/focus/desktop.tsx — M14.
+// routes/focus/desktop.tsx
 //
 // The desktop focus-mode route: resolves the session list (single source via
 // useFocusSessions) + the current session from the route `:name`, then renders
-// the two-column <DesktopSplit> (320px session-strip + main pane with the M13
-// LiveTerminal, FocusHeader, and the full §4.4.3 DesktopDock).
+// the two-column <DesktopSplit> (320px session-strip + main pane with the
+// LiveTerminal, FocusHeader, and the full DesktopDock).
 //
-// Navigation semantics (§4.4):
+// Navigation semantics:
 //   • Detach (⌘D / button) → navigate('/') — session kept alive.
 //   • Stop  (⌘W / button)  → confirm, POST /stop, then navigate('/').
 //   • Cmd+1..9 / compact-tile click → jump to the N-th session's focus route.
@@ -52,7 +52,7 @@ export interface DesktopFocusProps {
 
 export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}) {
   const { name = '' } = useParams()
-  // View-Transition navigate (§M23a): focus→overview plays the reverse morph,
+  // View-Transition navigate: focus→overview plays the reverse morph,
   // focus→focus cross-fades the main pane. Falls back to a plain navigate where
   // the API is unsupported / reduced-motion is set.
   const navigate = useNavigateMorph()
@@ -76,10 +76,10 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
     [navigate],
   )
 
-  // Detach (⌘D): leave to overview, session kept alive (§4.4).
+  // Detach (⌘D): leave to overview, session kept alive.
   const onDetach = React.useCallback(() => navigate('/'), [navigate])
 
-  // Stop (⌘W): confirm + POST /stop + leave (§4.4.3). The stop fetch is
+  // Stop (⌘W): confirm + POST /stop + leave. The stop fetch is
   // best-effort — failures are surfaced via the browser, never crash the route.
   //
   // Team-lead awareness: teammates are split-panes INSIDE the lead's session, so
@@ -88,7 +88,7 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   // with it) so the user isn't surprised. A normal session reads EXACTLY as
   // before — only leads get the extended copy.
   //
-  // SUPERMUX-38: flip the cached row to `stopped` OPTIMISTICALLY the instant Stop
+  // Flip the cached row to `stopped` OPTIMISTICALLY the instant Stop
   // is pressed, so the overview we navigate back to shows the session stopped
   // immediately — the user never perceives the (now-brief) server-side teardown
   // as "it didn't work". The backend also broadcasts `stopped` over SSE on the
@@ -118,9 +118,9 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
       })
   }, [name, navigate, qc, teams])
 
-  // FEAT-CONVERT-TEAM: gate the "Make it a team" affordance on a session that
+  // Gate the "Make it a team" affordance on a session that
   // is eligible to be converted — must exist, not be archived, and not already
-  // be a team lead (AT-B detection). When ineligible we omit the callback so
+  // be a team lead. When ineligible we omit the callback so
   // the header doesn't render the button at all (calmer than a disabled one).
   const isTeamLead = React.useMemo(
     () => teams.some((t) => t.lead_supermux_session === name),
@@ -158,8 +158,8 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
             // Conversion REUSES the existing row, so the name is unchanged —
             // we stay on this focus route. Refresh the cache so the (now-team)
             // session's tags/desc reflect server state, and confirm with a
-            // calm toast (the TEAM CARD itself will appear as AT-B detects the
-            // on-disk team files within a tick or two).
+            // calm toast (the TEAM CARD itself will appear once detection finds
+            // the on-disk team files within a tick or two).
             void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
             toast({ message: 'Team starting', tone: 'active' })
             if (leadName !== name) {

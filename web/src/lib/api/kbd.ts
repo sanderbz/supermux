@@ -1,8 +1,8 @@
-// M16 — keyboard-accessory groups client.
+// Keyboard-accessory groups client.
 //
 // `/api/kbd-groups` is the SINGLE canonical storage for the swipeable kbd
 // accessory groups (the v1 "prefs blob" alternative was removed). The backing
-// table was created by M9 (`0004_runtime_state.sql`) and seeded server-side on
+// table was created by `0004_runtime_state.sql` and seeded server-side on
 // first GET with the four default groups — Agent / Shell / Tmux / Symbols — so
 // the very first request returns a populated list, no client seed write needed.
 //
@@ -12,10 +12,10 @@
 // hook degrades that to the local `DEFAULT_KBD_GROUPS` seed so the accessory bar
 // always renders.
 //
-// ── Wire shape normalization (M24b integration fix) ──────────────────────────
-// The M9 backend stores a group row as `{ id:number, name:string,
+// ── Wire shape normalization ─────────────────────────────────────────────────
+// The backend stores a group row as `{ id:number, name:string,
 // keys:string, position:number }` where `keys` is a JSON-ENCODED string of
-// `[{label,key}, …]` objects. The frontend `KbdGroup` model (and the M16
+// `[{label,key}, …]` objects. The frontend `KbdGroup` model (and the
 // `<Group/>` component + the `DEFAULT_KBD_GROUPS` seed) expect `keys: string[]`
 // — a flat array of key NAMES that double as the chip label AND the value
 // `keyToBytes`/`sendKey` consume. Feeding the raw backend row to `<Group/>`
@@ -29,7 +29,7 @@ import type { KbdGroup } from './settings'
 
 export type { KbdGroup }
 
-/** One key entry as the M9 table stores it: a `{label,key}` pair. `label` is
+/** One key entry as the backend table stores it: a `{label,key}` pair. `label` is
  *  the on-chip name; `key` is the tmux/`keyToBytes` token. */
 interface WireKey {
   label?: unknown
@@ -46,7 +46,7 @@ interface WireGroup {
 
 /** Parse the backend's JSON-string `keys` column into the frontend's flat
  *  `string[]` of key names. Each `{label,key}` collapses to its `label` — the
- *  M9 seed's labels (`Esc`, `Tab`, `Ctrl-C`, `~`, `|`, …) are exactly the
+ *  backend seed's labels (`Esc`, `Tab`, `Ctrl-C`, `~`, `|`, …) are exactly the
  *  strings `keyToBytes` + `displayLabel` + `DEFAULT_KBD_GROUPS` already use, so
  *  the chip renders and sends the right token. Falls back to a raw string entry
  *  if a row is already flat (defensive — never throws). */
@@ -83,7 +83,7 @@ function normalizeGroup(row: WireGroup): KbdGroup {
 }
 
 /** Serialize the frontend `string[]` keys back into the `[{label,key}, …]`
- *  shape the M9 `kbd_create` / `kbd_patch` / replace handlers expect. The key
+ *  shape the backend `kbd_create` / `kbd_patch` / replace handlers expect. The key
  *  name doubles as both fields — the table never loses information the flat
  *  frontend model didn't carry in the first place. */
 function toWireKeys(keys: string[]): WireKey[] {

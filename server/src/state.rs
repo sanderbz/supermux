@@ -1,4 +1,4 @@
-//! Shared application state (TECH_PLAN §3.2.5).
+//! Shared application state.
 //!
 //! Cloned into every axum handler via `State<AppState>`. All fields are cheap to
 //! clone (an `Arc`, a connection pool handle, or a broadcast sender).
@@ -19,20 +19,20 @@ use crate::sessions::pty::PtyStream;
 use crate::sessions::status::{HookEvent, Status, TurnState};
 use crate::ws::streamer::PtyStreamer;
 
-/// Cold-start PTY sentinel (§3.2.8): until M4's reader records a real byte for a
+/// Cold-start PTY sentinel: until the live reader records a real byte for a
 /// session, [`AppState::last_pty`] reports the last byte as 5 minutes ago, so a
 /// freshly-booted server never reads `Active` off a stale heartbeat.
 const COLD_START_PTY_IDLE: Duration = Duration::from_secs(300);
 
 /// A per-session status snapshot pushed through [`AppState::status_watch`]:
-/// `(status, version)`. M3 establishes the channel + version counter as the
-/// multi-signal-status groundwork; M5a/M5b refine the status payload (the
-/// golden-fixture-tested `Status` enum) and start sending updates from the 2s
-/// detector loop. The `String` status is one of the `last_status` CHECK values.
+/// `(status, version)`. The channel + version counter form the
+/// multi-signal-status groundwork; the status payload is the
+/// golden-fixture-tested `Status` enum, updated from the 2s detector loop.
+/// The `String` status is one of the `last_status` CHECK values.
 pub type StatusUpdate = (String, u64);
 
 /// A per-session live "current activity" + last-error snapshot derived from
-/// Claude hook PAYLOADS (hooks-10x TRACK 1). Held ONLY in memory — payloads are
+/// Claude hook PAYLOADS. Held ONLY in memory — payloads are
 /// NEVER written to disk/DB (spec §SECURITY) — and surfaced on `SessionView`.
 ///
 /// * `activity` / `activity_kind` — the latest `PreToolUse`-derived label
@@ -59,10 +59,10 @@ impl SessionActivity {
     }
 }
 
-/// One server-sent event: `{ type, payload }` per §3.4.
+/// One server-sent event: `{ type, payload }`.
 ///
 /// The full producer set (sessions/board/schedules/alerts/status/ping) lands in
-/// later milestones; M1 only establishes the channel so handlers can publish.
+/// later milestones; this only establishes the channel so handlers can publish.
 #[derive(Debug, Clone, Serialize)]
 pub struct SseEvent {
     #[serde(rename = "type")]
@@ -74,11 +74,11 @@ pub struct SseEvent {
 const SSE_CHANNEL_CAP: usize = 256;
 
 /// How many most-recently-active working/loading sessions get the 1s preview
-/// tier (M-CADENCE — the user's "top 4"). The rest of the working/loading
+/// tier (the user's "top 4"). The rest of the working/loading
 /// sessions fall to the 2s tier.
 pub const HOT_SET_SIZE: usize = 4;
 
-/// One session's adaptive-cadence recency record (M-CADENCE). Updated by the
+/// One session's adaptive-cadence recency record. Updated by the
 /// detector loop every tick. `last_active` is the most recent instant the
 /// session was observed working/loading (active|starting); it is what the hot-set
 /// ranking sorts by, so the freshest workers win the 1s tier.
@@ -93,7 +93,7 @@ pub struct SessionRecency {
     pub last_active: Instant,
 }
 
-/// Pure hot-set membership test (M-CADENCE): is `name` among the top
+/// Pure hot-set membership test: is `name` among the top
 /// [`HOT_SET_SIZE`] most-recently-active working/loading sessions in `map`?
 ///
 /// Extracted from [`AppState::is_hot`] as a free function so the ranking is
@@ -133,7 +133,7 @@ pub fn is_hot_in(map: &HashMap<String, SessionRecency>, name: &str) -> bool {
     true
 }
 
-/// One in-flight "edit in native editor" handoff (feat-edit-in-native-editor).
+/// One in-flight "edit in native editor" handoff.
 ///
 /// When Claude's built-in `chat:externalEditor` (Ctrl+G) spawns the supermux
 /// `$EDITOR` bridge, the bridge POSTs the temp-file buffer to
@@ -181,17 +181,17 @@ pub struct AppState {
     /// Immutable runtime configuration.
     pub config: Arc<Config>,
     /// Per-session serialization locks. Added on first use; removed in
-    /// `sessions::delete`/`archive` (Eng concurrency #5/#6) — see §3.2.5.
+    /// `sessions::delete`/`archive`.
     pub session_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
-    /// Per-session status watch channels (the wait-primitive seam, §3.2.8/§3.7).
-    /// Empty until M5b drives the detector; M3 owns the map + the §3.2.5 cleanup
-    /// so churn never leaks entries.
+    /// Per-session status watch channels (the wait-primitive seam).
+    /// Empty until the detector drives updates; the map + cleanup ensures
+    /// churn never leaks entries.
     pub status_watch: Arc<DashMap<String, watch::Sender<StatusUpdate>>>,
-    /// Per-session hook-token cache (§6.5). Seeded on create + rotated on start;
+    /// Per-session hook-token cache. Seeded on create + rotated on start;
     /// removed on delete. NEVER holds the dashboard bearer — only the narrow
-    /// per-session `SUPERMUX_HOOK_TOKEN`. M5b's `/api/_internal/hook` reads it.
+    /// per-session `SUPERMUX_HOOK_TOKEN`. The `/api/_internal/hook` route reads it.
     pub hook_tokens: Arc<DashMap<String, String>>,
-    /// Per-session TURN STATE (§3.6; the "busy while thinking" fix). Written by
+    /// Per-session TURN STATE (the "busy while thinking" fix). Written by
     /// `/api/_internal/hook` (folding each Claude `SettingsHook` event into the
     /// matching per-type timestamp via [`TurnState::apply`]); read by the status
     /// detector's turn state machine, which marks the session `Active` for the
@@ -209,20 +209,20 @@ pub struct AppState {
     /// but must NOT read as "the agent is working" (the core fragility this fixes).
     /// `()` value = a presence set; cleared on session delete/rename.
     pub hooks_live: Arc<DashMap<String, ()>>,
-    /// Per-session detector wake (§3.6 — "within 1s of a real Claude
-    /// notification"). The hook endpoint `notify_one`s this so the affected
+    /// Per-session detector wake — "within 1s of a real Claude
+    /// notification". The hook endpoint `notify_one`s this so the affected
     /// session's 2s detector loop re-ticks immediately instead of waiting out the
     /// interval; `notify_one` stores a permit so a wake is never lost to a
     /// not-yet-parked loop. One `Notify` per session keeps a `PreToolUse` storm on
     /// one agent from waking every other session's loop.
     pub detector_wake: Arc<DashMap<String, Arc<Notify>>>,
     /// Per-session PTY heartbeat: the [`Instant`] the live reader last saw bytes
-    /// from this session's pane. The M5a status detector reads it for its
-    /// heartbeat branch (bytes <1.5s → `Active`, silent ≥30s → `Idle`). **M4's
+    /// from this session's pane. The status detector reads it for its
+    /// heartbeat branch (bytes <1.5s → `Active`, silent ≥30s → `Idle`). **The
     /// reader writes `Instant::now()` here on each byte batch**; until then a
     /// missing entry reads as the cold-start sentinel (see [`Self::last_pty`]).
     pub pty_heartbeat: Arc<DashMap<String, Instant>>,
-    /// Adaptive-cadence recency tracker (M-CADENCE). Each per-session detector
+    /// Adaptive-cadence recency tracker. Each per-session detector
     /// loop writes its CURRENT status + the instant it was last "active" (the
     /// last tick it read working/loading) here every tick; [`is_hot`](Self::is_hot)
     /// ranks the working/loading sessions by recency and returns true for the top
@@ -242,50 +242,50 @@ pub struct AppState {
     pub teams_wake: Arc<Notify>,
     /// Broadcast channel feeding the SSE endpoint.
     pub sse_tx: broadcast::Sender<SseEvent>,
-    /// Per-session live pty streams (M4). One FIFO reader + broadcast fan-out per
+    /// Per-session live pty streams. One FIFO reader + broadcast fan-out per
     /// session, created on first WS subscribe via [`AppState::pty_for`].
     pub pty: Arc<PtyStreamer>,
-    /// Per-session live background-task counter (R1-1/R1-2). Each per-session
+    /// Per-session live background-task counter. Each per-session
     /// loop (the 2s status detector + the steering deliver loop) increments this
     /// when it spawns and decrements when it exits. `archive`/`delete` use it to
     /// run [`forget_session`](Self::forget_session) only AFTER every loop has
     /// stopped — otherwise a still-running loop's `or_insert_with` re-creates the
-    /// very `DashMap` entries `forget_session` removed (R1-2).
+    /// very `DashMap` entries `forget_session` removed.
     pub session_tasks: Arc<DashMap<String, Arc<AtomicUsize>>>,
     /// Per-session live "current activity" + last-error snapshot derived from
-    /// Claude hook PAYLOADS (hooks-10x TRACK 1). IN-MEMORY ONLY (payloads are
+    /// Claude hook PAYLOADS. IN-MEMORY ONLY (payloads are
     /// never persisted — spec §SECURITY); read by `SessionView`. Written by
     /// `/api/_internal/hook` as `PreToolUse`/`StopFailure`/… land; pruned to
     /// empty on `Stop`/`SessionEnd` and dropped on session delete/rename.
     pub session_activity: Arc<DashMap<String, SessionActivity>>,
-    /// Per-session LIFECYCLE-forced status override (hooks-10x). A `SessionEnd`
+    /// Per-session LIFECYCLE-forced status override. A `SessionEnd`
     /// hook forces `Stopped`; the detector loop reads this each tick and
     /// `force`s it into its classifier (then clears it), so the lifecycle signal
     /// — which the capture classifier cannot infer — sticks instead of being
     /// re-derived to `active` on the next tick. `SessionStart` clears any pending
     /// override so the detector re-evaluates freely.
     pub forced_status: Arc<DashMap<String, Status>>,
-    /// Per-session PER-LAUNCH "force Agent Teams ON" flag (AT-D "Start a team").
-    /// AT-B's global `experimental.agent_teams` pref is the app-wide gate; this is
+    /// Per-session PER-LAUNCH "force Agent Teams ON" flag ("Start a team").
+    /// The global `experimental.agent_teams` pref is the app-wide gate; this is
     /// a NARROWER, explicit per-session opt-in set by the `POST /api/teams/start`
     /// endpoint when a user spins up a team lead, so that ONE lead session gets
     /// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode:"tmux"` even while
     /// the global pref is OFF (explicit opt-in beats the conservative default).
     /// [`crate::sessions::lifecycle::start`] reads `global_pref OR this.contains`,
-    /// so it never FIGHTS AT-B's gating — it only widens it for a flagged lead.
+    /// so it never FIGHTS the global gating — it only widens it for a flagged lead.
     /// `()` value = a presence set; persists across re-starts/wakes of that lead
     /// (a re-woken team lead should keep teams enabled), carried on rename, dropped
     /// on `forget_session`.
     pub force_agent_teams: Arc<DashMap<String, ()>>,
-    /// Per-session in-flight "edit in native editor" handoff
-    /// (feat-edit-in-native-editor). At most one [`PendingEdit`] per session
+    /// Per-session in-flight "edit in native editor" handoff.
+    /// At most one [`PendingEdit`] per session
     /// (Claude is blocked on the child `$EDITOR` while editing). The
     /// `/external-edit/open` handler inserts; `/result` awaits the oneshot;
     /// `/external-edit/submit` resolves + removes it. A `std::sync::Mutex` (not
     /// the tokio one) because every critical section is a tiny synchronous map
     /// op — insert/take a sender — never held across an `.await`.
     pub pending_edits: Arc<std::sync::Mutex<HashMap<String, PendingEdit>>>,
-    /// Shared VAPID keypair for web push (PUSH milestone). Computed once at
+    /// Shared VAPID keypair for web push. Computed once at
     /// startup (loaded/generated from the data dir); the public half is served by
     /// `GET /api/push/key`, the private half signs every push. Cheap `Arc` clone.
     pub vapid: Arc<crate::push::Vapid>,
@@ -294,7 +294,7 @@ pub struct AppState {
     /// Settings → Notifications — the diagnostic surface that answers "why
     /// didn't my phone ring?" without a log grep. Cheap `Arc` clone.
     pub push_attempts: Arc<crate::push::AttemptLog>,
-    /// Per-session pending push debounce timers (SD-13b). On each notify-worthy
+    /// Per-session pending push debounce timers. On each notify-worthy
     /// status transition, `maybe_push_on_transition` cancels the prior handle
     /// for the session and starts a fresh one — the trailing-edge "wait for
     /// quiet" pattern. The timer task re-reads the session's current status
@@ -305,7 +305,7 @@ pub struct AppState {
     /// after the system actually settles. Inserting cancels the prior task
     /// via the abort handle stored alongside.
     pub pending_pushes: Arc<DashMap<String, tokio::task::AbortHandle>>,
-    /// Persistent SSH ControlMaster pool (REMOTE_PLAN RT2). One master per
+    /// Persistent SSH ControlMaster pool. One master per
     /// remote host, shared by every `Transport::Ssh` shell-out; warmed on
     /// first use, reaped after 10min idle. Cheap `Arc` clone — actual state
     /// lives inside the [`HostPool`].
@@ -331,7 +331,7 @@ impl AppState {
         // before `config` is moved into the Arc. Non-fatal on failure (push then
         // stays disabled; the rest of the server still boots).
         let vapid = crate::push::init_vapid(&config.data_dir, config.push_sub.as_deref());
-        // RT2: SSH ControlMaster pool. Cheap to build (an empty DashMap + a
+        // SSH ControlMaster pool. Cheap to build (an empty DashMap + a
         // mkdir of `<data_dir>/ssh-control`); the actual ssh work happens
         // lazily when `transport_for` is first called for a host.
         let host_pool = HostPool::new(pool.clone(), &config.data_dir);
@@ -365,7 +365,7 @@ impl AppState {
 
     // ── external edit: in-flight native-editor handoff registry ───────────────
 
-    /// Register a fresh [`PendingEdit`] for `session` (feat-edit-in-native-editor).
+    /// Register a fresh [`PendingEdit`] for `session`.
     /// Stores BOTH channel halves so the receiver outlives the bridge's `open` call
     /// (the bridge then long-polls `/result`, which `take`s the receiver). If a
     /// prior edit is still in flight for this session it is resolved
@@ -393,7 +393,7 @@ impl AppState {
     }
 
     /// Take the result RECEIVER for `session`'s in-flight edit so the `/result`
-    /// long-poll can await it, IFF `request_id` matches (feat-edit-in-native-editor).
+    /// long-poll can await it, IFF `request_id` matches.
     /// `None` for no/stale slot or an already-taken receiver (the bridge makes
     /// exactly one `/result` per `open`, so this is taken at most once) — the caller
     /// then answers a no-op `{cancelled}`. The slot stays in the map so a pending
@@ -411,8 +411,8 @@ impl AppState {
         pending.rx.take()
     }
 
-    /// Resolve the in-flight edit for `session` IFF its `request_id` matches
-    /// (feat-edit-in-native-editor). Returns `true` when the matching pending edit
+    /// Resolve the in-flight edit for `session` IFF its `request_id` matches.
+    /// Returns `true` when the matching pending edit
     /// was found + resolved (the slot is removed); `false` for no pending edit or a
     /// stale `request_id` (a stale dashboard tab submitting an old id) — the caller
     /// answers 409/410. Sending on the oneshot wakes the `/result` long-poll.
@@ -430,8 +430,8 @@ impl AppState {
         }
     }
 
-    /// Drop the in-flight edit for `session` IFF its `request_id` still matches
-    /// (feat-edit-in-native-editor). Used by the `/result` long-poll on timeout so a
+    /// Drop the in-flight edit for `session` IFF its `request_id` still matches.
+    /// Used by the `/result` long-poll on timeout so a
     /// later `submit` for the SAME id can't resolve a receiver that has already gone
     /// away (it would no-op anyway, but clearing keeps the registry tidy). A
     /// different id means a newer edit superseded this one — leave it intact.
@@ -443,7 +443,7 @@ impl AppState {
     }
 
     /// Mark a session as a "Start a team" LEAD: its next (and subsequent) starts
-    /// inject the Agent Teams env even when the global pref is OFF (AT-D). Idempotent.
+    /// inject the Agent Teams env even when the global pref is OFF. Idempotent.
     pub fn set_force_agent_teams(&self, name: &str) {
         self.force_agent_teams.insert(name.to_string(), ());
     }
@@ -456,7 +456,7 @@ impl AppState {
     /// Register the start of a per-session background loop, returning a guard
     /// that decrements the live-task count when dropped. While ANY guard for
     /// `name` is alive, [`forget_session`](Self::forget_session) must not run
-    /// (the loop may still re-create map entries — R1-2).
+    /// (the loop may still re-create map entries).
     pub fn session_task_guard(&self, name: &str) -> SessionTaskGuard {
         let counter = self
             .session_tasks
@@ -485,14 +485,14 @@ impl AppState {
         let stream = self.pty.for_session(name);
         // Hand the reader BOTH the heartbeat map (so it stamps freshness on every
         // byte batch) AND this session's detector wake (so a silent→active edge in
-        // the byte flow re-ticks the detector immediately — STATLAT). The wake is
+        // the byte flow re-ticks the detector immediately). The wake is
         // the SAME `Notify` the detector loop parks on, so a byte burst after an
         // idle/waiting lull surfaces `Active` within ~1s regardless of provider or
         // whether Claude hooks are wired, instead of waiting out the 4s/5s tier.
         // The reader derives its tmux target (session vs pane) from the stream
-        // itself (Agent Teams §3.5), so no `Tmux` is passed in.
+        // itself, so no `Tmux` is passed in.
         //
-        // RT3: also hand the SSH ControlMaster pool so a session with
+        // Also hand the SSH ControlMaster pool so a session with
         // `host_id = Some(...)` builds the `SshPtyReader` variant instead of
         // the local FIFO reader; for `host_id = None` (legacy + every local
         // session) the host_pool is never touched.
@@ -532,8 +532,8 @@ impl AppState {
         Ok(stream)
     }
 
-    /// Get (creating on first use) the live pty stream for a teammate PANE (Agent
-    /// Teams §3.5) and ensure its FIFO reader is running. `stream_key` is a
+    /// Get (creating on first use) the live pty stream for a teammate PANE
+    /// and ensure its FIFO reader is running. `stream_key` is a
     /// pane-unique id (`%id` or `{lead}/{member}`) — it keys the registry AND the
     /// FIFO/log basenames so the teammate never clobbers the lead's. `pane_id` is
     /// the tmux `%id` the reader pipes. The caller MUST have already validated the
@@ -566,8 +566,8 @@ impl AppState {
     }
 
     /// The instant this session's PTY last produced a byte, or the cold-start
-    /// sentinel (`now − 5min`) when the reader (M4) has recorded nothing yet
-    /// (§3.2.8). The status detector feeds this into `StatusDetector::detect`.
+    /// sentinel (`now − 5min`) when the reader has recorded nothing yet.
+    /// The status detector feeds this into `StatusDetector::detect`.
     pub fn last_pty(&self, name: &str) -> Instant {
         self.pty_heartbeat
             .get(name)
@@ -576,7 +576,7 @@ impl AppState {
     }
 
     /// Fold a Claude `SettingsHook` event for `name` into its per-session
-    /// [`TurnState`] at the current instant (§3.6). Called by `/api/_internal/hook`
+    /// [`TurnState`] at the current instant. Called by `/api/_internal/hook`
     /// after the per-session hook token validates. Unlike the old single-slot
     /// store, this bumps ONLY the matching event-type's newest timestamp, so a
     /// `PreToolUse` followed by a silent think still has a `turn_start` newer than
@@ -588,7 +588,7 @@ impl AppState {
             .apply(Instant::now(), event);
     }
 
-    /// The current per-session [`TurnState`] snapshot for `name` (§3.6). Fed into
+    /// The current per-session [`TurnState`] snapshot for `name`. Fed into
     /// `StatusDetector::detect` as the apex signal; a never-seen session returns
     /// the empty default (non-decisive, so the bank/heartbeat decide).
     pub fn turn_state(&self, name: &str) -> TurnState {
@@ -613,9 +613,9 @@ impl AppState {
         self.hooks_live.contains_key(name)
     }
 
-    // ── hooks-10x: live activity + error (IN-MEMORY ONLY) ─────────────────────
+    // ── live activity + error (IN-MEMORY ONLY) ───────────────────────────────
 
-    /// The current in-memory [`SessionActivity`] for `name` (hooks-10x), or
+    /// The current in-memory [`SessionActivity`] for `name`, or
     /// `None` when the session has no activity/error to surface. Read by
     /// `SessionView`. Cheap clone of a tiny struct.
     pub fn session_activity(&self, name: &str) -> Option<SessionActivity> {
@@ -624,7 +624,7 @@ impl AppState {
 
     /// Mutate `name`'s activity snapshot with `f`, then prune the entry if it is
     /// empty. Returns `true` IFF the snapshot actually changed — the endpoint
-    /// broadcasts a `sessions` delta only on a real change (spec §4: "keep it
+    /// broadcasts a `sessions` delta only on a real change ("keep it
     /// cheap, only on change"). The whole op is a single short critical section.
     fn mutate_activity(&self, name: &str, f: impl FnOnce(&mut SessionActivity)) -> bool {
         let mut entry = self
@@ -678,7 +678,7 @@ impl AppState {
         })
     }
 
-    /// Force `name`'s status via the lifecycle override (hooks-10x): the detector
+    /// Force `name`'s status via the lifecycle override: the detector
     /// loop reads + applies this on its next tick (then clears it), so a
     /// `SessionEnd`-driven `Stopped` sticks instead of being re-derived. Wakes
     /// the loop so the change surfaces within ~1s, not at the next tier edge.
@@ -699,8 +699,8 @@ impl AppState {
         self.forced_status.remove(name);
     }
 
-    /// Record `name`'s current status for the adaptive-cadence hot-set
-    /// (M-CADENCE). Called by the detector loop every tick. When the session is
+    /// Record `name`'s current status for the adaptive-cadence hot-set.
+    /// Called by the detector loop every tick. When the session is
     /// working/loading (active|starting) its `last_active` is bumped to now, so it
     /// rises in the recency order that [`is_hot`](Self::is_hot) ranks; for any
     /// other status the prior `last_active` is preserved (it stops climbing but
@@ -727,7 +727,7 @@ impl AppState {
     }
 
     /// Is `name` among the TOP-[`HOT_SET_SIZE`] most-recently-active
-    /// working/loading sessions (M-CADENCE)? Membership earns the 1s preview
+    /// working/loading sessions? Membership earns the 1s preview
     /// tier. Ranking is over only the sessions whose LAST-RECORDED status is
     /// working/loading (active|starting), ordered by `last_active` descending; a
     /// session that is idle/waiting/stopped is never hot. O(n) over the live
@@ -743,7 +743,7 @@ impl AppState {
 
     /// The per-session detector wake handle (get-or-create). The detector loop
     /// holds one end; the hook endpoint `notify_one`s it for sub-second status
-    /// updates (§3.6 "within 1s").
+    /// updates ("within 1s").
     pub fn detector_wake_for(&self, name: &str) -> Arc<Notify> {
         self.detector_wake
             .entry(name.to_string())
@@ -758,12 +758,12 @@ impl AppState {
         self.detector_wake_for(name).notify_one();
     }
 
-    /// The per-session status watch sender (get-or-create), seeded `("unknown", 0)`
-    /// (§3.2.8/§3.7). The detector `send_replace`s `(status, ver+1)` on a status
+    /// The per-session status watch sender (get-or-create), seeded `("unknown", 0)`.
+    /// The detector `send_replace`s `(status, ver+1)` on a status
     /// change; `agents::wait` subscribes for the long-poll. A single shared sender
     /// per session means every waiter and the detector rendezvous on one channel —
     /// the watch receiver always holds the latest value, so there is no
-    /// notify-before-subscribe race (Eng P0 #2).
+    /// notify-before-subscribe race.
     pub fn status_watch_for(&self, name: &str) -> watch::Sender<StatusUpdate> {
         self.status_watch
             .entry(name.to_string())
@@ -772,8 +772,8 @@ impl AppState {
     }
 
     /// The human-readable reason to put in a web-push notification body for
-    /// `name` transitioning into `status` (PUSH milestone). Generic by design:
-    /// a parallel worker (`feat/hooks-be`) is enriching a per-session blocked
+    /// `name` transitioning into `status`. Generic by design:
+    /// a parallel worker is enriching a per-session blocked
     /// reason / `last_error` in this struct; when that lands, this is the single
     /// place to prefer it (e.g. `self.last_error.get(name)` / a blocked-reason
     /// map) before falling back to these generics — keeping the push wiring
@@ -794,7 +794,7 @@ impl AppState {
             .clone()
     }
 
-    /// Drop every per-session in-memory map entry for `name` (§3.2.5 cleanup
+    /// Drop every per-session in-memory map entry for `name` (cleanup
     /// rule). Called from `sessions::delete` so weeks of session churn don't leak
     /// `DashMap` entries.
     pub fn forget_session(&self, name: &str) {
@@ -820,9 +820,9 @@ impl AppState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(name);
-        // Resolve + drop any in-flight external edit (feat-edit-in-native-editor)
-        // so its `/result` long-poll wakes (Cancelled) instead of waiting out the
-        // server-side timeout against a forgotten session.
+        // Resolve + drop any in-flight external edit so its `/result` long-poll
+        // wakes (Cancelled) instead of waiting out the server-side timeout
+        // against a forgotten session.
         if let Some(pending) = self
             .pending_edits
             .lock()
@@ -836,7 +836,7 @@ impl AppState {
         self.pty.forget(name);
     }
 
-    /// Evict a teammate PANE stream (Agent Teams §3.5) keyed by its stream key
+    /// Evict a teammate PANE stream keyed by its stream key
     /// (`{lead}/{member}`). Called when a team ends (the watcher's deregister
     /// path) so the per-pane [`PtyStream`] cached in the streamer DashMap — plus
     /// its heartbeat entry, which the reader records under the SAME key — does NOT
@@ -913,7 +913,7 @@ impl AppState {
     }
 }
 
-/// RAII guard for a per-session background loop (R1-1/R1-2). Increment happens
+/// RAII guard for a per-session background loop. Increment happens
 /// in [`AppState::session_task_guard`]; the decrement happens on drop, so the
 /// live count is correct even if the loop panics. `archive`/`delete` wait for
 /// the count to reach 0 before running `forget_session`.
@@ -937,7 +937,7 @@ impl Drop for SessionTaskGuard {
 
 #[cfg(test)]
 mod hot_set_tests {
-    //! Adaptive-cadence hot-set ranking (M-CADENCE). Drives the pure
+    //! Adaptive-cadence hot-set ranking. Drives the pure
     //! [`is_hot_in`] over a hand-built recency map so the top-4-by-recency rule
     //! is pinned without a DB-backed `AppState`.
 
@@ -1043,7 +1043,7 @@ mod hot_set_tests {
 
 #[cfg(test)]
 mod pending_edit_tests {
-    //! feat-edit-in-native-editor: the in-flight native-editor handoff registry.
+    //! The in-flight native-editor handoff registry.
     //! `register_edit`/`resolve_edit`/`clear_edit_if` are pure synchronous map ops
     //! over an in-memory `AppState` (a temp DB only because `new` needs a pool), so
     //! the request-id matching + one-in-flight-per-session + supersede rules are

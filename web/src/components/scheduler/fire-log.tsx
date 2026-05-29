@@ -1,4 +1,4 @@
-// FireLog (M21) — surfaces the already-persisted last_run / next_run / run_count
+// FireLog — surfaces the already-persisted last_run / next_run / run_count
 // fields (db::schedules) as a friendly fire log. Used in the editor sheet (the
 // full card) and, via `formatRunTime`, on each list row. Relative time is shown
 // inline with the absolute datetime on hover (title attribute) — no extra click.

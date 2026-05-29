@@ -1,5 +1,5 @@
-// ResponsiveSheet — one modal detail-panel shell that forks on input modality
-// (TECH_PLAN §4.4 / §4.8). The scheduler detail/edit panel and the board issue
+// ResponsiveSheet — one modal detail-panel shell that forks on input modality.
+// The scheduler detail/edit panel and the board issue
 // detail panel both used a shadcn `<Sheet side="right">` (a Radix Dialog that
 // slides from the edge — no drag, no detents, no drag-to-dismiss). The app's
 // nicer mobile pattern is the Vaul drag-detent bottom sheet used by focus mode

@@ -1,16 +1,16 @@
-// Files (M20) — real client for the M7 backend file browser/editor/uploader.
+// Files — real client for the backend file browser/editor/uploader.
 //
-// Envelope: M7 success bodies are RAW JSON (`{ path, entries }`, …); only ERRORS
-// use the `{ ok:false, error }` envelope (§3.4). `fsRequest` returns the parsed
+// Envelope: success bodies are RAW JSON (`{ path, entries }`, …); only ERRORS
+// use the `{ ok:false, error }` envelope. `fsRequest` returns the parsed
 // body directly and lifts `error` on a non-2xx so the UI can surface path-safety
 // failures (403 "refusing to follow symlink", etc.) gracefully — never a crash.
 
 import { apiToken, apiUrl } from './client'
 
-// ── M0 stub domain types (legacy skeleton; pre-date the M7 contract) ───────────
+// ── Stub domain types (legacy skeleton; pre-date the live contract) ──────────
 //
-// The `FileEntry`/`FileContent` stub types pre-date the M7 contract and are
-// intentionally left untouched; the `Fs*` types below match what M7 returns.
+// The `FileEntry`/`FileContent` stub types pre-date the live contract and are
+// intentionally left untouched; the `Fs*` types below match what the backend returns.
 
 export interface FileEntry {
   name: string
@@ -26,7 +26,7 @@ export interface FileContent {
   encoding?: 'utf8' | 'base64'
 }
 
-// ── M7 wire types ─────────────────────────────────────────────────────────────
+// ── Wire types ────────────────────────────────────────────────────────────────
 
 export interface FsEntry {
   name: string
@@ -42,7 +42,7 @@ export interface FsListing {
   entries: FsEntry[]
 }
 
-/** Type-tagged read result, discriminated by the `is_*` flags M7 sets (§3.2). */
+/** Type-tagged read result, discriminated by the `is_*` flags the backend sets. */
 export type FileMeta =
   | { path: string; is_image: true; data_url: string; mime: string }
   | { path: string; is_pdf: true; data_url: string }
@@ -146,7 +146,7 @@ export const filesApi = {
     return fsRequest('/api/fs/upload', { method: 'POST', body: form })
   },
 
-  /** Authenticated direct-GET URL for `<video>`/`<audio>` (Range-served by M7).
+  /** Authenticated direct-GET URL for `<video>`/`<audio>` (Range-served by the backend).
    *  Media elements cannot set an Authorization header, so this uses the
    *  `?_token=` fallback the auth layer accepts (server/src/auth.rs). The token
    *  is read from `window` at runtime — never embedded in source. */
@@ -228,8 +228,8 @@ export function buildAttachmentPrompt(paths: string[]): string {
 }
 
 /** Resolve a session's working dir for the `/files/:name` root scope. Hits the
- *  M2/M3 sessions endpoint directly (the typed `api.getSession` is filled in by
- *  M12); returns null if it can't be resolved, so Files falls back to $HOME. */
+ *  sessions endpoint directly (the typed `api.getSession` is filled in elsewhere);
+ *  returns null if it can't be resolved, so Files falls back to $HOME. */
 export async function getSessionDir(name: string): Promise<string | null> {
   try {
     const body = await fsRequest<Record<string, unknown>>(

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-icons.sh — rasterize the single-source app icon (M28).
+# build-icons.sh — rasterize the single-source app icon.
 #
 # Source:  web/public/icon.svg  (full-bleed maskable mark)
 # Outputs: web/public/icon-192.png          (PWA manifest)

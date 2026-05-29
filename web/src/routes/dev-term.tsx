@@ -1,7 +1,7 @@
-// /dev/term/:name — M13 verification page (DEV-only; lazy-loaded so it never
+// /dev/term/:name — verification page (DEV-only; lazy-loaded so it never
 // ships in production, matching the /dev/tiles convention). Renders a full-height
 // <LiveTerminal> against a real backend session plus a tiny send-row so the
-// reviewer can prove keystrokes flow back over the M4 WS and replay/live bytes
+// reviewer can prove keystrokes flow back over the WS and replay/live bytes
 // render. The connection state is mirrored top-right for the visual critic.
 //
 // Usage: boot a session named `demo` (or pass ?name=foo), then open
@@ -15,7 +15,7 @@ import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { springs } from '@/lib/springs'
 import { motion } from 'framer-motion'
 
-// Default send-row chips (mirrors the M14/M16 defaults: Esc/Tab/Ctrl-C/Ctrl-U).
+// Default send-row chips (Esc/Tab/Ctrl-C/Ctrl-U).
 const CHIPS = ['Esc', 'Tab', 'Ctrl-C', 'Ctrl-U'] as const
 
 export default function DevTerm() {
@@ -47,7 +47,7 @@ export default function DevTerm() {
         <LiveTerminal name={name} onReady={(t) => (termRef.current = t)} />
       </div>
 
-      {/* Dock-lite send row — verifies sendKey + send round-trips (§5.2). */}
+      {/* Dock-lite send row — verifies sendKey + send round-trips. */}
       <div className="flex h-14 shrink-0 items-center gap-2 border-t border-border px-3 pb-safe">
         <div className="flex gap-1.5">
           {CHIPS.map((label) => (

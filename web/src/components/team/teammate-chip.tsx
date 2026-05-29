@@ -1,6 +1,5 @@
-// TeammateChip — one teammate as a compact 44pt glass row inside the TEAM CARD
-// (AT-F-FRONT / F1, plan §5.3 + the design-critic anatomy). The default density
-// (Chips) renders teammates as these rows below the lead tile.
+// TeammateChip — one teammate as a compact 44pt glass row inside the TEAM CARD.
+// The default density (Chips) renders teammates as these rows below the lead tile.
 //
 // ANATOMY (design critic):
 //   • h-11 (44pt) glass row, rounded-[10px], with a 2px LEFT COLOUR RAIL =
@@ -30,8 +29,8 @@ const TASK_DONE = 'completed'
 export interface TeammateChipProps {
   team: Team
   member: TeamMember
-  /** Live "what this teammate is doing now" label (optional — AT-B doesn't carry
-   *  a per-teammate activity line yet; threaded for forward-compat + AT-F3). */
+  /** Live "what this teammate is doing now" label (optional — not yet carried
+   *  in the team model; threaded for forward-compat). */
   activity?: string
   /** Tap → navigate to this teammate's focus page. */
   onFocus: () => void

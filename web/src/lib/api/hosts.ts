@@ -1,7 +1,7 @@
-// Hosts (REMOTE_PLAN.md RT9) — typed client for the remote-host CRUD + bootstrap
-// surface RT8 ships in `server/src/hosts/mod.rs`. Wire format mirrors the
-// server's `HostView` / `CheckReport` / `BootstrapReport` exactly so the FE can
-// render the onboarding checklist without re-shaping anything.
+// Hosts — typed client for the remote-host CRUD + bootstrap surface in
+// `server/src/hosts/mod.rs`. Wire format mirrors the server's `HostView` /
+// `CheckReport` / `BootstrapReport` exactly so the FE can render the
+// onboarding checklist without re-shaping anything.
 //
 // The dashboard bearer token + base URL come from the shared `apiToken`/
 // `apiUrl` accessors in ./client (window-resolved at call time) — no token is
@@ -10,7 +10,7 @@
 // and a typed `HostError` (carrying the HTTP status) lets the route branch on
 // 409 (duplicate / active-session-still-references) vs 404 vs 0 (server down).
 //
-// IMPORTANT: this module is ADDITIVE — RT8's backend types are read-only here.
+// IMPORTANT: this module is ADDITIVE — the backend types are read-only here.
 // We do NOT mutate server-side state on import; all calls are on-demand from
 // the new /hosts route or the host-picker in the new-session sheet.
 

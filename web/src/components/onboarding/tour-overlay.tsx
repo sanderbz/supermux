@@ -1,4 +1,4 @@
-// TourOverlay (M27 — Time to Wow tour).
+// TourOverlay — Time to Wow tour.
 //
 // The 4-step one-tap tour for returning v2 users. A dim scrim + one FloatingTip
 // at a time, advanced by the tip's primary button. Each step anchors to a real
@@ -8,7 +8,7 @@
 //      the tap-target is the same tile; the tile IS the focus entry point)
 //   3. the scheduler tab     — "schedule the routine"     ([data-tour="scheduler"])
 //   4. the Start-a-team CTA  — "run a team in parallel"   ([data-tour="start-team"])
-//      The Agent Teams explainer (FEAT-ONBOARDING-TEAMS): introduces the lead +
+//      The Agent Teams explainer: introduces the lead +
 //      teammate-pane model as the heavier sibling of New Session, without ever
 //      requiring the user to actually start one.
 //

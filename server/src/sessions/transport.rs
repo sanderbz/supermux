@@ -1,12 +1,12 @@
 //! Transport abstraction for shelling commands locally OR over an SSH
-//! ControlMaster (REMOTE_PLAN §RT1).
+//! ControlMaster.
 //!
 //! **The seam.** Every `tmux` (and later `git`, `claude`, …) shell-out in the
 //! sessions layer funnels through [`Transport::spawn_command`]. The local case
 //! is the identity transform (`Command::new(program).args(args)`); the SSH case
 //! prepends an `ssh -o ControlPath=… -- <program>` wrapper that re-uses a
 //! persistent multiplexed connection (one per host, opened on first use by
-//! `HostPool` in RT2). After the master is warm every call is sub-ms.
+//! `HostPool`). After the master is warm every call is sub-ms.
 //!
 //! **Why a `&'a Transport` field on `Tmux`.** The hot path here is local —
 //! every caller of `Tmux::new(name)` continues to use a `&'static LOCAL`
@@ -24,8 +24,8 @@ use std::path::PathBuf;
 
 use tokio::process::Command;
 
-/// A host row's primary key (DB-backed in RT4). For RT1 this is a placeholder
-/// newtype — `HostPool` (RT2) and the `hosts` table (RT4) give it real
+/// A host row's primary key (DB-backed). This is a placeholder
+/// newtype — `HostPool` and the `hosts` table give it real
 /// semantics. `Copy` because it's just an `i64`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostId(pub i64);
@@ -33,8 +33,8 @@ pub struct HostId(pub i64);
 /// Where a shell-out runs. `Local` is the today-path (direct `Command::new`);
 /// `Ssh` re-uses an existing SSH ControlMaster socket for sub-ms hops to a
 /// remote host. The `control_path` is the unix socket the master listens on
-/// (`~/.supermux/ssh-control/cm-<host_id>` per RT2's convention); the master
-/// itself is managed by `HostPool` (RT2) — this enum is a *value* describing
+/// (`~/.supermux/ssh-control/cm-<host_id>`); the master
+/// itself is managed by `HostPool` — this enum is a *value* describing
 /// where to dispatch, not a connection lifecycle.
 #[derive(Debug, Clone)]
 pub enum Transport {
@@ -42,13 +42,13 @@ pub enum Transport {
     Local,
     /// Run the command on a remote host via an established SSH ControlMaster.
     Ssh {
-        /// Identifies the host in the `hosts` table (RT4).
+        /// Identifies the host in the `hosts` table.
         host_id: HostId,
         /// SSH target spec, e.g. `user@ml-rig.tailnet.ts.net` — passed
         /// verbatim as the last positional arg to `ssh`.
         ssh_target: String,
         /// Unix socket path the ControlMaster is listening on. Passed via
-        /// `-o ControlPath=…`. The master is opened by `HostPool` (RT2)
+        /// `-o ControlPath=…`. The master is opened by `HostPool`
         /// before any `Transport::Ssh` value is ever handed out, so by the
         /// time `spawn_command` runs the socket is ready.
         control_path: PathBuf,

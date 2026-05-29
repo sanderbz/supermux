@@ -1,11 +1,11 @@
-// Per-team Chips↔Cards density preference (AT-F-FRONT / F5).
+// Per-team Chips↔Cards density preference.
 //
 // The TEAM CARD header carries a per-team segmented control toggling how
 // teammates render below the lead tile: compact 44pt CHIPS (the default, the
 // user's "½-size, status-only until peek" idea) or richer CARDS (a mini live
 // terminal each, like the desktop session tile). This is DELIBERATELY a per-team
 // choice, NOT the global SortControl/SizeControl — those are app-wide and would
-// wrongly imply resizing every tile (plan §5.3).
+// wrongly imply resizing every tile.
 //
 // Zustand + `persist` → localStorage, so each team's choice survives a browser
 // restart, keyed by team_name (matching the ui-store pattern in this app).
@@ -15,7 +15,7 @@ import { persist } from 'zustand/middleware'
 
 export type TeamDensity = 'chips' | 'cards'
 
-/** The product default: Chips (plan §5.3 — "v1 default = Chips"). */
+/** The product default: Chips ("v1 default = Chips"). */
 export const DEFAULT_TEAM_DENSITY: TeamDensity = 'chips'
 
 interface TeamDensityState {

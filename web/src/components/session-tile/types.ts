@@ -1,11 +1,11 @@
 import type { SessionSummary } from '@/lib/api'
 
-/** Display fields the hero tile layers on top of the canonical `SessionSummary`
- *  (TECH_PLAN §4.3). All optional, so a plain `SessionSummary` from
+/** Display fields the hero tile layers on top of the canonical `SessionSummary`.
+ *  All optional, so a plain `SessionSummary` from
  *  `useSessions()` is already a valid `TileSession` — the SSE `sessions` payload
  *  populates these when present and the tile degrades gracefully
- *  (`task_summary` → `name`). Kept in the M11 module rather than `lib/api.ts`
- *  so this addition can't conflict with sibling frontend milestones. */
+ *  (`task_summary` → `name`). Kept in this module rather than `lib/api.ts`
+ *  so this addition can't conflict with sibling frontend modules. */
 export interface TileSession extends SessionSummary {
   /** Claude Code chat description / auto-title. Falls back to `name`. */
   task_summary?: string
@@ -25,7 +25,7 @@ export interface TileSession extends SessionSummary {
   /** The latest unrecovered agent error from a StopFailure hook (hooks-10x).
    *  Cleared when the agent resumes — drives the amber error badge. */
   error?: { type: string; message: string }
-  /** Remote host the session runs on (REMOTE_PLAN.md RT9). `null` /
+  /** Remote host the session runs on. `null` /
    *  undefined = LOCAL — the historical default. The tile renders a small
    *  <HostBadge> when this is set. */
   host_id?: number | null

@@ -1,12 +1,11 @@
-// useSessions — the session data layer (TECH_PLAN §M12; M2 backend contract;
-// §3.6 hero data flow).
+// useSessions — the session data layer.
 //
 // TanStack Query against `GET /api/sessions`, invalidated/merged by the SSE
 // `sessions` + `status` deltas — NEVER polled (anti-vision: "WebSocket-only —
 // no 3s polling"). The query is the source of truth for the full list; the SSE
 // stream pushes deltas that we merge KEY-BY-KEY into the cached rows (each delta
 // item updates only the keys it carries — `preview_lines` and `status` move
-// independently, §3.6). This is what makes the overview's live tail-preview the
+// independently). This is what makes the overview's live tail-preview the
 // hero moment without a per-tile WebSocket.
 
 import * as React from 'react'
@@ -46,7 +45,7 @@ export interface UseSessionsResult {
   createSession: (input: NewSession) => Promise<string>
 }
 
-/** Merge one SSE delta row into a cached row, key by key (§3.6): only the keys
+/** Merge one SSE delta row into a cached row, key by key: only the keys
  *  present in `delta` overwrite — `preview_lines` and `status` update
  *  independently, so a status-only flip never blanks the tail-preview. */
 function mergeRow(prev: ApiSession, delta: Partial<ApiSession>): ApiSession {
@@ -132,7 +131,7 @@ function statusToDelta(payload: unknown): Partial<ApiSession>[] {
   return [{ name: p.name, status: status as ApiSession['status'] }]
 }
 
-/** DEV-only: `?mock=1` seeds the cache from the M11 mocks (overview dogfooding
+/** DEV-only: `?mock=1` seeds the cache from the mocks (overview dogfooding
  *  without a backend). When active, the live fetch is disabled so it can't
  *  overwrite the seed. Always `false` in a production build. */
 function devMockActive(): boolean {
@@ -155,7 +154,7 @@ export function useSessions(): UseSessionsResult {
   })
 
   // The ONE place SSE deltas land. Calling setQueryData (not invalidate) means
-  // the tail-preview updates in place with zero refetch round-trip — the §3.6
+  // the tail-preview updates in place with zero refetch round-trip — the
   // hero data flow. `status` deltas merge the same way.
   const handlers = React.useMemo(
     () => ({
@@ -222,7 +221,7 @@ export function useSessions(): UseSessionsResult {
     [qc],
   )
 
-  // Subscribe to the ONE shared SSE stream (§3.6, R3-202: singleton inside
+  // Subscribe to the ONE shared SSE stream (singleton inside
   // `use-sse.ts`). The global connection-store link is registered once at the
   // shell level (Layout → useSseConnectionStatus) so the ReconnectBanner never
   // sees racing `'sse'` reports from multiple useSessions mount points.

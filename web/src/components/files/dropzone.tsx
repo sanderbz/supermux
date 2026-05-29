@@ -14,7 +14,7 @@ export interface DropzoneProps {
 }
 
 /** Wraps a region so dragging files over it reveals an upload overlay; on drop
- *  it hands the files to `onFiles` (§M20 — POSTs multipart to /api/fs/upload). */
+ *  it hands the files to `onFiles` (POSTs multipart to /api/fs/upload). */
 export function Dropzone({
   onFiles,
   disabled,

@@ -1,4 +1,4 @@
-// useStandaloneMode — M23b (TECH_PLAN §4.9 / §10).
+// useStandaloneMode.
 //
 // Detects whether the app is running as an installed PWA (launched from the
 // home screen) rather than inside a browser tab. The Layout uses this to drop

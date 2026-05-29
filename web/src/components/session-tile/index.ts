@@ -1,5 +1,5 @@
-// Session-tile (HERO) public surface — TECH_PLAN §4.3 / M11.
-// The overview grid (M12) and the focus session-strip (M14) both import from
+// Session-tile (HERO) public surface.
+// The overview grid and the focus session-strip both import from
 // here so there is one canonical tile, one set of springs, one preview source.
 
 export { SessionTile } from './tile'

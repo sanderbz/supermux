@@ -1,4 +1,4 @@
-//! Filesystem path safety (TECH_PLAN §3.2.11, §6.3; feature-extract §3.4).
+//! Filesystem path safety.
 //!
 //! Two layers of defense:
 //!
@@ -13,11 +13,11 @@
 //!     the TOCTOU window between resolve and open, the kernel refuses (`ELOOP`).
 //!
 //! `resolve_safe` is `async` (uses `tokio::fs::canonicalize`) so it never blocks
-//! a tokio worker on a slow stat (Codex T0 fix). For a brand-new file the
+//! a tokio worker on a slow stat. For a brand-new file the
 //! parent — not the path — is canonicalized, so `PUT /api/file` to a path that
-//! does not exist yet no longer 500s (Codex #3).
+//! does not exist yet no longer 500s.
 //!
-//! ## Transport-aware variant (REMOTE_PLAN §RT6)
+//! ## Transport-aware variant
 //!
 //! [`resolve_safe_remote`] is the remote-transport companion to
 //! [`resolve_safe`]: it does NOT canonicalize against the local filesystem
@@ -98,7 +98,7 @@ impl From<PathError> for AppError {
 /// Resolve `input` to a real absolute path and verify it is not blocklisted.
 ///
 /// `jail`, when set, additionally requires the result to live under that root
-/// (used for per-session file views rooted at `CC_DIR`). M7's global browser
+/// (used for per-session file views rooted at `CC_DIR`). The global browser
 /// passes `None`.
 pub async fn resolve_safe(input: &str, jail: Option<&Path>) -> Result<PathBuf, PathError> {
     let expanded = shellexpand::tilde(input).into_owned();
@@ -175,8 +175,8 @@ async fn canonicalize_allowing_missing(candidate: &Path) -> Result<PathBuf, Path
     }
 }
 
-/// Transport-aware blocklist check for a path that lives on a REMOTE host
-/// (RT6). We cannot canonicalize the path against our local FS — the file
+/// Transport-aware blocklist check for a path that lives on a REMOTE host.
+/// We cannot canonicalize the path against our local FS — the file
 /// is on a different machine — so this enforces the blocklist via a
 /// case-insensitive prefix/exact compare on the expanded input. The exact
 /// list mirrors what [`resolve_safe`] enforces locally, so a remote
@@ -185,8 +185,8 @@ async fn canonicalize_allowing_missing(candidate: &Path) -> Result<PathBuf, Path
 /// NOTE: this does NOT resolve symlinks on the remote host. The remote shell
 /// (e.g. `cat <path>`) WILL follow them, so an attacker who can place a
 /// symlink at `/tmp/innocent -> /etc/shadow` on the remote host could bypass
-/// this check. That's a known trade-off of the shell-based transport and is
-/// documented in the RT6 done.json. A protocol-level SFTP rewrite (future
+/// this check. That's a known trade-off of the shell-based transport.
+/// A protocol-level SFTP rewrite (future
 /// work) would let us LSTAT + REALPATH over SFTP and reject the symlink.
 pub fn resolve_safe_remote(input: &str) -> Result<PathBuf, PathError> {
     let expanded = shellexpand::tilde(input).into_owned();

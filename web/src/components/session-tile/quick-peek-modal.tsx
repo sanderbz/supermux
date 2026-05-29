@@ -24,7 +24,7 @@ export interface QuickPeekModalProps {
   onOpenChange: (open: boolean) => void
 }
 
-/** Mobile long-press quick-peek (§4.3). A Vaul half-sheet over the overview —
+/** Mobile long-press quick-peek. A Vaul half-sheet over the overview —
  *  the ONLY surface this renders on (touch/coarse-pointer press-hold of a tile;
  *  the desktop hover-peek is a separate path, `TileLiveTerminal`, untouched).
  *
@@ -57,13 +57,13 @@ export function QuickPeekModal({
   const { busy: actionsBusy, stop, archive } = useSessionActions(session.name)
   const [restartBusy, setRestartBusy] = React.useState(false)
   const busy = actionsBusy || restartBusy
-  // FEAT-CONVERT-TEAM: the "Make it a team" sheet is mounted lazily inside
+  // The "Make it a team" sheet is mounted lazily inside
   // the peek so the action lives next to Restart/Stop (the natural mobile home
   // for session lifecycle actions). On success we navigate to the lead's focus
   // view AND close the peek — the session is now a team and the focus view's
   // TEAM CARD is the natural next surface.
   const [convertOpen, setConvertOpen] = React.useState(false)
-  // FEAT-SESSION-INFO: the same Info panel the focus-page title-click opens —
+  // The same Info panel the focus-page title-click opens —
   // mounted here so mobile gets parity with the desktop hover-kebab. Reuses the
   // SAME <SessionInfoPanel> component (mobile fork = bottom Sheet) so there is
   // ONE info surface app-wide, two entry points. Tapping a clone navigates to
@@ -121,7 +121,7 @@ export function QuickPeekModal({
       <Drawer.Portal>
         <Drawer.Overlay className="fixed inset-0 z-50 bg-black/50" />
         <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 flex h-[78vh] flex-col rounded-t-2xl border-t border-border bg-card/85 outline-none backdrop-blur-xl">
-          {/* Drag handle — 36×5, 2.5px radius, tertiary tint (§4.4 / Termius #11). */}
+          {/* Drag handle — 36×5, 2.5px radius, tertiary tint. */}
           <div className="mx-auto mt-1.5 h-[5px] w-9 shrink-0 rounded-full bg-muted-foreground/30" />
 
           <div className="flex items-center gap-2 px-4 py-3">
@@ -137,7 +137,7 @@ export function QuickPeekModal({
                 has nothing to do, so it becomes Archive — the same archive the
                 desktop reaches via the stopped tile's hover-peek (no confirm:
                 archive is reversible from the Archived sheet).
-                "Make team" (FEAT-CONVERT-TEAM) is hidden once the session IS
+                "Make team" is hidden once the session IS
                 already a team lead — there's nothing to convert. */}
             <PeekAction
               label="Info"
@@ -218,7 +218,7 @@ export function QuickPeekModal({
         </Drawer.Content>
       </Drawer.Portal>
 
-      {/* FEAT-CONVERT-TEAM: the convert sheet mounts OUTSIDE Drawer.Portal so a
+      {/* The convert sheet mounts OUTSIDE Drawer.Portal so a
           Vaul-managed peek closing/opening doesn't tear the sheet down. On
           success we dismiss the peek AND navigate to the (now team-lead) focus
           view — the team's TEAM CARD is the natural next surface. */}
@@ -236,7 +236,7 @@ export function QuickPeekModal({
         }}
       />
 
-      {/* FEAT-SESSION-INFO (mobile parity) — the same Info panel the focus-page
+      {/* Session info (mobile parity) — the same Info panel the focus-page
           title-click opens. Mounted OUTSIDE Drawer.Portal so the Vaul peek
           stays alive underneath while the info sheet is on top. Cloning an
           agent navigates to its focus route AND dismisses the peek. */}

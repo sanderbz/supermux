@@ -16,7 +16,7 @@
 //
 // Output split: the caller passes the merged text and a derived `command` /
 // `prompt` pair (computed by `splitCommandAndPrompt`) so the wire payload still
-// matches the M8 schema (separate `command` + `prompt`). The field itself only
+// matches the wire schema (separate `command` + `prompt`). The field itself only
 // knows about the merged text.
 
 import * as React from 'react'

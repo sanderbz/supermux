@@ -17,7 +17,7 @@ import { useLastActiveSession } from '@/stores/board-create-session-store'
 const PROVIDERS = ['claude', 'shell'] as const
 type Provider = (typeof PROVIDERS)[number]
 
-/** SD-3: remember the last-picked agent across cards (and reloads) so the next
+/** Remember the last-picked agent across cards (and reloads) so the next
  *  task defaults to whatever you started last. */
 const LAST_PROVIDER_KEY = 'supermux:board:last-provider'
 function loadLastProvider(): Provider {
@@ -33,9 +33,9 @@ export interface BoardComposerProps {
   onAdd: (input: NewBoardIssue) => Promise<void>
   /** Create + start an agent (lands in Doing). The `session` is null unless the
    *  user linked one via More — the route spawns a fresh session by default.
-   *  `provider` is the agent picked inline in the composer (SD-3). */
+   *  `provider` is the agent picked inline in the composer. */
   onAddAndStart: (input: NewBoardIssue, opts: { provider: string }) => Promise<void>
-  /** Board-scoped default session (FEAT-BOARD-SESSION §B). When set, the session
+  /** Board-scoped default session. When set, the session
    *  picker pre-selects this — used by per-session boards (their own session) +
    *  per-team boards (the team's lead session). `null` = no board scope; the
    *  composer falls back to the persisted last-used session. */
@@ -43,7 +43,7 @@ export interface BoardComposerProps {
 }
 
 /**
- * Description-first composer at the top of the To do lane (BM2 §2.1). One
+ * Description-first composer at the top of the To do lane. One
  * textarea is the whole surface; two primary actions collapse create + start
  * into a single move:
  *   • Add → creates the card in To do (no agent yet),
@@ -66,7 +66,7 @@ export function BoardComposer({
   const fine = useMediaQuery('(pointer: fine)')
   const moreId = useId()
 
-  // Persisted "last-used session" cell (FEAT-BOARD-SESSION §B). When the board
+  // Persisted "last-used session" cell. When the board
   // scope doesn't dictate a session (Main / All / a team without a live lead),
   // the composer falls back to this — updated on every successful submit.
   const [lastSession, setLastSession] = useLastActiveSession()
@@ -74,7 +74,7 @@ export function BoardComposer({
   const [description, setDescription] = useState('')
   const [title, setTitle] = useState('')
   // The picked session for the prominent picker. Resolution chain
-  // (FEAT-BOARD-SESSION §B): `defaultSession` (board scope) → persisted
+  // `defaultSession` (board scope) → persisted
   // last-used → '' (no session). `''` is the explicit zero-attachment choice.
   const [session, setSession] = useState<string>(
     () => defaultSession ?? lastSession ?? '',
@@ -87,7 +87,7 @@ export function BoardComposer({
   const [provider, setProvider] = useState<Provider>(loadLastProvider)
   const [sessions, setSessions] = useState<BoardSession[]>([])
 
-  // SD-3: persist the agent pick so the next card (and a reload) defaults to it.
+  // Persist the agent pick so the next card (and a reload) defaults to it.
   useEffect(() => {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(LAST_PROVIDER_KEY, provider)
@@ -120,8 +120,7 @@ export function BoardComposer({
   // hunt for the open-trigger that triggers the fetch. Fetch eagerly on mount;
   // payload is small (a `name`+`status` list) and cached for the composer's
   // lifetime. Was previously gated on `sessionSheetOpen || moreOpen` which
-  // hid every other session until the user opened More (FEAT-BOARD-SESSION
-  // regression).
+  // hid every other session until the user opened More (regression).
   useEffect(() => {
     if (sessions.length > 0) return
     let alive = true
@@ -157,7 +156,7 @@ export function BoardComposer({
     // Re-seed the session to the board scope (per-session / per-team default) or
     // the just-persisted last-used — same chain as first paint, so the NEXT card
     // creation starts where the previous one ended (zero clicks in the common
-    // case, per FEAT-BOARD-SESSION §B).
+    // case).
     setSession(defaultSession ?? lastSession ?? '')
     setAcceptance('')
     setDue('')
@@ -241,7 +240,7 @@ export function BoardComposer({
                 />
               </Labeled>
 
-              {/* Agent + Due share a row. FEAT-BOARD-SESSION §B: the agent
+              {/* Agent + Due share a row. The agent
                   toggle moved INTO More (was prominent before) since the prominent
                   slot now hosts the session picker — the more common dimension to
                   vary per-card. Default `claude`. */}
@@ -331,8 +330,8 @@ export function BoardComposer({
       )}
 
       <div className="flex flex-col gap-2">
-        {/* More toggle + the PROMINENT session picker share one row
-            (FEAT-BOARD-SESSION §B). The session picker replaced the inline
+        {/* More toggle + the PROMINENT session picker share one row.
+            The session picker replaced the inline
             agent toggle as the headline composer field — most cards SEND to a
             specific session; the Claude/Shell toggle is now advanced (in More).
             The two primary actions own the full lane width below. */}

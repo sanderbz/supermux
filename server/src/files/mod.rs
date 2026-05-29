@@ -1,4 +1,4 @@
-//! Files browser + editor + uploader (TECH_PLAN §3.2.11, M7; feature-extract §3).
+//! Files browser + editor + uploader.
 //!
 //! Endpoints (all bearer-protected — merged into the protected router so the auth
 //! layer wraps them; there is no localhost/loopback bypass):
@@ -59,7 +59,7 @@ const IMAGE_EXTS: &[&str] = &[
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "webm", "avi", "mkv", "m4v"];
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "ogg", "m4a", "aac", "flac"];
 
-/// Extensions accepted by `PUT /api/file` (feature-extract §3.3). Files with no
+/// Extensions accepted by `PUT /api/file`. Files with no
 /// extension (`Dockerfile`, `Makefile`) are also writable — handled separately.
 const WRITABLE_EXTS: &[&str] = &[
     "md", "markdown", "mdx", "txt", "json", "yml", "yaml", "toml", "ini", "cfg", "sh", "bash",
@@ -90,8 +90,8 @@ pub fn router_for() -> Router<AppState> {
         )
         .route("/api/uploads/{filename}", get(serve_upload))
         .route("/api/autocomplete/dir", get(autocomplete_dir))
-        // FEAT-WHERE-PICKER: list the deploy-configured project dirs' immediate
-        // subdirs with git-repo metadata, so the "Where" picker can render real
+        // List the deploy-configured project dirs' immediate subdirs with
+        // git-repo metadata, so the "Where" picker can render real
         // project rows with a tiny `git` tag (or a calm warning when a folder
         // isn't a git repo — teammates each need their own git worktree per the
         // official Agent Teams doc). Hidden entries are filtered.
@@ -105,7 +105,7 @@ struct LsQuery {
     path: String,
     #[serde(default)]
     hidden: Option<String>,
-    /// REMOTE_PLAN §RT6: when set, the named session's `host_id` (if any)
+    /// When set, the named session's `host_id` (if any)
     /// picks the remote SSH transport. Absent / unknown → local FS (the
     /// legacy contract — every existing caller keeps working).
     #[serde(default)]
@@ -150,7 +150,7 @@ struct UploadBody {
 struct AutocompleteQuery {
     #[serde(default)]
     q: String,
-    /// FEAT-WHERE-PICKER: when `hidden=0`, dotfile subdirs (`.git`, `.cache`,
+    /// When `hidden=0`, dotfile subdirs (`.git`, `.cache`,
     /// `.next`, …) are filtered from the typeahead. Default is unspecified
     /// (legacy behavior, hidden included) so any existing caller's contract is
     /// preserved byte-for-byte; the new "Where" picker passes `hidden=0`.
@@ -245,7 +245,7 @@ async fn ls(State(state): State<AppState>, Query(q): Query<LsQuery>) -> Result<J
     })))
 }
 
-/// `GET /api/file` — read a file with a type-aware JSON envelope (§3.2).
+/// `GET /api/file` — read a file with a type-aware JSON envelope.
 async fn get_file(
     State(state): State<AppState>,
     Query(q): Query<FileQuery>,
@@ -328,7 +328,7 @@ async fn put_file(
 
     let transport = transport_for_session(&state, body.session.as_deref()).await?;
     // resolve_safe canonicalizes the nearest existing ancestor, so a brand-new
-    // (non-existent) target resolves without 500ing (Codex #3 regression).
+    // (non-existent) target resolves without 500ing.
     let abs = safe_path(&transport, &raw, None).await?;
 
     // For the LOCAL transport keep the old `safe_open_write` (`O_NOFOLLOW`)
@@ -363,9 +363,9 @@ async fn put_file(
     Ok(Json(json!({ "ok": true, "path": abs.to_string_lossy() })))
 }
 
-/// `GET /api/file/raw` — stream bytes with Range + ETag (§3.7).
+/// `GET /api/file/raw` — stream bytes with Range + ETag.
 ///
-/// REMOTE_PLAN §RT6 LIMITATION: native byte-range reads only work for the
+/// LIMITATION: native byte-range reads only work for the
 /// LOCAL transport (which can `O_NOFOLLOW` + `seek`). Remote requests with a
 /// `Range:` header materialise the full file in memory on the server, slice
 /// the requested window, and return `206 Partial Content`. That's correct
@@ -526,7 +526,7 @@ async fn fs_upload(
 
 /// `DELETE /api/fs/delete` — remove a file (or a directory, recursively).
 ///
-/// REMOTE_PLAN §RT6 LIMITATION: over the remote transport, directory deletes
+/// LIMITATION: over the remote transport, directory deletes
 /// are REFUSED (a stray `rm -rf` over the wire is too easy to misuse). The
 /// remote transport returns an error which surfaces as 400 here. Local
 /// deletes keep their full recursive semantics.
@@ -635,8 +635,8 @@ async fn serve_upload(
 
 /// `GET /api/autocomplete/dir` — directory typeahead, capped at 10 results.
 ///
-/// FEAT-WHERE-PICKER: when `hidden=0` is passed, dotfile subdirs (`.git`, `.cache`)
-/// are filtered out so the "Where" picker's free-text autocomplete never surfaces
+/// When `hidden=0` is passed, dotfile subdirs (`.git`, `.cache`) are filtered
+/// out so the "Where" picker's free-text autocomplete never surfaces
 /// noise the user has to scroll past. The default (no query param) preserves the
 /// legacy "include everything" contract so existing consumers are byte-for-byte
 /// unaffected.
@@ -684,7 +684,7 @@ async fn autocomplete_dir(
     Json(out)
 }
 
-// ── FEAT-WHERE-PICKER: project repos endpoint ─────────────────────────────────
+// ── project repos endpoint ────────────────────────────────────────────────────
 //
 // The "Where" picker (web/src/components/session-tile/where-picker.tsx) renders
 // the deploy-configured project subdirs as primary candidates. Each row needs:
@@ -915,7 +915,7 @@ async fn read_text(
     }
 }
 
-/// Replace any character outside `[\w.\- ]` with `_` (feature-extract §3.5).
+/// Replace any character outside `[\w.\- ]` with `_`.
 fn sanitize_filename(name: &str) -> String {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w.\- ]").unwrap());
     // Defend against a path component sneaking in via the filename.
@@ -1027,7 +1027,7 @@ fn looks_like_heif(b: &[u8]) -> bool {
     false
 }
 
-/// Best-effort: remove uploaded files older than 24h (feature-extract §3.5).
+/// Best-effort: remove uploaded files older than 24h.
 async fn purge_old_uploads(dir: &Path) {
     let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
         return;

@@ -1,9 +1,9 @@
-// Brand tokens (M28) — the typed mirror of the CSS custom properties defined in
+// Brand tokens — the typed mirror of the CSS custom properties defined in
 // web/src/styles/globals.css. Import these in TS/TSX where you need a literal
 // value (Framer Motion keyframes, canvas, inline styles) instead of a CSS var.
 //
 // Single brand tint = "confident-builder amber". It is the ONLY brand hex in the
-// app; everything else should be a semantic token (M10 §4.8). Status colors tell
+// app; everything else should be a semantic token. Status colors tell
 // the running / waiting / error / idle story from user-vision.md.
 //
 // See web/src/brand/BRAND.md for the full rationale.

@@ -1,4 +1,4 @@
-// focus-strip-groups.ts — AT-H2 + group-aware strip (feat-focus-strip-groups).
+// focus-strip-groups.ts — team-aware + group-aware strip.
 //
 // Makes the desktop focus session-strip TEAM-AWARE AND GROUP-AWARE, consistent
 // with the overview's TEAM CARD and the overview's USER GROUPS.

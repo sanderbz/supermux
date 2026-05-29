@@ -1,11 +1,11 @@
-//! Bearer-token auth middleware (TECH_PLAN §3.2.3, §6.1).
+//! Bearer-token auth middleware.
 //!
 //! Applied to every protected route. Public routes (manifest, sw, icons,
 //! `/api/health`) are mounted on a separate router that is NOT wrapped by this
 //! layer — so this function contains no path carve-outs.
 //!
-//! Security invariants (§6.1):
-//!   * **No localhost bypass.** The peer address is never consulted; v2's
+//! Security invariants:
+//!   * **No localhost bypass.** The peer address is never consulted; an earlier
 //!     `/api`+`/ws` loopback carve-out was a CVE class and is gone.
 //!   * **Constant-time compare** via [`constant_time_eq`], so token validation
 //!     leaks no timing signal.
@@ -32,7 +32,7 @@ pub async fn auth_middleware(
 }
 
 /// Pull the token from `Authorization: Bearer <tok>` (canonical) or, for legacy
-/// curl convenience, the `?_token=` query parameter (§3.4).
+/// curl convenience, the `?_token=` query parameter.
 fn extract_token(req: &Request) -> Option<String> {
     if let Some(value) = req.headers().get(AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
@@ -55,7 +55,7 @@ fn extract_token(req: &Request) -> Option<String> {
     None
 }
 
-/// Constant-time token comparison (§6.1). `constant_time_eq` is itself
+/// Constant-time token comparison. `constant_time_eq` is itself
 /// length-aware and does not early-return on the first differing byte.
 fn token_matches(expected: &str, presented: &str) -> bool {
     constant_time_eq::constant_time_eq(expected.as_bytes(), presented.as_bytes())

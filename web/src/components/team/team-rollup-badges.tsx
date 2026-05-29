@@ -1,4 +1,4 @@
-// TeamRollupBadges — the shared attention-first roll-up badges (§5.2).
+// TeamRollupBadges — the shared attention-first roll-up badges.
 //
 // ONE loud token when present (the blue `needs you · N` pill in the tile
 // waiting-pill geometry) ELSE a calm green "done"; followed by a muted, tabular

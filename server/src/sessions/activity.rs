@@ -1,4 +1,4 @@
-//! Hook-payload → live "current activity" + error derivation (hooks-10x TRACK 1).
+//! Hook-payload → live "current activity" + error derivation.
 //!
 //! Claude Code's hooks carry rich JSON on STDIN (tool_name, tool_input.command /
 //! file_path / pattern, message, error_type, …). supermux's hook command forwards
@@ -10,7 +10,7 @@
 //!   * [`failed_label`]    — a `PostToolUseFailure` payload → `"✗ Bash failed"`.
 //!   * [`HookPayload`]     — the LENIENT (every field optional) parse of `payload`.
 //!
-//! **Security (spec §SECURITY).** Everything here is in-memory only and display
+//! **Security.** Everything here is in-memory only and display
 //! only. We deliberately prefer Claude's own `description` over the raw command,
 //! and we truncate to [`MAX_LABEL`] so a long secret-bearing command can never be
 //! surfaced (or logged) in full. Nothing here is persisted to disk/DB.
@@ -94,7 +94,7 @@ fn basename(path: &str) -> &str {
 /// `read`, `search`, `web`, `task`, `mcp`, `tool`). The emoji is baked into the
 /// label so the wire stays one string; `kind` is the machine-readable companion.
 ///
-/// Mapping (spec §3 — TRACK 1):
+/// Mapping:
 /// * `Bash`              → `⚡ {description || command first ~40 chars}`
 /// * `Edit`/`Write`/`MultiEdit`/`NotebookEdit` → `✎ {basename(file_path)}`
 /// * `Read`              → `📖 {basename(file_path)}`
@@ -168,8 +168,8 @@ pub fn activity_label(p: &HookPayload) -> Option<(String, String)> {
     Some((label, kind.to_string()))
 }
 
-/// The transient "a tool just failed" label for a `PostToolUseFailure` payload
-/// (spec §3): `✗ {tool} failed`. Falls back to a generic when no tool name.
+/// The transient "a tool just failed" label for a `PostToolUseFailure` payload:
+/// `✗ {tool} failed`. Falls back to a generic when no tool name.
 pub fn failed_label(p: &HookPayload) -> String {
     match p.tool_name.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(tool) => format!("✗ {} failed", truncate(tool)),
@@ -177,7 +177,7 @@ pub fn failed_label(p: &HookPayload) -> String {
     }
 }
 
-/// Derive a `(type, message)` error pair from a `StopFailure` payload (spec §3).
+/// Derive a `(type, message)` error pair from a `StopFailure` payload.
 /// `type` defaults to `"error"` when the payload omits `error_type`; `message`
 /// prefers `message` then `error`, truncated and secret-conscious. Always returns
 /// a pair (a `StopFailure` is, by definition, an error worth badging).

@@ -24,7 +24,7 @@ export interface BreadcrumbProps {
   onNavigate: (path: string) => void
 }
 
-/** Horizontally-scrollable path breadcrumb (§M20). Each segment is a ≥44 pt
+/** Horizontally-scrollable path breadcrumb. Each segment is a ≥44 pt
  *  touch target; the trailing segment is the current directory and is inert. */
 export function Breadcrumb({ path, onNavigate }: BreadcrumbProps) {
   const crumbs = toCrumbs(path)

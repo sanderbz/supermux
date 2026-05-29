@@ -1,4 +1,4 @@
-// WelcomeBanner (M27 — Time to Wow).
+// WelcomeBanner — Time to Wow.
 //
 // The non-blocking "welcome back" surface for a returning v2 user whose data
 // was migrated. It sits just under the safe-area top, NEVER covers content, and

@@ -39,7 +39,7 @@ export interface UseArchivedSessionsResult {
    *  per-row — fans out [`purge`] calls in parallel, resolves with `{ ok, failed }`
    *  counts so the sheet can toast a precise outcome. Each row that succeeds
    *  drops from the archived cache the moment its individual mutation lands, so
-   *  the sheet empties progressively even on slow networks. SD-9. */
+   *  the sheet empties progressively even on slow networks. */
   purgeAll: () => Promise<{ ok: number; failed: number }>
   /** Names currently mid-flight, so the sheet can disable their row actions. */
   pending: Set<string>
@@ -100,7 +100,7 @@ export function useArchivedSessions(
     onSettled: (_d, _e, name) => mark(name, false),
   })
 
-  // SD-9 "delete all": fan out individual purge mutations in parallel so each
+  // "Delete all": fan out individual purge mutations in parallel so each
   // row drops from the archived cache (via `purgeMut.onSuccess`) the moment
   // ITS request resolves — the sheet empties progressively rather than waiting
   // for the whole batch. We deliberately reuse the per-row mutation rather

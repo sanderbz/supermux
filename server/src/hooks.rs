@@ -1,13 +1,13 @@
-//! Claude `SettingsHook` ingestion endpoint (TECH_PLAN §3.6, §6.5; M5b).
+//! Claude `SettingsHook` ingestion endpoint.
 //!
 //! `POST /api/_internal/hook` is the inbound side of the status detector's apex
 //! signal: Claude Code runs supermux's `curl` hook (installed by
 //! [`crate::claude_config`]) on every tool call / notification / turn end, and it
 //! lands here. A valid event is recorded into [`AppState::record_hook`] and the
 //! session's detector loop is woken so the status update surfaces well within the
-//! §3.6 "1s" bound.
+//! "1s" bound.
 //!
-//! **Auth model (§6.5) — per-session, NOT the dashboard bearer.** This route is
+//! **Auth model — per-session, NOT the dashboard bearer.** This route is
 //! mounted OUTSIDE the bearer-token layer because the hook command never carries
 //! the dashboard bearer (it must not be in the session env). Instead each request
 //! presents `X-Supermux-Hook-Token`, validated by a **constant-time** compare against
@@ -49,11 +49,11 @@ struct HookBody {
     /// The Claude event kind (`pre_tool` | `post_tool` | `notification` | `stop`
     /// | `subagent_stop` | `session_start` | `session_end` | `stop_failure`).
     event: String,
-    /// The forwarded Claude hook JSON (hooks-10x v2): the event's STDIN payload,
+    /// The forwarded Claude hook JSON: the event's STDIN payload,
     /// size-capped by the hook command. Parsed LENIENTLY into [`HookPayload`]
     /// (every field optional; a partial/truncated/odd payload is a no-op, never a
     /// 400). Held in memory only — NEVER persisted (spec §SECURITY). Absent on a
-    /// v1 hook command (pre-upgrade sessions) → treated as `{}`.
+    /// legacy hook command (pre-upgrade sessions) → treated as `{}`.
     #[serde(default)]
     payload: Option<Value>,
 }
@@ -79,7 +79,7 @@ async fn hook_handler(
     // a 400 — a genuine client bug, distinct from the silent 415 we are avoiding.
     let body: HookBody =
         serde_json::from_slice(&raw).map_err(|e| AppError::BadRequest(format!("hook body: {e}")))?;
-    // The expected token is the session's own (DB is the source of truth, §6.5;
+    // The expected token is the session's own (DB is the source of truth;
     // survives restart). A missing session row → 401 (no existence oracle).
     let expected = db::sessions::runtime(&state.pool, &body.session)
         .await?
@@ -92,7 +92,7 @@ async fn hook_handler(
         .unwrap_or("");
 
     // Empty stored token (session never started → no secret minted) can never be
-    // authenticated; and the compare is constant-time (§6.5, no timing oracle).
+    // authenticated; and the compare is constant-time (no timing oracle).
     if expected.is_empty()
         || !constant_time_eq::constant_time_eq(expected.as_bytes(), presented.as_bytes())
     {
@@ -109,7 +109,7 @@ async fn hook_handler(
     state.mark_hooks_live(&body.session);
 
     // Fold the turn-state signal in for the events the detector
-    // cares about (§3.6 — Notification→Waiting, turn-start→Active, …). Unknown
+    // cares about (Notification→Waiting, turn-start→Active, …). Unknown
     // event kinds (e.g. SessionStart/SessionEnd/StopFailure) have NO HookEvent
     // variant and are skipped here — they are handled by the activity/lifecycle
     // dispatch below, NOT by the turn state machine.
@@ -117,7 +117,7 @@ async fn hook_handler(
         state.record_hook(&body.session, event);
     }
 
-    // ── hooks-10x: live activity + error + lifecycle from the PAYLOAD ──────────
+    // ── live activity + error + lifecycle from the PAYLOAD ──────────
     // Parse leniently (every field optional); a missing/odd/truncated payload
     // parses to the empty default and is a no-op rather than a 400.
     let payload: HookPayload = body
@@ -134,8 +134,8 @@ async fn hook_handler(
 }
 
 /// Derive + store the in-memory activity/error/lifecycle effects of one hook
-/// event's PAYLOAD (hooks-10x TRACK 1), broadcasting a `sessions` SSE delta only
-/// when the activity/error actually changed (spec §4 — change-only). Pure
+/// event's PAYLOAD, broadcasting a `sessions` SSE delta only
+/// when the activity/error actually changed (change-only). Pure
 /// dispatch on the wire `event` token (accepts both the snake_case form supermux
 /// emits and Claude's PascalCase). NOTHING here is persisted to disk/DB.
 fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPayload) {
@@ -198,7 +198,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
     }
 }
 
-/// Force a session `Stopped` from a `SessionEnd` hook (hooks-10x lifecycle).
+/// Force a session `Stopped` from a `SessionEnd` hook (lifecycle).
 /// Sets the detector-loop override (so the next tick can't re-derive it back to
 /// active) AND pushes the transition straight through the DB + status watch + SSE
 /// `status` so connected tiles flip immediately — the exact triplet
@@ -238,8 +238,8 @@ fn force_stopped(state: &AppState, session: &str) {
 }
 
 /// Broadcast a `sessions` SSE delta carrying `name`'s current activity/error so
-/// open overviews update the live line / error badge without a refetch
-/// (hooks-10x §4). Cheap; sent only when the snapshot changed (the caller gates
+/// open overviews update the live line / error badge without a refetch.
+/// Cheap; sent only when the snapshot changed (the caller gates
 /// on that). A cleared field is sent as JSON `null` so the client drops it.
 fn broadcast_activity_delta(state: &AppState, session: &str) {
     let act = state.session_activity(session).unwrap_or_default();
@@ -258,7 +258,7 @@ fn broadcast_activity_delta(state: &AppState, session: &str) {
 
 #[cfg(test)]
 mod tests {
-    //! Endpoint PAYLOAD dispatch (hooks-10x TRACK 1). Drives [`apply_payload`] —
+    //! Endpoint PAYLOAD dispatch. Drives [`apply_payload`] —
     //! the same in-memory derivation the live `/api/_internal/hook` handler runs
     //! after auth — so the activity/error/lifecycle effects are pinned without a
     //! live HTTP request. A real `AppState` (with a temp DB) is used so the

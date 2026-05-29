@@ -1,11 +1,11 @@
-// TeammateFocus — full-screen READ-ONLY focus for an Agent Teams teammate
-// (AT-F-FRONT / F2 / step 6). Tapping a chip opens the teammate's terminal
-// full-screen here. Reuses the existing terminal chrome language (glass header,
-// chevron-back, status, full-bleed <TeammateTerminal>, safe-area insets) without
-// going through the `/api/sessions`-bound focus route — teammates are NOT
-// sessions, so a self-contained full-screen overlay is the robust seam (and
-// AT-F3 mission control can later host the same <TeammateTerminal> inside its own
-// split). Read-only for this slice: no send/steer dock yet.
+// TeammateFocus — full-screen READ-ONLY focus for an Agent Teams teammate.
+// Tapping a chip opens the teammate's terminal full-screen here. Reuses the
+// existing terminal chrome language (glass header, chevron-back, status,
+// full-bleed <TeammateTerminal>, safe-area insets) without going through the
+// `/api/sessions`-bound focus route — teammates are NOT sessions, so a
+// self-contained full-screen overlay is the robust seam (and mission control
+// can later host the same <TeammateTerminal> inside its own split). Read-only
+// for this slice: no send/steer dock yet.
 //
 // Rendered as a fixed overlay over the overview (no router route needed) so the
 // overview state is preserved underneath; closing returns instantly.

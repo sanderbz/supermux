@@ -1,12 +1,12 @@
-//! Host CRUD + bootstrap HTTP surface (REMOTE_PLAN.md RT8).
+//! Host CRUD + bootstrap HTTP surface.
 //!
-//! **Router-registry pattern (TECH_PLAN §3.4).** [`router_for`] returns this
+//! **Router-registry pattern.** [`router_for`] returns this
 //! module's sub-router; [`crate::http::router`] merges it under the bearer
 //! auth layer with one `.merge(...)` line. Mounting under `/api/` is enough
 //! — `auth_middleware` has no path carve-outs, so every route here is
 //! bearer-gated by virtue of the merge order in `http::protected_router`.
 //!
-//! **Scope.** Five user-facing routes wrap the RT4 DB surface plus an
+//! **Scope.** Five user-facing routes wrap the DB surface plus an
 //! ssh-out bootstrap probe:
 //!   * `GET /api/hosts` — list live hosts.
 //!   * `POST /api/hosts` — create + auto-run a reachability check.
@@ -21,7 +21,7 @@
 //! side is invoked via fixed argv after `--`, never via shell composition.
 //! See [`SSH_TARGET_RE`] and [`valid_public_key`].
 //!
-//! **HTTP envelope (§3.4).** Successful responses are `{ok: true, data: T}`;
+//! **HTTP envelope.** Successful responses are `{ok: true, data: T}`;
 //! errors are `{ok: false, error: "..."}` via [`crate::error::AppError`].
 
 pub mod bootstrap;
@@ -285,7 +285,7 @@ async fn delete_handler(
     // `session_runtime` — so we LEFT JOIN it. A missing runtime row reads as
     // `unknown` (still NOT in our "safe-to-delete" set: `stopped`/`dead`).
     //
-    // The REMOTE_PLAN.md spec says `WHERE status NOT IN ('stopped','dead')`
+    // The spec says `WHERE status NOT IN ('stopped','dead')`
     // — `dead` isn't in our `last_status` CHECK constraint, but we honor the
     // contract so a future migration that adds it requires no code change.
     let active: i64 = sqlx::query_scalar(

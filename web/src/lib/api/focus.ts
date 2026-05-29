@@ -1,10 +1,10 @@
-// M14 — Focus-mode session control.
+// Focus-mode session control.
 //
-// The desktop focus dock's Stop (⌘W) button needs a real `stopSession` before
-// M12 wires the full sessions client; this is that real fetch.
+// The desktop focus dock's Stop (⌘W) button needs a real `stopSession`; this is
+// that real fetch.
 //
-// LIVE keystrokes are NOT sent through here — they flow over the M4 WebSocket pty
-// (the M13 LiveTerminal). This block is HTTP control-plane only (stop). Envelope
+// LIVE keystrokes are NOT sent through here — they flow over the WebSocket pty
+// (the LiveTerminal). This block is HTTP control-plane only (stop). Envelope
 // + bearer reuse the shared `settingsRequest` helper in ./client (token from
 // window at call time — never embedded in source).
 
@@ -16,8 +16,8 @@ export const focusApi = {
    *  keep the pane) — so the session disappears from `tmux ls` quickly. The DB
    *  row stays as a `stopped`, resumable card by design (Archive clears it). The
    *  server broadcasts the `stopped` status over SSE on teardown, and callers
-   *  optimistically flip the cached row so the overview reflects it instantly
-   *  (SUPERMUX-38). Returns 202 (async-shaped) once the row is `stopped`. */
+   *  optimistically flip the cached row so the overview reflects it instantly.
+   *  Returns 202 (async-shaped) once the row is `stopped`. */
   stopSession: (name: string): Promise<void> =>
     settingsRequest(`/api/sessions/${encodeURIComponent(name)}/stop`, {
       method: 'POST',

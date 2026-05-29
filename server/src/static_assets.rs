@@ -1,15 +1,15 @@
-//! Embedded frontend assets + SPA serving (TECH_PLAN §3.2 lines 134/153/2530, §8.1).
+//! Embedded frontend assets + SPA serving.
 //!
 //! The built web app (`web/dist`, copied to `server/static` by `scripts/build.sh`
 //! and `build.rs`) is embedded into the binary at compile time via `rust-embed`,
 //! so the single `supermux-server` binary serves the *whole* product — not just
 //! `/api` + `/ws`. Without this layer the deployed binary 404s on `GET /` and
-//! the SPA never receives its auth token (§3.2 line 153, R4-01).
+//! the SPA never receives its auth token.
 //!
 //! **Routes (PUBLIC — no bearer layer).** Mounted on the public router in
 //! `http::router` AFTER the protected `.layer(...)` so no auth middleware wraps
 //! them. The HTML body itself is public; the inline `window._SUPERMUX_AUTH_TOKEN` is
-//! the §1.4/§6.1 documented trade-off (token-in-HTML, acceptable because the
+//! the documented trade-off (token-in-HTML, acceptable because the
 //! server binds 127.0.0.1 + Tailscale and Tailscale provides device auth).
 //!
 //!   * `GET /`                — `index.html` with the runtime config injected.
@@ -170,7 +170,7 @@ fn inject_runtime_config(html: &str, state: &AppState) -> String {
         projects = json_string(&projects_dir),
     );
 
-    // `<div id="root">` is the documented injection anchor (§3.2 line 153).
+    // `<div id="root">` is the documented injection anchor.
     if let Some(idx) = html.find("<div id=\"root\">") {
         let mut out = String::with_capacity(html.len() + script.len());
         out.push_str(&html[..idx]);

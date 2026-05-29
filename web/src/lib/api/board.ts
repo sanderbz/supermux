@@ -1,19 +1,19 @@
-// Board (M19) — real client for the M6 backend kanban (issues + statuses + the
+// Board — real client for the backend kanban (issues + statuses + the
 // atomic claim).
 //
-// Envelope: M6 success bodies use the standard `{ ok:true, data }` envelope
-// (§3.4); errors use `{ ok:false, error }`. `boardRequest` unwraps `data` on
+// Envelope: success bodies use the standard `{ ok:true, data }` envelope;
+// errors use `{ ok:false, error }`. `boardRequest` unwraps `data` on
 // success and lifts `error` into a typed `BoardError` (carrying the HTTP status)
-// so the UI can branch 409 (atomic-claim lost / not-claimable — §3.2.10) vs 404
+// so the UI can branch 409 (atomic-claim lost / not-claimable) vs 404
 // vs 400 without ever crashing.
 
 import { apiToken, apiUrl } from './client'
 
-// ── M0 stub domain types (legacy skeleton) ────────────────────────────────────
+// ── Stub domain types (legacy skeleton) ───────────────────────────────────────
 //
-// The `Issue`/`CreateIssueInput` stub types pre-date the M6 contract and are
+// The `Issue`/`CreateIssueInput` stub types pre-date the live contract and are
 // intentionally left untouched; the `BoardIssue`/`BoardStatus` shapes below
-// match what M6 actually returns (server/src/board/mod.rs `IssueView` +
+// match what the backend actually returns (server/src/board/mod.rs `IssueView` +
 // server/src/db/board.rs `BoardStatus`).
 
 export interface Issue {
@@ -35,7 +35,7 @@ export interface CreateIssueInput {
   status?: string
 }
 
-// ── M6 wire types ─────────────────────────────────────────────────────────────
+// ── Wire types ────────────────────────────────────────────────────────────────
 
 /** A comment on an issue (server/src/db/board.rs `IssueComment`). The `author`
  *  is `'user'` (human via bearer), `'agent:<session>'` (agent via hook), or
@@ -69,8 +69,8 @@ export interface IssueLink {
   created: number
 }
 
-/** An issue exactly as M6's `IssueView` serialises it (server/src/board/mod.rs).
- *  The `comments`/`acceptance`/`links` relations (S1/S2) are always present —
+/** An issue exactly as `IssueView` serialises it (server/src/board/mod.rs).
+ *  The `comments`/`acceptance`/`links` relations are always present —
  *  empty arrays when the issue has none — so the card + sheet render with no
  *  extra round-trips. */
 export interface BoardIssue {
@@ -91,24 +91,24 @@ export interface BoardIssue {
   comments: IssueComment[]
   acceptance: AcceptanceItem[]
   links: IssueLink[]
-  /** R1 session→board reaction flags (migration 0011). `needs_review` is set
+  /** Session→board reaction flags (migration 0011). `needs_review` is set
    *  when the owning agent finished its turn (went idle) and a human should
    *  look; `awaiting_input` is set when the agent has been sitting in `waiting`
    *  (it needs you). Always present (default false). The card badges off these. */
   needs_review: boolean
   awaiting_input: boolean
-  /** R2 computed link-liveness. True when `session` points to a session row that
+  /** Computed link-liveness. True when `session` points to a session row that
    *  exists AND is not archived; false when unassigned, archived, or deleted. A
    *  card with `session !== null` but `session_live === false` shows
    *  "session archived — reassign?" instead of a confidently-wrong live dot. */
   session_live: boolean
-  /** BM1 (§4): the latest "needs your input" question the agent posted via the
+  /** The latest "needs your input" question the agent posted via the
    *  `needs-input` hook — surfaced on the amber Doing card so the human sees what
    *  the agent is asking without opening the session. `null`/absent when the card
    *  isn't awaiting input or the backend hasn't shipped the field yet (the card
    *  then falls back to the most recent agent comment). */
   latest_question?: string | null
-  /** AT-C (migration 0015): which board this card lives on. The "All" aggregate
+  /** Migration 0015: which board this card lives on. The "All" aggregate
    *  groups cards by this; a scoped board view is filtered server-side. Defaults
    *  to `'main'` for older payloads that predate the field. */
   board_id?: string
@@ -124,7 +124,7 @@ export interface ClaimResult {
   steer_id: number | null
 }
 
-/** Spawn options for the unified Start-agent action (BR1). When passed to
+/** Spawn options for the unified Start-agent action. When passed to
  *  {@link boardApi.start} (and no `session` is given) the server creates a NEW
  *  session for the issue — name auto-derived from the issue title/id — then boots
  *  it before claiming + delivering. `dir` empty/omitted defaults to home. */
@@ -142,9 +142,9 @@ export interface BoardStatus {
   is_builtin: number
 }
 
-/** Fields the description-first composer can set (BM2 §2.1 / §4). `description`
+/** Fields the description-first composer can set. `description`
  *  is the only required field; everything else lives behind "More". `owner_type`
- *  is gone — the server always treats cards as agent tasks now (§4). `acceptance`
+ *  is gone — the server always treats cards as agent tasks now. `acceptance`
  *  is one criterion per line (the server splits + creates the checklist items).
  *  `session: null`/omitted = unassigned (a new session is spawned on Start). */
 export interface NewBoardIssue {
@@ -158,14 +158,14 @@ export interface NewBoardIssue {
   tags?: string[]
   /** Acceptance criteria, one per line (the server creates the checklist). */
   acceptance?: string[]
-  /** AT-C: which board the new card lands on. Omitted → the fixed `main` board.
+  /** Which board the new card lands on. Omitted → the fixed `main` board.
    *  The board view passes the currently-selected board so a card created while
    *  viewing a team board lands on that team board. */
   board_id?: string
 }
 
-/** A partial patch. Only the keys present are written (M6 PATCH semantics).
- *  `owner_type` is intentionally absent — BM2 drops the human/agent distinction
+/** A partial patch. Only the keys present are written (PATCH semantics).
+ *  `owner_type` is intentionally absent — the wire drops the human/agent distinction
  *  (every card is an agent task). */
 export interface BoardIssuePatch {
   title?: string
@@ -233,7 +233,7 @@ export const boardApi = {
   /** `GET /api/board/statuses` — the column config, in display order. */
   statuses: (): Promise<BoardStatus[]> => boardRequest('/api/board/statuses'),
 
-  /** `POST /api/board` — create an issue (BM2 §4: description-first, no
+  /** `POST /api/board` — create an issue (description-first, no
    *  `owner_type`; the server always treats it as an agent task). The body maps
    *  the composer fields straight to the frozen contract
    *  `{ description, title?, session?, tags?, acceptance?, due? }`. */
@@ -254,8 +254,8 @@ export const boardApi = {
   remove: (id: string): Promise<{ ok: boolean; deleted: string }> =>
     boardRequest(`/api/board/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  /** `POST /api/board/{id}/claim` — the ATOMIC claim (§3.2.10) that ALSO
-   *  auto-sends the work to the agent (S3). `deliver` defaults to true (the
+  /** `POST /api/board/{id}/claim` — the ATOMIC claim that ALSO
+   *  auto-sends the work to the agent. `deliver` defaults to true (the
    *  user-chosen default); pass `false` for "Claim only" (flip the link without
    *  dispatching). Returns `{ issue, delivered, steer_id }` — use `steer_id`
    *  with {@link boardApi.unsend} for the Undo toast. Throws a `BoardError` with
@@ -271,7 +271,7 @@ export const boardApi = {
       body: JSON.stringify({ session, deliver }),
     }),
 
-  /** `POST /api/board/{id}/start` — the unified "Start agent" action (BR1). Makes
+  /** `POST /api/board/{id}/start` — the unified "Start agent" action. Makes
    *  the issue agent-owned, attaches an existing live `session` OR spawns a NEW
    *  one (pass `spawn`), then atomic-claims + delivers the work via the same
    *  steering path as {@link boardApi.claim}. Returns `{ issue, delivered,
@@ -288,7 +288,7 @@ export const boardApi = {
       body: JSON.stringify(opts),
     }),
 
-  /** `POST /api/board/{id}/reply` — THE headline UX (BM2 §2.4 / §4). Delivers
+  /** `POST /api/board/{id}/reply` — THE headline UX. Delivers
    *  `text` straight into the card's linked session (`send_text` + Enter,
    *  auto-waking a stopped session). Clears the card's `awaiting_input` state so
    *  the amber "Needs your input" badge resolves. 400 when the card has no linked
@@ -299,7 +299,7 @@ export const boardApi = {
       body: JSON.stringify({ text }),
     }),
 
-  /** `POST /api/board/{id}/discard` — soft-archive a card (BM2 §2.6 / §4). Data
+  /** `POST /api/board/{id}/discard` — soft-archive a card. Data
    *  is preserved; the board list excludes discarded cards by default. Pair with
    *  {@link boardApi.restore} for the undo toast. Returns ok. */
   discard: (id: string): Promise<{ ok: boolean }> =>
@@ -307,7 +307,7 @@ export const boardApi = {
       method: 'POST',
     }),
 
-  /** `POST /api/board/{id}/restore` — un-discard a card (BM2 §2.6). Powers the
+  /** `POST /api/board/{id}/restore` — un-discard a card. Powers the
    *  "Undo" on the discard toast, bringing the card back to the board. */
   restore: (id: string): Promise<{ ok: boolean }> =>
     boardRequest(`/api/board/${encodeURIComponent(id)}/restore`, {
@@ -337,7 +337,7 @@ export const boardApi = {
       body: JSON.stringify({ text: `Board note: ${body}` }),
     }),
 
-  // ── activity stream + acceptance + links (human side, bearer; AB2) ──────────
+  // ── activity stream + acceptance + links (human side, bearer) ───────────────
   // Every mutation returns the refreshed BoardIssue (with relations) and also
   // re-publishes the board over SSE, so the optimistic update is confirmed.
 
@@ -428,7 +428,7 @@ export const boardApi = {
     }),
 }
 
-/** A live session as the M2/M3 `/api/sessions` endpoint lists it. Only the
+/** A live session as the `/api/sessions` endpoint lists it. Only the
  *  fields the board's session-combo needs are typed. */
 export interface BoardSession {
   name: string
@@ -439,7 +439,7 @@ export interface BoardSession {
 }
 
 /** Fetch live sessions for the NewIssueDialog combo. Hits `/api/sessions`
- *  directly (the typed `api.listSessions` is filled in by M12); returns `[]` on
+ *  directly (the typed `api.listSessions` is filled in elsewhere); returns `[]` on
  *  any failure so the dialog degrades to "unassigned" rather than crashing. */
 export async function listBoardSessions(): Promise<BoardSession[]> {
   try {

@@ -55,7 +55,7 @@ import { BoardSwitcher } from '@/components/board/board-switcher'
 import { midpointPos } from '@/components/board/pos'
 import { useMediaQuery } from '@/hooks/use-media-query'
 
-/** The three fixed lanes (BM2 §1). No add/rename/delete column UI — these are
+/** The three fixed lanes. No add/rename/delete column UI — these are
  *  the whole board. Lane ids map to the backend column ids {todo,doing,done}. */
 type Lane = 'todo' | 'doing' | 'done'
 const LANES: { id: Lane; label: string }[] = [
@@ -73,10 +73,10 @@ interface DropSlot {
 }
 
 export function Board() {
-  // ── multi-board selection (AT-C, plan §5.5) ─────────────────────────────────
+  // ── multi-board selection ───────────────────────────────────────────────────
   const { boards } = useBoards()
-  // Team data — needed by the composer's default-session resolver (FEAT-BOARD-
-  // SESSION §B step 2): a per-team board prefers that team's lead session.
+  // Team data — needed by the composer's default-session resolver: a per-team
+  // board prefers that team's lead session.
   const { teams } = useTeams()
   const [selectedBoard, setSelectedBoardRaw] = useSelectedBoard()
   // App-wide "last-active session" — written when the user picks a per-session
@@ -106,7 +106,7 @@ export function Board() {
   // server re-syncs it every ~3s, so any drag/edit would snap back. Treat it
   // like the "All" aggregate in the UI: non-draggable cards, no composer, and no
   // per-card write affordances (Start / Reply / Discard). Board→file write-back
-  // is out of scope (see FIX-B).
+  // is out of scope.
   const activeBoard = boards.find((b) => b.id === activeBoardId)
   const readThrough = activeBoard?.kind === 'team'
 
@@ -166,7 +166,7 @@ export function Board() {
     return () => window.removeEventListener('keydown', onKey)
   }, [selectedId])
 
-  // AT-C "All" overview: a board id → name map for the grouped sub-headers.
+  // "All" overview: a board id → name map for the grouped sub-headers.
   const boardNameById = useMemo(() => {
     const m = new Map<string, string>()
     for (const b of boards) m.set(b.id, b.name)
@@ -244,7 +244,7 @@ export function Board() {
       await startAgent({
         id: issue.id,
         session: hasLive ? (issue.session as string) : undefined,
-        // Spawn-by-default; honour the composer's agent pick (SD-3) when given.
+        // Spawn-by-default; honour the composer's agent pick when given.
         spawn: hasLive ? undefined : provider ? { provider } : {},
         start: (a) => board.startIssue(a),
         sentDuration: 6000,
@@ -387,7 +387,7 @@ export function Board() {
   // ── Create handlers (description-first composer) ─────────────────────────────
   // A new card lands on the board currently in view. On the "All" aggregate
   // (which isn't a real board) new cards default to Main. A `session:<name>`
-  // board (FEAT-BOARD-SESSION) is a virtual filter on Main — `decodeBoardId`
+  // board is a virtual filter on Main — `decodeBoardId`
   // rewrites it to Main here so the server-side card row lands on Main with the
   // selected session attached (the filter then surfaces it on the per-session
   // view).
@@ -395,7 +395,7 @@ export function Board() {
   const createBoardId = isAll ? MAIN_BOARD_ID : decoded.fetchBoardId
 
   // The board-scoped "preferred" session for the composer's session picker
-  // (FEAT-BOARD-SESSION §B). Resolution chain (highest priority first):
+  // Resolution chain (highest priority first):
   //   1. Per-session board (`session:<name>`)         → that session.
   //   2. Per-team board (kind `team`, with a lead)     → the team's lead session.
   //   3. Main / All / a team with no live lead         → null (composer falls
@@ -496,7 +496,7 @@ export function Board() {
     [board.issues, handleDrop, resolveDropSlot],
   )
 
-  // The board-switcher next to the title (plan §5.5). Persisted selection; live
+  // The board-switcher next to the title. Persisted selection; live
   // boards list via SSE. Shown in every render state so it's always reachable.
   const switcher = (
     <BoardSwitcher
@@ -714,7 +714,7 @@ function LaneColumn({
   onStart: (issue: BoardIssue) => void
   onReply: (issue: BoardIssue, text: string) => Promise<void>
   onDiscard: (issue: BoardIssue) => void
-  /** AT-C "All" aggregate: a board id → name map. When present, the lane groups
+  /** "All" aggregate: a board id → name map. When present, the lane groups
    *  cards by board under a muted sub-header (read-through overview). When
    *  undefined, the lane renders a flat single-board list (the normal case). */
   boardNameById?: Map<string, string>
@@ -994,11 +994,11 @@ function SortableCard({
   )
 }
 
-/** Page chrome: title row + the board-switcher (AT-C). The board fills the full
+/** Page chrome: title row + the board-switcher. The board fills the full
  *  height so lanes scroll inside the viewport. No "Columns" gear — the 3 lanes
- *  are fixed (BM2 §1).
+ *  are fixed.
  *
- *  The switcher sits next to the title (plan §5.5): on desktop, inline after
+ *  The switcher sits next to the title: on desktop, inline after
  *  "Board"; on mobile, the same compact pill stays in the header (it forks to a
  *  Vaul half-sheet internally), reachable without clutter. */
 function BoardPage({

@@ -1,13 +1,13 @@
 // focus-mode/focus-header.tsx — the focus-mode top bars for BOTH viewports.
 //
-//   • DesktopFocusHeader — M14 (TECH_PLAN §4.4 desktop, "Header (44px)"): session
-//     name + status on the left, Detach + Stop on the right. Imported by
-//     DesktopSplit.
-//   • FocusHeader        — M15 (TECH_PLAN §4.4 mobile "Top bar"): chevron-back,
-//     centred truncating title + status, ··· overflow. Imported by focus/mobile.
+//   • DesktopFocusHeader — desktop "Header (44px)": session name + status on
+//     the left, Detach + Stop on the right. Imported by DesktopSplit.
+//   • FocusHeader        — mobile "Top bar": chevron-back, centred truncating
+//     title + status, ··· overflow. Imported by focus/mobile.
 //
-// M14 and M15 each authored a component named FocusHeader with INCOMPATIBLE
-// props; the merge keeps both by giving the desktop one a distinct name.
+// The desktop and mobile variants each authored a component named FocusHeader
+// with INCOMPATIBLE props; the merge keeps both by giving the desktop one a
+// distinct name.
 
 import * as React from 'react'
 import { motion } from 'framer-motion'
@@ -39,7 +39,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 
-// ── DesktopFocusHeader (M14, TECH_PLAN §4.4 desktop) ──────────────────────────
+// ── DesktopFocusHeader (desktop) ──────────────────────────────────────────────
 //
 // The top chrome of the desktop focus main pane: 44px tall, session name +
 // status dot on the left, Detach + Stop buttons on the right. The status banner
@@ -65,11 +65,11 @@ export interface DesktopFocusHeaderProps {
   /** Session provider — the mode pill is a Claude-only concept (permission modes
    *  don't exist for a plain shell/codex pane), so it renders only for `claude`. */
   provider?: string
-  /** Detach (⌘D): return to overview WITHOUT stopping the session (§4.4). */
+  /** Detach (⌘D): return to overview WITHOUT stopping the session. */
   onDetach: () => void
-  /** Stop (⌘W): confirm + stop the session, then leave (§4.4.3). */
+  /** Stop (⌘W): confirm + stop the session, then leave. */
   onStop: () => void
-  /** FEAT-CONVERT-TEAM: open the "Make it a team" sheet for this session. Omit
+  /** Open the "Make it a team" sheet for this session. Omit
    *  to hide the affordance entirely (e.g. on a session that's ALREADY a team
    *  lead — the route owns that gating so the header stays presentational). */
   onMakeTeam?: () => void
@@ -102,7 +102,7 @@ export function DesktopFocusHeader({
   return (
     <header
       className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3"
-      // Shared-element View Transition target (§M23a): carries the SAME
+      // Shared-element View Transition target: carries the SAME
       // `view-transition-name` as the session's overview tile, so the tile
       // morphs into this header bar on navigate (Chromium). No-op elsewhere.
       style={
@@ -177,7 +177,7 @@ export function DesktopFocusHeader({
           <TooltipContent>Claude tools</TooltipContent>
         </Tooltip>
 
-        {/* FEAT-CONVERT-TEAM — "Make it a team": only rendered when the route
+        {/* "Make it a team": only rendered when the route
             decides this session is eligible (not already a team lead, not
             archived). Placed BEFORE Detach so the destructive Stop button
             stays last in the cluster — iOS-y reading order. */}
@@ -235,7 +235,7 @@ export function DesktopFocusHeader({
   )
 }
 
-// ── FocusHeader (M15, TECH_PLAN §4.4 mobile "Top bar") ─────────────────────────
+// ── FocusHeader (mobile "Top bar") ────────────────────────────────────────────
 //
 // 44px + safe-area-top, chevron-back left, session title (truncating) + status
 // dot, ··· overflow right. Sentence-case labels, ≥44pt hit targets.
@@ -306,7 +306,7 @@ export function FocusHeader({
         'flex min-h-11 shrink-0 items-center gap-1 border-b border-border/60 px-1 pt-safe',
         className,
       )}
-      // Shared-element View Transition target (§M23a): same name as the tile, so
+      // Shared-element View Transition target: same name as the tile, so
       // the tapped tile morphs into this top bar on navigate (Chromium).
       style={
         supportsViewTransitions

@@ -1,7 +1,6 @@
-//! Backend scheduler: tick loop, expression parsing, job runner, HTTP surface
-//! (TECH_PLAN §3.2.12, §3.8; feature-extract §4).
+//! Backend scheduler: tick loop, expression parsing, job runner, HTTP surface.
 //!
-//! **Tick (§3.8 / Codex #6).** A 10s `tokio::time::interval` with
+//! **Tick.** A 10s `tokio::time::interval` with
 //! `MissedTickBehavior::Skip` — the default `Burst` would, on laptop wake from
 //! sleep, fire every missed tick at once and dispatch each schedule N times.
 //! Skip drops missed ticks; the next scheduled tick runs normally. Each tick
@@ -9,7 +8,7 @@
 //! `skipped` run and advances `next_run` WITHOUT firing; the rest dispatch via
 //! [`runner::run`] (which idempotency-gates on the fire-key).
 //!
-//! **Router-registry pattern (§3.4).** [`router_for`] returns this module's
+//! **Router-registry pattern.** [`router_for`] returns this module's
 //! sub-router; `http::router` merges it under the shared bearer-auth layer.
 
 pub mod hook;
@@ -35,13 +34,13 @@ use crate::state::{AppState, SseEvent};
 
 use runner::Trigger;
 
-/// The scheduler tick interval (§3.8 — explicit 10s).
+/// The scheduler tick interval (explicit 10s).
 const TICK_INTERVAL: Duration = Duration::from_secs(10);
-/// Past-due tolerance: beyond this, the window is treated as missed (§3.8).
+/// Past-due tolerance: beyond this, the window is treated as missed.
 const MISSED_WINDOW: chrono::Duration = chrono::Duration::seconds(60);
 /// Grace window for a *one-shot* (`sched_type == 'once'`): a single-fire job that
-/// is past due by less than this is still FIRED rather than silently discarded
-/// (R2-002). A one-shot created while the server was down — or one whose first
+/// is past due by less than this is still FIRED rather than silently discarded.
+/// A one-shot created while the server was down — or one whose first
 /// post-creation tick is slightly past due — should still run a few hours late;
 /// only an egregiously stale one-shot is skip+disabled.
 const ONESHOT_GRACE: chrono::Duration = chrono::Duration::hours(6);
@@ -53,13 +52,13 @@ const ONESHOT_GRACE: chrono::Duration = chrono::Duration::hours(6);
 /// running" (see [`watch::notify_timeout`]).
 const DEFAULT_WATCH_TIMEOUT: i64 = 1800;
 
-// ── tick loop (§3.2.12) ───────────────────────────────────────────────────────
+// ── tick loop ─────────────────────────────────────────────────────────────────
 
 /// Spawn the 10s scheduler tick (fire-and-forget; errors are logged only).
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(TICK_INTERVAL);
-        // Codex #6: drop missed ticks instead of bursting after a sleep.
+        // Drop missed ticks instead of bursting after a sleep.
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
@@ -91,7 +90,7 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
         let scheduled_for_ts = next_run.timestamp();
 
         if now - next_run > MISSED_WINDOW {
-            // R2-002: a still-recent ONE-SHOT is honoured late rather than
+            // A still-recent ONE-SHOT is honoured late rather than
             // discarded. `recompute_next` returns `None` for `sched_type='once'`,
             // so the generic skip path below would NULL `next_run` + set
             // `enabled = 0` — silently dropping a one-shot that fired before the
@@ -102,7 +101,7 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
             let recent_oneshot =
                 sched.sched_type == "once" && now - next_run <= ONESHOT_GRACE;
             if !recent_oneshot {
-                // Missed-window: log + advance, do NOT fire (§3.8). Claim the
+                // Missed-window: log + advance, do NOT fire. Claim the
                 // fire-key first so this only catches GENUINELY missed windows
                 // (server downtime); an in-flight long-running job already holds
                 // the key, so we leave its next_run for `record_fire` and skip.
@@ -119,7 +118,7 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
                         let next = runner::recompute_next(&sched, now);
                         let _ = db::schedules::advance_next(&state.pool, &sched.id, next).await;
                         tracing::info!(schedule = %sched.id, "advanced past missed schedule window (not fired)");
-                        // R2-002: surface a stranded/skipped schedule to clients
+                        // Surface a stranded/skipped schedule to clients
                         // — previously this path was log-only and invisible.
                         let _ = state.sse_tx.send(SseEvent {
                             event: "alerts".to_string(),
@@ -170,7 +169,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/schedules", get(list_handler).post(create_handler))
         // Static segments are registered alongside the `{id}` capture; axum's
         // router prioritizes static segments, so order is unambiguous.
-        .route("/api/schedules/preview", post(preview_handler)) // M21
+        .route("/api/schedules/preview", post(preview_handler))
         // Real installed agent commands for the recipe / command picker (skills +
         // user/managed commands + claude.ai MCP connectors — never built-ins).
         .route("/api/schedules/commands", get(commands_handler))
@@ -196,7 +195,7 @@ fn ok<T: Serialize>(data: T) -> Json<Envelope<T>> {
 
 // ── create ────────────────────────────────────────────────────────────────────
 
-/// Create-schedule request body (feature-extract §4.1). `schedule_expr` is the
+/// Create-schedule request body. `schedule_expr` is the
 /// canonical cadence; `recurrence`+`run_at` are an accepted legacy alternative.
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateScheduleInput {
@@ -236,7 +235,7 @@ pub struct CreateScheduleInput {
     /// tier; idle detection stays the fallback.
     #[serde(default)]
     pub confirm_finish: Option<bool>,
-    /// M21 "test fire": create the schedule, run it ONCE immediately, return the
+    /// "test fire": create the schedule, run it ONCE immediately, return the
     /// run result, then delete it — so the user can prove a job works before
     /// committing it. Never persists a live schedule.
     #[serde(default, rename = "_test_fire")]
@@ -393,7 +392,7 @@ async fn create_handler(
     State(state): State<AppState>,
     Json(input): Json<CreateScheduleInput>,
 ) -> Result<impl IntoResponse, AppError> {
-    // M21 test-fire: create, run once, capture the result, then delete. The
+    // Test-fire: create, run once, capture the result, then delete. The
     // schedule never goes live; the user gets immediate proof the job works.
     if input.test_fire {
         let result = test_fire(&state, input).await?;
@@ -410,7 +409,7 @@ pub struct TestFireResult {
     pub note: String,
 }
 
-/// Run a schedule ONCE synchronously without leaving it live (M21). The schedule
+/// Run a schedule ONCE synchronously without leaving it live. The schedule
 /// is created (so id/audit semantics are identical to a real fire), executed via
 /// the manual-run path (no idempotency key, no cadence advance), the resulting
 /// `schedule_runs` row is read back, then the schedule is soft-deleted.
@@ -418,7 +417,7 @@ pub async fn test_fire(
     state: &AppState,
     input: CreateScheduleInput,
 ) -> Result<TestFireResult, AppError> {
-    // R2-001: a `boot`-kind run spawns a REAL, persistent session (a `sessions`
+    // A `boot`-kind run spawns a REAL, persistent session (a `sessions`
     // row + a tmux/pty process, and optionally a git worktree). `test_fire` only
     // soft-deletes the *schedule* row, so test-firing a boot schedule would
     // leave a permanent orphan session/worktree behind on every call — breaking
@@ -448,7 +447,7 @@ pub async fn test_fire(
     Ok(result)
 }
 
-/// `POST /api/schedules/preview` (M21). Parse `expression` WITHOUT persisting and
+/// `POST /api/schedules/preview`. Parse `expression` WITHOUT persisting and
 /// return the next up-to-5 fire times as RFC3339 strings, so the create dialog
 /// can preview a cadence as the user types.
 async fn preview_handler(

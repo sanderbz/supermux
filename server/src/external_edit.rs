@@ -1,5 +1,4 @@
-//! "Edit in native editor" — the `$EDITOR` browser bridge + its server endpoints
-//! (feat-edit-in-native-editor).
+//! "Edit in native editor" — the `$EDITOR` browser bridge + its server endpoints.
 //!
 //! ## Why this is clean (Claude owns the contract)
 //! Claude Code has a built-in `chat:externalEditor` action (Ctrl+G). When
@@ -35,7 +34,7 @@
 //!      back the original = a no-op). A bridge bug can never corrupt or wedge
 //!      Claude's buffer.
 //!
-//! ## Auth (mirrors `hooks.rs`, §6.5)
+//! ## Auth (mirrors `hooks.rs`)
 //! `open` + `result` use the per-session `X-Supermux-Hook-Token` (NOT the dashboard
 //! bearer — the bridge runs inside the pane, which never holds the bearer),
 //! constant-time-compared against `session_runtime.hook_token`. `submit` is a
@@ -249,7 +248,7 @@ pub fn router_for(state: AppState) -> Router {
 
 /// Constant-time validation of the per-session hook token (mirrors `hooks.rs`).
 /// A missing session row OR a mismatched/empty token → 401 (no existence oracle,
-/// no timing oracle). The DB row is the source of truth (survives restart, §6.5).
+/// no timing oracle). The DB row is the source of truth (survives restart).
 async fn validate_hook_token(
     state: &AppState,
     session: &str,

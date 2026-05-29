@@ -1,10 +1,10 @@
-// ScheduleDetailSheet (M21) — the single editor surface for BOTH create and
+// ScheduleDetailSheet — the single editor surface for BOTH create and
 // edit. One full-height right-side <Sheet> shell (the one that scrolls correctly
-// — see schedule-rework.plan.md: the old centered create Dialog couldn't bound
-// its ScrollArea on mobile). `create` mode shows preset recipes + a blank
+// — the old centered create Dialog couldn't bound its ScrollArea on mobile).
+// `create` mode shows preset recipes + a blank
 // editor; `edit` mode binds an existing row, adds the fire log, the run-now /
 // delete / enable header actions, and the run history. Both render the shared
-// <ScheduleEditor>. The `skipped` run status surfaces the M8 missed-window /
+// <ScheduleEditor>. The `skipped` run status surfaces the missed-window /
 // idempotency behaviour (a fire-key collision or a >60s-late window logs a
 // skipped run rather than double-firing).
 
@@ -283,7 +283,7 @@ const STATUS_STYLE: Record<string, string> = {
   skipped: 'bg-status-idle/15 text-muted-foreground',
 }
 
-/** Status pill. `skipped` is the M8 missed-window / idempotency outcome. */
+/** Status pill. `skipped` is the missed-window / idempotency outcome. */
 function StatusPill({ status }: { status: string }) {
   return (
     <span

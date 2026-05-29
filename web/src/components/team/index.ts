@@ -1,6 +1,6 @@
-// Agent Teams overview surface — public barrel (AT-F-FRONT / F1+F2+F5).
+// Agent Teams overview surface — public barrel.
 //
-// The overview imports the TEAM CARD from here; AT-F3 (mission control) can reuse
+// The overview imports the TEAM CARD from here; mission control can reuse
 // the teammate primitives (chip, card, focus) directly. A teammate tap now
 // navigates directly to the FOCUS page (`/focus/<lead>?teammate=<agent_id>`) —
 // the in-overview peek half-sheet was deleted; full-screen focus is the single

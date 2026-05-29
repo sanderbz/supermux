@@ -1,6 +1,6 @@
-//! Boards row access (migration 0015 `boards`). Multi-board model (AT-C, plan
-//! §5.5): the single Kanban board became MULTIPLE boards selectable via a
-//! switcher. Each board owns its own cards (`issues.board_id`).
+//! Boards row access (migration 0015 `boards`). Multi-board model: the single
+//! Kanban board became MULTIPLE boards selectable via a switcher. Each board
+//! owns its own cards (`issues.board_id`).
 //!
 //! Runtime-checked queries — see the note in [`super::sessions`]. Higher-level
 //! orchestration (validation, the HTTP envelope, the "main is fixed" rule) lives
@@ -45,8 +45,8 @@ pub async fn get(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Board>> {
         .await
 }
 
-/// Fetch the board registered for a given on-disk team (or None). The lookup key
-/// AT-D/AT-F3 use to find a team's existing board before populating it.
+/// Fetch the board registered for a given on-disk team (or None). The lookup
+/// key used to find a team's existing board before populating it.
 pub async fn get_by_team(pool: &SqlitePool, team_name: &str) -> sqlx::Result<Option<Board>> {
     sqlx::query_as::<_, Board>("SELECT * FROM boards WHERE team_name = ?")
         .bind(team_name)

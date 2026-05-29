@@ -1,8 +1,8 @@
-// HostBadge (REMOTE_PLAN.md RT9) — a small "this session runs on a remote
+// HostBadge — a small "this session runs on a remote
 // host" indicator. Rendered on session tiles + rows when `session.host_id`
 // is set; absent (and consuming zero space) for local sessions.
 //
-// Design constraints from the milestone spec:
+// Design constraints:
 //   * Globe icon (lucide-react `Globe` — the icon set this codebase already
 //     imports; see layout.tsx, settings.tsx, etc.).
 //   * Truncated host name, max width ~80px.

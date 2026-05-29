@@ -1,4 +1,4 @@
-// TeamWidthToggle — the per-team TEAM CARD width segmented control (FEAT-RESIZE).
+// TeamWidthToggle — the per-team TEAM CARD width segmented control.
 //
 // Lives in the TEAM CARD header next to the existing Chips↔Cards density toggle
 // and matches that toggle's geometry EXACTLY (h-8, rounded-lg, bg-muted, p-0.5

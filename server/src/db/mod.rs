@@ -1,9 +1,7 @@
-//! Persistence layer (TECH_PLAN §3.2.4, §3.3).
+//! Persistence layer.
 //!
 //! [`init`] opens the SQLite pool with WAL + foreign keys and runs the embedded
-//! migrations. Per-table query modules live alongside this file; M1 fleshes out
-//! [`sessions`] and [`board`], leaving the rest as typed stubs for later
-//! milestones to fill in.
+//! migrations. Per-table query modules live alongside this file.
 
 use std::time::Duration;
 
@@ -226,7 +224,7 @@ mod tests {
         sessions::insert_minimal(&pool, "alpha", "/tmp/alpha", "shell")
             .await
             .unwrap();
-        // A runtime row with a per-session hook token (Eng P1 #3).
+        // A runtime row with a per-session hook token.
         sessions::ensure_runtime(&pool, "alpha", "hooktok-alpha")
             .await
             .unwrap();

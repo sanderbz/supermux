@@ -1,4 +1,4 @@
-// useMediaQuery — subscribe to a CSS media query (TECH_PLAN §4.3 / §4.8).
+// useMediaQuery — subscribe to a CSS media query.
 //
 // Used to fork tile behaviour by input modality: `pointer: fine` enables the
 // desktop hover-peek; `pointer: coarse` enables tap + long-press. Also forks the

@@ -96,7 +96,7 @@ const OVERVIEW_PREVIEW_OPTIONS: { value: OverviewPreview; label: string }[] = [
   { value: 'text', label: 'Text' },
 ]
 
-/** Fixed default-model list (§M22). '' = whatever the server is configured to. */
+/** Fixed default-model list. '' = whatever the server is configured to. */
 const MODELS: { value: string; label: string }[] = [
   { value: '', label: 'Server default' },
   { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
@@ -190,10 +190,10 @@ function RegenerateTokenButton({ onRotated }: { onRotated: (token: string) => vo
   function confirm() {
     regen.mutate(undefined, {
       onSuccess: (res) => {
-        // Keep the live token on `window` (NOT localStorage) per §4.10.
+        // Keep the live token on `window` (NOT localStorage).
         window._SUPERMUX_AUTH_TOKEN = res.token
         onRotated(res.token)
-        // M23b contract: drop the cached HTML shell + tell the SW the token
+        // Drop the cached HTML shell + tell the SW the token
         // rotated, so the next load doesn't serve a doc holding the old token.
         try {
           void caches?.delete?.('supermux-html')
@@ -255,7 +255,7 @@ function RegenerateTokenButton({ onRotated }: { onRotated: (token: string) => vo
   )
 }
 
-/** Settings → Experimental (AT-B). The Agent Teams toggle enables running
+/** Settings → Experimental. The Agent Teams toggle enables running
  *  several Claude agents in parallel for one task. State lives server-side
  *  (default OFF) and takes effect on the next new session. An older server build
  *  that lacks the endpoint surfaces as `isError`: a calm "not supported yet"
@@ -330,7 +330,7 @@ function ConnectionSection() {
   )
 }
 
-/** Settings → Onboarding (M27). "Run the 30-second demo" clears the
+/** Settings → Onboarding. "Run the 30-second demo" clears the
  *  first-launch flag, removes the one demo session supermux booted (if any), then
  *  navigates to `/` so the unboxing replays from a clean slate. */
 function OnboardingSection() {
@@ -795,7 +795,7 @@ export function Settings() {
           so the big `<h1>` title block below it also clears the notch. */}
       <motion.header
         style={{ opacity: navOpacity }}
-        // SD-6: min-h (not h) so the notch inset (pt-safe) ADDS to the bar height
+        // min-h (not h) so the notch inset (pt-safe) ADDS to the bar height
         // instead of eating into a fixed 48px — otherwise the title is squished
         // under the Dynamic Island in the iOS standalone PWA. Desktop resets
         // pt-safe (sm:pt-0), where min-h-12 renders identically to h-12.

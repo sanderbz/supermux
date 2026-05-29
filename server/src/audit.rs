@@ -1,11 +1,11 @@
-//! Audit-log read endpoint (TECH_PLAN §3.4, §6.4; M9).
+//! Audit-log read endpoint.
 //!
 //! `GET /api/audit?limit=N` returns the most-recent audit rows for the Settings
-//! audit viewer (§4 settings reference). Auth required — it is mounted under the
+//! audit viewer. Auth required — it is mounted under the
 //! bearer layer (audit history is operator-only). The write side lives in
 //! [`crate::db::audit`] and is called from every destructive handler.
 //!
-//! **Router-registry pattern (§3.4).** [`router_for`] returns this module's
+//! **Router-registry pattern.** [`router_for`] returns this module's
 //! sub-router; `http::router` merges it under the bearer layer additively.
 
 use axum::extract::{Query, State};
@@ -37,7 +37,7 @@ struct AuditQuery {
     limit: Option<i64>,
 }
 
-/// `GET /api/audit?limit=N` — last N audit rows, newest first (§3.4).
+/// `GET /api/audit?limit=N` — last N audit rows, newest first.
 async fn audit_list(
     State(state): State<AppState>,
     Query(q): Query<AuditQuery>,

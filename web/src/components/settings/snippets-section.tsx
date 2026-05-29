@@ -13,9 +13,9 @@ import {
 
 /** Saved-command manager. Rows live inside a [`Section`] (the divide-y comes
  *  from the card), so this renders rows + an inline add form. Wired to the real
- *  `/api/snippets` CRUD via `use-commands` — the SAME M9 client + `['snippets']`
+ *  `/api/snippets` CRUD via `use-commands` — the SAME client + `['snippets']`
  *  cache the focus snippet panel uses, so a snippet created here shows in the
- *  slash-menu panel and vice-versa (review R3-003: one client, one cache). */
+ *  slash-menu panel and vice-versa (one client, one cache). */
 export function SnippetsSection() {
   const { data, isLoading, isError } = useSnippets()
   const create = useCreateSnippet()

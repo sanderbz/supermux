@@ -1,7 +1,7 @@
-// use-two-finger — M17. Two-finger PageUp/PageDown recognizer over the terminal.
+// use-two-finger — two-finger PageUp/PageDown recognizer over the terminal.
 //
-// TECH_PLAN §4.4 (gestures bullet) + research/termius-ios-native-spec.md
-// §"Two-finger PageUp / PageDown" + v3 acceptance criterion #7.
+// See research/termius-ios-native-spec.md §"Two-finger PageUp / PageDown" +
+// v3 acceptance criterion #7.
 //
 // Tracks two SIMULTANEOUS pointers inside the terminal viewport, averages their
 // vertical translation, and emits scrollback keys:

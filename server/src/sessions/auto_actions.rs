@@ -1,10 +1,10 @@
-//! Per-session background watchers (TECH_PLAN §3.6, §3.2.8; M5a core + M5b fusion).
+//! Per-session background watchers.
 //!
 //! One `tokio` task per live session that captures the pane, runs the
 //! [`StatusDetector`] fusion rule, and writes the hero data flow:
 //!
 //! ```text
-//! status detector tick (ADAPTIVE cadence, or sooner on a hook wake — M-CADENCE:
+//! status detector tick (ADAPTIVE cadence, or sooner on a hook wake:
 //!   1s hot-active / 2s active / 4s idle / 5s waiting)
 //!   ├─ skip?  pty bytes <2s AND last_status == Active AND preview < tier
 //!   │         → reuse last_capture
@@ -20,15 +20,15 @@
 //! ```
 //!
 //! `last_capture` is the single canonical source the `SessionView.preview_lines`
-//! builder reads (CEO #1) — written every tick, classification or not.
+//! builder reads — written every tick, classification or not.
 //!
-//! **M5b layer (this file).** The `last_hook` signal, the per-session
+//! The `last_hook` signal, the per-session
 //! [`watch::Sender`](tokio::sync::watch) `send_replace`, the SSE `status` +
 //! `sessions` deltas, the 50ms flap debounce, and the sub-second hook wake all
 //! live here. The detector core ([`super::status`]) is the pure classifier; this
 //! file is its plumbing.
 //!
-//! **Locking (§3.2.5).** The tick is read-only on the tmux server
+//! **Locking.** The tick is read-only on the tmux server
 //! (`capture-pane`) and MUST NOT take the per-session `SessionLock`, or a chatty
 //! `send` burst would starve detection.
 
@@ -46,21 +46,21 @@ use super::status::{self, Status, StatusDetector};
 use super::tmux::Tmux;
 use super::transport::{HostId, Transport};
 
-/// Detector cadence floor (§3.6 — "runs every 2s" baseline). The loop no longer
+/// Detector cadence floor ("runs every 2s" baseline). The loop no longer
 /// uses a single fixed interval: after each tick it computes an ADAPTIVE delay
-/// via [`status::cadence_for`] (1s hot-active / 2s active / 4s idle / 5s waiting,
-/// M-CADENCE). This constant is the safe fallback delay used only when a tick
+/// via [`status::cadence_for`] (1s hot-active / 2s active / 4s idle / 5s waiting).
+/// This constant is the safe fallback delay used only when a tick
 /// errors out before it can report a status (so a persistent failure can't
 /// hot-spin). A hook wake can still re-tick sooner than any computed delay.
 const FALLBACK_DELAY: Duration = Duration::from_secs(2);
 
-/// Flap debounce (§3.7): on a detected transition, re-confirm against fresh
+/// Flap debounce: on a detected transition, re-confirm against fresh
 /// signals after this window and only commit a status that held stable, so a
 /// burst of conflicting hooks/heartbeats can't broadcast a state it immediately
 /// leaves. 50ms ≪ the 2s tick, so steady-state latency is unaffected.
 const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 
-/// How many trailing lines the tile preview surfaces (§3.6 hero flow, §3.4).
+/// How many trailing lines the tile preview surfaces.
 /// Sized to feed BOTH preview modes from one capture: the static tile shows
 /// the bottom 6 (CSS-clipped via container height + fade mask), and the
 /// Settings → Expanded-text hover mode reveals the full ~20-line tail.
@@ -81,7 +81,7 @@ const PREVIEW_LINES: usize = 20;
 /// enum's [`Status::Stopped`]). A session whose tmux pane genuinely exists is
 /// left untouched: the 2s detector loop classifies it live.
 ///
-/// REMOTE_PLAN §RT7: extended to reconcile REMOTE hosts too. Local sessions
+/// Extended to reconcile REMOTE hosts too. Local sessions
 /// (`host_id IS NULL`) keep the existing per-session `has-session` probe path
 /// (byte-for-byte unchanged). Remote sessions are handled per-host: for every
 /// row in `hosts` (non-soft-deleted), we run ONE `tmux ls` over the host's SSH
@@ -124,10 +124,10 @@ pub async fn reconcile_on_boot(state: &AppState) {
         tracing::info!(name = %s.name, "status reconcile: tmux pane gone → stopped");
     }
 
-    // ── REMOTE pass (RT7) — per-host `tmux ls` with a 5s timeout each ─────────
+    // ── REMOTE pass — per-host `tmux ls` with a 5s timeout each ──────────────
     // List once outside the per-host loop so a hosts-table read failure short-
     // circuits with one warning instead of N. An empty hosts table is the
-    // pre-RT4 fleet and skips this pass entirely — boot stays at the local-only
+    // pre-remote fleet and skips this pass entirely — boot stays at the local-only
     // cost (asserted by the empty-hosts test in `reattach_multi_host`).
     let hosts = match db::hosts::list(&state.pool).await {
         Ok(h) => h,
@@ -156,7 +156,7 @@ pub async fn reconcile_on_boot(state: &AppState) {
             by_host.get(&host.id).cloned().unwrap_or_default();
         // Per-host 5s wall-clock cap. A hung SSH (broken master, network
         // partition) can't stall boot for more than this — total worst-case
-        // boot time is `5s × N_hosts` (the RT7 acceptance bound).
+        // boot time is `5s × N_hosts` (the acceptance bound).
         let outcome = tokio::time::timeout(
             HOST_REATTACH_TIMEOUT,
             reconcile_host(state, host, &host_sessions),
@@ -180,7 +180,7 @@ pub async fn reconcile_on_boot(state: &AppState) {
     }
 }
 
-/// Per-host reattach budget (RT7 acceptance bullet — "reattach completes within
+/// Per-host reattach budget ("reattach completes within
 /// 5s × N_hosts worst case"). One `tmux ls` over an SSH ControlMaster is sub-ms
 /// once the master is warm; this generous cap exists only for the cold/broken
 /// master and is small enough that an all-down fleet still boots in seconds.
@@ -189,19 +189,19 @@ const HOST_REATTACH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Reconcile every session row on one remote host against ONE `tmux ls` listing.
 ///
 /// * Run `tmux ls -F #{session_name}` over an ad-hoc `Transport::Ssh` for this
-///   host. TODO(RT2): replace the ad-hoc transport with `HostPool.transport_for`
+///   host. TODO: replace the ad-hoc transport with `HostPool.transport_for`
 ///   so the ControlMaster lifecycle is centrally managed (warm/backoff/etc.).
-///   RT7 ships before RT2 — constructing the transport inline keeps the seam
-///   intact (the spawn_command argv is identical) without leaking RT2's
-///   not-yet-merged pool type into the boot path.
+///   Constructing the transport inline keeps the seam intact (the spawn_command
+///   argv is identical) without leaking the not-yet-merged pool type into the
+///   boot path.
 /// * Parse the output for `supermux-<name>` session names.
 /// * For every session row with `host_id = host.id`:
 ///     - DB row exists, tmux session in the listing → leave status as-is (the
 ///       detector loop will re-classify it within the first 2s tick).
 ///     - DB row exists, tmux session NOT in the listing → write `stopped` (the
 ///       same outcome as the local `has-session = false` branch above).
-///     - tmux session in the listing but NO DB row → ignored (RT7 spec — that
-///       is a future "connect-orphan" UX, not a boot-time reattach concern).
+///     - tmux session in the listing but NO DB row → ignored (that is a future
+///       "connect-orphan" UX, not a boot-time reattach concern).
 /// * Bumps the host's `status` to `Reachable` on a clean run.
 ///
 /// On error (SSH failure, parse error, DB write error) returns `Err` and the
@@ -270,9 +270,9 @@ async fn reconcile_host(
 }
 
 /// Construct an ad-hoc `Transport::Ssh` for one host without HostPool (which
-/// lands in RT2, in a parallel branch that may not be merged when RT7 lands).
+/// lands in a parallel branch that may not yet be merged).
 ///
-/// TODO(RT2): replace with `state.host_pool.transport_for(host.id)` once
+/// TODO: replace with `state.host_pool.transport_for(host.id)` once
 /// `HostPool` is in tree — this function should disappear. The control_path
 /// convention here (`<data_dir>/ssh-control/cm-<host_id>`) matches the path
 /// HostPool will own, so an existing master (if any) is re-used; if no master
@@ -297,13 +297,13 @@ fn adhoc_ssh_transport(state: &AppState, host: &Host) -> Transport {
 /// never claim it.
 async fn list_remote_supermux_sessions(transport: &Transport) -> anyhow::Result<HashSet<String>> {
     // `tmux` binary lookup: LOCAL would normally use `which::which`, but the
-    // RT7 reconcile path is only invoked here on REMOTE hosts (the local pass
+    // reconcile path is only invoked here on REMOTE hosts (the local pass
     // above uses the existing `Tmux::exists` flow). The bare `"tmux"` lets the
     // remote shell resolve it via the remote PATH — same convention as
     // `Tmux::program_for_transport` for `Transport::Ssh`.
     let out = transport
         .spawn_command("tmux", &["list-sessions", "-F", "#{session_name}"])
-        // RT7: the outer `tokio::time::timeout` cancels the future on a hung
+        // The outer `tokio::time::timeout` cancels the future on a hung
         // ssh, but that alone doesn't reap the child. `kill_on_drop` ensures
         // a stalled ssh subprocess is killed when the future is dropped, so a
         // partition-induced hang doesn't leak ssh PIDs every boot.
@@ -363,8 +363,8 @@ async fn mark_host_and_sessions_unknown(
 
 /// Spawn detector loops for every existing (non-archived) session. Called once
 /// from `main.rs` on boot so a restarted server resumes detection — the
-/// cold-start path (§3.2.8): each fresh [`StatusDetector`] reads the cold-start
-/// PTY sentinel until a real byte (M4) or a confirming capture arrives.
+/// cold-start path: each fresh [`StatusDetector`] reads the cold-start
+/// PTY sentinel until a real byte or a confirming capture arrives.
 pub async fn spawn_all(state: &AppState) {
     let names = match db::sessions::list(&state.pool).await {
         Ok(sessions) => sessions.into_iter().map(|s| s.name).collect::<Vec<_>>(),
@@ -378,19 +378,19 @@ pub async fn spawn_all(state: &AppState) {
     }
 }
 
-/// Spawn the adaptive-cadence status detector loop for one session (M-CADENCE:
-/// 1s hot-active / 2s active / 4s idle / 5s waiting). Idempotent at the
+/// Spawn the adaptive-cadence status detector loop for one session
+/// (1s hot-active / 2s active / 4s idle / 5s waiting). Idempotent at the
 /// system level: the loop self-terminates the moment the session row is gone
-/// OR archived (R1-1 — `exists_active` filters `archived = 0`), so churn never
+/// OR archived (`exists_active` filters `archived = 0`), so churn never
 /// leaks tasks. Safe to call once per session (boot via [`spawn_all`], create
 /// via `sessions::create`).
 pub fn spawn_status_loop(state: AppState, name: String) {
     tokio::spawn(async move {
-        // R1-1/R1-2: register this loop as a live per-session task. The guard
+        // Register this loop as a live per-session task. The guard
         // decrements the count on drop (loop exit), so `archive`/`delete` can
         // wait for every loop to stop before running `forget_session`.
         let _task = state.session_task_guard(&name);
-        // Cold-start init (§3.2.8): detector begins Unknown; its first heartbeat
+        // Cold-start init: detector begins Unknown; its first heartbeat
         // is the cold-start sentinel from `AppState::last_pty`. The tick body
         // reconciles the detector's internal `last_status` against the DB on
         // every iteration while we are still `Unknown`, so the
@@ -407,23 +407,23 @@ pub fn spawn_status_loop(state: AppState, name: String) {
         // bounded by this so a continuously streaming agent still re-captures +
         // re-broadcasts its live tail instead of freezing the overview preview for
         // the whole duration of its work. The bound is now the session's CURRENT
-        // cadence tier (M-CADENCE) — not a fixed 4s — so a 1s-tier hot session
+        // cadence tier — not a fixed 4s — so a 1s-tier hot session
         // re-captures within ~1s. Seed it "stale" so the very first tick captures.
         let mut last_capture_at = Instant::now() - status::MAX_PREVIEW_STALENESS;
 
         // Sub-second wake: the hook endpoint pings this so a real Claude
-        // notification surfaces well within the §3.6 "1s" bound, not at the next
+        // notification surfaces well within the "1s" bound, not at the next
         // tier edge. `notify_one` parks a permit, so a wake between ticks is kept.
         let wake = state.detector_wake_for(&name);
 
-        // Adaptive delay until the NEXT tick (M-CADENCE). Starts at the floor so
+        // Adaptive delay until the NEXT tick. Starts at the floor so
         // the first sleep is short; after each tick it is recomputed from the
         // observed status + hot-set membership via `status::cadence_for`.
         let mut delay = FALLBACK_DELAY;
 
         loop {
             // ADAPTIVE pacing: sleep the computed tier delay, but a hook wake can
-            // cut it short for the §3.6 sub-second path. `sleep` (vs a fixed
+            // cut it short for the sub-second path. `sleep` (vs a fixed
             // `interval`) is what lets the cadence change every iteration; a wake
             // simply re-ticks now and the next delay is recomputed as usual, so
             // missed-tick behaviour is inherently "skip, don't burst".
@@ -432,7 +432,7 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 _ = wake.notified() => {}
             }
 
-            // Stop the loop when the session is deleted OR archived (R1-1: the
+            // Stop the loop when the session is deleted OR archived (the
             // *live* row is the lifetime anchor — `exists_active` filters
             // `archived = 0`, so an archived session terminates this loop just
             // like a deleted one and the detector task is not leaked forever).
@@ -440,7 +440,7 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
-                    // R1-9 sibling-hardening: this loop's `tokio::select!` runs at
+                    // Sibling-hardening: this loop's `tokio::select!` runs at
                     // the TOP of the body so a `continue` here is already throttled
                     // by the sleep / wake on the next iteration. Defence-in-depth:
                     // reset the delay to the floor and sleep it on Err so a future
@@ -463,7 +463,7 @@ pub fn spawn_status_loop(state: AppState, name: String) {
             .await
             {
                 // Recompute the next-tick cadence from the JUST-observed status +
-                // live hot-set membership (M-CADENCE tiers): 1s hot-active /
+                // live hot-set membership: 1s hot-active /
                 // 2s active / 4s idle / 5s waiting. A `tick` that skipped its
                 // capture still reports the held status, so the cadence is correct.
                 Ok(observed) => {
@@ -484,14 +484,14 @@ pub fn spawn_status_loop(state: AppState, name: String) {
 
 /// One detector tick. Public so an integration test can drive a single tick
 /// deterministically (rather than waiting on the interval). `last_tail` carries
-/// the previously-broadcast preview tail across ticks for the §3.6 "status OR
+/// the previously-broadcast preview tail across ticks for the "status OR
 /// tail6 changed" SSE rule. `last_capture_at` is the time of the last actual
 /// `capture-pane`, used to bound the capture-skip optimization so the live
 /// preview never freezes while an agent streams (see [`status::should_skip_capture_within`]).
 ///
 /// Returns the session's status AS OF THIS TICK (the detector's `last_status`
 /// after the tick, whether it ran a capture or held on a skip). The loop feeds
-/// it into [`status::cadence_for`] to pick the NEXT adaptive delay (M-CADENCE),
+/// it into [`status::cadence_for`] to pick the NEXT adaptive delay,
 /// and the tick records it into the shared recency tracker for the hot-set rank.
 pub async fn tick(
     state: &AppState,
@@ -543,7 +543,7 @@ pub async fn tick(
     // The apex fusion signal — the per-session TURN STATE (newest instant of each
     // turn-relevant hook). The turn state machine inside `detect` marks the
     // session Active for the whole turn (incl. a silent think), outranking the
-    // regex bank + heartbeat (§3.6; the "busy while thinking" fix).
+    // regex bank + heartbeat (the "busy while thinking" fix).
     let turn = state.turn_state(name);
 
     // Record this session's CURRENT (held) status into the shared recency tracker
@@ -553,14 +553,14 @@ pub async fn tick(
     state.record_recency(name, held);
 
     // The capture-skip staleness is bound to this session's CURRENT cadence tier
-    // (M-CADENCE) rather than a fixed 4s: a 1s-tier hot-active session must
+    // rather than a fixed 4s: a 1s-tier hot-active session must
     // re-capture within ~1s during streaming, otherwise the old fixed bound would
     // let it skip three 1s ticks in a row and defeat the hot tier. Idle/waiting
     // sessions are not `Active`, so they never reach the staleness check and stay
     // cheap regardless. A tiny margin avoids re-capturing one tick too early.
     let tier = status::cadence_for(held, state.is_hot(name));
 
-    // capture-pane skip optimization (§3.6 [P2] #7): once M4's reader feeds the
+    // capture-pane skip optimization: once the PTY reader feeds the
     // heartbeat, a streaming-Active session keeps its status without a shell-out.
     // BOUNDED by the per-tier preview staleness so a session that streams every
     // tick still re-captures within its cadence and its live tail keeps refreshing
@@ -575,11 +575,11 @@ pub async fn tick(
         // Not running: the detector cannot capture. Leave the status untouched —
         // a never-started session stays Unknown (API renders 'stopped'), and the
         // explicit 'Any → Stopped' transition + side-effects on tmux death are a
-        // separate auto-actions concern deferred past the M5a core (§3.6).
+        // separate auto-actions concern deferred past the current core.
         return Ok(held);
     }
 
-    // M5a heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
+    // Heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
     // the detector's heartbeat branch fires) and is normally spawned on the
     // first WS subscribe via `AppState::pty_for`. Kicking it from here means a
     // session that NOBODY has opened the focus tab for still has a live
@@ -610,7 +610,7 @@ pub async fn tick(
     let prev = detector.last_status();
     let new_status = detector.detect(&capture, last_pty, turn, has_hooks);
 
-    // last_capture writeback — ALWAYS (canonical preview source, CEO #1).
+    // last_capture writeback — ALWAYS (canonical preview source).
     db::sessions::set_last_capture(&state.pool, name, &capture, &capture_ansi).await?;
 
     let tail = tail_lines(&capture);
@@ -647,7 +647,7 @@ pub async fn tick(
         if confirmed != prev || confirmed_drift {
             // DB first, THEN the watch send — a `wait` handler that subscribed
             // late reads the persisted status as its baseline, so no transition is
-            // lost regardless of subscribe timing (Eng P0 #2; see agents::wait).
+            // lost regardless of subscribe timing (see agents::wait).
             db::sessions::set_last_status(&state.pool, name, confirmed.as_str()).await?;
             let version = {
                 let tx = state.status_watch_for(name);
@@ -655,7 +655,7 @@ pub async fn tick(
                 tx.send_replace((confirmed.as_str().to_string(), next));
                 next
             };
-            // SSE `status` event — every status change (M5b acceptance).
+            // SSE `status` event — every status change.
             broadcast(state, "status", json!({
                 "name": name,
                 "status": confirmed.as_str(),
@@ -667,13 +667,13 @@ pub async fn tick(
         // already back to `prev`, so the next tick starts from a clean baseline.
     }
 
-    // ── R1: session→board reaction on a COMMITTED status transition ────────────
+    // ── session→board reaction on a COMMITTED status transition ──────────────
     // Fires only on the genuine, flap-confirmed transition edge (`committed`),
-    // never every tick — that is the one-shot guard the plan asks for. When the
+    // never every tick — that is the required one-shot guard. When the
     // session OWNS a `doing` issue:
     //   * → idle (agent finished its turn): post ONE system comment + set the
     //     `needs_review` flag. FLAG ONLY — the card is NOT auto-moved out of
-    //     `doing` and the next issue is NOT auto-picked (plan §C, safe default).
+    //     `doing` and the next issue is NOT auto-picked (safe default).
     //   * sustained → waiting (agent blocked on the user): set `awaiting_input`
     //     so the board can badge "needs you".
     // No-op when the session owns no `doing` issue. emit_board after a change so
@@ -731,7 +731,7 @@ pub async fn tick(
     Ok(observed)
 }
 
-/// R1 session→board reaction (plan §C.3). Called on a COMMITTED status
+/// Session→board reaction. Called on a COMMITTED status
 /// transition for `session`, with `new` being the status it just transitioned
 /// INTO. Resolves the issue the session OWNS in the `doing` column
 /// (`db::board::doing_issue_for_session`) and applies the safe-default side-effect:
@@ -739,7 +739,7 @@ pub async fn tick(
 /// * `Idle` — the agent finished its turn. Post a single SYSTEM comment
 ///   (author `system`) AND set the issue's `needs_review` flag, so the board can
 ///   badge the card "needs review". We do NOT move the column and do NOT auto-pick
-///   the next issue (plan open-question 5 default). Guarded by `needs_review == 0`
+///   the next issue (safe default). Guarded by `needs_review == 0`
 ///   so a flicker idle→active→idle while the issue is still unreviewed cannot post
 ///   a second comment (one-shot per review cycle, mirroring the `notified` latch).
 /// * `Waiting` — the agent is blocked on the user (the existing →Waiting alert
@@ -812,8 +812,8 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
             }
         }
         Status::Active => {
-            // The agent resumed working — clear BOTH attention flags (spec §3:
-            // "active → clear both"). A running agent is neither blocked
+            // The agent resumed working — clear BOTH attention flags
+            // ("active → clear both"). A running agent is neither blocked
             // (`awaiting_input`) nor finished-and-awaiting-review (`needs_review`):
             // it picked the work back up, so both stale badges come down. Only
             // write + re-publish when at least one flag actually flips off.
@@ -849,7 +849,7 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
 /// * Anything else (Active / Starting / Unknown) is intentionally silent — not
 ///   a user-actionable edge.
 ///
-/// **Trailing-coalesce debounce (SD-13b).** Instead of firing immediately, the
+/// **Trailing-coalesce debounce.** Instead of firing immediately, the
 /// send is scheduled after a quiet window — each fresh transition for this
 /// session CANCELS the prior pending send (via the abort handle in
 /// `state.pending_pushes`) and schedules a new one. At expiry the timer task
@@ -860,8 +860,8 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
 /// lead orchestrating teammates pulses Idle every few seconds — we want one
 /// "team finished" ping after things actually settle, not six in a minute.
 ///
-/// The body for Waiting is enriched via [`AppState::push_reason_for`] (set by
-/// `feat/hooks-be` once a blocked reason / last_error is captured); a generic
+/// The body for Waiting is enriched via [`AppState::push_reason_for`] (set
+/// once a blocked reason / last_error is captured); a generic
 /// fallback covers cold-start. `send_push_for` itself no-ops cheaply when
 /// nobody is subscribed OR the category is muted.
 pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
@@ -971,7 +971,7 @@ pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
 }
 
 /// Last [`PREVIEW_LINES`] lines of the (already ANSI-stripped) capture — the tile
-/// preview tail surfaced over SSE, matching `SessionView::preview_lines` (§3.4).
+/// preview tail surfaced over SSE, matching `SessionView::preview_lines`.
 fn tail_lines(capture: &str) -> Vec<String> {
     if capture.is_empty() {
         return Vec::new();
@@ -1012,7 +1012,7 @@ fn broadcast(state: &AppState, event: &str, payload: Value) {
 
 #[cfg(test)]
 mod board_reaction_tests {
-    //! R1 session→board reaction unit tests. Drive [`react_to_transition`]
+    //! Session→board reaction unit tests. Drive [`react_to_transition`]
     //! directly (the same one-shot side-effect the committed-transition edge in
     //! [`tick`] invokes) so the board reaction is exercised without a live tmux.
 

@@ -1,4 +1,4 @@
-// team-strip-group.tsx — AT-H2.
+// team-strip-group.tsx
 //
 // One detected Agent Team rendered as a GROUPED section in the desktop focus
 // session-strip — the focus-view analogue of the overview's TEAM CARD header +
@@ -104,7 +104,7 @@ export function TeamStripGroup({
   )
 }
 
-// ── Team header roll-up (mirrors the overview TeamCard §5.2 language) ──────────
+// ── Team header roll-up (mirrors the overview TeamCard language) ──────────────
 // The attention badges (primary token + muted secondary) are the SHARED
 // <TeamRollupBadges> at the `strip` density — the SAME markup the overview
 // TeamCard renders — so the focus + overview roll-ups never drift.

@@ -1,5 +1,4 @@
-//! Resumable Claude conversations for a session's working dir
-//! (feat-resume-picker).
+//! Resumable Claude conversations for a session's working dir.
 //!
 //! Starting a stopped session always launched a *clean* `claude`. The Resume
 //! affordance lets the user reopen a PAST conversation for that session's dir

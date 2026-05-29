@@ -1,4 +1,4 @@
-//! Per-session live pty stream (TECH_PLAN §3.2.7, REMOTE_PLAN §RT3).
+//! Per-session live pty stream.
 //!
 //! Each running session has one [`PtyStream`]. It drives a single reader that
 //! fans pane output out to every WebSocket subscriber via a
@@ -6,7 +6,7 @@
 //! freshly-connected (or reconnecting) client can be brought up to date
 //! immediately.
 //!
-//! **Reader trait (RT3).** The reader half is now a [`PtyReader`] trait with
+//! **Reader trait.** The reader half is now a [`PtyReader`] trait with
 //! two implementations:
 //!
 //! * [`LocalPtyReader`] — today's logic verbatim: `mkfifo` on this host, attach
@@ -30,7 +30,7 @@
 //! status-detector wake — is BYTE-FOR-BYTE identical regardless of where the
 //! pane lives.
 //!
-//! **Spawn-once (Eng concurrency #1).** [`PtyStream::ensure_started`] is
+//! **Spawn-once.** [`PtyStream::ensure_started`] is
 //! idempotent and race-safe via [`tokio::sync::OnceCell`]: many concurrent
 //! subscribers may call it, but only one mkfifos + `pipe-pane`s + spawns the
 //! reader. When the reader exits (tmux gone), the stream is flagged dead so the
@@ -114,7 +114,7 @@ type Replay = RwLock<VecDeque<Bytes>>;
 
 /// One pane's live stream: reader + broadcast fan-out + replay buffer.
 ///
-/// **Stream KEY vs tmux TARGET (Agent Teams §3.5).** `name` is the pane-unique
+/// **Stream KEY vs tmux TARGET.** `name` is the pane-unique
 /// STREAM KEY: a bare session name for a supermux session, or a pane-unique id
 /// (`%id` / `{lead}/{member}`) for an agent-team teammate pane. It keys the
 /// registry, the FIFO/log filenames, and the heartbeat map. `target` is what tmux
@@ -168,8 +168,8 @@ impl PtyStream {
         Self::new_with_target(name, target, fifo, log, broadcast_capacity)
     }
 
-    /// Construct an un-started stream against an explicit tmux `target` (Agent
-    /// Teams §3.5). For a teammate pane pass `TmuxTarget::Pane("%id")` with a
+    /// Construct an un-started stream against an explicit tmux `target`. For a
+    /// teammate pane pass `TmuxTarget::Pane("%id")` with a
     /// pane-unique `name` (the stream key + FIFO/log basename) so the teammate
     /// stream never clobbers the lead's.
     pub fn new_with_target(
@@ -249,7 +249,7 @@ impl PtyStream {
         (snapshot, rx)
     }
 
-    /// Last `n` lines of the replay buffer, ANSI-stripped (CEO #1 fast-path for
+    /// Last `n` lines of the replay buffer, ANSI-stripped (fast-path for
     /// the `SessionSummary` preview without a fresh `capture-pane`).
     pub fn tail(&self, n: usize) -> Vec<String> {
         let mut all = Vec::new();
@@ -271,8 +271,8 @@ impl PtyStream {
     ///
     /// * `host_id = None` (or pane stream) → [`LocalPtyReader`] (today's path,
     ///   unchanged).
-    /// * `host_id = Some(id)` → [`SshPtyReader`] over the host's ControlMaster
-    ///   (REMOTE_PLAN §RT3). Pane streams are always local — a teammate pane
+    /// * `host_id = Some(id)` → [`SshPtyReader`] over the host's ControlMaster.
+    ///   Pane streams are always local — a teammate pane
     ///   lives in the LEAD's tmux session, which (today) is always local.
     ///
     /// `pool` is handed to the reader task so that when the reader exits because
@@ -282,14 +282,14 @@ impl PtyStream {
     ///
     /// `host_pool` is the SSH ControlMaster pool. For LOCAL streams it is
     /// unused; for SSH streams the reader holds an `Arc<HostPool>` so that on a
-    /// ControlMaster bounce (RT2 auto-recovery) it can call
+    /// ControlMaster bounce (auto-recovery) it can call
     /// `host_pool.transport_for(id)` to re-resolve the warm Transport without
     /// caring how the master was respawned.
     ///
-    /// `pty_heartbeat` is the same `DashMap` the M5a status detector reads via
+    /// `pty_heartbeat` is the same `DashMap` the status detector reads via
     /// [`AppState::last_pty`](crate::state::AppState::last_pty). The reader writes
     /// `Instant::now()` here on every byte batch so the detector's heartbeat
-    /// branch (§3.6 fusion rule #3: "bytes <1.5s → `Active`") actually fires.
+    /// branch ("bytes <1.5s → `Active`") actually fires.
     /// Without this wire-up the heartbeat sits at the cold-start sentinel
     /// forever and the regex bank is the detector's only decisive signal — a
     /// session whose prompt the bank doesn't recognise stays stuck at its
@@ -332,7 +332,7 @@ impl PtyStream {
         //       no `sessions` row, always local (lead's tmux is local today).
         //   (b) a LEAD pane targeted by `%id` for a team-host SESSION (the
         //       Agent Teams routing fix) — key IS a session name, so look up
-        //       its row to honour `host_id` (a remote-host team-lead, RT3+).
+        //       its row to honour `host_id` (a remote-host team-lead).
         // The session-row lookup below already disambiguates: a teammate pane
         // misses (`Ok(None)`) and falls through to LOCAL, identical to the
         // legacy "always local for pane streams" behaviour. A LEAD pane finds
@@ -467,7 +467,7 @@ pub struct PtySink {
     pub replay: Arc<Replay>,
     /// Detector wake for the silent→active resume edge (STATLAT).
     pub wake_on_edge: Arc<Notify>,
-    /// M5a heartbeat — stamp on every batch so the status detector reads
+    /// Heartbeat — stamp on every batch so the status detector reads
     /// `Active` off byte flow.
     pub pty_heartbeat: Arc<DashMap<String, Instant>>,
     /// Reader exits when this fires (a SESSION stop/restart). Both reader
@@ -511,8 +511,7 @@ pub enum ReaderExit {
 
 /// Reader trait. One implementation per transport — `LocalPtyReader` for local
 /// sessions (today's FIFO + AsyncFd + keep-alive write fd pattern), and
-/// `SshPtyReader` for sessions whose tmux lives on a remote host (REMOTE_PLAN
-/// §RT3).
+/// `SshPtyReader` for sessions whose tmux lives on a remote host.
 ///
 /// **Self-healing contract.** `run` must return ONLY when the stream is
 /// genuinely dead (the tmux session is gone, the FIFO is permanently
@@ -698,7 +697,7 @@ async fn local_reader_loop(
     }
 }
 
-// ── SshPtyReader (REMOTE_PLAN §RT3) ─────────────────────────────────────────
+// ── SshPtyReader ────────────────────────────────────────────────────────────
 
 /// The SSH-FIFO reader. Spawns a remote `mkfifo`, attaches a remote `pipe-pane`
 /// that writes into the remote FIFO via `tee`, then runs TWO long-lived
@@ -725,8 +724,7 @@ async fn local_reader_loop(
 /// come back, then respawns the cat child. The keep-alive writer is monitored
 /// independently — if it dies it gets respawned too. The replay buffer is NOT
 /// cleared on respawn, so a reconnecting WS client sees the historical bytes
-/// intact (per the RT3 invariant: "stream resumes — replay is intact, new
-/// bytes still flow").
+/// intact (stream resumes — replay is intact, new bytes still flow).
 ///
 /// `run` returns `Ok(())` ONLY when the remote tmux session is genuinely gone
 /// (confirmed via `Tmux::exists` over the transport).
@@ -748,7 +746,7 @@ impl SshPtyReader {
         // remote path has no shell metacharacters: safe to embed inside the
         // double-quoted script-body context our SSH wrappers use). The
         // `$HOME/.supermux-remote/` directory is created on the remote by
-        // RT8's bootstrap, so we don't `mkdir -p` here. See
+        // the bootstrap step, so we don't `mkdir -p` here. See
         // [`SshPtyReader::remote_paths`] for why `$HOME` (not `~/`).
         let (fifo, log) = Self::remote_paths(&stream.name);
         Self {

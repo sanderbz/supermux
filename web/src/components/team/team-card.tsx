@@ -1,13 +1,13 @@
-// TeamCard — the first-class container that OWNS an Agent Team (AT-F-FRONT / F1,
-// plan §5.1–§5.3). A glass panel (rounded-xl, border-border, bg-card — the SAME
+// TeamCard — the first-class container that OWNS an Agent Team.
+// A glass panel (rounded-xl, border-border, bg-card — the SAME
 // chrome as a tile) that renders in EVERY overview sort mode, server-formed,
 // NOT renameable/deletable, NO drag handle. It is the opposite of the custom-mode
 // GroupHeader divider (rename/delete-able, custom-mode-only) — deleting a divider
 // must never imply killing live agents, so we deliberately do NOT reuse it.
 //
 // STRUCTURE:
-//   • Header: team name + the two-tier attention-first roll-up (§5.2) + the
-//     per-team Chips↔Cards density toggle (§5.3 / F5).
+//   • Header: team name + the two-tier attention-first roll-up + the
+//     per-team Chips↔Cards density toggle.
 //   • Lead: rendered as a FULL session tile at the top (reusing <SessionTile>,
 //     fed from /api/sessions by `lead_supermux_session`). The lead IS a normal
 //     supermux session; teammates are NOT.
@@ -56,7 +56,7 @@ export interface TeamCardProps {
 
 export function TeamCard({ team, sizeTier }: TeamCardProps) {
   const [density, setDensity] = useTeamDensity(team.team_name)
-  // Per-team desktop width tier (FEAT-RESIZE). The store defaults to `'full'`
+  // Per-team desktop width tier. The store defaults to `'full'`
   // so the overview reads identically to today until the user opts in. The
   // outer `<section>` reads the tier and applies a max-width (`full` ⇒ no
   // cap), and the overview's flex-wrap container lays sibling cards out
@@ -86,7 +86,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
     [navigate, team.lead_supermux_session],
   )
 
-  // Width tier → desktop sizing tokens (FEAT-RESIZE). Applied as inline style
+  // Width tier → desktop sizing tokens. Applied as inline style
   // so the four tiers are JIT-safe without flooding the Tailwind class list.
   // Mobile (< sm) ALWAYS gets `width: 100%` + `flex: '1 1 100%'` so the card
   // stays full-width regardless of tier — the resize feature is desktop-only.
@@ -175,7 +175,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
   )
 }
 
-// ── Roll-up header (§5.2) ────────────────────────────────────────────────────
+// ── Roll-up header ───────────────────────────────────────────────────────────
 // Attention-first: ONE loud token when present (the blue `needs you · N` pill in
 // the tile waiting-pill geometry) else a calm green "done"; a muted, tabular
 // secondary (`N agents · X/Y tasks`) that drops first on a narrow screen. We do
@@ -227,7 +227,7 @@ function TeamRollup({
           card itself is too narrow regardless of the screen size. */}
       <TeamRollupBadges team={team} density="card" hideSecondary={isCompact} />
 
-      {/* Width toggle — per-team TEAM CARD width (FEAT-RESIZE). Desktop-only
+      {/* Width toggle — per-team TEAM CARD width. Desktop-only
           (the component itself is `hidden sm:flex`); the narrow screen always
           renders the card full-width, so the control would be a no-op. Sits
           just before the density toggle so the two read as one pair of
@@ -250,7 +250,7 @@ function TeamRollup({
   )
 }
 
-// ── Width tier → sizing style (FEAT-RESIZE) ──────────────────────────────────
+// ── Width tier → sizing style ────────────────────────────────────────────────
 // The TEAM CARD wrapper applies these as inline style: max-width caps the
 // card at the chosen tier, flex-basis seeds the flex-wrap parent so siblings
 // honour the cap when they share a row. `full` → no cap (current behaviour).

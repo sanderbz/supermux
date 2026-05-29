@@ -1,4 +1,4 @@
-// DesktopSplit — M14 (TECH_PLAN §4.4 desktop + §4.4.3 dock).
+// DesktopSplit — desktop two-column focus mode + dock.
 //
 // The desktop focus mode: a two-column flex — a 320px session-strip on the left
 // (vertical scroll of <CompactTile>, current row highlighted via a spring), and
@@ -7,10 +7,10 @@
 //
 // Keyboard capture lives here: a document-level keydown listener (useKeyboard
 // capture) intercepts ONLY ⌘K / ⌘D / ⌘W / ⌘1..9; all other keys flow to the
-// xterm (M13 LiveTerminal) untouched. The dock send-row chips and the keyboard
+// xterm (LiveTerminal) untouched. The dock send-row chips and the keyboard
 // shortcuts share one imperative LiveTerminal handle captured via `onReady`.
 //
-// The LiveTerminal (M13) is REUSED verbatim — we do not reimplement xterm. The
+// The LiveTerminal is REUSED verbatim — we do not reimplement xterm. The
 // session-strip reuses the overview `TileSession` data via `useFocusSessions`
 // (single source of truth — no second fetch, WebSocket/SSE-driven downstream).
 
@@ -47,7 +47,7 @@ export interface DesktopSplitProps {
   sessions: TileSession[]
   /** The focused row (may be null before the store resolves). */
   current: TileSession | null
-  /** Detected Agent Teams (AT-B). The strip groups a team's lead + teammates
+  /** Detected Agent Teams. The strip groups a team's lead + teammates
    *  consistently with the overview TEAM CARD; empty array = today's flat list
    *  (zero regression). */
   teams?: Team[]
@@ -57,7 +57,7 @@ export interface DesktopSplitProps {
   onDetach: () => void
   /** Stop (⌘W): stop the session, then leave. */
   onStop: () => void
-  /** FEAT-CONVERT-TEAM: open the "Make it a team" sheet for the focused
+  /** Open the "Make it a team" sheet for the focused
    *  session. Omit to hide the affordance entirely (e.g. the route gates it on
    *  "already a team lead" / archived). */
   onMakeTeam?: () => void
@@ -167,7 +167,7 @@ export function DesktopSplit({
     [onSelect],
   )
   // One imperative LiveTerminal handle, shared by the dock chips + the keyboard
-  // shortcuts. Captured via the M13 `onReady` callback — no re-subscribe.
+  // shortcuts. Captured via the `onReady` callback — no re-subscribe.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
   // The pane that wraps xterm — used as the DOM-focus anchor for the capture
   // indicator: when focus moves anywhere INSIDE this subtree (xterm's hidden
@@ -181,7 +181,7 @@ export function DesktopSplit({
   // listener is what actually drives the badge.
   const [capturingInput, setCapturingInput] = React.useState(false)
 
-  // M18 snippet panel — the dock's "+" button opens it; desktop has no separate
+  // Snippet panel — the dock's "+" button opens it; desktop has no separate
   // text composer, so both tap-insert and long-press-run send straight to xterm.
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
 
@@ -517,10 +517,10 @@ export function DesktopSplit({
             {status === 'stopped' ? (
               <StoppedSession name={name} />
             ) : (
-              /* M13 LiveTerminal — reused verbatim. The keydown capture
+              /* LiveTerminal — reused verbatim. The keydown capture
                  deliberately does NOT preventDefault on ordinary keys, so
                  Ctrl-C / arrows / Tab / Shift+Tab / Esc / text all reach xterm's
-                 onData → the M4 pty WS. */
+                 onData → the pty WS. */
               <LiveTerminal name={name} onReady={handleTermReady} />
             )}
           </Dropzone>
@@ -563,7 +563,7 @@ export function DesktopSplit({
         )}
       </main>
 
-      {/* M18 snippet panel — slides up over the dock; tap-insert and long-press
+      {/* Snippet panel — slides up over the dock; tap-insert and long-press
           both fire the snippet body into xterm (no separate composer here). */}
       <SnippetPanel
         open={snippetsOpen}

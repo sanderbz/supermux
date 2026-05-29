@@ -1,7 +1,7 @@
-//! FileTransport: a host-agnostic file-ops trait (REMOTE_PLAN §RT6).
+//! FileTransport: a host-agnostic file-ops trait.
 //!
 //! **The seam.** Every `tokio::fs` / `std::fs` call in `files::mod.rs` (and,
-//! later in RT5, `claude_config::install_hooks`) funnels through a
+//! later, `claude_config::install_hooks`) funnels through a
 //! [`FileTransport`] so the handler doesn't care whether the bytes live on the
 //! orchestrator's local disk or on a remote host reached over the existing SSH
 //! [`HostPool`] ControlMaster. Two concrete impls:
@@ -12,7 +12,7 @@
 //!
 //! ## Why shell-outs and NOT a protocol-level SFTP client
 //!
-//! The original RT6 plan considered russh + russh-sftp. We rejected that path
+//! The original plan considered russh + russh-sftp. We rejected that path
 //! because those two crates pull in a heavy crypto stack (ring + chacha20 +
 //! sha2 + …) that visibly slows `cargo build` and duplicates work already done
 //! by OpenSSH's `ssh` binary, which the server already shells out to from
@@ -296,7 +296,7 @@ trap - EXIT
         //
         // NOTE: `find` differs subtly across coreutils vs BSD; we target GNU
         // here (the typical Linux remote) and accept that macOS hosts won't
-        // be the common case for RT6.
+        // be the common case.
         let mut cmd = transport.spawn_command(
             "find",
             &[

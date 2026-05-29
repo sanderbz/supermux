@@ -3,7 +3,7 @@
 // While a hover-peek is OPEN for a tile, this hook installs a single
 // document-level `keydown` listener and forwards qualifying keystrokes to the
 // peeked session's pty via callbacks the caller wires to the same imperative
-// `send`/`sendKey` surface the M13 `useLiveTerm` already exposes (no new WS
+// `send`/`sendKey` surface the `useLiveTerm` already exposes (no new WS
 // protocol — same wire the focus terminal uses).
 //
 // PROVENANCE: v2 shipped this exact pattern under the name "type-on-hover" —
@@ -66,10 +66,10 @@ export interface UsePeekTypeOptions {
    *  no listener is installed (zero overhead while no peek is open). */
   enabled: boolean
   /** Send a printable character (or multi-char IME burst) to the pty. Wire to
-   *  the M13 `useLiveTerm` imperative `send` (same WS the focus term uses). */
+   *  the `useLiveTerm` imperative `send` (same WS the focus term uses). */
   onText: (text: string) => void
   /** Send a named key (Enter, Tab, Arrow*, Backspace, …) to the pty. Wire to
-   *  the M13 `useLiveTerm` imperative `sendKey`. */
+   *  the `useLiveTerm` imperative `sendKey`. */
   onKey: (name: string) => void
   /** Close the peek — fires on Esc (policy (a): Esc dismisses, never sent). */
   onDismiss: () => void
@@ -233,7 +233,7 @@ export function usePeekType(opts: UsePeekTypeOptions): UsePeekTypeResult {
 
       if (isSendableNamed) {
         // Post-claim: arrows / Tab / Shift+Tab / Enter / Backspace / Page* /
-        // Home / End all flow through `sendKey` → `keyToBytes` → the SAME M13
+        // Home / End all flow through `sendKey` → `keyToBytes` → the SAME
         // WS the focus terminal uses. So ↓/↑ on a claude option menu (or
         // ←/→ on a yes/no prompt) navigates exactly as it would in focus view.
         optsRef.current.onKey(named)

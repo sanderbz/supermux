@@ -37,7 +37,7 @@ function relativeTime(ts: number | string | undefined): string {
 
 function detailText(detail?: string): string {
   if (!detail) return ''
-  // Detail is a JSON string column (§6.4). Render compactly; never a secret.
+  // Detail is a JSON string column. Render compactly; never a secret.
   try {
     const v = JSON.parse(detail)
     if (typeof v === 'string') return v
@@ -97,7 +97,7 @@ function Entry({ row, dim }: { row: AuditEntry; dim: boolean }) {
   )
 }
 
-/** Audit log viewer (§6.4) — last N rows. Graceful loading / error / empty. */
+/** Audit log viewer — last N rows. Graceful loading / error / empty. */
 export function AuditLog() {
   const { data, isLoading, isError } = useAuditLog(200)
 

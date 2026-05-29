@@ -29,7 +29,7 @@ interface NavItem {
   icon: LucideIcon
   /** Only the Overview route matches exactly; others match by prefix. */
   end?: boolean
-  /** M27 onboarding-tour anchor id (sets `data-tour` on the nav link). */
+  /** Onboarding-tour anchor id (sets `data-tour` on the nav link). */
   tour?: string
   /** Route key the update badge should attach to (v0.3.3). The Settings icon
    *  shows a small dot when `useUpdateBadge` reports an actionable state. */
@@ -41,7 +41,7 @@ const NAV: NavItem[] = [
   { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
   { to: '/scheduler', label: 'Scheduler', icon: CalendarClock, tour: 'scheduler' },
-  // RT9 hosts registry moved into Settings → Remote hosts (rare-use config
+  // Hosts registry moved into Settings → Remote hosts (rare-use config
   // doesn't need a primary-nav slot). `/hosts` redirects to /settings#hosts
   // (App.tsx) so old bookmarks land in the right section.
   { to: '/settings', label: 'Settings', icon: SettingsIcon, badgeKind: 'updates' },
@@ -196,24 +196,24 @@ function BottomNav() {
 }
 
 /** App shell: side-nav (desktop) / top + bottom nav (mobile) wrapping the route
- *  outlet. §M10 / §4.8. The <ReconnectBanner> (§M23a) is mounted ONCE here, at
- *  shell level, so the global connection-status surface floats above every
- *  route — pinned to the safe-area top, independent of the route's own scroll.
+ *  outlet. The <ReconnectBanner> is mounted ONCE here, at shell level, so the
+ *  global connection-status surface floats above every route — pinned to the
+ *  safe-area top, independent of the route's own scroll.
  *
- *  M23b: when launched as an installed PWA (`useStandaloneMode()`), the OS owns
- *  the window chrome, so `data-standalone` is set on the shell root — routes can
+ *  When launched as an installed PWA (`useStandaloneMode()`), the OS owns the
+ *  window chrome, so `data-standalone` is set on the shell root — routes can
  *  key off it (e.g. to drop browser-only back affordances). The `pt-safe` /
  *  `pb-safe` insets already handle the notch + Dynamic Island in both modes.
  *
- *  M27: the <ReconnectBanner> is an IN-FLOW row at the top of the content
- *  column — above <main>, below the mobile top bar — so when it is visible it
- *  reserves vertical space and pushes the route (and its own header chrome)
- *  down. It is never an overlay, so it can never collide with a route header's
- *  view-toggle / search / "New session" controls at any breakpoint. */
+ *  The <ReconnectBanner> is an IN-FLOW row at the top of the content column —
+ *  above <main>, below the mobile top bar — so when it is visible it reserves
+ *  vertical space and pushes the route (and its own header chrome) down. It is
+ *  never an overlay, so it can never collide with a route header's view-toggle
+ *  / search / "New session" controls at any breakpoint. */
 export function Layout() {
   const standalone = useStandaloneMode()
-  // R3-202: register the shared SSE channel with the global connection-store
-  // exactly once, at shell level. Previously this lived in `useSessions`, which
+  // Register the shared SSE channel with the global connection-store exactly
+  // once, at shell level. Previously this lived in `useSessions`, which
   // could be mounted from multiple routes simultaneously — racing reports under
   // the same `'sse'` id let last-write-wins flip the banner's view of stream
   // health. The singleton SSE client (use-sse.ts) is the source of truth.
@@ -247,8 +247,8 @@ export function Layout() {
         </main>
         {!isFocus && <BottomNav />}
       </div>
-      {/* M9/M50: the global ⌘K command palette. Mounted ONCE at shell level so
-       *  the shortcut works on EVERY route (overview, board, files, scheduler,
+      {/* The global ⌘K command palette. Mounted ONCE at shell level so the
+       *  shortcut works on EVERY route (overview, board, files, scheduler,
        *  settings, focus). Previously this was a per-route stub that only logged
        *  to the console — opening Cmd+K did nothing visible. The palette owns
        *  its own document-level keydown capture + preventDefault. */}
