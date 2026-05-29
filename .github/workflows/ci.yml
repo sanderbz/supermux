@@ -38,6 +38,18 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v4
+      # tests/static_assets.rs exercises the SPA the binary actually serves, so the
+      # web bundle must be built and embedded (rust-embed reads server/static at
+      # compile time) BEFORE the cargo steps — mirrors scripts/build.sh's embed step.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build + embed web bundle
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          rm -rf ../server/static && cp -r dist ../server/static
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
