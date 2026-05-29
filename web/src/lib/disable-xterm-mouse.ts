@@ -14,9 +14,10 @@ const MOUSE_TRACKING_MODES = new Set([1000, 1001, 1002, 1003, 1005, 1006, 1015, 
  * supermux is driven entirely through the web terminal — taps and drags ARE how
  * you scroll and select — so an app holding the mouse is worthless here and
  * actively breaks the two primary interactions. We tried disabling it at the
- * source (`CLAUDE_CODE_DISABLE_MOUSE=1`, server sessions/lifecycle.rs), but
- * Claude Code 2.1.156 IGNORES that env var and still emits ?1000h/?1002h/?1003h/
- * ?1006h continuously (verified in the live pty stream). So we neutralize it on
+ * source (`CLAUDE_CODE_DISABLE_MOUSE=1` in sessions/lifecycle.rs), but Claude Code
+ * 2.1.156 IGNORES that env var and still emits ?1000h/?1002h/?1003h/?1006h
+ * continuously (verified in the live pty stream) — so that server-side no-op was
+ * removed. We neutralize it on
  * the CLIENT: a parser CSI handler swallows the mouse-tracking set/reset
  * sequences before xterm's coreMouseService can act on them. Returning `true`
  * marks the sequence handled so xterm's built-in mode handler never runs; every

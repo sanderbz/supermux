@@ -212,34 +212,45 @@ fn build_env(
         "CLAUDE_CODE_FORCE_SYNC_OUTPUT".to_string(),
         "1".to_string(),
     );
-    // Disable Claude Code's terminal mouse reporting (DECSET ?1000/?1002/?1003/
-    // ?1006). THE fix for the mobile-scroll + desktop-select regression.
+    // Make Claude Code render INLINE (normal screen buffer) instead of taking over
+    // the terminal's ALTERNATE screen. THE root fix for the browser-terminal scroll
+    // saga.
     //
-    // ROOT CAUSE (anthropics/claude-code#61936, labeled a regression): Claude Code
-    // v2.1.150+ turns xterm mouse reporting ON by default. In supermux's
-    // browser-hosted xterm.js that is fatal to the two PRIMARY interactions:
-    //   • mobile — once an app holds the mouse, xterm gates its own one-finger
-    //     touch-scroll, so the scrollback can no longer be panned by a finger; and
-    //   • desktop — a drag is forwarded to the pty as a mouse report instead of
-    //     making a browser text selection, so select-to-copy stops working
-    //     ("copied … to tmux buffer" appears instead).
-    // Both regressed the instant users updated Claude Code — nothing in supermux
-    // changed. supermux is driven ENTIRELY through the web terminal (taps/drags ARE
-    // how you scroll and select), so Claude Code's in-pane mouse features
-    // (click-to-position, click-to-expand) are worthless here and actively harmful.
+    // ROOT CAUSE (proven by raw-pty capture on a real 2.1.156): Claude emits
+    // `ESC[?1049h` at startup and draws its whole TUI in the alternate-screen buffer,
+    // exactly like vim/htop. The alt screen has NO scrollback — so there is simply
+    // nothing for a mobile one-finger drag or a desktop wheel to pan. Worse, xterm
+    // translates an alt-buffer wheel event into cursor Up/Down keys (its "alternate
+    // scroll mode"), which Claude reads as INPUT-HISTORY navigation — so desktop
+    // "scroll" cycled prompts instead of moving the viewport. This is why every
+    // earlier fix (touch shims, mouse on/off) failed: they patched symptoms of a
+    // buffer that has no history. Older Claude rendered inline (normal buffer, with
+    // scrollback), which is why scrolling "worked two days ago".
     //
-    // Disabling at the SOURCE restores native touch-scroll + text selection for
-    // EVERY session on EVERY deployment (local, remote server, other users' hosts,
-    // OSS) with zero per-machine config — and team leads spawn teammates as child
-    // panes on the same tmux server, so teammates inherit this via both the tmux
-    // session env and process-env inheritance. Keyboard scroll (PgUp/PgDn/Ctrl+O)
-    // is unaffected. Same blast-radius/safety properties as FORCE_SYNC above:
-    // per-pane `-e KEY=VAL`, ignored by agents that don't read it.
+    // CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 makes Claude render inline again.
+    // Verified on the box: with it set, no `?1049h` is emitted, the pane reports
+    // `alternate_on=0`, and a 60-line print accumulated 63 lines of real, scrollable
+    // tmux history (vs 0 on the alt-screen baseline). Native wheel scroll, one-finger
+    // touch-pan, and drag-to-select then all operate on the genuine scrollback — no
+    // per-interaction hacks. The WS seed is already alt-screen-aware (the tmux capture
+    // branches on `alternate_on`): a normal-buffer pane is seeded with a plain capture
+    // and NO `?1049h` injection, so the browser xterm stays in the normal buffer with
+    // its own working scrollback — no companion change needed.
     //
-    // NOTE: read at Claude Code STARTUP — an already-running session must be
-    // restarted (the in-UI Restart button) to pick it up.
+    // Mouse REPORTING is a separate, client-side concern: Claude still emits DECSET
+    // ?1000/?1002/?1006 regardless of buffer, and 2.1.156 IGNORES the documented
+    // CLAUDE_CODE_DISABLE_MOUSE env (we used to set it here — a verified no-op, now
+    // removed). Mouse tracking is neutralized in web/src/lib/disable-xterm-mouse.ts,
+    // the authoritative version-proof fix that keeps touch-scroll + drag-select alive
+    // no matter what the agent emits; both buffers need it (mouse mode gates touch and
+    // hijacks drag regardless of which buffer is active).
+    //
+    // Same blast-radius/safety as FORCE_SYNC above: per-pane `-e KEY=VAL`, purely
+    // additive, ignored by agents that don't read it (codex/shell). Read at Claude
+    // STARTUP — an already-running session must be restarted (the in-UI Restart
+    // button) to pick it up.
     env.insert(
-        "CLAUDE_CODE_DISABLE_MOUSE".to_string(),
+        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
         "1".to_string(),
     );
     env
@@ -1301,8 +1312,9 @@ mod agent_ready_heuristics_tests {
 mod build_env_tests {
     //! `build_env` injects the per-pane tmux environment. These pin the two
     //! Claude-only escape hatches that fix browser-terminal regressions:
-    //! synchronized output (torn frames) and disabled mouse reporting (which
-    //! otherwise kills mobile touch-scroll + desktop select-to-copy).
+    //! synchronized output (torn frames) and inline rendering / disabled
+    //! alternate-screen (so the browser terminal keeps a native scrollback for
+    //! wheel + touch + drag-select).
     use super::*;
 
     fn cfg() -> crate::config::Config {
@@ -1322,18 +1334,18 @@ mod build_env_tests {
     }
 
     #[test]
-    fn disables_claude_mouse_reporting() {
-        // Regression guard: Claude Code v2.1.150+ force-enables xterm mouse
-        // reporting, which gates xterm's native one-finger touch-scroll and
-        // turns a desktop drag into a mouse report instead of a text selection.
-        // We always inject CLAUDE_CODE_DISABLE_MOUSE=1 (only Claude reads it;
-        // codex/shell ignore it, same as the FORCE_SYNC sibling) so the browser
-        // terminal keeps native scroll + selection.
+    fn renders_claude_in_the_normal_buffer() {
+        // Regression guard: Claude Code is a full-screen TUI in the ALTERNATE
+        // screen, which has no scrollback — so the browser terminal cannot scroll
+        // natively (a wheel event there even cycles prompt-history). Injecting
+        // CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 makes Claude render inline in the
+        // normal buffer so xterm keeps a real scrollback (only Claude reads it;
+        // codex/shell ignore it, same as the FORCE_SYNC sibling).
         let env = build_env(&cfg(), "s", "tok", "claude", false, None);
         assert_eq!(
-            env.get("CLAUDE_CODE_DISABLE_MOUSE").map(String::as_str),
+            env.get("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN").map(String::as_str),
             Some("1"),
-            "must disable mouse reporting (mobile scroll + desktop select)",
+            "must render Claude inline so the browser terminal has native scrollback",
         );
         // Sibling escape hatch stays put.
         assert_eq!(

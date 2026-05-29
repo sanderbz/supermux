@@ -503,9 +503,9 @@ export function useLiveTerm(
       scrollback: 50000,
       disableStdin: readOnly,
       // ⌥-drag forces a LOCAL text selection even if a program holds the mouse
-      // (DECSET ?1000/?1002). supermux disables Claude Code's mouse reporting
-      // (server CLAUDE_CODE_DISABLE_MOUSE=1), so a plain drag already selects for
-      // Claude sessions — but a raw `shell` session running a mouse-mode TUI (tmux
+      // (DECSET ?1000/?1002). supermux neutralizes mouse reporting client-side
+      // (lib/disable-xterm-mouse.ts), so a plain drag already selects for Claude
+      // sessions — but a raw `shell` session running a mouse-mode TUI (tmux
       // `mouse on`, vim, htop) still holds the mouse, and on macOS xterm has no
       // other modifier to bypass it. This keeps ⌥-drag-to-select working in that
       // case (Linux/Windows get Shift-drag by default; this affects macOS only).
@@ -516,7 +516,8 @@ export function useLiveTerm(
     // is what keeps xterm's native one-finger touch-scroll alive (mobile) and a
     // drag selecting text (desktop). MUST run before any pty bytes are written.
     // See lib/disable-xterm-mouse.ts for the full why (Claude 2.1.156 ignores the
-    // server-side CLAUDE_CODE_DISABLE_MOUSE env and still sends ?1000h/?1002h/…).
+    // documented CLAUDE_CODE_DISABLE_MOUSE env — so we never set it server-side —
+    // and still streams ?1000h/?1002h/…).
     disableXtermMouseTracking(term)
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -554,7 +555,8 @@ export function useLiveTerm(
     // `disableXtermMouseTracking(term)` above swallows the mouse-tracking DECSET
     // sequences so that flag never flips — making xterm's native one-finger pan
     // work even though Claude keeps emitting ?1000h/?1002h/?1006h (it ignores the
-    // server-side CLAUDE_CODE_DISABLE_MOUSE env). We deliberately do NOT layer a
+    // documented CLAUDE_CODE_DISABLE_MOUSE env, which is why we don't set it
+    // server-side). We deliberately do NOT layer a
     // custom touch shim on top: a JS `{passive:false}` touchmove handler competes
     // with xterm's native handler and (per the reverted 7723be1/9c7657d/d2810cb
     // attempts) regressed iOS feel. `.xterm-viewport { touch-action: pan-y }`
