@@ -242,6 +242,36 @@ fn build_env(
         "CLAUDE_CODE_DISABLE_MOUSE".to_string(),
         "1".to_string(),
     );
+    // Force Claude Code to render in the NORMAL screen buffer, not the ALTERNATE
+    // screen. THE root-cause fix for "can't scroll the terminal" (mobile AND
+    // desktop) under Claude Code 2.1.150+.
+    //
+    // ROOT CAUSE (proven by raw-pty capture on a real 2.1.156): Claude now emits
+    // `ESC[?1049h` on startup → it draws its whole TUI in the alternate screen
+    // buffer, exactly like vim/htop. The alt-screen has NO scrollback — so there
+    // is simply nothing to scroll: a mobile one-finger drag pans an empty buffer,
+    // and a desktop wheel gets translated to arrow-keys (xterm alternate-scroll
+    // mode), which cycles Claude's prompt history instead of scrolling. This is
+    // why every earlier fix (touch shims, mouse on/off) failed — they patched
+    // symptoms of a buffer that has no history. Older Claude rendered inline (the
+    // normal buffer, with scrollback) which is why it "worked two days ago".
+    //
+    // `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` makes Claude render inline again.
+    // Verified on the box: with it set, no `?1049h` is emitted, `alternate_on=0`,
+    // and a 60-line print accumulated 63 lines of real, scrollable tmux history
+    // (vs 0 on the alt-screen baseline). supermux's WS seed is already
+    // alt-screen-aware (`capture_history_with_alt_screen_aware_visible` branches on
+    // `alternate_on`): a normal-buffer pane is seeded with a plain capture and NO
+    // `?1049h` injection, so the browser xterm stays in the normal buffer with its
+    // own working scrollback — no companion change needed. Pairs with the
+    // client-side mouse-tracking suppression (disable-xterm-mouse.ts): mouse mode
+    // gates touch + hijacks drag-select regardless of which buffer is active, so
+    // both are required. Same per-pane `-e KEY=VAL` blast radius as the vars above;
+    // read at Claude STARTUP, so a running session needs a Restart to pick it up.
+    env.insert(
+        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
+        "1".to_string(),
+    );
     env
 }
 
@@ -1335,9 +1365,16 @@ mod build_env_tests {
             Some("1"),
             "must disable mouse reporting (mobile scroll + desktop select)",
         );
-        // Sibling escape hatch stays put.
+        // Sibling escape hatches stay put.
         assert_eq!(
             env.get("CLAUDE_CODE_FORCE_SYNC_OUTPUT").map(String::as_str),
+            Some("1"),
+        );
+        // Inline (normal-buffer) rendering — the root-cause scroll fix: the
+        // alt-screen has no scrollback, so nothing can scroll until Claude renders
+        // inline again.
+        assert_eq!(
+            env.get("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN").map(String::as_str),
             Some("1"),
         );
     }
