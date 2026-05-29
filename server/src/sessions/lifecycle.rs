@@ -1298,6 +1298,52 @@ mod agent_ready_heuristics_tests {
 }
 
 #[cfg(test)]
+mod build_env_tests {
+    //! `build_env` injects the per-pane tmux environment. These pin the two
+    //! Claude-only escape hatches that fix browser-terminal regressions:
+    //! synchronized output (torn frames) and disabled mouse reporting (which
+    //! otherwise kills mobile touch-scroll + desktop select-to-copy).
+    use super::*;
+
+    fn cfg() -> crate::config::Config {
+        crate::config::Config {
+            data_dir: std::env::temp_dir(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "t".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            extra_origins: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn disables_claude_mouse_reporting() {
+        // Regression guard: Claude Code v2.1.150+ force-enables xterm mouse
+        // reporting, which gates xterm's native one-finger touch-scroll and
+        // turns a desktop drag into a mouse report instead of a text selection.
+        // We always inject CLAUDE_CODE_DISABLE_MOUSE=1 (only Claude reads it;
+        // codex/shell ignore it, same as the FORCE_SYNC sibling) so the browser
+        // terminal keeps native scroll + selection.
+        let env = build_env(&cfg(), "s", "tok", "claude", false, None);
+        assert_eq!(
+            env.get("CLAUDE_CODE_DISABLE_MOUSE").map(String::as_str),
+            Some("1"),
+            "must disable mouse reporting (mobile scroll + desktop select)",
+        );
+        // Sibling escape hatch stays put.
+        assert_eq!(
+            env.get("CLAUDE_CODE_FORCE_SYNC_OUTPUT").map(String::as_str),
+            Some("1"),
+        );
+    }
+}
+
+#[cfg(test)]
 mod mode_cycle_tests {
     //! mode-shift: the Shift+Tab targeting math is a pure function, so the ring
     //! (`Normal → AcceptEdits → Plan → Normal`) is unit-tested directly.
