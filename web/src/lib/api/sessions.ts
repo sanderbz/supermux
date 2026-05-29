@@ -1,12 +1,6 @@
 // Sessions — the real client for the sessions CRUD + the hero data
 // flow (preview_lines off `last_capture`).
 //
-// This module ALSO carries the legacy skeleton (`notImplemented` + the typed
-// `api` stub object). The legacy `api` object aggregates one method per endpoint
-// across every feature; it predates the per-feature clients below and
-// is kept verbatim so the public surface is byte-for-byte identical. It imports
-// the non-session stub domain types from their sibling feature modules.
-//
 // Envelope: the backend wraps success bodies in `{ ok:true, data }` and errors in
 // `{ ok:false, error }`. Some handlers return a bare array. `sessReq`
 // unwraps `data` when present, tolerates a bare body, and lifts `error` into a
@@ -18,23 +12,8 @@
 // NEVER embedded here.
 
 import { apiToken, apiUrl } from './client'
-import type { Issue, CreateIssueInput } from './board'
-import type { Schedule, CreateScheduleInput } from './scheduler'
-import type { FileEntry, FileContent } from './files'
-import type { Snippet, KbdGroup, AuditEntry } from './settings'
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Legacy skeleton — typed stub `api` client (one method per endpoint).
-// Bodies throw `not yet implemented`; the real per-feature clients live below
-// and in the sibling modules. Never imported by consumers, but exported to keep
-// the public surface identical.
-// ─────────────────────────────────────────────────────────────────────────────
-
-function notImplemented(method: string, ..._args: unknown[]): never {
-  throw new Error(`api.${method}() — not yet implemented (stub)`)
-}
-
-// ── Domain types (minimal; extended later) ────────────────────────────────────
+// ── Domain types ──────────────────────────────────────────────────────────────
 
 export type SessionStatus =
   | 'starting'
@@ -72,123 +51,6 @@ export interface SessionSummary {
   /** Remote host the session runs on. `null` / undefined = LOCAL. Carried
    *  on the tile so <HostBadge> can render without an extra fetch. */
   host_id?: number | null
-}
-
-export interface Session extends SessionSummary {
-  created_at: string
-  pid?: number
-}
-
-export interface CreateSessionInput {
-  name: string
-  dir: string
-  provider?: string
-  command?: string
-}
-
-export interface PeekResult {
-  /** Static capture-pane snapshot (raw, may contain ANSI). */
-  text: string
-}
-
-// ── Agents ──────────────────────────────────────────────────────────────────
-
-export type AgentState = 'idle' | 'active' | 'waiting'
-
-/** Wait-state result — `{ reached, status }`. */
-export interface WaitResult {
-  reached: boolean
-  status: SessionStatus
-}
-
-export interface DelegateInput {
-  from: string
-  to: string
-  prompt: string
-}
-
-// ── Health ────────────────────────────────────────────────────────────────────
-
-export interface Health {
-  version: string
-  uptime_s: number
-  db_ok: boolean
-  tmux_ok: boolean
-}
-
-// ── Stub client ────────────────────────────────────────────────────────────────
-
-export const api = {
-  // Sessions
-  listSessions: (): Promise<SessionSummary[]> => notImplemented('listSessions'),
-  getSession: (name: string): Promise<Session> =>
-    notImplemented('getSession', name),
-  createSession: (input: CreateSessionInput): Promise<Session> =>
-    notImplemented('createSession', input),
-  deleteSession: (name: string): Promise<void> =>
-    notImplemented('deleteSession', name),
-  startSession: (name: string): Promise<Session> =>
-    notImplemented('startSession', name),
-  // NOTE: start/stop are LIVE in `focusApi` (./focus). These stubs are dead
-  // (no consumer imports this `api` object) and kept only so the frozen public
-  // surface stays byte-for-byte identical — use `focusApi.stopSession` /
-  // `focusApi.startSession` for the real control-plane calls.
-  stopSession: (name: string): Promise<void> =>
-    notImplemented('stopSession', name),
-  sendText: (name: string, text: string): Promise<void> =>
-    notImplemented('sendText', name, text),
-  sendKey: (name: string, key: string): Promise<void> =>
-    notImplemented('sendKey', name, key),
-  peek: (name: string): Promise<PeekResult> => notImplemented('peek', name),
-  archive: (name: string): Promise<void> => notImplemented('archive', name),
-  wake: (name: string): Promise<void> => notImplemented('wake', name),
-  clone: (name: string): Promise<Session> => notImplemented('clone', name),
-  duplicate: (name: string): Promise<Session> =>
-    notImplemented('duplicate', name),
-
-  // Board
-  listBoard: (): Promise<Issue[]> => notImplemented('listBoard'),
-  createIssue: (input: CreateIssueInput): Promise<Issue> =>
-    notImplemented('createIssue', input),
-  patchIssue: (id: string, patch: Partial<Issue>): Promise<Issue> =>
-    notImplemented('patchIssue', id, patch),
-  deleteIssue: (id: string): Promise<void> => notImplemented('deleteIssue', id),
-  claimIssue: (id: string, sessionName: string): Promise<Issue> =>
-    notImplemented('claimIssue', id, sessionName),
-
-  // Scheduler
-  listSchedules: (): Promise<Schedule[]> => notImplemented('listSchedules'),
-  createSchedule: (input: CreateScheduleInput): Promise<Schedule> =>
-    notImplemented('createSchedule', input),
-  runSchedule: (id: string): Promise<void> => notImplemented('runSchedule', id),
-
-  // Files
-  listFiles: (name: string, path?: string): Promise<FileEntry[]> =>
-    notImplemented('listFiles', name, path),
-  getFile: (name: string, path: string): Promise<FileContent> =>
-    notImplemented('getFile', name, path),
-  putFile: (name: string, path: string, content: string): Promise<void> =>
-    notImplemented('putFile', name, path, content),
-  uploadFile: (name: string, path: string, file: File): Promise<void> =>
-    notImplemented('uploadFile', name, path, file),
-
-  // Snippets / keyboard groups
-  listSnippets: (): Promise<Snippet[]> => notImplemented('listSnippets'),
-  listKbdGroups: (): Promise<KbdGroup[]> => notImplemented('listKbdGroups'),
-
-  // Agents
-  waitAgent: (
-    name: string,
-    state: AgentState,
-    timeout?: number,
-  ): Promise<WaitResult> => notImplemented('waitAgent', name, state, timeout),
-  delegate: (input: DelegateInput): Promise<void> =>
-    notImplemented('delegate', input),
-
-  // Audit / health
-  listAuditLog: (limit?: number): Promise<AuditEntry[]> =>
-    notImplemented('listAuditLog', limit),
-  health: (): Promise<Health> => notImplemented('health'),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

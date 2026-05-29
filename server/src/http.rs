@@ -10,8 +10,10 @@
 //! the public router (manifest, sw, icons, `/api/health`) is merged AFTER and is
 //! NOT wrapped by it (layers apply only to routes present when `.layer` runs).
 
+use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::from_fn_with_state;
 use axum::Router;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::agents;
 use crate::audit;
@@ -67,6 +69,65 @@ pub fn router(state: AppState) -> Router {
         // `/ws/*` are explicitly denylisted inside it so a missing API route
         // still 404s as itself rather than silently returning HTML.
         .merge(static_assets::router_for(state))
+        // ── Baseline security response headers ──
+        // Applied on the OUTERMOST router so they cover every response —
+        // protected /api, public endpoints, the SPA shell, and (critically)
+        // error responses synthesized by inner middleware (auth 401s, CORS
+        // rejects, body-limit 413s). `SetResponseHeaderLayer::overriding`
+        // gives us a single consistent value per header regardless of whether
+        // an inner handler already set one.
+        //
+        // CSP rationale: we ship a self-hosted SPA + JSON API on the same
+        // origin and never embed third-party iframes/scripts.
+        //   - `default-src 'self'` is the floor.
+        //   - `img-src 'self' data: blob:` covers icons, generated previews,
+        //     and the file-preview blob URLs.
+        //   - `media-src 'self' blob:` covers audio/video preview blobs.
+        //   - `style-src 'self' 'unsafe-inline'` is REQUIRED: Tailwind output
+        //     plus framer-motion inject inline `style="..."` attributes,
+        //     which CSP3's `'unsafe-inline'` allows but a nonce does not.
+        //   - `script-src 'self' 'unsafe-inline'` is REQUIRED because the
+        //     SPA shell carries a server-spliced `<script>` setting
+        //     `window._SUPERMUX_AUTH_TOKEN` / `_VERSION` / `_HOME_DIR` /
+        //     `_PROJECT_DIR` (see static_assets::splice_runtime_config).
+        //     A nonce would be cleaner but requires per-request HTML rewrite
+        //     AND per-request CSP — out of scope for this baseline. The
+        //     spliced token is JSON-encoded by `json_encode_for_script`, so
+        //     the inline payload is constant-shape and trusted.
+        //   - `connect-src 'self' ws: wss:` covers fetch + the WS pty stream.
+        //   - `frame-ancestors 'none'` is the modern X-Frame-Options.
+        //   - `base-uri 'self'` + `form-action 'self'` close the standard
+        //     CSP escape hatches.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; \
+                 img-src 'self' data: blob:; \
+                 media-src 'self' blob:; \
+                 style-src 'self' 'unsafe-inline'; \
+                 script-src 'self' 'unsafe-inline'; \
+                 connect-src 'self' ws: wss:; \
+                 frame-ancestors 'none'; \
+                 base-uri 'self'; \
+                 form-action 'self'",
+            ),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("interest-cohort=()"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
 }
 
 /// All bearer-token-protected routes.

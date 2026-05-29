@@ -87,6 +87,19 @@ pub trait FileTransport: Send + Sync {
     fn is_local(&self) -> bool {
         false
     }
+
+    /// Resolve symlinks on the remote side so the path-safety blocklist can
+    /// see what the remote shell will ACTUALLY operate on. Without this, a
+    /// remote symlink like `~/safe-link -> ~/.ssh` lets a literal-text
+    /// blocklist (`resolve_safe_remote`) be bypassed — the user sends
+    /// `~/safe-link/id_rsa`, we see nothing blocklisty, but the remote `cat`
+    /// happily follows the link into `.ssh`. Default returns the input
+    /// unchanged: that's correct for the LOCAL transport (which routes
+    /// through `resolve_safe`, doing its own canonicalize) and a safe
+    /// no-op for any other transport that opts into the trait.
+    async fn realpath(&self, path: &Path) -> Result<std::path::PathBuf> {
+        Ok(path.to_path_buf())
+    }
 }
 
 // ─────────────────────────── LocalFileTransport ────────────────────────────
@@ -443,6 +456,41 @@ trap - EXIT
         }
         Ok(())
     }
+
+    /// `readlink -f -- <path>` over the warm ControlMaster — one extra hop,
+    /// but it folds `~/safe-link -> ~/.ssh` symlinks BEFORE the blocklist runs
+    /// (the documented remote-symlink bypass). The script body never
+    /// interpolates the path; it's passed as `$1` positional. If `readlink
+    /// -f` is missing on the remote (older BSD `readlink`), we surface the
+    /// failure so the caller can fall back to the unresolved path with a
+    /// log line — NEVER silently allow.
+    async fn realpath(&self, path: &Path) -> Result<std::path::PathBuf> {
+        let transport = self.ssh_transport().await?;
+        let p = path_str(path)?;
+        // `readlink -f` prints the fully-resolved absolute path on stdout,
+        // exit 0. Missing target / broken link → non-zero exit + stderr.
+        const SCRIPT: &str = r#"
+set -eu
+readlink -f -- "$1"
+"#;
+        let mut cmd = transport.spawn_command("bash", &["-c", SCRIPT, "_", p]);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let out = cmd
+            .output()
+            .await
+            .with_context(|| format!("ssh readlink -f {}", path.display()))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            bail!("remote readlink of {} failed: {}", path.display(), stderr);
+        }
+        let resolved = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if resolved.is_empty() {
+            bail!("remote readlink of {} returned empty", path.display());
+        }
+        Ok(std::path::PathBuf::from(resolved))
+    }
 }
 
 /// Validate + convert a `Path` to an `&str` for arg passing. NUL bytes are
@@ -478,14 +526,6 @@ pub fn resolve(
         None => local(),
         Some(id) => Arc::new(SshFileTransport::new(host_pool.clone(), HostId(id))),
     }
-}
-
-/// Stable path-equality string used by the path-safety blocklist, mirrored
-/// here so both `path_safe::resolve_safe` and any direct transport caller use
-/// the SAME normalization. Case-folding defeats the macOS `/ETC/SHADOW`
-/// trick; the rest is byte-for-byte.
-pub fn normalize_for_blocklist(path: &Path) -> String {
-    path.to_string_lossy().to_lowercase()
 }
 
 // ─────────────────────────────── tests ─────────────────────────────────────
@@ -582,13 +622,5 @@ mod tests {
     fn path_str_rejects_nul() {
         let bad = PathBuf::from("/tmp/foo\0bar");
         assert!(path_str(&bad).is_err());
-    }
-
-    #[test]
-    fn normalize_for_blocklist_is_case_insensitive() {
-        assert_eq!(
-            normalize_for_blocklist(Path::new("/ETC/SHADOW")),
-            "/etc/shadow"
-        );
     }
 }

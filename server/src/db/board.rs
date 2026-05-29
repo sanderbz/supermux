@@ -326,7 +326,7 @@ pub async fn issues_for_session(pool: &SqlitePool, session: &str) -> sqlx::Resul
 /// Issues with a `due` date set (for the iCal feed).
 pub async fn issues_with_due(pool: &SqlitePool) -> sqlx::Result<Vec<Issue>> {
     sqlx::query_as::<_, Issue>(
-        "SELECT * FROM issues WHERE deleted IS NULL AND due IS NOT NULL AND due != ''
+        "SELECT * FROM issues WHERE deleted IS NULL AND archived = 0 AND due IS NOT NULL AND due != ''
          ORDER BY due ASC",
     )
     .fetch_all(pool)
@@ -384,18 +384,6 @@ pub async fn insert_issue(pool: &SqlitePool, i: &NewIssue) -> sqlx::Result<()> {
     .execute(pool)
     .await?;
     Ok(())
-}
-
-/// The smallest `pos` currently in `status` (for "place new card at top"). New
-/// cards get `min_pos - 1024.0`.
-pub async fn min_pos_in_status(pool: &SqlitePool, status: &str) -> sqlx::Result<f64> {
-    let min: Option<f64> =
-        sqlx::query_scalar("SELECT MIN(pos) FROM issues WHERE status = ? AND deleted IS NULL")
-            .bind(status)
-            .fetch_optional(pool)
-            .await?
-            .flatten();
-    Ok(min.unwrap_or(0.0))
 }
 
 /// The smallest `pos` in `status` SCOPED to one board (migration 0015) — so a new
@@ -696,15 +684,6 @@ pub async fn comments_for(pool: &SqlitePool, issue_id: &str) -> sqlx::Result<Vec
     .bind(issue_id)
     .fetch_all(pool)
     .await
-}
-
-/// Delete one comment by id. Returns false if the id does not exist.
-pub async fn delete_comment(pool: &SqlitePool, comment_id: i64) -> sqlx::Result<bool> {
-    let res = sqlx::query("DELETE FROM issue_comments WHERE id = ?")
-        .bind(comment_id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
 }
 
 // acceptance items ────────────────────────────────────────────────────────────
@@ -1242,6 +1221,28 @@ mod tests {
 
         // Empty id slice short-circuits to an empty map (no malformed SQL).
         assert!(comments_for_issues(&pool, &[]).await.unwrap().is_empty());
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Archived cards must drop out of the iCal feed exactly as they drop out
+    /// of the board UI — the feed is unauthenticated (URL-secret behind
+    /// Tailscale) so soft-discarded cards must not leak through it.
+    #[tokio::test]
+    async fn issues_with_due_excludes_archived() {
+        let (pool, dir) = test_pool().await;
+        seed_issue(&pool, "T-live").await;
+        seed_issue(&pool, "T-archived").await;
+        // Both get a due date; only the live one should surface.
+        sqlx::query("UPDATE issues SET due = '2026-06-01' WHERE id = ?")
+            .bind("T-live").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE issues SET due = '2026-06-02', archived = 1 WHERE id = ?")
+            .bind("T-archived").execute(&pool).await.unwrap();
+
+        let rows = issues_with_due(&pool).await.unwrap();
+        assert_eq!(rows.len(), 1, "archived card must not appear in the iCal feed");
+        assert_eq!(rows[0].id, "T-live");
 
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

@@ -300,9 +300,33 @@ fn last_n_lines(capture: &str, n: usize) -> Vec<String> {
 static NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9_.-]+$").unwrap());
 const PROVIDERS: [&str; 3] = ["claude", "codex", "shell"];
 
-/// Session-name slug rule: `[a-zA-Z0-9_.-]+`, bounded.
+/// Session-name slug rule: `[a-zA-Z0-9_.-]+`, bounded. The FIRST char must NOT
+/// be `-` — the session name flows through to argv for the provider CLI
+/// (`claude --session-id <name>` etc.), and a leading dash would be parsed as
+/// an option flag (CLI-flag injection).
 pub(crate) fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 100 && NAME_RE.is_match(name)
+    !name.is_empty()
+        && name.len() <= 100
+        && NAME_RE.is_match(name)
+        && !name.starts_with('-')
+        // `.` and `..` slip past the regex (it allows `[A-Za-z0-9_.-]`) and are
+        // path-traversal escapes when the name is used as a path segment — the
+        // teams config path build is one such caller. Forbid them explicitly.
+        && name != "."
+        && name != ".."
+}
+
+// Claude conversation/session ids land in a shell-interpolated launch line
+// (see `lifecycle::build_launch_command`). Validate at the boundary: real
+// Claude ids are UUIDs / alphanumeric+dash; a conservative `[A-Za-z0-9._-]`
+// rule excludes whitespace, quotes, `$`, backtick, `;`, `|`, `&`, etc., which
+// is the entire shell-meta surface we care about. Anything that doesn't match
+// is a 400 BadRequest before the DB write.
+static CC_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,128}$").unwrap());
+
+/// Claude conversation/session id charset — `[A-Za-z0-9._-]`, 1..=128 chars.
+pub(crate) fn valid_cc_id(id: &str) -> bool {
+    CC_ID_RE.is_match(id)
 }
 
 fn valid_provider(provider: &str) -> bool {
@@ -1085,6 +1109,12 @@ async fn resume_handler(
     if id.is_empty() {
         return Err(AppError::BadRequest("expected {id}".into()));
     }
+    // Boundary charset check: the id is interpolated into a shell launch line
+    // downstream, so reject anything outside `[A-Za-z0-9._-]{1,128}` BEFORE
+    // the DB write to keep shell-meta characters out of `cc_conversation_id`.
+    if !valid_cc_id(id) {
+        return Err(AppError::BadRequest("invalid conversation id".into()));
+    }
     // Validate the session exists before touching the row.
     ensure_session(&state, &name).await?;
     db::sessions::set_cc_conversation_id(&state.pool, &name, id).await?;
@@ -1185,4 +1215,66 @@ async fn steer_clear_handler(
         None => db::steering::clear(&state.pool, &name).await?,
     };
     Ok(Json(json!({ "ok": true, "cleared": cleared })))
+}
+
+// ── unit tests for the pure validators ───────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_name_basics_and_leading_dash() {
+        // Accept: ordinary slugs plus internal `-`, `.`, `_`.
+        for ok in &["a", "alpha", "team_01", "host.local", "abc-def", "A1.b2-c3"] {
+            assert!(valid_name(ok), "{ok:?} should validate");
+        }
+        // Reject: empty, shell-meta, length cap, AND leading `-` (CLI-flag
+        // injection guard — `--session-id -evil` would parse as a flag).
+        for bad in &[
+            "",
+            " ",
+            "with space",
+            "back`tick",
+            "slash/x",
+            "semi;rm",
+            "-leadingdash",
+            "-",
+            "--double",
+        ] {
+            assert!(!valid_name(bad), "{bad:?} should reject");
+        }
+        // Length cap (>100 rejected).
+        let too_long: String = std::iter::repeat('a').take(101).collect();
+        assert!(!valid_name(&too_long));
+    }
+
+    /// `valid_cc_id` accepts the real Claude id shapes (UUIDv4, alphanumeric
+    /// + dashes/dots/underscores) and rejects every shell metacharacter that
+    /// could otherwise break out of the launch line in `build_launch_command`.
+    #[test]
+    fn valid_cc_id_charset() {
+        // Accept: UUIDv4, plain alphanumeric, dashes/dots/underscores.
+        assert!(valid_cc_id("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(valid_cc_id("abcDEF123"));
+        assert!(valid_cc_id("a.b_c-d"));
+        // Reject: every shell-meta char that matters for `--resume <id>`.
+        for bad in &[
+            "",                 // empty
+            "id with space",    // word-split
+            "id;rm -rf /",      // command chain
+            "id`whoami`",       // backtick subshell
+            "id$USER",          // var expansion
+            "id'quoted'",       // single quote (our launch-line wrapper)
+            "id\"dq\"",         // double quote
+            "id|cat",           // pipe
+            "id&bg",            // background
+            "id\nnewline",      // newline
+        ] {
+            assert!(!valid_cc_id(bad), "{bad:?} should reject");
+        }
+        // Length cap (>128 rejected).
+        let too_long: String = std::iter::repeat('a').take(129).collect();
+        assert!(!valid_cc_id(&too_long));
+    }
 }

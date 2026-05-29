@@ -323,6 +323,11 @@ pub async fn get(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if !valid_skill_name(&name) {
+        return Err(AppError::BadRequest(
+            "invalid skill name (allowed: letters, digits, '_', '.', '-')".into(),
+        ));
+    }
     let skill = db::skills::get(&state.pool, &name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("skill '{name}'")))?;
@@ -358,6 +363,11 @@ pub async fn delete(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if !valid_skill_name(&name) {
+        return Err(AppError::BadRequest(
+            "invalid skill name (allowed: letters, digits, '_', '.', '-')".into(),
+        ));
+    }
     let removed = db::skills::delete(&state.pool, &name).await?;
     remove_skill_files(&name).await;
     if removed == 0 {

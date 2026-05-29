@@ -182,12 +182,15 @@ async fn canonicalize_allowing_missing(candidate: &Path) -> Result<PathBuf, Path
 /// list mirrors what [`resolve_safe`] enforces locally, so a remote
 /// `/ETC/SHADOW` request is refused the same way a local one is.
 ///
-/// NOTE: this does NOT resolve symlinks on the remote host. The remote shell
-/// (e.g. `cat <path>`) WILL follow them, so an attacker who can place a
-/// symlink at `/tmp/innocent -> /etc/shadow` on the remote host could bypass
-/// this check. That's a known trade-off of the shell-based transport.
-/// A protocol-level SFTP rewrite (future
-/// work) would let us LSTAT + REALPATH over SFTP and reject the symlink.
+/// NOTE: this function itself does NOT resolve symlinks on the remote host.
+/// The remote shell (e.g. `cat <path>`) WILL follow them, so an attacker who
+/// can place a symlink at `/tmp/innocent -> /etc/shadow` on the remote host
+/// could otherwise bypass this check. That's why the SSH call site in
+/// `files::mod::safe_path` runs `readlink -f` over the warm ControlMaster
+/// BEFORE handing the path here (H2). On older BSD `readlink` lacking `-f`
+/// the call site logs and falls back to the literal path — the blocklist
+/// still runs. A protocol-level SFTP rewrite (future work) would let us
+/// LSTAT + REALPATH over SFTP and skip the readlink shell-out.
 pub fn resolve_safe_remote(input: &str) -> Result<PathBuf, PathError> {
     let expanded = shellexpand::tilde(input).into_owned();
     if expanded.is_empty() || expanded.as_bytes().contains(&0) {
@@ -222,15 +225,27 @@ pub fn resolve_safe_remote(input: &str) -> Result<PathBuf, PathError> {
     // `/root` or `/home/<user>`. If the path matches `<anything>/<home-blocked>`
     // we treat it as blocked. This over-blocks slightly (any directory named
     // `.ssh` anywhere) but errs on the side of safety.
+    //
+    // For multi-segment rels like `.config/gcloud` we match the SEQUENCE as a
+    // contiguous sub-slice of the path's components — a per-component scan
+    // would let `~/foo/.config/something/gcloud` slip through because it sees
+    // `.config` and `gcloud` independently. Single-segment rels (`.ssh`,
+    // `.aws`, …) keep the existing any-component heuristic.
     let lower_path = std::path::Path::new(&lower);
+    let comps: Vec<String> = lower_path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
     for rel in HOME_BLOCKED {
-        let needle = format!("/{}", rel.to_lowercase());
-        // Match `<...>/.ssh` exactly OR `<...>/.ssh/<anything>`.
-        if lower.ends_with(&needle)
-            || lower_path
-                .components()
-                .any(|c| c.as_os_str().to_string_lossy() == *rel)
-        {
+        let rel_lower = rel.to_lowercase();
+        let needle_tail = format!("/{}", rel_lower);
+        let segs: Vec<&str> = rel_lower.split('/').collect();
+        let seq_hit = segs.len() > 1
+            && comps
+                .windows(segs.len())
+                .any(|w| w.iter().zip(segs.iter()).all(|(a, b)| a == b));
+        let single_hit = segs.len() == 1 && comps.iter().any(|c| c == segs[0]);
+        if lower.ends_with(&needle_tail) || seq_hit || single_hit {
             return Err(PathError::Blocked);
         }
     }
@@ -268,4 +283,37 @@ async fn open_nofollow(
     path: &Path,
 ) -> std::io::Result<tokio::fs::File> {
     opts.open(path).await
+}
+
+// H2 NOTE: `resolve_safe_remote` runs the blocklist against the literal path
+// the user provided. A remote shell happily follows symlinks (`~/safe-link
+// -> ~/.ssh`), so a blocklisted dir could be reached via a symlinked alias.
+// The fix lives at the SSH transport call site (`files::mod::safe_path`):
+// before this function runs, the caller does ONE `readlink -f -- "$path"`
+// hop over the warm ControlMaster and passes the RESOLVED path here. If
+// `readlink -f` is unavailable (older BSD `readlink`), the caller logs and
+// falls back to the literal path — never silently allows.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // H1: a nested `.config/.../gcloud` must NOT slip past the windowed match
+    // (the old per-component scan saw `.config` and `gcloud` independently).
+    #[test]
+    fn remote_blocks_nested_config_gcloud_sequence() {
+        // Direct adjacent sequence — the documented bypass.
+        let err = resolve_safe_remote("/home/u/foo/.config/gcloud/creds.json").unwrap_err();
+        assert!(matches!(err, PathError::Blocked));
+        // Same shape for `.config/gh`.
+        let err = resolve_safe_remote("/home/u/.config/gh/hosts.yml").unwrap_err();
+        assert!(matches!(err, PathError::Blocked));
+        // Non-adjacent must NOT match (`.config/something/gcloud` is allowed
+        // because the SEQUENCE `.config/gcloud` isn't a contiguous sub-slice).
+        let ok = resolve_safe_remote("/home/u/.config/something/gcloud-notes.txt");
+        assert!(ok.is_ok());
+        // Single-segment rels still trip on any component.
+        let err = resolve_safe_remote("/home/u/.ssh/id_ed25519").unwrap_err();
+        assert!(matches!(err, PathError::Blocked));
+    }
 }

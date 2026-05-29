@@ -186,6 +186,14 @@ async fn transport_for_session(
 /// `resolve_safe` (canonicalize, blocklist, jail). Remote transports go
 /// through the text-based blocklist (`resolve_safe_remote`) — we cannot
 /// canonicalize a remote path against our local FS.
+///
+/// **Remote symlink hop (H2).** Before applying the remote blocklist we ask
+/// the transport to `readlink -f` the path over the warm ControlMaster. That
+/// folds a `~/safe-link -> ~/.ssh` symlink into the real `.ssh` path so the
+/// blocklist sees what `cat` would actually open. If `readlink -f` fails on
+/// the remote (e.g. older BSD `readlink`, broken link, transient ssh error)
+/// we log the reason and fall back to the unresolved input — the blocklist
+/// still runs on SOMETHING, never silently allowed.
 async fn safe_path(
     transport: &Arc<dyn FileTransport>,
     input: &str,
@@ -197,7 +205,23 @@ async fn safe_path(
     } else {
         // The jail is a LOCAL FS concept; it doesn't apply to remote paths
         // (the global browser never sets one anyway). Honor only the blocklist.
-        Ok(path_safe::resolve_safe_remote(input)?)
+        // First-pass blocklist on the literal input — rejects obvious bad
+        // paths (and validates absoluteness / NUL bytes / `..`) before we
+        // spend an ssh round-trip on `readlink -f`.
+        let literal = path_safe::resolve_safe_remote(input)?;
+        // Now resolve symlinks remotely and re-check the resolved path.
+        match transport.realpath(&literal).await {
+            Ok(resolved) => {
+                let resolved_s = resolved.to_string_lossy().into_owned();
+                Ok(path_safe::resolve_safe_remote(&resolved_s)?)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "remote readlink -f failed for {input:?}: {e}; falling back to unresolved path (blocklist still applies)"
+                );
+                Ok(literal)
+            }
+        }
     }
 }
 
@@ -606,6 +630,15 @@ async fn upload(
 }
 
 /// `GET /api/uploads/{filename}` — serve a previously uploaded file.
+///
+/// Hardening: we serve same-origin bytes any authed bearer can upload, so a
+/// `.svg`/`.html` would otherwise render as active content in the app origin
+/// (stored XSS). We mitigate by (a) sending `X-Content-Type-Options: nosniff`
+/// so the browser never UA-sniffs HTML out of a `text/plain` body, and (b)
+/// forcing `Content-Disposition: attachment` for everything EXCEPT a tiny
+/// allowlist of types that are safe inline (raster images, mp4 video, mpeg
+/// audio, PDF). Notably `image/svg+xml` and `text/html` are NOT allowlisted —
+/// they download instead of rendering inline.
 async fn serve_upload(
     State(state): State<AppState>,
     axum::extract::Path(filename): axum::extract::Path<String>,
@@ -623,14 +656,36 @@ async fn serve_upload(
         .await
         .map_err(|_| AppError::NotFound("upload not found".into()))?;
     let mime = mime_for(&path);
+    let disposition = upload_disposition(&mime);
     build(
         StatusCode::OK,
         &[
             (header::CONTENT_TYPE, &mime),
             (header::CACHE_CONTROL, "private, max-age=3600"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CONTENT_DISPOSITION, disposition),
         ],
         Body::from(bytes),
     )
+}
+
+/// Small allowlist of MIME types that are safe to render inline from
+/// `/api/uploads/*`. Everything else gets `attachment` so a malicious upload
+/// (`.svg`, `.html`, `.xhtml`, …) downloads instead of executing in-origin.
+fn upload_disposition(mime: &str) -> &'static str {
+    matches!(
+        mime,
+        "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "image/x-icon"
+            | "video/mp4"
+            | "audio/mpeg"
+            | "application/pdf"
+    )
+    .then_some("inline")
+    .unwrap_or("attachment")
 }
 
 /// `GET /api/autocomplete/dir` — directory typeahead, capped at 10 results.
@@ -1076,5 +1131,79 @@ fn map_io(e: std::io::Error) -> AppError {
         std::io::ErrorKind::NotFound => AppError::NotFound("path not found".into()),
         std::io::ErrorKind::PermissionDenied => AppError::Forbidden("permission denied".into()),
         _ => AppError::Internal(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Stored-XSS hardening for `/api/uploads/*`. An authed bearer can upload
+    //! arbitrary bytes; we must NOT render them as active content in the app
+    //! origin. The serve path therefore: (a) sends `X-Content-Type-Options:
+    //! nosniff` and (b) forces `Content-Disposition: attachment` for anything
+    //! outside a tiny inline allowlist (raster image / mp4 / mpeg / pdf).
+    use super::*;
+    use crate::config::Config;
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("supermux-files-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    #[tokio::test]
+    async fn html_upload_serves_as_attachment_with_nosniff() {
+        let (state, dir) = test_state().await;
+
+        // Drive the same POST path the FE uses: a base64 payload of an HTML
+        // doc with a script — the kind a stored-XSS attack would smuggle in.
+        let html = b"<html><body><script>alert(1)</script></body></html>";
+        let body = UploadBody {
+            name: "evil.html".to_string(),
+            data: b64_standard().encode(html),
+        };
+        let posted = upload(State(state.clone()), Json(body))
+            .await
+            .expect("upload accepts arbitrary files");
+        let url = posted.0["url"].as_str().expect("url field").to_string();
+        // url is `/api/uploads/<uuid>-evil.html` — extract the filename.
+        let filename = url.rsplit('/').next().unwrap().to_string();
+
+        let resp = serve_upload(State(state.clone()), axum::extract::Path(filename))
+            .await
+            .expect("serve_upload");
+        let headers = resp.headers();
+        assert_eq!(
+            headers.get(header::X_CONTENT_TYPE_OPTIONS).and_then(|v| v.to_str().ok()),
+            Some("nosniff"),
+            "X-Content-Type-Options must be nosniff for uploaded HTML",
+        );
+        assert_eq!(
+            headers.get(header::CONTENT_DISPOSITION).and_then(|v| v.to_str().ok()),
+            Some("attachment"),
+            "HTML uploads must download, not render inline (stored-XSS defense)",
+        );
+        // The disposition helper's positive case stays honest: a PNG is inline.
+        assert_eq!(upload_disposition("image/png"), "inline");
+        // And SVG / HTML must NEVER be inline — they're the XSS vectors.
+        assert_eq!(upload_disposition("image/svg+xml"), "attachment");
+        assert_eq!(upload_disposition("text/html"), "attachment");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

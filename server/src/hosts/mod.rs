@@ -98,6 +98,13 @@ fn valid_ssh_target(target: &str) -> bool {
     if !SSH_TARGET_RE.is_match(target) {
         return false;
     }
+    // Option-injection guard: ssh treats a leading `-` as a flag, so a target
+    // like `-oProxyCommand=…` (or `user@-evil`) would smuggle ssh options
+    // through. Regex above permits `-` mid-token, so reject the leading-dash
+    // forms (bare host, and host portion after `user@`) explicitly.
+    if target.starts_with('-') || target.contains("@-") {
+        return false;
+    }
     // Port range guard — regex caps `[0-9]{1,5}` but `99999` slips through.
     if let Some((_host, port)) = target.rsplit_once(':') {
         if let Ok(p) = port.parse::<u32>() {
@@ -517,6 +524,11 @@ mod tests {
             "user with space@host",
             "host:0",
             "host\nrm",
+            // Option-injection guard — leading `-` would be parsed by ssh
+            // as a flag (e.g. `-oProxyCommand=…`).
+            "-oProxyCommand=evil",
+            "-evil",
+            "user@-evil",
         ] {
             assert!(!valid_ssh_target(bad), "{bad:?} should reject");
         }

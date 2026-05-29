@@ -33,7 +33,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }  # BroadcastStream adapt
 axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }   # TLS
 tower = { version = "0.5", features = ["util", "limit"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "fs", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "limit", "set-header"] }
 http = "1.2"
 http-body-util = "0.1"
 bytes = "1.9"

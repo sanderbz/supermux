@@ -274,12 +274,18 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
             if !s.flags.trim().is_empty() {
                 parts.push(s.flags.trim().to_string());
             }
+            // `cc_session_name` / `cc_conversation_id` are charset-validated
+            // at the HTTP boundary (see `sessions::valid_cc_id`), so the rule
+            // `[A-Za-z0-9._-]{1,128}` holds here. We single-quote the value
+            // anyway: the wrap is audit-obvious shell-injection-safe (the
+            // validated charset has no single quote), and it survives any
+            // stray legacy row from before the boundary check existed.
             if !s.cc_session_name.is_empty() {
                 parts.push("--resume".to_string());
-                parts.push(s.cc_session_name.clone());
+                parts.push(format!("'{}'", s.cc_session_name));
             } else if !s.cc_conversation_id.is_empty() {
                 parts.push("--resume".to_string());
-                parts.push(s.cc_conversation_id.clone());
+                parts.push(format!("'{}'", s.cc_conversation_id));
             } else {
                 parts.push("--name".to_string());
                 parts.push(s.name.clone());

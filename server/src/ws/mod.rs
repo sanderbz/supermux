@@ -29,6 +29,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use crate::sessions;
 use crate::sessions::teams;
 use crate::sessions::tmux::Tmux;
 use crate::state::AppState;
@@ -306,6 +307,17 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         .await
         .is_err()
     {
+        return;
+    }
+
+    // 1a. Validate the session name BEFORE it reaches tmux / path use. The REST
+    //     path (`sessions::*` handlers) gates names through `valid_name`; the
+    //     WS path historically skipped this and trusted whatever the router
+    //     captured. Mirror the REST gate so a leading `-`, shell meta, or
+    //     overlong slug can never flow into `Tmux::new(&name)` or any FIFO
+    //     path. Closing with POLICY (1008) matches the auth/origin idiom above.
+    if !sessions::valid_name(&name) {
+        close(&mut socket, close_code::POLICY, "bad name").await;
         return;
     }
 

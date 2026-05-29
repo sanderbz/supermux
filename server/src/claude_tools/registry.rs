@@ -16,7 +16,7 @@
 //!   * commands — `~/.claude/commands/*.md` (global; DB-backed ones flagged
 //!     "supermux-managed") + `<cwd>/.claude/commands/*.md` (project) + built-ins.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use axum::extract::{Query, State};
 use axum::Json;
@@ -540,13 +540,6 @@ async fn scan_command_dir(
             removable,
         });
     }
-}
-
-/// Resolve a session's working dir to its `~/.claude/projects/<encoded>` form is
-/// NOT needed here (registry reads config, not transcripts); kept out on purpose.
-#[allow(dead_code)]
-fn _unused() -> PathBuf {
-    PathBuf::new()
 }
 
 #[cfg(test)]

@@ -92,6 +92,7 @@ pub fn hook_router_for(state: AppState) -> Router {
 }
 
 /// Build the public board sub-router (iCal feed; no auth).
+// SECURITY: the iCal feed is public-by-URL by design (calendar clients can't send a bearer) — keep it behind Tailscale and never publish the URL. The `archived = 0` filter in `issues_with_due` keeps soft-discarded cards out of the public feed.
 pub fn public_router_for(state: AppState) -> Router {
     use axum::routing::get;
     Router::new()

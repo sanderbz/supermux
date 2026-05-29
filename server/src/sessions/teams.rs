@@ -112,7 +112,14 @@ pub fn team_config_path(team: &str) -> PathBuf {
 /// Read + parse `~/.claude/teams/{team}/config.json`. Defensive: a missing file
 /// or malformed JSON is an `Err` (callers surface it as a clean WS close), never
 /// a panic. NEVER cached — read fresh so a `%id` is always current.
+///
+/// **Path safety.** `team` is validated against the supermux slug rule
+/// ([`super::valid_name`]) BEFORE any filesystem use, so a `{team}` URL segment
+/// like `../etc` can never traverse out of the teams directory.
 pub fn read_team_config(team: &str) -> Result<TeamConfig> {
+    if !super::valid_name(team) {
+        return Err(anyhow!("invalid team name '{team}'"));
+    }
     let path = team_config_path(team);
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("reading team config {}", path.display()))?;
@@ -167,6 +174,12 @@ pub async fn resolve_member_pane(
     member: &str,
     pane_override: Option<&str>,
 ) -> Result<ResolvedPane> {
+    // Path safety: both URL segments must be slug-safe BEFORE we touch the
+    // filesystem (`read_team_config` revalidates `team`; this guards `member`
+    // for symmetry + future FS keying off the member name).
+    if !super::valid_name(member) {
+        return Err(anyhow!("invalid member name '{member}'"));
+    }
     let cfg = read_team_config(team)?;
 
     let pane_id = match pane_override {
@@ -363,6 +376,35 @@ mod tests {
         // A config with no members array still parses (defensive default).
         let cfg: TeamConfig = serde_json::from_str(r#"{"leadSessionId":"x"}"#).unwrap();
         assert!(cfg.members.is_empty());
+    }
+
+    #[test]
+    fn read_team_config_rejects_traversal_team_name_before_fs() {
+        // Path-safety guard: a `{team}` segment that fails the slug rule must
+        // fail FAST with no filesystem read attempted. Spot-checks the
+        // path-traversal vector + a sibling-escape vector.
+        for bad in ["..", "../etc/passwd", "team/../other", ""] {
+            let err = read_team_config(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("invalid team name"),
+                "expected invalid-team-name error for {bad:?}, got: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_member_pane_rejects_traversal_member_name() {
+        // Symmetric guard for the `{member}` URL segment — also slug-validated
+        // before the config read (which would otherwise trigger an FS read keyed
+        // by `team`).
+        let err = resolve_member_pane("ok-team", "../escape", None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("invalid member name"),
+            "expected invalid-member-name error, got: {err}"
+        );
     }
 
     // Lead-pane discrimination — pins the multi-bug fix:

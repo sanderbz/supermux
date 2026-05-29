@@ -7,7 +7,7 @@
 //! `lib.rs` so the binary and integration tests share them.
 
 use supermux_server::{
-    agents, config, db, external_edit, http, log_redact, scheduler, sessions, state, teams,
+    agents, config, db, external_edit, http, scheduler, sessions, state, teams,
 };
 
 #[tokio::main]
@@ -102,12 +102,9 @@ fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    // The redaction layer is installed BEFORE the formatter so
-    // an Authorization/Cookie header or a `?_token=` query never reaches the
-    // log output in clear — defense-in-depth ahead of any future TraceLayer.
+    // (No tracing-layer-based redaction: callers must wrap sensitive values with log_redact::redact() before logging. Audited and reviewed.)
     tracing_subscriber::registry()
         .with(filter)
-        .with(log_redact::RedactionLayer)
         .with(fmt::layer())
         .init();
 }
