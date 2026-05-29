@@ -21,3 +21,6 @@ playwright-report/
 DEPLOYED_SHA
 # Per-session Claude Code state (worktrees, etc.)
 .claude/
+# Internal-only working dirs (not for OSS)
+plan/
+agent_notes/
