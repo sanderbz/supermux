@@ -29,7 +29,10 @@ jobs:
   server:
     name: server (cargo check + test)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A cold debug build (check ~5m + test-compile ~3.5m) plus the test run can
+    # exceed 10m on a cache miss, which cancels the gating job mid-`cargo test`.
+    # Give headroom. Debug only — CLAUDE.md forbids --release (OOM on small hosts).
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: server
