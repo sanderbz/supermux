@@ -1095,12 +1095,13 @@ mod seed_tests {
 
 /// Boots a uniquely-named session on a PRIVATE tmux socket (`-L`), runs the
 /// EXACT `set-option -g -as terminal-features 'xterm*:sync'` argv `new_session`
-/// uses, and asserts tmux both accepts it AND resolves `sync` as a feature for
-/// the session. Pins the literal argv (refactor canary: a future change that
-/// drops `-a`, mis-spells the feature, or moves to the wrong target-class
-/// fails here) and proves it on a live tmux — the option string is
-/// server-parsed, so a string-only test would only prove formatting, not
-/// acceptance.
+/// uses, and asserts tmux accepts it AND stores it under the right option with
+/// the feature token appended. Pins the literal argv (refactor canary: a future
+/// change that drops `-a`, mis-spells the option name, or moves to the wrong
+/// target-class fails here) on a live tmux server. We read the STORED config via
+/// `show-options`, not the resolved `#{terminal-features}` — tmux only computes
+/// the resolved feature set per-CLIENT on attach, so a detached (clientless) test
+/// session always resolves to empty.
 ///
 /// SAFETY of the test:
 ///   • Uses `-L supermux-sync-test-<pid>` to spawn its OWN private tmux
@@ -1163,25 +1164,22 @@ mod sync_feature_tests {
             String::from_utf8_lossy(&set.stderr).trim()
         );
 
-        // Read back the resolved feature set for this session and confirm `sync`
-        // is present. This proves tmux PARSED the option (not just stored a
-        // string) — a typo would store but never resolve.
+        // Confirm the option was STORED under the right name with the feature
+        // token appended (`-a`), not overwriting tmux's built-in defaults. We read
+        // the configured value via `show-options`, NOT the resolved
+        // `#{terminal-features}` — tmux only computes the resolved feature set
+        // per-CLIENT on attach, so a detached (clientless) test session always
+        // resolves to empty (it would spuriously fail in CI and headless dev).
+        // `show-options` is the headless-robust canary for the option name, the
+        // `-a` append flag, and the `xterm*:sync` token.
         let q = Command::new("tmux")
-            .args([
-                "-L",
-                &socket,
-                "display-message",
-                "-p",
-                "-t",
-                session,
-                "#{?#{m/r:.*sync.*,#{terminal-features}},SYNC_OK,SYNC_MISSING}",
-            ])
+            .args(["-L", &socket, "show-options", "-g", "terminal-features"])
             .output()
-            .expect("spawn tmux display-message");
+            .expect("spawn tmux show-options");
         let out = String::from_utf8_lossy(&q.stdout);
         assert!(
-            out.trim() == "SYNC_OK",
-            "expected SYNC_OK in tmux terminal-features, got: {out:?}"
+            out.contains("xterm*:sync"),
+            "expected 'xterm*:sync' appended to terminal-features, got: {out:?}"
         );
 
         // Best-effort teardown of our private server only; never touches the
