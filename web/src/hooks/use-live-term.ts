@@ -589,6 +589,17 @@ export function useLiveTerm(
     }
     const onScreenTouchMove = (e: TouchEvent) => {
       if (touchLastY === null || e.touches.length !== 1 || !wantsTouchScroll()) return
+      // CLAIM THE GESTURE ON THE FIRST MOVE — not only once we've crossed a full
+      // cell. On iOS WebKit a touch gesture's nature (scroll vs. handled) is decided
+      // on the FIRST touchmove: if we don't preventDefault now, the event turns
+      // non-cancelable and our later preventDefault is silently ignored, so the
+      // scroll dies and the finger does nothing (the real-device bug). We pair this
+      // with `touch-action: pan-y` on `.xterm-screen` (globals.css) so iOS routes a
+      // vertical one-finger pan to THIS handler instead of committing it elsewhere
+      // (the Vaul sheet / nothing) on frame one. The cell accumulator below now
+      // only governs HOW MANY lines to scroll, not whether we own the gesture.
+      if (e.cancelable) e.preventDefault()
+      e.stopPropagation()
       const y = e.touches[0].clientY
       // Finger UP (y decreases) → scroll DOWN (positive lines); finger DOWN → up.
       touchAccumPx += touchLastY - y
@@ -598,8 +609,6 @@ export function useLiveTerm(
         const lines = Math.trunc(touchAccumPx / h)
         term.scrollLines(lines)
         touchAccumPx -= lines * h
-        e.preventDefault()
-        e.stopPropagation()
       }
     }
     const onScreenTouchEnd = () => {

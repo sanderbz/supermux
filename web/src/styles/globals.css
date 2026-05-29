@@ -234,6 +234,21 @@
   overscroll-behavior: contain;
 }
 
+/* THE one-finger touch-scroll fix. A finger lands on `.xterm-screen` (it sits ON
+   TOP of `.xterm-viewport` — they are siblings, the screen is not the scroll
+   container), so the touch never reaches the viewport. When an agent holds the
+   mouse (DECSET ?1000/?1002 — Claude Code's TUI), xterm gates its own touch
+   handler and our shim in use-live-term.ts scrolls via `term.scrollLines()`.
+   That shim is `{passive:false}` and calls preventDefault, but iOS WebKit decides
+   a gesture's nature on the FIRST touchmove — without `pan-y` here it commits the
+   one-finger drag to nothing (no scrollable ancestor) / the sheet on frame one and
+   the later preventDefault is ignored (e.cancelable=false), so the scroll dies.
+   `pan-y` tells iOS "a vertical pan handler owns this element," so it defers to the
+   shim. `!important` overrides Vaul's injected `touch-action:none` subtree. */
+.xterm-screen {
+  touch-action: pan-y !important;
+}
+
 /* ── Glass material (M20 — iOS-native bars; termius-ios-native-spec §Material) ─
    Regular Liquid-Glass analogue for toolbars/headers above content: a
    translucent surface (mixed from the semantic --card token so it tracks the
