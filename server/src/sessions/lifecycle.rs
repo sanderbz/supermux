@@ -212,6 +212,36 @@ fn build_env(
         "CLAUDE_CODE_FORCE_SYNC_OUTPUT".to_string(),
         "1".to_string(),
     );
+    // Disable Claude Code's terminal mouse reporting (DECSET ?1000/?1002/?1003/
+    // ?1006). THE fix for the mobile-scroll + desktop-select regression.
+    //
+    // ROOT CAUSE (anthropics/claude-code#61936, labeled a regression): Claude Code
+    // v2.1.150+ turns xterm mouse reporting ON by default. In supermux's
+    // browser-hosted xterm.js that is fatal to the two PRIMARY interactions:
+    //   • mobile — once an app holds the mouse, xterm gates its own one-finger
+    //     touch-scroll, so the scrollback can no longer be panned by a finger; and
+    //   • desktop — a drag is forwarded to the pty as a mouse report instead of
+    //     making a browser text selection, so select-to-copy stops working
+    //     ("copied … to tmux buffer" appears instead).
+    // Both regressed the instant users updated Claude Code — nothing in supermux
+    // changed. supermux is driven ENTIRELY through the web terminal (taps/drags ARE
+    // how you scroll and select), so Claude Code's in-pane mouse features
+    // (click-to-position, click-to-expand) are worthless here and actively harmful.
+    //
+    // Disabling at the SOURCE restores native touch-scroll + text selection for
+    // EVERY session on EVERY deployment (local, remote server, other users' hosts,
+    // OSS) with zero per-machine config — and team leads spawn teammates as child
+    // panes on the same tmux server, so teammates inherit this via both the tmux
+    // session env and process-env inheritance. Keyboard scroll (PgUp/PgDn/Ctrl+O)
+    // is unaffected. Same blast-radius/safety properties as FORCE_SYNC above:
+    // per-pane `-e KEY=VAL`, ignored by agents that don't read it.
+    //
+    // NOTE: read at Claude Code STARTUP — an already-running session must be
+    // restarted (the in-UI Restart button) to pick it up.
+    env.insert(
+        "CLAUDE_CODE_DISABLE_MOUSE".to_string(),
+        "1".to_string(),
+    );
     env
 }
 

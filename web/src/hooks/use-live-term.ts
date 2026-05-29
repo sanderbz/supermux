@@ -501,15 +501,14 @@ export function useLiveTerm(
       // stores lines compactly; 50k lines is a modest memory cost per terminal.
       scrollback: 50000,
       disableStdin: readOnly,
-      // ⌥-drag forces a LOCAL text selection even while the program holds the
-      // mouse (DECSET ?1000/?1002 — Claude Code's TUI, and tmux `mouse on`,
-      // almost always do). Without this, macOS xterm has NO modifier to bypass
-      // mouse reporting, so a plain drag is forwarded to the pty (tmux grabs it →
-      // "copied … to tmux buffer") and the user can't select+copy in the browser.
-      // With it, ⌥-drag selects locally (xterm does NOT forward those events), so
-      // the ⌘C handler below copies it. Plain drag is unchanged → the agent still
-      // gets its mouse events. (Linux/Windows already get Shift-drag by default;
-      // this option only affects macOS.)
+      // ⌥-drag forces a LOCAL text selection even if a program holds the mouse
+      // (DECSET ?1000/?1002). supermux disables Claude Code's mouse reporting
+      // (server CLAUDE_CODE_DISABLE_MOUSE=1), so a plain drag already selects for
+      // Claude sessions — but a raw `shell` session running a mouse-mode TUI (tmux
+      // `mouse on`, vim, htop) still holds the mouse, and on macOS xterm has no
+      // other modifier to bypass it. This keeps ⌥-drag-to-select working in that
+      // case (Linux/Windows get Shift-drag by default; this affects macOS only).
+      // Pairs with the ⌘C handler below. Cheap, additive, no downside.
       macOptionClickForcesSelection: true,
     })
     const fit = new FitAddon()
@@ -542,83 +541,15 @@ export function useLiveTerm(
     }
     viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
 
-    // ── Single-finger touch scroll-back while the agent holds the mouse ──────────
-    // xterm's OWN touch listeners (registered in Terminal.ts, NOT in
-    // Viewport.handleTouchMove) early-return whenever the program has mouse
-    // reporting ON (`coreMouseService.areMouseEventsActive` — Claude Code's TUI
-    // almost always does), DROPPING the touch (a bare `return`; it is NOT
-    // translated into a mouse report) instead of panning the scrollback. So on
-    // mobile a one-finger drag can't reach
-    // history while an agent is attached (wheel + 2-finger use other paths, hence
-    // they still work — the exact reported symptom). We restore it: while mouse
-    // reporting is ON and we're in the NORMAL buffer (the only one with scrollback),
-    // a one-finger vertical drag scrolls via `term.scrollLines()` — xterm's public
-    // scroll API. We deliberately use it instead of a raw `viewport.scrollTop +=
-    // dy` for three reasons: (1) it's line-granular via the accumulator below, so
-    // it never leaves a fractional-line scrollTop that xterm's `syncScrollArea`
-    // immediately snaps back — the jitter a raw per-pixel scrollTop produced; (2)
-    // it drives the renderer repaint directly through xterm's scroll pipeline
-    // (BufferService.scrollLines → onScroll → renderRows) instead of leaning on
-    // xterm's internal viewport 'scroll'-event bounce; (3) it's public API, so it
-    // survives xterm 6.x's viewport rewrite. (The earlier reverted attempt 7723be1
-    // was backed out for janky iOS *feel* — overriding the native pan, see 9c7657d
-    // — NOT a repaint failure; both scrollLines and raw scrollTop repaint. This
-    // path is still line-granular with no momentum, so the on-device feel is the
-    // thing to keep watching.) A pixel accumulator gives whole-line
-    // granularity. We claim the gesture (preventDefault + stopPropagation) ONLY once
-    // we actually scroll, so a tap still reaches the agent as a click and a STILL
-    // hold still arms the long-press joystick. When mouse reporting is OFF, this is
-    // inert and xterm's own native touch-scroll handles it (unchanged).
-    const screenEl = container.querySelector<HTMLElement>('.xterm-screen')
-    let touchLastY: number | null = null
-    let touchAccumPx = 0
-    const cellHeightPx = () => {
-      const rows = term.rows || 24
-      return (viewportEl?.clientHeight ?? rows * 16) / rows
-    }
-    const wantsTouchScroll = () =>
-      term.modes.mouseTrackingMode !== 'none' &&
-      term.buffer.active.type === 'normal'
-    const onScreenTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 1 && wantsTouchScroll()) {
-        touchLastY = e.touches[0].clientY
-        touchAccumPx = 0
-      } else {
-        touchLastY = null
-      }
-    }
-    const onScreenTouchMove = (e: TouchEvent) => {
-      if (touchLastY === null || e.touches.length !== 1 || !wantsTouchScroll()) return
-      // CLAIM THE GESTURE ON THE FIRST MOVE — not only once we've crossed a full
-      // cell. On iOS WebKit a touch gesture's nature (scroll vs. handled) is decided
-      // on the FIRST touchmove: if we don't preventDefault now, the event turns
-      // non-cancelable and our later preventDefault is silently ignored, so the
-      // scroll dies and the finger does nothing (the real-device bug). We pair this
-      // with `touch-action: pan-y` on `.xterm-screen` (globals.css) so iOS routes a
-      // vertical one-finger pan to THIS handler instead of committing it elsewhere
-      // (the Vaul sheet / nothing) on frame one. The cell accumulator below now
-      // only governs HOW MANY lines to scroll, not whether we own the gesture.
-      if (e.cancelable) e.preventDefault()
-      e.stopPropagation()
-      const y = e.touches[0].clientY
-      // Finger UP (y decreases) → scroll DOWN (positive lines); finger DOWN → up.
-      touchAccumPx += touchLastY - y
-      touchLastY = y
-      const h = cellHeightPx()
-      if (h > 0 && Math.abs(touchAccumPx) >= h) {
-        const lines = Math.trunc(touchAccumPx / h)
-        term.scrollLines(lines)
-        touchAccumPx -= lines * h
-      }
-    }
-    const onScreenTouchEnd = () => {
-      touchLastY = null
-      touchAccumPx = 0
-    }
-    screenEl?.addEventListener('touchstart', onScreenTouchStart, { passive: true })
-    screenEl?.addEventListener('touchmove', onScreenTouchMove, { passive: false })
-    screenEl?.addEventListener('touchend', onScreenTouchEnd, { passive: true })
-    screenEl?.addEventListener('touchcancel', onScreenTouchEnd, { passive: true })
+    // NOTE (mobile one-finger touch-scroll): supermux disables Claude Code's mouse
+    // reporting at the source (`CLAUDE_CODE_DISABLE_MOUSE=1`, server
+    // sessions/lifecycle.rs), so xterm's OWN native touch-scroll handler is active
+    // and pans the scrollback on a one-finger drag — the pre-Claude-v2.1.150
+    // behaviour. We deliberately do NOT layer a custom touch shim on top: a JS
+    // `{passive:false}` touchmove handler competes with xterm's native handler and
+    // (per the reverted 7723be1/9c7657d/d2810cb attempts) regressed iOS feel
+    // without ever being device-proven. `.xterm-viewport { touch-action: pan-y }`
+    // (globals.css) is what lets the native pan through inside the Vaul sheet.
 
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
@@ -1542,10 +1473,6 @@ export function useLiveTerm(
         wsRef.current = null
       }
       viewportEl?.removeEventListener('scroll', syncScrolledUp)
-      screenEl?.removeEventListener('touchstart', onScreenTouchStart)
-      screenEl?.removeEventListener('touchmove', onScreenTouchMove)
-      screenEl?.removeEventListener('touchend', onScreenTouchEnd)
-      screenEl?.removeEventListener('touchcancel', onScreenTouchEnd)
       term.dispose()
       termRef.current = null
       fitRef.current = null
