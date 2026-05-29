@@ -395,13 +395,17 @@ fn boot_session_name(sched: &Schedule) -> String {
 }
 
 /// Trim a note to a reasonable column size (matches v2's 500-char cap).
+/// Slices on a CHAR boundary — naive byte-index slicing panics when byte 500
+/// lands inside a multi-byte char (emoji/CJK/accented stdout).
 fn truncate(s: &str) -> String {
+    const MAX_CHARS: usize = 500;
     let s = s.trim();
-    if s.len() <= 500 {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..500])
+    if s.chars().count() <= MAX_CHARS {
+        return s.to_string();
     }
+    let mut out: String = s.chars().take(MAX_CHARS).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -463,5 +467,22 @@ mod tests {
         let s = sched_with("  ", "  do it  ");
         // whitespace-only command is dropped; prompt is trimmed.
         assert_eq!(delivery_lines(&s), vec!["do it"]);
+    }
+
+    #[test]
+    fn truncate_does_not_panic_on_multibyte_boundary() {
+        // "€" is 3 bytes; 167 copies = 501 bytes / 167 chars. A naive &s[..500]
+        // would land inside the 167th '€' and panic. Char-boundary slice is safe.
+        let input = "€".repeat(167);
+        let out = truncate(&input);
+        // Short input (167 chars ≤ 500 MAX_CHARS) passes through verbatim.
+        assert_eq!(out.chars().count(), 167);
+        // ASCII shorter than the cap is unchanged.
+        assert_eq!(truncate("hello"), "hello");
+        // Long multibyte input is capped to MAX_CHARS chars + the ellipsis.
+        let long = "€".repeat(600);
+        let capped = truncate(&long);
+        assert_eq!(capped.chars().count(), 501); // 500 '€' + '…'
+        assert!(capped.ends_with('…'));
     }
 }
