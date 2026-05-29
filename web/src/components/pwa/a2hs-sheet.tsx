@@ -93,7 +93,14 @@ export function A2HSInstructionsSheet() {
   }
 
   return (
-    <Drawer.Root open={open} onOpenChange={handleOpenChange}>
+    {/* modal={false} — a MODAL Vaul/Radix drawer sets `pointer-events: none` on
+        <body> and mounts a focus-trap; iOS WebKit's transformed / backdrop-filter
+        ancestors (the focus route's `motion.div style={{x}}`, every `.glass`
+        surface) turn that into DEAD TAPS, so "Got it" / the X close became
+        unclickable on iPhone. Non-modal keeps the dimmed overlay but lets taps
+        reach the buttons — the same decision the focus `MobileSheet` already makes
+        ("don't lock the rest of the app"). */}
+    <Drawer.Root open={open} onOpenChange={handleOpenChange} modal={false}>
       <Drawer.Portal>
         <Drawer.Overlay className="fixed inset-0 z-[70] bg-black/40" />
         <Drawer.Content
