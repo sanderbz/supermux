@@ -184,6 +184,21 @@ export function MobileFocus() {
   } | null>(null)
   const onTermPointerDown = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      // ROOT CAUSE of dead one-finger scroll on mobile. Vaul's Drawer.Content
+      // onPointerDown → onPress UNCONDITIONALLY calls setPointerCapture() on the
+      // touched node before it ever consults `data-vaul-no-drag` (shouldDrag runs
+      // later and only decides whether to TRANSLATE the sheet — it cannot undo the
+      // capture). On iOS a single captured pointer stops driving native scroll, so
+      // the xterm viewport could only be panned with a SECOND, uncaptured finger —
+      // the laggy two-finger scroll, dead one-finger scroll we saw on EVERY session
+      // regardless of Claude's mouse-reporting state. Stop the event here so it
+      // never reaches Vaul: no capture → xterm's own touch handler + native viewport
+      // scroll pan the scrollback on one finger again. Because onPress never runs,
+      // Vaul never sets isDragging, so its onRelease (fling-dismiss) is a no-op for
+      // terminal-body gestures — a fast downward scroll can't dismiss the sheet. The
+      // FocusHeader/handle + MobileDock sit OUTSIDE this wrapper, so dragging THEM to
+      // dismiss is unaffected.
+      e.stopPropagation()
       // A second concurrent pointer = multi-touch → not a tap. Invalidate.
       if (tapRef.current && tapRef.current.id !== e.pointerId) {
         tapRef.current = null
@@ -396,13 +411,14 @@ export function MobileFocus() {
               so a plain one-finger drag falls through to `.xterm-viewport` and
               pans the scrollback natively. See joystick.tsx.
 
-              `data-vaul-no-drag` (kept — still load-bearing): Vaul wires drag on
-              the whole Drawer.Content, so a downward swipe over the terminal
-              would otherwise drag the SHEET to dismiss instead of scrolling
-              scrollback. This attr makes Vaul's `shouldDrag` short-circuit for
-              touches starting in the terminal body, releasing the gesture to
-              xterm (`.xterm-viewport` gets `touch-action: pan-y` in globals.css).
-              The FocusHeader/handle + MobileDock sit OUTSIDE this region, so
+              `data-vaul-no-drag` (kept): marks the terminal body so Vaul's
+              `shouldDrag` won't TRANSLATE the sheet for touches that start here.
+              NOTE: that alone does NOT free one-finger scroll — Vaul still
+              setPointerCapture()s the pointer in onPress before shouldDrag runs.
+              The actual fix is `e.stopPropagation()` in onTermPointerDown (above),
+              which keeps the pointerdown from ever reaching Vaul. `.xterm-viewport`
+              gets `touch-action: pan-y` in globals.css for the native pan. The
+              FocusHeader/handle + MobileDock sit OUTSIDE this region, so
               drag-the-header-to-dismiss is unchanged. */}
           <div
             className="relative min-h-0 flex-1"
