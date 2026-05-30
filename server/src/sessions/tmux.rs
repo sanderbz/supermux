@@ -857,6 +857,48 @@ pub async fn find_pane_session(pane_id: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// List every LIVE local `supermux-*` tmux session as `(bare_name, cwd)`.
+///
+/// Used by boot reconcile's tmux→DB "adopt orphans" pass: a session whose tmux
+/// pane is alive but whose DB row was lost (a renamed/deleted row while the agent
+/// kept running, or a data-dir swap across restarts) is otherwise invisible to
+/// the UI forever — a CPU-burning orphan the operator can neither see nor stop.
+/// We re-create the link from the live pane instead.
+///
+/// One `list-sessions` roundtrip, mirroring [`find_pane_session`]'s server-wide
+/// scan + `supermux-` strip. The cwd comes from `#{pane_current_path}` so the
+/// adopted row points at the right project dir. A cold tmux server (no sessions)
+/// exits non-zero → treated as "none" (empty), never an error — same fail-soft
+/// convention as the rest of this module.
+pub async fn list_local_supermux_sessions() -> Result<Vec<(String, String)>> {
+    let bin = tmux_bin()?;
+    let out = Command::new(bin)
+        .args([
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{pane_current_path}",
+        ])
+        .output()
+        .await
+        .context("spawning tmux list-sessions")?;
+    if !out.status.success() {
+        // No server / no sessions → nothing to adopt.
+        return Ok(Vec::new());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut sessions = Vec::new();
+    for line in stdout.lines() {
+        let mut it = line.splitn(2, '\t');
+        let (Some(name), dir) = (it.next(), it.next().unwrap_or("")) else {
+            continue;
+        };
+        if let Some(bare) = name.trim().strip_prefix("supermux-") {
+            sessions.push((bare.to_string(), dir.trim().to_string()));
+        }
+    }
+    Ok(sessions)
+}
+
 /// Parse tmux's `display-message -p '#{alternate_on},#{cursor_x},#{cursor_y}'`
 /// output into the three pieces the seed framer needs. Whitespace-tolerant;
 /// malformed input falls back to `(false, 0, 0)` so the seed degrades to a

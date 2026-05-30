@@ -157,6 +157,32 @@ pub async fn insert_minimal(
     Ok(())
 }
 
+/// Insert a session row for an ADOPTED orphan — a live `supermux-*` tmux pane
+/// found at boot with no matching DB row (see `auto_actions::reconcile_on_boot`'s
+/// tmux→DB pass). Like [`insert_minimal`] but stamps `creator = 'adopted'` so the
+/// row's provenance is recorded (re-linked from a running pane, not user-created).
+/// `created_at` is set to now; every other column takes its schema default. The
+/// caller skips names already present, so no upsert is needed.
+pub async fn insert_adopted(
+    pool: &SqlitePool,
+    name: &str,
+    dir: &str,
+    provider: &str,
+) -> sqlx::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO sessions (name, dir, provider, creator, created_at)
+         VALUES (?, ?, ?, 'adopted', ?)",
+    )
+    .bind(name)
+    .bind(dir)
+    .bind(provider)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Create or refresh the runtime row for `name`, storing `hook_token`.
 pub async fn ensure_runtime(
     pool: &SqlitePool,

@@ -115,6 +115,15 @@ OOMScoreAdjust=200
 # with OOMScoreAdjust=200 above: this caps the cgroup's growth; OOMScoreAdjust
 # decides who gets killed if the host as a whole still tips into OOM.
 MemoryHigh=__MEMORY_HIGH__
+# CPU de-prioritisation for the whole supermux tree (server + tmux + agents +
+# their children). CPUWeight only bites UNDER CONTENTION: when the box is busy it
+# proportionally favours everything else (sshd, the OS) over supermux's cgroup, so
+# a runaway agent that pegs every core can't lock you out of the box or starve the
+# server's own request handling — yet on an idle box it costs nothing (no cap).
+# 50 = half the default 100 weight. This is the cheap, always-safe guard; it does
+# NOT kill or hard-cap anything (a healthy busy agent still gets all spare CPU),
+# unlike a CPUQuota ceiling. Static (no placeholder) so every deploy inherits it.
+CPUWeight=50
 StandardOutput=journal
 StandardError=journal
 

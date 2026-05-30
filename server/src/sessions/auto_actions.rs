@@ -124,6 +124,62 @@ pub async fn reconcile_on_boot(state: &AppState) {
         tracing::info!(name = %s.name, "status reconcile: tmux pane gone → stopped");
     }
 
+    // ── LOCAL tmux→DB ADOPTION pass (orphan recovery) ─────────────────────────
+    // The pass above is DB→tmux (mark dead rows stopped). The INVERSE — a LIVE
+    // local `supermux-*` tmux pane with NO DB row — was previously ignored, so a
+    // running agent whose row was lost (a renamed/deleted row while the agent kept
+    // running, OR the server coming back against a different data.db across the
+    // restarts that happen during self-deploy) became a permanent ORPHAN: it
+    // burned CPU forever, invisible to the UI and impossible to stop from it. This
+    // is exactly the "all sessions dead in the UI while ~10 claude agents peg the
+    // box" failure. We RE-ADOPT such panes: insert a minimal session row + runtime
+    // (fresh hook token) so the normal machinery picks them up — `spawn_all`
+    // (called right after this in main) starts a status loop for every DB row, and
+    // the detector re-arms pipe-pane on first WS connect. Purely additive: we only
+    // CREATE links, never kill a pane. Best-effort — one bad pane never aborts boot.
+    let db_names: std::collections::HashSet<String> =
+        sessions.iter().map(|s| s.name.clone()).collect();
+    match super::tmux::list_local_supermux_sessions().await {
+        Ok(live) => {
+            for (bare, dir) in live {
+                if db_names.contains(&bare) {
+                    continue; // already tracked
+                }
+                // Guard: only adopt names that are valid supermux slugs, and skip
+                // the internal `paste-*` buffer-session artifact (a transient
+                // helper session, never a real agent — see Tmux::paste_via_buffer).
+                if !super::valid_name(&bare) || bare.starts_with("paste-") {
+                    continue;
+                }
+                let dir = if dir.is_empty() { "/".to_string() } else { dir };
+                // Adopted as a `claude` session (the only provider supermux spawns
+                // as a long-lived pane); `creator="adopted"` records the provenance
+                // so the row is distinguishable from a user-created one.
+                if let Err(e) =
+                    db::sessions::insert_adopted(&state.pool, &bare, &dir, "claude").await
+                {
+                    tracing::warn!(name = %bare, error = %e, "orphan adopt: insert_adopted failed");
+                    continue;
+                }
+                let hook_token = super::gen_hook_token();
+                if let Err(e) =
+                    db::sessions::ensure_runtime(&state.pool, &bare, &hook_token).await
+                {
+                    tracing::warn!(name = %bare, error = %e, "orphan adopt: ensure_runtime failed");
+                    continue;
+                }
+                state.hook_tokens.insert(bare.clone(), hook_token);
+                // Leave status at its default — the status loop spawned by
+                // `spawn_all` will classify it (Active/Idle/Waiting) on its first
+                // tick from a real capture.
+                tracing::info!(name = %bare, dir = %dir, "orphan adopt: re-linked live tmux pane → DB");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "orphan adopt: list_local_supermux_sessions failed");
+        }
+    }
+
     // ── REMOTE pass — per-host `tmux ls` with a 5s timeout each ──────────────
     // List once outside the per-host loop so a hosts-table read failure short-
     // circuits with one warning instead of N. An empty hosts table is the
