@@ -1203,6 +1203,7 @@ export function useLiveTerm(
         clearAuthTimer()
         authedRef.current = false
         if (disposedRef.current || ev.code === CLOSE_UNMOUNT) return
+        console.warn(`[supermux] ws closed code=${ev.code} reason=${ev.reason || '(none)'}`)
 
         switch (ev.code) {
           case CLOSE_NOT_RUNNING:

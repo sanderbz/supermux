@@ -258,10 +258,11 @@ function connect() {
     )
   }
 
-  es.onerror = () => {
+  es.onerror = (ev) => {
     // EventSource auto-reconnects, but its built-in retry has no jitter and
     // can't recover a half-open proxy connection. Take over: close + back off
     // ourselves so the policy is uniform.
+    console.warn('[supermux] SSE error readyState=', es?.readyState, ev)
     setStatus('closed')
     es?.close()
     es = null

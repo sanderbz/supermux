@@ -27,7 +27,10 @@ pub async fn auth_middleware(
     let presented = extract_token(&req);
     match presented {
         Some(tok) if token_matches(&state.config.auth_token, &tok) => Ok(next.run(req).await),
-        _ => Err(AppError::Unauthorized),
+        other => {
+            tracing::warn!(path = %req.uri().path(), token_present = other.is_some(), "auth rejected");
+            Err(AppError::Unauthorized)
+        }
     }
 }
 
