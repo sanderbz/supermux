@@ -1,5 +1,13 @@
+import * as React from 'react'
 import { motion } from 'framer-motion'
-import { ChevronRight, EllipsisVertical, Folder, Trash2 } from 'lucide-react'
+import {
+  ChevronRight,
+  Download,
+  EllipsisVertical,
+  Folder,
+  Share2,
+  Trash2,
+} from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -7,9 +15,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { FsEntry } from '@/lib/api'
+import { useToast } from '@/components/ui/use-toast'
+import { filesApi, type FsEntry } from '@/lib/api'
 import { formatBytes, formatMtime, iconForEntry } from './file-types'
 
 /** Join a directory with a child name, collapsing the root-slash case. */
@@ -26,6 +36,23 @@ export interface FileListProps {
   onDelete: (path: string, isDir: boolean) => void
 }
 
+/** Detected once per mount: does this browser support sharing files via the Web
+ *  Share API? iOS Safari and Android Chrome on HTTPS contexts return true here;
+ *  desktop browsers usually false (Chrome desktop on HTTPS does support it). We
+ *  probe with a tiny text File so we hide the menu item only when the API genuinely
+ *  can't accept files (some browsers expose share() for text/url but not files). */
+function detectCanShareFiles(): boolean {
+  if (typeof navigator === 'undefined') return false
+  if (typeof navigator.share !== 'function') return false
+  if (typeof navigator.canShare !== 'function') return false
+  try {
+    const probe = new File([''], 'probe.txt', { type: 'text/plain' })
+    return navigator.canShare({ files: [probe] })
+  } catch {
+    return false
+  }
+}
+
 export function FileList({
   dirPath,
   entries,
@@ -34,6 +61,60 @@ export function FileList({
   onOpenFile,
   onDelete,
 }: FileListProps) {
+  const { toast } = useToast()
+  const [canShareFiles] = React.useState(detectCanShareFiles)
+
+  const handleDownload = async (path: string, name: string) => {
+    try {
+      const res = await fetch(filesApi.rawUrl(path))
+      if (!res.ok) throw new Error(`download failed (${res.status})`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      // Defer revoke so the browser has time to start the download stream.
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      toast({
+        message: `Download failed — ${(e as Error).message}`,
+        tone: 'error',
+        duration: 4000,
+      })
+    }
+  }
+
+  const handleShare = async (path: string, name: string) => {
+    try {
+      const res = await fetch(filesApi.rawUrl(path))
+      if (!res.ok) throw new Error(`fetch failed (${res.status})`)
+      const blob = await res.blob()
+      const file = new File(
+        [blob],
+        name,
+        { type: blob.type || 'application/octet-stream' },
+      )
+      const data: ShareData = { files: [file], title: name }
+      // canShare with the real file: some types are blocked by the OS share sheet
+      // even when the API exists (e.g. .exe on iOS). Surface that as a clean toast.
+      if (navigator.canShare && !navigator.canShare(data)) {
+        throw new Error('this file type can’t be shared')
+      }
+      await navigator.share(data)
+    } catch (e) {
+      // User dismissed the share sheet → silent, not an error.
+      if ((e as { name?: string })?.name === 'AbortError') return
+      toast({
+        message: `Share failed — ${(e as Error).message}`,
+        tone: 'error',
+        duration: 4000,
+      })
+    }
+  }
+
   return (
     <ul className="flex flex-col gap-0.5 p-2">
       {entries.map((entry) => {
@@ -95,6 +176,25 @@ export function FileList({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {!isDir && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => void handleDownload(path, entry.name)}
+                    >
+                      <Download className="size-4" />
+                      Download
+                    </DropdownMenuItem>
+                    {canShareFiles && (
+                      <DropdownMenuItem
+                        onClick={() => void handleShare(path, entry.name)}
+                      >
+                        <Share2 className="size-4" />
+                        Share…
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator />
+                  </>
+                )}
                 <DropdownMenuItem
                   onClick={() => onDelete(path, isDir)}
                   className="text-destructive focus:text-destructive"

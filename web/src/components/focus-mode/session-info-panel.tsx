@@ -27,6 +27,7 @@ import {
   Check,
   Copy,
   Files,
+  FolderOpen,
   GitBranch,
   Loader2,
   Pencil,
@@ -185,7 +186,21 @@ function PanelBody({
       {/* Working dir */}
       <PaneSection label="Working dir">
         {dir ? (
-          <CopyableMono value={dir} ariaLabel="Copy working directory" />
+          <CopyableMono
+            value={dir}
+            ariaLabel="Copy working directory"
+            trailing={
+              <Link
+                to={`/files/${encodeURIComponent(name)}`}
+                onClick={onClose}
+                aria-label="Open in file browser"
+                title="Open in file browser"
+                className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <FolderOpen className="size-4" aria-hidden />
+              </Link>
+            }
+          />
         ) : (
           <p className="text-sm text-muted-foreground">Not set.</p>
         )}
@@ -553,13 +568,17 @@ function SchedulesList({ name }: { name: string }) {
 
 // ── primitives ────────────────────────────────────────────────────────────────
 
-/** A mono value row with a copy-to-clipboard affordance (≥44pt copy target). */
+/** A mono value row with a copy-to-clipboard affordance (≥44pt copy target).
+ *  Optional `trailing` slot appends another icon button right of Copy — used by
+ *  the Working dir section to surface "Open in file browser". */
 function CopyableMono({
   value,
   ariaLabel,
+  trailing,
 }: {
   value: string
   ariaLabel: string
+  trailing?: React.ReactNode
 }) {
   const [copied, setCopied] = React.useState(false)
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -602,6 +621,7 @@ function CopyableMono({
           <Copy className="size-4" aria-hidden />
         )}
       </button>
+      {trailing}
     </div>
   )
 }
