@@ -78,11 +78,12 @@ export default defineConfig({
         // is root-relative — push-sw.js is a public asset served at /push-sw.js.
         importScripts: ['/push-sw.js'],
         cleanupOutdatedCaches: true,
-        // Single-page-app fallback: an unknown navigation re-serves index.html…
-        navigateFallback: '/index.html',
-        // …EXCEPT for /api and /ws — those must always hit the live backend so
-        // the bearer gate + WS first-frame auth run unchanged (Codex #13/#20).
-        navigateFallbackDenylist: [/^\/api\//, /^\/ws\//],
+        // No navigateFallback needed: the server returns index.html for every
+        // SPA route, so NetworkFirst above handles all navigations. Setting
+        // navigateFallback: '/index.html' would require index.html to be in the
+        // precache manifest (globPatterns only covers hashed assets, not HTML),
+        // which causes a non-precached-url throw on slow connections when the
+        // 3s NetworkFirst timeout fires before the network responds.
         runtimeCaching: [
           {
             // The HTML document carries the auth token — NetworkFirst with a
