@@ -393,8 +393,6 @@ export function MobileFocus() {
             status={current.status}
             activity={current.activity}
             error={current.error}
-            mode={current.mode}
-            provider={current.provider}
             onBack={goOverviewMorph}
             onTitleClick={() => setInfoOpen(true)}
           />

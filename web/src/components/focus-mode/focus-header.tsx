@@ -21,9 +21,8 @@ import {
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import type { SessionStatus, SessionMode } from '@/lib/api'
+import type { SessionStatus } from '@/lib/api'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
-import { ModeMenu } from '@/components/focus-mode/mode-menu'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import {
   ActivityLine,
@@ -59,12 +58,6 @@ export interface DesktopFocusHeaderProps {
   activity?: string
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
-  /** Live Claude permission mode (mode-shift) — drives the mode pill's checked
-   *  radio + its label. Defaults to `normal` when unknown. */
-  mode?: SessionMode
-  /** Session provider — the mode pill is a Claude-only concept (permission modes
-   *  don't exist for a plain shell/codex pane), so it renders only for `claude`. */
-  provider?: string
   /** Detach (⌘D): return to overview WITHOUT stopping the session. */
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave. */
@@ -88,8 +81,6 @@ export function DesktopFocusHeader({
   status,
   activity,
   error,
-  mode,
-  provider,
   onDetach,
   onStop,
   onMakeTeam,
@@ -156,11 +147,9 @@ export function DesktopFocusHeader({
       </span>
 
       <div className="flex shrink-0 items-center gap-1">
-        {/* Permission-mode pill (mode-shift) — one element that shows the live
-            mode AND opens the switcher; Claude-only (no permission modes for a
-            plain shell/codex pane). Cycle via Shift+Tab, Bypass confirms+relaunches. */}
-        {provider === 'claude' && <ModeMenu name={name} mode={mode} />}
-
+        {/* Claude tools sheet — opens MCP / Skills / Commands AND (since v0.4.15)
+            the permission-mode switcher, which moved here from the header so the
+            chrome stays a single-row cluster of session-level actions. */}
         <Tooltip>
           <TooltipTrigger asChild>
             <motion.button
@@ -252,11 +241,6 @@ export interface FocusHeaderProps {
   activity?: string
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
-  /** Live Claude permission mode (mode-shift) — drives the mode pill. */
-  mode?: SessionMode
-  /** Session provider — the mode pill renders only for `claude` (permission
-   *  modes are a Claude-only concept; a shell/codex pane has none). */
-  provider?: string
   onBack: () => void
   /** Open the session info panel (feat-session-info). When set, the title becomes
    *  a bare button (pixel-identical to the <h1> — no padding/border/extra height,
@@ -272,8 +256,6 @@ export function FocusHeader({
   status,
   activity,
   error,
-  mode,
-  provider,
   onBack,
   onTitleClick,
   className,
@@ -370,22 +352,11 @@ export function FocusHeader({
         )}
       </div>
 
-      {/* Right cluster: the ⋯ permission-mode menu + the Claude tools icon.
-          (The Enter affordance lives in the bottom DOCK, beside the session
-          switcher — not in this header.) */}
+      {/* Right cluster: the Claude tools icon. Since v0.4.15 the permission-mode
+          switcher lives INSIDE the Claude tools sheet (the panel above the tabs),
+          so this cluster stays a single 44pt button — the right-side counterweight
+          to the back-chevron, with the title centred between them. */}
       <div className="flex shrink-0 items-center">
-        {/* ⋯ permission-mode menu (mode-shift) — live-checked radios; cycle modes
-            via Shift+Tab, Bypass confirms + relaunches. Sits left of Claude tools
-            so the title's right cluster stays a single tap-row (≥44pt each). */}
-        {provider === 'claude' && (
-          // h-9 (not h-11): the pill sat edge-to-edge in the min-h-11 row and
-          // read as cramped — a slightly shorter pill drops neatly into the
-          // title row while staying comfortably tappable.
-          <ModeMenu name={name} mode={mode} className="h-9" />
-        )}
-
-        {/* R5 removed the redundant "···" overflow (it duplicated the session
-            pill). This slot carries the Claude tools manager icon. */}
         <motion.button
           type="button"
           aria-label="Claude tools"

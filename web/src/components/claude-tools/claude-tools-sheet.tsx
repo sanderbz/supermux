@@ -39,6 +39,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   Activity,
   AlertTriangle,
+  Check,
   ChevronDown,
   CircleSlash,
   Loader2,
@@ -48,6 +49,7 @@ import {
   Puzzle,
   RefreshCw,
   ServerCog,
+  ShieldAlert,
   SlashSquare,
   Sparkles,
   Trash2,
@@ -56,6 +58,7 @@ import {
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { settingsRequest } from '@/lib/api/client'
+import { CONFIRM } from '@/brand/copy'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useToast } from '@/components/ui/use-toast'
@@ -65,6 +68,9 @@ import {
   useToggleMcp,
   useCheckMcp,
 } from '@/hooks/use-claude-tools'
+import { useSession } from '@/hooks/use-sessions'
+import { sessionsApi, type SessionMode } from '@/lib/api'
+import { modeChipLabel } from '@/components/focus-mode/mode-labels'
 import type {
   CommandEntry,
   McpEntry,
@@ -216,6 +222,11 @@ function ClaudeToolsBody({
         />
       ) : (
         <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)}>
+          {/* Permission mode — moved here from the focus header. Lives BEFORE the
+              tabs so it reads as session-level settings, distinct from the
+              tool-registry tabs below. Hidden when there's no focused session OR
+              the session isn't a Claude pane (modes are a Claude-only concept). */}
+          {sessionName && <ModeSection name={sessionName} />}
           <div className="sticky top-0 z-10 border-b border-border bg-background/90 px-4 pb-3 pt-3 backdrop-blur-sm sm:px-5">
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="mcp">MCP</TabsTrigger>
@@ -262,6 +273,163 @@ function ClaudeToolsBody({
         </Tabs>
       )}
     </>
+  )
+}
+
+// ── Permission mode (session-level settings — moved here from the focus header) ─
+//
+// One panel that shows the LIVE permission mode of the focused Claude session
+// AND switches it. Three cyclable modes (normal / accept_edits / plan) sit in a
+// single bordered card with internal dividers; Bypass sits below in a separate
+// destructive card with confirm-then-relaunch semantics — the same contract the
+// former <ModeMenu> dropdown enforced, just rendered as a tap-target panel that
+// fits the sheet's spacing language.
+
+/** Modes that cycle in place via Shift+Tab on the server side. */
+const CYCLE_MODES: { value: SessionMode; label: string; hint: string }[] = [
+  { value: 'normal', label: 'Normal', hint: 'Asks before every edit' },
+  { value: 'accept_edits', label: 'Accept edits', hint: 'Auto-accepts file edits' },
+  { value: 'plan', label: 'Plan mode', hint: 'Plans first, no changes' },
+]
+
+function ModeSection({ name }: { name: string }) {
+  const { session } = useSession(name)
+  // Hide for non-Claude panes — permission modes don't exist there. We render
+  // nothing until the session row has loaded so the section doesn't flash in
+  // and out during the sheet's open animation.
+  if (!session) return null
+  if (session.provider !== 'claude') return null
+  return <ModeSectionInner name={name} mode={session.mode ?? 'normal'} />
+}
+
+function ModeSectionInner({
+  name,
+  mode,
+}: {
+  name: string
+  mode: SessionMode
+}) {
+  const { toast } = useToast()
+  const [busy, setBusy] = React.useState(false)
+
+  const applyMode = React.useCallback(
+    async (target: SessionMode) => {
+      if (busy || target === mode) return
+      if (target === 'bypass') {
+        const c = CONFIRM.switchToBypass
+        if (!window.confirm(`${c.title}\n\n${c.body}`)) return
+      }
+      setBusy(true)
+      try {
+        const res = await sessionsApi.setMode(name, target)
+        if (res.relaunched) {
+          toast({ message: 'Session restarted in Bypass mode.', tone: 'active' })
+        } else if (!res.converged) {
+          toast({
+            message: `Couldn’t switch to ${modeChipLabel(target)} — still ${modeChipLabel(res.mode)}.`,
+            tone: 'waiting',
+          })
+        }
+      } catch (e) {
+        toast({
+          message: e instanceof Error ? e.message : 'Mode switch failed.',
+          tone: 'error',
+        })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [busy, mode, name, toast],
+  )
+
+  return (
+    <section className="border-b border-border px-4 pb-3 pt-3 sm:px-5">
+      <h3 className="pb-2 text-[12px] font-medium uppercase tracking-wide text-muted-foreground">
+        Permission mode
+      </h3>
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
+        {CYCLE_MODES.map((m, i) => (
+          <ModeRow
+            key={m.value}
+            label={m.label}
+            hint={m.hint}
+            selected={mode === m.value}
+            disabled={busy}
+            divider={i > 0}
+            onClick={() => void applyMode(m.value)}
+          />
+        ))}
+      </div>
+      {/* Bypass — destructive, launch-only (confirms then relaunches). Pulled
+          OUT of the card above so the visual weight matches its consequence:
+          its own bordered surface in calm amber, never adjacent to a "normal"
+          row that a thumb could mis-tap. */}
+      <motion.button
+        type="button"
+        onClick={() => void applyMode('bypass')}
+        disabled={busy}
+        whileTap={{ scale: 0.985 }}
+        transition={springs.buttonPress}
+        aria-pressed={mode === 'bypass'}
+        className={cn(
+          'mt-2 flex min-h-12 w-full items-center gap-3 rounded-xl border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+          mode === 'bypass'
+            ? 'border-status-error/40 bg-status-error/15 text-status-error'
+            : 'border-status-error/40 bg-status-error/5 text-status-error hover:bg-status-error/10',
+        )}
+      >
+        <ShieldAlert className="size-4 shrink-0" aria-hidden />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="text-sm font-medium">Bypass permissions</span>
+          <span className="text-[11px] opacity-80">
+            Skips all prompts · restarts the session
+          </span>
+        </span>
+        {mode === 'bypass' && <Check className="size-4 shrink-0" aria-hidden />}
+      </motion.button>
+    </section>
+  )
+}
+
+function ModeRow({
+  label,
+  hint,
+  selected,
+  disabled,
+  divider,
+  onClick,
+}: {
+  label: string
+  hint: string
+  selected: boolean
+  disabled: boolean
+  divider: boolean
+  onClick: () => void
+}) {
+  return (
+    <motion.button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      whileTap={{ scale: 0.985 }}
+      transition={springs.buttonPress}
+      aria-pressed={selected}
+      className={cn(
+        'flex min-h-12 w-full items-center gap-3 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+        divider && 'border-t border-border',
+        selected
+          ? 'bg-accent/40 text-foreground'
+          : 'text-foreground hover:bg-accent/30',
+      )}
+    >
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-[11px] text-muted-foreground">{hint}</span>
+      </span>
+      {selected && (
+        <Check className="size-4 shrink-0 text-primary" aria-hidden />
+      )}
+    </motion.button>
   )
 }
 
