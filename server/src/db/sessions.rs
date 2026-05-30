@@ -161,8 +161,13 @@ pub async fn insert_minimal(
 /// found at boot with no matching DB row (see `auto_actions::reconcile_on_boot`'s
 /// tmux→DB pass). Like [`insert_minimal`] but stamps `creator = 'adopted'` so the
 /// row's provenance is recorded (re-linked from a running pane, not user-created).
-/// `created_at` is set to now; every other column takes its schema default. The
-/// caller skips names already present, so no upsert is needed.
+/// `created_at` is set to now; every other column takes its schema default.
+/// Usually the caller skips names already present, but a live pane's name can
+/// still collide with an ARCHIVED row — `list()` (which builds the caller's
+/// skip-set) excludes `archived = 1` rows. So we UPSERT: on a name conflict we
+/// un-archive (`archived = 0`) and refresh `dir`, rescuing a still-running pane
+/// whose row was archived back into the visible fleet (creator/provider of the
+/// existing row are preserved).
 pub async fn insert_adopted(
     pool: &SqlitePool,
     name: &str,
@@ -172,7 +177,8 @@ pub async fn insert_adopted(
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO sessions (name, dir, provider, creator, created_at)
-         VALUES (?, ?, ?, 'adopted', ?)",
+         VALUES (?, ?, ?, 'adopted', ?)
+         ON CONFLICT(name) DO UPDATE SET archived = 0, dir = excluded.dir",
     )
     .bind(name)
     .bind(dir)

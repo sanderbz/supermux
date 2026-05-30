@@ -132,11 +132,11 @@ pub async fn reconcile_on_boot(state: &AppState) {
     // restarts that happen during self-deploy) became a permanent ORPHAN: it
     // burned CPU forever, invisible to the UI and impossible to stop from it. This
     // is exactly the "all sessions dead in the UI while ~10 claude agents peg the
-    // box" failure. We RE-ADOPT such panes: insert a minimal session row + runtime
-    // (fresh hook token) so the normal machinery picks them up — `spawn_all`
-    // (called right after this in main) starts a status loop for every DB row, and
-    // the detector re-arms pipe-pane on first WS connect. Purely additive: we only
-    // CREATE links, never kill a pane. Best-effort — one bad pane never aborts boot.
+    // box" failure. We RE-ADOPT such panes: insert (or un-archive) a session row +
+    // runtime so the normal machinery picks them up — `spawn_all` (called right
+    // after this in main) starts a status loop for every DB row, and the detector
+    // re-arms pipe-pane on first WS connect. Purely additive: we only CREATE/relink
+    // rows, never kill a pane. Best-effort — one bad pane never aborts boot.
     let db_names: std::collections::HashSet<String> =
         sessions.iter().map(|s| s.name.clone()).collect();
     match super::tmux::list_local_supermux_sessions().await {
@@ -152,16 +152,33 @@ pub async fn reconcile_on_boot(state: &AppState) {
                     continue;
                 }
                 let dir = if dir.is_empty() { "/".to_string() } else { dir };
-                // Adopted as a `claude` session (the only provider supermux spawns
-                // as a long-lived pane); `creator="adopted"` records the provenance
-                // so the row is distinguishable from a user-created one.
+                // Adopted as a `claude` session: `claude` is the only provider
+                // supermux spawns as a long-lived pane, and a session-level tmux
+                // listing can't reveal the provider anyway (the pane's current
+                // command is the shell, not the agent). `creator="adopted"` records
+                // the provenance so the row is distinguishable from a user-created
+                // one. Best-effort for the rare non-claude orphan.
                 if let Err(e) =
                     db::sessions::insert_adopted(&state.pool, &bare, &dir, "claude").await
                 {
                     tracing::warn!(name = %bare, error = %e, "orphan adopt: insert_adopted failed");
                     continue;
                 }
-                let hook_token = super::gen_hook_token();
+                // REUSE the pane's existing hook token when a runtime row survives
+                // (the archived-but-still-running case: the sessions row was archived
+                // — hidden from `list()` — but its session_runtime row, and the
+                // pane's frozen `$SUPERMUX_HOOK_TOKEN` env, are intact). Minting a
+                // fresh token would rotate the DB value out from under the running
+                // agent and every hook POST would fail constant-time auth (hooks.rs),
+                // silently breaking the session we just rescued. Only generate a new
+                // token when no runtime row exists.
+                let existing_token = db::sessions::runtime(&state.pool, &bare)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|rt| rt.hook_token)
+                    .filter(|t| !t.is_empty());
+                let hook_token = existing_token.unwrap_or_else(super::gen_hook_token);
                 if let Err(e) =
                     db::sessions::ensure_runtime(&state.pool, &bare, &hook_token).await
                 {
@@ -169,6 +186,17 @@ pub async fn reconcile_on_boot(state: &AppState) {
                     continue;
                 }
                 state.hook_tokens.insert(bare.clone(), hook_token);
+                // Seed cc_conversation_id from the newest transcript in this dir so a
+                // LATER restart of the adopted session resumes the same conversation
+                // (`claude --resume <id>`) instead of starting blank. `list_for_dir`
+                // returns newest-first; best-effort — no transcript yet leaves it unset.
+                if let Some(r) = super::resumable::list_for_dir(&dir).into_iter().next() {
+                    if let Err(e) =
+                        db::sessions::set_cc_conversation_id(&state.pool, &bare, &r.id).await
+                    {
+                        tracing::warn!(name = %bare, error = %e, "orphan adopt: set_cc_conversation_id failed");
+                    }
+                }
                 // Leave status at its default — the status loop spawned by
                 // `spawn_all` will classify it (Active/Idle/Waiting) on its first
                 // tick from a real capture.
