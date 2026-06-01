@@ -154,6 +154,22 @@ pub struct PreflightStatus {
     pub manageable: bool,
 }
 
+/// Check whether a build tool is available, mirroring what build.sh does:
+/// first look on PATH, then check the conventional user-local install locations
+/// (`~/.cargo/bin/cargo`, `~/.bun/bin/bun`). The systemd unit's static PATH
+/// omits those dirs even though build.sh sources them at build time.
+fn tool_available(tool: &str) -> bool {
+    if which::which(tool).is_ok() {
+        return true;
+    }
+    let Some(home) = dirs::home_dir() else { return false };
+    match tool {
+        "cargo" => home.join(".cargo/bin/cargo").exists(),
+        "bun"   => home.join(".bun/bin/bun").exists(),
+        _ => false,
+    }
+}
+
 /// Run every preflight check + assemble the snapshot. Accepts a pre-fetched
 /// `latest` so the caller controls whether to hit the cache or force-refresh.
 pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
@@ -264,15 +280,16 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
         }
     }
 
-    // Tool gates. Build runs as the service user, so we check the calling
-    // process's PATH (close enough on a real self-host: the supermux unit
-    // exports the service user's $HOME so `~/.cargo/bin` is in PATH).
+    // Tool gates. build.sh sources ~/.cargo/env and prepends ~/.bun/bin to PATH
+    // before invoking cargo/bun, so we mirror that here: fall back to the
+    // conventional user-local install paths when the tool isn't on the server
+    // process's PATH (the systemd unit's static PATH omits those dirs).
     for tool in ["git", "cargo", "bun"] {
-        if which::which(tool).is_err() {
+        if !tool_available(tool) {
             blocked.push(BlockedReason::MissingTool {
                 name: tool.into(),
                 message: format!(
-                    "`{tool}` isn't on PATH. The build runs as the supermux service user, so install {tool} for that user."
+                    "`{tool}` isn't installed for the supermux service user. Install it for that user."
                 ),
             });
         }
