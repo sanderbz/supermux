@@ -2,11 +2,11 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   CalendarClock,
-  Crosshair,
   FolderClosed,
   LayoutGrid,
   Settings as SettingsIcon,
   SquareKanban,
+  Terminal,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -47,8 +47,10 @@ const NAV: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
   // Focus — desktop-only entry that redirects to /focus/<last-active-session>
   // (see [[FocusEntry]] in routes/focus.tsx). `end: false` (default) so the
-  // item stays highlighted while you're on any /focus/* sub-route.
-  { to: '/focus', label: 'Focus', icon: Crosshair, desktopOnly: true },
+  // item stays highlighted while you're on any /focus/* sub-route. The
+  // Terminal glyph (>_) matches the abstract-geometric rest of the rail and
+  // names what focus mode IS — sitting inside a terminal session.
+  { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true },
   { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
   { to: '/scheduler', label: 'Scheduler', icon: CalendarClock, tour: 'scheduler' },
