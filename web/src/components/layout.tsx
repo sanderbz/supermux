@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   CalendarClock,
+  Crosshair,
   FolderClosed,
   LayoutGrid,
   Settings as SettingsIcon,
@@ -34,10 +35,20 @@ interface NavItem {
   /** Route key the update badge should attach to (v0.3.3). The Settings icon
    *  shows a small dot when `useUpdateBadge` reports an actionable state. */
   badgeKind?: 'updates'
+  /** Render this item ONLY in the desktop SideNav, not the mobile BottomNav.
+   *  Used by the Focus entry — on mobile the natural way into a session is
+   *  tapping a tile, so a primary-nav slot would be redundant. On desktop it
+   *  lets the user jump straight back to the last-focused session from any
+   *  route. */
+  desktopOnly?: boolean
 }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
+  // Focus — desktop-only entry that redirects to /focus/<last-active-session>
+  // (see [[FocusEntry]] in routes/focus.tsx). `end: false` (default) so the
+  // item stays highlighted while you're on any /focus/* sub-route.
+  { to: '/focus', label: 'Focus', icon: Crosshair, desktopOnly: true },
   { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
   { to: '/scheduler', label: 'Scheduler', icon: CalendarClock, tour: 'scheduler' },
@@ -145,7 +156,9 @@ function MobileTopBar(_props: { overview: boolean }) {
   return null
 }
 
-/** Mobile: bottom tab bar, 5 icons + label, safe-area inset (≤md). */
+/** Mobile: bottom tab bar, safe-area inset (≤md). Filters out `desktopOnly`
+ *  items so the mobile chrome stays at its 5-tab footprint — on mobile the
+ *  natural way into a focused session is tapping a tile in Overview. */
 function BottomNav() {
   const { state: updateBadge } = useUpdateBadge()
   return (
@@ -153,7 +166,7 @@ function BottomNav() {
       aria-label="Primary"
       className="flex shrink-0 items-stretch justify-around border-t border-border bg-card pb-safe md:hidden"
     >
-      {NAV.map((item) => {
+      {NAV.filter((item) => !item.desktopOnly).map((item) => {
         const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
         return (
           <NavLink

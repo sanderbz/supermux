@@ -10,7 +10,7 @@ import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
 import { ConnectionOverlay } from '@/components/connection/connection-overlay'
 import { Overview } from '@/routes/overview'
-import { Focus } from '@/routes/focus'
+import { Focus, FocusEntry } from '@/routes/focus'
 import { Board } from '@/routes/board'
 import { Files } from '@/routes/files'
 import { Scheduler } from '@/routes/scheduler'
@@ -67,6 +67,10 @@ export default function App() {
             <Routes>
               <Route element={<Layout />}>
                 <Route path="/" element={<Overview />} />
+                {/* `/focus` (no `:name`) — the desktop SideNav Focus item
+                    points here. Resolves to the last-active session, falling
+                    back to the first live session, then overview. */}
+                <Route path="/focus" element={<FocusEntry />} />
                 <Route path="/focus/:name" element={<Focus />} />
                 <Route path="/board" element={<Board />} />
                 <Route path="/files/:name?" element={<Files />} />
