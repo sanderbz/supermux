@@ -1376,6 +1376,17 @@ export function useLiveTerm(
     }
 
     // 4. ResizeObserver → debounced fit + resize round-trip.
+    //
+    // `clearTextureAtlas()` invalidates the WebGL/Canvas glyph cache after the
+    // fit so the next paint redraws cells from scratch against the new grid.
+    // This fixes the iOS-Safari ghosting where keyboard-close left stale glyphs
+    // in the scrollback (the container grew but the GPU atlas + compositor
+    // layer kept the pre-close pixels, visible when scrolling up). Rotation
+    // never showed the bug — the canvas reallocates on a width-change and the
+    // atlas is rebuilt anyway. Adding it here is the single-point fix that
+    // covers every viewport shift (keyboard, rotate, iOS URL-bar collapse,
+    // sidebar resize, desktop window resize). No-op on the DOM renderer
+    // fallback (no atlas to clear).
     let resizeTimer: number | null = null
     const ro = new ResizeObserver(() => {
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
@@ -1385,6 +1396,7 @@ export function useLiveTerm(
         if (!f || !t) return
         try {
           f.fit()
+          t.clearTextureAtlas()
         } catch {
           return
         }
