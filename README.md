@@ -157,7 +157,9 @@ supermux checks the browser's `Origin` header on every WebSocket upgrade and clo
 If you reach supermux by a **hostname that isn't one of those** — a reverse-proxy domain, or an internal DNS name that resolves to a private IP (`supermux.corp.example`, `box-12.internal.example`) — the browser sends that hostname as the `Origin`, the allowlist misses it, and the WebSocket closes with `1008`. This is the common snag for non-Tailscale deployments. Add the browser-facing hostname(s) to `extra_origins` in `~/.supermux/config.toml`:
 
 ```toml
-bind = "0.0.0.0:8824"
+# bind stays loopback for a reverse-proxy deployment; set 0.0.0.0 only if you
+# actually want LAN clients reaching supermux directly (internal-DNS case).
+bind = "127.0.0.1:8824"
 extra_origins = ["supermux.corp.example", "box-12.internal.example"]
 ```
 
