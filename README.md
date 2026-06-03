@@ -147,8 +147,21 @@ Module map and protocol details: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 The service binds `127.0.0.1` and speaks plain HTTP. Put it behind TLS one of two ways:
 
-1. **Reverse proxy** (nginx, Caddy) terminating at `http://localhost:<SUPERMUX_INTERNAL_PORT>` (default `8824`).
+1. **Reverse proxy** (nginx, Caddy) terminating at `http://localhost:<SUPERMUX_INTERNAL_PORT>` (default `8824`). See **WebSocket origins** below — a proxied hostname usually needs an `extra_origins` entry.
 2. **`tailscale serve`** — set `SUPERMUX_USE_TAILSCALE=1` and `deploy.sh` runs `tailscale serve --https=<SUPERMUX_PUBLIC_PORT>` to terminate TLS and proxy to the loopback port.
+
+### WebSocket origins
+
+supermux checks the browser's `Origin` header on every WebSocket upgrade and closes non-matching connections with code `1008 "origin not allowed"` (you'll see `ws closed code=1008 reason=origin not allowed` in the browser console, and the UI never goes live). The built-in allowlist covers `localhost`, `127.0.0.1`/`::1`, private-LAN IPv4 ranges (`10/8`, `172.16/12`, `192.168/16`, and link-local), `*.ts.net` (Tailscale), and the server's own bind address.
+
+If you reach supermux by a **hostname that isn't one of those** — a reverse-proxy domain, or an internal DNS name that resolves to a private IP (`supermux.corp.example`, `box-12.internal.example`) — the browser sends that hostname as the `Origin`, the allowlist misses it, and the WebSocket closes with `1008`. This is the common snag for non-Tailscale deployments. Add the browser-facing hostname(s) to `extra_origins` in `~/.supermux/config.toml`:
+
+```toml
+bind = "0.0.0.0:8824"
+extra_origins = ["supermux.corp.example", "box-12.internal.example"]
+```
+
+Exact host match only (no wildcards); the scheme and port are ignored, only the host part of the `Origin` is compared. Restart the service after editing (`systemctl restart supermux`).
 
 ### HOME and DATA_DIR are separate
 
