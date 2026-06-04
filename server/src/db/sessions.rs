@@ -460,17 +460,30 @@ pub async fn bump_start(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Record a send: stamp `last_send = now` and store the first 200 chars of text.
-pub async fn set_last_send(pool: &SqlitePool, name: &str, text: &str) -> sqlx::Result<()> {
+/// Cap on the stored last_send_text. SQLite TEXT has no schema constraint —
+/// this is purely a payload bound: the recall popover/sheet shows the field
+/// verbatim, and a runaway paste would otherwise puff every SSE `sessions`
+/// delta. 8000 chars covers any realistic human prompt (~1200 words) without
+/// punishing the wire on 100-session fleets.
+pub const LAST_SEND_TEXT_MAX_CHARS: usize = 8000;
+
+/// Record a send: stamp `last_send = now` and store the truncated preview text.
+/// Returns the `(preview, now)` pair the caller can pass to `broadcast_send`
+/// so the SSE delta matches what landed in the DB byte-for-byte.
+pub async fn set_last_send(
+    pool: &SqlitePool,
+    name: &str,
+    text: &str,
+) -> sqlx::Result<(String, i64)> {
     let now = chrono::Utc::now().timestamp();
-    let preview: String = text.chars().take(200).collect();
+    let preview: String = text.chars().take(LAST_SEND_TEXT_MAX_CHARS).collect();
     sqlx::query("UPDATE sessions SET last_send = ?, last_send_text = ? WHERE name = ?")
         .bind(now)
-        .bind(preview)
+        .bind(&preview)
         .bind(name)
         .execute(pool)
         .await?;
-    Ok(())
+    Ok((preview, now))
 }
 
 /// Set the archived flag.

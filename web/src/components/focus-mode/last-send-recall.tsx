@@ -26,7 +26,7 @@
 import * as React from 'react'
 import { Drawer } from 'vaul'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
-import { Clipboard, Quote, X } from 'lucide-react'
+import { Clipboard, History, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -84,10 +84,12 @@ export function formatRecallTime(sentAt: Date, now: Date = new Date()): string {
   return `${Math.round(diff / ONE_DAY)}d ago`
 }
 
-/** "preview · 200 chars max" footer when the stored text hit the DB truncation
+/** "preview · N chars max" footer when the stored text hit the DB truncation
  *  cap. We mirror the cap rather than thread it from the server — it's a fixed
- *  property of `db::sessions::set_last_send`. */
-const DB_LAST_SEND_CAP = 200
+ *  property of `db::sessions::set_last_send` (`LAST_SEND_TEXT_MAX_CHARS`). At
+ *  this size hitting the cap is rare; the footer remains as a calm signal
+ *  that the user is seeing a truncated preview, not the full original. */
+const DB_LAST_SEND_CAP = 8000
 
 // ── shared content (used by both Popover and Sheet) ──────────────────────────
 
@@ -127,9 +129,11 @@ function LastSendBody({
         </button>
       </div>
       <p
-        className="whitespace-pre-wrap break-words text-[13px] leading-snug text-foreground"
+        className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap break-words text-[13px] leading-snug text-foreground"
         // Length above DB cap means upstream truncation already happened — the
         // text we render IS the preview. The footer below makes that visible.
+        // max-h + overflow-y-auto so a long prompt scrolls inside the popover/
+        // sheet instead of pushing the layout taller than the viewport.
       >
         {recall.text}
       </p>
@@ -183,7 +187,7 @@ export function LastSendButton({
           aria-haspopup="dialog"
           className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Quote className="size-4" />
+          <History className="size-4" />
         </motion.button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
@@ -238,7 +242,7 @@ export function LastSendPopover({
       <PopoverContent
         align="end"
         sideOffset={8}
-        className="glass w-[320px] max-w-[calc(100vw-1rem)] rounded-xl border border-border/60 p-3"
+        className="glass w-[420px] max-w-[calc(100vw-1rem)] rounded-xl border border-border/60 p-3"
         role="dialog"
         aria-label="Last prompt"
       >
@@ -270,7 +274,7 @@ export function LastSendSheet({
         <Drawer.Content
           aria-describedby={undefined}
           className={cn(
-            'glass fixed inset-x-0 bottom-0 z-[60] flex flex-col',
+            'glass fixed inset-x-0 bottom-0 z-[60] flex max-h-[80vh] flex-col',
             'rounded-t-[10px] border-t border-border/60 pb-safe outline-none',
           )}
         >
@@ -278,7 +282,7 @@ export function LastSendSheet({
           <Drawer.Title className="px-4 pb-1 pt-3 text-[13px] font-semibold text-muted-foreground">
             Last prompt
           </Drawer.Title>
-          <div className="px-4 pb-4 pt-1">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-1">
             <LastSendBody
               recall={recall}
               sessionLabel={displayLabel(session)}
@@ -300,62 +304,46 @@ export interface LastSendBarProps {
   onOpenRecall: () => void
 }
 
-const AUTO_SHOW_TIMEOUT_MS = 8_000
-
 /**
  * Glass strip rendered directly below the focus header (desktop only).
  *
  * VISIBILITY MODEL.
- *   Mount with a non-null `recall` AND it differs from the last shown → show.
- *   Hide on: × press, 8s timer, terminal keypress, terminal click/scroll.
- *   We listen for the terminal-engagement events via document-level capture so
- *   we don't have to thread refs through the whole split — the bar fades on
- *   ANY pointerdown / wheel / keydown after it appears, and unsubscribes on
- *   hide. That matches "the user is engaged with their session now" without
- *   coupling to the xterm internals.
+ *   Show whenever the session has a recall — i.e. the bar is the calm,
+ *   persistent "what did I last say" reminder until the user explicitly
+ *   dismisses it with × OR opens the popover (which carries the full text
+ *   in front, making the bar redundant).
  *
- *   The auto-show is REPLAYED on session change (sessionName prop): switching
- *   to a different session is a fresh recall opportunity. Switching back to a
- *   session whose recall hasn't changed since last dismissal also replays —
- *   you want the context every time you re-arrive at a session, not just the
- *   first time you ever opened it.
+ *   EARLIER REVISIONS auto-faded on terminal engagement (any keydown /
+ *   pointerdown / wheel after appearance) + an 8s timer. That regressed:
+ *   the bar would vanish while the user clicked into Claude's reply to
+ *   copy text, while Claude was streaming output, or simply because they
+ *   were reading. "Liever in meer scenarios laten staan dan irritant dat
+ *   ie weg gaat terwijl ik m wou zien." So we keep it visible.
+ *
+ *   Triggers that DO hide the bar:
+ *   - The × button (explicit user dismiss).
+ *   - `onOpenRecall` (user opened the popover; the full text is now in front).
+ *   - The recall going away (new session with no submission yet → no bar).
+ *   - Session switch (the keyed mount in DesktopSplit replays the bar fresh).
  */
 export function LastSendBar({ recall, sessionName, onOpenRecall }: LastSendBarProps) {
   const reduceMotion = useReducedMotion()
-  const [visible, setVisible] = React.useState(false)
+  const [dismissed, setDismissed] = React.useState(false)
 
-  // (Re-)trigger on session change OR when a recall appears for a session
-  // that didn't have one. Hidden when there's no recall to show.
+  // Reset the dismissed flag on session change OR when the recall content
+  // actually changes (new prompt came in via SSE — bring the bar back so the
+  // user sees the fresh prompt without having to navigate away and back).
   React.useEffect(() => {
-    if (recall) {
-      setVisible(true)
-    } else {
-      setVisible(false)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionName, !!recall])
+    setDismissed(false)
+  }, [sessionName, recall?.text, recall?.sentAt.getTime()])
 
-  // While visible: arm the 8s timeout AND the engagement listeners. Each
-  // listener clears the bar; ALL of them are torn down on hide.
-  React.useEffect(() => {
-    if (!visible) return
-    const hide = () => setVisible(false)
-    const timer = window.setTimeout(hide, AUTO_SHOW_TIMEOUT_MS)
-    const opts = { capture: true } as const
-    document.addEventListener('keydown', hide, opts)
-    document.addEventListener('pointerdown', hide, opts)
-    document.addEventListener('wheel', hide, opts)
-    return () => {
-      window.clearTimeout(timer)
-      document.removeEventListener('keydown', hide, opts)
-      document.removeEventListener('pointerdown', hide, opts)
-      document.removeEventListener('wheel', hide, opts)
-    }
-  }, [visible])
-
-  // Live announce when the bar appears — once per appearance. The label is the
-  // body itself so screen-reader users get the recall context too.
+  const visible = !!recall && !dismissed
   const ariaLive = visible ? 'polite' : 'off'
+
+  const openAndDismiss = React.useCallback(() => {
+    setDismissed(true)
+    onOpenRecall()
+  }, [onOpenRecall])
 
   if (!recall) return null
 
@@ -381,7 +369,7 @@ export function LastSendBar({ recall, sessionName, onOpenRecall }: LastSendBarPr
           <div className="flex h-8 items-center gap-2 px-3 text-[12px]">
             <button
               type="button"
-              onClick={onOpenRecall}
+              onClick={openAndDismiss}
               className="flex min-w-0 flex-1 items-center gap-2 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label={`You said ${formatRecallTime(recall.sentAt)}: ${recall.text}`}
             >
@@ -396,7 +384,7 @@ export function LastSendBar({ recall, sessionName, onOpenRecall }: LastSendBarPr
               type="button"
               onClick={(e) => {
                 e.stopPropagation()
-                setVisible(false)
+                setDismissed(true)
               }}
               aria-label="Dismiss last prompt"
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

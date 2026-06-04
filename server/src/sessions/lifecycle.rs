@@ -439,6 +439,29 @@ fn broadcast_status(state: &AppState, name: &str, status: &str) {
     });
 }
 
+/// Broadcast a `sessions` SSE delta carrying the just-recorded last_send_text +
+/// last_send_at. Without this, `set_last_send` only writes the DB; the focus
+/// screen's recall affordance would stay stale until the next refetch — the
+/// user-visible bug "ik typte een nieuwe prompt maar de bar toont nog de
+/// oude". Per-key broadcast volume is bounded by typing speed × number of
+/// sessions; the delta payload is tiny (≤8 KB), so this is safe even on big
+/// fleets.
+///
+/// Helper rather than inlining at every `set_last_send` callsite so the wire
+/// shape stays in one place.
+pub(crate) fn broadcast_send(state: &AppState, name: &str, text: &str, at: i64) {
+    let _ = state.sse_tx.send(SseEvent {
+        event: "sessions".to_string(),
+        payload: json!({
+            "delta": [{
+                "name": name,
+                "last_send_text": text,
+                "last_send_at": at,
+            }]
+        }),
+    });
+}
+
 /// Stop's graceful-exit window. After nudging the agent to exit (`C-c` + `/exit`)
 /// we poll on this TIGHT cadence for the pane to die, capping the total wait at
 /// [`STOP_GRACE_CAP`]. The cap is deliberately short: tmux teardown
@@ -634,7 +657,8 @@ pub async fn start(
         if !p.trim().is_empty() {
             tmux.send_text(p).await?;
             tmux.send_key("Enter").await?;
-            db::sessions::set_last_send(&state.pool, name, p).await?;
+            let (preview, at) = db::sessions::set_last_send(&state.pool, name, p).await?;
+            broadcast_send(state, name, &preview, at);
         }
     }
 
@@ -757,7 +781,8 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
     let _guard = lock.lock().await;
     tmux.send_text(text).await?;
     tmux.send_key("Enter").await?;
-    db::sessions::set_last_send(&state.pool, name, text).await?;
+    let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
+    broadcast_send(state, name, &preview, at);
     Ok(())
 }
 
@@ -801,7 +826,8 @@ pub async fn paste(
     if submit {
         tmux.send_key("Enter").await?;
     }
-    db::sessions::set_last_send(&state.pool, name, text).await?;
+    let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
+    broadcast_send(state, name, &preview, at);
     Ok(())
 }
 

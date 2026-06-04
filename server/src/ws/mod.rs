@@ -762,8 +762,13 @@ async fn input_drain_loop(
             // op goes to tmux: each Text/Input chunk feeds the buffer, named keys
             // (Enter / C-c / C-u) gate commit/clear.
             if let Some(prompt) = inspect_for_prompt(&mut prompt_buf, &op) {
-                if let Err(e) = db::sessions::set_last_send(&state.pool, &name, &prompt).await {
-                    tracing::debug!(session = %name, error = %e, "set_last_send (WS) failed");
+                match db::sessions::set_last_send(&state.pool, &name, &prompt).await {
+                    Ok((preview, at)) => {
+                        sessions::lifecycle::broadcast_send(&state, &name, &preview, at);
+                    }
+                    Err(e) => {
+                        tracing::debug!(session = %name, error = %e, "set_last_send (WS) failed");
+                    }
                 }
             }
             apply_one(&state, &name, lead_pane_id.as_deref(), op).await;
@@ -771,12 +776,13 @@ async fn input_drain_loop(
     }
 }
 
-/// Cap for the per-session last-prompt buffer. 4 KB is far above any plausible
-/// human prompt; the cap exists only to bound memory if a client streams Input
-/// bytes without ever submitting (paste storm, broken client). When full, new
-/// bytes are dropped — we don't try to be clever about which end (the surviving
-/// half would be a garbled mix of two prompts anyway).
-const LAST_PROMPT_BUF_CAP: usize = 4096;
+/// Cap for the per-session last-prompt buffer. Sized at 2× the DB cap
+/// (`db::sessions::LAST_SEND_TEXT_MAX_CHARS`) so a long paste survives intact up
+/// to that cap with a little slack; the cap only exists to bound memory if a
+/// client streams Input bytes without ever submitting (paste storm, broken
+/// client). When full, new bytes are dropped — we don't try to be clever about
+/// which end (the surviving half would be a garbled mix of two prompts anyway).
+const LAST_PROMPT_BUF_CAP: usize = 16_384;
 
 /// Per-op tap on the input drain that maintains the rolling last-prompt buffer
 /// and returns `Some(prompt)` when the op commits a submission. The op still
@@ -852,16 +858,19 @@ fn consume_last_prompt(buf: &mut String, text: &str) -> Option<String> {
     last_committed
 }
 
-/// Strip non-newline/tab control chars and trim, then truncate to the 200-char
-/// DB cap (the same cap `db::sessions::set_last_send` enforces; we pre-truncate
-/// so the cap is visible at the call site).
+/// Strip non-newline/tab control chars and trim, then truncate to the DB cap
+/// (`db::sessions::LAST_SEND_TEXT_MAX_CHARS`; we pre-truncate so the cap is
+/// visible at the call site).
 fn sanitise_prompt(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect();
     let trimmed = cleaned.trim();
-    trimmed.chars().take(200).collect()
+    trimmed
+        .chars()
+        .take(db::sessions::LAST_SEND_TEXT_MAX_CHARS)
+        .collect()
 }
 
 /// Apply a single planned op to tmux under the per-session lock (acquire session
