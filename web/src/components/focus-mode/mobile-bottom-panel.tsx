@@ -162,10 +162,8 @@ export function MobileBottomPanel({
     onPickRef.current = onPick
   })
 
-  // ── Refs for focus restoration + the panel-wrapper outside-tap test ────────
+  // ── Ref for the panel-wrapper outside-tap test ─────────────────────────────
   const panelRef = React.useRef<HTMLDivElement | null>(null)
-  const previousFocusRef = React.useRef<Element | null>(null)
-  const firstPillRef = React.useRef<HTMLButtonElement | null>(null)
 
   const close = React.useCallback(() => {
     setDragOffset(0)
@@ -329,27 +327,12 @@ export function MobileBottomPanel({
     }
   }, [state, close])
 
-  // ── Focus management ───────────────────────────────────────────────────────
-  React.useEffect(() => {
-    if (state === 'open') {
-      previousFocusRef.current = document.activeElement
-      const raf = window.requestAnimationFrame(() => {
-        firstPillRef.current?.focus({ preventScroll: true })
-      })
-      return () => window.cancelAnimationFrame(raf)
-    }
-    if (state === 'closed') {
-      const prev = previousFocusRef.current
-      if (prev instanceof HTMLElement) {
-        // Only restore focus if it's still on body — the user hasn't
-        // grabbed it elsewhere (e.g. tapping back into the terminal).
-        if (document.activeElement === document.body) {
-          prev.focus({ preventScroll: true })
-        }
-      }
-      previousFocusRef.current = null
-    }
-  }, [state])
+  // No programmatic focus on open: this is a touch-first surface (the terminal
+  // is the keyboard sink) and Chromium-on-Android paints the UA :focus ring on
+  // a JS .focus() after touch, while iOS Safari suppresses it — leaving a
+  // phantom ring on the "first non-current" pill only on Android. The terminal
+  // keeps its focus; tapping a pill picks the session. Hardware-keyboard users
+  // can still Tab into the pills if they choose.
 
   const onPickInternal = React.useCallback((name: string) => {
     onPickRef.current(name)
@@ -516,7 +499,7 @@ export function MobileBottomPanel({
               '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
             )}
           >
-            {ordered.map((s, i) => {
+            {ordered.map((s) => {
               const isCurrent = s.name === currentName
               return (
                 <SessionPill
@@ -524,7 +507,6 @@ export function MobileBottomPanel({
                   session={s}
                   isCurrent={isCurrent}
                   onPick={onPickInternal}
-                  pillRef={i === firstNonCurrentIdx ? firstPillRef : undefined}
                 />
               )
             })}
@@ -546,16 +528,13 @@ function SessionPill({
   session,
   isCurrent,
   onPick,
-  pillRef,
 }: {
   session: ApiSession
   isCurrent: boolean
   onPick: (name: string) => void
-  pillRef?: React.RefObject<HTMLButtonElement | null>
 }) {
   return (
     <motion.button
-      ref={pillRef}
       type="button"
       data-vr-session-name={session.name}
       data-vr-current={isCurrent || undefined}
