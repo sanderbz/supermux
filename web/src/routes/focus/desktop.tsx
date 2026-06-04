@@ -7,7 +7,12 @@
 //
 // Navigation semantics:
 //   • Detach (⌘D / button) → navigate('/') — session kept alive.
-//   • Stop  (⌘W / button)  → confirm, POST /stop, then navigate('/').
+//   • Stop  (⌘W / button)  → confirm + POST /stop, then STAY on the focus route.
+//                            The status flips to `stopped` (SSE + optimistic
+//                            cache update) and <LiveTerminal> swaps to
+//                            <StoppedSession>, giving the user a calm "this is
+//                            stopped" screen with a restart affordance instead
+//                            of yanking them away to the overview.
 //   • Cmd+1..9 / compact-tile click → jump to the N-th session's focus route.
 //
 // The command palette (⌘K) is mounted globally in <Layout>; the slash menu is
@@ -79,22 +84,30 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   // Detach (⌘D): leave to overview, session kept alive.
   const onDetach = React.useCallback(() => navigate('/'), [navigate])
 
-  // Stop (⌘W): confirm + POST /stop + leave. The stop fetch is
-  // best-effort — failures are surfaced via the browser, never crash the route.
+  // Stop (⌘W): confirm + POST /stop, then STAY on the focus route. The user
+  // explicitly chose to stop THIS session — they didn't ask to leave it. The
+  // status flip to `stopped` (optimistic cache write below + SSE delta) causes
+  // <LiveTerminal> to swap to <StoppedSession>, which already provides the
+  // calm "session is stopped" surface with a restart affordance. Yanking the
+  // user back to the overview was unwanted context loss.
   //
-  // Team-lead awareness: teammates are split-panes INSIDE the lead's session, so
-  // stopping a lead ends the whole team. When `name` IS a team lead we swap in
-  // the team-aware confirm copy (which spells out the N teammates that go down
-  // with it) so the user isn't surprised. A normal session reads EXACTLY as
-  // before — only leads get the extended copy.
+  // The stop fetch is best-effort — failures are surfaced via the browser
+  // console, never crash the route.
   //
-  // Flip the cached row to `stopped` OPTIMISTICALLY the instant Stop
-  // is pressed, so the overview we navigate back to shows the session stopped
-  // immediately — the user never perceives the (now-brief) server-side teardown
-  // as "it didn't work". The backend also broadcasts `stopped` over SSE on the
-  // real teardown, so this optimistic write is only the head-start; `invalidate`
-  // in `.finally` backfills the authoritative row. Mirrors the quick-peek-modal
-  // stop path — one shared `['sessions']` cache, no new transport.
+  // Team-lead awareness: teammates are split-panes INSIDE the lead's session,
+  // so stopping a lead ends the whole team. When `name` IS a team lead we
+  // swap in the team-aware confirm copy (which spells out the N teammates that
+  // go down with it) so the user isn't surprised. A normal session reads
+  // EXACTLY as before — only leads get the extended copy.
+  //
+  // Flip the cached row to `stopped` OPTIMISTICALLY the instant Stop is
+  // pressed, so the in-page state (header status dot, strip row, dock) reads
+  // stopped immediately — the user never perceives the (now-brief) server-side
+  // teardown as "it didn't work". The backend also broadcasts `stopped` over
+  // SSE on the real teardown, so this optimistic write is only the head-start;
+  // `invalidate` in `.finally` backfills the authoritative row. Mirrors the
+  // quick-peek-modal stop path — one shared `['sessions']` cache, no new
+  // transport.
   const onStop = React.useCallback(() => {
     if (!name) return
     const team = teams.find((t) => t.lead_supermux_session === name)
@@ -112,11 +125,13 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
       .catch((e) => console.warn('stopSession failed', e))
       .finally(() => {
         // Reconcile against the server's authoritative state (the SSE `stopped`
-        // delta may have already landed; this covers the case it hasn't).
+        // delta may have already landed; this covers the case it hasn't). We
+        // intentionally DO NOT navigate away — the user stays on the focus
+        // route to see the calm `StoppedSession` surface that LiveTerminal
+        // swaps in when status === 'stopped'.
         void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
-        navigate('/')
       })
-  }, [name, navigate, qc, teams])
+  }, [name, qc, teams])
 
   // Gate the "Make it a team" affordance on a session that
   // is eligible to be converted — must exist, not be archived, and not already
