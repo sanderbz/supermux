@@ -240,6 +240,13 @@ export function LiveTerminal({
           clientY: y,
           button: 0,
           buttons: type === 'mouseup' ? 0 : 1,
+          // detail=1 marks this as a single-click. SelectionService.handleMouseDown
+          // branches ONLY on detail === 1 / 2 / 3 (single / double / triple click);
+          // a default of 0 falls through every branch, selectionStart stays
+          // undefined, and the move/up handlers early-return — the drag would
+          // silently produce no selection. Mousemove + mouseup don't gate on
+          // detail, so 0 there is fine; we only need to declare "click" here.
+          detail: type === 'mousedown' ? 1 : 0,
         }),
       )
     }

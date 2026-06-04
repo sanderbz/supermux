@@ -573,7 +573,7 @@ export function useLiveTerm(
     // custom touch shim on top: a JS `{passive:false}` touchmove handler competes
     // with xterm's native handler and (per the reverted 7723be1/9c7657d/d2810cb
     // attempts) regressed iOS feel. `.xterm-viewport { touch-action: pan-y }`
-    // (globals.css) is what lets the native pan through inside the Vaul sheet.
+    // (globals.css) is what lets the native pan through in the mobile focus route.
 
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
