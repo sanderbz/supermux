@@ -118,16 +118,22 @@ export interface StripUserGroup {
 /** The full grouped strip model the desktop split renders. */
 export interface GroupedFocusStripModel {
   /** Detected team groups — pinned ABOVE the user groups (mirrors how the
-   *  overview pins team cards above the grid). */
+   *  overview pins team cards above the grid). Renders the same way in both
+   *  view modes; teams are conceptually distinct from sort. */
   teamGroups: TeamGroup[]
-  /** User groups (overview-defined, possibly empty) + the implicit "Ungrouped"
-   *  bucket (only present when it has at least one session). */
+  /** User groups (overview-defined, possibly empty) + the implicit
+   *  "Ungrouped" bucket. Populated in `'as-overview'` view mode only; in
+   *  flat modes this is empty and `flatSessions` carries the rendered list
+   *  instead. */
   userGroups: StripUserGroup[]
-  /** Flattened ⌘1..9-routable SESSION list in render order. Teammates excluded
-   *  (they are read-only, not routable). Order:
-   *    1. Each team group's lead (in team order, when the lead is mapped).
-   *    2. Each user group's sessions (in user-group order, then per-group sort).
-   *  Same contract as the legacy `jumpSessions`. */
+  /** Non-team sessions sorted by the top-level view mode. Populated in
+   *  flat modes ('smart' / 'recent' / 'status' / 'name'). When non-null
+   *  the renderer skips group chrome entirely and renders these as a flat
+   *  CompactTile list. Empty array in 'as-overview' mode. */
+  flatSessions: TileSession[] | null
+  /** Flattened ⌘1..9-routable SESSION list in render order. Teammates
+   *  excluded (they are read-only, not routable). Order matches what's
+   *  actually visible — grouped or flat. */
   jumpSessions: TileSession[]
 }
 
@@ -137,20 +143,26 @@ export interface BuildGroupedFocusStripInput {
   teams: readonly Team[]
   /** The reconciled custom layout — same shape `useOverviewLayout` returns
    *  after `reconcileCustomLayout` is applied. Group order + group membership
-   *  flow from THIS list (the strip never invents groups). */
+   *  flow from THIS list (the strip never invents groups). Ignored in flat
+   *  modes (where groups aren't rendered at all). */
   layoutItems: ReadonlyArray<LayoutItem>
   /** Resolved per-group sort mode for each known group id, INCLUDING the
-   *  implicit `UNGROUPED_GROUP_ID`. The caller (the strip's hook) resolves
-   *  these via `readStripGroupSortMode` so it knows whether match-overview or
-   *  custom mode is in effect — this helper stays pure. */
+   *  implicit `UNGROUPED_GROUP_ID`. Used only in 'as-overview' view mode.
+   *  Caller resolves these from the overview's persisted prefs so this
+   *  helper stays pure. */
   resolveSortMode: (groupId: string) => GroupSortMode
-  /** Per-group "hide stopped sessions" filter, INCLUDING the implicit
-   *  `UNGROUPED_GROUP_ID`. Default (caller returns false) = no filter, all
-   *  sessions render. When true, stopped sessions are filtered BEFORE the
-   *  sort applies so the count chip on the section header reflects what's
-   *  actually visible. Pure pass-through if the caller returns false for
-   *  every group. */
-  resolveHideStopped?: (groupId: string) => boolean
+  /** The top-level view mode. `'as-overview'` keeps groups + per-group
+   *  sort; everything else flattens into a single globally-sorted list. */
+  viewMode?:
+    | 'as-overview'
+    | 'smart'
+    | 'recent'
+    | 'status'
+    | 'name'
+  /** Global "hide stopped sessions" filter. Applied uniformly across
+   *  every group (and the flat list), BEFORE sort, so counts agree with
+   *  what's rendered. */
+  hideStopped?: boolean
 }
 
 /** Compute the full grouped strip model.
@@ -162,14 +174,14 @@ export function buildGroupedFocusStrip({
   teams,
   layoutItems,
   resolveSortMode,
-  resolveHideStopped,
+  viewMode = 'as-overview',
+  hideStopped = false,
 }: BuildGroupedFocusStripInput): GroupedFocusStripModel {
-  const hideStoppedFor =
-    resolveHideStopped ?? ((_id: string) => false)
   // 1) Detect team groups + split the session pool. The `splitTeamLeads`
   //    helper is the shared "team lead consumed by team group" contract used
   //    by the overview too. We separately build the `teamGroups` array (with
   //    lead row + members + empty-team prune) — that shape is strip-specific.
+  //    Teams render identically in both view modes.
   const byName = new Map(sessions.map((s) => [s.name, s]))
   const teamGroups: TeamGroup[] = []
   for (const team of teams) {
@@ -179,6 +191,24 @@ export function buildGroupedFocusStrip({
     teamGroups.push({ team, lead, members: team.members })
   }
   const { nonLeadSessions } = splitTeamLeads(sessions, teams)
+
+  // FLAT view mode — bypass the layout walk and per-group sort entirely.
+  // Just filter + sort the non-lead sessions in one pass.
+  if (viewMode !== 'as-overview') {
+    const filtered = hideStopped
+      ? nonLeadSessions.filter((s) => s.status !== 'stopped')
+      : nonLeadSessions
+    const flatSessions = sortSessionsByMode(viewMode, filtered) as TileSession[]
+    const jumpSessions: TileSession[] = []
+    for (const g of teamGroups) if (g.lead) jumpSessions.push(g.lead)
+    for (const s of flatSessions) jumpSessions.push(s)
+    return {
+      teamGroups,
+      userGroups: [],
+      flatSessions,
+      jumpSessions,
+    }
+  }
 
   // 2) Walk the layout via the shared `bucketSessionsByLayout` kernel — same
   //    walk the overview's `buildSections` uses. The kernel always returns
@@ -228,18 +258,16 @@ export function buildGroupedFocusStrip({
     implicit.sessions = [...missing, ...implicit.sessions]
   }
 
-  // 4) Apply the per-group filter THEN sort. The session lists were collected
-  //    in layout order — that IS the 'custom' sort for that group; every other
-  //    mode is a pure function of the sessions' fields. The `TileSession` shape
-  //    is a superset of `ApiSession` for sort purposes (sortSessionsByMode
-  //    reads name / status / pinned / running / last_activity / created_at /
-  //    updated_at — all present on TileSession).
+  // 4) Apply the global hide-stopped filter THEN the per-group sort. The
+  //    session lists were collected in layout order — that IS the 'custom'
+  //    sort for that group; every other mode is a pure function of the
+  //    sessions' fields.
   //
   //    Filter BEFORE sort so the count chip + the rendered list agree and so
   //    the sort kernel never wastes a comparison on a row that's about to be
   //    dropped.
   const userGroups = sectionsInOrder.map((sec) => {
-    const filtered = hideStoppedFor(sec.groupId)
+    const filtered = hideStopped
       ? sec.sessions.filter((s) => s.status !== 'stopped')
       : sec.sessions
     if (sec.sortMode === 'custom') {
@@ -265,7 +293,12 @@ export function buildGroupedFocusStrip({
     for (const s of sec.sessions) jumpSessions.push(s)
   }
 
-  return { teamGroups, userGroups: finalUserGroups, jumpSessions }
+  return {
+    teamGroups,
+    userGroups: finalUserGroups,
+    flatSessions: null,
+    jumpSessions,
+  }
 }
 
 /** Convenience: the list of group ids the strip currently knows about (for

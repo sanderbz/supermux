@@ -30,21 +30,25 @@
 // under prefers-reduced-motion.
 
 import * as React from 'react'
-import { ChevronRight, Eye, EyeOff } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { GroupSortChip } from '@/components/session-tile/group-sort-chip'
 import type { GroupSortMode } from '@/lib/overview-layout'
-import { STRIP_SORT_MODES } from '@/lib/focus-strip-layout'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
 import type { TileSession } from '@/components/session-tile/types'
 
 import { CompactTile } from './compact-tile'
 import type { StripUserGroup } from './focus-strip-groups'
+
+/** The set of per-group sort modes the strip exposes. Smaller than the
+ *  overview's six — `'custom'` (per-group drag order) and `'age'` add no
+ *  value on a 320 px sidebar with no drag affordance. */
+const STRIP_PER_GROUP_SORT_MODES: GroupSortMode[] = [
+  'smart',
+  'recent',
+  'status',
+  'name',
+]
 
 export interface FocusStripSectionProps {
   group: StripUserGroup
@@ -63,11 +67,6 @@ export interface FocusStripSectionProps {
   /** Per-section collapse state + setter (strip-local, persisted). */
   collapsed: boolean
   onCollapsedChange: (collapsed: boolean) => void
-  /** Per-section "hide stopped" filter + setter (strip-local, persisted).
-   *  When true, stopped sessions are filtered out by the builder before they
-   *  reach `group.sessions`, so the count chip + the rendered rows agree. */
-  hideStopped: boolean
-  onHideStoppedChange: (hidden: boolean) => void
   /** Map of session name → 1-indexed Cmd+N slot (≤9). Used to surface the
    *  ⌘N / Ctrl+N hint on the first 9 jumpable rows. */
   jumpIndexBySession?: Map<string, number>
@@ -81,8 +80,6 @@ export function FocusStripSection({
   onSortModeChange,
   collapsed,
   onCollapsedChange,
-  hideStopped,
-  onHideStoppedChange,
   jumpIndexBySession,
 }: FocusStripSectionProps) {
   const [sortOpen, setSortOpen] = React.useState(false)
@@ -139,52 +136,13 @@ export function FocusStripSection({
             · {group.sessions.length}
           </span>
         </button>
-        {/* Hide-stopped filter — a real filter that DROPS rows (not just sort
-            them). Pairs with the sort chip on this same row: the chip orders
-            what's left, this toggle decides what makes the cut. Lives on the
-            LEFT of the sort chip so the visual cluster reads "show what · in
-            what order ▾". */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onHideStoppedChange(!hideStopped)
-              }}
-              onPointerDown={(e) => e.stopPropagation()}
-              aria-pressed={hideStopped}
-              aria-label={
-                hideStopped
-                  ? 'Show stopped sessions'
-                  : 'Hide stopped sessions'
-              }
-              data-vr="strip-hide-stopped"
-              data-vr-active={hideStopped ? 'true' : 'false'}
-              className={cn(
-                'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                hideStopped
-                  ? 'text-foreground'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {hideStopped ? (
-                <EyeOff className="size-3.5" aria-hidden />
-              ) : (
-                <Eye className="size-3.5" aria-hidden />
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            {hideStopped ? 'Show stopped sessions' : 'Hide stopped sessions'}
-          </TooltipContent>
-        </Tooltip>
-
-        {/* Shared sort chip — same component the overview uses on its group
-            headers, in 'strip' density (compact "<Mode> ▾"). The strip
-            renders a CURATED 4-mode set (Smart / Recent / Status / Name)
-            via the `modes` prop — Custom is meaningless on a 320 px sidebar
-            without a drag affordance, and Age overlaps with Recent. */}
+        {/* Shared sort chip — same component the overview uses on its
+            group headers, in 'strip' density (compact "<Mode> ▾"). The
+            strip renders a CURATED 4-mode set (Smart / Recent / Status /
+            Name) — Custom is meaningless on a 320 px sidebar without a
+            drag affordance, and Age overlaps with Recent.
+            Only renders in 'as-overview' view mode; flat modes don't
+            render section headers at all. */}
         <GroupSortChip
           open={sortOpen}
           onOpenChange={setSortOpen}
@@ -192,7 +150,7 @@ export function FocusStripSection({
           onChange={onSortModeChange}
           density="strip"
           vrTag="strip-sort-chip"
-          modes={STRIP_SORT_MODES}
+          modes={STRIP_PER_GROUP_SORT_MODES}
         />
       </div>
 

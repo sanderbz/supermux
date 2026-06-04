@@ -1,17 +1,29 @@
-// FocusStripModeToggle — the strip header's "Match overview ⇄ Custom" chip.
+// FocusStripModeToggle — the strip header's 5-option view-mode dropdown.
 //
-// SHAPE. A tiny dropdown menu chip that sits in the strip's "Sessions" header
-// row, RIGHT-aligned. Two options: "Match overview" (default — the strip
-// reads the overview's group order + per-group sort) and "Custom for this
-// strip" (the strip keeps its own per-group sort overrides in a separate
-// localStorage namespace; group order is STILL inherited from the overview
-// per product decree).
+// One control at the top of the strip with five options:
 //
-// VR HOOK. `data-vr="strip-mode-toggle"` + `data-vr-strip-mode` (match-overview
-// | custom) so the visual-regression battery can assert the toggle's state
-// from a single selector.
+//   • As overview     (default) — mirror the overview's groups + per-group sort
+//   • Smart                       — flat, smart sort (pinned/active/recent)
+//   • Recent activity             — flat, most recent first
+//   • Status                      — flat, active first → stopped last
+//   • Name                        — flat, alphabetical
+//
+// "As overview" keeps the strip's group sections + per-group sort chips
+// intact. The other modes flatten the strip into a single sorted list with
+// no group chrome. The redesign exists because the previous "match-overview
+// vs custom" toggle was invisible and the per-group sort chips were silently
+// overridden by the overview's persisted prefs.
+//
+// VR HOOKS. `data-vr="strip-mode-toggle"` + `data-vr-view-mode` so a visual
+// regression battery can assert state from a single selector.
 
-import { Layers, Settings2 } from 'lucide-react'
+import {
+  ArrowDownAZ,
+  ArrowUpDown,
+  Check,
+  Layers,
+  Sparkles,
+} from 'lucide-react'
 
 import {
   DropdownMenu,
@@ -19,26 +31,44 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { FocusStripMode } from '@/lib/focus-strip-layout'
+import {
+  FOCUS_STRIP_VIEW_MODES,
+  type FocusStripViewMode,
+} from '@/lib/focus-strip-layout'
 
 export interface FocusStripModeToggleProps {
-  mode: FocusStripMode
-  onChange: (next: FocusStripMode) => void
+  mode: FocusStripViewMode
+  onChange: (next: FocusStripViewMode) => void
 }
 
 const MODE_META: Record<
-  FocusStripMode,
+  FocusStripViewMode,
   { label: string; hint: string; Icon: typeof Layers }
 > = {
-  'match-overview': {
-    label: 'Match overview',
-    hint: 'Same groups and per-group sort as the overview',
+  'as-overview': {
+    label: 'As overview',
+    hint: 'Mirror the overview — same groups, same per-group sort',
     Icon: Layers,
   },
-  custom: {
-    label: 'Custom for this strip',
-    hint: 'Override per-group sort just here (groups stay from the overview)',
-    Icon: Settings2,
+  smart: {
+    label: 'Smart',
+    hint: 'Active and pinned first, then by recent activity',
+    Icon: Sparkles,
+  },
+  recent: {
+    label: 'Recent activity',
+    hint: 'Most recently active first',
+    Icon: ArrowUpDown,
+  },
+  status: {
+    label: 'Status',
+    hint: 'Running, waiting, idle, stopped',
+    Icon: ArrowUpDown,
+  },
+  name: {
+    label: 'Name',
+    hint: 'A → Z by session name',
+    Icon: ArrowDownAZ,
   },
 }
 
@@ -53,25 +83,21 @@ export function FocusStripModeToggle({
         <button
           type="button"
           aria-haspopup="menu"
-          aria-label={`Strip mode: ${MODE_META[mode].label}. Change`}
+          aria-label={`Strip view: ${MODE_META[mode].label}. Change`}
           title={MODE_META[mode].label}
           data-vr="strip-mode-toggle"
-          data-vr-strip-mode={mode}
-          // Compact chip — fits the strip's 44px "Sessions" header without
-          // crowding the title. Muted until hover; same affordance pattern
-          // as the per-group sort chip so the strip's chrome reads as one
-          // calm cluster.
+          data-vr-view-mode={mode}
+          // Compact chip — fits the strip's 44 px "Sessions" header without
+          // crowding the title. Muted until hover.
           className="flex h-6 min-h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ActiveIcon className="size-3.5" aria-hidden />
-          {/* The short label keeps the chip narrow on the 320px strip. The
-              full mode name lives in the menu + aria-label. */}
-          <span>{mode === 'match-overview' ? 'Overview' : 'Custom'}</span>
+          <span>{MODE_META[mode].label}</span>
           <span aria-hidden className="opacity-60">▾</span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="min-w-60">
-        {(Object.keys(MODE_META) as FocusStripMode[]).map((m) => {
+        {FOCUS_STRIP_VIEW_MODES.map((m) => {
           const { label, hint, Icon } = MODE_META[m]
           const active = m === mode
           return (
@@ -83,7 +109,15 @@ export function FocusStripModeToggle({
             >
               <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
               <span className="flex min-w-0 flex-col">
-                <span className="text-foreground">{label}</span>
+                <span className="flex items-center gap-1 text-foreground">
+                  {label}
+                  {active && (
+                    <Check
+                      className="size-3.5 text-muted-foreground"
+                      aria-hidden
+                    />
+                  )}
+                </span>
                 <span className="text-[11px] leading-tight text-muted-foreground">
                   {hint}
                 </span>

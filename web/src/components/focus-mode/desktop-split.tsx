@@ -16,6 +16,7 @@
 
 import * as React from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { Eye, EyeOff } from 'lucide-react'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
@@ -23,6 +24,13 @@ import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import type { TileSession } from '@/components/session-tile/types'
 import type { Team, TeamMember } from '@/lib/api/teams'
 import { sessionTitle } from '@/lib/api'
+import { cn } from '@/lib/utils'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import { CompactTile } from './compact-tile'
 import { TeamStripGroup } from './team-strip-group'
 import { TeammatePane } from './teammate-pane'
 import { useGroupedStrip } from './use-grouped-strip'
@@ -92,13 +100,13 @@ export function DesktopSplit({
   // (zero regression for first-time users).
   const {
     model: strip,
-    stripMode,
-    setStripMode,
+    viewMode,
+    setViewMode,
+    hideStopped,
+    setHideStopped,
     setGroupSortMode,
     isCollapsed,
     setCollapsed,
-    isHideStopped,
-    setHideStopped,
   } = useGroupedStrip(sessions, teams)
 
   // Which teammate (if any) is shown in the MAIN pane. Held by team+agent_id so
@@ -427,25 +435,60 @@ export function DesktopSplit({
       <aside
         className="flex w-80 shrink-0 flex-col border-r border-border bg-background/60"
         data-vr="focus-strip"
-        data-vr-strip-mode={stripMode}
+        data-vr-view-mode={viewMode}
       >
-        <div className="flex h-11 shrink-0 items-center gap-2 px-3 text-[13px] font-semibold tracking-tight text-muted-foreground">
+        <div className="flex h-11 shrink-0 items-center gap-1 px-3 text-[13px] font-semibold tracking-tight text-muted-foreground">
           <span className="min-w-0 flex-1 truncate">Sessions</span>
-          <FocusStripModeToggle mode={stripMode} onChange={setStripMode} />
+          {/* Global hide-stopped toggle (Eye / EyeOff). One control, applies
+              to every group in 'as-overview' AND to the flat list in any
+              other view mode. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => setHideStopped(!hideStopped)}
+                aria-pressed={hideStopped}
+                aria-label={
+                  hideStopped
+                    ? 'Show stopped sessions'
+                    : 'Hide stopped sessions'
+                }
+                data-vr="strip-hide-stopped"
+                data-vr-active={hideStopped ? 'true' : 'false'}
+                className={cn(
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  hideStopped
+                    ? 'text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {hideStopped ? (
+                  <EyeOff className="size-3.5" aria-hidden />
+                ) : (
+                  <Eye className="size-3.5" aria-hidden />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {hideStopped ? 'Show stopped sessions' : 'Hide stopped sessions'}
+            </TooltipContent>
+          </Tooltip>
+          <FocusStripModeToggle mode={viewMode} onChange={setViewMode} />
         </div>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
           {sessions.length === 0 &&
           strip.teamGroups.length === 0 &&
-          strip.userGroups.length === 0 ? (
+          strip.userGroups.length === 0 &&
+          (strip.flatSessions?.length ?? 0) === 0 ? (
             <p className="px-1 pt-2 text-[13px] text-muted-foreground">
               No other sessions.
             </p>
           ) : (
             <>
-              {/* Detected teams — grouped (header + lead + teammates), mirroring
-                  the overview TEAM CARD. Pinned ABOVE user groups because that
-                  matches how the overview pins team cards above the grid in
-                  every sort mode. Renders nothing when there are no teams. */}
+              {/* Detected teams — grouped (header + lead + teammates),
+                  mirroring the overview TEAM CARD. Pinned ABOVE the rest
+                  in both view modes because teams are a separate concept
+                  from sort. */}
               {strip.teamGroups.map((g) => (
                 <TeamStripGroup
                   key={g.team.team_name}
@@ -462,30 +505,41 @@ export function DesktopSplit({
                 />
               ))}
 
-              {/* User groups — one collapsible section each, with the same
-                  6-mode sort chip the overview uses on its group headers
-                  (shared component, single source of truth). The implicit
-                  "Ungrouped" bucket renders here too when it has any
-                  sessions, mirroring the overview's behaviour. */}
-              {strip.userGroups.map((g) => (
-                <FocusStripSection
-                  key={g.groupId}
-                  group={g}
-                  focusedSessionName={name}
-                  teammateActive={teammateActive}
-                  onSelectSession={selectSession}
-                  onSortModeChange={(mode) =>
-                    setGroupSortMode(g.groupId, mode)
-                  }
-                  collapsed={isCollapsed(g.groupId)}
-                  onCollapsedChange={(next) => setCollapsed(g.groupId, next)}
-                  hideStopped={isHideStopped(g.groupId)}
-                  onHideStoppedChange={(next) =>
-                    setHideStopped(g.groupId, next)
-                  }
-                  jumpIndexBySession={jumpIndexBySession}
-                />
-              ))}
+              {/* As-overview view — render user groups (overview's
+                  membership + group order) with per-group sort chips. */}
+              {strip.flatSessions == null &&
+                strip.userGroups.map((g) => (
+                  <FocusStripSection
+                    key={g.groupId}
+                    group={g}
+                    focusedSessionName={name}
+                    teammateActive={teammateActive}
+                    onSelectSession={selectSession}
+                    onSortModeChange={(mode) =>
+                      setGroupSortMode(g.groupId, mode)
+                    }
+                    collapsed={isCollapsed(g.groupId)}
+                    onCollapsedChange={(next) => setCollapsed(g.groupId, next)}
+                    jumpIndexBySession={jumpIndexBySession}
+                  />
+                ))}
+
+              {/* Flat view — one sorted list, no group chrome. The
+                  view-mode dropdown at the top advertises the active
+                  sort, so we don't repeat it in a section header. */}
+              {strip.flatSessions != null && (
+                <div className="flex flex-col gap-1.5">
+                  {strip.flatSessions.map((s) => (
+                    <CompactTile
+                      key={s.name}
+                      session={s}
+                      current={!teammateActive && s.name === name}
+                      onSelect={selectSession}
+                      jumpIndex={jumpIndexBySession?.get(s.name)}
+                    />
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>
