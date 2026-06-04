@@ -22,6 +22,7 @@ pub mod auto_actions;
 pub mod host_pool;
 pub mod lifecycle;
 pub mod pty;
+pub mod recall;
 pub mod resumable;
 pub mod status;
 pub mod steering;
@@ -77,6 +78,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/keys", post(keys_handler))
         .route("/api/sessions/{name}/paste", post(paste_handler))
         .route("/api/sessions/{name}/peek", get(peek_handler))
+        .route("/api/sessions/{name}/recall", get(recall::handler))
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))

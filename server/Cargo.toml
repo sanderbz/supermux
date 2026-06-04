@@ -102,7 +102,20 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 dirs = "5.0"                                             # home dir
 which = "7.0"                                            # locate claude/tmux
 
+[features]
+# Gates test-only helpers (e.g. `ReleaseCache::seed`) that would otherwise be
+# compiled into release production binaries. Auto-enabled for `cargo test`
+# (both unit + integration) via the dev-dependencies trick below: any path
+# that pulls supermux-server's library with default features gets it.
+# A real production release build (`cargo build --release`) does NOT enable
+# `test-support`, so the helpers compile out.
+test-support = []
+
 [dev-dependencies]
+# Self-dep with `test-support` so any `cargo test` (debug or release) sees the
+# test-only helpers, while production builds do not.
+supermux-server = { path = ".", features = ["test-support"] }
+
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 tungstenite = "0.24"

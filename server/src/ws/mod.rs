@@ -865,20 +865,30 @@ fn consume_last_prompt(buf: &mut String, text: &str) -> Option<String> {
 /// mode). Stripping these as whole units is necessary because the ESC byte itself
 /// is a control char (filtered below) but the trailing `[A` / `OA` are plain
 /// printable bytes that would otherwise survive into the recall text.
-static ANSI_RECALL_RE: Lazy<Regex> =
+///
+/// `pub(crate)` so other modules (`sessions::recall`) can reuse the same regex
+/// for defense-in-depth scrubbing of historical transcript text.
+pub(crate) static ANSI_RECALL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O[A-Z])").unwrap());
 
-/// Strip ANSI escapes + non-newline/tab control chars and trim, then truncate to
-/// the DB cap (`db::sessions::LAST_SEND_TEXT_MAX_CHARS`; we pre-truncate so the
-/// cap is visible at the call site).
-fn sanitise_prompt(raw: &str) -> String {
+/// Strip ANSI escapes + non-newline/tab control chars and trim. Does NOT
+/// truncate — callers apply their own cap (`db::sessions::LAST_SEND_TEXT_MAX_CHARS`
+/// at the DB boundary, `PROMPT_MAX_CHARS` at the recall wire). Pulled out of
+/// the WS-side `sanitise_prompt` so it can be reused by `sessions::recall`
+/// for transcript-derived text without re-implementing the regex.
+pub(crate) fn sanitise_text(raw: &str) -> String {
     let stripped = ANSI_RECALL_RE.replace_all(raw, "");
-    let cleaned: String = stripped
+    stripped
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
-        .collect();
-    let trimmed = cleaned.trim();
-    trimmed
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// WS-side recall capture: strip noise, then clamp to the DB column's cap.
+fn sanitise_prompt(raw: &str) -> String {
+    sanitise_text(raw)
         .chars()
         .take(db::sessions::LAST_SEND_TEXT_MAX_CHARS)
         .collect()

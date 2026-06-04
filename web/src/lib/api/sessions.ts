@@ -185,6 +185,35 @@ export function sessionTitle(s: {
 /** A past Claude conversation for a session's working dir.
  *  Surfaced by `GET /api/sessions/{name}/resumable`; picking one resumes it via
  *  `claude --resume <id>`. */
+/** One row in the focus-mode recall list — a user prompt the session has sent
+ *  (read from Claude Code's on-disk JSONL transcript) paired with the first
+ *  text block of the assistant's next turn. */
+export interface RecallEntry {
+  uuid: string
+  ts: number
+  sessionId: string
+  sessionTitle?: string
+  text: string
+  reply?: string
+  sidechain: boolean
+}
+
+export interface RecallResponse {
+  entries: RecallEntry[]
+  hasMore: boolean
+  nextBefore?: string
+}
+
+export type RecallScope = 'session' | 'project'
+
+export interface RecallQueryParams {
+  scope?: RecallScope
+  q?: string
+  includeSidechains?: boolean
+  before?: string
+  limit?: number
+}
+
 export interface ResumableConversation {
   /** Conversation UUID — the `claude --resume <id>` argument. */
   id: string
@@ -489,6 +518,26 @@ export const sessionsApi = {
    *  branch / dirty / ahead-behind), read when the info panel opens. */
   git: (name: string): Promise<GitInfo> =>
     sessReq<GitInfo>(`/api/sessions/${encodeURIComponent(name)}/git`),
+
+  /** `GET /api/sessions/{name}/recall` — paginated prompt history for the
+   *  focus-mode recall popover. Cursor-based via `before`; `scope=project`
+   *  walks every JSONL in the session's cwd (newest mtime first). Empty
+   *  arrays for sessions that haven't sent anything yet. */
+  recall: (
+    name: string,
+    q: RecallQueryParams,
+  ): Promise<RecallResponse> => {
+    const params = new URLSearchParams()
+    if (q.scope) params.set('scope', q.scope)
+    if (q.q) params.set('q', q.q)
+    if (q.includeSidechains) params.set('include_sidechains', 'true')
+    if (q.before) params.set('before', q.before)
+    if (q.limit != null) params.set('limit', String(q.limit))
+    const qs = params.toString()
+    return sessReq<RecallResponse>(
+      `/api/sessions/${encodeURIComponent(name)}/recall${qs ? `?${qs}` : ''}`,
+    )
+  },
 
 
   /** `GET /api/autocomplete/dir?q=…[&hidden=0]` — directory typeahead for the

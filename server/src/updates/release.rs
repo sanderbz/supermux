@@ -131,10 +131,14 @@ impl ReleaseCache {
 
     /// Test-only helper: seed a release directly into the cache so tests can
     /// drive the `update_available` / `blocked_reasons` logic without ever
-    /// touching the network. Gated on `debug_assertions` (not `cfg(test)`) so
-    /// integration tests in `tests/` (which compile against the optimised
-    /// library, not its `cfg(test)` form) can call it.
-    #[cfg(debug_assertions)]
+    /// touching the network.
+    ///
+    /// Gated behind the `test-support` feature so a production
+    /// `cargo build --release` does NOT compile this method into the binary;
+    /// the `[dev-dependencies] supermux-server = { features = ["test-support"] }`
+    /// self-edge auto-enables the feature for any `cargo test` (debug or
+    /// release), so integration tests in `tests/` keep working.
+    #[cfg(feature = "test-support")]
     pub async fn seed(&self, release: LatestRelease) {
         let mut w = self.slot.write().await;
         *w = Some((release, Instant::now()));
@@ -215,7 +219,7 @@ async fn fetch_latest() -> Result<Option<LatestRelease>, FetchError> {
     Ok(Some(wire.into()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-support"))]
 mod tests {
     use super::*;
 

@@ -67,7 +67,7 @@ pub struct Resumable {
 /// [`crate::claude_config`]'s resolver so the two stay in lockstep. We read
 /// transcripts from the SERVICE user's HOME (the server already runs with HOME
 /// set).
-fn claude_config_dir() -> PathBuf {
+pub(crate) fn claude_config_dir() -> PathBuf {
     if let Ok(d) = std::env::var("CLAUDE_CONFIG_DIR") {
         let d = d.trim();
         if !d.is_empty() {
@@ -91,7 +91,7 @@ pub fn encode_project_dir(abs_dir: &str) -> String {
 /// Resolve a session's working dir to its `~/.claude/projects/<encoded>` folder.
 /// The cwd is symlink-canonicalized first (Claude records the resolved path);
 /// if canonicalization fails (dir gone), we encode the raw dir as a fallback.
-fn project_dir_for(dir: &str) -> PathBuf {
+pub(crate) fn project_dir_for(dir: &str) -> PathBuf {
     let resolved = std::fs::canonicalize(dir)
         .ok()
         .map(|p| p.to_string_lossy().to_string())
