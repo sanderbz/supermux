@@ -1,15 +1,18 @@
 // MobileFocus — focus-mode mobile route.
 //
 // Composes the hero mobile interaction around the LiveTerminal:
-//   <MobileSheet>            ← drag-detent sheet (peek 40% / full 100%, framer-
-//                              motion), its height driven by useKeyboardViewport
-//                              so it shrinks to sit ABOVE the soft keyboard (no
-//                              page slide). NOT Vaul: the sheet IS the whole
-//                              focus surface — nothing meaningful sits behind it,
-//                              so we render inline with no portal/modal/scrim and
-//                              own the gesture math directly. Vaul stays in the
-//                              other mobile sheets below (picker/specials/etc.)
-//                              where the drawer-over-content model fits.
+//   <MobileSheet>            ← full-screen layout wrapper, its height driven by
+//                              useKeyboardViewport so it shrinks to sit ABOVE
+//                              the soft keyboard (no page slide). NO drawer
+//                              chrome — focus mode is the whole surface, peek
+//                              detents and drag-to-dismiss never revealed
+//                              anything useful, so we dropped Vaul + the
+//                              handle/glass/rounded-top theatre. iOS and
+//                              Android share one path. Dismiss = the back
+//                              chevron in FocusHeader or the existing left-edge
+//                              swipe-back. Vaul still owns the other mobile
+//                              sheets below (picker/specials/etc.) where the
+//                              drawer-over-content model fits.
 //     <FocusHeader minimal />← 44px top bar
 //     <LiveTerminal />       ← the terminal (flex-1) — REUSED, the LIVE-TYPE
 //                              keystroke-capture (tap focuses it → keyboard up)
@@ -190,13 +193,12 @@ export function MobileFocus() {
   } | null>(null)
   const onTermPointerDown = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      // MobileSheet (framer-motion) consults `[data-sheet-no-drag]` BEFORE
-      // calling `setPointerCapture`, so the sheet never grabs touches that
-      // start inside the terminal wrapper — xterm's own scroll handler + the
-      // native viewport pan are free to drive one-finger scrollback. The old
-      // Vaul implementation captured every pointerdown unconditionally and
-      // needed an `e.stopPropagation()` rescue here; the new sheet gates at
-      // the source, so no stop-the-bubble workaround is required.
+      // LIVE-TYPE tap detection. A genuine tap (single pointer, <10px travel,
+      // <500ms) on the terminal focuses xterm so iOS raises the keyboard inside
+      // the user gesture — a deferred/rAF focus would be ignored. A swipe is
+      // not a tap and must not summon the keyboard; xterm's own viewport
+      // handler pans the scrollback instead. We use pointer events (not
+      // onClick) so the touch is observed even if xterm stops the click.
       // A second concurrent pointer = multi-touch → not a tap. Invalidate.
       if (tapRef.current && tapRef.current.id !== e.pointerId) {
         tapRef.current = null
@@ -376,7 +378,6 @@ export function MobileFocus() {
         className="h-full w-full"
       >
         <MobileSheet
-          onDismiss={goOverview}
           contentHeight={vvHeight}
           keyboardInset={keyboardInset}
         >
@@ -405,19 +406,9 @@ export function MobileFocus() {
               own scroll handler ran). It now observes pointer gestures via
               NON-blocking listeners on this wrapper and only captures once ARMED,
               so a plain one-finger drag falls through to `.xterm-viewport` and
-              pans the scrollback natively. See joystick.tsx.
-
-              `data-sheet-no-drag`: marks the terminal body so MobileSheet's
-              drag-init `target.closest(...)` check bails out before any
-              `setPointerCapture()` runs. Result: xterm's own touch handler
-              and the `.xterm-viewport` `touch-action: pan-y` pan the
-              scrollback on one finger; the sheet's drag cannot accidentally
-              dismiss while the user is reading the buffer. The FocusHeader,
-              handle, and MobileDock sit OUTSIDE this region, so dragging THEM
-              to peek/dismiss still works as designed. */}
+              pans the scrollback natively. See joystick.tsx. */}
           <div
             className="relative min-h-0 flex-1"
-            data-sheet-no-drag
             // Tap-to-focus (LIVE-TYPE): a genuine TAP anywhere in the terminal
             // body focuses xterm INSIDE the touch gesture so iOS summons the soft
             // keyboard reliably (it only opens the keyboard on a real user
