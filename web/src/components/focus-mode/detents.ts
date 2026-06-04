@@ -3,10 +3,12 @@
 // Kept out of mobile-sheet.tsx (a component module) so Fast-Refresh stays happy
 // and the bungee math is independently importable/testable.
 
-// Detent snap points as NUMERIC screen fractions: peek (40%) and full (100%).
-// Vaul treats numbers 0–1 as fractions of the viewport height and STRINGS as px
-// (node_modules/vaul `isPx = typeof snapPoint === 'string'`), so these must stay
-// numbers for "40% / 100%" detents to mean what the spec says.
+// Detent snap points as NUMERIC screen fractions of the layout viewport:
+//   PEEK = 0.4 (sheet visible bottom 40%) and FULL = 1.0 (full screen).
+// MobileSheet converts these to a pixel `peekOffset = vh * (1 - PEEK)` for its
+// translate-Y math; the constants stay unitless so the spec ("40% / 100%
+// detents") reads at a glance and downstream consumers can derive their own
+// offsets without re-encoding the fractions.
 export const PEEK = 0.4
 export const FULL = 1
 export const SNAP_POINTS = [PEEK, FULL]
