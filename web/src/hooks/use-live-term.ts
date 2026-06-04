@@ -63,6 +63,11 @@ export interface UseLiveTermResult {
   resize(cols: number, rows: number): void
   /** Copy the whole scrollback buffer to the clipboard. */
   copyAll(): void
+  /** Copy the CURRENT xterm selection to the clipboard. Returns the copied text,
+   *  or null when nothing is selected. Same path as the desktop ⌘C chord — used
+   *  by the mobile select-mode (touch can't reach xterm's SelectionService, so
+   *  LiveTerminal synthesizes the drag and calls this on release). */
+  copySelection(): string | null
   /** Manual retry for the permanent (`offline`) state — "Tap to retry". */
   retry(): void
   /** Programmatically focus xterm's input. The focus route calls this on mount
@@ -418,6 +423,14 @@ export function useLiveTerm(
     }
     const text = lines.join('\n').replace(/\n+$/, '\n')
     void navigator.clipboard?.writeText(text)
+  }, [])
+
+  const copySelection = React.useCallback((): string | null => {
+    const term = termRef.current
+    if (!term || !term.hasSelection()) return null
+    const sel = term.getSelection()
+    if (sel) void navigator.clipboard?.writeText(sel)
+    return sel || null
   }, [])
 
   const retry = React.useCallback(() => {
@@ -1520,6 +1533,7 @@ export function useLiveTerm(
     sendKey,
     resize,
     copyAll,
+    copySelection,
     retry,
     focus,
     blur,
