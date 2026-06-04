@@ -29,6 +29,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use crate::db;
 use crate::sessions;
 use crate::sessions::teams;
 use crate::sessions::tmux::Tmux;
@@ -743,6 +744,11 @@ async fn input_drain_loop(
 ) {
     // Reused across wakeups to avoid a per-burst allocation.
     let mut run: Vec<ClientMsg> = Vec::new();
+    // Per-session last-prompt buffer: accumulates typed bytes until a CR/LF
+    // commits one prompt to the DB (driving the focus-screen recall affordance).
+    // See `consume_last_prompt` for the submission/clear rules; capped at
+    // LAST_PROMPT_BUF_CAP to bound memory if the user pastes without submitting.
+    let mut prompt_buf: String = String::new();
     while let Some(first) = rx.recv().await {
         // Greedily drain every frame already queued so a fast burst is coalesced
         // in one planning pass (non-blocking `try_recv` until the queue empties).
@@ -752,9 +758,110 @@ async fn input_drain_loop(
             run.push(next);
         }
         for op in plan_applies(run.drain(..)) {
+            // Capture the user's last prompt for the recall affordance BEFORE the
+            // op goes to tmux: each Text/Input chunk feeds the buffer, named keys
+            // (Enter / C-c / C-u) gate commit/clear.
+            if let Some(prompt) = inspect_for_prompt(&mut prompt_buf, &op) {
+                if let Err(e) = db::sessions::set_last_send(&state.pool, &name, &prompt).await {
+                    tracing::debug!(session = %name, error = %e, "set_last_send (WS) failed");
+                }
+            }
             apply_one(&state, &name, lead_pane_id.as_deref(), op).await;
         }
     }
+}
+
+/// Cap for the per-session last-prompt buffer. 4 KB is far above any plausible
+/// human prompt; the cap exists only to bound memory if a client streams Input
+/// bytes without ever submitting (paste storm, broken client). When full, new
+/// bytes are dropped — we don't try to be clever about which end (the surviving
+/// half would be a garbled mix of two prompts anyway).
+const LAST_PROMPT_BUF_CAP: usize = 4096;
+
+/// Per-op tap on the input drain that maintains the rolling last-prompt buffer
+/// and returns `Some(prompt)` when the op commits a submission. The op still
+/// flows to tmux unchanged; this is read-only side-channel capture.
+///
+/// Commit rules:
+/// - A `\r` or `\n` byte inside a Text/Input chunk commits the buffered prefix.
+/// - A named `Key { data: "Enter" | "C-m" | "C-j" }` commits whatever is buffered.
+///
+/// Clear-without-commit rules:
+/// - A `\x03` (Ctrl-C) or `\x15` (Ctrl-U) byte clears the buffer.
+/// - A named `Key { data: "C-c" | "C-u" }` clears the buffer.
+///
+/// Sanitisation: control bytes other than `\n` and `\t` are stripped from the
+/// returned prompt; the result is truncated to 200 chars to match the DB cap.
+/// Empty (whitespace-only) prompts are NOT committed — pressing Enter on an
+/// empty buffer is a no-op for recall purposes.
+fn inspect_for_prompt(buf: &mut String, op: &Apply) -> Option<String> {
+    match op {
+        Apply::Text(text) | Apply::Ctrl(ClientMsg::Input { data: text }) => {
+            consume_last_prompt(buf, text)
+        }
+        Apply::Ctrl(ClientMsg::Key { data }) => {
+            let lower = data.to_ascii_lowercase();
+            if lower == "enter" || lower == "c-m" || lower == "c-j" {
+                let committed = sanitise_prompt(buf);
+                buf.clear();
+                if committed.is_empty() {
+                    None
+                } else {
+                    Some(committed)
+                }
+            } else if lower == "c-c" || lower == "c-u" {
+                buf.clear();
+                None
+            } else {
+                None
+            }
+        }
+        Apply::Ctrl(_) => None,
+    }
+}
+
+/// Walks `text` char-by-char, mutating `buf` and tracking the LATEST committed
+/// prompt within this single chunk (a paste like `"a\rb\rc"` returns the
+/// non-empty `b` if it's the last non-empty submission; `c` survives in `buf`
+/// uncommitted). Returns `None` if nothing was committed.
+fn consume_last_prompt(buf: &mut String, text: &str) -> Option<String> {
+    let mut last_committed: Option<String> = None;
+    for ch in text.chars() {
+        match ch {
+            '\x03' | '\x15' => {
+                // Ctrl-C / Ctrl-U inline → discard pending prompt.
+                buf.clear();
+            }
+            '\r' | '\n' => {
+                let committed = sanitise_prompt(buf);
+                buf.clear();
+                if !committed.is_empty() {
+                    last_committed = Some(committed);
+                }
+            }
+            _ => {
+                if buf.len() + ch.len_utf8() <= LAST_PROMPT_BUF_CAP {
+                    buf.push(ch);
+                }
+                // else: silently drop. The spec calls for head-drop but tail-drop
+                // is simpler and the edge case (>4 KB without submit) is so rare
+                // that the surviving half would be garbage either way.
+            }
+        }
+    }
+    last_committed
+}
+
+/// Strip non-newline/tab control chars and trim, then truncate to the 200-char
+/// DB cap (the same cap `db::sessions::set_last_send` enforces; we pre-truncate
+/// so the cap is visible at the call site).
+fn sanitise_prompt(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
+    let trimmed = cleaned.trim();
+    trimmed.chars().take(200).collect()
 }
 
 /// Apply a single planned op to tmux under the per-session lock (acquire session

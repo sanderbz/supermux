@@ -51,6 +51,13 @@ export interface SessionSummary {
   /** Remote host the session runs on. `null` / undefined = LOCAL. Carried
    *  on the tile so <HostBadge> can render without an extra fetch. */
   host_id?: number | null
+  /** The user's last sent prompt (≤200 chars), captured by `set_last_send` on
+   *  both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
+   *  Absent when the session has never received a submission. */
+  last_send_text?: string
+  /** Epoch seconds when `last_send_text` was written. Absent iff
+   *  `last_send_text` is absent. */
+  last_send_at?: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,6 +148,15 @@ export interface ApiSession {
    *  row). The session tile renders a small globe badge when this is set; the
    *  new-session sheet picks it via <HostPicker>. */
   host_id?: number | null
+  /** The user's last sent prompt (≤200 chars, control chars stripped), captured
+   *  on both REST `send`/`paste` and WebSocket Input frames terminated by Enter.
+   *  Absent when the session has never received a submission. Pairs with
+   *  `last_send_at` to drive the focus-screen recall affordance (glass bar +
+   *  popover + mobile sheet). */
+  last_send_text?: string
+  /** Epoch seconds when `last_send_text` was written. Absent iff `last_send_text`
+   *  is absent. Used for the "<rel time> ago" label in the recall affordance. */
+  last_send_at?: number
 }
 
 /** The human label to show for a session: its `display_name` when set, else the

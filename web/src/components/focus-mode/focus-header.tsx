@@ -28,6 +28,7 @@ import {
   ActivityLine,
   ErrorBadge,
 } from '@/components/session-tile/activity-status'
+import { LastSendButton } from './last-send-recall'
 import {
   supportsViewTransitions,
   vtSessionName,
@@ -73,6 +74,16 @@ export interface DesktopFocusHeaderProps {
   /** Ref to the title <button> — the route passes it to the info panel's Popover
    *  `virtualRef` so the popover anchors to the title. */
   titleRef?: React.Ref<HTMLButtonElement>
+  /** Whether this session has a recallable last prompt. When false the recall
+   *  icon is omitted entirely (no dead control in the header cluster). */
+  hasLastSend?: boolean
+  /** Whether the recall popover is currently open (drives `aria-expanded`). */
+  lastSendOpen?: boolean
+  /** Toggle the recall popover. The popover itself lives at the DesktopSplit
+   *  level so the bar (below this header) can drive the SAME state. */
+  onToggleLastSend?: () => void
+  /** Ref to the recall icon — anchors the popover at the DesktopSplit level. */
+  lastSendButtonRef?: React.Ref<HTMLButtonElement>
 }
 
 export function DesktopFocusHeader({
@@ -86,6 +97,10 @@ export function DesktopFocusHeader({
   onMakeTeam,
   onTitleClick,
   titleRef,
+  hasLastSend,
+  lastSendOpen,
+  onToggleLastSend,
+  lastSendButtonRef,
 }: DesktopFocusHeaderProps) {
   // Entry point 1 (skills-mcp-manager plan §C.1): the Claude tools manager,
   // pre-scoped to THIS session's project so .mcp.json / .claude/* resolve.
@@ -147,6 +162,17 @@ export function DesktopFocusHeader({
       </span>
 
       <div className="flex shrink-0 items-center gap-1">
+        {/* Recall last prompt (feat-last-prompt) — left of Claude tools so the
+            "what I said" affordance sits adjacent to the session-level config
+            cluster. Hidden when the session has no submission yet. */}
+        {hasLastSend && onToggleLastSend && (
+          <LastSendButton
+            onToggle={onToggleLastSend}
+            open={!!lastSendOpen}
+            buttonRef={lastSendButtonRef}
+            shortcutHint="⌘G"
+          />
+        )}
         {/* Claude tools sheet — opens MCP / Skills / Commands AND (since v0.4.15)
             the permission-mode switcher, which moved here from the header so the
             chrome stays a single-row cluster of session-level actions. */}
@@ -247,6 +273,13 @@ export interface FocusHeaderProps {
    *  so NO resting space is added). Mobile anchors the panel to the viewport
    *  bottom (a Sheet), so no anchor ref is needed here. */
   onTitleClick?: () => void
+  /** Whether this session has a recallable last prompt (feat-last-prompt).
+   *  When false the recall icon is omitted entirely. */
+  hasLastSend?: boolean
+  /** Whether the recall sheet is currently open (drives `aria-expanded`). */
+  lastSendOpen?: boolean
+  /** Toggle the recall sheet. */
+  onToggleLastSend?: () => void
   className?: string
 }
 
@@ -258,6 +291,9 @@ export function FocusHeader({
   error,
   onBack,
   onTitleClick,
+  hasLastSend,
+  lastSendOpen,
+  onToggleLastSend,
   className,
 }: FocusHeaderProps) {
   const label = title ?? name
@@ -352,11 +388,19 @@ export function FocusHeader({
         )}
       </div>
 
-      {/* Right cluster: the Claude tools icon. Since v0.4.15 the permission-mode
-          switcher lives INSIDE the Claude tools sheet (the panel above the tabs),
-          so this cluster stays a single 44pt button — the right-side counterweight
-          to the back-chevron, with the title centred between them. */}
+      {/* Right cluster: optional Recall icon (feat-last-prompt) + Claude tools.
+          Since v0.4.15 the permission-mode switcher lives INSIDE the Claude tools
+          sheet (the panel above the tabs), so this cluster stays narrow — the
+          right-side counterweight to the back-chevron, with the title centred
+          between them. */}
       <div className="flex shrink-0 items-center">
+        {hasLastSend && onToggleLastSend && (
+          <LastSendButton
+            onToggle={onToggleLastSend}
+            open={!!lastSendOpen}
+            // no shortcutHint on mobile — no hardware-keyboard expectation
+          />
+        )}
         <motion.button
           type="button"
           aria-label="Claude tools"
