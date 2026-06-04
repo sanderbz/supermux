@@ -116,15 +116,23 @@ SUPERMUX_OP_SSH_REF="op://My Server Secrets/Git SSH key/private key?ssh-format=o
 
 # 2) Persistent ssh-agent at a fixed socket under the supermux data dir
 #    (writable + stable across sessions; reused by every session).
+#    `ssh-add -l` exit codes: 0 = agent up, has keys; 1 = agent up, empty;
+#    2 = agent UNREACHABLE. Only (re)spawn on 2 — respawning on 1 would kill a
+#    live agent that other sessions share.
 export SSH_AUTH_SOCK="$HOME/.supermux/ssh-agent.sock"
-if ! ssh-add -l >/dev/null 2>&1; then
+mkdir -p "$(dirname "$SSH_AUTH_SOCK")"
+ssh-add -l >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 2 ]; then          # agent unreachable -> (re)spawn at the fixed socket
     rm -f "$SSH_AUTH_SOCK"
     ssh-agent -a "$SSH_AUTH_SOCK" >/dev/null 2>&1 || true
 fi
 
 # 3) Load the Git key from 1Password into agent MEMORY only (never touches disk),
-#    only if the agent currently holds no key. 8h TTL -> re-fetched later.
-if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ] && ! ssh-add -l >/dev/null 2>&1; then
+#    only when the agent is reachable but empty (exit 1). 8h TTL -> re-fetched
+#    later. Guarding on exit 1 (not just "non-zero") avoids masking a still-
+#    unreachable agent and matches "load only if it holds no key".
+ssh-add -l >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 1 ] && [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
     op read "$SUPERMUX_OP_SSH_REF" 2>/dev/null | ssh-add -t 8h - >/dev/null 2>&1 || true
 fi
 # op-secrets END
@@ -176,10 +184,14 @@ git clone git@github.com:<owner>/<repo>.git
 # Read a single secret:
 op read "op://$VAULT/<item>/<field>"
 
-# Inject secrets into a child process WITHOUT writing them to disk:
-op run -- some-tool --flag           # exposes vault refs as env to the child
-op inject -i config.tmpl -o config   # fills op:// refs in a template
+# Inject secrets into a child process as env, WITHOUT writing them to disk:
+op run -- some-tool --flag           # exposes vault refs as env to the child only
 ```
+
+`op inject -i tmpl -o out` also resolves `op://` refs, but it **writes the rendered
+result to disk** — `out` then contains the plaintext secrets. Prefer `op run` (env
+only) where possible; if you must use `op inject`, write to a tmpfs path and tighten
+perms (`umask 077`), and delete the output when done.
 
 ---
 
@@ -222,10 +234,16 @@ ls -la ~/.ssh             # ...but there is NO private key file on disk (only *.
   `~/.zprofile`/`~/.bash_profile`/`~/.profile`** before exec'ing the agent
   (`build_launch_command` in `server/src/sessions/lifecycle.rs`). That dotfile is the
   supported, code-free injection point used above.
-- The systemd sandbox permits all of this: the data dir and the user's home are in
-  `ReadWritePaths` (token file + agent socket are fine), `AF_UNIX` (agent socket) and
-  `AF_INET`/`AF_INET6` (`op` → 1Password cloud over HTTPS) are allowed, and `op` execs
-  from read-only `/usr/local` paths without issue.
+- The systemd sandbox permits all of this. For a non-root deploy the unit sets
+  `ProtectHome=tmpfs` (which masks every home), then a `BindPaths=` line re-mounts
+  **only the service user's own home** so it's visible again; `ProtectSystem=strict`
+  makes the rest of the filesystem read-only and `ReadWritePaths=` scopes the
+  writes. `deploy.sh`'s smart default for `ReadWritePaths` is the data dir + the
+  service user's home + the project dirs — so the token file (`~/.config/op/token`)
+  and the agent socket (`~/.supermux/…`) are writable. `AF_UNIX` (agent socket) and
+  `AF_INET`/`AF_INET6` (`op` → 1Password cloud over HTTPS) are allowed, and `op`
+  execs fine from read-only system paths. (Root deploys instead use
+  `ProtectHome=false` + `ReadWritePaths=/root`.)
 - It survives redeploys: `deploy.sh` writes `config.toml` only if absent and never
   touches `~/.bash_profile` or `~/.ssh`. The marker-guarded blocks make re-runs a
   no-op; re-verify after a deploy regardless.
