@@ -48,7 +48,6 @@ import type { Team, TeamMember } from '@/lib/api/teams'
 import type { TileSession } from '@/components/session-tile/types'
 import {
   bucketSessionsByLayout,
-  defaultGroupSortMode,
   sortSessionsByMode,
   UNGROUPED_GROUP_ID,
   type GroupSortMode,
