@@ -145,6 +145,13 @@ export interface BuildGroupedFocusStripInput {
    *  these via `readStripGroupSortMode` so it knows whether match-overview or
    *  custom mode is in effect — this helper stays pure. */
   resolveSortMode: (groupId: string) => GroupSortMode
+  /** Per-group "hide stopped sessions" filter, INCLUDING the implicit
+   *  `UNGROUPED_GROUP_ID`. Default (caller returns false) = no filter, all
+   *  sessions render. When true, stopped sessions are filtered BEFORE the
+   *  sort applies so the count chip on the section header reflects what's
+   *  actually visible. Pure pass-through if the caller returns false for
+   *  every group. */
+  resolveHideStopped?: (groupId: string) => boolean
 }
 
 /** Compute the full grouped strip model.
@@ -156,7 +163,10 @@ export function buildGroupedFocusStrip({
   teams,
   layoutItems,
   resolveSortMode,
+  resolveHideStopped,
 }: BuildGroupedFocusStripInput): GroupedFocusStripModel {
+  const hideStoppedFor =
+    resolveHideStopped ?? ((_id: string) => false)
   // 1) Detect team groups + split the session pool. The `splitTeamLeads`
   //    helper is the shared "team lead consumed by team group" contract used
   //    by the overview too. We separately build the `teamGroups` array (with
@@ -219,18 +229,24 @@ export function buildGroupedFocusStrip({
     implicit.sessions = [...missing, ...implicit.sessions]
   }
 
-  // 4) Apply the per-group sort. The session lists were collected in layout
-  //    order — that IS the 'custom' sort for that group; every other mode is
-  //    a pure function of the sessions' fields. The `TileSession` shape is a
-  //    superset of `ApiSession` for sort purposes (sortSessionsByMode reads
-  //    name / status / pinned / running / last_activity / created_at /
+  // 4) Apply the per-group filter THEN sort. The session lists were collected
+  //    in layout order — that IS the 'custom' sort for that group; every other
+  //    mode is a pure function of the sessions' fields. The `TileSession` shape
+  //    is a superset of `ApiSession` for sort purposes (sortSessionsByMode
+  //    reads name / status / pinned / running / last_activity / created_at /
   //    updated_at — all present on TileSession).
+  //
+  //    Filter BEFORE sort so the count chip + the rendered list agree and so
+  //    the sort kernel never wastes a comparison on a row that's about to be
+  //    dropped.
   const userGroups = sectionsInOrder.map((sec) => {
-    if (sec.sortMode === 'custom') return sec
-    const sorted = sortSessionsByMode(
-      sec.sortMode,
-      sec.sessions,
-    ) as TileSession[]
+    const filtered = hideStoppedFor(sec.groupId)
+      ? sec.sessions.filter((s) => s.status !== 'stopped')
+      : sec.sessions
+    if (sec.sortMode === 'custom') {
+      return filtered === sec.sessions ? sec : { ...sec, sessions: filtered }
+    }
+    const sorted = sortSessionsByMode(sec.sortMode, filtered) as TileSession[]
     return { ...sec, sessions: sorted }
   })
 
@@ -265,6 +281,12 @@ export function stripGroupIds(model: GroupedFocusStripModel): string[] {
  *  match-overview → custom for the first time doesn't snap every group to
  *  Smart. Caller normally uses `readStripGroupSortMode` (which already falls
  *  back to the overview's stored mode); this is exported for tests. */
-export function stripDefaultGroupSortMode(groupId: string): GroupSortMode {
-  return defaultGroupSortMode(groupId)
+export function stripDefaultGroupSortMode(_groupId: string): GroupSortMode {
+  // The strip defaults EVERY group to Smart, including user-defined ones —
+  // unlike the overview where user groups default to 'custom' (= the drag
+  // order). On a 320 px sidebar with no drag affordance, 'custom' read as
+  // "the chip does nothing" because every mode collapsed to the same layout
+  // order until a user dragged on the overview. Smart is visibly responsive:
+  // pinned/active first, then by recency. Users get instant feedback.
+  return 'smart'
 }

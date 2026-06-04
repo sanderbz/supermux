@@ -97,6 +97,8 @@ export function DesktopSplit({
     setGroupSortMode,
     isCollapsed,
     setCollapsed,
+    isHideStopped,
+    setHideStopped,
   } = useGroupedStrip(sessions, teams)
 
   // Which teammate (if any) is shown in the MAIN pane. Held by team+agent_id so
@@ -477,6 +479,10 @@ export function DesktopSplit({
                   }
                   collapsed={isCollapsed(g.groupId)}
                   onCollapsedChange={(next) => setCollapsed(g.groupId, next)}
+                  hideStopped={isHideStopped(g.groupId)}
+                  onHideStoppedChange={(next) =>
+                    setHideStopped(g.groupId, next)
+                  }
                   jumpIndexBySession={jumpIndexBySession}
                 />
               ))}

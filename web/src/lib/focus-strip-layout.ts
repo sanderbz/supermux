@@ -37,10 +37,27 @@
 // `overview-layout.ts` directly so the strip and the overview share state.
 
 import {
-  defaultGroupSortMode,
-  readGroupSortMode as readOverviewGroupSortMode,
+  groupSortKey as overviewGroupSortKey,
   type GroupSortMode,
 } from './overview-layout'
+
+/** The curated set of sort modes the STRIP's per-group chip offers. Smaller
+ *  than the overview's six because two of those modes don't pay off on a
+ *  320 px sidebar:
+ *   - `custom` was the per-group drag order — there is no drag in the strip,
+ *     so the chip option just meant "render whatever order the overview
+ *     happened to have", which read as "the chip does nothing" to users.
+ *   - `age` (newest-by-created-at) overlaps with `recent` for almost every
+ *     real workflow and added cognitive load without paying it back.
+ *  The four that survive each produce VISIBLY different orderings against a
+ *  mixed fleet (some active, some idle, some stopped), so picking one in the
+ *  chip menu always gives the user immediate visual confirmation. */
+export const STRIP_SORT_MODES: GroupSortMode[] = [
+  'smart',
+  'recent',
+  'status',
+  'name',
+]
 
 /** The strip's relationship with the overview. */
 export type FocusStripMode = 'match-overview' | 'custom'
@@ -59,6 +76,10 @@ export function stripGroupSortKey(groupId: string): string {
 
 export function stripCollapsedKey(groupId: string): string {
   return `supermux:focus-strip:collapsed:${groupId}`
+}
+
+export function stripHideStoppedKey(groupId: string): string {
+  return `supermux:focus-strip:hide-stopped:${groupId}`
 }
 
 // ── Strip mode (match-overview vs custom) ────────────────────────────────────
@@ -91,30 +112,36 @@ export function writeFocusStripMode(mode: FocusStripMode): void {
 
 /** Resolve the per-group sort mode the strip should use for `groupId`.
  *
- *  In 'match-overview' the strip reads the overview's persisted mode (the
- *  SAME `supermux:overview:group-sort:<id>` row the overview reads). In
- *  'custom' it reads the strip's separate namespace
- *  (`supermux:focus-strip:group-sort:<id>`); if the strip has never set a
- *  mode for this group, we INHERIT from the overview as a sensible default,
- *  so flipping into 'custom' for the first time doesn't snap every group to
- *  Smart out of nowhere. */
+ *  Lookup order is identical in both stripModes — the only difference is
+ *  which row we consult first:
+ *
+ *    custom         : strip's own row → overview's row → 'smart' default
+ *    match-overview : overview's row → 'smart' default
+ *
+ *  Crucially, when nothing is set we ALWAYS fall back to `'smart'` (not the
+ *  overview's per-group default which is `'custom'` for user groups). On the
+ *  strip, `'custom'` reads as "the chip does nothing" because there is no
+ *  drag here — every other mode would be visibly preferable to the user.
+ *  We import `groupSortKey` (not `readGroupSortMode`) so the overview's
+ *  fallback-to-`'custom'` for user groups doesn't leak in. */
 export function readStripGroupSortMode(
   stripMode: FocusStripMode,
   groupId: string,
 ): GroupSortMode {
-  if (stripMode === 'match-overview') {
-    return readOverviewGroupSortMode(groupId)
-  }
-  // Custom mode — look up the strip's own row first; fall back to whatever the
-  // overview has so the first toggle into Custom doesn't reset every group.
-  if (typeof window === 'undefined') return defaultGroupSortMode(groupId)
+  if (typeof window === 'undefined') return 'smart'
   try {
-    const raw = window.localStorage.getItem(stripGroupSortKey(groupId))
-    if (raw && isGroupSortMode(raw)) return raw
+    if (stripMode === 'custom') {
+      const stripRaw = window.localStorage.getItem(stripGroupSortKey(groupId))
+      if (stripRaw && isGroupSortMode(stripRaw)) return stripRaw
+    }
+    const overviewRaw = window.localStorage.getItem(
+      overviewGroupSortKey(groupId),
+    )
+    if (overviewRaw && isGroupSortMode(overviewRaw)) return overviewRaw
   } catch {
-    /* fall through */
+    /* fall through to default */
   }
-  return readOverviewGroupSortMode(groupId)
+  return 'smart'
 }
 
 /** Persist a per-group sort mode WHEN the strip is in 'custom' mode. In
@@ -182,6 +209,40 @@ export function writeStripGroupCollapsed(
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(stripCollapsedKey(groupId), collapsed ? '1' : '0')
+  } catch {
+    /* private mode / quota — non-fatal */
+  }
+}
+
+// ── Per-group hide-stopped filter ────────────────────────────────────────────
+//
+// A real filter (not a sort): when on, stopped sessions in that group simply
+// don't render. Lives in the strip's namespace, persisted per group, default
+// OFF (we show everything until the user opts in). Pairs with the sort chip
+// on the section header: the sort decides the order, hide-stopped decides
+// what gets rendered at all — together they cover "what should I look at".
+
+/** Default = show everything. */
+export function readStripHideStopped(groupId: string): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const raw = window.localStorage.getItem(stripHideStoppedKey(groupId))
+    return raw === '1'
+  } catch {
+    return false
+  }
+}
+
+export function writeStripHideStopped(
+  groupId: string,
+  hidden: boolean,
+): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      stripHideStoppedKey(groupId),
+      hidden ? '1' : '0',
+    )
   } catch {
     /* private mode / quota — non-fatal */
   }

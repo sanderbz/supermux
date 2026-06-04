@@ -50,6 +50,10 @@ import {
   type GroupSortMode,
 } from '@/lib/overview-layout'
 
+/** Default rendered mode list when the caller doesn't override. Mirrors the
+ *  overview's 6-mode set; the strip passes a curated 4-mode list via `modes`. */
+const DEFAULT_RENDERED_MODES = GROUP_SORT_MODES
+
 /** A tiny per-mode glyph for the chip + popover. Single source of truth — both
  *  the overview group-header and the focus-strip section header read the same
  *  table so the icon never drifts between surfaces. */
@@ -79,6 +83,13 @@ export interface GroupSortChipProps {
    *  set e.g. `data-vr="strip-sort-chip"` to differentiate from the overview's
    *  `data-vr="group-sort-chip"`. Defaults to 'group-sort-chip' for back-compat. */
   vrTag?: string
+  /** Optional override for which modes appear in the menu. Defaults to the
+   *  overview's 6-mode set. The strip passes the curated 4-mode list
+   *  (`STRIP_SORT_MODES` from focus-strip-layout). The TYPE accepts any
+   *  GroupSortMode, so stale localStorage values (e.g. 'custom' or 'age' set
+   *  by a previous build) still resolve to a working sort kernel — they just
+   *  don't appear in the dropdown anymore. */
+  modes?: ReadonlyArray<GroupSortMode>
 }
 
 export function GroupSortChip({
@@ -88,6 +99,7 @@ export function GroupSortChip({
   onChange,
   density = 'overview',
   vrTag = 'group-sort-chip',
+  modes = DEFAULT_RENDERED_MODES,
 }: GroupSortChipProps) {
   const ActiveIcon = GROUP_SORT_MODE_ICON[sortMode]
   // Compact strip density is "<Mode> ▾" with no responsive switch — the strip
@@ -136,7 +148,7 @@ export function GroupSortChip({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="min-w-52">
-        {GROUP_SORT_MODES.map((mode) => {
+        {modes.map((mode) => {
           const Icon = GROUP_SORT_MODE_ICON[mode]
           const active = mode === sortMode
           return (

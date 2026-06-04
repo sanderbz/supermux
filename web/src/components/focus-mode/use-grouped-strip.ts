@@ -45,9 +45,11 @@ import {
   readFocusStripMode,
   readStripGroupCollapsed,
   readStripGroupSortMode,
+  readStripHideStopped,
   writeFocusStripMode,
   writeStripGroupCollapsed,
   writeStripGroupSortMode,
+  writeStripHideStopped,
   type FocusStripMode,
 } from '@/lib/focus-strip-layout'
 import type { Team } from '@/lib/api/teams'
@@ -68,6 +70,9 @@ export interface UseGroupedStripResult {
   /** Per-group collapse state. */
   isCollapsed: (groupId: string) => boolean
   setCollapsed: (groupId: string, collapsed: boolean) => void
+  /** Per-group "hide stopped sessions" filter. */
+  isHideStopped: (groupId: string) => boolean
+  setHideStopped: (groupId: string, hidden: boolean) => void
 }
 
 /** Build the grouped strip model + own the strip's local state.
@@ -241,6 +246,54 @@ export function useGroupedStrip(
     [],
   )
 
+  // ── Per-group hide-stopped filter ──────────────────────────────────────
+  // Mirrors the collapse pattern: default false (show everything), lazily
+  // hydrated from localStorage on first ask per id, writes persist + update
+  // local state so the model rebuilds immediately.
+  const [hideStoppedMap, setHideStoppedMap] = React.useState<
+    Map<string, boolean>
+  >(() => new Map())
+
+  const isHideStopped = React.useCallback(
+    (groupId: string): boolean => {
+      const fromState = hideStoppedMap.get(groupId)
+      if (fromState !== undefined) return fromState
+      const fromLs = readStripHideStopped(groupId)
+      if (fromLs) {
+        queueMicrotask(() => {
+          setHideStoppedMap((prev) => {
+            if (prev.has(groupId)) return prev
+            const next = new Map(prev)
+            next.set(groupId, fromLs)
+            return next
+          })
+        })
+      }
+      return fromLs
+    },
+    [hideStoppedMap],
+  )
+
+  const setHideStopped = React.useCallback(
+    (groupId: string, hidden: boolean) => {
+      setHideStoppedMap((prev) => {
+        const next = new Map(prev)
+        next.set(groupId, hidden)
+        return next
+      })
+      writeStripHideStopped(groupId, hidden)
+    },
+    [],
+  )
+
+  // resolveHideStopped reads from component state directly so a flip of the
+  // toggle re-runs the build via the dep set below. Wrapped in useCallback so
+  // its identity is stable across renders that don't change the map.
+  const resolveHideStopped = React.useCallback(
+    (groupId: string) => hideStoppedMap.get(groupId) ?? false,
+    [hideStoppedMap],
+  )
+
   // ── Build the model ────────────────────────────────────────────────────
   const model = React.useMemo(
     () =>
@@ -249,11 +302,19 @@ export function useGroupedStrip(
         teams,
         layoutItems: reconciledLayout,
         resolveSortMode,
+        resolveHideStopped,
       }),
     // resolveTick is part of the dep set so a match-overview chip flip
     // re-runs the build (its inputs don't otherwise change — only ls did).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessions, teams, reconciledLayout, resolveSortMode, resolveTick],
+    [
+      sessions,
+      teams,
+      reconciledLayout,
+      resolveSortMode,
+      resolveHideStopped,
+      resolveTick,
+    ],
   )
 
   // Track the set of group ids the model currently shows so setStripMode's
@@ -272,5 +333,7 @@ export function useGroupedStrip(
     setGroupSortMode,
     isCollapsed,
     setCollapsed,
+    isHideStopped,
+    setHideStopped,
   }
 }
