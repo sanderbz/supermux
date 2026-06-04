@@ -58,6 +58,10 @@ import { StatusDot } from '@/components/session-tile/status-dot'
 
 import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
 import { FocusHeader } from '@/components/focus-mode/focus-header'
+import {
+  LastSendSheet,
+  useLastSend,
+} from '@/components/focus-mode/last-send-recall'
 import { MobileDock } from '@/components/focus-mode/dock'
 import { MobileBottomPanel } from '@/components/focus-mode/mobile-bottom-panel'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
@@ -356,6 +360,10 @@ export function MobileFocus() {
   }, [])
   // feat-session-info — the title-click info panel (a bottom Sheet on mobile).
   const [infoOpen, setInfoOpen] = React.useState(false)
+  // feat-last-prompt — recall sheet for the user's last prompt. No auto-show
+  // on mobile (the icon in the header is the only entry).
+  const [lastSendOpen, setLastSendOpen] = React.useState(false)
+  const lastSend = useLastSend(current ?? undefined)
   // DOCK — the slash panel was removed: slash commands now run from the Claude
   // Tools sheet's Commands tab (tap a command → it runs in the focused terminal).
   // Joystick on/off. The accessory bar's "Gesture" toggle flips this
@@ -417,6 +425,9 @@ export function MobileFocus() {
             error={current.error}
             onBack={goOverviewMorph}
             onTitleClick={() => setInfoOpen(true)}
+            hasLastSend={!!lastSend}
+            lastSendOpen={lastSendOpen}
+            onToggleLastSend={() => setLastSendOpen((o) => !o)}
           />
 
           {/* The LiveTerminal with the joystick + 2-finger gesture
@@ -583,6 +594,18 @@ export function MobileFocus() {
         onOpenChange={setInfoOpen}
         onNavigate={goSession}
       />
+
+      {/* feat-last-prompt — the recall bottom sheet. Heavy content only mounts
+          while open (Vaul unmounts when closed). Gated on having a recall to
+          show so a missing-prompt session can't open an empty sheet. */}
+      {lastSend && current && (
+        <LastSendSheet
+          open={lastSendOpen}
+          onOpenChange={setLastSendOpen}
+          recall={lastSend}
+          session={current}
+        />
+      )}
 
       {/* Read-only teammate focus. The SAME full-screen <TeammateFocus>
           overlay the overview uses (one teammate-focus UI app-wide): glass

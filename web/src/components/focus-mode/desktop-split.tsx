@@ -29,6 +29,11 @@ import { useGroupedStrip } from './use-grouped-strip'
 import { FocusStripSection } from './focus-strip-section'
 import { FocusStripModeToggle } from './focus-strip-mode-toggle'
 import { DesktopFocusHeader } from './focus-header'
+import {
+  LastSendBar,
+  LastSendPopover,
+  useLastSend,
+} from './last-send-recall'
 import { DesktopDock } from './dock'
 import { TerminalCaptureIndicator } from './terminal-capture-indicator'
 import { useKeyboardCapture } from './use-keyboard-capture'
@@ -250,6 +255,23 @@ export function DesktopSplit({
   const [infoOpen, setInfoOpen] = React.useState(false)
   const titleRef = React.useRef<HTMLButtonElement>(null)
 
+  // feat-last-prompt — the recall popover open state, owned HERE so the icon
+  // (inside the header), the auto-show bar (below the header), and the ⌘G
+  // shortcut all toggle the SAME state. The button ref anchors the popover.
+  const [lastSendOpen, setLastSendOpen] = React.useState(false)
+  const lastSendButtonRef = React.useRef<HTMLButtonElement>(null)
+  const lastSend = useLastSend(current ?? undefined)
+  const toggleLastSend = React.useCallback(
+    () => setLastSendOpen((o) => !o),
+    [],
+  )
+  // ⌘G is gated on having a recall to show: when there's no last send the
+  // shortcut is a no-op (we don't preventDefault on a key we can't service).
+  const onShowLastSend = React.useMemo(
+    () => (lastSend ? toggleLastSend : undefined),
+    [lastSend, toggleLastSend],
+  )
+
   // Clipboard image paste — handled BEFORE xterm. xterm only forwards TEXT paste
   // (the textarea paste → `term.onData`), so reading `clipboardData.files` /
   // `items[].getAsFile()` here for images doesn't conflict. We ONLY
@@ -388,6 +410,7 @@ export function DesktopSplit({
     onDetach,
     onStop,
     onJump: jump,
+    onShowLastSend,
   })
 
   const status = current?.status ?? 'starting'
@@ -484,6 +507,20 @@ export function DesktopSplit({
           // toggle here would race its onOpenChange(false) and re-open it.
           onTitleClick={() => setInfoOpen(true)}
           titleRef={titleRef}
+          hasLastSend={!!lastSend}
+          lastSendOpen={lastSendOpen}
+          onToggleLastSend={toggleLastSend}
+          lastSendButtonRef={lastSendButtonRef}
+        />
+
+        {/* feat-last-prompt — the auto-show glass strip. Re-keys on `name` so
+            switching sessions resets the show-then-fade cycle, matching the
+            "recall on arrival" trigger model in the spec. */}
+        <LastSendBar
+          key={name}
+          recall={lastSend}
+          sessionName={name}
+          onOpenRecall={() => setLastSendOpen(true)}
         />
 
         {/* `relative` so the capture indicator (polish-pass #4) can position
@@ -596,6 +633,21 @@ export function DesktopSplit({
         triggerRef={titleRef}
         onNavigate={onSelect}
       />
+
+      {/* feat-last-prompt — the recall popover, anchored to the icon in the
+          header. Only mounts the heavy content while open. The popover is
+          controlled by `lastSendOpen`; the icon, the bar-click, and the ⌘G
+          shortcut all flip the same state above. Gate the render on
+          `lastSend` so the anchor refs don't fight an unmounted button. */}
+      {lastSend && current && (
+        <LastSendPopover
+          open={lastSendOpen}
+          onOpenChange={setLastSendOpen}
+          recall={lastSend}
+          session={current}
+          anchorRef={lastSendButtonRef}
+        />
+      )}
     </div>
   )
 }

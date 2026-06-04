@@ -6,6 +6,7 @@
 //
 //   ⌘/Ctrl+D  → Detach (navigate to overview, session kept alive)
 //   ⌘/Ctrl+W  → Stop session, then leave
+//   ⌘/Ctrl+G  → Show last prompt (feat-last-prompt)
 //   ⌘/Ctrl+1..9 → jump to the N-th session in the strip
 //
 // ⌘/Ctrl+K is intentionally NOT handled here — the global <CommandPalette> in
@@ -25,6 +26,11 @@ export interface KeyboardCaptureHandlers {
   onStop: () => void
   /** ⌘/Ctrl+1..9 — jump to the N-th (1-indexed) session row. */
   onJump: (index: number) => void
+  /** ⌘/Ctrl+G — toggle the last-prompt recall popover (feat-last-prompt).
+   *  Optional: when omitted (or when the current session has no last send),
+   *  the shortcut is a no-op so we never preventDefault on a key we can't
+   *  service. */
+  onShowLastSend?: () => void
 }
 
 /** Register the global-shortcut keydown capture for the lifetime of the focus
@@ -61,6 +67,11 @@ export function useKeyboardCapture(handlers: KeyboardCaptureHandlers): void {
       if (key === 'w') {
         e.preventDefault()
         ref.current.onStop()
+        return
+      }
+      if (key === 'g' && ref.current.onShowLastSend) {
+        e.preventDefault()
+        ref.current.onShowLastSend()
         return
       }
       // Cmd/Ctrl+1..9 → jump to that session row.

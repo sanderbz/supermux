@@ -185,6 +185,17 @@ pub struct SessionView {
     /// an optimistic guess. Cheap (a pure string scan over the held capture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// The user's last sent prompt to this session (≤200 chars, control chars
+    /// stripped), as captured by `db::sessions::set_last_send`. `None` when the
+    /// session has never received a submission. Drives the last-prompt recall
+    /// affordance on the focus screen (glass bar + popover + mobile sheet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_send_text: Option<String>,
+    /// Epoch seconds when `last_send_text` was written. `None` when there is no
+    /// last send. Pairs with `last_send_text` for the recall affordance's
+    /// "<relative time> ago" label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_send_at: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -241,6 +252,19 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
             None
         } else {
             Some(status::parse_mode(last_capture).as_str().to_string())
+        },
+        // Last user prompt + its epoch. Pair them: either both Some, or both
+        // None (no submission yet). The DB stores empty string + 0 as the
+        // "never sent" sentinel.
+        last_send_text: if s.last_send_text.is_empty() {
+            None
+        } else {
+            Some(s.last_send_text.clone())
+        },
+        last_send_at: if s.last_send_text.is_empty() {
+            None
+        } else {
+            Some(s.last_send)
         },
         created_at: to_rfc3339(s.created_at),
         updated_at: to_rfc3339(updated_ts),
