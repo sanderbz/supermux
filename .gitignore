@@ -24,3 +24,5 @@ DEPLOYED_SHA
 # Internal-only working dirs (not for OSS)
 plan/
 agent_notes/
+# Local-only notes (private brainstorms / route planning).
+ios.md
