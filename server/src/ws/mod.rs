@@ -26,6 +26,8 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use bytes::Bytes;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 
@@ -858,11 +860,20 @@ fn consume_last_prompt(buf: &mut String, text: &str) -> Option<String> {
     last_committed
 }
 
-/// Strip non-newline/tab control chars and trim, then truncate to the DB cap
-/// (`db::sessions::LAST_SEND_TEXT_MAX_CHARS`; we pre-truncate so the cap is
-/// visible at the call site).
+/// Matches CSI escape sequences (e.g. `\x1b[A` from Up, `\x1b[1;5C` from Ctrl-Right)
+/// and SS3 sequences (e.g. `\x1bOA` — xterm.js emits these in application-cursor
+/// mode). Stripping these as whole units is necessary because the ESC byte itself
+/// is a control char (filtered below) but the trailing `[A` / `OA` are plain
+/// printable bytes that would otherwise survive into the recall text.
+static ANSI_RECALL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O[A-Z])").unwrap());
+
+/// Strip ANSI escapes + non-newline/tab control chars and trim, then truncate to
+/// the DB cap (`db::sessions::LAST_SEND_TEXT_MAX_CHARS`; we pre-truncate so the
+/// cap is visible at the call site).
 fn sanitise_prompt(raw: &str) -> String {
-    let cleaned: String = raw
+    let stripped = ANSI_RECALL_RE.replace_all(raw, "");
+    let cleaned: String = stripped
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect();
@@ -1143,5 +1154,81 @@ mod coalesce_tests {
         // A lone Enter produces just the Ctrl op — no spurious empty Text send.
         let plan = plan_applies([key("Enter")]);
         assert_eq!(trace(&plan), vec!["K:Enter"]);
+    }
+}
+
+#[cfg(test)]
+mod recall_tests {
+    //! Pins the [`sanitise_prompt`] contract for the focus-screen recall: ANSI
+    //! cursor escapes from xterm.js arrow keys (CSI `\x1b[A` and SS3 `\x1bOA`)
+    //! must be stripped as whole units, not byte-by-byte — otherwise the ESC is
+    //! filtered as a control char but the trailing printable bracket+letter
+    //! survives and corrupts the stored text.
+    use super::*;
+
+    #[test]
+    fn csi_arrow_keys_are_stripped_whole() {
+        // Up/Down/Left/Right inline: every CSI byte sequence vanishes, the
+        // surrounding typed text survives untouched.
+        assert_eq!(sanitise_prompt("\x1b[Aweer\x1b[C go"), "weer go");
+        assert_eq!(
+            sanitise_prompt("a\x1b[Ab\x1b[Bc\x1b[Dd\x1b[Ce"),
+            "abcde"
+        );
+    }
+
+    #[test]
+    fn ss3_arrow_keys_are_stripped() {
+        // xterm.js in application-cursor mode sends SS3 (`ESC O <letter>`)
+        // instead of CSI; both must die.
+        assert_eq!(sanitise_prompt("hi\x1bOAthere"), "hithere");
+    }
+
+    #[test]
+    fn parameterised_csi_sequences_strip() {
+        // Ctrl-Right / Alt-arrows / xterm modifyOtherKeys all emit longer CSI
+        // sequences with numeric params; the regex covers the whole grammar.
+        assert_eq!(sanitise_prompt("foo\x1b[1;5Cbar"), "foobar");
+        assert_eq!(sanitise_prompt("x\x1b[38;5;208my"), "xy");
+    }
+
+    #[test]
+    fn realworld_arrow_spam_collapses() {
+        // The exact shape the user reported: repeated arrow presses while
+        // editing, then a real edit, then more arrows. Pure typed text remains.
+        let raw =
+            "\x1b[A\x1b[D\x1b[Dbbbbbbb\x1b[D\x1b[D weer\x1b[C Nu uitgebreid en gehardend, \
+             gebeurt niet meer. Jij kan vol door!\x1b[C\x1b[C\x1b[Cr go\x1b[C";
+        assert_eq!(
+            sanitise_prompt(raw),
+            "bbbbbbb weer Nu uitgebreid en gehardend, gebeurt niet meer. Jij kan vol door!r go"
+        );
+    }
+
+    #[test]
+    fn bare_esc_without_csi_is_dropped() {
+        // A lone ESC (no `[` follow-up) was already handled by the control
+        // filter; pin that we didn't regress it.
+        assert_eq!(sanitise_prompt("hello\x1bworld"), "helloworld");
+    }
+
+    #[test]
+    fn newlines_and_tabs_are_preserved() {
+        // The recall stores soft-wrapped multi-line prompts; these two
+        // whitespace control chars must survive the sanitiser.
+        assert_eq!(sanitise_prompt("line1\nline2\tcol"), "line1\nline2\tcol");
+    }
+
+    #[test]
+    fn other_control_chars_still_strip() {
+        // Bell, NUL, vertical tab: still filtered by the control-char pass.
+        assert_eq!(sanitise_prompt("a\x07b\x00c\x0bd"), "abcd");
+    }
+
+    #[test]
+    fn empty_after_strip_returns_empty() {
+        // A buffer of pure cursor noise commits nothing — pairs with the
+        // `if committed.is_empty()` gate in `inspect_for_prompt`.
+        assert_eq!(sanitise_prompt("\x1b[A\x1b[B\x1b[C\x1b[D"), "");
     }
 }
