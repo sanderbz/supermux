@@ -231,16 +231,6 @@
   overscroll-behavior: contain;
 }
 
-/* Mobile select-mode (the dock "select text" toggle, live-terminal.tsx): while
-   active, a one-finger drag must DRIVE A TEXT SELECTION, not pan. We set
-   `touch-action: none` so the browser surrenders the gesture and our capture-
-   phase touch listeners can synthesize the selection drag without the viewport
-   scrolling underneath it. Scoped to the data-attr so normal (scroll) mode is
-   untouched. */
-[data-select-mode='true'] .xterm-viewport {
-  touch-action: none !important;
-}
-
 /* ── Glass material (iOS-native bars; termius-ios-native-spec §Material) ─
    Regular Liquid-Glass analogue for toolbars/headers above content: a
    translucent surface (mixed from the semantic --card token so it tracks the

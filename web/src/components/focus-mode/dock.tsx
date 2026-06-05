@@ -28,7 +28,6 @@ import {
   Keyboard,
   Ellipsis,
   Mic,
-  TextSelect,
   Paperclip,
   PencilLine,
   ArrowLeft,
@@ -379,11 +378,6 @@ export interface MobileDockProps {
   keyboardOpen?: boolean
   /** Open the snippet panel (in-place slide-up). */
   onOpenSnippets?: () => void
-  /** True while mobile select-mode is active (the terminal turns a one-finger
-   *  drag into a text selection instead of a scroll). Tints the toggle. */
-  selectMode?: boolean
-  /** Toggle mobile select-mode. Omit to hide the affordance. */
-  onToggleSelect?: () => void
   /** Tap the bottom-left Edit field → lift Claude's current `❯` input into the
    *  native editor sheet (feat-edit-in-native-editor). The caller sends Ctrl+G to
    *  the pty here; the sheet itself opens on the resulting `external-edit` SSE
@@ -414,8 +408,6 @@ export function MobileDock({
   onBlurTerm,
   keyboardOpen = false,
   onOpenSnippets,
-  selectMode = false,
-  onToggleSelect,
   onEdit,
   editOpen = false,
   registerInsert,
@@ -641,16 +633,6 @@ export function MobileDock({
         {onOpenSnippets && (
           <DockIcon label="Snippets" onClick={onOpenSnippets}>
             <Plus className="size-5" strokeWidth={1.75} />
-          </DockIcon>
-        )}
-
-        {onToggleSelect && (
-          <DockIcon
-            label={selectMode ? 'Exit select mode' : 'Select text'}
-            onClick={onToggleSelect}
-            active={selectMode}
-          >
-            <TextSelect className="size-5" strokeWidth={1.75} />
           </DockIcon>
         )}
 

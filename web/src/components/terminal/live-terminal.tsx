@@ -90,19 +90,6 @@ export interface LiveTerminalProps {
    *  the caller. When set, `name` is used only for the aria-label + the cached-tail
    *  fallback lookup (which simply misses for a teammate — harmless). */
   wsPath?: string
-  /** Mobile select-mode (the dock "select text" toggle). The terminal renders
-   *  with a WebGL/Canvas renderer — there is NO selectable DOM text — and xterm
-   *  only starts a selection on `mousedown`, while one-finger touch is hard-routed
-   *  to scrollback panning (areMouseEventsActive is forced false). So selection is
-   *  impossible on touch by default. When this is true we take over: a one-finger
-   *  drag is translated into the mousedown/mousemove/mouseup sequence xterm's
-   *  SelectionService listens for, and the result is copied on release. Off (the
-   *  default) leaves native one-finger pan-scroll completely untouched. */
-  selectMode?: boolean
-  /** Fired on select-mode drag-release when the drag produced a non-empty
-   *  selection (already copied to the clipboard). The route shows a toast and
-   *  exits select-mode. */
-  onSelectionCopied?: (text: string) => void
   /** Suppress the internal cached-tail overlay. The overview hover-peek
    *  (<TileLiveTerminal>) ALREADY owns a static→live crossfade — its <TailPreview>
    *  sits behind the live layer which fades in on `onFirstFrame`. Rendering the
@@ -128,8 +115,6 @@ export function LiveTerminal({
   previewLines,
   suppressCachedTail = false,
   wsPath,
-  selectMode = false,
-  onSelectionCopied,
 }: LiveTerminalProps) {
   const term = useLiveTerm(name, {
     readOnly,
@@ -147,7 +132,6 @@ export function LiveTerminal({
     retry,
     scrolledUp,
     scrollToBottom,
-    copySelection,
   } = term
 
   // Resolve the cached tail. Callers that already hold the session row (mobile
@@ -200,151 +184,6 @@ export function LiveTerminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // ── Mobile select-mode ──────────────────────────────────────────────────────
-  // The active renderer is WebGL/Canvas (no selectable DOM text) and xterm starts
-  // a selection ONLY on `mousedown`, while one-finger touch is hard-routed to
-  // scrollback panning (areMouseEventsActive is forced false in use-live-term.ts).
-  // So a touch can never begin a selection by default — that's deliberate (scroll
-  // beats select; a permanent {passive:false} touch shim regressed iOS scroll feel
-  // and was reverted, see use-live-term.ts:552-563). The dock "select text" toggle
-  // flips this prop; only THEN do we attach listeners and translate a one-finger
-  // drag into the mousedown→mousemove→mouseup sequence SelectionService listens
-  // for, copying the result on release. When the prop is false NOTHING is attached,
-  // so native pan-scroll is completely untouched.
-  const onSelectionCopiedRef = React.useRef(onSelectionCopied)
-  React.useEffect(() => {
-    onSelectionCopiedRef.current = onSelectionCopied
-  }, [onSelectionCopied])
-  React.useEffect(() => {
-    if (!selectMode) return
-    const container = containerRef.current
-    const screen = container?.querySelector<HTMLElement>('.xterm-screen')
-    if (!container || !screen) return
-
-    // Drives `[data-select-mode] .xterm-viewport { touch-action: none }` so the
-    // browser doesn't try to pan while we're synthesizing a selection drag.
-    container.setAttribute('data-select-mode', 'true')
-
-    // Keyboard-suppression while selecting.
-    //
-    // Problem: the React-side tap handler in mobile.tsx already skips
-    // `focusTerm()` when `selectMode` is on, BUT xterm.js's own internal
-    // mousedown listener — which our synthesized mousedown below
-    // (`fireMouse(screen, 'mousedown', ...)`) deliberately triggers — calls
-    // `helperTextarea.focus()` synchronously, INSIDE the same touchstart user
-    // gesture. iOS then opens the soft keyboard, covering the terminal
-    // mid-selection. So gating focus on the React side isn't enough.
-    //
-    // Fix: while select-mode is on, set the helper textarea's `inputMode` to
-    // `none` AND `readOnly` to `true`. Both iOS 15+ and modern Android Chrome
-    // respect this combination and refuse to summon the virtual keyboard even
-    // when the textarea receives programmatic focus. Physical keyboards
-    // (irrelevant here, but worth noting) continue to fire `keydown` events
-    // through readOnly textareas; we don't care because xterm reads the
-    // helper textarea's `input` events for IME-aware composition, and we want
-    // *no* user input flowing in while the dock is in select mode anyway.
-    //
-    // We save the previous values and restore them on cleanup so toggling
-    // select-mode on→off→on is idempotent (no drift), and so a separate code
-    // path that ever set `inputMode` (none today) survives untouched.
-    const helper = container.querySelector<HTMLTextAreaElement>(
-      '.xterm-helper-textarea',
-    )
-    const prevInputMode = helper?.inputMode ?? ''
-    const prevReadOnly = helper?.readOnly ?? false
-    if (helper) {
-      helper.inputMode = 'none'
-      helper.readOnly = true
-    }
-
-    const fireMouse = (
-      target: EventTarget,
-      type: 'mousedown' | 'mousemove' | 'mouseup',
-      x: number,
-      y: number,
-    ) => {
-      target.dispatchEvent(
-        new MouseEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: x,
-          clientY: y,
-          button: 0,
-          buttons: type === 'mouseup' ? 0 : 1,
-          // detail=1 marks this as a single-click. SelectionService.handleMouseDown
-          // branches ONLY on detail === 1 / 2 / 3 (single / double / triple click);
-          // a default of 0 falls through every branch, selectionStart stays
-          // undefined, and the move/up handlers early-return — the drag would
-          // silently produce no selection. Mousemove + mouseup don't gate on
-          // detail, so 0 there is fine; we only need to declare "click" here.
-          detail: type === 'mousedown' ? 1 : 0,
-        }),
-      )
-    }
-
-    let dragging = false
-    // Capture phase + stopPropagation so we run BEFORE xterm's own touch handlers
-    // (descendants of `container`) and prevent them from routing the touch to a
-    // viewport pan + cancel(). preventDefault blocks the browser's native scroll.
-    const onTouchStart = (e: TouchEvent) => {
-      const t = e.touches[0]
-      if (!t) return
-      e.preventDefault()
-      e.stopPropagation()
-      dragging = true
-      // mousedown lands on `.xterm-screen` — where SelectionService binds.
-      fireMouse(screen, 'mousedown', t.clientX, t.clientY)
-    }
-    const onTouchMove = (e: TouchEvent) => {
-      if (!dragging) return
-      const t = e.touches[0]
-      if (!t) return
-      e.preventDefault()
-      e.stopPropagation()
-      // mousemove goes to `document` — xterm adds the move/up listeners there for
-      // the duration of a drag.
-      fireMouse(document, 'mousemove', t.clientX, t.clientY)
-    }
-    const endDrag = (e: TouchEvent) => {
-      if (!dragging) return
-      dragging = false
-      e.preventDefault()
-      e.stopPropagation()
-      const t = e.changedTouches[0]
-      // Synchronous mouseup → xterm's SelectionService.handleMouseUp commits
-      // the selection inside this same call stack (dispatchEvent is
-      // synchronous), so `copySelection()` directly below reads the freshly
-      // committed text. No setTimeout: a 0ms defer escapes iOS Safari /
-      // WKWebView's user-activation window, after which BOTH
-      // `navigator.clipboard.writeText()` and `document.execCommand('copy')`
-      // silently fail in installed PWAs. The whole copy must finish before
-      // touchend's handler returns. Tested fix for the "toast says Copied
-      // but iOS clipboard is empty" bug.
-      fireMouse(document, 'mouseup', t?.clientX ?? 0, t?.clientY ?? 0)
-      const text = copySelection()
-      if (text) onSelectionCopiedRef.current?.(text)
-    }
-
-    const opts = { capture: true, passive: false } as const
-    container.addEventListener('touchstart', onTouchStart, opts)
-    container.addEventListener('touchmove', onTouchMove, opts)
-    container.addEventListener('touchend', endDrag, opts)
-    container.addEventListener('touchcancel', endDrag, opts)
-    return () => {
-      container.removeAttribute('data-select-mode')
-      if (helper) {
-        helper.inputMode = prevInputMode
-        helper.readOnly = prevReadOnly
-      }
-      container.removeEventListener('touchstart', onTouchStart, opts)
-      container.removeEventListener('touchmove', onTouchMove, opts)
-      container.removeEventListener('touchend', endDrag, opts)
-      container.removeEventListener('touchcancel', endDrag, opts)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectMode])
-
   // Register this terminal's WebSocket as a connection link in the global store.
   // The <ReconnectBanner> aggregates it with the SSE stream + any other
   // open terminals — worst-state wins, so the banner never flickers between two
@@ -367,9 +206,7 @@ export function LiveTerminal({
         ref={containerRef}
         // `touch-action: pan-y` lets a vertical drag inside the terminal produce
         // a native vertical-pan that xterm's `.xterm-viewport` scrollback
-        // consumes. In mobile select-mode the effect above flips the container's
-        // `data-select-mode`, and the scoped CSS rule overrides this to
-        // `touch-action: none` so the same drag drives a text selection instead.
+        // consumes — the canonical mobile scrollback gesture.
         //
         // SCROLL-ON-OPEN FIX (cached-tail crossfade). On open we INSTANTLY show
         // the session's already-cached last-screen capture as a static overlay

@@ -63,10 +63,10 @@ export interface UseLiveTermResult {
   resize(cols: number, rows: number): void
   /** Copy the whole scrollback buffer to the clipboard. */
   copyAll(): void
-  /** Copy the CURRENT xterm selection to the clipboard. Returns the copied text,
-   *  or null when nothing is selected. Same path as the desktop ⌘C chord — used
-   *  by the mobile select-mode (touch can't reach xterm's SelectionService, so
-   *  LiveTerminal synthesizes the drag and calls this on release). */
+  /** Copy the CURRENT xterm selection (made with the desktop shift-click-drag
+   *  the renderer natively supports) to the clipboard. Returns the copied text
+   *  on a confirmed write, `null` when nothing is selected OR the clipboard
+   *  write failed. Same path as the desktop ⌘C / Ctrl+Shift+C chord. */
   copySelection(): string | null
   /** Manual retry for the permanent (`offline`) state — "Tap to retry". */
   retry(): void
@@ -108,10 +108,9 @@ export interface UseLiveTermResult {
  * whether to surface "Copied" honestly. Pre-fix the caller would announce
  * a copy that silently never happened (the user-reported iOS bug).
  *
- * MUST be called synchronously inside a user gesture (touchend, keydown,
- * pointerup). A trailing `setTimeout(…, 0)` is enough to escape the gesture
- * token on iOS 16+ and rejects both APIs — see the touchend path in
- * `LiveTerminal`'s select-mode effect.
+ * MUST be called synchronously inside a user gesture (click, keydown, …). A
+ * trailing `setTimeout(…, 0)` is enough to escape the gesture token on iOS
+ * 16+ and rejects both APIs.
  */
 function writeClipboard(text: string): boolean {
   if (!text) return false

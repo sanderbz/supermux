@@ -65,7 +65,6 @@ import {
 import { MobileDock } from '@/components/focus-mode/dock'
 import { MobileBottomPanel } from '@/components/focus-mode/mobile-bottom-panel'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
-import { useToast } from '@/components/ui/use-toast'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
 import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
@@ -179,26 +178,6 @@ export function MobileFocus() {
   const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
   const blurTerm = React.useCallback(() => termRef.current?.blur(), [])
 
-  // ── Mobile select-mode ──────────────────────────────────────────────────────
-  // Touch can't reach xterm's mouse-driven selection (see LiveTerminal), so a
-  // dock toggle flips this: while on, a one-finger drag in the terminal selects
-  // text (LiveTerminal synthesizes the mouse drag) and copies on release. We
-  // dismiss the keyboard on entry so the whole terminal is reachable for the
-  // drag, and auto-exit + toast once a selection has been copied.
-  const { toast } = useToast()
-  const [selectMode, setSelectMode] = React.useState(false)
-  const toggleSelectMode = React.useCallback(() => {
-    setSelectMode((on) => {
-      const next = !on
-      if (next) blurTerm()
-      return next
-    })
-  }, [blurTerm])
-  const onSelectionCopied = React.useCallback(() => {
-    setSelectMode(false)
-    toast({ message: 'Copied to clipboard' })
-  }, [toast])
-
   // ── Tap-vs-swipe gate for the terminal body (mobile keyboard fix) ───────────
   // The terminal body now scrolls its scrollback on a one-finger swipe (R5). But
   // focusing xterm on EVERY pointer-up also summoned the iOS soft keyboard at the
@@ -248,12 +227,10 @@ export function MobileFocus() {
       const isTap = dist < TAP_SLOP_PX && elapsed < TAP_MAX_MS
       // A genuine tap = "I want to type" → focus xterm so iOS raises the keyboard
       // INSIDE this user gesture. A swipe just scrolled the scrollback — do
-      // nothing (no keyboard). Stopped sessions never focus. In select-mode a tap
-      // is part of selecting, not "I want to type", so it must NOT summon the
-      // keyboard (which would cover the terminal mid-selection).
-      if (isTap && !selectMode && current.status !== 'stopped') focusTerm()
+      // nothing (no keyboard). Stopped sessions never focus.
+      if (isTap && current.status !== 'stopped') focusTerm()
     },
-    [current.status, focusTerm, selectMode],
+    [current.status, focusTerm],
   )
   const onTermPointerCancel = React.useCallback(() => {
     tapRef.current = null
@@ -474,8 +451,6 @@ export function MobileFocus() {
                   onReady={onTermReady}
                   previewAnsi={current.preview_ansi}
                   previewLines={current.preview_lines}
-                  selectMode={selectMode}
-                  onSelectionCopied={onSelectionCopied}
                 />
                 <Joystick
                   enabled={gestureOn}
@@ -521,8 +496,6 @@ export function MobileFocus() {
               onOpenPicker={() => setPickerOpen(true)}
               onOpenSpecials={() => setSpecialsOpen(true)}
               onOpenSnippets={() => setSnippetsOpen(true)}
-              selectMode={selectMode}
-              onToggleSelect={toggleSelectMode}
               // Edit-in-native-editor uses Claude's Ctrl+G bridge; no-op on
               // codex/shell — only surface it for Claude sessions.
               onEdit={current.provider === 'claude' ? onEdit : undefined}
