@@ -26,3 +26,4 @@ plan/
 agent_notes/
 # Local-only notes (private brainstorms / route planning).
 ios.md
+tests/install/.cache/

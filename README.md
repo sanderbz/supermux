@@ -124,26 +124,37 @@ That's the problem supermux solves.
 
 ---
 
-## Quickstart (5 minutes)
+## Quickstart — one line on your VPS
 
-You need a Linux machine you can SSH into (VPS, home server, Raspberry Pi, dev box). The PWA installs on whatever you're holding.
-
-```bash
-git clone https://github.com/sanderbz/supermux
-cd supermux
-bash scripts/setup.sh     # friendly wizard, ~30 seconds
-bash scripts/deploy.sh    # ships over SSH, builds natively on the target, starts the service
-```
-
-`setup.sh` asks the handful of values `deploy.sh` needs (SSH host, service user, ports, Tailscale) with smart defaults — hit Enter through it for the common case. Or set `SUPERMUX_DEPLOY_HOST=user@host` and run `scripts/setup.sh --yes` for a non-interactive deploy.
-
-After deploy, open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push.
-
-**Local dev** (Rust + bun + tmux on your laptop):
+SSH into your server (Ubuntu 22.04+ or Debian 12+) and run:
 
 ```bash
-scripts/dev.sh   # Rust backend on :8823, Vite HMR for the PWA
+curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo bash
 ```
+
+That's it. The installer downloads the prebuilt binary for your CPU (x86_64 or aarch64), provisions an unprivileged `supermux` service user, installs the systemd unit, starts the service, and prints your URL + auth token. ~10 seconds end-to-end. Re-run any time to upgrade; existing data + sessions are preserved.
+
+If you have **Tailscale** already running on the box, supermux auto-exposes itself via `tailscale serve` on `:443` — clean HTTPS, internal-only URL on every device on your tailnet. Otherwise it binds to `127.0.0.1:8824` and you put your own reverse proxy in front.
+
+If `claude` isn't installed for the service user, the installer offers to do that too (one prompt, official native installer — no Node). Then log in once: `sudo -u supermux -i claude` → `/login`.
+
+After install, open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
+
+### Want to inspect before running?
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh -o install.sh
+less install.sh
+sudo bash install.sh
+```
+
+### Other ways
+
+- **Pin a version**: `curl -fsSL .../install.sh | sudo SUPERMUX_VERSION=v0.4.21 bash`
+- **Dry run** (print plan, change nothing): add `--dry-run`
+- **From a clone** (development / private fork): `git clone … && cd supermux && sudo bash install.sh`
+- **Deploy over SSH from your workstation** (advanced — useful for fleet management of multiple boxes): see [`scripts/deploy.sh`](scripts/deploy.sh) and `bash scripts/setup.sh`.
+- **Local development** with HMR: `scripts/dev.sh` (Rust backend on `:8823`, Vite for the PWA).
 
 ---
 
@@ -161,11 +172,11 @@ scripts/dev.sh   # Rust backend on :8823, Vite HMR for the PWA
 - **macOS** — Apple Silicon and Intel (development + local self-host).
 - **Windows** — not supported (relies on Unix-only primitives like `tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
 
-Toolchain floor: `rustc 1.83` and a recent `bun` 1.x. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (`deploy.sh` can install it for you via `SUPERMUX_INSTALL_CLAUDE=1`).
+Toolchain floor (only relevant if you build from source): `rustc 1.83` and a recent `bun` 1.x. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you).
 
 ### Tailscale-ready
 
-If you have `tailscaled` running on the target host, `deploy.sh` auto-detects it and exposes supermux via `tailscale serve` on `:443`. Rename once (`sudo tailscale set --hostname=supermux`) and you have a clean, HTTPS, internal-only URL on every device on your tailnet.
+If `tailscaled` is running on the target host, the installer auto-detects it and exposes supermux via `tailscale serve` on `:443`. Rename once (`sudo tailscale set --hostname=supermux`) and you have a clean, HTTPS, internal-only URL on every device on your tailnet.
 
 ---
 

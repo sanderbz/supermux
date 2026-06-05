@@ -1,0 +1,148 @@
+name: release
+
+# Build prebuilt-binary tarballs + checksums on every `vX.Y.Z` tag push, then
+# attach them to the matching GitHub Release so the one-line install.sh on the
+# README can download + verify them.
+#
+# Layout per tarball (matches what install.sh expects):
+#   supermux-<target>.tar.gz
+#   ├── supermux-server          (release binary, stripped)
+#   ├── etc/
+#   │   ├── systemd/{supermux.service,supermux-deploy.path,supermux-deploy.service}
+#   │   └── supermux-deploy-runner
+#   └── VERSION                  (the tag)
+#
+# checksums.txt aggregates the SHA256 of every tarball.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # to upload assets to the GitHub Release
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04          # oldest glibc we ship for max compat
+            arch_label: x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm      # native ARM runner — no cross-compile
+            arch_label: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install system build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential pkg-config libssl-dev cmake unzip
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('server/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - uses: actions/cache@v4
+        with:
+          path: web/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('web/bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: build frontend (vite → web/dist)
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: embed frontend (web/dist → server/static)
+        run: |
+          rm -rf server/static
+          cp -r web/dist server/static
+          # Force cargo to re-stamp the rust-embed include so the new bundle is
+          # part of this binary.
+          touch server/src/main.rs
+
+      - name: cargo build --release
+        working-directory: server
+        env:
+          SUPERMUX_RELEASE_OK: '1'
+          # Release tags are built on a real CI runner — full opts are fine.
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: stage tarball
+        run: |
+          STAGE="$(mktemp -d)"
+          BIN="server/target/${{ matrix.target }}/release/supermux-server"
+          test -x "$BIN"
+          strip "$BIN"
+          cp "$BIN" "$STAGE/supermux-server"
+          mkdir -p "$STAGE/etc/systemd"
+          cp etc/systemd/supermux.service        "$STAGE/etc/systemd/"
+          cp etc/systemd/supermux-deploy.path    "$STAGE/etc/systemd/"
+          cp etc/systemd/supermux-deploy.service "$STAGE/etc/systemd/"
+          cp etc/supermux-deploy-runner          "$STAGE/etc/"
+          echo "${{ github.ref_name }}" > "$STAGE/VERSION"
+          OUT="supermux-${{ matrix.target }}.tar.gz"
+          tar -czf "$OUT" -C "$STAGE" .
+          sha256sum "$OUT" > "${OUT}.sha256"
+          ls -la "$OUT"*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.target }}
+          path: |
+            supermux-${{ matrix.target }}.tar.gz
+            supermux-${{ matrix.target }}.tar.gz.sha256
+          retention-days: 7
+
+  publish:
+    name: publish to release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: aggregate checksums
+        working-directory: artifacts
+        run: |
+          ls -la
+          # checksums.txt: one `<sha>  <name>` line per tarball. Matches the
+          # `sha256sum -c` format install.sh feeds.
+          cat ./*.sha256 > checksums.txt
+          rm -f ./*.sha256
+          cat checksums.txt
+
+      - name: attach assets to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: artifacts
+        run: |
+          # The release for this tag may already exist (manually cut with
+          # release notes) — `gh release upload --clobber` is idempotent.
+          gh release upload "${{ github.ref_name }}" \
+              ./*.tar.gz checksums.txt \
+              --clobber \
+              --repo "${{ github.repository }}"
