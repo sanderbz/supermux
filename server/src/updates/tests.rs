@@ -50,6 +50,18 @@ fn blocked_reasons_carry_actionable_messages() {
     let json = serde_json::to_value(&r).unwrap();
     assert_eq!(json["kind"], "manual_update_required");
     assert!(json["command"].as_str().unwrap().contains("update.sh"));
+
+    // NoRepoDir: eligible install but no source clone. The frontend renders the
+    // command as a code block (same path as manual_update_required), so pin both
+    // the tag and that the command survives serde.
+    let r = BlockedReason::NoRepoDir {
+        command: "bash scripts/deploy.sh".into(),
+        message: "No source clone on the server. Deploy from your workstation: `bash scripts/deploy.sh`.".into(),
+    };
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["kind"], "no_repo_dir");
+    assert!(json["command"].as_str().unwrap().contains("deploy.sh"));
+    assert!(json["message"].as_str().unwrap().contains("clone"));
 }
 
 #[test]

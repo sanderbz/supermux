@@ -7,7 +7,6 @@
 //! on them without spelunking the source.
 
 use std::convert::Infallible;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
@@ -91,19 +90,21 @@ async fn post_start(State(state): State<AppState>) -> Result<impl IntoResponse, 
             .into_response());
     }
 
-    let repo = std::env::var("SUPERMUX_REPO_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            // Match preflight's resolution: production self-host default first.
-            let prod = PathBuf::from("/opt/projects/supermux");
-            if prod.join(".git").exists() { Some(prod) } else { None }
-        })
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!(
-                "cannot resolve the supermux repo dir; set SUPERMUX_REPO_DIR to override"
-            ))
-        })?;
+    // Resolve via the SAME helper preflight uses, so the two can never disagree
+    // (a divergent 2-step copy here used to 500 on installs preflight had passed
+    // because it lacked preflight's CWD-walk fallback). If it's still None we
+    // refuse with 409: preflight above should already have surfaced NoRepoDir,
+    // so this is a belt-and-suspenders guard that never returns a 500.
+    let Some(repo) = preflight::detect_repo_dir() else {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "error": "update blocked: no source clone on the server to build from.",
+            })),
+        )
+            .into_response());
+    };
 
     let job_id = state.updates.jobs.create();
     let registry = state.updates.jobs.clone();

@@ -429,7 +429,7 @@ function BlockedRow({ reason }: { reason: BlockedReason }) {
       <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
       <div className="flex flex-col gap-1 text-[13px]">
         <p className="text-foreground">{reason.message}</p>
-        {reason.kind === 'manual_update_required' ? (
+        {reason.kind === 'manual_update_required' || reason.kind === 'no_repo_dir' ? (
           <code className="w-fit rounded bg-muted px-1.5 py-0.5 font-mono text-[12px] text-foreground">
             {reason.command}
           </code>

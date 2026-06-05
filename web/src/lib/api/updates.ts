@@ -48,6 +48,7 @@ export type BlockedReason =
   | { kind: 'no_latest_release'; message: string }
   | { kind: 'path_unit_missing'; message: string }
   | { kind: 'manual_update_required'; command: string; message: string }
+  | { kind: 'no_repo_dir'; command: string; message: string }
   | { kind: 'docker_update_unsupported'; message: string }
   | { kind: 'not_privileged_to_write'; message: string }
 

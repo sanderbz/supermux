@@ -17,7 +17,7 @@ use super::version::{self, VersionInfo};
 /// Where the repo lives. Resolved at runtime via several heuristics so the
 /// preflight works whether the binary is launched from the clone (dev) or
 /// installed at `/usr/local/bin/supermux-server` (systemd).
-fn detect_repo_dir() -> Option<PathBuf> {
+pub(crate) fn detect_repo_dir() -> Option<PathBuf> {
     // 1. Explicit override: the operator can set `SUPERMUX_REPO_DIR=/path` in
     //    the unit's `Environment=` line if their layout is non-standard.
     if let Ok(p) = std::env::var("SUPERMUX_REPO_DIR") {
@@ -131,6 +131,13 @@ pub enum BlockedReason {
     /// We're a bare-binary / dev install. Refuse the auto-update and show
     /// the exact command to run by hand.
     ManualUpdateRequired { command: String, message: String },
+    /// Eligible install (systemd + path-unit) but no source clone resolves on
+    /// the host, so there's nothing to fast-forward + build. Carries the
+    /// deploy-from-workstation command; the message also explains how to enable
+    /// 1-click updates (clone the repo on the server). Without this, preflight
+    /// would emit no blocker and the UI would show an enabled "Update now" that
+    /// 500s on click (the start handler can't resolve a repo either).
+    NoRepoDir { command: String, message: String },
     /// Docker install: future scope.
     DockerUpdateUnsupported { message: String },
     /// Cannot create the marker file under `<data>/deploy/` (permissions /
@@ -233,7 +240,24 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
             });
         }
         InstallMode::Systemd { path_unit_present: true } => {
-            // Eligible: fall through to the git/disk/tool checks.
+            // Eligible install shape, but the 1-click path also needs a source
+            // clone to fast-forward + build. A binary-only deploy (e.g. via
+            // scripts/deploy.sh, which ships a `git archive` into a non-`.git`
+            // build dir) has none, so block here with an actionable manual
+            // path instead of letting the git/disk/tool checks below silently
+            // skip on `repo == None` and leave the button enabled (it would
+            // then 500 on click). The other install modes already emit their
+            // own manual/unsupported reasons above.
+            if repo.is_none() {
+                let cmd = "bash scripts/deploy.sh".to_string();
+                blocked.push(BlockedReason::NoRepoDir {
+                    command: cmd.clone(),
+                    message: format!(
+                        "An update is available, but supermux can't auto-update here: there's no source clone on the server to build from. Deploy from your workstation instead: `{cmd}`. To enable 1-click updates on this server, clone the repo here (e.g. into /opt/projects/supermux) on branch `main`."
+                    ),
+                });
+            }
+            // Otherwise fall through to the git/disk/tool checks.
         }
     }
 
