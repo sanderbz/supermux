@@ -40,6 +40,15 @@ REPO_NAME="supermux"
 RELEASES_BASE="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases"
 RAW_BASE="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}"
 
+# Optional Authorization header for the GitHub fetches. The public-repo case
+# leaves this empty (no auth needed). Private repos / forks behind a private
+# fork can export `SUPERMUX_GITHUB_TOKEN=ghp_…` so the same one-liner works
+# without a public release. Same env var the in-app updater honours.
+GH_AUTH_HEADER=()
+if [ -n "${SUPERMUX_GITHUB_TOKEN:-}" ]; then
+  GH_AUTH_HEADER=(-H "Authorization: Bearer ${SUPERMUX_GITHUB_TOKEN}")
+fi
+
 SUPERMUX_USER="supermux"
 SUPERMUX_BIN="/usr/local/bin/supermux-server"
 SUPERMUX_RUNNER="/usr/local/sbin/supermux-deploy-runner"
@@ -84,7 +93,32 @@ while [ $# -gt 0 ]; do
     --version=*)       VERSION="${1#--version=}" ;;
     --no-start)        NO_START=1 ;;
     --help|-h)
-      sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+      # When invoked via `curl … | sudo bash`, `$0` is `bash` — there is no
+      # file to read. Print an embedded summary instead. When run as a real
+      # file the comment header at the top of this script is the canonical
+      # docs; honour that for `bash install.sh --help` callers.
+      if [ -f "$0" ] && [ -r "$0" ]; then
+        sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+      else
+        cat <<'HELP'
+supermux installer — usage:
+  curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo bash
+
+Flags:
+  --dry-run         print the plan, change nothing
+  --version <tag>   pin a release (default: latest)
+  --no-start        install but don't enable + restart
+  --help            this message
+
+Env vars:
+  SUPERMUX_VERSION         pin a tag
+  SUPERMUX_INTERNAL_PORT   loopback port (default 8824)
+  SUPERMUX_PROJECT_DIRS    `:`-joined dirs (default $HOME/projects)
+  SUPERMUX_USE_TAILSCALE   1 | 0 (default: auto-detect)
+  SUPERMUX_INSTALL_CLAUDE  ask | 1 | 0 (default: ask)
+  SUPERMUX_GITHUB_TOKEN    needed only for private repos / forks
+HELP
+      fi
       exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -157,22 +191,25 @@ require_tmux() {
   ok "tmux installed: $(tmux -V)"
 }
 
-port_free() {
-  # Fast check: anything listening on $INTERNAL_PORT on loopback?
+port_busy() {
+  # Returns 0 (true) when SOMETHING is listening on $INTERNAL_PORT, 1 (false)
+  # otherwise. Anchor the awk pattern with `==` on the listen-address column
+  # rather than a shell-escaped regex tail (`\$` in a double-quoted string is
+  # literal, not the end-of-line anchor it was meant to be).
   if command -v ss >/dev/null 2>&1; then
     ss -lntH "( sport = :${INTERNAL_PORT} )" 2>/dev/null | grep -q .
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -lntp 2>/dev/null | awk -v p=":${INTERNAL_PORT}\$" '$4 ~ p { found=1 } END { exit !found }'
+    netstat -lntp 2>/dev/null \
+      | awk -v p=":${INTERNAL_PORT}" '{ split($4, a, ":"); if (a[length(a)] == p+0) found=1 } END { exit !found }'
   else
-    return 1  # can't tell → assume free
+    return 1  # can't tell → assume free; install attempts and surfaces the conflict at start
   fi
 }
 
 preflight_port() {
   # Existing supermux install on this port is fine — we'll restart it. Only
-  # bail when a DIFFERENT process holds the port. We detect "ours" by checking
-  # the unit ownership of the listener.
-  if port_free; then
+  # bail when a DIFFERENT process holds the port.
+  if port_busy; then
     if systemctl is-active --quiet supermux 2>/dev/null; then
       ok "port ${INTERNAL_PORT}: held by existing supermux service (will upgrade)"
     else
@@ -193,12 +230,13 @@ resolve_version() {
   fi
   log "resolving latest release..."
   # GitHub redirects /releases/latest → /releases/tag/<tag>. Pull the tag
-  # from the Location header — no API call, no jq, no GH_TOKEN.
+  # from the Location header — no API call, no jq. Private repos / forks
+  # need SUPERMUX_GITHUB_TOKEN; the public-repo case sends no auth header.
   local loc
   loc="$(curl -fsS --proto '=https' --tlsv1.2 -o /dev/null -w '%{redirect_url}' \
-         "${RELEASES_BASE}/latest" || true)"
+         "${GH_AUTH_HEADER[@]}" "${RELEASES_BASE}/latest" || true)"
   VERSION="${loc##*/}"
-  [ -n "$VERSION" ] || die "could not resolve latest release tag (network?)."
+  [ -n "$VERSION" ] || die "could not resolve latest release tag. Private repo? Set SUPERMUX_GITHUB_TOKEN."
   case "$VERSION" in v*) : ;; *) die "unexpected tag format: ${VERSION}" ;; esac
   ok "version: ${VERSION} (latest)"
 }
@@ -239,17 +277,24 @@ fetch_tarball() {
 
   log "downloading ${name}..."
   curl -fSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
+       "${GH_AUTH_HEADER[@]}" \
        -o "$TARBALL" "$url" \
     || die "download failed: ${url}"
 
   log "downloading checksums.txt..."
   curl -fSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
+       "${GH_AUTH_HEADER[@]}" \
        -o "${stage}/checksums.txt" "$sums_url" \
     || die "download failed: ${sums_url}"
 
   log "verifying sha256..."
-  # checksums.txt has one entry per asset:  <sha>  <name>
-  ( cd "$stage" && grep "  ${name}\$" checksums.txt | sha256sum -c - ) \
+  # checksums.txt has one entry per asset: `<sha>  <name>`. Anchor with awk
+  # (regex-safe: `==` exact match on the filename column, no backslash-escape
+  # surprises in BRE — the earlier `grep "  …\$"` form silently matched zero
+  # lines because `\$` in a double-quoted string is literal `\$`, not the
+  # end-of-line anchor it was meant to be).
+  ( cd "$stage" \
+    && awk -v n="$name" '$2 == n' checksums.txt | sha256sum -c - ) \
     || die "sha256 verification FAILED for ${name}. Refusing to install."
   ok "checksum verified"
 }
@@ -409,8 +454,12 @@ install_binary() {
   fi
   run install -m 0755 -o root -g root "${EXTRACT_DIR}/supermux-server" "${SUPERMUX_BIN}.new"
   run mv -f "${SUPERMUX_BIN}.new" "$SUPERMUX_BIN"
-  # Write installed-version marker — the SOLE source of truth for the
-  # installer's "what's running here" question on subsequent re-runs.
+}
+
+# Commit the version marker. Called AFTER `verify_health` succeeds — if the
+# service fails to come up we leave the previous version recorded so a re-run
+# correctly retries the install instead of short-circuiting to noop.
+stamp_version() {
   run install -d -m 0755 -o root -g root "$SUPERMUX_SHARE"
   if [ "${DRY_RUN:-0}" = "1" ]; then
     printf '%s[dry]%s      write %s ← %s\n' "$C_DIM" "$C_RST" "$SUPERMUX_VERSION_FILE" "$VERSION" >&2
@@ -496,7 +545,11 @@ maybe_claude() {
   fi
   if [ "$mode" = "ask" ] && [ -t 0 ]; then
     printf '%sInstall Claude Code now for %s? [Y/n] %s' "$C_BOLD" "$SUPERMUX_USER" "$C_RST" >&2
-    local ans; read -r ans
+    # `local ans=""` (not `local ans`) — `set -u` would otherwise fire on the
+    # `case "$ans"` if the user hits Ctrl-D and `read` returns with `ans`
+    # never initialised.
+    local ans=""
+    read -r ans || true
     case "$ans" in n|N|no|NO) mode=0 ;; *) mode=1 ;; esac
   elif [ "$mode" = "ask" ]; then
     mode=0  # non-interactive: don't auto-install
@@ -586,6 +639,8 @@ main() {
   install_units
   start_service
   verify_health
+  stamp_version  # AFTER health: a failed start leaves the marker untouched,
+                 # so a re-run retries the install instead of short-circuiting.
 
   maybe_tailscale
   maybe_claude
