@@ -1,0 +1,98 @@
+name: install-smoke
+
+# Run the one-line installer's test scenarios on real systemd containers,
+# every push/PR. Uses `jrei/systemd-*` images that boot full systemd as PID 1
+# under --privileged (the documented + only practical way to test systemd
+# behavior in CI). The locally-built tarball — built once per workflow — is
+# passed to each container via SUPERMUX_TARBALL_FROM so the scenarios exercise
+# the installer end-to-end without depending on a GitHub Release roundtrip.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'tests/install/**'
+      - 'etc/systemd/**'
+      - 'etc/supermux-deploy-runner'
+      - '.github/workflows/install-smoke.yml'
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'tests/install/**'
+      - 'etc/systemd/**'
+      - 'etc/supermux-deploy-runner'
+      - '.github/workflows/install-smoke.yml'
+
+jobs:
+  build-tarball:
+    name: build local tarball
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential pkg-config libssl-dev cmake unzip
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: smoke-cargo-${{ hashFiles('server/Cargo.lock') }}
+          restore-keys: smoke-cargo-
+
+      - uses: actions/cache@v4
+        with:
+          path: web/node_modules
+          key: smoke-bun-${{ hashFiles('web/bun.lock') }}
+          restore-keys: smoke-bun-
+
+      - name: build tarball (release binary + etc/ + VERSION)
+        run: bash tests/install/build-local-tarball.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: supermux-local-tarball
+          path: tests/install/.cache/supermux-local.tar.gz
+          retention-days: 1
+
+  smoke:
+    name: ${{ matrix.distro }} / ${{ matrix.scenario }}
+    needs: build-tarball
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - debian-12
+        scenario:
+          - dry-run
+          - fresh
+          - upgrade
+          - port-conflict
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: supermux-local-tarball
+          path: tests/install/.cache/
+
+      - name: run scenario
+        env:
+          SUPERMUX_TARBALL_FROM: ${{ github.workspace }}/tests/install/.cache/supermux-local.tar.gz
+        run: bash tests/install/run-in-docker.sh ${{ matrix.distro }} ${{ matrix.scenario }}
