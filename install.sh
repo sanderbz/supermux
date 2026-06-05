@@ -182,11 +182,19 @@ require_curl() {
 }
 
 require_tmux() {
-  command -v tmux >/dev/null 2>&1 && { ok "tmux: $(tmux -V)"; return 0; }
+  if command -v tmux >/dev/null 2>&1; then
+    ok "tmux: $(tmux -V)"
+    return 0
+  fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    # Dry-run: `run apt-get install` would skip; don't enforce the post-check.
+    printf '%s[dry]%s      tmux missing — would install via apt\n' "$C_DIM" "$C_RST" >&2
+    return 0
+  fi
   log "tmux missing — installing via apt..."
   export DEBIAN_FRONTEND=noninteractive
-  run apt-get update -qq
-  run apt-get install -y -qq tmux
+  apt-get update -qq
+  apt-get install -y -qq tmux
   command -v tmux >/dev/null 2>&1 || die "tmux install failed."
   ok "tmux installed: $(tmux -V)"
 }
@@ -226,6 +234,18 @@ resolve_version() {
   if [ -n "$VERSION" ]; then
     case "$VERSION" in v*) : ;; *) VERSION="v${VERSION}" ;; esac
     ok "version: ${VERSION} (pinned)"
+    return 0
+  fi
+  if [ -n "${SUPERMUX_TARBALL_FROM:-}" ]; then
+    # Local-tarball test mode: read the version label out of the tarball
+    # itself so we don't make a network call (and so we don't fail on
+    # private repos where /releases/latest 404s without a token). The
+    # tarball ships a top-level VERSION file by convention.
+    local tv
+    tv="$(tar -xzOf "$SUPERMUX_TARBALL_FROM" ./VERSION 2>/dev/null | head -1 | tr -d '\r\n')"
+    [ -n "$tv" ] || die "SUPERMUX_TARBALL_FROM tarball has no VERSION file."
+    VERSION="$tv"
+    ok "version: ${VERSION} (from local tarball)"
     return 0
   fi
   log "resolving latest release..."
