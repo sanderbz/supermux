@@ -544,7 +544,7 @@ start_service() {
 }
 
 verify_health() {
-  if [ "$NO_START" = "1" ]; then
+  if [ "$NO_START" = "1" ] || [ "${DRY_RUN:-0}" = "1" ]; then
     return 0
   fi
   log "verifying health on http://127.0.0.1:${INTERNAL_PORT}${HEALTH_PATH} ..."
@@ -564,6 +564,10 @@ verify_health() {
 # ── Tailscale + Claude (optional, mirrors deploy.sh) ────────────────────────
 
 maybe_tailscale() {
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    ok "Tailscale: skipped (dry-run)"
+    return 0
+  fi
   local want="${SUPERMUX_USE_TAILSCALE:-}"
   if [ -z "$want" ]; then
     if command -v tailscale >/dev/null 2>&1 && systemctl is-active --quiet tailscaled 2>/dev/null; then
@@ -588,7 +592,24 @@ maybe_tailscale() {
 }
 
 maybe_claude() {
-  if sudo -u "$SUPERMUX_USER" -H bash -lc 'command -v claude >/dev/null 2>&1'; then
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    ok "Claude Code: skipped (dry-run)"
+    return 0
+  fi
+  # Use whichever drop-privs tool the host has. `sudo` is conventional but
+  # `runuser` ships with util-linux on every distro we target — it's the
+  # canonical fallback when sudo isn't installed (minimal containers + some
+  # cloud images skip sudo by default).
+  local as_user
+  if command -v sudo >/dev/null 2>&1; then
+    as_user=(sudo -u "$SUPERMUX_USER" -H bash -lc)
+  elif command -v runuser >/dev/null 2>&1; then
+    as_user=(runuser -u "$SUPERMUX_USER" -- bash -lc)
+  else
+    warn "neither sudo nor runuser is available — skipping Claude Code check."
+    return 0
+  fi
+  if "${as_user[@]}" 'command -v claude >/dev/null 2>&1'; then
     ok "Claude Code: already installed for ${SUPERMUX_USER}"
     return 0
   fi
@@ -610,9 +631,8 @@ maybe_claude() {
   fi
   if [ "$mode" = "1" ]; then
     log "installing Claude Code for ${SUPERMUX_USER} (official native installer)..."
-    run sudo -u "$SUPERMUX_USER" -H bash -lc \
-      'curl -fsSL https://claude.ai/install.sh | bash' \
-      || warn "Claude installer failed. Install manually: sudo -u ${SUPERMUX_USER} -i bash -c 'curl -fsSL https://claude.ai/install.sh | bash'"
+    run "${as_user[@]}" 'curl -fsSL https://claude.ai/install.sh | bash' \
+      || warn "Claude installer failed. Try manually: ${as_user[*]} 'curl -fsSL https://claude.ai/install.sh | bash'"
   fi
   warn "after install, log in once with: ${C_BOLD}sudo -u ${SUPERMUX_USER} -i claude${C_RST} → /login"
 }

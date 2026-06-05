@@ -30,6 +30,23 @@ esac
 OUT="${CACHE}/supermux-local.tar.gz"
 echo "[build] target=${TARGET}"
 
+# Build frontend (bun install + vite) and embed into server/static so the
+# binary serves the PWA. The release.yml workflow does the same thing — this
+# mirrors it byte-for-byte so the local tarball is functionally identical to
+# what a real release ships.
+echo "[build] bun install + vite build (frontend)..."
+(
+  cd "${ROOT}/web"
+  bun install --frozen-lockfile --silent
+  bun run build >/dev/null
+)
+echo "[build] embedding frontend → server/static..."
+rm -rf "${ROOT}/server/static"
+cp -r "${ROOT}/web/dist" "${ROOT}/server/static"
+# Force a rebuild of the rust-embed include so the new bundle is part of the
+# binary on every invocation (matches the workflow's `touch server/src/main.rs`).
+touch "${ROOT}/server/src/main.rs"
+
 # Build (release mode, no `--release` flag override needed: the host's cargo
 # wrapper allows release when SUPERMUX_RELEASE_OK=1).
 echo "[build] cargo build --release (this can take a few minutes on a cold cache)..."
