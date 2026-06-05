@@ -335,14 +335,28 @@ extract_tarball() {
 ensure_user() {
   if id "$SUPERMUX_USER" >/dev/null 2>&1; then
     ok "service user: ${SUPERMUX_USER} (already exists)"
+    USER_HOME="$(getent passwd "$SUPERMUX_USER" | awk -F: '{print $6}')"
+    [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ] \
+      || die "could not resolve home directory for ${SUPERMUX_USER}."
   else
-    log "creating service user '${SUPERMUX_USER}'..."
-    run useradd --create-home --shell /bin/bash --comment "supermux service user" "$SUPERMUX_USER"
-    ok "service user: ${SUPERMUX_USER} (created)"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      # Dry-run: useradd is skipped (wrapped in `run`), so getent would
+      # return empty and break every downstream step. Predict the home
+      # `useradd --create-home` would land on (matches Debian/Ubuntu
+      # defaults: /home/<name>) so the rest of the dry-run can produce
+      # a meaningful plan.
+      USER_HOME="/home/${SUPERMUX_USER}"
+      printf '%s[dry]%s      would create service user %s with home %s\n' \
+        "$C_DIM" "$C_RST" "$SUPERMUX_USER" "$USER_HOME" >&2
+    else
+      log "creating service user '${SUPERMUX_USER}'..."
+      useradd --create-home --shell /bin/bash --comment "supermux service user" "$SUPERMUX_USER"
+      USER_HOME="$(getent passwd "$SUPERMUX_USER" | awk -F: '{print $6}')"
+      [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ] \
+        || die "could not resolve home directory for ${SUPERMUX_USER} after useradd."
+      ok "service user: ${SUPERMUX_USER} (created)"
+    fi
   fi
-  USER_HOME="$(getent passwd "$SUPERMUX_USER" | awk -F: '{print $6}')"
-  [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ] \
-    || die "could not resolve home directory for ${SUPERMUX_USER}."
   DATA_DIR="${USER_HOME}/.supermux"
   PROJECTS_RAW="${SUPERMUX_PROJECT_DIRS:-${USER_HOME}/projects}"
 }
@@ -361,6 +375,26 @@ ensure_dirs() {
       run install -d -m 0755 -o "$SUPERMUX_USER" -g "$SUPERMUX_USER" "$d"
     fi
   done
+
+  # Write config.toml with the configured bind address. Only when absent so
+  # re-runs don't rotate the auth token (server seeds it on first launch only
+  # if no token file exists). Without this file supermux-server falls back to
+  # its built-in default (127.0.0.1:8823), the unit then can't be reached on
+  # our configured port, and health-check times out — same shape as the
+  # CI-matrix "did not become healthy" failure.
+  local cfg="${DATA_DIR}/config.toml"
+  if [ ! -f "$cfg" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+    printf 'bind = "127.0.0.1:%s"\n' "$INTERNAL_PORT" > "$cfg"
+    chown "${SUPERMUX_USER}:${SUPERMUX_USER}" "$cfg"
+    chmod 0600 "$cfg"
+    ok "wrote ${cfg} (bind 127.0.0.1:${INTERNAL_PORT})"
+  elif [ "${DRY_RUN:-0}" = "1" ] && [ ! -f "$cfg" ]; then
+    printf '%s[dry]%s      write %s ← bind = "127.0.0.1:%s"\n' \
+      "$C_DIM" "$C_RST" "$cfg" "$INTERNAL_PORT" >&2
+  else
+    ok "config: ${cfg} (preserved)"
+  fi
+
   ok "data dir: ${DATA_DIR}"
   ok "project dirs: ${PROJECTS_RAW}"
 }
