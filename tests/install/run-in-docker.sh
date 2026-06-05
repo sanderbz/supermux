@@ -44,8 +44,8 @@ docker run -d --rm \
   --name "$NAME" \
   --privileged \
   --cgroupns=host \
-  --tmpfs /tmp \
-  --tmpfs /run \
+  --tmpfs /tmp:rw,exec,nosuid,nodev \
+  --tmpfs /run:rw,exec,nosuid,nodev \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   -v "${ROOT}:/src:ro" \
   -v "${TARBALL}:/cache/supermux.tar.gz:ro" \
