@@ -280,13 +280,30 @@ function RecallPanel({
   const displayGroups =
     fallbackEntries.length > 0 ? groupBySession(fallbackEntries) : groups
 
-  const scrollClass =
-    variant === 'popover'
-      ? 'max-h-[420px] overflow-y-auto'
-      : 'flex-1 overflow-y-auto'
+  // Layout contract:
+  //   popover (desktop) — root is content-sized inside a fixed-width Radix
+  //     Popover; scroll container caps its own height. No Vaul, no drag.
+  //   sheet   (mobile)  — root fills the Vaul Drawer.Content's flex column
+  //     (h-full + flex-1 chain). The scroll container is `min-h-0 flex-1`
+  //     so it claims the remaining height AFTER tabs/search/footer, and
+  //     `data-vaul-no-drag` tells Vaul's shouldDrag to short-circuit on
+  //     pointerdowns landing here — otherwise the sheet's drag-to-dismiss
+  //     wins over native scroll and the list freezes (the exact bug this
+  //     fixes). Pattern matches `snippet-panel.tsx` + `quick-keys-sheet.tsx`.
+  const isSheet = variant === 'sheet'
+  const scrollClass = isSheet
+    ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain touch-pan-y'
+    : 'max-h-[420px] overflow-y-auto'
 
   return (
-    <div className="flex w-full flex-col gap-2.5">
+    <div
+      className={cn(
+        'flex w-full flex-col gap-2.5',
+        // Fill the Drawer.Content's flex column on mobile so the inner
+        // flex-1 scroll area has a parent that actually distributes height.
+        isSheet && 'h-full min-h-0',
+      )}
+    >
       {/* Tabs row — Session is the default; Project widens to the cwd. */}
       <Tabs
         value={scope}
@@ -316,7 +333,12 @@ function RecallPanel({
       </div>
 
       {/* Entries list */}
-      <div className={cn(scrollClass, '-mx-1 px-1')}>
+      <div
+        className={cn(scrollClass, '-mx-1 px-1')}
+        // Vaul opt-out: pointerdowns inside this scroller don't start a
+        // sheet drag, so finger scroll wins. Inert on desktop (no Vaul).
+        {...(isSheet ? { 'data-vaul-no-drag': '' } : {})}
+      >
         {recall.isError && (
           <div className="px-1 py-6 text-center text-[12px] text-muted-foreground">
             Couldn’t load history.
@@ -778,9 +800,15 @@ export function LastSendSheet({
           )}
         >
           <div className="mx-auto mt-1.5 h-[5px] w-9 shrink-0 rounded-[2.5px] bg-muted-foreground/30" />
-          <Drawer.Title className="px-4 pb-1 pt-3 text-[13px] font-semibold text-muted-foreground">
+          <Drawer.Title className="shrink-0 px-4 pb-1 pt-3 text-[13px] font-semibold text-muted-foreground">
             Prompt history
           </Drawer.Title>
+          {/* Padding shell that forwards the flex-1 sizing chain to
+              RecallPanel. RecallPanel's root is `h-full min-h-0 flex-col` so
+              its internal `flex-1 overflow-y-auto` list actually claims the
+              free height between tabs/search/footer. Breaking this chain
+              (e.g. by removing `min-h-0` here) collapses the inner scroller
+              and gives the "list locked, sheet drags instead" symptom. */}
           <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-1">
             <RecallPanel
               sessionName={session.name}
