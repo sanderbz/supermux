@@ -86,6 +86,72 @@ export interface UseLiveTermResult {
   scrollToBottom(): void
 }
 
+// ── Clipboard ────────────────────────────────────────────────────────────────
+
+/**
+ * Write `text` to the clipboard from a user gesture.
+ *
+ * Two parallel paths — whichever lands first wins, and we no longer fire and
+ * forget:
+ *
+ *   1. `document.execCommand('copy')` via a transient off-screen `<textarea>`.
+ *      Synchronous, returns a success boolean, works in installed iOS PWAs
+ *      and on Android Chrome — the only clipboard API guaranteed under the
+ *      strict user-activation gate Safari/WKWebView enforces. Deprecated but
+ *      still implemented everywhere we ship.
+ *   2. `navigator.clipboard.writeText()` — modern, async, allowed everywhere
+ *      it isn't behind permissions. We let it run; if it rejects (iOS PWA's
+ *      usual response when called outside the gesture window) the catch is
+ *      a no-op because (1) already covered us.
+ *
+ * Returns the boolean result of (1) — toast handlers use this to decide
+ * whether to surface "Copied" honestly. Pre-fix the caller would announce
+ * a copy that silently never happened (the user-reported iOS bug).
+ *
+ * MUST be called synchronously inside a user gesture (touchend, keydown,
+ * pointerup). A trailing `setTimeout(…, 0)` is enough to escape the gesture
+ * token on iOS 16+ and rejects both APIs — see the touchend path in
+ * `LiveTerminal`'s select-mode effect.
+ */
+function writeClipboard(text: string): boolean {
+  if (!text) return false
+  let ok = false
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    // `readonly` keeps iOS from popping the soft keyboard for our hidden node,
+    // and is also the documented hint that this textarea isn't user-editable.
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '-9999px'
+    ta.style.left = '0'
+    ta.style.opacity = '0'
+    ta.style.pointerEvents = 'none'
+    document.body.appendChild(ta)
+    const prevActive = document.activeElement as HTMLElement | null
+    ta.focus()
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    }
+    document.body.removeChild(ta)
+    // Restore focus so we don't strand it on a removed node — the host page's
+    // own focus management owns where it lands; we just shouldn't break it.
+    prevActive?.focus?.()
+  } catch {
+    /* deliberately silent */
+  }
+  // Belt-and-suspenders modern path. If the gesture is fresh, it succeeds and
+  // overwrites the clipboard with the same content. If it rejects (iOS PWA
+  // outside-gesture, permission denied, insecure origin), the execCommand
+  // result above is still authoritative.
+  navigator.clipboard?.writeText(text).catch(() => {})
+  return ok
+}
+
 // ── Tunables ─────────────────────────────────────────────────────────────────
 const BASE_BACKOFF_MS = 300
 const MAX_BACKOFF_MS = 30_000
@@ -422,15 +488,19 @@ export function useLiveTerm(
       lines.push(buf.getLine(i)?.translateToString(true) ?? '')
     }
     const text = lines.join('\n').replace(/\n+$/, '\n')
-    void navigator.clipboard?.writeText(text)
+    writeClipboard(text)
   }, [])
 
   const copySelection = React.useCallback((): string | null => {
     const term = termRef.current
     if (!term || !term.hasSelection()) return null
     const sel = term.getSelection()
-    if (sel) void navigator.clipboard?.writeText(sel)
-    return sel || null
+    if (!sel) return null
+    // Return the text ONLY when the synchronous clipboard write actually
+    // succeeded — the caller uses this to decide whether to announce
+    // "Copied". Pre-fix the return-on-selection-present path fired the
+    // toast even when iOS had silently rejected the write.
+    return writeClipboard(sel) ? sel : null
   }, [])
 
   const retry = React.useCallback(() => {
@@ -859,7 +929,7 @@ export function useLiveTerm(
         if (isCopyChord && term.hasSelection()) {
           if (e.type === 'keydown') {
             const sel = term.getSelection()
-            if (sel) void navigator.clipboard?.writeText(sel)
+            if (sel) writeClipboard(sel)
             e.preventDefault()
           }
           return false

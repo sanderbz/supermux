@@ -312,13 +312,18 @@ export function LiveTerminal({
       e.preventDefault()
       e.stopPropagation()
       const t = e.changedTouches[0]
+      // Synchronous mouseup → xterm's SelectionService.handleMouseUp commits
+      // the selection inside this same call stack (dispatchEvent is
+      // synchronous), so `copySelection()` directly below reads the freshly
+      // committed text. No setTimeout: a 0ms defer escapes iOS Safari /
+      // WKWebView's user-activation window, after which BOTH
+      // `navigator.clipboard.writeText()` and `document.execCommand('copy')`
+      // silently fail in installed PWAs. The whole copy must finish before
+      // touchend's handler returns. Tested fix for the "toast says Copied
+      // but iOS clipboard is empty" bug.
       fireMouse(document, 'mouseup', t?.clientX ?? 0, t?.clientY ?? 0)
-      // Defer the read a tick so xterm's mouseup handler commits the selection
-      // before we copy it.
-      window.setTimeout(() => {
-        const text = copySelection()
-        if (text) onSelectionCopiedRef.current?.(text)
-      }, 0)
+      const text = copySelection()
+      if (text) onSelectionCopiedRef.current?.(text)
     }
 
     const opts = { capture: true, passive: false } as const
