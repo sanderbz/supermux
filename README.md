@@ -34,6 +34,14 @@ That's the problem supermux solves.
 - **A full harness, not a thin remote.** Start sessions, stop them, restart with a flag, resume an older conversation, rename inline, archive — all from the UI.
 - **Native-feeling PWA.** Installs on macOS, Windows, iPhone, Android. iOS gets real push notifications, dictation in the prompt editor, drag-and-drop file uploads on desktop.
 
+<p align="center">
+  <a href="docs/screenshots/overview-desktop.png"><img src="docs/screenshots/overview-desktop.png" alt="supermux overview on desktop" width="580"></a>
+  &nbsp;
+  <a href="docs/screenshots/overview-mobile.png"><img src="docs/screenshots/overview-mobile.png" alt="supermux overview on iPhone" width="220"></a>
+</p>
+
+<p align="center"><em>Same dashboard. Every device. Tap to enlarge.</em></p>
+
 ## What you can do
 
 ### See every agent, jump anywhere
@@ -41,6 +49,8 @@ That's the problem supermux solves.
 - **Quick peek** — hover a tile (desktop) or tap a pill (mobile) to read the latest output, type a reply, or hit a quick action without leaving the overview.
 - **Focus mode** — tap any tile to zoom into a keyboard-captured xterm.js terminal (desktop) or a detented bottom-sheet (mobile). `⌘1..9` jumps instantly between sessions.
 - **⌘K command palette** — fuzzy search across sessions, board issues, slash commands, MCP tools, and Claude Code skills.
+
+<p align="center"><a href="docs/screenshots/focus-mode.png"><img src="docs/screenshots/focus-mode.png" alt="Focus mode with sidebar of sessions and live terminal" width="780"></a></p>
 
 ### Notifications that find you
 - **Real push notifications** when Claude finishes, asks a question, or stops. Works on iOS too — install the PWA, allow notifications, walk away from your machine.
@@ -72,6 +82,8 @@ That's the problem supermux solves.
 - **Scheduler** — cron and "every Nm/Nh" jobs. Schedule a daily `claude --resume` with a prompt. iCal feed. Live job list.
 - **Kanban board** — session-scoped issue tracker. Sessions can comment, mark issues done, attach commits, or ask for input via per-session hook tokens. Wire it into your agent flow and let Claude pull its own next task.
 - **Schedules and board updates trigger push notifications** when something needs you.
+
+<p align="center"><a href="docs/screenshots/board.png"><img src="docs/screenshots/board.png" alt="Kanban board — To do, Doing, Done — with an issue assigned to a session" width="780"></a></p>
 
 ### Reach across machines
 - **Add any host you can SSH to** under Settings → Hosts (Tailscale, VPN, public DNS, reverse tunnel). supermux multiplexes one SSH ControlMaster per host.
