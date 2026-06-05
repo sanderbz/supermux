@@ -130,7 +130,9 @@ async fn recall_session_scope_returns_paired_entries() {
     let proj = claude_dir.join("projects").join(&encoded);
     std::fs::create_dir_all(&proj).unwrap();
 
-    // Single conversation with two paired turns + an ai-title.
+    // Single conversation with two paired turns + an ai-title + a
+    // background `<task-notification>` event that should NOT appear in the
+    // default view (regression pin for the "noisy XML in recall" report).
     let cc = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     write_jsonl(
         &proj,
@@ -140,6 +142,12 @@ async fn recall_session_scope_returns_paired_entries() {
             &asst("a1", "2026-06-05T10:00:05Z", "Done — diff on `feature/seo`.", false),
             &user("u2", "2026-06-05T10:01:00Z", "fix typo in footer", false),
             &asst("a2", "2026-06-05T10:01:05Z", "Done — commit b3f7e21.", false),
+            &user(
+                "u3",
+                "2026-06-05T10:02:00Z",
+                "<task-notification><summary>Agent X done</summary></task-notification>",
+                false,
+            ),
             r#"{"type":"ai-title","aiTitle":"SEO sprint"}"#,
         ],
     );
@@ -182,7 +190,11 @@ async fn recall_session_scope_returns_paired_entries() {
     assert_eq!(body["ok"], json!(true));
     let data = &body["data"];
     let entries = data["entries"].as_array().expect("entries array");
-    assert_eq!(entries.len(), 2, "two paired prompts");
+    assert_eq!(
+        entries.len(),
+        2,
+        "two paired prompts (notification hidden by default)"
+    );
 
     // Newest-first.
     assert_eq!(entries[0]["text"], json!("fix typo in footer"));
@@ -190,11 +202,25 @@ async fn recall_session_scope_returns_paired_entries() {
     assert_eq!(entries[0]["sessionTitle"], json!("SEO sprint"));
     assert_eq!(entries[0]["sessionId"], json!(cc));
     assert_eq!(entries[0]["sidechain"], json!(false));
+    assert_eq!(entries[0]["kind"], json!("prompt"));
 
     assert_eq!(entries[1]["text"], json!("build SEO audit"));
     assert_eq!(entries[1]["reply"], json!("Done — diff on `feature/seo`."));
 
     assert_eq!(data["hasMore"], json!(false));
+
+    // include_system_events=true → notification appears with its parsed summary.
+    let (_, body) = send(
+        &app,
+        Method::GET,
+        "/api/sessions/recall-it/recall?scope=session&include_system_events=true",
+        None,
+    )
+    .await;
+    let entries = body["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0]["kind"], json!("notification"));
+    assert_eq!(entries[0]["text"], json!("Agent X done"));
 
     std::env::remove_var("CLAUDE_CONFIG_DIR");
     let _ = std::fs::remove_dir_all(&data_dir);

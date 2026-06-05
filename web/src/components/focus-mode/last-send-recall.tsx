@@ -28,13 +28,19 @@ import { Drawer } from 'vaul'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import {
+  Bell,
   Bot,
   ChevronRight,
   Clipboard,
   History,
+  Image as ImageIcon,
+  Info,
   Loader2,
   MessageSquareText,
   Search,
+  TerminalSquare,
+  Users,
+  Wrench,
   X,
 } from 'lucide-react'
 
@@ -45,6 +51,7 @@ import {
   sessionsApi,
   type ApiSession,
   type RecallEntry,
+  type RecallEntryKind,
   type RecallResponse,
   type RecallScope,
 } from '@/lib/api'
@@ -129,15 +136,24 @@ function useRecall(
   scope: RecallScope,
   q: string,
   includeSidechains: boolean,
+  includeSystemEvents: boolean,
   enabled: boolean,
 ) {
   return useInfiniteQuery<RecallResponse, Error>({
-    queryKey: ['session-recall', sessionName, scope, q, includeSidechains],
+    queryKey: [
+      'session-recall',
+      sessionName,
+      scope,
+      q,
+      includeSidechains,
+      includeSystemEvents,
+    ],
     queryFn: ({ pageParam }) =>
       sessionsApi.recall(sessionName, {
         scope,
         q: q || undefined,
         includeSidechains,
+        includeSystemEvents,
         before: pageParam as string | undefined,
         limit: RECALL_PAGE_SIZE,
       }),
@@ -173,9 +189,20 @@ function RecallPanel({
   const [searchInput, setSearchInput] = React.useState('')
   const search = useDebouncedValue(searchInput, 150)
   const [includeSidechains, setIncludeSidechains] = React.useState(false)
+  // Off by default — the popover should feel like a clean log of what YOU
+  // asked, not a firehose of harness events. Power users flip it on for
+  // audit / debug.
+  const [includeSystemEvents, setIncludeSystemEvents] = React.useState(false)
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
 
-  const recall = useRecall(sessionName, scope, search, includeSidechains, true)
+  const recall = useRecall(
+    sessionName,
+    scope,
+    search,
+    includeSidechains,
+    includeSystemEvents,
+    true,
+  )
   const entries = React.useMemo<RecallEntry[]>(
     () => recall.data?.pages.flatMap((p) => p.entries) ?? [],
     [recall.data],
@@ -203,7 +230,7 @@ function RecallPanel({
   React.useEffect(() => {
     autoExpandedRef.current = new Set()
     setExpanded(new Set())
-  }, [sessionName, scope, search, includeSidechains])
+  }, [sessionName, scope, search, includeSidechains, includeSystemEvents])
 
   const toggleExpanded = React.useCallback((uuid: string) => {
     setExpanded((prev) => {
@@ -229,7 +256,11 @@ function RecallPanel({
   // scope/search guard this is now belt + suspenders.
   const isFirstMount = !recall.data && entries.length === 0
   const showSeed =
-    isFirstMount && scope === 'session' && !search && !includeSidechains
+    isFirstMount &&
+    scope === 'session' &&
+    !search &&
+    !includeSidechains &&
+    !includeSystemEvents
   const fallbackEntries: RecallEntry[] = React.useMemo(
     () =>
       showSeed
@@ -240,6 +271,7 @@ function RecallPanel({
               sessionId: sessionName,
               text: initialRecall.text,
               sidechain: false,
+              kind: 'prompt' as const,
             },
           ]
         : [],
@@ -347,16 +379,30 @@ function RecallPanel({
             ? `Load ${RECALL_PAGE_SIZE} more`
             : 'End of history'}
         </button>
-        <label className="flex cursor-pointer items-center gap-1.5 select-none">
-          <input
-            type="checkbox"
-            checked={includeSidechains}
-            onChange={(e) => setIncludeSidechains(e.target.checked)}
-            className="size-3 cursor-pointer accent-foreground"
-          />
-          <Bot className="size-3" />
-          <span>Sub-agents</span>
-        </label>
+        <div className="flex items-center gap-3">
+          <label className="flex cursor-pointer items-center gap-1.5 select-none">
+            <input
+              type="checkbox"
+              checked={includeSidechains}
+              onChange={(e) => setIncludeSidechains(e.target.checked)}
+              className="size-3 cursor-pointer accent-foreground"
+              aria-label="Include sub-agent turns"
+            />
+            <Bot className="size-3" aria-hidden />
+            <span>Sub-agents</span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-1.5 select-none">
+            <input
+              type="checkbox"
+              checked={includeSystemEvents}
+              onChange={(e) => setIncludeSystemEvents(e.target.checked)}
+              className="size-3 cursor-pointer accent-foreground"
+              aria-label="Include system events"
+            />
+            <Bell className="size-3" aria-hidden />
+            <span>System events</span>
+          </label>
+        </div>
       </div>
 
       {/* Session label as a calm subscript — same affordance the old
@@ -394,6 +440,45 @@ function groupBySession(entries: RecallEntry[]): RecallGroup[] {
  *  hit the wire-side clamp. Single literal across two languages is acceptable
  *  here — drift would surface immediately (hint never / always shows). */
 const RECALL_PROMPT_MAX_CHARS = 8000
+
+/** Display metadata per entry kind: badge text, icon, optional tint. `prompt`
+ *  renders WITHOUT a badge (it's the unmarked default — the user's own typing
+ *  shouldn't need a label). Everything else gets a small chip so the reader
+ *  knows at a glance what they're looking at. */
+const KIND_BADGE: Record<
+  Exclude<RecallEntryKind, 'prompt'>,
+  { label: string; Icon: typeof Bell }
+> = {
+  command: { label: 'slash', Icon: TerminalSquare },
+  teammate: { label: 'teammate', Icon: Users },
+  notification: { label: 'agent done', Icon: Bell },
+  system: { label: 'system', Icon: Info },
+  tool: { label: 'tool', Icon: Wrench },
+  image: { label: 'image', Icon: ImageIcon },
+}
+
+/** Small chip rendered after the timestamp on every non-prompt row. Prompts
+ *  (the user's typing) don't get a chip — they're the default and quiet. */
+function KindBadge({
+  kind,
+  label,
+}: {
+  kind: RecallEntryKind
+  label?: string
+}) {
+  if (kind === 'prompt') return null
+  const meta = KIND_BADGE[kind]
+  const display = kind === 'command' && label ? label : meta.label
+  return (
+    <span
+      className="flex items-center gap-0.5 rounded bg-secondary/80 px-1 py-px text-[9.5px] uppercase tracking-wide text-muted-foreground"
+      title={meta.label}
+    >
+      <meta.Icon className="size-2.5" aria-hidden />
+      {display}
+    </span>
+  )
+}
 
 interface RecallRowProps {
   entry: RecallEntry
@@ -482,16 +567,23 @@ const RecallRow = React.memo(function RecallRow({
         >
           <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
             <span className="flex items-center gap-1.5">
-              <span className="font-medium text-foreground/90">You</span>
+              <span className="font-medium text-foreground/90">
+                {entry.kind === 'prompt' || entry.kind === 'command'
+                  ? 'You'
+                  : entry.kind === 'teammate'
+                    ? entry.label || 'Teammate'
+                    : 'System'}
+              </span>
               <span>·</span>
               <span>{formatRecallTime(new Date(entry.ts * 1000))}</span>
+              <KindBadge kind={entry.kind} label={entry.label} />
               {entry.sidechain && (
                 <span
                   className="flex items-center gap-0.5 rounded bg-secondary px-1 py-px text-[9.5px] uppercase tracking-wide text-muted-foreground"
                   title="Sub-agent turn"
                 >
-                  <Bot className="size-2.5" />
-                  agent
+                  <Bot className="size-2.5" aria-hidden />
+                  sub
                 </span>
               )}
             </span>

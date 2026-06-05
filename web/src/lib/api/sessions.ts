@@ -185,9 +185,12 @@ export function sessionTitle(s: {
 /** A past Claude conversation for a session's working dir.
  *  Surfaced by `GET /api/sessions/{name}/resumable`; picking one resumes it via
  *  `claude --resume <id>`. */
-/** One row in the focus-mode recall list — a user prompt the session has sent
- *  (read from Claude Code's on-disk JSONL transcript) paired with the first
- *  text block of the assistant's next turn. */
+/** One row in the focus-mode recall list — a user-role turn from Claude
+ *  Code's on-disk JSONL transcript. Most rows are real prompts the human
+ *  typed (`kind: 'prompt'`), but Claude Code also wraps tool results,
+ *  slash-command echoes, harness reminders, and background-agent completion
+ *  notifications as role:user messages — `kind` identifies which flavour so
+ *  the popover can render a badge or hide them by default. */
 export interface RecallEntry {
   uuid: string
   ts: number
@@ -196,7 +199,25 @@ export interface RecallEntry {
   text: string
   reply?: string
   sidechain: boolean
+  kind: RecallEntryKind
+  /** Kind-specific identifier: slash name for commands, teammate_id for
+   *  teammate routing, task-id for notifications, the leading wrapper tag
+   *  for unknown system events. */
+  label?: string
 }
+
+/** Mirrored from `Kind` in `server/src/sessions/recall.rs`. `'prompt'`,
+ *  `'command'`, and `'teammate'` are user-initiated and shown by default;
+ *  the rest are harness/tool events surfaced only when the "Show system
+ *  events" toggle is on. */
+export type RecallEntryKind =
+  | 'prompt'
+  | 'command'
+  | 'teammate'
+  | 'notification'
+  | 'system'
+  | 'tool'
+  | 'image'
 
 export interface RecallResponse {
   entries: RecallEntry[]
@@ -210,6 +231,7 @@ export interface RecallQueryParams {
   scope?: RecallScope
   q?: string
   includeSidechains?: boolean
+  includeSystemEvents?: boolean
   before?: string
   limit?: number
 }
@@ -531,6 +553,7 @@ export const sessionsApi = {
     if (q.scope) params.set('scope', q.scope)
     if (q.q) params.set('q', q.q)
     if (q.includeSidechains) params.set('include_sidechains', 'true')
+    if (q.includeSystemEvents) params.set('include_system_events', 'true')
     if (q.before) params.set('before', q.before)
     if (q.limit != null) params.set('limit', String(q.limit))
     const qs = params.toString()
