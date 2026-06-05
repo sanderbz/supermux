@@ -225,6 +225,38 @@ export function LiveTerminal({
     // browser doesn't try to pan while we're synthesizing a selection drag.
     container.setAttribute('data-select-mode', 'true')
 
+    // Keyboard-suppression while selecting.
+    //
+    // Problem: the React-side tap handler in mobile.tsx already skips
+    // `focusTerm()` when `selectMode` is on, BUT xterm.js's own internal
+    // mousedown listener — which our synthesized mousedown below
+    // (`fireMouse(screen, 'mousedown', ...)`) deliberately triggers — calls
+    // `helperTextarea.focus()` synchronously, INSIDE the same touchstart user
+    // gesture. iOS then opens the soft keyboard, covering the terminal
+    // mid-selection. So gating focus on the React side isn't enough.
+    //
+    // Fix: while select-mode is on, set the helper textarea's `inputMode` to
+    // `none` AND `readOnly` to `true`. Both iOS 15+ and modern Android Chrome
+    // respect this combination and refuse to summon the virtual keyboard even
+    // when the textarea receives programmatic focus. Physical keyboards
+    // (irrelevant here, but worth noting) continue to fire `keydown` events
+    // through readOnly textareas; we don't care because xterm reads the
+    // helper textarea's `input` events for IME-aware composition, and we want
+    // *no* user input flowing in while the dock is in select mode anyway.
+    //
+    // We save the previous values and restore them on cleanup so toggling
+    // select-mode on→off→on is idempotent (no drift), and so a separate code
+    // path that ever set `inputMode` (none today) survives untouched.
+    const helper = container.querySelector<HTMLTextAreaElement>(
+      '.xterm-helper-textarea',
+    )
+    const prevInputMode = helper?.inputMode ?? ''
+    const prevReadOnly = helper?.readOnly ?? false
+    if (helper) {
+      helper.inputMode = 'none'
+      helper.readOnly = true
+    }
+
     const fireMouse = (
       target: EventTarget,
       type: 'mousedown' | 'mousemove' | 'mouseup',
@@ -296,6 +328,10 @@ export function LiveTerminal({
     container.addEventListener('touchcancel', endDrag, opts)
     return () => {
       container.removeAttribute('data-select-mode')
+      if (helper) {
+        helper.inputMode = prevInputMode
+        helper.readOnly = prevReadOnly
+      }
       container.removeEventListener('touchstart', onTouchStart, opts)
       container.removeEventListener('touchmove', onTouchMove, opts)
       container.removeEventListener('touchend', endDrag, opts)
