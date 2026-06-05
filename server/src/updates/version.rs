@@ -93,11 +93,15 @@ pub fn is_newer(current: Option<&str>, latest: Option<&str>) -> bool {
         // reason anyway. Returning false here keeps the cosmetic state honest.
         return false;
     };
-    let (cn, cpre) = parse_semver(current);
-    let (ln, lpre) = parse_semver(latest);
+    let (cn, cpre, c_ahead) = parse_semver(current);
+    let (ln, lpre, _) = parse_semver(latest);
     match cmp_components(&ln, &cn) {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
+        // A describe-ahead build (`v0.4.20-1-g6a951b8`: master moved past the
+        // tag) sits AT-OR-ABOVE its tag, so the same-core release is never an
+        // update — offering it would be a downgrade.
+        std::cmp::Ordering::Equal if c_ahead && cpre.is_empty() => false,
         // Same core (e.g. v0.3.0 vs v0.3.0-rc1). Per semver §11, a release
         // ranks ABOVE its pre-releases: `v0.3.0` is newer than `v0.3.0-rc1`.
         std::cmp::Ordering::Equal => match (cpre.is_empty(), lpre.is_empty()) {
@@ -109,9 +113,12 @@ pub fn is_newer(current: Option<&str>, latest: Option<&str>) -> bool {
     }
 }
 
-/// `v0.3.0-rc1` → ([0, 3, 0], "rc1"). The pre-release suffix is empty for a
-/// plain release tag.
-fn parse_semver(tag: &str) -> (Vec<u64>, String) {
+/// `v0.3.0-rc1` → ([0, 3, 0], "rc1", false). The pre-release suffix is empty
+/// for a plain release tag. The bool is true when the suffix carried a
+/// git-describe ahead-marker (`-N-g<sha>`): the build is N commits PAST the
+/// tag, not a pre-release of it. `-dirty` is build metadata, stripped either
+/// way.
+fn parse_semver(tag: &str) -> (Vec<u64>, String, bool) {
     let bare = tag.trim_start_matches('v');
     let (core, pre) = match bare.split_once('-') {
         Some((c, p)) => (c, p.to_string()),
@@ -121,7 +128,30 @@ fn parse_semver(tag: &str) -> (Vec<u64>, String) {
         .split('.')
         .filter_map(|p| p.parse::<u64>().ok())
         .collect();
-    (components, pre)
+    let (pre, ahead) = strip_describe_metadata(&pre);
+    (components, pre, ahead)
+}
+
+/// `git describe --tags --dirty` appends `-N-g<sha>` when HEAD is N commits
+/// past the tag and `-dirty` when the tree has local edits. Strip both from a
+/// pre-release suffix; report whether the ahead-marker was present.
+fn strip_describe_metadata(pre: &str) -> (String, bool) {
+    let mut parts: Vec<&str> = if pre.is_empty() { Vec::new() } else { pre.split('-').collect() };
+    if parts.last() == Some(&"dirty") {
+        parts.pop();
+    }
+    let mut ahead = false;
+    if let [.., n, g] = parts.as_slice() {
+        let is_count = !n.is_empty() && n.chars().all(|c| c.is_ascii_digit());
+        let is_gsha = g.len() > 1
+            && g.starts_with('g')
+            && g[1..].chars().all(|c| c.is_ascii_hexdigit());
+        if is_count && is_gsha {
+            ahead = true;
+            parts.truncate(parts.len() - 2);
+        }
+    }
+    (parts.join("-"), ahead)
 }
 
 fn cmp_components(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
@@ -163,6 +193,22 @@ mod tests {
         assert!(is_newer(Some("v0.3.0-rc1"), Some("v0.3.0")));
         assert!(!is_newer(Some("v0.3.0"), Some("v0.3.0")));
         assert!(!is_newer(Some("v0.3.0"), Some("v0.2.9")));
+    }
+
+    #[test]
+    fn describe_ahead_build_is_not_older_than_its_tag() {
+        // A deploy from master 1 commit past the v0.4.20 tag describes as
+        // `v0.4.20-1-g6a951b8`. The v0.4.20 release is OLDER, not an update.
+        assert!(!is_newer(Some("v0.4.20-1-g6a951b8"), Some("v0.4.20")));
+        assert!(!is_newer(Some("v0.4.20-1-g6a951b8-dirty"), Some("v0.4.20")));
+        // ...but a genuinely newer release still advertises.
+        assert!(is_newer(Some("v0.4.20-1-g6a951b8"), Some("v0.4.21")));
+        // A dirty build of the tag itself is the same version, not an upgrade.
+        assert!(!is_newer(Some("v0.4.20-dirty"), Some("v0.4.20")));
+        // Real pre-releases keep semver §11 ordering (release > its pre).
+        assert!(is_newer(Some("v0.3.0-rc1"), Some("v0.3.0")));
+        // Describe-ahead of a pre-release tag still upgrades to the release.
+        assert!(is_newer(Some("v0.3.0-rc1-2-gabc1234"), Some("v0.3.0")));
     }
 
     #[test]
