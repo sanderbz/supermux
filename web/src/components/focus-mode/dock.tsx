@@ -800,11 +800,24 @@ function ComposeField({
   // ── Tap-vs-swipe gate ───────────────────────────────────────────────────────
   // A TAP fires onEdit (Ctrl+G); a horizontal SWIPE switches sessions. Mirrors the
   // tap-vs-pan gating the terminal body uses (mobile.tsx): a candidate is armed
-  // on pointer-down and only counts as a tap on pointer-up if the finger barely
+  // on pointer-down and only counts as a tap on CLICK if the finger barely
   // moved and the press was short. framer's own drag also flips `draggedRef` in
   // onDragStart, so a committed drag (which fires onDragEnd → onSwitch) can never
   // ALSO be read as a tap. A second concurrent pointer (multi-touch) invalidates
   // the candidate.
+  //
+  // GHOST-CLICK FIX — the action fires on `click`, NOT pointerup. On touch, the
+  // browser synthesizes a `click` at the tap coordinates ~after pointerup. When
+  // onEdit fired on pointerup, the editor sheet mounted UNDER THE FINGER (the
+  // optimistic open + the layoutId morph starts the sheet's surface at this
+  // very pill's rect, with the NavBar's Cancel squeezed inside it) — and the
+  // late synthetic click landed on the sheet's Cancel button, closing the
+  // editor within ~50ms of opening. Claude was left blocked in $EDITOR with no
+  // sheet on screen (the "tapped Edit, nothing visible, terminal frozen"
+  // Android bug). Firing on click CONSUMES that click on the pill itself —
+  // there is nothing left to ghost onto the sheet. Desktop mice were never
+  // affected (no delayed synthetic click), keyboard activation arrives as a
+  // `click` with `detail === 0` and is honored directly.
   const TAP_SLOP_PX = 10
   const TAP_MAX_MS = 500
   const tapRef = React.useRef<{ x: number; y: number; t: number; id: number } | null>(
@@ -813,17 +826,28 @@ function ComposeField({
   const draggedRef = React.useRef(false)
 
   const onPillPointerDown = (e: React.PointerEvent) => {
-    if (tapRef.current && tapRef.current.id !== e.pointerId) {
+    const cand = tapRef.current
+    // A CONCURRENT second finger invalidates the tap. A STALE candidate (its
+    // click never arrived — e.g. the gesture turned into a scroll) is just
+    // residue: overwrite it, don't punish the next tap.
+    if (cand && cand.id !== e.pointerId && Date.now() - cand.t < TAP_MAX_MS) {
       tapRef.current = null // multi-touch → not a tap
       return
     }
     draggedRef.current = false
     tapRef.current = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId }
   }
-  const onPillPointerUp = (e: React.PointerEvent) => {
+  const onPillClick = (e: React.MouseEvent) => {
     const cand = tapRef.current
     tapRef.current = null
-    if (!cand || cand.id !== e.pointerId) return
+    // Keyboard activation (Enter/Space on the focused button) has no pointer
+    // gesture — `detail === 0` — and is always an intentional "tap".
+    if (e.detail === 0) {
+      if (onEdit) onEdit()
+      else onTap()
+      return
+    }
+    if (!cand) return
     if (draggedRef.current) return // a swipe committed — handled by onDragEnd
     const dist = Math.hypot(e.clientX - cand.x, e.clientY - cand.y)
     const elapsed = Date.now() - cand.t
@@ -903,7 +927,7 @@ function ComposeField({
         }}
         onDragEnd={onDragEnd}
         onPointerDown={onPillPointerDown}
-        onPointerUp={onPillPointerUp}
+        onClick={onPillClick}
         // Accessible label spells out the action (the field is icon + placeholder
         // only, no session name — that lives in the top header). The current
         // session name stays as the `title` so screen-reader/hover context isn't
