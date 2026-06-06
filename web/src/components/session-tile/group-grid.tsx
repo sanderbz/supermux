@@ -535,6 +535,19 @@ export function GroupGrid({
   const [overItemId, setOverItemId] = React.useState<UniqueIdentifier | null>(
     null,
   )
+  // ── Drop-edge tracking ────────────────────────────────────────────────────
+  // Which SIDE of the hovered tile the pointer is on: 'before' (leading half)
+  // or 'after' (trailing half — y-midline in list view, x-midline in the
+  // reading-order tile grid). Without this, hovering a tile could ONLY mean
+  // "insert before it", and since the group-body droppable hugs its content
+  // (no pixels below the last row), the LAST position in a group was
+  // unreachable by drag. 'after' on the last tile now maps to the
+  // end-of-list slot (blue bar below the last entry, drop at the end).
+  // The ref is the source of truth (written in collisionDetection, which
+  // runs on every pointer move in the SAME coordinate space as the
+  // pointerWithin collisions); the state mirrors it for rendering.
+  const [overEdge, setOverEdge] = React.useState<'before' | 'after'>('before')
+  const overEdgeRef = React.useRef<'before' | 'after'>('before')
   const isDragging = activeId !== null
   const draggingKind: 'group' | 'session' | null = React.useMemo(() => {
     if (!activeId) return null
@@ -581,11 +594,21 @@ export function GroupGrid({
     setActiveId(e.active.id)
     setOverGroupId(null)
     setOverItemId(null)
+    overEdgeRef.current = 'before'
+    setOverEdge('before')
+  }
+
+  // dnd-kit fires onDragOver only when the OVER TARGET changes; the edge can
+  // flip while hovering the same tile (pointer crosses its midline), so the
+  // every-move event syncs the ref → state. setState bails when unchanged.
+  const onDragMove = () => {
+    setOverEdge(overEdgeRef.current)
   }
 
   const onDragOver = (e: DragOverEvent) => {
     const over = e.over
     setOverItemId(over?.id ?? null)
+    setOverEdge(overEdgeRef.current)
     if (!over) {
       setOverGroupId(null)
       return
@@ -663,6 +686,10 @@ export function GroupGrid({
         s.sessions.some((x) => x.name === overName),
       )
       dropIndex = destSec ? destSec.sessions.findIndex((x) => x.name === overName) : -1
+      // Pointer past the hovered tile's midline → insert AFTER it. On the
+      // LAST tile this is the only drag path to the end of the group (the
+      // group-body droppable has no pixels below the last row).
+      if (dropIndex >= 0 && overEdgeRef.current === 'after') dropIndex += 1
     } else if (overStr.startsWith('group:')) {
       destSec = sections.find((s) => s.groupId === overStr.slice('group:'.length))
       dropIndex = 0
@@ -914,12 +941,40 @@ export function GroupGrid({
             // Session drag — keep everything (group-body, session, group header).
             return arr
           }
-          const pointer = filterByKind(pointerWithin(args))
-          if (pointer.length > 0) return pointer
-          const intersect = filterByKind(rectIntersection(args))
-          if (intersect.length > 0) return intersect
-          return filterByKind(closestCenter(args))
+          const collisions = (() => {
+            const pointer = filterByKind(pointerWithin(args))
+            if (pointer.length > 0) return pointer
+            const intersect = filterByKind(rectIntersection(args))
+            if (intersect.length > 0) return intersect
+            return filterByKind(closestCenter(args))
+          })()
+          // Drop-edge detection: when a session hovers a session, decide
+          // 'before' vs 'after' from the pointer's position against the
+          // winning tile's midline. Computed HERE (not in onDragOver) because
+          // (a) this runs on every move, and (b) `args.pointerCoordinates` +
+          // `args.droppableRects` are in the same scroll-adjusted coordinate
+          // space pointerWithin itself used — no drift under auto-scroll.
+          // List view splits on the y-midline; the reading-order tile grid
+          // splits on the x-midline. Keyboard drags have no pointer → the
+          // edge stays 'before' (the classic sortable semantic).
+          const first = collisions[0]
+          if (first && String(first.id).startsWith('session:')) {
+            const rect = args.droppableRects.get(first.id)
+            const p = args.pointerCoordinates
+            if (rect && p) {
+              overEdgeRef.current =
+                viewMode === 'list'
+                  ? p.y >= rect.top + rect.height / 2
+                    ? 'after'
+                    : 'before'
+                  : p.x >= rect.left + rect.width / 2
+                    ? 'after'
+                    : 'before'
+            }
+          }
+          return collisions
         }}
+        onDragMove={onDragMove}
         onDragStart={onDragStart}
         onDragOver={onDragOver}
         onDragCancel={onDragCancel}
@@ -1008,6 +1063,7 @@ export function GroupGrid({
                       justDroppedName={justDroppedName}
                       onMoveSessionToGroup={moveSessionToGroup}
                       overItemId={overItemId}
+                      overEdge={overEdge}
                       onSortModeChange={(mode) =>
                         setGroupMode(section.groupId, mode)
                       }
@@ -1159,6 +1215,7 @@ function GroupSection({
   justDroppedName,
   onMoveSessionToGroup,
   overItemId,
+  overEdge,
   onSortModeChange,
   onMoveUp,
   onMoveDown,
@@ -1191,6 +1248,9 @@ function GroupSection({
    *  (Gap 2) and (internally) the drag-drop path. */
   onMoveSessionToGroup: (sessionName: string, destGroupId: string) => void
   overItemId: UniqueIdentifier | null
+  /** Which side of the hovered tile the pointer is on — 'after' shifts the
+   *  insertion line to the NEXT tile (or the end-of-list slot on the last). */
+  overEdge: 'before' | 'after'
   onSortModeChange: (mode: GroupSortMode) => void
   onMoveUp?: () => void
   onMoveDown?: () => void
@@ -1248,6 +1308,35 @@ function GroupSection({
     draggingKind === 'session' &&
     containerIndicate === 'custom' &&
     overItemId !== null
+
+  // Which tile (if any) carries the insertion line at its leading edge: the
+  // hovered tile when the pointer is on its 'before' half, or the NEXT tile
+  // when on its 'after' half. 'after' on the LAST tile maps to the
+  // end-of-list line instead (`showEndLine`) — the only drag path to the
+  // last position in a group, since the group-body droppable has no pixels
+  // below the last row.
+  const lineBeforeName = React.useMemo<string | null>(() => {
+    if (!showInterTileLine || overItemId === null) return null
+    const overStr = String(overItemId)
+    if (!overStr.startsWith('session:')) return null
+    const name = overStr.slice('session:'.length)
+    const idx = section.sessions.findIndex((s) => s.name === name)
+    if (idx < 0) return null
+    if (overEdge === 'before') return name
+    return idx + 1 < section.sessions.length
+      ? section.sessions[idx + 1].name
+      : null
+  }, [showInterTileLine, overItemId, overEdge, section.sessions])
+  const lastSessionName =
+    section.sessions.length > 0
+      ? section.sessions[section.sessions.length - 1].name
+      : null
+  const showEndLine =
+    showInterTileLine &&
+    (overItemId === groupDropId(section.groupId) ||
+      (overEdge === 'after' &&
+        lastSessionName !== null &&
+        overItemId === sessionDragId(lastSessionName)))
 
   // EFFECTIVE collapse — the user's persisted collapse state, but FORCE-OPEN
   // while a drag is in flight. Rationale: dnd-kit's drop targets live on the
@@ -1418,10 +1507,7 @@ function GroupSection({
                 isDragging={isDragging}
                 draggingKind={draggingKind}
                 activeSessionName={activeSessionName}
-                showLineBefore={
-                  showInterTileLine &&
-                  overItemId === sessionDragId(sess.name)
-                }
+                showLineBefore={lineBeforeName === sess.name}
                 tour={i === 0 && sIdx === 0 ? tourFirstTileId : undefined}
                 reduce={reduce}
                 justDropped={justDroppedName === sess.name}
@@ -1434,18 +1520,18 @@ function GroupSection({
                 // hide the inter-tile line; the container indication shows.
               />
             ))}
-            {/* End-of-list drop slot: when a tile is dragged into this group
-                with no specific over-target inside, the line shows at the END.
-                The container indication on a smart-sort group already covers
-                this case, so we only render the end-line for custom. */}
-            {showInterTileLine &&
-              overItemId === groupDropId(section.groupId) && (
-                <div
-                  data-vr="tile-drop-line"
-                  data-vr-drop-line="tile"
-                  className="col-span-full h-0.5 rounded-full bg-primary"
-                />
-              )}
+            {/* End-of-list drop slot: shows when a tile hovers the group body
+                with no specific over-target inside, OR hovers the 'after'
+                half of the LAST tile. The container indication on a
+                smart-sort group already covers this case, so we only render
+                the end-line for custom. */}
+            {showEndLine && (
+              <div
+                data-vr="tile-drop-line"
+                data-vr-drop-line="tile"
+                className="col-span-full h-0.5 rounded-full bg-primary"
+              />
+            )}
             {/* Empty-section caption when this section has no tiles AND a
                 drag is hovering it — keeps the destination box from looking
                 broken. */}
@@ -1469,10 +1555,7 @@ function GroupSection({
                 isDragging={isDragging}
                 draggingKind={draggingKind}
                 activeSessionName={activeSessionName}
-                showLineBefore={
-                  showInterTileLine &&
-                  overItemId === sessionDragId(sess.name)
-                }
+                showLineBefore={lineBeforeName === sess.name}
                 reduce={reduce}
                 justDropped={justDroppedName === sess.name}
                 currentGroupId={section.groupId}
@@ -1482,6 +1565,16 @@ function GroupSection({
                 }
               />
             ))}
+            {/* End-of-list drop slot — row-view twin of the tile-view bar
+                above. Without it the list view had NO visual for "drop at
+                the end of this group". */}
+            {showEndLine && (
+              <div
+                data-vr="row-drop-line"
+                data-vr-drop-line="tile"
+                className="h-0.5 rounded-full bg-primary"
+              />
+            )}
             <span hidden data-vr-active-session-group={activeSessionGroupId} />
           </div>
         )}
