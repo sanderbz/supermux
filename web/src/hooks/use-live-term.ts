@@ -26,6 +26,7 @@ import { authToken, wsUrl } from '@/env'
 import { claim as claimPrewarm } from '@/hooks/peek-prewarm-store'
 import { disableXtermMouseTracking } from '@/lib/disable-xterm-mouse'
 import { attachAndroidImeBridge, isAndroid } from '@/lib/android-ime'
+import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
 // session's pty is gone (not running) — there is nothing to reconnect to, so we
@@ -165,11 +166,10 @@ const AUTH_GRACE_MS = 4_000 // server allots 2s for the first frame; we give sla
 // Kept short — long enough to swallow the replay-scroll on a healthy server,
 // short enough that a legacy server's reveal still feels instant.
 const REPLAY_DONE_FALLBACK_MS = 400
-// Soft-keyboard detection threshold (px of visualViewport inset). Mirrors
-// `useKeyboardViewport`'s 80px floor so the live-render kick agrees with the
-// route's keyboard-open state; below this, iOS jitter (URL-bar collapse,
-// rubber-band) must not flip us into the kick path.
-const KEYBOARD_OPEN_THRESHOLD = 80
+// Soft-keyboard detection for the live-render kick reuses the shared
+// dual-signal detector from `use-keyboard-viewport` (overlay inset on iOS,
+// layout-viewport shrink on Android's resizes-content) so the kick path
+// agrees with the route's keyboard-open state on BOTH platforms.
 // SD-2: how many pixels above the live bottom the viewport must sit before the
 // "jump to bottom" affordance appears. A small slack so sub-pixel rounding at the
 // bottom (or a 1-notch rubber-band) never flickers the button on; scrolling up
@@ -1542,14 +1542,11 @@ export function useLiveTerm(
     const visual =
       typeof window !== 'undefined' ? window.visualViewport : undefined
     let kbRaf = 0
+    const detectKeyboard = createKeyboardOpenDetector()
     const measureKeyboard = () => {
       kbRaf = 0
       if (!visual) return
-      const inset = Math.max(
-        0,
-        window.innerHeight - visual.height - visual.offsetTop,
-      )
-      const open = inset > KEYBOARD_OPEN_THRESHOLD
+      const { open } = detectKeyboard(visual)
       const was = keyboardOpenRef.current
       keyboardOpenRef.current = open
       // On the open→closed edge, force one repaint so anything written while the
