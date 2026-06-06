@@ -159,6 +159,13 @@ const MAX_BACKOFF_MS = 30_000
 const MAX_ATTEMPTS = 6 // 1011 server-error path then permanent
 const RESIZE_DEBOUNCE_MS = 100
 const VISIBILITY_DEBOUNCE_MS = 2_000
+// Resume staleness ceiling. The server pings every 20s and reaps a client that
+// stays silent past a 30s deadline (ws/mod.rs PING_EVERY / PONG_DEADLINE) — a
+// page hidden longer than this has likely been reaped server-side even when
+// the local socket still CLAIMS to be OPEN (Android freezes the renderer +
+// network without closing the socket: the classic resume-zombie). Past this,
+// a visible-again page reconnects proactively instead of trusting readyState.
+const RESUME_STALE_MS = 15_000
 const AUTH_GRACE_MS = 4_000 // server allots 2s for the first frame; we give slack
 // Fallback for an OLD server that doesn't emit `{"type":"replay_done"}`: if no
 // such control frame arrives within this window AFTER the first pty byte, we
@@ -1208,6 +1215,17 @@ export function useLiveTerm(
 
     const scheduleReconnect = () => {
       if (disposedRef.current) return
+      // HIDDEN page → DEFER, don't burn attempts. Android freezes background
+      // timers, so backoff retries either never run or fail against a frozen
+      // network stack — the old behaviour spent all MAX_ATTEMPTS while
+      // backgrounded and resumed into a dead-end `offline`. Park the intent
+      // and let the visibility health-check reconnect with a fresh budget the
+      // moment the page is visible again.
+      if (document.visibilityState === 'hidden') {
+        visibilityPendingRef.current = true
+        setLiveState('reconnecting')
+        return
+      }
       const attempt = attemptRef.current
       if (attempt >= MAX_ATTEMPTS) {
         setLiveState('offline')
@@ -1499,36 +1517,126 @@ export function useLiveTerm(
     // sidebar resize, desktop window resize). No-op on the DOM renderer
     // fallback (no atlas to clear).
     let resizeTimer: number | null = null
+    // ── Keyboard-stable geometry (scrollback-duplication fix) ────────────────
+    //
+    // ROOT CAUSE. The soft keyboard shrinks the terminal container (Android
+    // resizes-content shrinks the layout viewport; iOS gets the same shrink
+    // from the route's vvHeight-driven sheet). The old path refit + resized
+    // the PTY on every keyboard open/close — and a pty row-count change makes
+    // tmux AND Claude's ink renderer repaint their whole screen. xterm had
+    // just folded the now-hidden top rows into its scrollback, so each
+    // repaint re-emitted lines that were already there: every keyboard cycle
+    // DUPLICATED a screenful of lines near the end of the scrollback (and
+    // reflow churn could swallow others).
+    //
+    // THE FIX. A HEIGHT-ONLY container change while the keyboard is open (or
+    // opening) keeps the pty geometry untouched. The xterm element keeps its
+    // full-height grid; we bottom-anchor it with a negative top margin so the
+    // CURSOR AREA stays visible above the keyboard and the hidden rows are
+    // clipped by the wrapper's overflow-hidden — a pure-visual crop, zero pty
+    // traffic, zero tmux/ink redraw, zero scrollback damage. On keyboard
+    // close the margin clears and the normal fit runs — geometry is identical
+    // to before the keyboard, so FitAddon no-ops and nothing redraws.
+    //
+    // A WIDTH change is never keyboard-driven (rotation, split-screen, font
+    // resize) → always takes the full fit + pty-resize path, even mid-
+    // keyboard. The pty resize is also SKIPPED when fit() lands on the same
+    // cols/rows as last sent — a same-size `refresh-client` still makes tmux
+    // schedule a redraw on some configs, which is exactly the churn this fix
+    // exists to avoid.
+    let lastSentCols = 0
+    let lastSentRows = 0
+    // Width at the last FULL fit — 0 until then, so the first observer pass
+    // always takes the full-fit path regardless of keyboard state.
+    let lastFitWidth = 0
     const ro = new ResizeObserver(() => {
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
       resizeTimer = window.setTimeout(() => {
         const f = fitRef.current
         const t = termRef.current
         if (!f || !t) return
+        const el = t.element
+        const widthChanged =
+          Math.abs(container.clientWidth - lastFitWidth) >= 1
+        if (keyboardOpenRef.current && el && !widthChanged) {
+          // Keyboard-driven height change → bottom-anchor, keep the grid.
+          const delta = Math.round(el.offsetHeight - container.clientHeight)
+          el.style.marginTop = delta > 0 ? `-${delta}px` : ''
+          return
+        }
+        if (el) el.style.marginTop = ''
         try {
           f.fit()
           t.clearTextureAtlas()
         } catch {
           return
         }
-        resize(t.cols, t.rows)
+        lastFitWidth = container.clientWidth
+        if (t.cols !== lastSentCols || t.rows !== lastSentRows) {
+          lastSentCols = t.cols
+          lastSentRows = t.rows
+          resize(t.cols, t.rows)
+        }
       }, RESIZE_DEBOUNCE_MS)
     })
     ro.observe(container)
 
-    // 5. 1013 silent-reconnect: on visibilitychange→visible (debounced ≥2s),
-    //    re-establish the subscription without a banner state flip.
+    // 5. Resume health-check. Fires on visibilitychange→visible, pageshow
+    //    (bfcache restore) and network `online`. Reconnects when:
+    //      • a reconnect was parked while hidden (1013 overflow, or any close
+    //        deferred by scheduleReconnect's hidden guard), OR
+    //      • the socket is missing / not OPEN / never authed (covers the
+    //        `offline` dead-end after burned attempts — resume gets a fresh
+    //        budget), OR
+    //      • the page was hidden past RESUME_STALE_MS — Android suspends the
+    //        network without closing sockets, so after a long background the
+    //        local WS still CLAIMS readyState OPEN while the server reaped the
+    //        subscription long ago (20s ping / 30s deadline). readyState is a
+    //        lie there; reconnect proactively. A short blip (≤ the ceiling)
+    //        keeps its socket: if the server reaped it anyway, the close now
+    //        arrives while VISIBLE and the normal backoff path heals it.
+    //    `stopped` stays terminal — the pty is gone; resume can't revive it.
+    const hiddenAtRef = { current: null as number | null }
     const onVisibility = () => {
-      if (document.visibilityState !== 'visible') return
-      if (!visibilityPendingRef.current || disposedRef.current) return
+      if (document.visibilityState === 'hidden') {
+        hiddenAtRef.current = Date.now()
+        return
+      }
+      if (disposedRef.current) return
+      if (stateRef.current === 'stopped') return
+      const hiddenFor =
+        hiddenAtRef.current === null ? 0 : Date.now() - hiddenAtRef.current
+      hiddenAtRef.current = null
+      const ws = wsRef.current
+      const socketLooksDead =
+        !ws || ws.readyState !== WebSocket.OPEN || !authedRef.current
+      const needsReconnect =
+        visibilityPendingRef.current ||
+        socketLooksDead ||
+        hiddenFor > RESUME_STALE_MS
+      if (!needsReconnect) return
       const now = Date.now()
       if (now - lastVisibleAtRef.current < VISIBILITY_DEBOUNCE_MS) return
       lastVisibleAtRef.current = now
       visibilityPendingRef.current = false
       attemptRef.current = 0
+      // Retire a zombie that still claims OPEN before dialing a fresh socket —
+      // with its handlers dropped first so its eventual close can't schedule a
+      // competing reconnect.
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null
+        try {
+          ws.close(CLOSE_UNMOUNT, 'stale-resume')
+        } catch {
+          /* already closing */
+        }
+        wsRef.current = null
+      }
       connect()
     }
     document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pageshow', onVisibility)
+    window.addEventListener('online', onVisibility)
 
     // 5b. Track soft-keyboard open/close off `visualViewport` so the live-render
     //     kick (above) knows when xterm's canvas is in the frozen-while-keyboard-up
@@ -1579,6 +1687,8 @@ export function useLiveTerm(
       disposedRef.current = true
       window.cancelAnimationFrame(raf)
       document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pageshow', onVisibility)
+      window.removeEventListener('online', onVisibility)
       if (visual) {
         visual.removeEventListener('resize', scheduleKeyboard)
         visual.removeEventListener('scroll', scheduleKeyboard)
