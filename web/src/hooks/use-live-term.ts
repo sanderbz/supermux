@@ -25,6 +25,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { authToken, wsUrl } from '@/env'
 import { claim as claimPrewarm } from '@/hooks/peek-prewarm-store'
 import { disableXtermMouseTracking } from '@/lib/disable-xterm-mouse'
+import { attachAndroidImeBridge, isAndroid } from '@/lib/android-ime'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
 // session's pty is gone (not running) — there is nothing to reconnect to, so we
@@ -871,7 +872,21 @@ export function useLiveTerm(
     //    We send ONLY (a). The agent (claude, etc.) re-enables and uses focus
     //    events / DSR-CPR via the server→client direction; nothing of value
     //    flows back through client→server other than what the user typed.
+    // Android IME bridge teardown handle (assigned below when attached).
+    let disposeAndroidIme: (() => void) | null = null
     if (!readOnly) {
+      // ANDROID IME (GBoard et al.): xterm.js doesn't support Android soft-
+      // keyboard composition (upstream #3600) — tapping an autocomplete
+      // suggestion duplicated text at Claude's prompt. The bridge owns the
+      // hidden-textarea → pty translation on Android (proper prefix/suffix
+      // diff → DELs + replacement bytes) and blackholes the composition/input
+      // events xterm would mis-handle; the keyCode-229 branch in the custom
+      // key handler below keeps xterm's own composition path short-circuited.
+      // Full design + known limits: lib/android-ime.ts.
+      const androidIme = isAndroid()
+      if (androidIme) {
+        disposeAndroidIme = attachAndroidImeBridge(term, sendRaw)
+      }
       // `coreService` is documented as `public readonly` on CoreTerminal — stable
       // since xterm 5.x. We reach it via `_core` (private on the public Terminal
       // wrapper) with a typed local cast; if a future xterm rev drops the
@@ -913,6 +928,20 @@ export function useLiveTerm(
       // during IME composition (`isComposing` / keyCode 229) so a CJK
       // candidate-commit Enter still reaches the composer normally.
       term.attachCustomKeyEventHandler((e) => {
+        // ANDROID IME BYPASS (lib/android-ime.ts owns the full why). Soft
+        // keyboards deliver composed text under keydown keyCode 229; xterm's
+        // CompositionHelper diffs the hidden textarea naively and duplicates
+        // text on a suggestion tap / autocorrect. Returning false here
+        // short-circuits `_keyDown` BEFORE `CompositionHelper.keydown` (which
+        // would schedule its broken `_handleAnyTextareaChanges` sender) —
+        // the bridge attached below translates the textarea mutations
+        // instead. The browser's default edit still applies (no
+        // preventDefault), so the `input` events the bridge needs keep
+        // firing. Real keys (Enter 13, Backspace 8, arrows, Ctrl chords)
+        // fall through to xterm's keymap untouched.
+        if (androidIme && e.type === 'keydown' && e.keyCode === 229) {
+          return false
+        }
         // ⌘C (macOS) / Ctrl+Shift+C (Linux/Windows) copies the CURRENT selection
         // to the system clipboard. With the GPU renderer there is no DOM text for
         // the browser's native copy to grab, so we copy via xterm's selection API.
@@ -1579,6 +1608,7 @@ export function useLiveTerm(
         wsRef.current = null
       }
       viewportEl?.removeEventListener('scroll', syncScrolledUp)
+      disposeAndroidIme?.()
       term.dispose()
       termRef.current = null
       fitRef.current = null
