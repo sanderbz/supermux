@@ -5,9 +5,7 @@
 Run a roomful of Claude Code agents on your VPS or home server. Watch, steer, and switch between them from your phone or laptop — with native-feeling UI on every device. Your sessions stay alive whether your laptop is open or closed.
 
 <p align="center">
-  <video src="https://github.com/sanderbz/supermux/raw/main/docs/showcase/supermux-showcase.mp4" autoplay loop muted playsinline width="900">
-    <img src="docs/showcase/supermux-showcase.gif" alt="supermux in action" width="900">
-  </video>
+  <a href="docs/screenshots/supermux-detail.png"><img src="docs/screenshots/supermux-detail.png" alt="supermux focus mode: sidebar of live sessions on the left, terminal pane, keyboard-shortcut dock" width="900"></a>
 </p>
 
 <p align="center"><em>Every Claude Code session at a glance. Hover for a live peek, type without leaving the overview, tap to zoom into focus mode, jump anywhere with ⌘K. Same dashboard on your phone.</em></p>
@@ -18,6 +16,18 @@ Run a roomful of Claude Code agents on your VPS or home server. Watch, steer, an
   <img src="https://img.shields.io/badge/single--binary-Rust-orange" alt="Rust">
   <img src="https://img.shields.io/badge/runs%20on-Linux%20%7C%20macOS-success" alt="platforms">
 </p>
+
+---
+
+## Install in one line
+
+SSH into a fresh Ubuntu 22.04+ / Debian 12+ box and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo bash
+```
+
+~10 seconds. Downloads the prebuilt binary for your CPU, provisions an unprivileged `supermux` service user, installs the systemd unit, starts the service, prints your URL + auth token. Re-run any time to upgrade — sessions + data are preserved. Tailscale + Claude Code are auto-detected and offered. Full quickstart details + flags are [below](#full-quickstart).
 
 ---
 
@@ -35,9 +45,9 @@ That's the problem supermux solves.
 - **Native-feeling PWA.** Installs on macOS, Windows, iPhone, Android. iOS gets real push notifications, dictation in the prompt editor, drag-and-drop file uploads on desktop.
 
 <p align="center">
-  <a href="docs/screenshots/overview-desktop.png"><img src="docs/screenshots/overview-desktop.png" alt="supermux overview on desktop" width="580"></a>
+  <a href="docs/screenshots/mobile-overview.png"><img src="docs/screenshots/mobile-overview.png" alt="supermux on iPhone: vertical list of session tiles" width="260"></a>
   &nbsp;
-  <a href="docs/screenshots/overview-mobile.png"><img src="docs/screenshots/overview-mobile.png" alt="supermux overview on iPhone" width="220"></a>
+  <a href="docs/screenshots/mobile-detail.png"><img src="docs/screenshots/mobile-detail.png" alt="supermux on iPhone: focus mode inside a session" width="260"></a>
 </p>
 
 <p align="center"><em>Same dashboard. Every device. Tap to enlarge.</em></p>
@@ -50,7 +60,7 @@ That's the problem supermux solves.
 - **Focus mode** — tap any tile to zoom into a keyboard-captured xterm.js terminal (desktop) or a detented bottom-sheet (mobile). `⌘1..9` jumps instantly between sessions.
 - **⌘K command palette** — fuzzy search across sessions, board issues, slash commands, MCP tools, and Claude Code skills.
 
-<p align="center"><a href="docs/screenshots/focus-mode.png"><img src="docs/screenshots/focus-mode.png" alt="Focus mode with sidebar of sessions and live terminal" width="780"></a></p>
+<p align="center"><a href="docs/screenshots/new-claude.png"><img src="docs/screenshots/new-claude.png" alt="New session sheet on the overview: Quick start (Blank Claude / Code reviewer / Doc writer presets) and Advanced" width="780"></a></p>
 
 ### Notifications that find you
 - **Real push notifications** when Claude finishes, asks a question, or stops. Works on iOS too — install the PWA, allow notifications, walk away from your machine.
@@ -72,6 +82,8 @@ That's the problem supermux solves.
 - **Done** writes back, you hit Enter when ready. **Send** writes back and submits.
 - Mobile gets a full-page edit surface with proper safe-area handling.
 - Built on Claude Code's own `chat:externalEditor` (Ctrl+G) bridge — no scraping, no keystroke replay.
+
+<p align="center"><a href="docs/screenshots/native-input.png"><img src="docs/screenshots/native-input.png" alt="Edit prompt sheet on iPhone: native textarea with iOS selection handles, attach + voice + Done" width="260"></a></p>
 
 ### Drag-and-drop uploads
 - **Drag a file onto the terminal pane** on desktop — supermux uploads it server-side and pastes the resolved path at Claude's cursor.
@@ -124,36 +136,36 @@ That's the problem supermux solves.
 
 ---
 
-## Quickstart — one line on your VPS
+<a id="full-quickstart"></a>
 
-SSH into your server (Ubuntu 22.04+ or Debian 12+) and run:
+## Full quickstart
 
+The [one-liner above](#install-in-one-line) covers the common case. A few flavours for everything else:
+
+**Pinned version** — install exactly `v0.4.22`:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo SUPERMUX_VERSION=v0.4.22 bash
 ```
 
-That's it. The installer downloads the prebuilt binary for your CPU (x86_64 or aarch64), provisions an unprivileged `supermux` service user, installs the systemd unit, starts the service, and prints your URL + auth token. ~10 seconds end-to-end. Re-run any time to upgrade; existing data + sessions are preserved.
-
-If you have **Tailscale** already running on the box, supermux auto-exposes itself via `tailscale serve` on `:443` — clean HTTPS, internal-only URL on every device on your tailnet. Otherwise it binds to `127.0.0.1:8824` and you put your own reverse proxy in front.
-
-If `claude` isn't installed for the service user, the installer offers to do that too (one prompt, official native installer — no Node). Then log in once: `sudo -u supermux -i claude` → `/login`.
-
-After install, open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
-
-### Want to inspect before running?
-
+**Inspect before running**:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh -o install.sh
 less install.sh
 sudo bash install.sh
 ```
 
-### Other ways
+**Dry run** (print the plan, change nothing): append `--dry-run` to the bash command.
 
-- **Pin a version**: `curl -fsSL .../install.sh | sudo SUPERMUX_VERSION=v0.4.21 bash`
-- **Dry run** (print plan, change nothing): add `--dry-run`
-- **From a clone** (development / private fork): `git clone … && cd supermux && sudo bash install.sh`
-- **Deploy over SSH from your workstation** (advanced — useful for fleet management of multiple boxes): see [`scripts/deploy.sh`](scripts/deploy.sh) and `bash scripts/setup.sh`.
+**Tailscale** — if `tailscaled` is running on the box, supermux auto-exposes via `tailscale serve` on `:443`. Otherwise it binds to `127.0.0.1:8824` for your own reverse proxy.
+
+**Claude Code** — the installer offers to install it for the service user if missing (official native installer — no Node). Log in once with `sudo -u supermux -i claude` → `/login`.
+
+**After install**: open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
+
+### Other paths
+
+- **From a clone** (development / private fork): `git clone … && cd supermux && sudo bash install.sh`.
+- **Deploy over SSH from your workstation** (advanced — fleet management of many boxes): see [`scripts/deploy.sh`](scripts/deploy.sh) and `bash scripts/setup.sh`.
 - **Local development** with HMR: `scripts/dev.sh` (Rust backend on `:8823`, Vite for the PWA).
 
 ---
