@@ -67,21 +67,6 @@ impl TmuxTarget {
         }
     }
 
-    /// The EXACT-MATCH `-t` argument: `=supermux-<name>` for a session, the raw
-    /// `%id` for a pane (pane ids are already exact). The leading `=` disables
-    /// tmux's prefix/fnmatch target resolution, so a session whose name is a
-    /// PREFIX of another (e.g. `supermux-supermux` vs `supermux-supermux-side`)
-    /// can never shadow it. Use this for every `-t` target — has-session,
-    /// capture-pane, send-keys, kill-session, etc. Without it, targeting the
-    /// shorter name while only the longer session exists resolves to the WRONG
-    /// session (the "sessions glued together" bug).
-    pub fn arg_match(&self) -> String {
-        match self {
-            TmuxTarget::Session(name) => format!("=supermux-{name}"),
-            TmuxTarget::Pane(id) => id.clone(),
-        }
-    }
-
     /// True for a teammate pane target — callers use this to pick pane-scoped
     /// behaviour (e.g. `resize-pane` vs `resize-window`).
     pub fn is_pane(&self) -> bool {
@@ -156,11 +141,51 @@ impl<'a> Tmux<'a> {
         self.target.arg()
     }
 
-    /// The EXACT-MATCH (`=`-prefixed) tmux `-t` target for this handle. Every
-    /// `-t` shell-out below uses this so a session never shadows another whose
-    /// name it prefixes. See [`TmuxTarget::arg_match`].
-    pub fn target_match(&self) -> String {
-        self.target.arg_match()
+    /// The EXACT `-t` target for this handle, resolved at runtime to a tmux
+    /// session-id (`$N`) for sessions or the bare `%id` for panes. Every
+    /// session-targeted `-t` shell-out below uses this so a session never
+    /// shadows another whose name it prefixes — `$N` is allocated by the tmux
+    /// server, globally unique, and never substring-matched.
+    ///
+    /// History: an earlier fix used the `=name` exact-match prefix tmux
+    /// documents for session targets, but on tmux 3.4 (Ubuntu noble + the
+    /// other current LTS targets) `=name` is rejected for pane-target
+    /// commands with `can't find pane: =name`, breaking every
+    /// `capture-pane` / `send-keys` / `pipe-pane` call in the binary. The
+    /// session-id approach side-steps the whole resolver.
+    ///
+    /// Async because the lookup runs a tmux `list-sessions` exec. On a miss
+    /// (session has been killed, server down) the bare `supermux-<name>`
+    /// falls through so the caller's command produces the same natural
+    /// "session not found" error a torn-down session would have produced
+    /// without this fix.
+    pub async fn target_match(&self) -> String {
+        match &self.target {
+            TmuxTarget::Pane(id) => id.clone(),
+            TmuxTarget::Session(name) => {
+                let bare = format!("supermux-{name}");
+                self.resolve_session_id(&bare).await.unwrap_or(bare)
+            }
+        }
+    }
+
+    /// Look up the live `$<id>` for a session by EXACT name match in Rust.
+    /// Returns `None` when the session does not exist or `list-sessions`
+    /// fails (no tmux server running, transport down) — callers fall back to
+    /// the bare name in both cases, which then produces the correct
+    /// session-not-found error.
+    async fn resolve_session_id(&self, full_name: &str) -> Option<String> {
+        let out = self
+            .run(&["list-sessions", "-F", "#{session_id} #{session_name}"])
+            .await
+            .ok()?;
+        for line in out.lines() {
+            let (id, n) = line.split_once(' ')?;
+            if n == full_name {
+                return Some(id.to_string());
+            }
+        }
+        None
     }
 
     /// True when this handle targets a teammate pane (`%id`) rather than a session.
@@ -261,7 +286,7 @@ impl<'a> Tmux<'a> {
         shell: &str,
     ) -> Result<()> {
         let target = self.target(); // bare name — `new-session -s` takes a literal NAME
-        let target_match = self.target_match(); // exact `=`-target for `-t` post-create opts
+        let target_match = self.target_match().await; // exact `=`-target for `-t` post-create opts
         let dir_str = dir.to_string_lossy().to_string();
         let history_limit = Self::HISTORY_LIMIT.to_string();
 
@@ -365,7 +390,7 @@ impl<'a> Tmux<'a> {
         if !self.exists().await.unwrap_or(false) {
             return Ok(());
         }
-        self.run(&["kill-session", "-t", &self.target_match()]).await?;
+        self.run(&["kill-session", "-t", &self.target_match().await]).await?;
         Ok(())
     }
 
@@ -377,28 +402,40 @@ impl<'a> Tmux<'a> {
     /// fresh attach against the new name. Caller verifies the session exists.
     pub async fn rename_session(&self, new_bare: &str) -> Result<()> {
         let new_target = format!("supermux-{new_bare}");
-        self.run(&["rename-session", "-t", &self.target_match(), &new_target])
+        self.run(&["rename-session", "-t", &self.target_match().await, &new_target])
             .await?;
         Ok(())
     }
 
-    /// `tmux has-session -t =supermux-<name>` → true on exit 0 (exact-match `-t`).
+    /// `tmux list-sessions -F #{session_name}` + EXACT name match in Rust. We
+    /// deliberately do NOT use `tmux has-session -t <name>` because that
+    /// path's target resolver is prefix/fnmatch-based, so a bare
+    /// `supermux-foo` would wrongly report the session alive when only the
+    /// longer `supermux-foo-side` exists (the start-skip / shadowing bug
+    /// `linkbuilder` vs `linkbuilder-mailer`). The `=name` exact-match prefix
+    /// tmux documents for this is rejected on tmux 3.4 (`can't find pane`),
+    /// so we dodge the whole resolver and match in Rust.
+    ///
+    /// For pane handles (`%id`) we return `false`: panes aren't sessions, and
+    /// the previous `has-session -t %id` would have errored too. Callers
+    /// that need pane liveness use [`pane_alive`].
     pub async fn exists(&self) -> Result<bool> {
-        let program = self.program_for_transport()?;
-        // EXACT-match target: `has-session` is the liveness/already-running probe;
-        // a bare `supermux-foo` would prefix-match a longer `supermux-foo-side` and
-        // wrongly report the session alive (the start-skip / shadowing bug).
-        let target = self.target_match();
-        let ok = self
-            .transport
-            .spawn_command(&program, &["has-session", "-t", &target])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+        let name = match &self.target {
+            TmuxTarget::Session(n) => n,
+            TmuxTarget::Pane(_) => return Ok(false),
+        };
+        let full = format!("supermux-{name}");
+        // `list-sessions` exits non-zero when there is no tmux server. Treat
+        // that as "no session" — same shape the old `has-session` returned in
+        // that state.
+        let out = match self
+            .run(&["list-sessions", "-F", "#{session_name}"])
             .await
-            .with_context(|| "spawning tmux has-session")?
-            .success();
-        Ok(ok)
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(false),
+        };
+        Ok(out.lines().any(|l| l == full))
     }
 
     /// Is the addressed PANE still alive? `list-panes -t %id`
@@ -410,7 +447,7 @@ impl<'a> Tmux<'a> {
     /// fault reads as "gone" (false) so the stream errs toward teardown.
     pub async fn pane_alive(&self) -> bool {
         match self
-            .run(&["list-panes", "-t", &self.target_match(), "-F", "#{pane_id}"])
+            .run(&["list-panes", "-t", &self.target_match().await, "-F", "#{pane_id}"])
             .await
         {
             Ok(out) => out.lines().any(|l| !l.trim().is_empty()),
@@ -436,7 +473,7 @@ impl<'a> Tmux<'a> {
             .run(&[
                 "list-panes",
                 "-t",
-                &self.target_match(),
+                &self.target_match().await,
                 "-F",
                 "#{pane_dead}",
             ])
@@ -454,7 +491,7 @@ impl<'a> Tmux<'a> {
             "capture-pane",
             "-p",
             "-t",
-            &self.target_match(),
+            &self.target_match().await,
             "-S",
             &start,
         ])
@@ -471,7 +508,7 @@ impl<'a> Tmux<'a> {
             "-p",
             "-e",
             "-t",
-            &self.target_match(),
+            &self.target_match().await,
             "-S",
             &start,
         ])
@@ -485,13 +522,13 @@ impl<'a> Tmux<'a> {
     /// server restart — see session-survival) still sees the current screen
     /// instead of a black pane. Read-only, no lock.
     pub async fn capture_screen_ansi(&self) -> Result<String> {
-        self.run(&["capture-pane", "-p", "-e", "-t", &self.target_match()])
+        self.run(&["capture-pane", "-p", "-e", "-t", &self.target_match().await])
             .await
     }
 
     /// Capture the entire scrollback (`-S -`), used by `archive`.
     pub async fn capture_full(&self) -> Result<String> {
-        self.run(&["capture-pane", "-p", "-t", &self.target_match(), "-S", "-"])
+        self.run(&["capture-pane", "-p", "-t", &self.target_match().await, "-S", "-"])
             .await
     }
 
@@ -512,7 +549,7 @@ impl<'a> Tmux<'a> {
             "-e",
             "-J",
             "-t",
-            &self.target_match(),
+            &self.target_match().await,
             "-S",
             "-",
             "-E",
@@ -583,7 +620,7 @@ impl<'a> Tmux<'a> {
                 "display-message",
                 "-p",
                 "-t",
-                &self.target_match(),
+                &self.target_match().await,
                 "#{alternate_on},#{cursor_x},#{cursor_y},#{pane_height}",
             ])
             .await
@@ -608,19 +645,19 @@ impl<'a> Tmux<'a> {
             }
             let history = self
                 .run(&[
-                    "capture-pane", "-p", "-e", "-J", "-t", &self.target_match(),
+                    "capture-pane", "-p", "-e", "-J", "-t", &self.target_match().await,
                     "-S", "-", "-E", "-1",
                 ])
                 .await
                 .unwrap_or_default();
             let visible = self
-                .run(&["capture-pane", "-p", "-e", "-t", &self.target_match()])
+                .run(&["capture-pane", "-p", "-e", "-t", &self.target_match().await])
                 .await
                 .unwrap_or_default();
             // Race-B: re-probe the cursor right after the visible capture so the
             // CUP matches the bytes we just grabbed (same tightening as alt mode).
             let info2 = self
-                .run(&["display-message", "-p", "-t", &self.target_match(), "#{cursor_x},#{cursor_y}"])
+                .run(&["display-message", "-p", "-t", &self.target_match().await, "#{cursor_x},#{cursor_y}"])
                 .await
                 .unwrap_or_default();
             let (cursor_x, cursor_y) =
@@ -639,7 +676,7 @@ impl<'a> Tmux<'a> {
                 "-e",
                 "-J",
                 "-t",
-                &self.target_match(),
+                &self.target_match().await,
                 "-S",
                 "-",
                 "-E",
@@ -649,7 +686,7 @@ impl<'a> Tmux<'a> {
             .unwrap_or_default();
         // 3b. Visible alt-screen body (the current TUI frame).
         let visible = self
-            .run(&["capture-pane", "-p", "-e", "-t", &self.target_match()])
+            .run(&["capture-pane", "-p", "-e", "-t", &self.target_match().await])
             .await
             .unwrap_or_default();
         // 3c. RE-PROBE the cursor (Race-B tightening). The TUI may have moved
@@ -661,7 +698,7 @@ impl<'a> Tmux<'a> {
                 "display-message",
                 "-p",
                 "-t",
-                &self.target_match(),
+                &self.target_match().await,
                 "#{cursor_x},#{cursor_y}",
             ])
             .await
@@ -692,7 +729,7 @@ impl<'a> Tmux<'a> {
             self.paste_via_buffer(text, false).await
         } else {
             // `--` so a leading '-' in the text isn't parsed as a flag.
-            self.run(&["send-keys", "-t", &self.target_match(), "-l", "--", text])
+            self.run(&["send-keys", "-t", &self.target_match().await, "-l", "--", text])
                 .await
                 .map(|_| ())
         }
@@ -702,7 +739,7 @@ impl<'a> Tmux<'a> {
     /// `bracketed` requests bracketed-paste mode so the receiving app treats it
     /// as a single paste (`paste-buffer -p`).
     pub async fn paste_via_buffer(&self, text: &str, bracketed: bool) -> Result<()> {
-        let target = self.target_match(); // `-t` target for load-buffer/paste-buffer
+        let target = self.target_match().await; // `-t` target for load-buffer/paste-buffer
         let buf = format!("supermux-paste-{}", self.name);
         // load-buffer reads the payload from stdin (`-`): no arg-length limit.
         self.run_stdin(
@@ -722,7 +759,7 @@ impl<'a> Tmux<'a> {
 
     /// Send a named tmux key (e.g. `Enter`, `C-c`, `Escape`). Not literal.
     pub async fn send_key(&self, key: &str) -> Result<()> {
-        self.run(&["send-keys", "-t", &self.target_match(), key])
+        self.run(&["send-keys", "-t", &self.target_match().await, key])
             .await
             .map(|_| ())
     }
@@ -735,7 +772,7 @@ impl<'a> Tmux<'a> {
         self.run(&[
             "resize-window",
             "-t",
-            &self.target_match(),
+            &self.target_match().await,
             "-x",
             &c,
             "-y",
@@ -757,7 +794,7 @@ impl<'a> Tmux<'a> {
         self.run(&[
             "resize-pane",
             "-t",
-            &self.target_match(),
+            &self.target_match().await,
             "-x",
             &c,
             "-y",
@@ -772,7 +809,7 @@ impl<'a> Tmux<'a> {
     /// form once a WS client subscribes; this gives plain logging meanwhile.
     pub async fn pipe_pane(&self, target_path: &Path) -> Result<()> {
         let cmd = format!("cat >> {}", shell_escape::escape(target_path.to_string_lossy()));
-        self.run(&["pipe-pane", "-O", "-t", &self.target_match(), &cmd])
+        self.run(&["pipe-pane", "-O", "-t", &self.target_match().await, &cmd])
             .await
             .map(|_| ())
     }
@@ -789,7 +826,7 @@ impl<'a> Tmux<'a> {
             shell_escape::escape(log.to_string_lossy()),
             shell_escape::escape(fifo.to_string_lossy()),
         );
-        self.run(&["pipe-pane", "-O", "-t", &self.target_match(), &cmd])
+        self.run(&["pipe-pane", "-O", "-t", &self.target_match().await, &cmd])
             .await
             .map(|_| ())
     }
@@ -803,7 +840,7 @@ impl<'a> Tmux<'a> {
     /// drops every member's live status — fail-closed, never a stale `%id`.
     pub async fn list_pane_ids(&self) -> Result<Vec<String>> {
         let out = self
-            .run(&["list-panes", "-t", &self.target_match(), "-F", "#{pane_id}"])
+            .run(&["list-panes", "-t", &self.target_match().await, "-F", "#{pane_id}"])
             .await?;
         Ok(out
             .lines()
@@ -817,7 +854,7 @@ impl<'a> Tmux<'a> {
     /// child of this. `None` if no pane is reported.
     pub async fn pane_pid(&self) -> Result<Option<u32>> {
         let out = self
-            .run(&["list-panes", "-t", &self.target_match(), "-F", "#{pane_pid}"])
+            .run(&["list-panes", "-t", &self.target_match().await, "-F", "#{pane_pid}"])
             .await?;
         Ok(out.lines().next().and_then(|l| l.trim().parse::<u32>().ok()))
     }
@@ -1232,30 +1269,12 @@ mod target_tests {
     }
 
     #[test]
-    fn session_match_target_is_exact_to_defeat_prefix_shadowing() {
-        // `-t` targets are `=`-prefixed so `supermux-foo` never resolves to a
-        // longer session like `supermux-foo-side` (tmux prefix/fnmatch matching).
-        assert_eq!(
-            TmuxTarget::Session("foo".into()).arg_match(),
-            "=supermux-foo"
-        );
-        assert_eq!(Tmux::new("foo").target_match(), "=supermux-foo");
-        // `=supermux-foo` is NOT a prefix of `=supermux-foo-side`, so exact-match
-        // targeting of the shorter name can no longer hit the longer session.
-        assert_ne!(
-            Tmux::new("foo").target_match(),
-            Tmux::new("foo-side").target_match()
-        );
-    }
-
-    #[test]
     fn pane_target_is_the_raw_pane_id() {
-        // A teammate pane is addressed by its raw `%id` with NO prefix — and the
-        // exact-match accessor leaves pane ids untouched (already unambiguous).
+        // A teammate pane is addressed by its raw `%id` with NO prefix.
         assert_eq!(TmuxTarget::Pane("%17".into()).arg(), "%17");
-        assert_eq!(TmuxTarget::Pane("%17".into()).arg_match(), "%17");
         assert_eq!(Tmux::for_pane("teamA/worker-1", "%17").target(), "%17");
-        assert_eq!(Tmux::for_pane("teamA/worker-1", "%17").target_match(), "%17");
+        // The async `target_match()` short-circuits on pane targets and never
+        // makes a tmux call — exercised in the live-tmux block below.
     }
 
     #[test]
@@ -1264,5 +1283,138 @@ mod target_tests {
         assert!(Tmux::for_pane("s", "%3").is_pane());
         assert!(!TmuxTarget::Session("s".into()).is_pane());
         assert!(TmuxTarget::Pane("%3".into()).is_pane());
+    }
+}
+
+/// Live-tmux integration tests. Run with:
+///     cargo test --release --lib sessions::tmux::live_tmux_tests -- --ignored
+/// Each test creates one or two real tmux sessions with a unique random
+/// prefix, exercises the method under test, then cleans them up. ALWAYS
+/// `#[ignore]` so CI (no tmux daemon, no `supermux-` prefixed sessions to
+/// shadow) and the host's prod tmux don't trip each other.
+///
+/// The bug these tests catch — and that the prior `arg()`/`arg_match()`
+/// string-equality tests missed — is that tmux 3.4 rejects the documented
+/// `=name` exact-match prefix for pane-target commands with `can't find
+/// pane: =name`. A unit test that compares strings can never see this; only
+/// a test that actually shells out can.
+#[cfg(test)]
+mod live_tmux_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn rand_tag() -> String {
+        // No randomness crate — use the nanosecond epoch + pid for uniqueness.
+        let ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("itest-{ns}-{}", std::process::id())
+    }
+
+    async fn create_session(name: &str) {
+        // `new-session -d -s supermux-<name>` — detached, no env, no working dir
+        // requirements.
+        let tmux = Tmux::new(name);
+        tmux.new_session(std::path::Path::new("/tmp"), &HashMap::new(), "/bin/bash")
+            .await
+            .expect("new-session");
+    }
+
+    async fn kill_session(name: &str) {
+        // Best-effort cleanup; we don't want a failing kill to mask a real
+        // assertion failure in the test body.
+        let _ = Tmux::new(name).kill_session().await;
+    }
+
+    /// `exists()` must report TRUE for a session whose name is a prefix of
+    /// another live session — the linkbuilder / linkbuilder-mailer scenario.
+    /// Pre-fix (`has-session -t <bare>` with tmux's prefix matcher) this
+    /// passed both. Post-fix (list-sessions + exact match) it correctly
+    /// distinguishes them.
+    #[tokio::test]
+    #[ignore]
+    async fn exists_distinguishes_prefix_named_sessions() {
+        let tag = rand_tag();
+        let short = format!("{tag}-foo");
+        let long = format!("{tag}-foo-side");
+        create_session(&short).await;
+        create_session(&long).await;
+        assert!(Tmux::new(&short).exists().await.unwrap(), "short exists");
+        assert!(Tmux::new(&long).exists().await.unwrap(), "long exists");
+        // Kill the SHORT one. The LONG must remain reachable.
+        kill_session(&short).await;
+        assert!(!Tmux::new(&short).exists().await.unwrap(), "short gone");
+        assert!(
+            Tmux::new(&long).exists().await.unwrap(),
+            "long still alive"
+        );
+        kill_session(&long).await;
+    }
+
+    /// `target_match()` resolves a session name to its live tmux `$<id>` —
+    /// and that `$<id>` is acceptable to `-t` on tmux 3.4 (the regression the
+    /// `=name` form tripped on). We verify by feeding it to a real
+    /// `capture-pane` call.
+    #[tokio::test]
+    #[ignore]
+    async fn target_match_resolves_to_session_id_usable_by_capture_pane() {
+        let tag = rand_tag();
+        create_session(&tag).await;
+        let tmux = Tmux::new(&tag);
+        let target = tmux.target_match().await;
+        assert!(
+            target.starts_with('$'),
+            "expected $<id>, got {target}"
+        );
+        // Independent verification: capture-pane against the resolved id
+        // must succeed (this is the path that broke under `=name`).
+        tmux.capture_pane(40).await.expect("capture-pane on resolved id");
+        kill_session(&tag).await;
+    }
+
+    /// Prefix-shadowing regression: with both `<tag>` and `<tag>-side` alive,
+    /// a capture on the shorter must NOT return content from the longer.
+    /// Pre-fix this would silently return the wrong session's pane content.
+    #[tokio::test]
+    #[ignore]
+    async fn capture_pane_does_not_cross_prefix_shadow() {
+        let tag = rand_tag();
+        let short = format!("{tag}-foo");
+        let long = format!("{tag}-foo-side");
+        create_session(&short).await;
+        create_session(&long).await;
+        // Write a marker into each session's pane via send-keys.
+        Tmux::new(&short)
+            .send_text("echo SHORT_MARKER\n")
+            .await
+            .expect("send to short");
+        Tmux::new(&long)
+            .send_text("echo LONG_MARKER\n")
+            .await
+            .expect("send to long");
+        // Give tmux a beat to render.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let short_cap = Tmux::new(&short).capture_pane(40).await.unwrap();
+        let long_cap = Tmux::new(&long).capture_pane(40).await.unwrap();
+        assert!(short_cap.contains("SHORT_MARKER"), "short pane has SHORT");
+        assert!(long_cap.contains("LONG_MARKER"), "long pane has LONG");
+        assert!(
+            !short_cap.contains("LONG_MARKER"),
+            "short MUST NOT see LONG (prefix shadow)"
+        );
+        kill_session(&short).await;
+        kill_session(&long).await;
+    }
+
+    /// `exists()` for a non-existent session returns Ok(false) — including
+    /// the case where tmux server isn't running at all (no panic, no Err
+    /// bubble up — matching the old `has-session`'s exit-1 semantics).
+    #[tokio::test]
+    #[ignore]
+    async fn exists_returns_false_for_missing_session() {
+        let tag = format!("nonexistent-{}", rand_tag());
+        assert!(!Tmux::new(&tag).exists().await.unwrap());
     }
 }
