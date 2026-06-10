@@ -129,7 +129,7 @@ export default function App() {
           </TooltipProvider>
         </QueryClientProvider>
       </ThemeProvider>
-      {/* V034: app-root branded overlay for hard outages — offline / server
+      {/* App-root branded overlay for hard outages — offline / server
        *  unreachable / auth-invalid. Mounted OUTSIDE the providers so it can
        *  render even if a provider crashed (e.g. QueryClient fetching during a
        *  network drop). Renders nothing while the connection is healthy. */}

@@ -1,11 +1,11 @@
-//! MCP server mutators (plan §C.3): add (guided form OR raw JSON), remove,
+//! MCP server mutators: add (guided form OR raw JSON), remove,
 //! enable/disable (project trust), and the OPT-IN live health check.
 //!
-//! **Write path = atomic JSON edit** of the smallest subtree (plan §C.4, open-
-//! risk). For `user`/`local` we read→merge→write `~/.claude.json`; for `project`
+//! **Write path = atomic JSON edit** of the smallest subtree. For `user`/`local`
+//! we read→merge→write `~/.claude.json`; for `project`
 //! we write `<cwd>/.mcp.json` — but ONLY with an explicit confirm flag, because
 //! that file is git-tracked and its env values would be shared with everyone who
-//! clones (plan §D.6). Project paths are jailed to the session's `cwd` via
+//! clones. Project paths are jailed to the session's `cwd` via
 //! [`path_safe::resolve_safe`].
 //!
 //! **Secrets are write-only.** `env`/`headers` values arrive raw on the way IN
@@ -14,7 +14,7 @@
 //!
 //! **Health check is opt-in ONLY.** `POST /api/claude/mcp/{name}/check` shells
 //! out to `claude mcp` (the one path that does a live probe). It is bounded by a
-//! timeout and never runs on a plain list-read (plan §A, §D.7, open-risk).
+//! timeout and never runs on a plain list-read.
 
 use std::path::Path;
 use std::time::Duration;
@@ -82,7 +82,7 @@ pub struct AddBody {
 
     /// MUST be `true` to write the git-tracked `<cwd>/.mcp.json` (project scope).
     /// Absent/false on a project write → a clear error telling the FE to show a
-    /// loud "committed to git" warning first (plan §D.6).
+    /// loud "committed to git" warning first.
     #[serde(default)]
     pub confirm_project_write: bool,
 }
@@ -111,7 +111,7 @@ pub async fn add(
         None => build_guided_config(&body)?,
     };
 
-    let restart_hint = true; // MCP changes need a fresh session (plan §A.1).
+    let restart_hint = true; // MCP changes need a fresh session.
 
     match scope {
         Scope::User => {
@@ -125,7 +125,7 @@ pub async fn add(
             audit(&state, "mcp.add", "local", Some(&cwd), &body.name).await;
         }
         Scope::Project => {
-            // Git-tracked file → require an explicit confirm (plan §D.6).
+            // Git-tracked file → require an explicit confirm.
             if !body.confirm_project_write {
                 return Err(AppError::BadRequest(
                     ".mcp.json is committed to git — its env values would be shared with everyone \

@@ -1,13 +1,14 @@
-//! Integration tests for the hosts HTTP surface (REMOTE_PLAN.md RT8).
+//! Integration tests for the hosts HTTP surface (CRUD, soft delete,
+//! reachability).
 //!
 //! Driven via `axum::Router::oneshot` against an isolated temp-dir database,
-//! mirroring `tests/http_session.rs` (the M2 reference pattern). The auto-
+//! mirroring `tests/http_session.rs` (the reference pattern). The auto-
 //! check that fires after `POST /api/hosts` shells out to `ssh` against a
 //! syntactically-valid-but-unroutable target — the spawn succeeds, the connect
 //! fails with `Unreachable` in <10s. We assert the create payload still 201s
 //! (the spec says auto-check is best-effort and MUST NOT fail the create).
 //!
-//! Covers RT8's acceptance bullets:
+//! Covers the acceptance bullets:
 //!   * happy-path create → 201, get → 200, delete → 204.
 //!   * duplicate-name create → 409.
 //!   * delete with an active session referencing host_id → 409.
@@ -177,7 +178,7 @@ async fn delete_refuses_when_active_session_references_host() {
     let host_id = body["data"]["id"].as_i64().unwrap();
 
     // Plant a session row pointing at this host_id with an ACTIVE runtime
-    // status — the exact scenario the RT8 spec says must refuse delete.
+    // status — the exact scenario that must refuse delete.
     db::sessions::insert_minimal(&state.pool, "running", "/tmp/x", "shell")
         .await
         .unwrap();

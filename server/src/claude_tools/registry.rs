@@ -4,7 +4,7 @@
 //! with its **scope** and **provenance**, MCP `env`/`headers` values MASKED. This
 //! path parses Claude's config FILES directly — it NEVER spawns a process, so it
 //! is fast, needs no trust prompt, and keeps the secret values under our control
-//! so we can mask them before they ever leave the server (plan §A, §C.2, §C.4).
+//! so we can mask them before they ever leave the server.
 //!
 //! Sources scanned:
 //!   * MCP — `~/.claude.json` top-level `mcpServers` (user), its

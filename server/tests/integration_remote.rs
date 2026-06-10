@@ -1,30 +1,31 @@
-//! RT10 — end-to-end remote-SSH integration test (REMOTE_PLAN §RT10).
+//! End-to-end remote-SSH integration test.
 //!
 //! This is the final ship-gate for the remote-SSH feature. It exercises every
-//! milestone (RT1–RT9) in one self-contained flow against a localhost-ssh
+//! slice of the feature in one self-contained flow against a localhost-ssh
 //! fixture:
 //!
 //!   1. Boot an in-process supermux server on an ephemeral port (mirrors the
 //!      `tests/ws_pty.rs` harness: `axum::serve` + `tokio::net::TcpListener`).
 //!   2. `POST /api/hosts` to register `<user>@localhost`. Then
 //!      `POST /api/hosts/{id}/check` and assert the row flips to
-//!      `reachable` (RT8 + RT2).
+//!      `reachable` (hosts HTTP API + `HostPool`).
 //!   3. `POST /api/sessions` with `host_id` set, `provider="shell"`. The session
-//!      runs `bash` on the remote (RT3/RT4 join).
-//!   4. WebSocket connect → first-frame auth → `auth_ok` (RT3 routes the pty
-//!      reader through `SshPtyReader`; the auth surface is unchanged from M4).
+//!      runs `bash` on the remote (SSH pty spawn joined to the `host_id` schema).
+//!   4. WebSocket connect → first-frame auth → `auth_ok` (the pty reader is
+//!      routed through `SshPtyReader`; the auth surface is unchanged from the
+//!      local WebSocket path).
 //!   5. `POST /send {"text":"echo remote-hello"}` → poll `/peek` until
 //!      `remote-hello` shows up. Status flips `Active → Idle` within the
-//!      generous-but-bounded window (RT3 + status detector).
+//!      generous-but-bounded window (SSH pty reader + status detector).
 //!   6. `GET /api/file?session=...&path=/etc/hostname` returns the remote
 //!      hostname (matches `hostname` on localhost) — proves the file API's
-//!      `SshFileTransport` dispatch on a session with `host_id` (RT6).
+//!      `SshFileTransport` dispatch on a session with `host_id`.
 //!   7. Manually invoke `claude_config::install_hooks` against the
 //!      `SshFileTransport` (provider=shell sessions don't auto-install — that
 //!      is Claude-only — so we drive the public surface directly). Then
 //!      `GET /api/file?session=...&path=~/.claude/settings.json` and assert
 //!      the body contains the `supermux-hook` marker AND a URL that is NOT
-//!      `127.0.0.1`, but the configured `remote_callback_url` (RT5).
+//!      `127.0.0.1`, but the configured `remote_callback_url`.
 //!   8. Tear down: `DELETE /api/sessions/...`, `DELETE /api/hosts/{id}`,
 //!      pool/host-pool tear-down.
 //!
@@ -119,7 +120,7 @@ fn config_round_trips_remote_callback_url() {
     assert!(cfg_none.remote_callback_url.is_none());
 }
 
-/// The RT5 resolver contract, exercised at the unit level via `build_env`'s
+/// The remote-callback-URL resolver contract, exercised at the unit level via `build_env`'s
 /// observable output: a session with `host_id=Some(_)` MUST NOT carry a
 /// `SUPERMUX_URL=http://127.0.0.1:…` value when a `remote_callback_url` is
 /// configured. The resolver itself is private; we observe it through the
@@ -312,12 +313,12 @@ fn local_user() -> String {
             }
         }
     }
-    panic!("RT10: could not resolve local user (set $USER or have whoami on PATH)");
+    panic!("remote e2e: could not resolve local user (set $USER or have whoami on PATH)");
 }
 
 // ── Gated end-to-end ─────────────────────────────────────────────────────────
 
-/// The full RT10 e2e. See module docs for the slice-by-slice walk. Gated
+/// The full remote-SSH e2e. See module docs for the slice-by-slice walk. Gated
 /// `#[ignore = "requires localhost-ssh"]`: opt-in only with
 /// `cargo test --release --test integration_remote -- --ignored`.
 #[tokio::test]
@@ -393,7 +394,7 @@ async fn end_to_end_remote_session() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "create session body: {body}");
 
-    // Start it — spawns the pty via the SSH transport (RT3).
+    // Start it — spawns the pty via the SSH transport.
     let (status, body) = send(
         &f.app,
         Method::POST,
@@ -552,10 +553,10 @@ async fn end_to_end_remote_session() {
     // design (the URL must NOT be written to the world-readable settings
     // file). What we CAN assert is the marker exists + the literal
     // `127.0.0.1` does NOT appear (which would be the local-default mistake
-    // RT5 specifically fixes).
+    // the remote callback-URL resolution specifically fixes).
     assert!(
         !settings.contains("127.0.0.1"),
-        "settings.json must NOT contain literal 127.0.0.1 (would be a regression of RT5):\n{settings}"
+        "settings.json must NOT contain literal 127.0.0.1 (would be a regression of the remote callback-URL fix):\n{settings}"
     );
 
     // ── 8. Teardown — DELETE session, DELETE host, assert cleanup.

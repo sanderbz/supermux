@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// R5 — mobile action-panels spec (panels-unify + quick-keys). Unlike the smoke
+// Mobile action-panels spec (unified sheets + quick-keys). Unlike the smoke
 // suite (which boots a real Rust binary + tmux per test), this config serves the
 // built static app via `vite preview` and stubs ALL backend traffic (REST + SSE
 // + the live-terminal WebSocket) at the network layer with Playwright route

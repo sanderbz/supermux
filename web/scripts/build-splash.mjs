@@ -1,11 +1,11 @@
-// M23b — iOS PWA splash-screen generator (TECH_PLAN §4.9 / §10).
+// iOS PWA splash-screen generator.
 //
 // iOS Safari does not read the manifest `background_color` for the launch
 // screen of a home-screen PWA — it needs a per-device <link rel="apple-touch-
 // startup-image"> PNG matched by a media query. This script renders one PNG per
 // supported iPhone size: a #0a0a0a field (identical to globals.css --background
 // and the manifest background_color, so there is NO flash of a wrong color)
-// with the M28 amber app icon centered.
+// with the amber app icon centered.
 //
 // Run: `node scripts/build-splash.mjs` (needs `rsvg-convert` on PATH).
 // Output: web/public/splash/apple-splash-<w>-<h>.png. Re-run after the icon
@@ -46,7 +46,7 @@ function splashSvg(w, h) {
   const cy = h / 2
   const mark = Math.round(Math.min(w, h) * 0.22)
   const half = mark / 2
-  // Icon path coordinates are the M28 icon.svg geometry, scaled into `mark`.
+  // Icon path coordinates are the icon.svg geometry, scaled into `mark`.
   const s = mark / 512
   const px = (x) => cx - half + x * s
   const py = (y) => cy - half + y * s

@@ -5,20 +5,20 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
-// Tailwind v4 is wired via the first-party Vite plugin (TECH_PLAN §M0 / §4) —
+// Tailwind v4 is wired via the first-party Vite plugin —
 // no postcss.config.js / tailwind.config.ts pipeline required.
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    // M23b (TECH_PLAN §4.9 / §10): installable PWA for iOS Safari.
+    // Installable PWA for iOS Safari.
     //
     // The service worker caches ONLY the static app shell (fingerprinted JS/CSS
     // + icons). It is NOT a data layer: the WebSocket (live terminal) and SSE
     // (metadata) remain the single source of truth for session data. There is
     // NO polling and NO offline data replay here.
     //
-    // Auth-safety contract (Codex #13/#20):
+    // Auth-safety contract (what the service worker must never break):
     //   - `/` (the HTML doc) is fetched NetworkFirst with a 3s timeout. The doc
     //     carries the injected `window._SUPERMUX_AUTH_TOKEN`, so a stale cached doc
     //     would leak an old token — NetworkFirst keeps the cache as a 3s-timeout
@@ -41,7 +41,7 @@ export default defineConfig({
         'icon-512.png',
         'apple-touch-icon.png',
         'splash/*.png',
-        // V034: branded offline shell, precached so the SW can serve it on the
+        // Branded offline shell, precached so the SW can serve it on the
         // cold-start-with-no-server path (first visit while offline). See
         // workbox.runtimeCaching below for the navigation-fallback wiring.
         'offline.html',
@@ -50,13 +50,13 @@ export default defineConfig({
         name: 'supermux',
         short_name: 'supermux',
         description: 'Run and watch your agents from anywhere.',
-        // ?source=pwa lets the app distinguish a home-screen launch (§4.9).
+        // ?source=pwa lets the app distinguish a home-screen launch.
         start_url: '/?source=pwa',
         scope: '/',
         display: 'standalone',
         orientation: 'portrait',
         // Matches globals.css --background and the dark first-frame paint, so
-        // the iOS splash has NO flash of white (M23b acceptance).
+        // the iOS splash has NO flash of white.
         background_color: '#0a0a0a',
         theme_color: '#0a0a0a',
         icons: [
@@ -89,9 +89,9 @@ export default defineConfig({
             // The HTML document carries the auth token — NetworkFirst with a
             // 3s timeout means a live token always wins; the cache is only a
             // brief offline-shell fallback. Cache name `supermux-html` is the one
-            // Settings → Rotate token drops on rotation (M22 contract).
+            // Settings → Rotate token drops on rotation.
             //
-            // V034: when BOTH the network and the cached HTML doc fail (cold
+            // When BOTH the network and the cached HTML doc fail (cold
             // first-visit while offline / server down), Workbox tries
             // `precache(offline.html)` — that file is precached above so it's
             // guaranteed to be available. The user gets a branded
@@ -135,7 +135,7 @@ export default defineConfig({
     },
   },
   build: {
-    // M29 (TECH_PLAN §10): explicit vendor splitting so the hero loop
+    // Explicit vendor splitting so the hero loop
     // (overview + focus terminal) ships a lean main `app` chunk and heavy
     // vendors are cached / loaded independently. Budgets are enforced
     // post-build by `scripts/size-budget.mjs` (`bun run perf:size`).
@@ -149,7 +149,7 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/]framer-motion[\\/]/.test(id)) return 'vendor-framer'
           if (/[\\/]node_modules[\\/](@codemirror|@uiw|@lezer|codemirror)[\\/]/.test(id))
             return 'vendor-codemirror'
-          // M-MD: rendered-markdown stack — unified/remark/rehype/mdast/hast/
+          // Rendered-markdown stack — unified/remark/rehype/mdast/hast/
           // micromark/lowlight/highlight.js plus react-markdown itself. Lazy
           // route only (FileViewer markdown Preview tab), so split it out so
           // the overview/focus hero loop never pays for it.
@@ -164,7 +164,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Backend (Rust/axum) runs on 127.0.0.1:8823 in dev. The M24a e2e smoke
+    // Backend (Rust/axum) runs on 127.0.0.1:8823 in dev. The e2e smoke
     // harness boots a fresh binary on an ephemeral port and points Vite at it
     // via SUPERMUX_E2E_BACKEND, so /api + /ws are proxied SAME-ORIGIN — the app runs
     // exactly as it does behind the embedded static server (no CORS, no

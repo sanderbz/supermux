@@ -1,4 +1,4 @@
-M29 — Performance budget report (gzipped)
+Performance budget report (gzipped)
 
 App JS chunks:
   index-CO2hPr4p.js                    43.67 KB

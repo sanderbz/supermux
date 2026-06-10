@@ -1,6 +1,4 @@
-// ReconnectBanner — the global connection-status surface
-// (research/termius-ios-native-spec.md §"Reconnect banner / connection status
-// surface", §"v3 finish acceptance criteria" #8 / #20).
+// ReconnectBanner — the global connection-status surface.
 //
 // One glass pill, 8px below the safe-area top, 36px tall, full-pill radius. It
 // renders the AGGREGATED `useConnection` verdict — the worst current state
@@ -14,10 +12,10 @@
 // "New session" button) at any breakpoint. When there is no banner it occupies
 // zero height — `<AnimatePresence>` collapses the row on exit.
 //
-// Motion (per the Termius motion table):
+// Motion:
 //   • slide-in        — y:-44 → 0, springs.smooth (~0.35s)
 //   • state morph     — amber → green, IN PLACE, springs.statusMorph (~0.25s
-//                       snappy); the surface never slides out + back in (#20)
+//                       snappy); the surface never slides out + back in
 //   • success linger  — green "Connected" holds 1.2s, then slides up + fades
 //                       (springs.smooth ~0.4s) and unmounts
 //
@@ -26,7 +24,7 @@
 // SF-Pro 13px semibold label, Title-Case copy (never UPPERCASE), ≥44pt retry
 // hit target inside the 36px pill via negative-margin padding.
 //
-// Reduced motion (Termius #13): slide-in/out become a crossfade and the spinner
+// Reduced motion: slide-in/out become a crossfade and the spinner
 // shimmer is dropped — `<AnimatePresence>` exits/enters still run but only
 // opacity tweens; the state-morph spring becomes an instant cut.
 
@@ -57,9 +55,8 @@ interface BannerVisual {
  *  for the transient green recovery flash. */
 type VisibleState = 'reconnecting' | 'offline' | 'connected'
 
-/** Copy + tint per visible state. Title-Case throughout (never UPPERCASE) —
- *  Termius criterion. Tints are ~0.18 alpha over the glass surface, matching the
- *  spec's `Color.orange/green/red.opacity(0.18)`. */
+/** Copy + tint per visible state. Title-Case throughout (never UPPERCASE).
+ *  Tints are ~0.18 alpha over the glass surface. */
 const VISUALS: Record<VisibleState, BannerVisual> = {
   reconnecting: {
     label: 'Reconnecting…',
@@ -233,7 +230,7 @@ export function ReconnectBanner() {
             >
               {/* The single morphing surface: tint + icon swap in place via
                   the `layout` + statusMorph spring; never a remount, never a
-                  slide-out+slide-in for the same surface (Termius #20). */}
+                  slide-out+slide-in for the same surface. */}
               <motion.button
                 type="button"
                 layout
@@ -257,7 +254,7 @@ export function ReconnectBanner() {
                   <span
                     className={cn(
                       // ≥44pt hit target inside the 36px pill via negative-
-                      // margin padding (Termius #5) — pill stays 36px tall.
+                      // margin padding — pill stays 36px tall.
                       '-my-2 -mr-2 ml-1 flex h-11 items-center gap-1',
                       'rounded-full px-3 text-[13px] font-semibold text-primary',
                     )}

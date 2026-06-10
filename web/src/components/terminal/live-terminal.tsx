@@ -363,7 +363,7 @@ function ConnectionPill({
     <AnimatePresence>
       {cfg && (
         <motion.div
-          // Slide down from above the safe-area, in-place state morph (§Termius
+          // Slide down from above the safe-area, in-place state morph (the
           // reconnect-banner spec): one surface, spring physics, no slide-out.
           key="conn-pill"
           initial={{ y: -44, opacity: 0 }}
@@ -391,7 +391,7 @@ function ConnectionPill({
               <button
                 type="button"
                 onClick={onRetry}
-                // ≥44pt hit target (Termius criterion #5) via negative-margin
+                // ≥44pt hit target via negative-margin
                 // padding while the pill stays 36pt tall.
                 className="-my-2 -mr-2 ml-1 flex h-11 items-center rounded-full px-3 text-[13px] font-semibold text-primary"
               >

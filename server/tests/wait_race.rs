@@ -1,5 +1,5 @@
-//! `wait` primitive race regression (TECH_PLAN §3.7, §3.2.13, §7.1; M5b, Eng P0
-//! #2). 100 concurrent `wait` handlers + one detector-style transition: every
+//! `wait` primitive race regression (lost-wakeup hazard in the long-poll).
+//! 100 concurrent `wait` handlers + one detector-style transition: every
 //! handler must observe the transition. The watch channel (vs v1's `Notify`) has
 //! no notify-before-subscribe window, so none get stuck on a lost wakeup.
 

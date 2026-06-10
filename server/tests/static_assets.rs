@@ -1,7 +1,6 @@
-//! Integration tests for the embedded-frontend layer (TECH_PLAN §3.2 line 153,
-//! §8.1 — review finding R4-01).
+//! Integration tests for the embedded-frontend layer.
 //!
-//! These guard the path the M24a/M24b Playwright e2e missed (it ran against the
+//! These guard the path the Playwright e2e suites missed (they ran against the
 //! Vite dev server, never the embedded binary): the release binary MUST serve
 //! the SPA at `GET /` with `window._SUPERMUX_AUTH_TOKEN` injected, fall back to the
 //! SPA shell for client-side routes, and still 404 unknown `/api/*` routes

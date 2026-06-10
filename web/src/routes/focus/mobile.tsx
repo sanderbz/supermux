@@ -179,7 +179,7 @@ export function MobileFocus() {
   const blurTerm = React.useCallback(() => termRef.current?.blur(), [])
 
   // ── Tap-vs-swipe gate for the terminal body (mobile keyboard fix) ───────────
-  // The terminal body now scrolls its scrollback on a one-finger swipe (R5). But
+  // The terminal body now scrolls its scrollback on a one-finger swipe. But
   // focusing xterm on EVERY pointer-up also summoned the iOS soft keyboard at the
   // END of a scroll gesture. So we only focus on a genuine TAP: same pointer,
   // tiny movement (< slop), short duration. A swipe (movement) just scrolls —
@@ -344,7 +344,7 @@ export function MobileFocus() {
   // DOCK — the slash panel was removed: slash commands now run from the Claude
   // Tools sheet's Commands tab (tap a command → it runs in the focused terminal).
   // Joystick on/off. The accessory bar's "Gesture" toggle flips this
-  // via `onGestureToggle`; default ON (joystick wins, per the Termius spec).
+  // via `onGestureToggle`; default ON (the joystick wins by default).
   const [gestureOn, setGestureOn] = React.useState(true)
   void setGestureOn // wired by the accessory bar; kept for the toggle handoff
 
@@ -389,7 +389,7 @@ export function MobileFocus() {
           contentHeight={vvHeight}
           keyboardInset={keyboardInset}
         >
-          {/* R5 — the title-bar "···" overflow was removed: it opened the SAME
+          {/* The title-bar "···" overflow was removed: it opened the SAME
               SessionPickerSheet the bottom-left session pill already opens (the
               pill is the richer, more discoverable affordance — name + status +
               swipe). Dropping the redundant dots clears the naming confusion so
@@ -412,7 +412,7 @@ export function MobileFocus() {
               to the terminal viewport (excludes header/dock). The joystick
               drives the SAME `termRef` handle the dock uses — no second WS.
 
-              R5 SCROLL FIX — the joystick no longer blankets the terminal with a
+              SCROLL FIX — the joystick no longer blankets the terminal with a
               `touch-none` capturing overlay (that ate every touch before xterm's
               own scroll handler ran). It now observes pointer gestures via
               NON-blocking listeners on this wrapper and only captures once ARMED,
@@ -470,8 +470,8 @@ export function MobileFocus() {
               and `kbdGroups` are still exposed via the "···" Specials sheet
               below. Clean removal — no orphaned import. */}
 
-          {/* polish/swipe-integrate — the unified mobile bottom panel:
-              ONE positioned element holds the Termius-style session-pills
+          {/* The unified mobile bottom panel:
+              ONE positioned element holds the session-pills
               strip AND the MobileDock content. Swipe-up reveals the pills
               above the dock buttons; swipe-down (or tap the grabber, or tap
               outside) hides them. Single height-animation on the panel — no

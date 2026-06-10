@@ -2,7 +2,7 @@
 //! the MCP mutators. This is the SAME read → refuse-if-unparseable → merge-own-
 //! subtree → temp → fsync → `rename(2)` shape proven in [`crate::claude_config`],
 //! lifted here so `~/.claude.json` and `<cwd>/.mcp.json` get the identical crash-
-//! safe, non-clobbering treatment (plan §B.2, §C.4). A crash mid-write never
+//! safe, non-clobbering treatment. A crash mid-write never
 //! truncates the file; a file we cannot parse is left ALONE.
 
 use std::io::Write as _;
@@ -126,7 +126,7 @@ fn sibling_tmp(path: &Path) -> PathBuf {
 
 /// Replace every `env`/`headers` VALUE in one MCP server object with the masked
 /// sentinel, IN PLACE, returning a deep clone safe to serialize to the client.
-/// Only KEY names survive — the secret values never leave the server (plan §C.4).
+/// Only KEY names survive — the secret values never leave the server.
 pub fn mask_mcp_secrets(server: &Value, masked: &str) -> Value {
     let mut out = server.clone();
     if let Some(obj) = out.as_object_mut() {

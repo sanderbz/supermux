@@ -1,8 +1,8 @@
-//! Atomic-claim race test (TECH_PLAN §7, M6 acceptance).
+//! Atomic-claim race test.
 //!
 //! Spawn 100 concurrent `POST /api/board/{id}/claim` against the SAME agent issue
 //! and assert exactly one `200 OK` and ninety-nine `409 Conflict` — and crucially
-//! **zero 500s** (the Codex #1 hardening: `busy_timeout` + `BEGIN IMMEDIATE`
+//! **zero 500s** (the contention hardening: `busy_timeout` + `BEGIN IMMEDIATE`
 //! converts SQLite write contention into the 409 path, never a `SQLITE_BUSY`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};

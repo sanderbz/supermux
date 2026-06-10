@@ -1,6 +1,6 @@
-//! `SshPtyReader` integration + argv tests (REMOTE_PLAN §RT3).
+//! `SshPtyReader` integration + argv tests.
 //!
-//! Four scenarios cover the RT3 contract:
+//! Four scenarios cover the SSH pty spawn/reader contract:
 //!
 //! 1. **localhost happy path** (`#[ignore]`) — register a localhost host, build
 //!    a transport, spin up a real remote tmux session, attach the reader, send
@@ -171,7 +171,7 @@ fn keepalive_child_argv_is_pinned() {
     );
 }
 
-/// Remote path convention (RT3 + RT8 bootstrap). Lives outside the data dir;
+/// Remote path convention (pty reader + host bootstrap). Lives outside the data dir;
 /// the SshPtyReader uses the `$HOME/…` token form so the remote `/bin/sh -c`
 /// expands it once against the REMOTE user's HOME (literal `~/` would be
 /// suppressed by `shell_escape`'s single-quoting in Transport's SSH branch).

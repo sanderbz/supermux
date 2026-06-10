@@ -381,7 +381,7 @@ function OnboardingSection() {
   )
 }
 
-/** Settings → Claude tools (skills-mcp-manager plan §C.1, entry point 3). Opens
+/** Settings → Claude tools. Opens
  *  the same manager sheet the ⌘K command + focus title-bar icon open, scoped to
  *  global (no session in this context). */
 function ClaudeToolsSection() {
@@ -788,7 +788,7 @@ export function Settings() {
     <div ref={scrollRef} className="relative h-full overflow-y-auto">
       {/* Floating glass nav bar — the only glass surface here; grouped cards
           below use the opaque iOS settings-list material. Fades in on scroll. */}
-      {/* R5: the shared mobile top bar was removed, so this sticky glass header
+      {/* The shared mobile top bar was removed, so this sticky glass header
           owns the safe-area top inset on mobile (≤md) via `pt-safe`, reset at
           `sm` once the desktop SideNav owns the chrome. As the first in-flow
           child it reserves that height regardless of its scroll-driven opacity,

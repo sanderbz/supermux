@@ -102,7 +102,7 @@ export function DesktopFocusHeader({
   onToggleLastSend,
   lastSendButtonRef,
 }: DesktopFocusHeaderProps) {
-  // Entry point 1 (skills-mcp-manager plan §C.1): the Claude tools manager,
+  // The Claude tools manager entry point,
   // pre-scoped to THIS session's project so .mcp.json / .claude/* resolve.
   const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
   return (
@@ -299,8 +299,8 @@ export function FocusHeader({
   const label = title ?? name
   const showActivity =
     (status === 'active' || status === 'starting') && !!activity?.trim()
-  // Entry point 1, mobile (skills-mcp-manager plan §C.1): the right slot — a bare
-  // spacer since R5 removed the redundant "···" — now hosts the Claude tools
+  // Mobile: the right slot — a bare spacer since the redundant "···" was
+  // removed — now hosts the Claude tools
   // icon, pre-scoped to THIS session's project. Keeps the title centred against
   // the left back-button (same 44pt footprint as the old spacer).
   const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)

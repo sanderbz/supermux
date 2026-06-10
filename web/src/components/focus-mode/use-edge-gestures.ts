@@ -26,7 +26,7 @@ import type { ApiSession } from '@/lib/api'
 
 const EDGE_PX = 16 // start zone width at each screen edge
 const COMMIT_DX = 40 // min horizontal travel to count as a swipe
-const COMMIT_VELOCITY = 800 // px/s threshold (Termius edge-swipe spec)
+const COMMIT_VELOCITY = 800 // px/s threshold (iOS edge-swipe feel)
 const COMMIT_FRACTION = 0.4 // …OR ≥40% of viewport width
 
 export interface EdgeGestureState {

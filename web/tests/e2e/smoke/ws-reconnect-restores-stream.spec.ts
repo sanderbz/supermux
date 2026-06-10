@@ -1,5 +1,5 @@
-// M24a smoke #3 — ws-reconnect-restores-stream (TECH_PLAN §10 "M24a"; §4.5
-// reconnect policy; §7.1 stress_reconnect.rs).
+// Smoke e2e — a dropped WebSocket reconnects and restores the stream
+// (backend mirror: stress_reconnect.rs).
 //
 // Open a live terminal, kill the backend, restart it on the SAME port + data dir
 // (the tmux pane outlives the binary), and verify the LiveTerminal RECONNECTS
@@ -57,7 +57,7 @@ test.describe('ws reconnect restores stream', () => {
     //    so the pane history (incl. MARKER_BEFORE) is still there to re-attach to.
     await backend.restartBackend()
 
-    // 3. Reconnect within 30s — the LiveTerminal's jittered backoff (§4.5) caps at
+    // 3. Reconnect within 30s — the LiveTerminal's jittered backoff caps at
     //    30s, so it MUST be back live inside the window.
     await expect(liveSurface).toBeVisible({ timeout: 30_000 })
 

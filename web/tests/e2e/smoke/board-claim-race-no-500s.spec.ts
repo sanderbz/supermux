@@ -1,5 +1,5 @@
-// M24a smoke #4 — board-claim-race-no-500s (TECH_PLAN §10 "M24a"; §7.1
-// `board_claim.rs`; Codex #1 regression).
+// Smoke e2e — concurrent board claims must never 500 (regression guard for a
+// review-found SQLITE_BUSY bug; backend mirror: `board_claim.rs`).
 //
 // 100 PARALLEL POSTs to /api/board/{id}/claim against ONE agent-owned issue must
 // yield EXACTLY 1 success (200) + 99 conflicts (409) and ZERO 500s. This is the

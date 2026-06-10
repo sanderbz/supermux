@@ -1,13 +1,12 @@
-// SnippetPanel — see research/termius-ios-native-spec.md
-// §"Snippet picker" #5.
+// SnippetPanel — the mobile snippet picker sheet.
 //
-// R5 panels-unify: the hand-rolled framer-motion slide-up + bespoke tap-catcher
+// Panels-unify: the hand-rolled framer-motion slide-up + bespoke tap-catcher
 // backdrop were replaced by the shared `<MobileActionSheet>` Vaul shell, so the
 // snippet panel now inherits the SAME backdrop / tap-away / drag-down-to-dismiss
 // / focus-trap / safe-area as the dots panel — only the row CONTENT (tap-insert /
 // long-press-run / swipe-to-edit-delete) is bespoke here.
 //
-// Per-row interactions (spec #5):
+// Per-row interactions:
 //   • Tap          → insert the snippet body into the composer (onInsert).
 //   • Long-press 500ms → run-immediately: send the body straight to the pty
 //     (onRun), with a medium haptic (navigator.vibrate(15), Android-only).
@@ -19,7 +18,7 @@
 // `/status`) as one-tap "create this" rows so the panel is never empty on a
 // fresh install. A "+" header button opens the SnippetEditor for a new snippet.
 //
-// VISUAL (Termius #1/#5/#18/#19): .thinMaterial glass (`bg-background/70
+// VISUAL: translucent glass material (`bg-background/70
 // backdrop-blur-xl` — the `glass` utility), ≥44pt rows (h-12), sentence-case
 // labels (NO uppercase), spring physics throughout, NO `transition: all`.
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * M29 — Performance budget gate (TECH_PLAN §10).
+ * Performance budget gate.
  *
  * Runs after `vite build`. Measures gzipped sizes of the production bundle and
  * fails (exit 1) if any budget is exceeded. No new runtime deps — uses the
  * Node built-in `zlib`.
  *
- * Budgets (TECH_PLAN §10 M29 acceptance):
+ * Budgets:
  *   - main app JS  ≤ 200 KB gzipped  (the entry chunk + non-vendor app code;
  *                                     vendor chunks are cached independently)
  *   - CSS          ≤  30 KB gzipped
@@ -62,7 +62,7 @@ const appJsTotal = appJs.reduce((s, c) => s + c.gz, 0)
 const vendorJsTotal = vendorJs.reduce((s, c) => s + c.gz, 0)
 const cssTotal = css.reduce((s, c) => s + c.gz, 0)
 
-console.log('\nM29 — Performance budget report (gzipped)\n')
+console.log('\nPerformance budget report (gzipped)\n')
 
 console.log('App JS chunks:')
 for (const c of appJs) console.log(`  ${c.name.padEnd(36)} ${fmt(c.gz)}`)

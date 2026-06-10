@@ -1,4 +1,4 @@
-//! `POST /api/teams/start` (AT-D "Start a team") wire-contract coverage.
+//! `POST /api/teams/start` ("Start a team") wire-contract coverage.
 //!
 //! The happy path boots a real Claude session in tmux (not viable in CI), so
 //! these tests pin the parts that DON'T need a live agent:
@@ -7,7 +7,8 @@
 //!   * the per-session Agent-Teams OPT-IN mechanism the endpoint relies on
 //!     (`set_force_agent_teams` flips the per-session override that
 //!     `lifecycle::start` ORs with the global pref) — proven directly against
-//!     `AppState`, since that flag is the load-bearing AT-D ↔ AT-B coordination.
+//!     `AppState`, since that flag is the load-bearing coordination between the
+//!     start endpoint and team detection.
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
 use supermux_server::state::AppState;
@@ -104,7 +105,7 @@ async fn start_team_rejects_empty_goal() {
 
 #[tokio::test]
 async fn start_team_route_is_distinct_from_list() {
-    // AT-D must NOT clobber AT-B's `GET /api/teams` (the list). GET still returns
+    // The start route must NOT clobber `GET /api/teams` (the list). GET still returns
     // the (empty) list envelope; the start route is POST-only.
     let (state, _dir) = test_state().await;
     let app = http::router(state);
@@ -116,7 +117,7 @@ async fn start_team_route_is_distinct_from_list() {
 
 #[tokio::test]
 async fn force_agent_teams_flag_is_per_session_and_independent_of_global_pref() {
-    // The load-bearing AT-D ↔ AT-B coordination: the start endpoint sets a
+    // The load-bearing start ↔ detection coordination: the start endpoint sets a
     // per-session override so ONE lead gets Agent Teams even while the GLOBAL
     // pref is OFF. Prove the flag mechanics directly (the happy-path boot needs
     // a real agent, but this invariant is testable in isolation).

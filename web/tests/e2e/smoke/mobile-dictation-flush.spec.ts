@@ -1,6 +1,6 @@
-// R5 e2e — mic→terminal dictation flush (iOS-reliable).
+// E2e — mic→terminal dictation flush (iOS-reliable).
 //
-// REGRESSION GUARD for the R5 mic fix. The dictation flush used to be gated
+// REGRESSION GUARD for the mic fix. The dictation flush used to be gated
 // ENTIRELY on Web Speech firing `onend` (listening→idle). On iOS Safari /
 // WKWebView `onend` is unreliable, so a dictated transcript never reached the
 // pty. The fix surfaces FINAL segments via `onFinal` the instant they commit and

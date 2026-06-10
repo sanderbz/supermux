@@ -1,8 +1,5 @@
 // use-two-finger — two-finger PageUp/PageDown recognizer over the terminal.
 //
-// See research/termius-ios-native-spec.md §"Two-finger PageUp / PageDown" +
-// v3 acceptance criterion #7.
-//
 // Tracks two SIMULTANEOUS pointers inside the terminal viewport, averages their
 // vertical translation, and emits scrollback keys:
 //   • two-finger swipe DOWN ≥ 20pt cumulative → PageUp  (reveal history)
@@ -10,7 +7,7 @@
 //   • every additional 24pt of translation → one more PageUp/Down
 //   • velocity > 1500 px/s → emit 2 keys at once (instant page-of-page)
 //
-// Crossing the 20pt threshold fires within 100ms (criterion #7); the gesture
+// Crossing the 20pt threshold fires within 100ms; the gesture
 // never false-fires during a one-finger joystick — the joystick subscribes to
 // the SAME `onTwoFingerStart` callback so it cancels the moment a 2nd pointer
 // lands. WebSocket-only: the keys go out via `sendKey` from the LiveTerminal
@@ -18,7 +15,7 @@
 
 import * as React from 'react'
 
-// ── Tunables (research §"Two-finger PageUp / PageDown") ───────────────────────
+// ── Tunables ──────────────────────────────────────────────────────────────────
 const FIRST_EMIT_PT = 20 // cumulative dominant-axis translation before 1st emit
 const REPEAT_PT = 24 // every additional 24pt → one more key
 const VELOCITY_FAST = 1500 // px/s → emit 2 keys at once

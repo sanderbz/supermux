@@ -1,5 +1,4 @@
-// SnippetEditor — see research/termius-ios-native-spec.md
-// §"Snippet editor — in-place vs modal".
+// SnippetEditor — a modal sheet rather than in-place row editing.
 //
 // A Vaul modal full-sheet for creating / editing one snippet: a title input and
 // a body textarea, with Save / Cancel. Persists through the `/api/snippets`

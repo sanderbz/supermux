@@ -1,4 +1,4 @@
-// M24a smoke-e2e harness (TECH_PLAN §7.2). Boots a REAL supermux-server binary on an
+// Smoke-e2e harness. Boots a REAL supermux-server binary on an
 // ephemeral port with an isolated temp data dir, plus a Vite dev server that
 // proxies /api + /ws to it SAME-ORIGIN. Each test gets a clean backend, so a
 // kill/restart test can drive the process lifecycle directly.

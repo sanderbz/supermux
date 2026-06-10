@@ -17,7 +17,7 @@ categories = ["command-line-utilities", "web-programming::http-server"]
 publish = false
 
 # server/ is its own workspace root (the repo top is intentionally NOT a Cargo
-# workspace — TECH_PLAN §2). resolver "3" is MSRV-aware: it honours the
+# workspace). resolver "3" is MSRV-aware: it honours the
 # `rust-version = "1.83"` floor above when selecting transitive dep versions,
 # so the resulting Cargo.lock builds on the pinned toolchain.
 [workspace]
@@ -87,13 +87,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 # ── misc ──
 anyhow = "1.0"
-async-trait = "0.1"                                       # async trait methods for FileTransport (RT6) + PtyReader (RT3)
+async-trait = "0.1"                                       # async trait methods for FileTransport + PtyReader
 futures-util = { version = "0.3", default-features = false, features = ["std"] }  # SSE preamble chain in updates::api (+ everything reqwest already pulls)
 thiserror = "2.0"
 once_cell = "1.20"
 dashmap = "6.1"                                          # per-session lock/stream maps (AppState)
 regex = "1.11"
-nix = { version = "0.29", features = ["signal", "process", "fs"] }  # SIGTERM Claude; fs = mkfifo/open/Mode (M4 pty FIFO)
+nix = { version = "0.29", features = ["signal", "process", "fs"] }  # SIGTERM Claude; fs = mkfifo/open/Mode (pty FIFO)
 notify = "7.0"                                           # FS watch for hot-reload (optional)
 shell-escape = "0.1"
 shellexpand = "3.1"
@@ -119,7 +119,7 @@ supermux-server = { path = ".", features = ["test-support"] }
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 tungstenite = "0.24"
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }  # WS client Stream/Sink ext (M4 ws tests)
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }  # WS client Stream/Sink ext (ws tests)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 pretty_assertions = "1.4"
 insta = "1.42"                                           # snapshot tests for status detector

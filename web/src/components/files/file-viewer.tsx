@@ -73,7 +73,7 @@ export function FileViewer({
   const value = draft ?? content
   const dirty = isText && draft !== null && draft !== content
 
-  // Markdown surface mode (M-MD). Opens in `preview` for `.md`/`.markdown`/
+  // Markdown surface mode. Opens in `preview` for `.md`/`.markdown`/
   // `.mdx`; the user flips to `source` (CodeMirror) to edit. The Preview
   // surface has no edit affordance, so the only way to dirty the buffer is
   // through Source — no auto-switch effect needed. FileViewer is keyed by
@@ -91,7 +91,7 @@ export function FileViewer({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header — glass bar with filename + actions. R5: on mobile a file-open
+      {/* Header — glass bar with filename + actions. On mobile a file-open
           state hides the files toolbar (which used to carry the safe-area inset),
           so this viewer header owns the top inset via `pt-safe` (reset at `sm`
           once the desktop SideNav owns the chrome) to clear the notch. */}

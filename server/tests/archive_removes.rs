@@ -1,4 +1,4 @@
-//! Archive end-to-end (TECH_PLAN §3.2.5).
+//! Archive end-to-end.
 //!
 //! Verifies the contract the overview's "Archive removes the row" bug-fix
 //! depends on:

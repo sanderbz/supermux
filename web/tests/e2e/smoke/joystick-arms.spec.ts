@@ -1,7 +1,7 @@
-// M24b e2e — joystick-arms (TECH_PLAN §10 "M24b"; §4; M17 — THE interaction).
+// E2e — the touch joystick arms on a long-press (THE mobile interaction).
 //
 // Mobile (iPhone 14 Pro) viewport: open mobile focus and long-press the
-// terminal viewport. The M17 joystick must ARM (its overlay flips
+// terminal viewport. The joystick must ARM (its overlay flips
 // `data-armed="true"`) within 400ms of the press — the 350ms hold-to-arm
 // threshold plus headroom. A premature release (well under 350ms) must NOT arm.
 //
@@ -32,7 +32,7 @@ test.describe('mobile: joystick hold-to-arm', () => {
   }) => {
     test.setTimeout(60_000)
     await page.addInitScript(injectGlobals(backend.token))
-    // Pre-dismiss the M23b "Add to Home Screen" sheet — on an iOS-emulating
+    // Pre-dismiss the "Add to Home Screen" sheet — on an iOS-emulating
     // context it auto-opens as a focus-trapping modal that covers the terminal
     // viewport (and the joystick overlay). Setting its localStorage dismiss key
     // reflects the normal returning-user state.

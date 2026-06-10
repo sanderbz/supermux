@@ -1,5 +1,5 @@
-//! Board CRUD integration tests (TECH_PLAN §3.4, M6 acceptance; feature-extract
-//! §2.1). Driven via `axum::Router::oneshot` against an isolated temp-dir DB.
+//! Board CRUD integration tests.
+//! Driven via `axum::Router::oneshot` against an isolated temp-dir DB.
 //! Covers: create=201 + id prefix, list, patch, soft-delete + 404, clear-done,
 //! claim error surfaces (404/409), statuses CRUD + builtin protection, tag
 //! completion, the PUBLIC iCal feed, and auth enforcement.

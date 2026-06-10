@@ -1,4 +1,4 @@
-// useConnectionStatus — V034 PWA offline / server-down UX.
+// useConnectionStatus — PWA offline / server-down UX.
 //
 // The thin public hook that the <ConnectionOverlay> reads. Wires together:
 //   • `useApiStatus` store (the state machine — see stores/api-status-store.ts)

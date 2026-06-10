@@ -43,11 +43,11 @@ interface UIStore {
   viewMode: ViewMode
   /** Default `--model` flag for new sessions ('' = server default). */
   defaultModel: string
-  /** What an overview tile shows on hover (§ overview tile preview). Only
+  /** What an overview tile shows on hover. Only
    *  consulted while `overviewPreview === 'live'`. */
   hoverPreview: HoverPreview
   /** Master overview-tile preview mode: live xterm peek vs static text tail
-   *  only (§ overview tile preview). `text` suppresses the live peek + its WS
+   *  only. `text` suppresses the live peek + its WS
    *  entirely — at rest and on hover. */
   overviewPreview: OverviewPreview
   /** Overview density tier — 1 = smallest (default, matches polish-pass), 4 =

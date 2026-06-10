@@ -1,5 +1,4 @@
-// MobileActionSheet — the single reusable Vaul shell for mobile focus panels
-// (R5 panels-unify, see skill/review/mobile-panels-dry.md Step 1).
+// MobileActionSheet — the single reusable Vaul shell for mobile focus panels.
 //
 // Lifted verbatim from the GOOD dots panel (`specials-sheet.tsx`): a Vaul
 // `Drawer` half-sheet with a real backdrop (`bg-black/40` → tap-away dismiss for
@@ -54,7 +53,7 @@ export function MobileActionSheet({
             'border-t border-border/60 pb-safe outline-none',
           )}
         >
-          {/* Drag indicator — 36×5, 2.5px radius, tertiary tint (Termius #11). */}
+          {/* Drag indicator — 36×5, 2.5px radius, tertiary tint. */}
           <div className="mx-auto mt-1.5 h-[5px] w-9 shrink-0 rounded-[2.5px] bg-muted-foreground/30" />
           <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-1 pt-3">
             <Drawer.Title className="text-[13px] font-semibold text-muted-foreground">

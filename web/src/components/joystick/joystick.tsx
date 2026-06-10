@@ -1,25 +1,22 @@
-// joystick.tsx — the Termius "hold-anywhere arrow joystick" + 2-finger
+// joystick.tsx — the "hold-anywhere arrow joystick" + 2-finger
 // scrollback gesture, layered over the terminal.
-//
-// See research/termius-ios-native-spec.md §"Hold-anywhere arrow joystick",
-// §"Two-finger PageUp / PageDown", v3 acceptance criteria #2, #3, #4, #7, #13.
 //
 // THE interaction. Hold ≥350ms anywhere on the terminal → joystick ARMS:
 //   • arm haptic — navigator.vibrate(8) (Android) PLUS a 60ms scale 0.96→1.0
 //     micro-press on the rose origin (iOS Safari has no navigator.vibrate;
 //     haptics caveat documented in the web acceptance notes).
 //   • a faint translucent "rose" fades in at the touch point: 88px circle,
-//     1px tertiary stroke, 0 fill, 80ms ease-in (criterion #3).
+//     1px tertiary stroke, 0 fill, 80ms ease-in.
 //   • drag → radial distance from the press origin picks a SPEED TIER and
 //     `sendKey('Up'|'Down'|'Left'|'Right')` repeats at that tier's interval.
 //   • direction lock — dominant axis holds through wobble until the touch
-//     crosses a 30° re-orient cone for ~80ms (criterion #4).
+//     crosses a 30° re-orient cone for ~80ms.
 //   • release → rose fades out 120ms; no haptic.
 //
 // A SECOND finger landing cancels the joystick and hands off to the 2-finger
 // PageUp/PageDown recognizer (use-two-finger.ts).
 //
-// R5 FIX — DON'T BLANKET THE TERMINAL. The earlier design rendered an
+// SCROLL FIX — DON'T BLANKET THE TERMINAL. The earlier design rendered an
 // `absolute inset-0 z-20 touch-none` overlay with live pointer handlers covering
 // the WHOLE terminal. That overlay was the topmost hit target AND its
 // `touch-action: none` told the engine "no native panning here," so xterm's own
@@ -44,10 +41,10 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useTwoFinger } from '@/components/joystick/use-two-finger'
 
-// ── Tunables (research §"Hold-anywhere arrow joystick") ───────────────────────
-const ARM_HOLD_MS = 350 // hold-to-arm threshold (criterion #2: 350ms ± 25ms)
+// ── Tunables ──────────────────────────────────────────────────────────────────
+const ARM_HOLD_MS = 350 // hold-to-arm threshold (350ms ± 25ms)
 const ARM_CANCEL_PT = 8 // movement > 8pt during the hold cancels into selection
-const ROSE_DIAMETER = 88 // px — translucent rose circle (criterion #3)
+const ROSE_DIAMETER = 88 // px — translucent rose circle
 const DIR_LOCK_PT = 4 // directional travel before the first key fires
 const REORIENT_CONE_DEG = 30 // wobble tolerance before the lock re-orients
 const REORIENT_HOLD_MS = 80 // sustained re-orient time before the axis flips
@@ -178,7 +175,7 @@ export function Joystick({
       }
     } else if (candidate !== locked) {
       // Wobble: only re-orient if the touch holds OUTSIDE the 30° cone (relative
-      // to the locked axis) for ≥80ms (criterion #4 — lock holds through wobble).
+      // to the locked axis) for ≥80ms (the lock holds through wobble).
       const lockVec: Record<Dir, [number, number]> = {
         Up: [0, -1],
         Down: [0, 1],
@@ -238,7 +235,7 @@ export function Joystick({
   }, [reduceMotion])
 
   // ── Two-finger PageUp/Down recognizer — shares the gesture stream ────────────
-  // A second pointer landing cancels the joystick (research §"Conflict").
+  // A second pointer landing cancels the joystick.
   const twoFinger = useTwoFinger({
     sendKey,
     onTwoFingerStart: disarm,
@@ -340,7 +337,7 @@ export function Joystick({
   return (
     <div
       ref={overlayRef}
-      // R5: this layer is PASS-THROUGH (`pointer-events-none`) until the joystick
+      // This layer is PASS-THROUGH (`pointer-events-none`) until the joystick
       // arms. While unarmed it never intercepts touches — xterm's `.xterm-viewport`
       // receives the touchmove and scrolls the scrollback natively. Gesture
       // detection (hold-to-arm, two-finger) is wired to the wrapper above. ONCE
@@ -355,12 +352,12 @@ export function Joystick({
       aria-hidden
     >
       {/* The rose — translucent 88px ring at the press origin. Reduce Motion
-          skips it entirely (criterion #13); keys still flow. */}
+          skips it entirely; keys still flow. */}
       <AnimatePresence>
         {armed && !reduceMotion && (
           <motion.div
             key="joystick-rose"
-            // 80ms ease-in fade-in (criterion #3); 120ms ease-out fade-out.
+            // 80ms ease-in fade-in; 120ms ease-out fade-out.
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{
               opacity: 1,

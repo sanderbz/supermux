@@ -1,9 +1,9 @@
-// M24b e2e — scheduler-fires (TECH_PLAN §10 "M24b"; §3.8 the scheduler runner).
+// E2e — a scheduled job actually fires.
 //
 // Create a one-shot `kind=shell` schedule ("in 5s") that touches a marker file,
 // load the Scheduler route so it appears in the list, then WAIT for the runner
-// to fire and assert the marker file exists ON DISK. This proves the M8 runner
-// loop + M21 scheduler UI cohere end-to-end against a real booted backend.
+// to fire and assert the marker file exists ON DISK. This proves the backend runner
+// loop + the scheduler UI cohere end-to-end against a real booted backend.
 //
 // The runner ticks every 10s, so an "in 5s" job fires inside one tick window —
 // the test allows a generous 25s for the firing.

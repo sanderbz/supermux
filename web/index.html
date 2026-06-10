@@ -3,26 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <!-- apple-touch-icon: 180×180, the iOS home-screen tile (M23b / §4.9). -->
+    <!-- apple-touch-icon: 180×180, the iOS home-screen tile. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <!-- The web app manifest is injected by vite-plugin-pwa (M23b) as
+    <!-- The web app manifest is injected by vite-plugin-pwa as
          <link rel="manifest" href="/manifest.webmanifest">. The static
          public/manifest.json mirrors it for any non-PWA / dev consumer. -->
-    <!-- interactive-widget=resizes-content (M-mobile-livetype): when the soft
+    <!-- interactive-widget=resizes-content: when the soft
          keyboard opens, supporting engines (Chrome/Android) shrink the LAYOUT
          viewport instead of scrolling the whole page up. iOS Safari/WKWebView
          support lags, so a visualViewport listener (use-keyboard-viewport.ts)
          is the belt-and-suspenders fallback. NOTE: deliberately NO
          user-scalable=no / maximum-scale — that is an a11y regression; the
-         iOS focus-zoom is solved by ≥16px inputs (fix/ios-zoom) instead. -->
+         iOS focus-zoom is solved by ≥16px inputs instead. -->
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <!-- Brand splash color (M28): kept identical to manifest background_color
+    <!-- Brand splash color: kept identical to manifest background_color
          and globals.css --background so the PWA splash has no flash of white. -->
     <meta name="theme-color" content="#0a0a0a" />
-    <!-- Apple PWA meta (§4.8) -->
+    <!-- Apple PWA meta -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta

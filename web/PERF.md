@@ -1,9 +1,9 @@
-# Performance budgets (M29)
+# Performance budgets
 
 supermux has a measured, enforced performance budget. This document defines the
 budgets, how they are enforced, and how to re-run the suite.
 
-## Budgets (TECH_PLAN §10 — M29)
+## Budgets
 
 | Metric                     | Budget            | Enforced by                       |
 | -------------------------- | ----------------- | --------------------------------- |
@@ -66,5 +66,4 @@ See `perf/baselines/baseline.json` and `perf/baselines/bundle-size.txt`
 ## Updating budgets
 
 Budgets live in `scripts/size-budget.mjs` (`BUDGET_APP_JS`, `BUDGET_CSS`).
-Changing them is a deliberate decision — keep it in sync with this doc and
-TECH_PLAN §10.
+Changing them is a deliberate decision — keep it in sync with this doc.

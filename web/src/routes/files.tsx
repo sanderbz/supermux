@@ -180,7 +180,7 @@ export function Files() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Toolbar — breadcrumb + controls. Hidden on mobile while a file is open.
-          R5: the shared mobile top bar was removed, so this header owns the
+          The shared mobile top bar was removed, so this header owns the
           safe-area top inset on mobile (≤md). ios-pwa: use the shared
           `safe-header` utility (min-h 56px + additive padding-top:env(top)) so
           the inset GROWS the box instead of eating into a fixed h-14 and tucking

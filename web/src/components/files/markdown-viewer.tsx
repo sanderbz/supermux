@@ -1,4 +1,4 @@
-// Rendered Markdown viewer for the Files route (M-MD).
+// Rendered Markdown viewer for the Files route.
 //
 // Lazy-loaded sibling to the CodeMirror editor: when the user is reading a
 // `.md`/`.markdown`/`.mdx` file we ship a *typeset* surface that fits the

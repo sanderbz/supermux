@@ -218,8 +218,7 @@ const ANSI_PALETTE = {
 
 /** Read the live terminal theme from the CSS custom properties. This runs
  *  at mount so the terminal tracks whichever theme `<ThemeProvider>` applied to
- *  <html> before first paint — no hardcoded hex for bg/fg (Termius criterion
- *  #15). The 16-colour ANSI palette IS hardcoded: those bytes ARE the terminal's
+ *  <html> before first paint — no hardcoded hex for bg/fg. The 16-colour ANSI palette IS hardcoded: those bytes ARE the terminal's
  *  colours (an agent's SGR escapes), not app chrome, and must stay constant
  *  across themes. */
 function themeFromCss(): import('@xterm/xterm').ITheme {
@@ -583,7 +582,7 @@ export function useLiveTerm(
       allowTransparency: false,
       // Steady (non-blinking) block cursor: a blink forces a periodic renderer
       // wake even when idle (mobile battery + needless idle repaints). A solid
-      // cursor reads as more native/snappy (Termius / iTerm default-feel).
+      // cursor reads as more native/snappy (the iTerm default-feel).
       cursorBlink: false,
       // Large scrollback so the client never truncates the history the server
       // replays on connect (replay ring is ≤512 KB ≈ several thousand lines) or

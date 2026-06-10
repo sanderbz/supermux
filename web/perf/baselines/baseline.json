@@ -1,5 +1,4 @@
 {
-  "milestone": "M29",
   "measured_at": "2026-05-22",
   "tool": "scripts/size-budget.mjs (Node zlib gzip level 9)",
   "build": "vite 8.0.14 / rolldown, production",
@@ -33,7 +32,7 @@
   },
   "notes": [
     "manualChunks (vite.config.ts) splits vendors into vendor-react, vendor-xterm, vendor-framer, vendor-codemirror so the hero-loop app chunk stays lean and vendors cache independently.",
-    "vendor-codemirror (333 KB gz) is the CodeMirror language-pack set behind the lazy `code-editor` route — it never loads on the overview or focus-terminal hero path, so it is not gated by the main-app-JS budget per TECH_PLAN §10 ('main app JS').",
+    "vendor-codemirror (333 KB gz) is the CodeMirror language-pack set behind the lazy `code-editor` route — it never loads on the overview or focus-terminal hero path, so it is not counted against the main-app-JS budget.",
     "Lighthouse perf >=85 / FCP <500ms / TTI <1.5s are documented targets; run `bunx lighthouse` against the dev server (see PERF.md) to archive an HTML report alongside this baseline."
   ]
 }

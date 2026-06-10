@@ -1,4 +1,4 @@
-//! Integration tests for the `FileTransport` trait (REMOTE_PLAN §RT6).
+//! Integration tests for the `FileTransport` trait (local + over-SSH file IO).
 //!
 //! Three slices:
 //!
@@ -201,7 +201,7 @@ async fn ssh_localhost_roundtrip() {
         "supermux-rt6-ssh-{}.txt",
         uuid::Uuid::new_v4().simple()
     ));
-    let payload = b"hello from RT6 over SSH\n";
+    let payload = b"hello over SSH\n";
     t.write(&target, payload).await.expect("ssh write");
     let got = t.read(&target).await.expect("ssh read");
     assert_eq!(got, payload, "round-trip bytes match");

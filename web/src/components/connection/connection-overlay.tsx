@@ -1,11 +1,11 @@
-// ConnectionOverlay — V034 PWA branded full-screen UX for hard outages.
+// ConnectionOverlay — branded full-screen PWA UX for hard outages.
 //
 // Mounts ONCE at the app root (App.tsx). Renders nothing while the
 // connection is healthy. Paints a full-bleed branded surface when the state
 // machine reports `offline` / `server_unreachable` / `auth_invalid` — the
 // three "the app can't function until this clears" states.
 //
-// MOTION (Termius spec, springs.smooth):
+// MOTION (springs.smooth):
 //   • enter — fade + 6px translate-up, ~0.35s spring
 //   • exit  — fade + 6px translate-up, ~0.30s spring (covers the "smooth
 //             fade-out when the connection restores" requirement)

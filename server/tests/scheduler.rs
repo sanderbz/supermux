@@ -1,5 +1,5 @@
 //! Scheduler integration: a `kind=shell` one-shot fires within the tick window
-//! (TECH_PLAN §3.8, M8 acceptance; subagent prompt's marker test) and the HTTP
+//! (asserted via a marker file the job writes) and the HTTP
 //! CRUD surface round-trips through the bearer-auth router.
 
 use std::path::PathBuf;
@@ -201,7 +201,7 @@ async fn http_crud_roundtrip() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// M21 preview: parse an expression WITHOUT persisting and get the next 5 runs.
+/// Schedule preview: parse an expression WITHOUT persisting and get the next 5 runs.
 #[tokio::test]
 async fn preview_returns_next_runs_without_persisting() {
     let (state, dir) = new_state().await;
@@ -361,7 +361,7 @@ async fn job_accepts_command_or_prompt_and_rejects_neither() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// M21 test-fire: `_test_fire:true` runs once immediately, returns the result,
+/// Schedule test-fire: `_test_fire:true` runs once immediately, returns the result,
 /// and leaves NO live schedule behind.
 #[tokio::test]
 async fn test_fire_runs_once_and_does_not_persist() {

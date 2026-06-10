@@ -1,4 +1,4 @@
-//! Property test (REQUIRED gate, TECH_PLAN §7.1 / §3.2.11): `resolve_safe`
+//! Property test (REQUIRED gate): `resolve_safe`
 //! never escapes its jail under random Unicode-normalization, `..`-stacks, and
 //! `//`-collapses.
 //!

@@ -1,9 +1,9 @@
-// M24b e2e — files-edit-save (TECH_PLAN §10 "M24b"; §7).
+// E2e — the file editor saves to disk.
 //
 // The full file-editing journey end-to-end: write a temp file on disk → browse
 // to it through the real Files UI → edit it in the CodeMirror editor → Save →
 // assert the new content landed ON DISK via a direct fs read. This proves the
-// M20 file editor + M7 files API cohere: GET /api/files/raw → editor → PUT
+// file editor + files API cohere: GET /api/files/raw → editor → PUT
 // /api/files → fsync to disk.
 
 import { expect, test } from '@playwright/test'

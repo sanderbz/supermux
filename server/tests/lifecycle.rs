@@ -1,10 +1,10 @@
-//! tmux-backed session lifecycle integration tests (TECH_PLAN §3.4, M3
-//! acceptance). These drive the full HTTP stack via `axum::Router::oneshot` and
+//! tmux-backed session lifecycle integration tests.
+//! These drive the full HTTP stack via `axum::Router::oneshot` and
 //! spawn REAL tmux sessions (provider `shell` running the user shell), so they
 //! require `tmux` on PATH. Each test uses a unique `supermux-`-prefixed session and
 //! tears it down (delete → kill-session) in every exit path.
 //!
-//! Coverage (M3 §10 acceptance):
+//! Coverage:
 //!   * `POST /start` spawns tmux + returns 200.
 //!   * `POST /send {text:"echo hi"}` → "hi" appears in `/peek` scrollback.
 //!   * `POST /stop` cleanly exits (session gone afterwards).
@@ -23,7 +23,7 @@ use tower::ServiceExt; // for `oneshot`
 const TOKEN: &str = "secret-test-token-lifecycle";
 
 /// Skip (with a printed note) rather than fail when tmux is unavailable, so the
-/// suite stays green on a tmux-less box; CI has tmux per the M3 verification note.
+/// suite stays green on a tmux-less box; CI has tmux.
 fn tmux_available() -> bool {
     which::which("tmux").is_ok()
 }

@@ -1,5 +1,4 @@
-// Quick-keys library — the curated tap-to-send catalog + selection model
-// (R5 quick-keys, see skill/review/quick-keys-library.plan.md).
+// Quick-keys library — the curated tap-to-send catalog + selection model.
 //
 // Replaces the "type the special key" model of the old Specials sheet with a
 // curated library of the most-used Claude-Code actions. Each entry maps to the

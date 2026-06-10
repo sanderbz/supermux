@@ -1,4 +1,4 @@
-//! Golden-fixture tests for the status detector core (TECH_PLAN §3.6, M5a).
+//! Golden-fixture tests for the status detector core.
 //!
 //! The crown-jewel reliability guarantee: 33 real-shaped `capture-pane`
 //! snapshots are each classified to their expected status (encoded in the

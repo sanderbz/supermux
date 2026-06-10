@@ -1,4 +1,4 @@
-//! M4 first-frame WS auth + Origin allowlist tests (TECH_PLAN §3.2.9, §6.2, §10).
+//! First-frame WS auth + Origin allowlist tests.
 //!
 //! Auth runs BEFORE any pty work, so these need no tmux — they bind a real port
 //! and assert the close codes for the auth/origin failure paths:

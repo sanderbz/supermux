@@ -1,8 +1,7 @@
-// M24a smoke #2 — focus-types-and-sees-output (TECH_PLAN §10 "M24a"; §7.2; §5.2
-// the live-pty data flow).
+// Smoke e2e — typing in the focus terminal round-trips through the live pty.
 //
 // Boot the binary; create + start a `shell` session; open its focus route on a
-// DESKTOP viewport (≥768px → DesktopFocus → M13 LiveTerminal); type "echo hi"
+// DESKTOP viewport (≥768px → DesktopFocus → LiveTerminal); type "echo hi"
 // into xterm and assert "hi" shows up. This is the hero loop: keystroke →
 // {type:'input'} WS frame → tmux send-keys → pty bytes → broadcast → xterm.write.
 
@@ -51,7 +50,7 @@ test.describe('focus types and sees output', () => {
 
     // Focus the terminal and type THROUGH THE REAL UI. xterm renders a hidden
     // helper <textarea> that the container focuses on click; the keystrokes flow
-    // term.onData → {type:'input'} WS frame → tmux send-keys → pty (§5.2). We use
+    // term.onData → {type:'input'} WS frame → tmux send-keys → pty. We use
     // a distinctive token so the assertion can't false-match shell chrome.
     await term.click()
     await page.keyboard.type('echo HELLO_FROM_SMOKE')

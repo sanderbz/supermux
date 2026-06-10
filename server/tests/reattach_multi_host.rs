@@ -1,8 +1,8 @@
-//! Cross-host reattach-on-boot tests (REMOTE_PLAN §RT7).
+//! Cross-host reattach-on-boot tests.
 //!
 //! `sessions::auto_actions::reconcile_on_boot` is the boot-time reattach: it
-//! reconciles every persisted session against tmux reality. RT7 extends it to
-//! iterate the `hosts` table and run a `tmux ls` over each host's SSH
+//! reconciles every persisted session against tmux reality. The multi-host
+//! extension makes it iterate the `hosts` table and run a `tmux ls` over each host's SSH
 //! transport — best-effort, with a strict per-host timeout so a single broken
 //! host can never stall boot.
 //!
@@ -56,7 +56,7 @@ async fn seed_session(pool: &SqlitePool, name: &str) {
         .unwrap();
 }
 
-/// Attach `name`'s session row to `host_id` (RT4 schema — `host_id` is
+/// Attach `name`'s session row to `host_id` (`host_id` is
 /// nullable, no Rust helper, so the test pokes it via raw SQL).
 async fn attach_session_to_host(pool: &SqlitePool, name: &str, host_id: i64) {
     sqlx::query("UPDATE sessions SET host_id = ? WHERE name = ?")
@@ -76,7 +76,7 @@ async fn last_status(pool: &SqlitePool, name: &str) -> String {
         .last_status
 }
 
-/// Test 1 — empty hosts table → reconcile is FAST (the local-only pre-RT7 cost
+/// Test 1 — empty hosts table → reconcile is FAST (the local-only cost
 /// only). A regression that would always sweep hosts (or otherwise call into
 /// SSH on every boot) is caught here: with zero hosts the cross-host pass
 /// must short-circuit before any `tmux ls` is spawned.

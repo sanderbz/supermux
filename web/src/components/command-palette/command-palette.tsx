@@ -546,7 +546,7 @@ export function CommandPalette() {
     [board, setOpen, sendToAgent, toast],
   )
 
-  // ── Start agent on an issue (the unified BR1 flow) ─────────────────────────
+  // ── Start agent on an issue (the one unified flow) ─────────────────────────
   // Calm + state-aware: when the issue already has a live linked session, one
   // pick starts + delivers right away (toast + Undo, shared toast system). With
   // no live session, advance to a pick-a-running-agent step so the start can

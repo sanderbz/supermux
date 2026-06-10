@@ -1,11 +1,11 @@
-//! M4 WebSocket pty stream integration tests (TECH_PLAN §3.2.7/§3.2.9, §10 M4).
+//! WebSocket pty stream integration tests.
 //!
 //! These bind a real ephemeral TCP port + `axum::serve` (the `oneshot` harness
 //! used elsewhere can't drive a WS upgrade) and connect with `tokio-tungstenite`.
 //! Bidirectional + replay coverage spawns REAL tmux sessions (provider `shell`),
-//! so they self-skip when tmux is absent (CI has tmux per the M4 verification).
+//! so they self-skip when tmux is absent (CI has tmux).
 //!
-//! Coverage (M4 acceptance):
+//! Coverage:
 //!   * first-frame auth → `auth_ok`,
 //!   * live pty bytes flow to the client (input round-trips),
 //!   * a second client receives the replay buffer,

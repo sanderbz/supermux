@@ -1,8 +1,8 @@
-//! Integration tests for the files subsystem (TECH_PLAN M7, §3.2.11).
+//! Integration tests for the files subsystem.
 //!
 //! Driven through the full router (`http::router`) via `oneshot`, so every call
 //! also exercises the bearer-auth layer. Covers: directory listing, creating a
-//! brand-new file (Codex #3 regression), text round-trip, Range serving, and
+//! brand-new file (regression: this used to 500), text round-trip, Range serving, and
 //! the path-safety blocklist incl. macOS case-insensitivity and a TOCTOU
 //! symlink swap.
 
@@ -128,7 +128,7 @@ async fn ls_lists_entries_and_hides_dotfiles() {
 
 #[tokio::test]
 async fn put_creates_brand_new_file_then_get_roundtrips() {
-    // Codex #3 regression: PUT to a not-yet-existing nested path must not 500.
+    // Regression: PUT to a not-yet-existing nested path must not 500.
     let env = setup().await;
     let target = env.work_dir.join("nested/dir/new.md");
     let content = "# hello\nworld\n";
@@ -377,7 +377,7 @@ fn base64_std(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-// ── FEAT-WHERE-PICKER: autocomplete dotfile filter + projects/repos ───────────
+// ── "Where" autocomplete: dotfile filter + projects/repos ────────────────────
 
 /// `GET /api/autocomplete/dir?q=…&hidden=0` filters dotfile subdirs.
 #[tokio::test]

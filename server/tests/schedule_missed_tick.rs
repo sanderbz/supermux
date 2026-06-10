@@ -1,4 +1,4 @@
-//! Missed-tick recovery (TECH_PLAN §3.8 v2, §7 testing strategy; Codex #6).
+//! Missed-tick recovery — scheduler idempotency after downtime.
 //!
 //! A schedule whose `next_run` is far in the past must NOT burst-fire on the next
 //! tick: the tick logs a `skipped` run and ADVANCES `next_run` to the future

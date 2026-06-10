@@ -9,10 +9,10 @@
 //
 // Motion: springs.cardExpand in / out via the parent's <AnimatePresence>; the
 // pointer + card are one surface so the morph stays coherent. Reduced motion
-// (Termius #13) collapses the entrance to an opacity crossfade.
+// collapses the entrance to an opacity crossfade.
 //
 // VISUAL: opaque card material (not glass — coach-marks must stay legible over
-// any background), sentence-case copy, ≥44pt buttons (Termius #5 hit target),
+// any background), sentence-case copy, ≥44pt buttons (comfortable hit targets),
 // brand-tinted step pips. No UPPERCASE, no `transition: all`.
 
 import * as React from 'react'

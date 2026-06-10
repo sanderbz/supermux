@@ -1,5 +1,5 @@
-//! Integration tests for the tmux-free session HTTP surface (TECH_PLAN §3.4, M2
-//! acceptance). Driven via `axum::Router::oneshot` against an isolated temp-dir
+//! Integration tests for the tmux-free session HTTP surface.
+//! Driven via `axum::Router::oneshot` against an isolated temp-dir
 //! database. Covers: create=201, duplicate-name=409, missing=404, PATCH rename
 //! end-to-end, plus tracked-files / steering round-trips and auth enforcement.
 

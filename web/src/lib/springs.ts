@@ -1,9 +1,9 @@
 // Framer Motion spring preset bank.
 //
-// These mirror the Termius / SwiftUI "Recommended values per use case" from
-// research/termius-ios-native-spec.md. EVERY motion in the app MUST use one of
-// these presets. No `transition: all`, no ad-hoc cubic-beziers — PR review
-// (the PRINCIPLE critic) enforces this so the whole app shares one motion feel.
+// These mirror SwiftUI's recommended spring values per use case, for an
+// iOS-native motion feel. EVERY motion in the app MUST use one of these
+// presets. No `transition: all`, no ad-hoc cubic-beziers — PR review enforces
+// this so the whole app shares one motion feel.
 //
 // `tweens` (below) covers the small number of duration-based, non-spring
 // transitions the app needs — drag-and-drop container indication, post-drop
@@ -30,7 +30,7 @@ export const springs = {
   tileHover: { type: 'spring', stiffness: 380, damping: 24 },
   // Status pill state change (in-place morph).
   statusMorph: { type: 'spring', stiffness: 500, damping: 32 },
-  // Snippet-panel slide-up (Termius spec #5: SwiftUI `.spring(response:
+  // Snippet-panel slide-up (SwiftUI `.spring(response:
   // 0.35, dampingFraction: 0.85)`). Converted to framer-motion: stiffness ≈
   // (2π/0.35)² ≈ 322; damping ≈ 2·0.85·√322 ≈ 30.5.
   snippetSlide: { type: 'spring', stiffness: 322, damping: 30.5 },

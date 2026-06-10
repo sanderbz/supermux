@@ -7,7 +7,7 @@
 // beneath it.
 //
 // Motion: slides down from above the safe-area on mount (springs.smooth), slides
-// back up on dismiss. Reduced motion (Termius #13) collapses both to a crossfade.
+// back up on dismiss. Reduced motion collapses both to a crossfade.
 //
 // VISUAL: glass capsule material (matches the ReconnectBanner finish — one
 // pinned glass surface vocabulary), SF-Pro 13px copy, sentence case, ≥44pt tap

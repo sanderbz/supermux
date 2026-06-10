@@ -5,7 +5,7 @@ import App from './App.tsx'
 import { initPWA } from '@/lib/pwa'
 import { installFetchInstrumentation } from '@/lib/api/fetch-wrap'
 
-// V034: install the global fetch wrapper BEFORE any component renders so the
+// Install the global fetch wrapper BEFORE any component renders so the
 // FIRST /api/* call is observed by the connection-state machine. Idempotent.
 installFetchInstrumentation()
 

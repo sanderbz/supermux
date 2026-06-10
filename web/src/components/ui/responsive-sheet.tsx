@@ -96,7 +96,7 @@ function MobileBody({
             'rounded-t-[10px] border-t border-border/60 pb-safe outline-none',
           )}
         >
-          {/* Drag indicator — 36×5, 2.5px radius, tertiary tint (Termius #11).
+          {/* Drag indicator — 36×5, 2.5px radius, tertiary tint.
               NO `pt-safe` wrapper: the sheet is capped at `max-h-[92vh]` so the
               top of the drawer always sits ≥8% below the physical screen top —
               more than the iOS notch / Dynamic Island inset (~47–59px) on any

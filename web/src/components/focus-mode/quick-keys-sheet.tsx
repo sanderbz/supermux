@@ -1,4 +1,4 @@
-// QuickKeysSheet — the curated tap-to-send quick-keys panel (R5 quick-keys).
+// QuickKeysSheet — the curated tap-to-send quick-keys panel.
 //
 // Replaces the old SpecialsSheet's "type the special key" 2×2 pager with a
 // curated library rendered as big 44pt tap-to-send chips inside the shared

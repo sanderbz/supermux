@@ -1,5 +1,5 @@
-//! Hook-token auth scoping (TECH_PLAN §3.6, §6.5, §7.1; M5b, Eng P1 #3 / Codex
-//! #4). The `/api/_internal/hook` endpoint authenticates with the PER-SESSION
+//! Hook-token auth scoping.
+//! The `/api/_internal/hook` endpoint authenticates with the PER-SESSION
 //! `X-Supermux-Hook-Token`, never the dashboard bearer. Asserts:
 //!   * session A's token cannot mark session B (cross-session → 401),
 //!   * the correct per-session token is accepted and the event is recorded,

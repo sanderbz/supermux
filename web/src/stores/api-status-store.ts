@@ -1,4 +1,4 @@
-// useApiStatus — the V034 connection-status state machine (PWA offline / server-
+// useApiStatus — the connection-status state machine (PWA offline / server-
 // down branded UX).
 //
 // THE PROBLEM. The existing `useConnection` store aggregates WS + SSE

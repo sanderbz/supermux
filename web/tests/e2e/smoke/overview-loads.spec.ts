@@ -1,4 +1,4 @@
-// M24a smoke #1 — overview-loads (TECH_PLAN §10 "M24a"; §7.2).
+// Smoke e2e — the overview loads against a real booted backend.
 //
 // Boot the binary on an ephemeral port; navigate to /. With an EMPTY DB the
 // overview must show the empty-state CTA ("No agents yet. Boot your first one.").

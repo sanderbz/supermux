@@ -1,4 +1,4 @@
-//! RT5: claude_config::install_hooks via FileTransport
+//! claude_config::install_hooks via FileTransport (remote hook install)
 //!
 //! Exercises the transport-aware refactor:
 //!
@@ -17,7 +17,7 @@
 //! without needing a real remote host. The same install_hooks code path is
 //! exercised against `LocalFileTransport` by `claude_config`'s own
 //! `#[cfg(test)] mod tests` — that suite is the golden-snapshot regression
-//! for the local path and is untouched by RT5.
+//! for the local path and is untouched by the transport-aware refactor.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

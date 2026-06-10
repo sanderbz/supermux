@@ -10,8 +10,8 @@
 //!   * `update_status(Reachable)` bumps `last_seen`; other transitions don't.
 //!   * `soft_delete` tombstones the row: `list()` filters it out, but
 //!     `get_by_name()` (the historical-resolution path) still returns it.
-//!   * `host_id` defaults to `NULL` on every pre-RT4 session row (the
-//!     non-empty-existing-db migration regression).
+//!   * `host_id` defaults to `NULL` on every session row that predates the
+//!     `host_id` migration (the non-empty-existing-db migration regression).
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
 use supermux_server::db;
@@ -187,9 +187,9 @@ async fn soft_delete_filters_list_but_get_by_name_still_resolves() {
 
 #[tokio::test]
 async fn migration_backfills_host_id_null_on_existing_session_rows() {
-    // The RT4 migration adds `host_id` to `sessions` via ALTER TABLE ADD
+    // The host_id migration adds `host_id` to `sessions` via ALTER TABLE ADD
     // COLUMN — SQLite must default every existing row to NULL so the entire
-    // pre-RT4 fleet keeps its local-only semantics. Insert a session BEFORE
+    // pre-migration fleet keeps its local-only semantics. Insert a session BEFORE
     // reading host_id back to assert the backfill behavior.
     let (pool, dir) = test_pool().await;
     // (Migrations have already run via db::init in test_pool — that's the

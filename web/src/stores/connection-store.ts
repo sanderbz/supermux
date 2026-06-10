@@ -1,6 +1,4 @@
-// useConnection — the single global source of truth for live-link health
-// (research/termius-ios-native-spec.md §"Reconnect banner /
-// connection status surface", §"v3 finish acceptance criteria" #8).
+// useConnection — the single global source of truth for live-link health.
 //
 // The app holds N live connections at once: exactly one SSE stream (`/api/events`,
 // see use-sse.ts) plus zero-or-more live-terminal WebSockets (use-live-term.ts,

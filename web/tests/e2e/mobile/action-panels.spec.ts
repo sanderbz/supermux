@@ -1,4 +1,4 @@
-// R5 mobile action-panels e2e — panels-unify + curated quick-keys + title-dots
+// Mobile action-panels e2e — unified sheets + curated quick-keys + title-dots
 // removal. Served from the built `dist` (vite preview); ALL backend traffic is
 // stubbed at the network layer so the test is hermetic + fast while still
 // exercising the REAL app code.
@@ -159,7 +159,7 @@ async function gotoFocus(page: Page) {
   await expect(page.getByRole('button', { name: 'Specials' })).toBeVisible()
 }
 
-test.describe('mobile action panels (R5 unify + quick-keys)', () => {
+test.describe('mobile action panels (unified sheets + quick-keys)', () => {
   test('slash / dots / + all open the shared Vaul sheet with backdrop dismiss', async ({
     page,
   }) => {

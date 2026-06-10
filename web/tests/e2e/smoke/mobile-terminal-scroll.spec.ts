@@ -1,6 +1,6 @@
-// R5 e2e — mobile terminal scrollback scroll (iOS).
+// E2e — mobile terminal scrollback scroll (iOS).
 //
-// REGRESSION GUARD for the R5 scroll fix. The M17 joystick used to render an
+// REGRESSION GUARD for the mobile scroll fix. The joystick used to render an
 // `absolute inset-0 z-20 touch-none` overlay that blanketed the whole terminal,
 // so a one-finger drag NEVER reached xterm's own touchmove scroll handler — the
 // scrollback couldn't scroll on mobile. The fix makes the joystick layer

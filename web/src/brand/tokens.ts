@@ -50,8 +50,7 @@ export function statusColor(status: string): string {
 }
 
 /**
- * Toast / banner slide-in. Termius spec calls this `.smooth(0.35)` (§termius
- * "reconnect banner slide-in"). In Framer Motion terms: a critically-damped
+ * Toast / banner slide-in — SwiftUI's `.smooth(0.35)`. In Framer Motion terms: a critically-damped
  * spring with no bounce, ~0.35s. Use for the <Toast/> entrance.
  */
 export const TOAST_SPRING = {
@@ -60,7 +59,7 @@ export const TOAST_SPRING = {
   bounce: 0,
 } as const
 
-/** Slightly longer settle for the toast/banner exit (Termius `.smooth(0.4)`). */
+/** Slightly longer settle for the toast/banner exit (`.smooth(0.4)`). */
 export const TOAST_SPRING_OUT = {
   type: 'spring',
   duration: 0.4,

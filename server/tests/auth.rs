@@ -1,6 +1,5 @@
-//! Integration tests for the bearer-auth middleware (TECH_PLAN §6.1, M1
-//! acceptance). Covers: missing token = 401, wrong token = 401, correct token =
-//! 200 + `[]`.
+//! Integration tests for the bearer-auth middleware. Covers: missing token =
+//! 401, wrong token = 401, correct token = 200 + `[]`.
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
 use supermux_server::state::AppState;
@@ -83,8 +82,8 @@ async fn correct_token_is_200_and_empty_array() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // M2 finalises the §3.4 HTTP envelope: `{ ok, data }` on success. An empty
-    // session list is therefore `{"ok":true,"data":[]}` (was a bare `[]` in M1).
+    // The HTTP envelope is `{ ok, data }` on success. An empty session list is
+    // therefore `{"ok":true,"data":[]}` (was a bare `[]` before the envelope).
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v, serde_json::json!({ "ok": true, "data": [] }));

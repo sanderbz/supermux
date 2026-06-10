@@ -327,7 +327,7 @@ export default DesktopDock
 //     focus-preservation trick the accessory keys use). Right-aligned cluster.
 //   • Accessory strip — Esc/Tab/Ctrl-C/arrows, each → `sendKey` (the SAME named-
 //     key path desktop's send-row + the joystick use). Pinned above the keyboard
-//     via the route's `keyboardInset`, Termius-style.
+//     via the route's `keyboardInset`, like an iOS keyboard accessory bar.
 //
 // HIG: every interactive control here is ≥44×44pt — the iOS tap-target floor.
 //
@@ -340,7 +340,7 @@ export default DesktopDock
 // iOS haptics caveat: chip presses use a 0.92 scale (CSS-only feedback);
 // navigator.vibrate(8) is gated by `'vibrate' in navigator` (Android only).
 
-/** Accessory-strip keys, in Termius order. Each label maps to a `keyToBytes`
+/** Accessory-strip keys. Each label maps to a `keyToBytes`
  *  name understood by `LiveTerminal.sendKey` — Esc/Tab/Ctrl-C plus a 4-way
  *  arrow cluster, the keys a soft keyboard lacks. */
 const ACCESSORY_KEYS = ['Esc', 'Tab', 'Ctrl-C'] as const
@@ -418,7 +418,7 @@ export function MobileDock({
   // Claude Tools sheet's Commands tab (tap a command → it runs in the focused
   // terminal). MobileDock keeps NO slash state.
   //
-  // Dictation — the mic toggles Web Speech. R5 FIX: the flush no longer depends
+  // Dictation — the mic toggles Web Speech. FIX: the flush no longer depends
   // on Web Speech firing `onend` (flaky on iOS Safari / WKWebView — when it never
   // arrives the transcript was silently dropped). Instead `useDictation` surfaces
   // each FINAL segment via `onFinal` the instant it commits, and we send that
@@ -716,7 +716,7 @@ function AccessoryChip({
       // keyboard (and breaks live-type). preventDefault on pointer/mouse-down
       // keeps the textarea focused so the keyboard stays up; the sendKey on
       // `onClick` still fires (the key reaches the pty). The standard accessory-
-      // bar pattern (Termius / CodeEditor toolbars use the same trick).
+      // bar pattern (the CodeEditor toolbar uses the same trick).
       onPointerDown={(e) => e.preventDefault()}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {

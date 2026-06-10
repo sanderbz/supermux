@@ -1,8 +1,8 @@
-//! End-to-end status hero-flow (TECH_PLAN §3.6, §10 M5b acceptance: "SSE clients
-//! receive `{type:'sessions'...}` deltas as the detector ticks"). Spawns a REAL
-//! tmux shell session, subscribes to the SSE broadcast, and asserts the detector
-//! loop publishes a `sessions` delta once it captures the live pane. Requires
-//! `tmux`; skips cleanly without it (CI has tmux per the M3/M5b verification note).
+//! End-to-end status hero-flow: SSE clients receive `{type:'sessions'...}`
+//! deltas as the detector ticks. Spawns a REAL tmux shell session, subscribes
+//! to the SSE broadcast, and asserts the detector loop publishes a `sessions`
+//! delta once it captures the live pane. Requires `tmux`; skips cleanly
+//! without it (CI has tmux).
 
 use std::time::Duration;
 

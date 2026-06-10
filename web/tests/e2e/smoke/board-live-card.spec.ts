@@ -1,10 +1,10 @@
-// U1 verification — the live board issue card (board-integration §C.4).
+// E2e — the live board issue card.
 //
 // The card must be as alive as an overview tile: the LINKED session's real
 // StatusDot (joined to the shared SSE status/sessions stream by issue.session),
 // a hover tail-peek off the same last_capture, one-tap Open/Send actions, a
-// compact acceptance progress pill, the R2 stale-link reassign badge, and the
-// R1 needs_review / awaiting_input badges.
+// compact acceptance progress pill, the stale-link reassign badge, and the
+// needs_review / awaiting_input badges.
 //
 // Drives the real binary over HTTP through the smoke harness, same as the other
 // board smoke specs. Note: the card is a `div[role=button]` (nested action
@@ -48,7 +48,7 @@ function card(page: Page, title: string) {
   return page.getByRole('button', { name: title, exact: false }).first()
 }
 
-test.describe('board live issue card (U1)', () => {
+test.describe('board live issue card', () => {
   let backend: Backend
 
   test.beforeEach(async () => {

@@ -2,7 +2,7 @@
 // or any store, so later milestones can adopt it by dropping <ToastProvider>
 // near the root and calling `useToast()` (from ./use-toast) anywhere beneath it.
 //
-// Spec (Termius reconnect-banner finish):
+// Spec (matches the reconnect-banner finish):
 //   - Glass capsule, 36px tall, top-center, respects the top safe-area inset.
 //   - Slides in from the top with `.smooth(0.35)` (TOAST_SPRING).
 //   - Auto-dismisses after 2.5s; the stack holds at most 3 (oldest drops first).

@@ -109,7 +109,7 @@ export function A2HSInstructionsSheet() {
             'border-t border-border/60 pb-safe outline-none',
           )}
         >
-          {/* Drag indicator — 36×5, 2.5px radius, tertiary tint (Termius #11). */}
+          {/* Drag indicator — 36×5, 2.5px radius, tertiary tint. */}
           <div className="mx-auto mt-1.5 h-[5px] w-9 shrink-0 rounded-[2.5px] bg-muted-foreground/30" />
 
           <motion.div

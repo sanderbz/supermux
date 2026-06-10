@@ -1,4 +1,4 @@
-// Fix verification — mobile overview parity (fix/r5-overview-parity).
+// Fix verification — mobile overview parity.
 //
 // Two parity gaps on phones, verified against the real binary through the smoke
 // harness, at an iPhone 16 Pro Max viewport (430×932) with an iOS user-agent so

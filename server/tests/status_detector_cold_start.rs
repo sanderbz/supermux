@@ -34,8 +34,8 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
         tls: TlsConfig::default(),
         auth_token: "secret-test-token-status".to_string(),
         provider_defaults: ProviderDefaults::default(),
-        // M4 added the required `ws` block after M5a branched; default it so the
-        // M5a cold-start test compiles against the merged `Config`.
+        // The WebSocket layer requires a `ws` block in `Config`; default it so
+        // the cold-start test compiles against the merged `Config`.
         ws: WsConfig::default(),
         remote_callback_url: None,
             push_sub: None,
@@ -49,7 +49,7 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
 async fn cold_start_heartbeat_is_five_minutes_ago() {
     let (state, dir) = test_state().await;
 
-    // With no live reader (M4 absent), the heartbeat reads as the cold-start
+    // With no live pty reader attached, the heartbeat reads as the cold-start
     // sentinel: ~5 minutes ago.
     let elapsed = state.last_pty("never-seen").elapsed();
     assert!(
@@ -70,7 +70,7 @@ async fn cold_start_first_tick_is_unknown_then_active_on_byte() {
     let first = detector.detect("", state.last_pty("alpha"), TurnState::default(), false);
     assert_eq!(first.as_str(), "unknown", "cold-start first tick must be Unknown");
 
-    // A real PTY byte arrives (what M4's reader will record): → Active. No hooks
+    // A real PTY byte arrives (what the ws reader records): → Active. No hooks
     // wired for this session, so the heartbeat heuristic is the liveness signal.
     state.pty_heartbeat.insert("alpha".to_string(), Instant::now());
     let second = detector.detect("", state.last_pty("alpha"), TurnState::default(), false);

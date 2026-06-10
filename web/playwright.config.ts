@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test'
 
-// M24a — smoke e2e (TECH_PLAN §7.2, §10 "M24a"). The FOUR most-critical
+// Smoke e2e — the FOUR most-critical
 // early-warning tests, run against a REAL supermux-server binary booted per-test on
 // an ephemeral port with an isolated temp data dir (see tests/e2e/smoke/harness.ts).
 //

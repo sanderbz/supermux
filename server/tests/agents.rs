@@ -1,7 +1,7 @@
-//! M9 acceptance integration tests (TECH_PLAN §10 "### M9 —", §3.4, §5).
+//! Agents-surface acceptance integration tests.
 //!
 //! Driven via `axum::Router::oneshot` against an isolated temp-dir DB (same
-//! pattern as `board.rs`). Covers the four §10 M9 acceptance criteria that don't
+//! pattern as `board.rs`). Covers the four acceptance criteria that don't
 //! need live tmux:
 //!   * `GET /api/slash-commands` returns the built-ins (~50) + skills.
 //!   * `GET /api/kbd-groups` returns the four defaults on first read (seeded).
@@ -280,7 +280,7 @@ async fn kbd_groups_crud() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// `PUT /api/kbd-groups` — whole-list replace (M24b integration fix). The M16
+/// `PUT /api/kbd-groups` — whole-list replace. The keyboard-shortcuts
 /// manage-sheet funnels every reorder / add / remove through this single
 /// canonical write. Replaces the seeded defaults wholesale, then verifies the
 /// list is exactly the new content (old rows gone, new order preserved).

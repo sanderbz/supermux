@@ -414,7 +414,7 @@ trap - EXIT
         let s = self.stat(path).await?;
         if s.is_dir {
             bail!(
-                "refusing to delete directory {} over the remote transport (single-file deletes only in RT6 MVP)",
+                "refusing to delete directory {} over the remote transport (single-file deletes only)",
                 path.display()
             );
         }

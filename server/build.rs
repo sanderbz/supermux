@@ -1,4 +1,4 @@
-//! Build script (TECH_PLAN §8.1).
+//! Build script.
 //!
 //! Two jobs:
 //!   1. `scripts/build.sh` copies `web/dist` → `server/static` before
