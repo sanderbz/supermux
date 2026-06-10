@@ -14,7 +14,7 @@ Run a roomful of Claude Code agents on your VPS or home server. Watch, steer, an
   <a href="https://github.com/sanderbz/supermux/releases/latest"><img src="https://img.shields.io/github/v/release/sanderbz/supermux" alt="latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
   <img src="https://img.shields.io/badge/single--binary-Rust-orange" alt="Rust">
-  <img src="https://img.shields.io/badge/runs%20on-Linux-success" alt="platforms">
+  <img src="https://img.shields.io/badge/runs%20on-Linux%20%7C%20macOS-success" alt="platforms">
 </p>
 
 ---
@@ -177,8 +177,8 @@ sudo bash install.sh
 
 ### Supported platforms
 
-- **Linux**: Ubuntu 22.04+ / Debian 12+ with systemd, `x86_64` and `aarch64` (the deploy target). Other distros with systemd generally work but aren't tested.
-- **macOS**: development only (`cargo run` + Vite); not supported as a self-host target (the installer, systemd sandbox, and updater are Linux-only).
+- **Linux**: Ubuntu 22.04+ / Debian 12+ with systemd, `x86_64` and `aarch64`. This is what the one-line installer, the systemd sandbox, and the in-UI updater target. Other distros with systemd generally work but aren't tested.
+- **macOS**: works, manual install. Nothing in supermux itself is Linux-only; a Mac mini in a closet makes a fine supermux box (that's a real deployment). Build from source (`bash scripts/build.sh`, see [`docs/TESTING.md`](docs/TESTING.md)) and run the binary; keep it alive with `launchd` or tmux. The one-line installer and the auto-updater don't cover macOS yet.
 - **Windows**: not supported (relies on Unix-only primitives like `tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
 
 Building from source needs: `rustc 1.83+`, a recent `bun` 1.x, and the system build deps `build-essential pkg-config libssl-dev cmake unzip`. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you).
