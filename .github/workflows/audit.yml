@@ -23,7 +23,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
         with:
           toolchain: stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/cargo-audit
           key: ${{ runner.os }}-cargo-audit-bin
