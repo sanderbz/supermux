@@ -41,7 +41,7 @@ mime_guess = "2.0"
 rust-embed = { version = "8.5", features = ["mime-guess"] }  # embed web/dist on stable Rust
 
 # ── ws ──
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.29"
 
 # ── database ──
 sqlx = { version = "0.8", default-features = false, features = [
