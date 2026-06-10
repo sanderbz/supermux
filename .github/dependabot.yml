@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # bun ecosystem: web/ uses bun.lock as its canonical lockfile (no
+  # package-lock.json), which the npm ecosystem can't update.
+  - package-ecosystem: bun
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

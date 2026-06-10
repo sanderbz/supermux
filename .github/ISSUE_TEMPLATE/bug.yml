@@ -1,0 +1,55 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+      placeholder: |
+        1. Open the dashboard on mobile
+        2. Tap a running session
+        3. Expected the sheet to open; instead …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: supermux version
+      description: From Settings → Updates, or `supermux-server --version`.
+      placeholder: v0.4.23
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Host platform
+      placeholder: Ubuntu 24.04 x86_64, systemd install via install.sh
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - Desktop browser
+        - Mobile browser / PWA (iOS)
+        - Mobile browser / PWA (Android)
+        - Other / not relevant
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        e.g. `journalctl -u supermux -n 100 --no-pager`, or the browser console.
+        ⚠️ Redact your auth token and any other secrets before pasting.
+      render: shell
+    validations:
+      required: false
