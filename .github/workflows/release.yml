@@ -43,7 +43,7 @@ jobs:
             runner: ubuntu-22.04-arm      # native ARM runner — no cross-compile
             arch_label: aarch64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: install system build deps
         run: |
