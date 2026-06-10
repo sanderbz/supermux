@@ -1,9 +1,8 @@
--- migrations/0017_hosts.sql
--- Remote-host registry (RT4 of the remote-ssh feature plan,
--- /opt/projects/supermux-remote-ssh/plan/REMOTE_PLAN.md). The supermux server
--- gains a `hosts` table that catalogs every machine the user wants to run
--- Claude sessions on. `host_id = NULL` on a session row means LOCAL — that
--- preserves the existing one-machine behavior unchanged (every pre-RT4 row
+-- migrations/0018_hosts.sql
+-- Remote-host registry for the remote-SSH feature. The supermux server gains
+-- a `hosts` table that catalogs every machine the user wants to run Claude
+-- sessions on. `host_id = NULL` on a session row means LOCAL — that preserves
+-- the existing one-machine behavior unchanged (every pre-existing row
 -- backfills to NULL via SQLite's default-NULL ADD COLUMN).
 --
 -- Status is constrained to a small enum so the FE can render a deterministic

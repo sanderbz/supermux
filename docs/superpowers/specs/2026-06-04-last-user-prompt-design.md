@@ -44,9 +44,9 @@ The bar lives directly under the focus header, full-width, ~32 px tall:
 
 ```
 ┌─ focus header ──────────────────────────────────────────────────┐
-│ ●  superseo-private                            [↩] [⚙] [⋯] [⊕] │   ← recall icon left of settings
+│ ●  my-app-refactor                             [↩] [⚙] [⋯] [⊕] │   ← recall icon left of settings
 ├─ glass recall bar (auto-show on mount, fade per §4.1) ──────────┤
-│ ╴ You · 2m ago · "audit homepage SEO, focus op CWV en title…" × │
+│ ╴ You · 2m ago · "refactor the auth middleware to use the…"   × │
 ├──────────────────────────────────────────────────────────────────┤
 │ $ claude is typing…                                              │
 │   …long reply…                                                   │
@@ -69,9 +69,9 @@ Triggered by clicking the recall icon, clicking the auto-bar, or pressing `⌘G`
 ┌─ popover (≤320 × auto height, max 360 height) ──────────────┐
 │  You · 2m ago                                       [📋]    │
 ├──────────────────────────────────────────────────────────────┤
-│  audit homepage SEO, focus op CWV en title.                 │
-│  let de title niet langer dan 60 chars worden,              │
-│  en zorg dat de meta-description CTA-driven is…             │
+│  refactor the auth middleware to use the new token shape.   │
+│  keep the legacy header working for one release so the      │
+│  mobile clients have time to roll out…                       │
 │                                                              │
 │  (preview · 200 chars max — DB cap)                          │
 └──────────────────────────────────────────────────────────────┘
@@ -88,7 +88,7 @@ Mobile has no auto-show. The focus header gets the same recall icon, left of set
 
 ```
 ┌─────────────────────────────────────┐
-│ ←  ● superseo-private    [↩][⚙][⋯] │   ← icon mirrors desktop position
+│ ←  ● my-app-refactor     [↩][⚙][⋯] │   ← icon mirrors desktop position
 ├─────────────────────────────────────┤
 │ terminal…                            │
 │ …                                    │
@@ -104,9 +104,9 @@ Tapping the icon opens a Vaul bottom-sheet (matches `session-picker-sheet.tsx` p
 │                                      │
 │  You · 2m ago                  📋   │
 │                                      │
-│  audit homepage SEO, focus op       │
-│  CWV en title. let de title niet    │
-│  langer dan 60 chars worden, en…    │
+│  refactor the auth middleware to    │
+│  use the new token shape. keep the  │
+│  legacy header working for one…     │
 │                                      │
 │  (preview · 200 chars max)           │
 └─────────────────────────────────────┘

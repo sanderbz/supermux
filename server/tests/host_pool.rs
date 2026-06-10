@@ -1,5 +1,4 @@
-//! `HostPool` integration tests (REMOTE_PLAN §RT2,
-//! /opt/projects/supermux-remote-ssh/plan/REMOTE_PLAN.md).
+//! `HostPool` integration tests — the SSH-side of the remote-host registry.
 //!
 //! The localhost-ssh test is `#[ignore]` by default: many CI environments
 //! (and the orchestrator's sandbox) don't have a usable

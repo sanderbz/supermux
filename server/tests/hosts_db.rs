@@ -1,10 +1,10 @@
-//! `db::hosts` integration tests (RT4 of the remote-ssh plan,
-//! /opt/projects/supermux-remote-ssh/plan/REMOTE_PLAN.md).
+//! `db::hosts` integration tests — the SQLite-level invariants of the remote-
+//! SSH host registry.
 //!
 //! Each test spins up an isolated temp-dir SQLite pool via [`crate::test_pool`]
 //! (matches the pattern in `server/tests/auth.rs` & `server/tests/board.rs`),
-//! runs migration 0017, then exercises the [`db::hosts`] surface. The
-//! invariants under test mirror RT4's acceptance bullets:
+//! runs the hosts migration, then exercises the [`db::hosts`] surface. The
+//! invariants under test:
 //!   * `create` + `get_by_name` round-trip.
 //!   * Duplicate `name` violates `UNIQUE` and surfaces as an `Err`.
 //!   * `update_status(Reachable)` bumps `last_seen`; other transitions don't.

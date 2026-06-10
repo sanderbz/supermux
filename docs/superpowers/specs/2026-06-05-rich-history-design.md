@@ -52,11 +52,11 @@ from the bar or the `Quote` icon is what gets the upgrade.
 │  🔍  Search…                                                │   ← search row
 │  ────────────────────────────────────────────────────────── │
 │  ▼  You · 2m ago                                      📋   │   ← entry, expanded
-│     audit homepage SEO, focus op CWV en title.              │      (first item only)
-│     ↳ Klaar — diff staat op `feature/seo`.                  │      reply, line-clamp-3
+│     refactor the auth middleware to use the new token shape │      (first item only)
+│     ↳ Done — diff is on `feature/auth-refactor`.            │      reply, line-clamp-3
 │  ─────                                                       │
 │  ▸  You · 12m ago                                     📋   │   ← entry, collapsed
-│     herstel die typo in de footer                           │      (prompt line-clamp-3)
+│     fix the typo in the footer                              │      (prompt line-clamp-3)
 │     ↳ Done — commit b3f7e21.                                │      reply, line-clamp-1
 │  ─────                                                       │
 │  …                                                           │
@@ -130,9 +130,9 @@ GET /api/sessions/{name}/recall
         "uuid": "42f93248-83ce-4270-b158-397c1922b665",
         "ts": 1748278675,
         "sessionId": "abf2f6fd-...",
-        "sessionTitle": "SEO audit homepage",   // optional
-        "text": "audit homepage SEO, focus op CWV en title",
-        "reply": "Klaar — diff staat op `feature/seo`.",  // optional
+        "sessionTitle": "Auth middleware refactor",  // optional
+        "text": "refactor the auth middleware to use the new token shape",
+        "reply": "Done — diff is on `feature/auth-refactor`.",  // optional
         "sidechain": false
       }
     ],

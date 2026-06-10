@@ -151,11 +151,12 @@ fn inject_runtime_config(html: &str, state: &AppState) -> String {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     // `_SUPERMUX_PROJECT_DIR`: the FIRST project directory from the deploy-time
-    // `SUPERMUX_PROJECT_DIRS` env var (smart default `<home>/projects`; clawd-02
-    // is `/opt/projects`). Start-a-team pre-fills its directory field with this
-    // (with a trailing slash) so the autocomplete on focus immediately surfaces
-    // the project repos — making "pick a repo" one click. Empty string when the
-    // var is unset (the form falls back to home).
+    // `SUPERMUX_PROJECT_DIRS` env var (smart default `<home>/projects`;
+    // multi-project deployments commonly set it to `/opt/projects`).
+    // Start-a-team pre-fills its directory field with this (with a trailing
+    // slash) so the autocomplete on focus immediately surfaces the project
+    // repos — making "pick a repo" one click. Empty string when the var is
+    // unset (the form falls back to home).
     let projects_dir = std::env::var("SUPERMUX_PROJECT_DIRS")
         .ok()
         .and_then(|s| s.split(':').next().map(str::to_string))
