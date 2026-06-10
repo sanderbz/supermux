@@ -3309,7 +3309,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "tungstenite 0.24.0",
+ "tungstenite 0.29.0",
  "url",
  "uuid",
  "web-push",
