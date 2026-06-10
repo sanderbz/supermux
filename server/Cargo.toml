@@ -118,7 +118,7 @@ supermux-server = { path = ".", features = ["test-support"] }
 
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
-tungstenite = "0.24"
+tungstenite = "0.29"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }  # WS client Stream/Sink ext (ws tests)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 pretty_assertions = "1.4"
