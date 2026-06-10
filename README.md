@@ -175,7 +175,9 @@ sudo bash install.sh
 - **Tmux survival**: the tmux socket lives in the persistent data dir, so sessions outlive supermux restarts.
 - **In-UI 1-click updates**: `git fetch → build → install → verify → auto-rollback on failure`, exposed as a button. Preflight refuses unsafe upgrades. Needs a source clone on the server (clone-based installs); prebuilt-binary installs upgrade by re-running the one-line installer.
 
-### Supported platforms
+### Supported platforms (for hosting)
+
+This is about where the *server* runs. The dashboard itself works in any modern browser on macOS, Windows, iPhone and Android.
 
 - **Linux**: Ubuntu 22.04+ / Debian 12+ with systemd, `x86_64` and `aarch64`. This is what the one-line installer, the systemd sandbox, and the in-UI updater target. Other distros with systemd generally work but aren't tested.
 - **macOS**: works, manual install. Nothing in supermux itself is Linux-only; a Mac mini in a closet makes a fine supermux box (that's a real deployment). Build from source (`bash scripts/build.sh`, see [`docs/TESTING.md`](docs/TESTING.md)) and run the binary; keep it alive with `launchd` or tmux. The one-line installer and the auto-updater don't cover macOS yet.
