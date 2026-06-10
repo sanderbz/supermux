@@ -142,10 +142,7 @@ That's the problem supermux solves.
 
 The [one-liner above](#install-in-one-line) covers the common case. A few flavours for everything else:
 
-**Pinned version** — install exactly `v0.4.22`:
-```bash
-curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo SUPERMUX_VERSION=v0.4.22 bash
-```
+**Pinned version** — same one-liner with `SUPERMUX_VERSION=vX.Y.Z` added to the env: `… | sudo SUPERMUX_VERSION=v0.4.23 bash`.
 
 **Inspect before running**:
 ```bash
