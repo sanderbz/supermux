@@ -99,7 +99,7 @@ shell-escape = "0.1"
 shellexpand = "3.1"
 url = "2.5"
 uuid = { version = "1.11", features = ["v4", "serde"] }
-dirs = "5.0"                                             # home dir
+dirs = "6.0"                                             # home dir
 which = "7.0"                                            # locate claude/tmux
 
 [features]
