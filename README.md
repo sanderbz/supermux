@@ -14,7 +14,7 @@ Run a roomful of Claude Code agents on your VPS or home server. Watch, steer, an
   <a href="https://github.com/sanderbz/supermux/releases/latest"><img src="https://img.shields.io/github/v/release/sanderbz/supermux" alt="latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
   <img src="https://img.shields.io/badge/single--binary-Rust-orange" alt="Rust">
-  <img src="https://img.shields.io/badge/runs%20on-Linux%20%7C%20macOS-success" alt="platforms">
+  <img src="https://img.shields.io/badge/runs%20on-Linux-success" alt="platforms">
 </p>
 
 ---
@@ -180,11 +180,11 @@ sudo bash install.sh
 
 ### Supported platforms
 
-- **Linux** — `x86_64` and `aarch64` (primary deploy target).
-- **macOS** — Apple Silicon and Intel (development + local self-host).
+- **Linux** — Ubuntu 22.04+ / Debian 12+ with systemd, `x86_64` and `aarch64` (the deploy target). Other distros with systemd generally work but aren't tested.
+- **macOS** — development only (`cargo run` + Vite); not supported as a self-host target (the installer, systemd sandbox, and updater are Linux-only).
 - **Windows** — not supported (relies on Unix-only primitives like `tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
 
-Toolchain floor (only relevant if you build from source): `rustc 1.83` and a recent `bun` 1.x. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you).
+Building from source needs: `rustc 1.83+`, a recent `bun` 1.x, and the system build deps `build-essential pkg-config libssl-dev cmake unzip`. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you).
 
 ### Tailscale-ready
 
@@ -212,7 +212,8 @@ Module map and protocol details: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 ### Defaults
 
 - **Non-root by default, even from a root SSH session.** Root provisions; the service drops to the unprivileged `supermux` user. Forcing root throws away the systemd sandbox and trips Claude Code's refusal to run `--dangerously-skip-permissions` as uid 0, so it's refused unless you explicitly set `SUPERMUX_ALLOW_ROOT=1`.
-- **Service user** defaults to `supermux`. If it doesn't exist, `deploy.sh` provisions it. Pick a non-default name and the script refuses rather than silently creating something unexpected.
+- **Service user** — `SUPERMUX_SERVICE_USER` (default `supermux`). If it doesn't exist, `deploy.sh` provisions it. Pick a non-default name and the script refuses rather than silently creating something unexpected; `root` is refused unless `SUPERMUX_ALLOW_ROOT=1`.
+- **Repo dir for the updater** — the in-UI updater builds from a git clone, auto-detected at `/opt/projects/supermux` (falling back to walking up from the binary's CWD). Set `SUPERMUX_REPO_DIR=/path/to/clone` for non-standard layouts.
 - **Project directories** — `SUPERMUX_PROJECT_DIRS` (default `<user-home>/projects`). Under-home dirs just work; outside-home dirs (`/opt/projects`, `/srv/work`, …) are created, `chown -R`'d, and folded into the systemd `ReadWritePaths` so the sandbox permits agent writes.
 - **Claude Code (the agent runtime)** — every non-shell session launches the `claude` binary on the service user's PATH, so it's a runtime dependency for the default provider. After provisioning, `deploy.sh` checks whether the service user has `claude` and, when missing, installs it (official native installer — no Node) per `SUPERMUX_INSTALL_CLAUDE` (`ask` = offer interactively, `1` = auto, `0` = warn only).
 - **Service-user Claude login** — supermux uses your Claude subscription (OAuth), never an API key. After confirming the binary, `deploy.sh` checks for `~supermux/.claude/.credentials.json` and offers to copy the deployer's existing login.

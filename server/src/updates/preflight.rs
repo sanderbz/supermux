@@ -227,7 +227,7 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
         InstallMode::Docker => {
             blocked.push(BlockedReason::DockerUpdateUnsupported {
                 message:
-                    "supermux is running in a Docker container. Pull the latest image and recreate the container to update."
+                    "supermux is running in a container. There is no official image yet — rebuild the container from the latest source to update."
                         .into(),
             });
         }
