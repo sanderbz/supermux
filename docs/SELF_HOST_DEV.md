@@ -156,7 +156,7 @@ systemd unit (preferred; never lands on disk in your config):
 ```
 sudo systemctl edit supermux
 # add under [Service]:
-#   Environment=SUPERMUX_GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#   Environment=SUPERMUX_GITHUB_TOKEN=ghp_YOUR_TOKEN_HERE
 sudo systemctl restart supermux
 ```
 

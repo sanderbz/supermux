@@ -1,73 +1,40 @@
-# React + TypeScript + Vite
+# supermux frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The React + TypeScript + Vite PWA that talks to the supermux server (`../server/`).
+Built artifacts are embedded into the Rust binary at compile time via
+[`rust-embed`], so the binary serves the frontend directly — there is no
+separate static-asset deploy step.
 
-Currently, two official plugins are available:
+## Dev loop
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+From this directory:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+bun install         # or: npm install (bun.lock is canonical)
+bun run dev         # vite dev server with HMR, proxied to a local supermux
+bun run build       # tsc -b && vite build  → dist/, picked up by the embed step
+bun run test        # vitest (browser-mode component tests)
+bun run lint        # eslint
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The dev server proxies API + SSE + WebSocket calls to a locally running
+supermux server on `http://127.0.0.1:8824` (configurable via `VITE_API_BASE`
+in `.env.local`). Start the backend separately with `cargo run` in `../server`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Layout
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+- `src/routes/` — top-level pages (`/`, `/focus/:name`, `/files`, etc.).
+- `src/components/` — feature components, grouped by domain (`focus-mode/`,
+  `session-tile/`, `terminal/`, `team/`, `files/`, `board/`, `snippets/`, …).
+- `src/lib/api/` — typed client per API module + a shared `client.ts`.
+- `src/hooks/` — shared cross-cutting hooks (sessions, teams, SSE, …).
+- `src/stores/` — Zustand stores for UI state that survives unmount.
+- `public/` — assets that ship as-is in the embedded bundle.
+
+## Embedding into the server binary
+
+`server/build.rs` shells out to `bun run build` and then `rust-embed` packs
+`dist/` into the binary. A `vite build` failure breaks `cargo build`. The
+`scripts/build.sh` wrapper does both halves for CI + the in-app updater.
+
+[`rust-embed`]: https://crates.io/crates/rust-embed

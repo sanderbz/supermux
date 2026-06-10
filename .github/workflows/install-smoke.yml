@@ -15,6 +15,11 @@ on:
       - 'tests/install/**'
       - 'etc/systemd/**'
       - 'etc/supermux-deploy-runner'
+      - 'scripts/build.sh'
+      - 'server/**'
+      - 'web/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/install-smoke.yml'
   pull_request:
     paths:
@@ -22,6 +27,11 @@ on:
       - 'tests/install/**'
       - 'etc/systemd/**'
       - 'etc/supermux-deploy-runner'
+      - 'scripts/build.sh'
+      - 'server/**'
+      - 'web/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/install-smoke.yml'
 
 jobs:
