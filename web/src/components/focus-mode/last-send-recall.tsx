@@ -20,7 +20,7 @@
 // helper that returns a typed view for the components.
 //
 // SCOPE. The full design lives in
-// `docs/superpowers/specs/2026-06-04-last-user-prompt-design.md`. This module
+// `design/specs/2026-06-04-last-user-prompt-design.md`. This module
 // implements §4 (UX) and §6 (frontend) of that spec.
 
 import * as React from 'react'
