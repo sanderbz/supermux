@@ -262,8 +262,8 @@ iOS specifics: Safari only allows push from installed home-screen PWAs, so add t
 
 ## Contributing
 
-Issues, ideas, screenshots of your dashboard with 14 Claude sessions — welcome. PRs land via review; CI runs on every push to `main`. Heavy code paths (sessions, ws, scheduler, board) have inline `#[cfg(test)]` tests plus integration tests under `server/tests/`. The frontend is type-checked end-to-end with `tsc -b` and uses Playwright for e2e smoke.
+Issues, ideas, screenshots of your dashboard with 14 Claude sessions — welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev setup. PRs land via review; CI runs on every push to `main`. Heavy code paths (sessions, ws, scheduler, board) have inline `#[cfg(test)]` tests plus integration tests under `server/tests/`. The frontend is type-checked end-to-end with `tsc -b` and uses Playwright for e2e smoke.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE). Third-party dependency licenses are summarized in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
