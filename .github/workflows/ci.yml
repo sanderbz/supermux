@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   web:
     name: web (bun build)
@@ -15,7 +19,7 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
       - uses: actions/cache@v4
@@ -48,7 +52,7 @@ jobs:
       # tests/static_assets.rs exercises the SPA the binary actually serves, so the
       # web bundle must be built and embedded (rust-embed reads server/static at
       # compile time) BEFORE the cargo steps — mirrors scripts/build.sh's embed step.
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
       - name: Build + embed web bundle
@@ -57,7 +61,9 @@ jobs:
           bun install --frozen-lockfile
           bun run build
           rm -rf ../server/static && cp -r dist ../server/static
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
+        with:
+          toolchain: stable
       - uses: actions/cache@v4
         with:
           path: |
@@ -81,8 +87,9 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
         with:
+          toolchain: stable
           components: rustfmt
       # Advisory only (non-blocking). The codebase is intentionally hand-formatted
       # in a compact style that diverges from stable rustfmt across ~150 files;
