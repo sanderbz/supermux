@@ -27,7 +27,7 @@ SSH into a fresh Ubuntu 22.04+ / Debian 12+ box and run:
 curl -fsSL https://raw.githubusercontent.com/sanderbz/supermux/main/install.sh | sudo bash
 ```
 
-~10 seconds. Downloads the prebuilt binary for your CPU, provisions an unprivileged `supermux` service user, installs the systemd unit, starts the service, prints your URL + auth token. Re-run any time to upgrade — sessions + data are preserved. Tailscale + Claude Code are auto-detected and offered. Full quickstart details + flags are [below](#full-quickstart).
+Under a minute on a typical VPS. Downloads the prebuilt binary for your CPU, provisions an unprivileged `supermux` service user, installs the systemd unit, starts the service, prints your URL + auth token. Re-run any time to upgrade — sessions + data are preserved. Tailscale + Claude Code are auto-detected and offered. Full quickstart details + flags are [below](#full-quickstart).
 
 ---
 
@@ -39,7 +39,7 @@ That's the problem supermux solves.
 
 - **All your Claude sessions in one view.** Live previews, color-true, sub-second fresh. See who's typing, who's waiting on you, who's idle.
 - **Notifications when Claude needs you.** App notification (PWA, real push on iOS) the second Claude asks a question, finishes a task, or stops unexpectedly. Per-category mute.
-- **Quick peek + type-in-place.** Hover a tile on desktop or swipe up on mobile to read the latest output and type a reply *without leaving the overview*.
+- **Quick peek + type-in-place.** Hover a tile on desktop or long-press it on mobile to read the latest output and type a reply *without leaving the overview*.
 - **Sessions live on your server, not your device.** Run on a VPS, a Raspberry Pi, or your home NAS. Close your laptop. Sessions keep running. Push notifications wake you when they need you.
 - **A full harness, not a thin remote.** Start sessions, stop them, restart with a flag, resume an older conversation, rename inline, archive — all from the UI.
 - **Native-feeling PWA.** Installs on macOS, Windows, iPhone, Android. iOS gets real push notifications, dictation in the prompt editor, drag-and-drop file uploads on desktop.
@@ -56,7 +56,7 @@ That's the problem supermux solves.
 
 ### See every agent, jump anywhere
 - **Live overview** with color-true terminal previews. Refresh tiers self-throttle: 1 s for hot-active sessions, 2 s for the rest active, 4 s idle.
-- **Quick peek** — hover a tile (desktop) or tap a pill (mobile) to read the latest output, type a reply, or hit a quick action without leaving the overview.
+- **Quick peek** — hover a tile (desktop) or long-press it (mobile) to read the latest output, type a reply, or hit a quick action without leaving the overview.
 - **Focus mode** — tap any tile to zoom into a keyboard-captured xterm.js terminal (desktop) or a detented bottom-sheet (mobile). `⌘1..9` jumps instantly between sessions.
 - **⌘K command palette** — fuzzy search across sessions, board issues, slash commands, MCP tools, and Claude Code skills.
 
@@ -108,7 +108,7 @@ That's the problem supermux solves.
 - **Files browser** — path-jailed, with an editor.
 - **MCP & Skills** in the palette — toggle MCPs per session, tap-activate skills.
 - **Mode shift** — flip Claude Code's permission mode (normal / accept-edits / plan / bypass) without a relaunch.
-- **In-UI updater** — Settings → Updates. 1-click upgrade with live SSE progress and auto-rollback on failure.
+- **In-UI updater** — Settings → Updates. 1-click upgrade with live SSE progress and auto-rollback on failure. (Needs a source clone on the server; one-liner installs upgrade by re-running the installer.)
 
 ---
 
@@ -128,7 +128,7 @@ That's the problem supermux solves.
 | Scheduled prompts / runs                  | ✅ | ❌ | ❌ |
 | Kanban issue board agents read & write    | ✅ | ❌ | ❌ |
 | Agent teams (multi-agent collaboration)   | ✅ | ❌ | ❌ |
-| Self-hosted, MIT, your data on your box   | ✅ | ❌ (proprietary) | ✅ |
+| Self-hosted, MIT, your data on your box   | ✅ | ❌ (proprietary) | ❌ (proprietary; relays via Anthropic) |
 
 **Termius** is a great generic terminal. supermux is a Claude Code *control room* — knows the agent lifecycle, knows when it's waiting, surfaces its history, and pushes you the moment it asks.
 
@@ -142,7 +142,7 @@ That's the problem supermux solves.
 
 The [one-liner above](#install-in-one-line) covers the common case. A few flavours for everything else:
 
-**Pinned version** — same one-liner with `SUPERMUX_VERSION=vX.Y.Z` added to the env: `… | sudo SUPERMUX_VERSION=v0.4.23 bash`.
+**Pinned version** — same one-liner with `SUPERMUX_VERSION=vX.Y.Z` added to the env (e.g. `… | sudo SUPERMUX_VERSION=v0.4.23 bash`).
 
 **Inspect before running**:
 ```bash
@@ -161,7 +161,7 @@ sudo bash install.sh
 
 ### Other paths
 
-- **From a clone** (development / private fork): `git clone … && cd supermux && sudo bash install.sh`.
+- **From a clone**: `sudo bash install.sh` from a checkout still installs the latest *release* binary — it never builds your local code. For a source build use `scripts/dev.sh` (local dev) or [`scripts/deploy.sh`](scripts/deploy.sh) (native build + deploy).
 - **Deploy over SSH from your workstation** (advanced — fleet management of many boxes): see [`scripts/deploy.sh`](scripts/deploy.sh) and `bash scripts/setup.sh`.
 - **Local development** with HMR: `scripts/dev.sh` (Rust backend on `:8823`, Vite for the PWA).
 
@@ -173,7 +173,7 @@ sudo bash install.sh
 - **systemd-sandboxed by default** — runs as an unprivileged user with `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`, restricted address families, and `ReadWritePaths` scoped to the data dir + your project dirs.
 - **Auth on every API route** — bearer token at `~/.supermux/auth_token` (mode `0600`). No localhost bypass.
 - **Tmux survival** — the tmux socket lives in the persistent data dir, so sessions outlive supermux restarts.
-- **In-UI 1-click updates** — `git fetch → build → install → verify → auto-rollback on failure`, exposed as a button. Preflight refuses unsafe upgrades.
+- **In-UI 1-click updates** — `git fetch → build → install → verify → auto-rollback on failure`, exposed as a button. Preflight refuses unsafe upgrades. Needs a source clone on the server (clone-based installs); prebuilt-binary installs upgrade by re-running the one-line installer.
 
 ### Supported platforms
 
@@ -260,7 +260,7 @@ iOS specifics: Safari only allows push from installed home-screen PWAs, so add t
 
 ## Contributing
 
-Issues, ideas, screenshots of your dashboard with 14 Claude sessions — welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev setup. PRs land via review; CI runs on every push to `main`. Heavy code paths (sessions, ws, scheduler, board) have inline `#[cfg(test)]` tests plus integration tests under `server/tests/`. The frontend is type-checked end-to-end with `tsc -b` and uses Playwright for e2e smoke.
+Issues, ideas, screenshots of your dashboard with 14 Claude sessions — welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev setup. Security issues: please report privately via [`SECURITY.md`](SECURITY.md). PRs land via review; CI runs on every push to `main`. Heavy code paths (sessions, ws, scheduler, board) have inline `#[cfg(test)]` tests plus integration tests under `server/tests/`. The frontend is type-checked end-to-end with `tsc -b` and uses Playwright for e2e smoke.
 
 ## License
 
