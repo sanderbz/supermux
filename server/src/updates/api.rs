@@ -76,6 +76,10 @@ async fn post_refresh(State(state): State<AppState>) -> Result<Json<serde_json::
 async fn post_start(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let cache = state.updates.release_cache.clone();
     let latest = cache.get_or_fetch().await;
+    // The tag the update must install: detection compares the binary's tag to
+    // this release, so the executor pins the clone to the SAME tag (never the
+    // tip of main, which may carry unreleased commits past the release).
+    let target_tag = latest.as_ref().map(|r| r.tag.clone());
     let snap = preflight::run_preflight(latest);
 
     if !snap.blocked_reasons.is_empty() {
@@ -106,12 +110,26 @@ async fn post_start(State(state): State<AppState>) -> Result<impl IntoResponse, 
             .into_response());
     };
 
+    // Unreachable in practice: a missing release is already a blocked reason
+    // (NoLatestRelease) and refused above. Guard anyway so this can never
+    // start an unpinned update.
+    let Some(target_tag) = target_tag else {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "error": "update blocked: no published release to update to.",
+            })),
+        )
+            .into_response());
+    };
+
     let job_id = state.updates.jobs.create();
     let registry = state.updates.jobs.clone();
     let id = job_id.clone();
     let current_sha = super::version::CURRENT_SHA.to_string();
 
-    exec::spawn_update_task(registry, id, repo, current_sha)
+    exec::spawn_update_task(registry, id, repo, current_sha, target_tag)
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 

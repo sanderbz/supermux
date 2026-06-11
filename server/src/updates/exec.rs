@@ -159,11 +159,14 @@ pub fn deploy_log_path() -> PathBuf {
 ///
 /// Sequence (the critical ordering):
 ///   1. emit `Queued`, then `Fetching` so the UI leaves "Queued" immediately;
-///   2. `git fetch origin` + `git merge --ff-only origin/main` in `source_dir`
-///      so the clone is on the TARGET release before the runner builds it
-///      (the runner builds the source dir as-is and does NOT pull). On any
-///      fetch/ff failure we emit `Failed` and return WITHOUT writing the
-///      request, so a stale checkout is never built;
+///   2. `git fetch --tags origin` + fast-forward `source_dir` to the
+///      `target_tag` commit, so the clone is on EXACTLY the release the UI
+///      advertised before the runner builds it (the runner builds the source
+///      dir as-is and does NOT pull). Pinning to the tag, not `origin/main`,
+///      is the whole contract: detection is tag-based, so installing the
+///      branch tip would silently ship unreleased commits. On any fetch/ff
+///      failure we emit `Failed` and return WITHOUT writing the request, so a
+///      stale (or past-the-release) checkout is never built;
 ///   3. resolve the new HEAD sha and write THAT as the request `sha=` (the
 ///      target the runner records), atomically (request.tmp → mv → request);
 ///   4. spawn a tail task that reads the runner's log and re-emits each
@@ -182,6 +185,7 @@ pub async fn spawn_update_task(
     job_id: String,
     source_dir: PathBuf,
     current_sha: String,
+    target_tag: String,
 ) -> Result<(), String> {
     // Initial "queued" event so the UI never shows a blank progress bar.
     registry
@@ -196,7 +200,7 @@ pub async fn spawn_update_task(
         )
         .await;
 
-    // ── fast-forward the clone to origin/main BEFORE the build ───────────────
+    // ── fast-forward the clone to the release tag BEFORE the build ───────────
     // The runner builds source_dir AS-IS; without this it would rebuild the
     // currently-checked-out commit and never reach the new release. We emit
     // `Fetching` first so the UI advances off "Queued" while git runs.
@@ -206,13 +210,13 @@ pub async fn spawn_update_task(
             UpdateEvent {
                 job_id: job_id.clone(),
                 step: UpdateStep::Fetching,
-                message: "Fetching the latest commit from GitHub.".into(),
+                message: format!("Fetching release {target_tag} from GitHub."),
                 ts: Utc::now().timestamp(),
             },
         )
         .await;
 
-    let target_sha = match fetch_and_fast_forward(&source_dir) {
+    let target_sha = match fetch_and_fast_forward(&source_dir, &target_tag) {
         Ok(sha) => sha,
         Err(e) => {
             // Surface a clear terminal failure and do NOT write the request:
@@ -224,7 +228,7 @@ pub async fn spawn_update_task(
                         job_id: job_id.clone(),
                         step: UpdateStep::Failed,
                         message: format!(
-                            "Could not fast-forward to origin/main, so the update was not started: {e}"
+                            "Could not fast-forward to release {target_tag}, so the update was not started: {e}"
                         ),
                         ts: Utc::now().timestamp(),
                     },
@@ -242,7 +246,8 @@ pub async fn spawn_update_task(
     tracing::info!(
         from = %current_sha,
         to = %target_sha,
-        "update: fast-forwarded source clone to origin/main"
+        tag = %target_tag,
+        "update: fast-forwarded source clone to the release tag"
     );
 
     let req_path = deploy_request_path();
@@ -284,17 +289,27 @@ pub async fn spawn_update_task(
     Ok(())
 }
 
-/// Fetch `origin` and fast-forward `source_dir` to `origin/main`, returning the
-/// new HEAD sha on success.
+/// Fetch `origin` (with tags) and fast-forward `source_dir` to the `tag`
+/// commit, returning the new HEAD sha on success.
+///
+/// The target is the RELEASE TAG, not `origin/main`: update detection is
+/// tag-based (current binary tag vs the latest GitHub release), so building
+/// the branch tip would install commits past the release the UI advertised.
 ///
 /// `--ff-only` is safe here because `/api/update/start`'s preflight (re-run at
 /// call time) already guarantees: on branch `main`, clean working tree, and NOT
 /// ahead of origin. So this can only ever fast-forward, never rewrite local
-/// commits. If the tree is already current the merge is a no-op. We still handle
-/// fetch failure (offline) and an unexpected non-ff (diverged) defensively.
-fn fetch_and_fast_forward(source_dir: &Path) -> Result<String, String> {
+/// commits. If the tree is already on the tag the merge is a no-op.
+///
+/// One git subtlety makes the final HEAD check load-bearing: `merge --ff-only
+/// <commit>` SUCCEEDS as a silent no-op when `<commit>` is an ancestor of
+/// HEAD ("Already up to date"). A clone sitting past the release (a dev
+/// checkout that pulled main) would therefore "succeed" while still pointing
+/// at unreleased commits, which is exactly the bug this function exists to
+/// prevent. So: after the merge, HEAD must equal the tag commit, or we refuse.
+fn fetch_and_fast_forward(source_dir: &Path, tag: &str) -> Result<String, String> {
     let fetch = Command::new("git")
-        .args(["fetch", "--quiet", "origin"])
+        .args(["fetch", "--tags", "--quiet", "origin"])
         .current_dir(source_dir)
         .output()
         .map_err(|e| format!("could not run git fetch: {e}"))?;
@@ -305,14 +320,28 @@ fn fetch_and_fast_forward(source_dir: &Path) -> Result<String, String> {
         ));
     }
 
+    // Resolve the tag to its commit (`^{{commit}}` peels annotated tags).
+    let tag_ref = format!("refs/tags/{tag}^{{commit}}");
+    let resolve = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &tag_ref])
+        .current_dir(source_dir)
+        .output()
+        .map_err(|e| format!("could not run git rev-parse: {e}"))?;
+    if !resolve.status.success() {
+        return Err(format!(
+            "release tag {tag} was not found on origin. The GitHub release exists but its tag isn't fetchable; was the tag pushed?"
+        ));
+    }
+    let tag_sha = String::from_utf8_lossy(&resolve.stdout).trim().to_string();
+
     let merge = Command::new("git")
-        .args(["merge", "--ff-only", "origin/main"])
+        .args(["merge", "--ff-only", &tag_sha])
         .current_dir(source_dir)
         .output()
         .map_err(|e| format!("could not run git merge: {e}"))?;
     if !merge.status.success() {
         return Err(format!(
-            "git merge --ff-only origin/main failed (diverged history?): {}",
+            "git merge --ff-only to release {tag} failed (diverged history?): {}",
             String::from_utf8_lossy(&merge.stderr).trim()
         ));
     }
@@ -328,11 +357,16 @@ fn fetch_and_fast_forward(source_dir: &Path) -> Result<String, String> {
             String::from_utf8_lossy(&head.stderr).trim()
         ));
     }
-    let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    if sha.is_empty() {
+    let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    if head_sha.is_empty() {
         return Err("git rev-parse HEAD returned an empty sha".to_string());
     }
-    Ok(sha)
+    if head_sha != tag_sha {
+        return Err(format!(
+            "the clone is ahead of release {tag} (a development checkout?). The in-UI updater only installs published releases; use scripts/deploy-self.sh to deploy local commits, or reset the clone to the release tag."
+        ));
+    }
+    Ok(head_sha)
 }
 
 /// Tail the runner's log, re-emitting structured lines as SSE events. Terminates
@@ -620,8 +654,11 @@ mod tests {
 
     // ── fetch + fast-forward ─────────────────────────────────────────────────
     // These build two real git repos (a "remote" and a "clone" of it on main),
-    // advance the remote, and assert the in-UI fetch+ff lands the clone on the
-    // remote's new HEAD (the bug: it used to build the clone's OLD commit).
+    // advance the remote, and assert the in-UI fetch+ff lands the clone on
+    // EXACTLY the release tag's commit — not the clone's old commit (the
+    // original bug) and not the tip of main (the second bug: detection is
+    // tag-based but the install used to build origin/main, silently shipping
+    // unreleased commits).
 
     use std::process::Command;
 
@@ -668,20 +705,21 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// Build a bare "remote" with one commit on `main` and a working clone of it.
-    /// Returns (remote_dir, clone_dir, scratch_guard).
+    /// Build a bare "remote" with one commit on `main` (tagged `v0.0.1`) and a
+    /// working clone of it. Returns (remote_dir, clone_dir, scratch_guard).
     fn make_remote_and_clone() -> (PathBuf, PathBuf, Scratch) {
         let tmp = Scratch::new("repo");
         let seed = tmp.path().join("seed");
         let remote = tmp.path().join("remote.git");
         let clone = tmp.path().join("clone");
 
-        // Seed repo on main with one commit, then push into a bare remote.
+        // Seed repo on main with one tagged commit, then push into a bare remote.
         std::fs::create_dir(&seed).unwrap();
         git(&seed, &["init", "-q", "-b", "main"]);
         std::fs::write(seed.join("file.txt"), b"v1\n").unwrap();
         git(&seed, &["add", "."]);
         git(&seed, &["commit", "-q", "-m", "v1"]);
+        git(&seed, &["tag", "v0.0.1"]);
         git(&seed, &["clone", "-q", "--bare", ".", remote.to_str().unwrap()]);
 
         // The clone the in-UI updater operates on; on branch main tracking origin.
@@ -694,46 +732,99 @@ mod tests {
         (remote, clone, tmp)
     }
 
-    #[test]
-    fn fast_forward_advances_clone_to_new_remote_head() {
-        let (remote, clone, _tmp) = make_remote_and_clone();
-
-        // The clone starts on v1.
-        let old = git(&clone, &["rev-parse", "HEAD"]);
-
-        // Advance the remote's main by pushing a second commit from a fresh
-        // working clone of the remote (simulates a new release landing).
-        let pusher = remote.parent().unwrap().join("pusher");
+    /// Push a commit to the remote's `main` from a fresh working clone and
+    /// return its sha. Tags it when `tag` is `Some`.
+    fn push_remote_commit(remote: &Path, name: &str, content: &str, tag: Option<&str>) -> String {
+        let pusher = remote.parent().unwrap().join(format!("pusher-{name}"));
         git(
             remote.parent().unwrap(),
             &["clone", "-q", remote.to_str().unwrap(), pusher.to_str().unwrap()],
         );
         git(&pusher, &["checkout", "-q", "main"]);
-        std::fs::write(pusher.join("file.txt"), b"v2\n").unwrap();
+        std::fs::write(pusher.join("file.txt"), content).unwrap();
         git(&pusher, &["add", "."]);
-        git(&pusher, &["commit", "-q", "-m", "v2"]);
+        git(&pusher, &["commit", "-q", "-m", name]);
+        if let Some(t) = tag {
+            git(&pusher, &["tag", t]);
+            git(&pusher, &["push", "-q", "origin", t]);
+        }
         git(&pusher, &["push", "-q", "origin", "main"]);
-        let remote_head = git(&pusher, &["rev-parse", "HEAD"]);
+        git(&pusher, &["rev-parse", "HEAD"])
+    }
 
-        // The fix: fetch + ff lands the clone on the remote's NEW head and
-        // returns it as the target sha (this is what gets written as request sha=).
-        let target = super::fetch_and_fast_forward(&clone).expect("ff succeeds");
-        assert_eq!(target, remote_head, "target sha must be origin/main HEAD");
+    #[test]
+    fn fast_forward_advances_clone_to_the_release_tag() {
+        let (remote, clone, _tmp) = make_remote_and_clone();
+
+        // The clone starts on v1.
+        let old = git(&clone, &["rev-parse", "HEAD"]);
+
+        // A new release lands on the remote: a commit tagged v0.0.2.
+        let tagged = push_remote_commit(&remote, "v2", "v2\n", Some("v0.0.2"));
+
+        // The fix: fetch + ff lands the clone on the TAG commit and returns it
+        // as the target sha (this is what gets written as request sha=).
+        let target = super::fetch_and_fast_forward(&clone, "v0.0.2").expect("ff succeeds");
+        assert_eq!(target, tagged, "target sha must be the release tag's commit");
         assert_ne!(target, old, "clone must have advanced past its old commit");
         assert_eq!(
             git(&clone, &["rev-parse", "HEAD"]),
-            remote_head,
-            "the working tree HEAD must now be origin/main"
+            tagged,
+            "the working tree HEAD must now be the release tag"
         );
     }
 
     #[test]
-    fn fast_forward_is_a_noop_when_already_current() {
-        // Mirrors deploy-self.sh's already-pulled tree: ff-only on a current
-        // tree must succeed and return the same HEAD (no error, no double-pull pain).
+    fn fast_forward_pins_to_the_tag_not_the_branch_tip() {
+        // THE regression this module exists to prevent: detection said
+        // "update to v0.0.2" but the install used to build origin/main, which
+        // here carries an extra unreleased commit past the tag.
+        let (remote, clone, _tmp) = make_remote_and_clone();
+        let tagged = push_remote_commit(&remote, "v2", "v2\n", Some("v0.0.2"));
+        let tip = push_remote_commit(&remote, "wip", "unreleased\n", None);
+        assert_ne!(tagged, tip);
+
+        let target = super::fetch_and_fast_forward(&clone, "v0.0.2").expect("ff succeeds");
+        assert_eq!(target, tagged, "must install the tag commit");
+        assert_eq!(
+            git(&clone, &["rev-parse", "HEAD"]),
+            tagged,
+            "HEAD must be the tag, not origin/main's tip"
+        );
+    }
+
+    #[test]
+    fn fast_forward_is_a_noop_when_already_on_the_tag() {
+        // A clone already sitting on the release: ff-only is a no-op that must
+        // succeed and return the same HEAD (no error, no double-pull pain).
         let (_remote, clone, _tmp) = make_remote_and_clone();
         let head = git(&clone, &["rev-parse", "HEAD"]);
-        let target = super::fetch_and_fast_forward(&clone).expect("noop ff succeeds");
+        let target = super::fetch_and_fast_forward(&clone, "v0.0.1").expect("noop ff succeeds");
         assert_eq!(target, head);
+    }
+
+    #[test]
+    fn fast_forward_refuses_a_clone_ahead_of_the_release() {
+        // `merge --ff-only <ancestor>` "succeeds" as a no-op, so a dev clone
+        // sitting PAST the release would silently keep its unreleased commits;
+        // the explicit HEAD==tag check must turn that into a refusal.
+        let (_remote, clone, _tmp) = make_remote_and_clone();
+        std::fs::write(clone.join("file.txt"), b"local wip\n").unwrap();
+        git(&clone, &["add", "."]);
+        git(&clone, &["commit", "-q", "-m", "local wip"]);
+
+        let err = super::fetch_and_fast_forward(&clone, "v0.0.1")
+            .expect_err("a clone past the tag must be refused");
+        assert!(err.contains("ahead of release v0.0.1"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn fast_forward_refuses_a_missing_tag() {
+        // GitHub shows a release whose tag was never pushed (or was deleted):
+        // refuse with a message naming the tag instead of building anything.
+        let (_remote, clone, _tmp) = make_remote_and_clone();
+        let err = super::fetch_and_fast_forward(&clone, "v9.9.9")
+            .expect_err("a missing tag must be refused");
+        assert!(err.contains("v9.9.9"), "unexpected error: {err}");
     }
 }
