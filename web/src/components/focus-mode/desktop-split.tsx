@@ -559,6 +559,7 @@ export function DesktopSplit({
           title={title}
           status={status}
           activity={current?.activity}
+          subagents={current?.subagents}
           error={current?.error}
           onDetach={onDetach}
           onStop={onStop}

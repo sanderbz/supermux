@@ -138,6 +138,12 @@ export interface ApiSession {
    *  `task`/`mcp`/`tool`/`failed`) so the UI can style without re-parsing the
    *  emoji. Present iff `activity` is. */
   activity_kind?: string
+  /** Live count of outstanding Task sub-agents for the current turn (fed by the
+   *  `SubagentStart`/`SubagentStop` hooks). DISPLAY-ONLY parallelism signal: the
+   *  overview shows a calm `· N subagents` clause on the activity line while the
+   *  agent is working and this is ≥ 2. Never a status signal. Omitted (absent)
+   *  when 0, which the SSE delta sends as `0` to clear the clause. */
+  subagents?: number
   /** The latest unrecovered agent error from a `StopFailure` hook (hooks-10x):
    *  `{type, message}` (e.g. `rate_limit` / `billing_error`). In-memory only;
    *  cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber

@@ -399,6 +399,7 @@ export function MobileFocus() {
             title={sessionTitle(current)}
             status={current.status}
             activity={current.activity}
+            subagents={current.subagents}
             error={current.error}
             onBack={goOverviewMorph}
             onTitleClick={() => setInfoOpen(true)}

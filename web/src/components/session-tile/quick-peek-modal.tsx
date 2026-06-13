@@ -189,6 +189,16 @@ export function QuickPeekModal({
             Terminal preview of {session.name}
           </Drawer.Description>
 
+          {/* Parallelism, spelled out in full where there's room (the quick-peek
+              is the richest tier): a calm line when the agent is working with
+              ≥ 2 outstanding Task subagents. Mirrors the tile's `· N subagents`
+              clause, here as plain prose. */}
+          {session.status === 'active' && (session.subagents ?? 0) >= 2 && (
+            <p className="px-4 pb-2 text-xs text-muted-foreground">
+              Working with {session.subagents} subagents
+            </p>
+          )}
+
           <div
             className="relative mx-3 mb-3 min-h-0 flex-1 overflow-hidden rounded-xl"
             style={{ backgroundColor: 'var(--terminal-bg)' }}

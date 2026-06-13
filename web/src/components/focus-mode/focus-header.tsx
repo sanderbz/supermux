@@ -57,6 +57,8 @@ export interface DesktopFocusHeaderProps {
   /** Live "what the agent is doing now" label (hooks-10x) — shown next to the
    *  status while the agent is working; falls back to the status label otherwise. */
   activity?: string
+  /** Live outstanding Task sub-agent count → the calm `· N subagents` clause. */
+  subagents?: number
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
   /** Detach (⌘D): return to overview WITHOUT stopping the session. */
@@ -91,6 +93,7 @@ export function DesktopFocusHeader({
   title,
   status,
   activity,
+  subagents,
   error,
   onDetach,
   onStop,
@@ -152,6 +155,7 @@ export function DesktopFocusHeader({
         {(status === 'active' || status === 'starting') && activity?.trim() ? (
           <ActivityLine
             activity={activity}
+            subagents={subagents}
             className="min-w-0 shrink basis-auto text-[11px]"
           />
         ) : (
@@ -265,6 +269,8 @@ export interface FocusHeaderProps {
   /** Live "what the agent is doing now" label (hooks-10x) — shown under the name
    *  while the agent is working. */
   activity?: string
+  /** Live outstanding Task sub-agent count → the calm `· N subagents` clause. */
+  subagents?: number
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
   onBack: () => void
@@ -288,6 +294,7 @@ export function FocusHeader({
   title,
   status,
   activity,
+  subagents,
   error,
   onBack,
   onTitleClick,
@@ -383,6 +390,7 @@ export function FocusHeader({
         {showActivity && (
           <ActivityLine
             activity={activity}
+            subagents={subagents}
             className="max-w-full text-center text-[11px] leading-tight"
           />
         )}

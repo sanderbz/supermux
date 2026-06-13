@@ -16,6 +16,9 @@
 //   `title` tooltip. Uses the calm `--status-error` orange token (never an
 //   alarmist red), matching the rest of the app's error treatment.
 
+import { motion, useReducedMotion } from 'framer-motion'
+
+import { springs } from '@/lib/springs'
 import { cn } from '@/lib/utils'
 
 /** Map a machine `error.type` to a short, friendly, sentence-case label. Unknown
@@ -37,26 +40,58 @@ function errorLabel(type: string): string {
   }
 }
 
+/** Below this many outstanding subagents the parallelism clause stays hidden — a
+ *  lone Task is not noteworthy; two or more is the "many hands" signal we surface. */
+const SUBAGENT_CLAUSE_MIN = 2
+
 export interface ActivityLineProps {
   /** The live activity label from the backend (already emoji-prefixed). */
   activity?: string
+  /** Live count of outstanding Task sub-agents for the current turn. When ≥ 2 a
+   *  calm `· N subagents` clause is appended — the display-only parallelism
+   *  signal so a 5-subagent turn reads visibly different from a single tool. */
+  subagents?: number
   /** Extra classes for the wrapping span (sizing / layout from the caller). */
   className?: string
 }
 
-/** A calm, single-line, truncating activity indicator. Renders null when there
- *  is no activity, so callers can drop it in without their own guard. */
-export function ActivityLine({ activity, className }: ActivityLineProps) {
+/** A calm, single-line, truncating activity indicator with an optional muted
+ *  `· N subagents` parallelism clause. Renders null when there is nothing to
+ *  show, so callers can drop it in without their own guard.
+ *
+ *  Layout is a single `truncate` line (not flex) so every call site keeps its
+ *  existing alignment (incl. the centered mobile focus line and the desktop
+ *  focus header's content-sized `basis-auto`). The clause sits LAST, so on a
+ *  tight line the `truncate` ellipsis clips it before the activity label — the
+ *  name always wins the squeeze. (No container query / `container-type`: that
+ *  would impose size containment and collapse the header's content-sized line.) */
+export function ActivityLine({ activity, subagents, className }: ActivityLineProps) {
+  // Hook must run unconditionally (rules-of-hooks) — before any early return.
+  const reduce = useReducedMotion()
   const label = activity?.trim()
-  if (!label) return null
+  const n = subagents ?? 0
+  const showCount = n >= SUBAGENT_CLAUSE_MIN
+  if (!label && !showCount) return null
   return (
     <span
-      // `min-w-0` + `truncate` so the line never pushes its row wider or wraps —
-      // it shrinks first. Muted so it reads as ambient status, not a headline.
       className={cn('block min-w-0 truncate text-muted-foreground', className)}
       title={label}
     >
       {label}
+      {showCount && (
+        <motion.span
+          // Tick on change (2→3) — a 2px fade, not a pop. Reduced motion: instant.
+          key={n}
+          initial={reduce ? false : { opacity: 0, y: 2 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={reduce ? { duration: 0 } : springs.statusMorph}
+          // Muted /70 + tabular so the count is calm and non-jittering.
+          className="ml-1 inline-block align-baseline whitespace-nowrap tabular-nums text-muted-foreground/70"
+        >
+          {label ? '· ' : ''}
+          {n} subagents
+        </motion.span>
+      )}
     </span>
   )
 }

@@ -939,7 +939,11 @@ export function SessionTile({
               // Working + live activity → the calm "what is this agent doing now"
               // line claims the meta slot (same h-4 row, no height change), so the
               // signal is obvious at a glance without fighting the live preview.
-              <ActivityLine activity={activity} className="text-xs" />
+              <ActivityLine
+                activity={activity}
+                subagents={session.subagents}
+                className="text-xs"
+              />
             ) : (
               <>
                 {tokens && <span className="shrink-0">{tokens} tokens</span>}

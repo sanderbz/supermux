@@ -22,6 +22,10 @@ export interface TileSession extends SessionSummary {
   /** Machine class for `activity` (`bash`/`edit`/`read`/`search`/`web`/`task`/
    *  `mcp`/`fail`). Present iff `activity` is. */
   activity_kind?: string
+  /** Live count of outstanding Task sub-agents for the current turn. Display-only
+   *  parallelism signal: the activity line gains a calm `· N subagents` clause
+   *  when the agent is working and this is ≥ 2. Absent/0 → no clause. */
+  subagents?: number
   /** The latest unrecovered agent error from a StopFailure hook (hooks-10x).
    *  Cleared when the agent resumes — drives the amber error badge. */
   error?: { type: string; message: string }
