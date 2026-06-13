@@ -160,17 +160,31 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         {
             state.set_activity(session, activity::failed_label(payload), "failed".into())
         }
+        // A Task sub-agent STARTED → bump the live outstanding count (the
+        // display-only parallelism signal). Never touches the turn boundary.
+        "subagent_start" | "SubagentStart" => state.inc_subagents(session),
         // The MAIN turn ended → clear the live activity (the error, if any,
-        // persists until the next prompt/start).
-        "stop" | "Stop" => state.clear_activity(session),
-        // A Task sub-agent finished, but it shares the parent session token and
-        // the MAIN agent is still working — do NOT wipe the main session's live
-        // activity label (that reinforced the false-finished look mid-turn).
-        // Non-decisive, mirrors the status detector's turn_end (Stop-only).
-        "subagent_stop" | "SubagentStop" => false,
+        // persists until the next prompt/start) AND force-0 the subagent count
+        // (the authoritative turn end; makes the finished-notification gate
+        // fail-safe — a lost SubagentStop can't permanently suppress a finish).
+        "stop" | "Stop" => {
+            let act = state.clear_activity(session);
+            let sub = state.reset_subagents(session);
+            act || sub
+        }
+        // A Task sub-agent finished. It shares the parent session token and the
+        // MAIN agent is still working, so do NOT wipe the main activity label or
+        // end the turn (non-decisive, mirrors turn_end = Stop-only) — but DO
+        // decrement the live outstanding count (saturating).
+        "subagent_stop" | "SubagentStop" => state.dec_subagents(session),
         // A new prompt / a fresh session → the previous error is no longer
-        // current (the user is acting again) → clear it.
-        "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => state.clear_error(session),
+        // current (the user is acting again) → clear it, and reset the subagent
+        // count for the new turn.
+        "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => {
+            let err = state.clear_error(session);
+            let sub = state.reset_subagents(session);
+            err || sub
+        }
         // Session lifecycle ───────────────────────────────────────────────────
         // Start: clear a stale error AND any pending forced-stopped override so
         // the detector re-evaluates the freshly-(re)started session freely.
@@ -184,8 +198,9 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // the tile flips immediately, mirroring lifecycle::stop's broadcast.
         "session_end" | "SessionEnd" => {
             let act_changed = state.clear_activity(session);
+            let sub_changed = state.reset_subagents(session);
             force_stopped(state, session);
-            act_changed
+            act_changed || sub_changed
         }
         // A turn failed with an agent error → record `{type, message}` for the
         // error badge (also clear the now-irrelevant activity).
@@ -257,6 +272,9 @@ fn broadcast_activity_delta(state: &AppState, session: &str) {
             "activity": act.activity,
             "activity_kind": act.activity_kind,
             "error": error,
+            // Live outstanding-subagent count (display-only parallelism signal).
+            // Always present so a drop back to 0 clears the client's clause.
+            "subagents": act.subagents,
         }] }),
     });
 }
@@ -294,6 +312,40 @@ mod tests {
 
     fn p(json: &str) -> HookPayload {
         serde_json::from_str(json).unwrap()
+    }
+
+    #[tokio::test]
+    async fn subagent_count_rides_the_sessions_delta() {
+        // The live overview gets the outstanding-subagent count on the SAME
+        // change-only `sessions` SSE delta that already carries the activity line
+        // — no new event type. The broadcasts fire synchronously inside
+        // apply_payload, so the channel holds them immediately.
+        let (state, dir) = test_state().await;
+        let s = "lead-3";
+        let mut rx = state.sse_tx.subscribe();
+
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+
+        let mut last_count: Option<i64> = None;
+        while let Ok(ev) = rx.try_recv() {
+            if ev.event == "sessions" {
+                if let Some(d) = ev
+                    .payload
+                    .get("delta")
+                    .and_then(|d| d.as_array())
+                    .and_then(|a| a.first())
+                {
+                    if d.get("name").and_then(|n| n.as_str()) == Some(s) {
+                        last_count = d.get("subagents").and_then(|v| v.as_i64());
+                    }
+                }
+            }
+        }
+        assert_eq!(last_count, Some(2), "the sessions delta must carry subagents: 2");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -344,6 +396,52 @@ mod tests {
         // The real main Stop still clears it.
         apply_payload(&state, s, "stop", &p("{}"));
         assert!(state.session_activity(s).is_none(), "main Stop clears activity");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Read the live outstanding-subagent count (0 when there's no entry).
+    fn subagents(state: &AppState, s: &str) -> u32 {
+        state.session_activity(s).map(|a| a.subagents).unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn subagent_start_stop_track_the_outstanding_count() {
+        // Display-only parallelism signal: SubagentStart increments, SubagentStop
+        // decrements (saturating), a new prompt resets, and the main Stop force-0s
+        // (the authoritative turn end — bounds any drift to one turn).
+        let (state, dir) = test_state().await;
+        let s = "lead-2";
+
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        assert_eq!(subagents(&state, s), 3, "three subagents started");
+
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        assert_eq!(subagents(&state, s), 2, "one finished → 2 outstanding");
+
+        // Saturating: more stops than starts must clamp at 0, never underflow.
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        assert_eq!(subagents(&state, s), 0, "saturating dec floors at 0");
+
+        // A fresh turn resets the count.
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        assert_eq!(subagents(&state, s), 2);
+        apply_payload(&state, s, "user_prompt", &p("{}"));
+        assert_eq!(subagents(&state, s), 0, "a new prompt resets the count");
+
+        // The main Stop force-0s any stragglers (makes the notification gate
+        // fail-safe: a lost SubagentStop can never permanently suppress a finish).
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        apply_payload(&state, s, "subagent_start", &p("{}"));
+        assert_eq!(subagents(&state, s), 2);
+        apply_payload(&state, s, "stop", &p("{}"));
+        assert_eq!(subagents(&state, s), 0, "main Stop force-0s the count");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

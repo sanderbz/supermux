@@ -51,12 +51,16 @@ const MARKER: &str = "supermux-hook";
 /// for the lifecycle + error-badge features: `SessionStart` clears a stale
 /// stopped/error, `SessionEnd` forces `Stopped` + clears activity, `StopFailure`
 /// records the agent error (`rate_limit`/`billing_error`/…).
-const EVENTS: [(&str, &str); 9] = [
+const EVENTS: [(&str, &str); 10] = [
     ("UserPromptSubmit", "user_prompt"),
     ("PreToolUse", "pre_tool"),
     ("PostToolUse", "post_tool"),
     ("Notification", "notification"),
     ("Stop", "stop"),
+    // A Task sub-agent started/finished. Both POST on the PARENT session's token
+    // (subagents share the parent session_id), so they drive the display-only
+    // outstanding-subagent count — never the status turn boundary.
+    ("SubagentStart", "subagent_start"),
     ("SubagentStop", "subagent_stop"),
     ("SessionStart", "session_start"),
     ("SessionEnd", "session_end"),
@@ -469,6 +473,24 @@ mod tests {
             assert!(cmd.contains("\\\"payload\\\":$D"), "{event} must splice the payload");
             assert_eq!(arr[0]["hooks"][0]["blocking"], json!(false));
         }
+    }
+
+    #[tokio::test]
+    async fn installs_the_subagent_start_hook() {
+        // Required so Claude fires a live "a Task subagent began" signal — without
+        // it the outstanding-subagent count can only ever decrement. Feeds the
+        // display-only parallelism count; never a turn-boundary signal.
+        let dir = temp_dir();
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&dir.join("settings.json"));
+        let arr = v["hooks"]["SubagentStart"]
+            .as_array()
+            .expect("SubagentStart hook installed");
+        let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            cmd.contains("\\\"event\\\":\\\"subagent_start\\\""),
+            "SubagentStart must POST the subagent_start token"
+        );
     }
 
     #[tokio::test]

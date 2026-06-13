@@ -1140,6 +1140,14 @@ mod tests {
             assert_eq!(HookEvent::from_event_str(s), Some(want), "{s:?}");
         }
         assert_eq!(HookEvent::from_event_str("garbage"), None);
+        // INVARIANT: `subagent_start` is NOT a turn HookEvent. It drives only the
+        // display-only outstanding-subagent count (via apply_payload's string
+        // dispatch) and must never enter the TurnState machine, or it would
+        // pollute the pure, golden-tested classifier. Keeping it out of HookEvent
+        // is what structurally prevents the parallelism signal from ever flipping
+        // the turn boundary (and regressing the false-finished fix).
+        assert_eq!(HookEvent::from_event_str("subagent_start"), None);
+        assert_eq!(HookEvent::from_event_str("SubagentStart"), None);
     }
 
     #[test]

@@ -864,6 +864,26 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
 /// once a blocked reason / last_error is captured); a generic
 /// fallback covers cold-start. `send_push_for` itself no-ops cheaply when
 /// nobody is subscribed OR the category is muted.
+/// Whether a settled transition into `cat` should actually send, given the
+/// session's freshly re-read persisted `last_status` and live outstanding
+/// `subagents` count. Pure so the debounce decision is unit-testable.
+fn push_should_fire(cat: crate::db::push::NotifCategory, last_status: &str, subagents: u32) -> bool {
+    use crate::db::push::NotifCategory;
+    let cat_matches = matches!(
+        (cat, last_status),
+        (NotifCategory::AgentWaiting, "waiting")
+            | (NotifCategory::AgentFinished, "idle")
+            | (NotifCategory::AgentStopped, "stopped"),
+    );
+    // The finished ping is held while Task subagents are still in flight: a
+    // multi-agent turn that momentarily reads idle between subagent dispatches
+    // must not cry "finished". Only AgentFinished is gated — a genuine
+    // needs-you (Waiting) or stopped signal always tells. Fail-safe: the count
+    // is force-0'd on the main Stop, so a lost SubagentStop can never
+    // permanently suppress a real finish.
+    cat_matches && !(matches!(cat, NotifCategory::AgentFinished) && subagents > 0)
+}
+
 pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
     use crate::db::push::NotifCategory;
     let cat = match new {
@@ -909,11 +929,10 @@ pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
         // this push was for, drop the send. (A later transition into a
         // notify-worthy state will have scheduled its OWN debounce task.)
         let still_matches = match db::sessions::runtime(&task_state.pool, &task_name).await {
-            Ok(Some(rt)) => matches!(
-                (cat, rt.last_status.as_str()),
-                (NotifCategory::AgentWaiting, "waiting")
-                    | (NotifCategory::AgentFinished, "idle")
-                    | (NotifCategory::AgentStopped, "stopped"),
+            Ok(Some(rt)) => push_should_fire(
+                cat,
+                rt.last_status.as_str(),
+                task_state.subagents(&task_name),
             ),
             _ => false,
         };
@@ -1019,6 +1038,22 @@ mod board_reaction_tests {
     use super::*;
     use crate::config::Config;
     use crate::db::board::NewIssue;
+    use crate::db::push::NotifCategory;
+
+    #[test]
+    fn finished_push_is_gated_on_zero_subagents() {
+        // The "agent finished" ping must NOT fire while Task subagents are still
+        // outstanding — even if the status momentarily read idle on a missed-hook
+        // edge. It fires only once the count is genuinely 0 (the count is force-0'd
+        // on the main Stop, so this can never permanently suppress a real finish).
+        assert!(push_should_fire(NotifCategory::AgentFinished, "idle", 0), "idle + 0 subagents → fire");
+        assert!(!push_should_fire(NotifCategory::AgentFinished, "idle", 3), "idle + subagents in flight → hold");
+        assert!(!push_should_fire(NotifCategory::AgentFinished, "active", 0), "status moved on → no fire");
+
+        // Subagents must NOT suppress a genuine needs-you / stopped signal.
+        assert!(push_should_fire(NotifCategory::AgentWaiting, "waiting", 5), "waiting always tells, subagents or not");
+        assert!(push_should_fire(NotifCategory::AgentStopped, "stopped", 2), "stopped always tells");
+    }
 
     async fn test_state() -> (AppState, std::path::PathBuf) {
         let dir =

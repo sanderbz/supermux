@@ -180,6 +180,13 @@ pub struct SessionView {
     /// error badge on the card.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorInfo>,
+    /// Live count of outstanding Task sub-agents for the current turn (fed by the
+    /// `SubagentStart`/`SubagentStop` hooks). DISPLAY-ONLY parallelism signal:
+    /// the overview shows a calm `· N subagents` clause when the session is
+    /// `active` and this is ≥ 2. Never a status/turn-boundary signal. Omitted
+    /// when 0 (the common case) so a resting session's wire shape is unchanged.
+    #[serde(skip_serializing_if = "is_zero", default)]
+    pub subagents: u32,
     /// The Claude Code permission MODE parsed from the persistent status bar in
     /// `last_capture`: `normal` / `accept_edits` / `plan` / `bypass`.
     /// `None` until the first capture (the menu then defaults to `normal`). Drives
@@ -244,6 +251,7 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         preview_ansi: last_n_lines(last_capture_ansi, 20),
         activity: act.as_ref().and_then(|a| a.activity.clone()),
         activity_kind: act.as_ref().and_then(|a| a.activity_kind.clone()),
+        subagents: act.as_ref().map(|a| a.subagents).unwrap_or(0),
         error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
             error_type,
             message,
@@ -271,6 +279,12 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         created_at: to_rfc3339(s.created_at),
         updated_at: to_rfc3339(updated_ts),
     }
+}
+
+/// `serde` skip predicate: omit the `subagents` count when it's 0 (the common
+/// case), keeping a resting session's wire shape byte-identical to before.
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Map the DB `last_status` onto the API status union. A session with no live

@@ -49,13 +49,25 @@ pub struct SessionActivity {
     pub activity_kind: Option<String>,
     /// The latest unrecovered error `(type, message)` from a `StopFailure` hook.
     pub error: Option<(String, String)>,
+    /// Live count of outstanding Task sub-agents for the current turn (fed by
+    /// `SubagentStart`/`SubagentStop`). DISPLAY-ONLY: it surfaces parallelism on
+    /// the tile and gates the "finished" notification, but is NEVER read by the
+    /// status classifier's turn boundary ([`super::sessions::status::TurnState`]
+    /// `turn_end` = main `Stop` only), so it cannot regress the false-finished
+    /// fix. Best-effort (subagents share the parent token, no per-subagent id):
+    /// saturating, reset on a new prompt, force-0 on the main `Stop`.
+    pub subagents: u32,
 }
 
 impl SessionActivity {
     /// Is this snapshot entirely empty (nothing to surface)? Used to prune the
-    /// map entry after a clear so an idle session leaks no entry.
+    /// map entry after a clear so an idle session leaks no entry. `subagents == 0`
+    /// counts as empty so a resting session leaks no map entry.
     fn is_empty(&self) -> bool {
-        self.activity.is_none() && self.activity_kind.is_none() && self.error.is_none()
+        self.activity.is_none()
+            && self.activity_kind.is_none()
+            && self.error.is_none()
+            && self.subagents == 0
     }
 }
 
@@ -633,9 +645,10 @@ impl AppState {
             .or_default();
         let before = entry.value().clone();
         f(entry.value_mut());
-        let changed =
-            entry.activity != before.activity || entry.activity_kind != before.activity_kind
-                || entry.error != before.error;
+        let changed = entry.activity != before.activity
+            || entry.activity_kind != before.activity_kind
+            || entry.error != before.error
+            || entry.subagents != before.subagents;
         let empty = entry.is_empty();
         drop(entry);
         if empty {
@@ -676,6 +689,41 @@ impl AppState {
         self.mutate_activity(name, |a| {
             a.error = None;
         })
+    }
+
+    /// A Task sub-agent started → bump the live outstanding count (display-only).
+    /// Returns whether it changed (for the change-only SSE broadcast).
+    pub fn inc_subagents(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.subagents = a.subagents.saturating_add(1);
+        })
+    }
+
+    /// A Task sub-agent finished → decrement, saturating at 0 so more stops than
+    /// starts (a missed/duplicated hook) can never underflow. Returns whether it
+    /// changed.
+    pub fn dec_subagents(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.subagents = a.subagents.saturating_sub(1);
+        })
+    }
+
+    /// Reset the outstanding-subagent count to 0 — on a new prompt (a fresh turn)
+    /// and force-applied on the main `Stop`/`SessionEnd` (the authoritative turn
+    /// end, which bounds any drift to a single turn and makes the "finished"
+    /// notification gate fail-safe). Returns whether it changed.
+    pub fn reset_subagents(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.subagents = 0;
+        })
+    }
+
+    /// The live outstanding-subagent count for `name` (0 when no entry).
+    pub fn subagents(&self, name: &str) -> u32 {
+        self.session_activity
+            .get(name)
+            .map(|e| e.subagents)
+            .unwrap_or(0)
     }
 
     /// Force `name`'s status via the lifecycle override: the detector
