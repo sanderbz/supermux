@@ -214,7 +214,7 @@ async fn handle_team_socket(
         return;
     }
 
-    if !send_seed_then_done(&mut socket, &tmux).await {
+    if !send_seed_then_done(&mut socket, &tmux, &mut rx, &resolved.lead_session).await {
         return;
     }
 
@@ -408,7 +408,24 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         Err(_) => return,
     };
 
-    if !send_seed_then_done(&mut socket, &tmux).await {
+    // Cross-session-leak catcher (instrumentation). Resolve the seed's tmux
+    // target to the session tmux ACTUALLY maps it to; if that isn't this
+    // session, the attach is about to seed/stream the WRONG pane — log hard
+    // proof so a "text from another session got injected" report becomes a
+    // grep-able journal line instead of an unverifiable hunch. Read-only.
+    if let Some(actual) = tmux.resolved_session_name().await {
+        let expected = format!("supermux-{name}");
+        if actual != expected {
+            tracing::error!(
+                session = %name,
+                expected = %expected,
+                actual = %actual,
+                "WS attach target resolves to the WRONG tmux session — cross-session leak"
+            );
+        }
+    }
+
+    if !send_seed_then_done(&mut socket, &tmux, &mut rx, &name).await {
         return;
     }
 
@@ -657,8 +674,65 @@ async fn peek_initial_resize(
 /// `replay_done` boundary is ALWAYS sent so the client's "hide viewport until
 /// the snapshot lands, then jump to bottom + reveal in one paint" gate is
 /// released even when nothing seeded.
-async fn send_seed_then_done(socket: &mut WebSocket, tmux: &Tmux<'_>) -> bool {
-    if let Ok(body) = tmux.capture_history_with_alt_screen_aware_visible().await {
+/// Discard the pre-capture OVERLAP from a freshly-subscribed broadcast receiver.
+///
+/// The WS attach `subscribe()`s BEFORE it captures the seed (so the live fan-out
+/// can't lose a byte that streams mid-capture). But that means every byte the
+/// pane emits between `subscribe()` and the capture finishing is delivered
+/// TWICE: once baked into the `capture-pane` seed snapshot, and again as the
+/// first queued live bytes. Forwarding both double-renders that window — plain
+/// output prints duplicate lines, a TUI's cursor-relative redraw applied on top
+/// of the seeded screen blanks/garbles text. (The "double lines / missing text,
+/// fixed by reload" bug.)
+///
+/// Call this immediately AFTER the capture and BEFORE the fan-out loop: it drains
+/// EXACTLY the messages queued at call time (`rx.len()` snapshot) so live bytes
+/// that arrive *after* the snapshot — i.e. produced after the capture point —
+/// are preserved and stream normally. Returns `(chunks, bytes)` discarded for
+/// instrumentation. A `Lagged`/`Closed`/`Empty` `try_recv` stops the drain.
+fn drain_queued_overlap(rx: &mut tokio::sync::broadcast::Receiver<Bytes>) -> (usize, usize) {
+    let queued = rx.len();
+    let mut chunks = 0usize;
+    let mut bytes = 0usize;
+    for _ in 0..queued {
+        match rx.try_recv() {
+            Ok(chunk) => {
+                chunks += 1;
+                bytes += chunk.len();
+            }
+            Err(_) => break,
+        }
+    }
+    (chunks, bytes)
+}
+
+async fn send_seed_then_done(
+    socket: &mut WebSocket,
+    tmux: &Tmux<'_>,
+    rx: &mut tokio::sync::broadcast::Receiver<Bytes>,
+    name: &str,
+) -> bool {
+    let body = tmux
+        .capture_history_with_alt_screen_aware_visible()
+        .await
+        .ok();
+    // The capture above is the seed's authoritative snapshot of tmux up to NOW.
+    // Every byte the broadcast queued between `subscribe()` and this point is
+    // ALSO baked into that snapshot — discard the queued copies so the live
+    // fan-out doesn't re-render the overlap (the "double lines / missing text,
+    // fixed by reload" bug). `drain_queued_overlap` drains only what's queued at
+    // THIS instant; bytes produced after the capture stay queued and stream
+    // normally behind the seed.
+    let (overlap_chunks, overlap_bytes) = drain_queued_overlap(rx);
+    let seed_bytes = body.as_ref().map(|b| b.len()).unwrap_or(0);
+    tracing::debug!(
+        session = %name,
+        seed_bytes,
+        overlap_chunks,
+        overlap_bytes,
+        "WS seed sent; discarded pre-capture broadcast overlap"
+    );
+    if let Some(body) = body {
         if !body.is_empty()
             && socket
                 .send(Message::Binary(Bytes::from(body)))
@@ -1164,6 +1238,63 @@ mod coalesce_tests {
         // A lone Enter produces just the Ctrl op — no spurious empty Text send.
         let plan = plan_applies([key("Enter")]);
         assert_eq!(trace(&plan), vec!["K:Enter"]);
+    }
+}
+
+#[cfg(test)]
+mod overlap_drain_tests {
+    //! The seed/live overlap fix ([`drain_queued_overlap`]). A WS attach
+    //! `subscribe()`s before it captures the seed, so bytes that stream during
+    //! the capture land in BOTH the seed snapshot AND the broadcast queue.
+    //! Forwarding the queued copies double-renders them (the "double lines /
+    //! missing text, fixed by reload" bug). The drain discards exactly the
+    //! pre-capture backlog while preserving bytes that arrive after it.
+    use super::*;
+    use tokio::sync::broadcast;
+
+    #[test]
+    fn discards_the_prequeued_overlap_and_reports_it() {
+        // Three chunks streamed between subscribe() and the capture finishing.
+        // They are already in the seed; the drain must discard ALL of them and
+        // report the (chunks, bytes) it dropped.
+        let (tx, mut rx) = broadcast::channel::<Bytes>(16);
+        tx.send(Bytes::from_static(b"alpha")).unwrap(); // 5
+        tx.send(Bytes::from_static(b"beta")).unwrap(); //  4
+        tx.send(Bytes::from_static(b"gamma")).unwrap(); // 5
+
+        let (chunks, bytes) = drain_queued_overlap(&mut rx);
+
+        assert_eq!(chunks, 3, "all three pre-queued chunks discarded");
+        assert_eq!(bytes, 14, "byte total of the discarded overlap (5+4+5)");
+        assert_eq!(rx.len(), 0, "receiver is empty after the drain");
+    }
+
+    #[test]
+    fn preserves_live_bytes_that_arrive_after_the_drain() {
+        // The whole point: only the snapshot of bytes queued at drain time is
+        // discarded. A byte produced AFTER the capture point (sent after the
+        // drain) is genuine live output and MUST still reach the client.
+        let (tx, mut rx) = broadcast::channel::<Bytes>(16);
+        tx.send(Bytes::from_static(b"overlap")).unwrap();
+
+        let (chunks, _bytes) = drain_queued_overlap(&mut rx);
+        assert_eq!(chunks, 1, "the one pre-queued chunk is dropped");
+
+        // A fresh live chunk arrives after the drain — it was NOT in the seed.
+        tx.send(Bytes::from_static(b"live")).unwrap();
+        assert_eq!(
+            rx.try_recv().ok(),
+            Some(Bytes::from_static(b"live")),
+            "post-drain live byte is preserved, not swallowed",
+        );
+    }
+
+    #[test]
+    fn empty_receiver_drains_to_zero() {
+        // An idle session (no output during the capture window) has nothing
+        // queued — the drain is a clean no-op.
+        let (_tx, mut rx) = broadcast::channel::<Bytes>(16);
+        assert_eq!(drain_queued_overlap(&mut rx), (0, 0));
     }
 }
 

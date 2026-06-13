@@ -188,6 +188,26 @@ impl<'a> Tmux<'a> {
         None
     }
 
+    /// Diagnostic (cross-session-leak catcher): resolve this handle's `-t`
+    /// target exactly as every capture/pipe/send does, then ask tmux which
+    /// `session_name` that target ACTUALLY maps to. The WS attach logs this so a
+    /// target that ever resolves to a DIFFERENT session than requested leaves
+    /// hard proof in the journal — instead of an unverifiable "I think I saw
+    /// another session's output" report. Read-only; one extra `display-message`.
+    /// `None` when the lookup fails (no tmux server / gone session) — callers
+    /// treat that as "nothing to verify".
+    pub async fn resolved_session_name(&self) -> Option<String> {
+        let target = self.target_match().await;
+        let out = self
+            .run(&["display-message", "-p", "-t", &target, "#{session_name}"])
+            .await
+            .ok()?;
+        out.lines()
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     /// True when this handle targets a teammate pane (`%id`) rather than a session.
     pub fn is_pane(&self) -> bool {
         self.target.is_pane()
