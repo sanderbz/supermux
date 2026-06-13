@@ -262,9 +262,12 @@ pub enum HookEvent {
     PostToolUse,
     /// `Notification` — Claude is asking the user something ⇒ `Waiting`.
     Notification,
-    /// `Stop` — the turn ended ⇒ `Idle`.
+    /// `Stop` — the MAIN agent's turn ended ⇒ `Idle`.
     Stop,
-    /// `SubagentStop` — a sub-agent turn ended ⇒ `Idle`.
+    /// `SubagentStop` — a Task sub-agent finished. Recorded but NON-DECISIVE for
+    /// the turn boundary: it arrives on the parent session's token while the
+    /// main agent keeps working, so it must NOT end the main turn (see
+    /// [`TurnState::turn_end`]).
     SubagentStop,
 }
 
@@ -345,9 +348,23 @@ impl TurnState {
             .max()
     }
 
-    /// `turn_end` = newest of {Stop, SubagentStop}.
+    /// `turn_end` = newest main-thread `Stop` only.
+    ///
+    /// `SubagentStop` is deliberately EXCLUDED. A Task subagent shares the
+    /// parent session's token (subagents carry the parent `session_id` with no
+    /// per-subagent identifier — anthropics/claude-code#7881), so its
+    /// `SubagentStop` is POSTed on the MAIN session and folded into
+    /// `self.subagent_stop`. If it counted as a turn end, a single subagent
+    /// finishing while the main agent is still working would satisfy
+    /// `turn_end ≥ turn_start` and flip the card to `Idle` ("finished")
+    /// mid-turn — the false-finished / Active↔Idle flap that plagues
+    /// multi-agent workflows and Agent-Team leads (a burst of `SubagentStop`s
+    /// makes it long-lived, not a blip). Only the main agent's own `Stop` ends
+    /// the main turn. The `subagent_stop` slot is still RECORDED (it is read by
+    /// `tests/hook_auth_scope.rs` and is available for future subagent-activity
+    /// surfacing) but is non-decisive for the turn boundary.
     fn turn_end(&self) -> Option<Instant> {
-        [self.stop, self.subagent_stop].into_iter().flatten().max()
+        self.stop
     }
 
     /// The newest of ALL turn-relevant hooks (start/end/notif), if any.
@@ -942,6 +959,69 @@ mod tests {
         turn.apply(Instant::now() - Duration::from_secs(30), HookEvent::PreToolUse);
         turn.apply(Instant::now() - Duration::from_secs(2), HookEvent::Stop);
         assert_eq!(d.detect("plan mode", neutral_pty(), turn, true), Status::Idle);
+    }
+
+    #[test]
+    fn subagent_stop_mid_turn_must_not_finish_the_turn() {
+        // THE bug: a Task subagent shares the parent session token, so its
+        // SubagentStop POSTs on the MAIN session. With turn_end folding in
+        // SubagentStop, a subagent finishing while the main agent is still
+        // working makes turn_end ≥ turn_start ⇒ the card flips to Idle
+        // ("finished") mid-turn. Only the main-thread Stop ends the main turn.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::PreToolUse);
+        turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::SubagentStop);
+        assert_eq!(
+            d.detect("esc to interrupt", neutral_pty(), turn, true),
+            Status::Active,
+            "a subagent stop with no main Stop must NOT read finished"
+        );
+    }
+
+    #[test]
+    fn parallel_subagent_stops_do_not_finish_the_turn() {
+        // A workflow/team lead running several Task subagents at once emits a
+        // burst of SubagentStops with no interleaved main PreToolUse. None of
+        // them may end the main turn.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::PreToolUse);
+        turn.apply(Instant::now() - Duration::from_secs(3), HookEvent::SubagentStop);
+        turn.apply(Instant::now() - Duration::from_secs(2), HookEvent::SubagentStop);
+        turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::SubagentStop);
+        assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Active);
+    }
+
+    #[test]
+    fn main_stop_after_subagents_is_idle() {
+        // The genuine finish still works: after the subagents, the main agent's
+        // own Stop is the newest signal ⇒ Idle.
+        let mut d = StatusDetector::new();
+        d.force(Status::Active);
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::PreToolUse);
+        turn.apply(Instant::now() - Duration::from_secs(3), HookEvent::SubagentStop);
+        turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::Stop);
+        assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Idle);
+    }
+
+    #[test]
+    fn late_subagent_stop_after_main_stop_stays_idle() {
+        // Receipt jitter / a converted terminal hook can deliver a SubagentStop
+        // AFTER the main Stop. Because SubagentStop is non-decisive (not a
+        // turn_start signal), it must NOT resurrect the turn to Active — the
+        // main Stop ended it and it stays Idle. (Guards against the rejected
+        // "reroute SubagentStop into post_tool" design.)
+        let mut d = StatusDetector::new();
+        d.force(Status::Idle);
+        let mut turn = TurnState::default();
+        turn.apply(Instant::now() - Duration::from_secs(10), HookEvent::PreToolUse);
+        turn.apply(Instant::now() - Duration::from_secs(5), HookEvent::Stop);
+        turn.apply(Instant::now() - Duration::from_secs(1), HookEvent::SubagentStop);
+        assert_eq!(d.detect("", neutral_pty(), turn, true), Status::Idle);
     }
 
     #[test]

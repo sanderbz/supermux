@@ -181,3 +181,98 @@ async fn lifecycle_start_emits_status_active_sse() {
 
     assert!(saw_active, "expected `status:active` SSE after `status:starting` from lifecycle::start");
 }
+
+/// POST a hook event to `/api/_internal/hook` exactly as the Claude curl does:
+/// the session's hook token in the `X-Supermux-Hook-Token` header, body
+/// `{session, event, payload}`. Returns the HTTP status.
+async fn post_hook(app: &axum::Router, session: &str, token: &str, event: &str) -> StatusCode {
+    let body = serde_json::json!({ "session": session, "event": event, "payload": {} });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/_internal/hook")
+        .header("X-Supermux-Hook-Token", token)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
+/// GET `/api/sessions` and return this session's `status` string, if present.
+async fn session_status(app: &axum::Router, name: &str) -> Option<String> {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/sessions")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    // Envelope: { ok, data: [ { name, status, ... } ] }.
+    let arr = v.get("data").and_then(|d| d.as_array())?;
+    arr.iter()
+        .find(|s| s.get("name").and_then(|n| n.as_str()) == Some(name))
+        .and_then(|s| s.get("status").and_then(|st| st.as_str()).map(str::to_string))
+}
+
+/// END-TO-END regression for the SubagentStop false-finished bug: a real session
+/// that receives `UserPromptSubmit → PreToolUse → SubagentStop` (a Task subagent
+/// finishing while the main agent keeps working) must NOT read `idle`/finished.
+/// Drives the live HTTP hook endpoint + the real detector loop through the whole
+/// stack (auth, event mapping, record_hook, classify, set_last_status, GET).
+/// Before the fix (`turn_end = max(Stop, SubagentStop)`) the SubagentStop ends
+/// the turn and the GET reads `idle`; with the fix it reads `active`.
+#[tokio::test]
+async fn subagent_stop_does_not_finish_a_live_session_e2e() {
+    if !tmux_available() {
+        eprintln!("skipping: tmux not on PATH");
+        return;
+    }
+    let (state, app, dir) = setup().await;
+    let name = format!("sub{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+
+    assert_eq!(
+        api(&app, Method::POST, "/api/sessions", Some(serde_json::json!({
+            "name": name, "provider": "shell", "dir": "/tmp"
+        }))).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        api(&app, Method::POST, &format!("/api/sessions/{name}/start"), None).await,
+        StatusCode::OK
+    );
+
+    // The session's hook token (the same secret the Claude curl would carry).
+    let token = supermux_server::db::sessions::runtime(&state.pool, &name)
+        .await
+        .expect("runtime query")
+        .expect("runtime row exists after start")
+        .hook_token;
+    assert!(!token.is_empty(), "a started session has a hook token");
+
+    // The exact hook stream a main agent running ONE Task subagent produces:
+    // a prompt, a tool call (the Task), then the subagent finishing — with NO
+    // main Stop yet (the main agent is still working).
+    assert_eq!(post_hook(&app, &name, &token, "user_prompt").await, StatusCode::OK);
+    assert_eq!(post_hook(&app, &name, &token, "pre_tool").await, StatusCode::OK);
+    assert_eq!(post_hook(&app, &name, &token, "subagent_stop").await, StatusCode::OK);
+
+    // The last POST woke the detector AND it re-ticks every 2s. Wait past a full
+    // cycle so the status reflects the hook stream (not the stale boot `active`),
+    // then read it. With the buggy turn_end the detector has by now written
+    // `idle` (false-finished); with the fix it holds `active`.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let status = session_status(&app, &name).await;
+
+    let _ = api(&app, Method::DELETE, &format!("/api/sessions/{name}"), None).await;
+    let _ = std::process::Command::new("tmux")
+        .args(["kill-session", "-t", &format!("supermux-{name}")])
+        .output();
+    let _ = std::fs::remove_dir_all(dir);
+
+    assert_eq!(
+        status.as_deref(),
+        Some("active"),
+        "a SubagentStop with no main Stop must read `active`, not `idle`/finished"
+    );
+}

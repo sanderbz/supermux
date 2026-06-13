@@ -160,9 +160,14 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         {
             state.set_activity(session, activity::failed_label(payload), "failed".into())
         }
-        // The turn ended → clear the live activity (the error, if any, persists
-        // until the next prompt/start).
-        "stop" | "Stop" | "subagent_stop" | "SubagentStop" => state.clear_activity(session),
+        // The MAIN turn ended → clear the live activity (the error, if any,
+        // persists until the next prompt/start).
+        "stop" | "Stop" => state.clear_activity(session),
+        // A Task sub-agent finished, but it shares the parent session token and
+        // the MAIN agent is still working — do NOT wipe the main session's live
+        // activity label (that reinforced the false-finished look mid-turn).
+        // Non-decisive, mirrors the status detector's turn_end (Stop-only).
+        "subagent_stop" | "SubagentStop" => false,
         // A new prompt / a fresh session → the previous error is no longer
         // current (the user is acting again) → clear it.
         "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => state.clear_error(session),
@@ -309,6 +314,36 @@ mod tests {
         // Stop clears the live activity; the snapshot prunes empty → None.
         apply_payload(&state, s, "stop", &p("{}"));
         assert!(state.session_activity(s).is_none(), "Stop clears activity");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn subagent_stop_does_not_clear_the_main_activity() {
+        // A Task subagent finishing (SubagentStop, on the parent session token)
+        // means the MAIN agent is still working — its live activity label must
+        // survive. Only the main Stop clears it.
+        let (state, dir) = test_state().await;
+        let s = "lead-1";
+
+        apply_payload(
+            &state,
+            s,
+            "pre_tool",
+            &p(r#"{"tool_name":"Task","tool_input":{"description":"review"}}"#),
+        );
+        assert!(state.session_activity(s).is_some(), "pre_tool set an activity");
+
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        assert!(
+            state.session_activity(s).is_some(),
+            "SubagentStop must NOT clear the main session's activity"
+        );
+
+        // The real main Stop still clears it.
+        apply_payload(&state, s, "stop", &p("{}"));
+        assert!(state.session_activity(s).is_none(), "main Stop clears activity");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
