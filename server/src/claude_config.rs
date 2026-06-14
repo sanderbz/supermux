@@ -494,6 +494,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upgrade_adds_a_newly_added_event_without_duplicating_or_clobbering() {
+        // THE upgrade path: a user already running supermux has a settings.json
+        // with the OLD hook set (no SubagentStart). Upgrading the binary + starting
+        // any session re-runs install_hooks, which must ADD the new SubagentStart
+        // event to the existing config — without duplicating the events already
+        // there and without touching the user's own foreign hooks/keys.
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+
+        // 1. Simulate a PRE-UPGRADE install: write the current set, then strip
+        //    SubagentStart so the file looks like an older supermux version.
+        install_hooks_at(&dir).await.unwrap();
+        let mut old = read_json(&path);
+        old["hooks"].as_object_mut().unwrap().remove("SubagentStart");
+        // 2. Add a foreign top-level key + a foreign Stop hook the user owns.
+        old.as_object_mut().unwrap().insert("theirSetting".into(), json!("keep-me"));
+        old["hooks"]["Stop"].as_array_mut().unwrap().push(json!({
+            "matcher": "*",
+            "hooks": [ { "type": "command", "command": "echo their-own-stop-hook" } ]
+        }));
+        std::fs::write(&path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+        assert!(old["hooks"].get("SubagentStart").is_none(), "precondition: no SubagentStart");
+
+        // 3. The UPGRADE: a session start re-installs hooks.
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&path);
+
+        // SubagentStart was added.
+        let ss = v["hooks"]["SubagentStart"].as_array().expect("SubagentStart added on upgrade");
+        assert_eq!(ss.len(), 1, "exactly one SubagentStart entry");
+        assert!(ss[0]["hooks"][0]["command"].as_str().unwrap().contains("subagent_start"));
+
+        // No supermux event got duplicated (each has exactly ONE marked entry).
+        for (event, _) in EVENTS {
+            let arr = v["hooks"][event].as_array().unwrap();
+            let marked = arr.iter().filter(|e| is_supermux_entry(e)).count();
+            assert_eq!(marked, 1, "{event}: exactly one supermux entry after upgrade");
+        }
+
+        // The user's foreign key + foreign Stop hook survived untouched.
+        assert_eq!(v["theirSetting"], json!("keep-me"), "foreign top-level key preserved");
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert!(
+            stop.iter().any(|e| e["hooks"][0]["command"] == json!("echo their-own-stop-hook")),
+            "user's own Stop hook preserved alongside supermux's"
+        );
+    }
+
+    #[tokio::test]
     async fn reinstall_is_idempotent() {
         let dir = temp_dir();
         install_hooks_at(&dir).await.unwrap();
