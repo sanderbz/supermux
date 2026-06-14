@@ -679,6 +679,18 @@ pub async fn tick(
     // No-op when the session owns no `doing` issue. emit_board after a change so
     // open boards reflect the new flag without a manual refetch.
     if let Some(s) = committed {
+        // A committed turn-end (idle/stopped) means the turn is over and no Task
+        // subagents can be in flight — reset the best-effort outstanding-subagent
+        // count so any drift self-corrects EVERY turn instead of accumulating.
+        // The count is fed by best-effort `--max-time 1` hook curls: an occasional
+        // lost SubagentStop, or a turn whose UserPromptSubmit/Stop reset hook never
+        // fired, would otherwise leave the count stuck high (the "I spawned 3 but
+        // it shows 6" drift). The detector's turn-end is the reliable server-side
+        // correction signal. Not Waiting — a subagent may still run while the main
+        // agent is blocked on the user.
+        if turn_ends_subagents(s) {
+            state.reset_subagents(name);
+        }
         if let Err(e) = react_to_transition(state, name, s).await {
             tracing::debug!(name = %name, error = %e, "board reaction on status transition failed");
         }
@@ -864,6 +876,15 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
 /// once a blocked reason / last_error is captured); a generic
 /// fallback covers cold-start. `send_push_for` itself no-ops cheaply when
 /// nobody is subscribed OR the category is muted.
+/// A committed status that means the turn is over, so the live outstanding-
+/// subagent count must be 0. Used to self-correct best-effort count drift at
+/// every turn end (idle/stopped), independent of whether the per-turn reset
+/// hooks fired. `Waiting` is excluded: a subagent can still be running while the
+/// main agent is blocked on the user mid-turn.
+fn turn_ends_subagents(s: Status) -> bool {
+    matches!(s, Status::Idle | Status::Stopped)
+}
+
 /// Whether a settled transition into `cat` should actually send, given the
 /// session's freshly re-read persisted `last_status` and live outstanding
 /// `subagents` count. Pure so the debounce decision is unit-testable.
@@ -1039,6 +1060,19 @@ mod board_reaction_tests {
     use crate::config::Config;
     use crate::db::board::NewIssue;
     use crate::db::push::NotifCategory;
+
+    #[test]
+    fn turn_end_resets_the_subagent_count_drift() {
+        // The detector self-corrects best-effort count drift at a committed
+        // turn-end. Idle/Stopped ⇒ no subagents can be in flight ⇒ reset. Active
+        // (subagents running) and Waiting (main blocked, subagent may still run)
+        // must NOT reset.
+        assert!(turn_ends_subagents(Status::Idle), "idle = turn done → reset");
+        assert!(turn_ends_subagents(Status::Stopped), "stopped → reset");
+        assert!(!turn_ends_subagents(Status::Active), "active = subagents may be running");
+        assert!(!turn_ends_subagents(Status::Waiting), "waiting = subagent may still run");
+        assert!(!turn_ends_subagents(Status::Starting));
+    }
 
     #[test]
     fn finished_push_is_gated_on_zero_subagents() {
