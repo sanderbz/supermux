@@ -678,19 +678,22 @@ pub async fn tick(
     //     so the board can badge "needs you".
     // No-op when the session owns no `doing` issue. emit_board after a change so
     // open boards reflect the new flag without a manual refetch.
+    // A committed turn-end (idle/stopped) means the turn is over and no Task
+    // subagents can be in flight — reset the best-effort outstanding-subagent
+    // count so any drift self-corrects EVERY turn instead of accumulating. The
+    // count is fed by best-effort `--max-time 1` hook curls: an occasional lost
+    // SubagentStop, or a turn whose UserPromptSubmit/Stop reset hook never fired,
+    // would otherwise leave the count stuck high (the "I spawned 3 but it shows 6"
+    // drift). The detector's turn-end is the reliable server-side correction
+    // signal. Not Waiting — a subagent may still run while the main agent is
+    // blocked on the user. Computed BEFORE the push gate (which re-reads the count
+    // after its debounce) and surfaced on the `sessions` delta below so the
+    // `· N subagents` clause clears promptly even on a pure-drift idle (one with
+    // no `Stop` hook to broadcast the zero).
+    let subagents_reset =
+        matches!(committed, Some(s) if turn_ends_subagents(s)) && state.reset_subagents(name);
+
     if let Some(s) = committed {
-        // A committed turn-end (idle/stopped) means the turn is over and no Task
-        // subagents can be in flight — reset the best-effort outstanding-subagent
-        // count so any drift self-corrects EVERY turn instead of accumulating.
-        // The count is fed by best-effort `--max-time 1` hook curls: an occasional
-        // lost SubagentStop, or a turn whose UserPromptSubmit/Stop reset hook never
-        // fired, would otherwise leave the count stuck high (the "I spawned 3 but
-        // it shows 6" drift). The detector's turn-end is the reliable server-side
-        // correction signal. Not Waiting — a subagent may still run while the main
-        // agent is blocked on the user.
-        if turn_ends_subagents(s) {
-            state.reset_subagents(name);
-        }
         if let Err(e) = react_to_transition(state, name, s).await {
             tracing::debug!(name = %name, error = %e, "board reaction on status transition failed");
         }
@@ -708,6 +711,12 @@ pub async fn tick(
         item.insert("name".into(), Value::String(name.to_string()));
         if let Some(s) = committed {
             item.insert("status".into(), Value::String(s.as_str().to_string()));
+        }
+        // Surface the drift-reset so connected clients clear the `· N subagents`
+        // clause on a pure-drift turn-end (the tick delta otherwise omits the
+        // count, which the change-only `broadcast_activity_delta` carries).
+        if subagents_reset {
+            item.insert("subagents".into(), json!(0));
         }
         if tail_changed {
             item.insert(
