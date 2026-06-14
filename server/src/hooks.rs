@@ -189,6 +189,12 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // Start: clear a stale error AND any pending forced-stopped override so
         // the detector re-evaluates the freshly-(re)started session freely.
         "session_start" | "SessionStart" => {
+            // A brand-new Claude process: clear the stale forced-stopped override
+            // AND wipe the previous process's in-progress turn so the detector
+            // doesn't pin the freshly-booted, idle session Active (the
+            // restart-stuck-loading bug). reset_turn_state has no activity-delta
+            // effect; wake_detector (in the handler) re-ticks the status.
+            state.reset_turn_state(session);
             state.clear_forced_status(session);
             state.clear_error(session)
         }
@@ -199,6 +205,10 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "session_end" | "SessionEnd" => {
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
+            // The turn is definitively over when the session ends — drop it so a
+            // later restart can't inherit it (belt-and-suspenders with the
+            // SessionStart reset above).
+            state.reset_turn_state(session);
             force_stopped(state, session);
             act_changed || sub_changed
         }
@@ -404,6 +414,42 @@ mod tests {
     /// Read the live outstanding-subagent count (0 when there's no entry).
     fn subagents(state: &AppState, s: &str) -> u32 {
         state.session_activity(s).map(|a| a.subagents).unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn session_start_resets_a_stale_turn_state() {
+        // A restarted session must NOT inherit the previous Claude process's
+        // in-progress turn. The server keeps in-memory TurnState across a session
+        // restart (it's only cleared on delete), and a turn left with
+        // turn_start > turn_end (no clean Stop — e.g. the old process was killed,
+        // or a dangling SubagentStop) makes the detector pin the freshly-booted,
+        // idle session "active" until TURN_SAFETY (15 min). SessionStart (a new
+        // process) must reset the turn machine so the detector classifies the new
+        // session from scratch.
+        use crate::sessions::status::{HookEvent, TurnState};
+        let (state, dir) = test_state().await;
+        let s = "restarted-1";
+
+        // The previous process left a turn in progress (UserPromptSubmit/PreToolUse,
+        // no Stop) → the detector would read this Active.
+        state.record_hook(s, HookEvent::UserPromptSubmit);
+        state.record_hook(s, HookEvent::PreToolUse);
+        assert_ne!(
+            state.turn_state(s),
+            TurnState::default(),
+            "precondition: a turn is in progress"
+        );
+
+        // The new process boots → SessionStart must wipe the stale turn.
+        apply_payload(&state, s, "session_start", &p("{}"));
+        assert_eq!(
+            state.turn_state(s),
+            TurnState::default(),
+            "SessionStart must reset the stale turn state so the idle session isn't pinned active"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

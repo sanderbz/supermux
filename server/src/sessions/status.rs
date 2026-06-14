@@ -305,7 +305,7 @@ impl HookEvent {
 /// map and passed *into* [`StatusDetector::detect`] so the classifier stays a
 /// pure function of its inputs (golden-testable). All fields are
 /// `Option<Instant>` because a session may not have seen every event yet.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TurnState {
     /// Newest `UserPromptSubmit` — the user submitted a prompt (a turn begins).
     pub user_prompt: Option<Instant>,

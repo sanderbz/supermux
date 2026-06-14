@@ -607,6 +607,19 @@ impl AppState {
         self.last_hook.get(name).map(|e| *e.value()).unwrap_or_default()
     }
 
+    /// Reset the per-session turn state machine to empty. Called on `SessionStart`
+    /// (a brand-new Claude process must NOT inherit the previous one's in-progress
+    /// turn) and `SessionEnd` (the turn is over). The in-memory `TurnState`
+    /// otherwise survives a session restart (it's only dropped on delete), so a
+    /// turn left with `turn_start > turn_end` (the old process was killed before a
+    /// clean `Stop`, or a dangling `SubagentStop`) would pin the freshly-booted,
+    /// idle session `Active` until the 15-min `TURN_SAFETY` bound. Dropping the
+    /// entry makes [`turn_state`](Self::turn_state) return the empty default, so
+    /// the detector classifies the new session from scratch (content + heartbeat).
+    pub fn reset_turn_state(&self, name: &str) {
+        self.last_hook.remove(name);
+    }
+
     /// Mark `name`'s Claude hooks as LIVE — called by `/api/_internal/hook` on
     /// EVERY authenticated POST (any event kind, incl. `SessionStart`). Once set,
     /// the detector treats the turn state machine + content bank as authoritative
