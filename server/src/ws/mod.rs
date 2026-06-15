@@ -54,6 +54,19 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 /// practice (every supermux client resizes on `auth_ok`).
 const PRESEED_RESIZE_PEEK: Duration = Duration::from_millis(150);
 
+/// Settle delay before the auto-heal resync that follows a client resize. A
+/// width change reflows the client's xterm buffer; the inline-TUI (Claude's Ink
+/// renderer) then repaints its current frame with cursor-relative moves that can
+/// land on the now-reflowed rows, leaving stale/garbled rows ABOVE the frame
+/// that no incremental redraw ever clears. After the resize lands we re-push a
+/// clean full-screen snapshot (the same alt-screen-aware seed) which begins with
+/// a clear, deterministically wiping that garble — the coherent state a reload
+/// reaches, with no reload. Debounced: a drag fires many resizes; each pushes
+/// the deadline out so only the FINAL geometry triggers a single resync. Sized
+/// to comfortably cover the resize landing on tmux plus the app's SIGWINCH
+/// repaint, without a perceptible lag before the view settles.
+const RESYNC_SETTLE: Duration = Duration::from_millis(300);
+
 /// Application close code for "the session's tmux pty is gone" (e.g. the DB row
 /// survived a reboot but the tmux session did not). This is a TERMINAL condition,
 /// distinct from `close_code::ERROR` (1011 — a transient server error worth a
@@ -224,42 +237,68 @@ async fn handle_team_socket(
     //    teammate WS is keystroke-read-only for this slice) and only refreshes
     //    the liveness timer.
     let mut last_inbound = Instant::now();
+    // Auto-heal resync — mirrors the session path (see [`handle_socket`] and
+    // [`RESYNC_SETTLE`]). A teammate pane is read-only but still reflows on a
+    // viewport width change, so the same inline-TUI stale-row garble applies;
+    // re-pushing a clean snapshot heals it.
+    let mut resync_deadline: Option<Instant> = None;
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
     ping.tick().await;
 
     loop {
+        // Copy-by-value snapshot — no borrow held across the `select!`.
+        let resync_tick = async {
+            match resync_deadline {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             inbound = socket.recv() => {
                 match inbound {
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                     Some(Ok(Message::Text(t))) => {
                         last_inbound = Instant::now();
-                        // Resize is the ONLY control frame we apply on the
-                        // read-only teammate path — keeps tmux's pane geometry
-                        // synced with xterm's grid as the user resizes their
-                        // viewport (drag, mobile orientation flip, etc.).
-                        // Everything else (Input/Key) is silently dropped per
-                        // the read-only contract above; malformed JSON is a
+                        // Resize + Resync are the ONLY control frames we act on for
+                        // the read-only teammate path. Resize keeps tmux's pane
+                        // geometry synced with xterm's grid (drag, orientation
+                        // flip) and arms a debounced auto-heal; Resync is the
+                        // manual refresh. Everything else (Input/Key) is silently
+                        // dropped per the read-only contract; malformed JSON is a
                         // no-op (the inbound-silence timer still ticks).
-                        if let Ok(ClientMsg::Resize { cols, rows }) =
-                            serde_json::from_str::<ClientMsg>(t.as_str())
-                        {
-                            let lock = state.lock_for(&resolved.lead_session);
-                            let _guard = lock.lock().await;
-                            if let Err(e) = tmux.resize_pane(cols, rows).await {
-                                tracing::debug!(
-                                    team = %team,
-                                    member = %member,
-                                    error = %e,
-                                    "teammate resize_pane failed"
-                                );
+                        match serde_json::from_str::<ClientMsg>(t.as_str()) {
+                            Ok(ClientMsg::Resize { cols, rows }) => {
+                                let lock = state.lock_for(&resolved.lead_session);
+                                let _guard = lock.lock().await;
+                                if let Err(e) = tmux.resize_pane(cols, rows).await {
+                                    tracing::debug!(
+                                        team = %team,
+                                        member = %member,
+                                        error = %e,
+                                        "teammate resize_pane failed"
+                                    );
+                                }
+                                drop(_guard);
+                                resync_deadline = Some(Instant::now() + RESYNC_SETTLE);
                             }
+                            Ok(ClientMsg::Resync) => {
+                                resync_deadline = Some(Instant::now());
+                            }
+                            _ => {}
                         }
                     }
                     // Any other inbound frame (Binary, Pong, stray Input
                     // shape) just refreshes the liveness timer.
                     Some(Ok(_)) => { last_inbound = Instant::now(); }
+                }
+            }
+            // Debounced auto-heal resync — same clean-snapshot re-push as the
+            // session path, scoped to this teammate pane.
+            _ = resync_tick => {
+                resync_deadline = None;
+                if !send_seed_then_done(&mut socket, &tmux, &mut rx, &resolved.lead_session).await {
+                    break;
                 }
             }
             outbound = rx.recv() => {
@@ -468,11 +507,26 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     // 6. Unified fan-out + client-read + ping loop (single task, no split — uses
     //    WebSocket's inherent recv/send).
     let mut last_inbound = Instant::now();
+    // Auto-heal resync: when set, a clean snapshot is re-pushed once this
+    // (absolute) deadline passes. Armed (debounced) on a client resize and
+    // immediately on an explicit `Resync`. `None` = nothing pending. Recomputed
+    // into a fresh timer each loop iteration; `sleep_until` is absolute so the
+    // re-creation on every inbound/outbound/ping tick still fires at the same
+    // instant. See [`RESYNC_SETTLE`] and [`send_seed_then_done`].
+    let mut resync_deadline: Option<Instant> = None;
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
     ping.tick().await; // consume the immediate first tick
 
     loop {
+        // `resync_deadline` is `Copy` (Option<Instant>), so this captures a
+        // snapshot by value — no borrow held across the `select!`.
+        let resync_tick = async {
+            match resync_deadline {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             inbound = socket.recv() => {
                 match inbound {
@@ -481,12 +535,36 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
                         match msg {
                             Message::Text(t) => {
                                 if let Ok(cmd) = serde_json::from_str::<ClientMsg>(t.as_str()) {
-                                    // Non-blocking hand-off; the drain task applies
-                                    // it in order. A closed channel only happens if
-                                    // the drain task has exited (teardown) — then we
-                                    // break and tear down too.
-                                    if input_tx.send(cmd).is_err() {
-                                        break;
+                                    match cmd {
+                                        // Manual refresh: schedule an IMMEDIATE
+                                        // resync. Not forwarded to the input drain
+                                        // (no tmux side effect — the snapshot push
+                                        // happens on this socket below).
+                                        ClientMsg::Resync => {
+                                            resync_deadline = Some(Instant::now());
+                                        }
+                                        // Auto-heal: the resize still flows to the
+                                        // drain (it resizes tmux), AND we arm a
+                                        // debounced resync so the post-resize view
+                                        // self-heals. A drag keeps pushing the
+                                        // deadline out → one resync at the final
+                                        // geometry, not one per intermediate step.
+                                        ClientMsg::Resize { .. } => {
+                                            resync_deadline =
+                                                Some(Instant::now() + RESYNC_SETTLE);
+                                            if input_tx.send(cmd).is_err() {
+                                                break;
+                                            }
+                                        }
+                                        // Everything else: non-blocking hand-off to
+                                        // the drain task, which applies it in order.
+                                        // A closed channel means the drain exited
+                                        // (teardown) — break and tear down too.
+                                        _ => {
+                                            if input_tx.send(cmd).is_err() {
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -497,6 +575,17 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
                         }
                     }
                     Some(Err(_)) | None => break,
+                }
+            }
+            // Debounced auto-heal resync. Re-push the clean snapshot (same payload
+            // as the attach seed: clear + alt-screen-aware capture, with the
+            // pre-capture broadcast overlap drained) so the client repaints
+            // coherently. `replay_done` is re-sent but the client treats it as an
+            // idempotent no-op once already revealed.
+            _ = resync_tick => {
+                resync_deadline = None;
+                if !send_seed_then_done(&mut socket, &tmux, &mut rx, &name).await {
+                    break;
                 }
             }
             outbound = rx.recv() => {
@@ -1021,8 +1110,11 @@ async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op:
                 tmux.resize(cols, rows).await
             }
         }
-        // Auth-after-auth and client Ping are no-ops on the input path.
-        Apply::Ctrl(ClientMsg::Auth { .. } | ClientMsg::Ping) => Ok(()),
+        // Auth-after-auth, client Ping, and Resync are no-ops on the input path.
+        // Resync never reaches here in practice — the main loop intercepts it
+        // before the input hand-off — but a stray one is a harmless no-op (it
+        // carries no tmux side effect; the snapshot push happens on the socket).
+        Apply::Ctrl(ClientMsg::Auth { .. } | ClientMsg::Ping | ClientMsg::Resync) => Ok(()),
     };
     if let Err(e) = res {
         tracing::debug!(session = %name, error = %e, "ws input → tmux failed");

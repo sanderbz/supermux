@@ -402,6 +402,13 @@ export function MobileFocus() {
             subagents={current.subagents}
             error={current.error}
             onBack={goOverviewMorph}
+            // Manual resync — re-pull a clean screen on the live handle. Omitted
+            // for a stopped session (no live WS to resync) so the control hides.
+            onRefresh={
+              current.status === 'stopped'
+                ? undefined
+                : () => termRef.current?.resync()
+            }
             onTitleClick={() => setInfoOpen(true)}
             hasLastSend={!!lastSend}
             lastSendOpen={lastSendOpen}

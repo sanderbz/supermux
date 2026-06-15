@@ -63,6 +63,16 @@ export interface UseLiveTermResult {
   /** Force a fit + resize round-trip (callers rarely need this — the
    *  ResizeObserver handles it — but the dock/joystick may after a layout flip). */
   resize(cols: number, rows: number): void
+  /** Ask the server to re-push a clean full-screen snapshot ("refresh"). The
+   *  server replies on the SAME socket with the clear + alt-screen-aware capture
+   *  (the attach-seed payload), deterministically wiping any client-side render
+   *  garble — an inline-TUI cursor-relative redraw landing on rows xterm has
+   *  reflowed (e.g. after a width change) leaves stale, misaligned rows that no
+   *  incremental redraw clears. This reaches the same coherent state a full page
+   *  reload would, without the reload. The server ALSO triggers this same resync
+   *  automatically (debounced) after a resize, so the manual call is only needed
+   *  for residual garble from some other desync. No-op until authed. */
+  resync(): void
   /** Copy the whole scrollback buffer to the clipboard. */
   copyAll(): void
   /** Copy the CURRENT xterm selection (made with the desktop shift-click-drag
@@ -482,6 +492,17 @@ export function useLiveTerm(
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN && authedRef.current) {
       ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+    }
+  }, [])
+
+  /** Request a clean full-screen snapshot from the server (manual "refresh").
+   *  The server re-pushes the attach-seed payload on this socket; writing it
+   *  (it begins with a clear) repaints the terminal coherently — the reload-
+   *  equivalent self-heal for residual render garble. No-op until authed. */
+  const resync = React.useCallback(() => {
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN && authedRef.current) {
+      ws.send(JSON.stringify({ type: 'resync' }))
     }
   }, [])
 
@@ -1110,6 +1131,15 @@ export function useLiveTerm(
     let writeFlushRaf: number | null = null
     let writeFlushTimeout: number | null = null
     let capWarned = false
+    // Set by the `replay_done` handler to request a scroll-to-bottom that lands
+    // AFTER the queued snapshot bytes are parsed (via the flush's write
+    // callback) — NOT before, while they're still in the queue. A mid-stream
+    // resync (the server's post-resize auto-heal / the manual refresh) re-pushes
+    // the seed and re-sends `replay_done`; without this the viewport stays at the
+    // TOP of the freshly-rewritten scrollback instead of the live bottom. Only
+    // ever set on a snapshot boundary, so normal live streaming (where the user
+    // may have scrolled up) is untouched.
+    let pinBottomPending = false
     // Soft cap on the queue: rAF does NOT fire in background tabs, so a
     // backgrounded terminal that's still receiving WS bytes builds up the queue
     // until either the tab is foregrounded (rAF fires + flushes) OR the
@@ -1118,6 +1148,20 @@ export function useLiveTerm(
     // surfaces in the console before memory pressure shows up elsewhere.
     // xterm.js's own internal queue caps at ~50 MB; 4 MB warns early.
     const QUEUE_WARN_BYTES = 4 * 1024 * 1024
+    // Runs once a flush has actually committed bytes (xterm's write callback) —
+    // or immediately when there was nothing to flush. Honours a pending
+    // snapshot-boundary pin: scroll to the live bottom AFTER the snapshot is in
+    // the buffer so a resync lands at the bottom, not the top of the rewritten
+    // scrollback. A no-op on every normal flush (flag unset).
+    const afterFlush = () => {
+      if (!pinBottomPending) return
+      pinBottomPending = false
+      try {
+        termRef.current?.scrollToBottom()
+      } catch {
+        /* disposed mid-pin — harmless */
+      }
+    }
     const flushPendingWrites = () => {
       if (writeFlushRaf !== null) {
         window.cancelAnimationFrame(writeFlushRaf)
@@ -1127,22 +1171,30 @@ export function useLiveTerm(
         window.clearTimeout(writeFlushTimeout)
         writeFlushTimeout = null
       }
-      if (pendingWrites.length === 0) return
+      if (pendingWrites.length === 0) {
+        // Nothing queued — the buffer is already current; pin now if requested.
+        afterFlush()
+        return
+      }
       const term = termRef.current
       if (!term) {
         pendingWrites = []
         pendingBytes = 0
+        afterFlush()
         return
       }
-      // Fast path: a single queued frame writes directly (no copy).
+      // Fast path: a single queued frame writes directly (no copy). The write
+      // callback fires after xterm has parsed the bytes — the correct moment to
+      // pin the viewport to the bottom for a snapshot boundary.
       if (pendingWrites.length === 1) {
         const only = pendingWrites[0]
         pendingWrites = []
         pendingBytes = 0
         try {
-          term.write(only)
+          term.write(only, afterFlush)
         } catch {
           /* terminal disposed mid-flush — harmless */
+          afterFlush()
         }
         return
       }
@@ -1157,9 +1209,10 @@ export function useLiveTerm(
       pendingWrites = []
       pendingBytes = 0
       try {
-        term.write(merged)
+        term.write(merged, afterFlush)
       } catch {
         /* terminal disposed mid-flush — harmless */
+        afterFlush()
       }
     }
     const enqueueWrite = (bytes: Uint8Array) => {
@@ -1280,11 +1333,21 @@ export function useLiveTerm(
               const t = termRef.current
               if (t) resize(t.cols, t.rows)
             } else if (msg.type === 'replay_done') {
-              // The server has flushed the entire replay snapshot and is about
-              // to start the live fan-out. Pin to the bottom and REVEAL — the
-              // user never saw the replay scroll because the terminal was
-              // covered (opacity-0) until exactly now. Sent even for an empty
-              // replay, so a short/no-history session reveals instantly too.
+              // The server has flushed an entire snapshot (the attach seed OR a
+              // mid-stream resync) and is about to resume the live fan-out. Pin
+              // to the bottom AFTER the snapshot bytes are parsed: the seed is a
+              // binary frame still sitting in the rAF write queue right now, so
+              // we request the pin and flush — `afterFlush` (xterm's write
+              // callback) scrolls once the bytes land. Without this a resync (the
+              // server's post-resize auto-heal or the manual refresh) leaves the
+              // viewport at the TOP of the freshly-rewritten scrollback. Then
+              // REVEAL — the user never saw the replay scroll because the
+              // terminal was covered (opacity-0) until now. `markReady` is a
+              // one-time reveal (no-op on a resync); the bottom-pin runs every
+              // time. Sent even for an empty replay, so a short/no-history
+              // session reveals instantly too.
+              pinBottomPending = true
+              flushPendingWrites()
               markReady()
             }
           } catch {
@@ -1737,6 +1800,7 @@ export function useLiveTerm(
     send,
     sendKey,
     resize,
+    resync,
     copyAll,
     copySelection,
     retry,

@@ -563,6 +563,13 @@ export function DesktopSplit({
           error={current?.error}
           onDetach={onDetach}
           onStop={onStop}
+          // Manual resync — re-pull a clean screen on the live handle. Omitted
+          // for a stopped session (no live WS to resync) so the control hides.
+          onRefresh={
+            status === 'stopped'
+              ? undefined
+              : () => termRef.current?.resync()
+          }
           onMakeTeam={onMakeTeam}
           // Open only — Radix closes the popover on outside-click / Escape, so a
           // toggle here would race its onOpenChange(false) and re-open it.

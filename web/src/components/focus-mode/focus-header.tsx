@@ -14,6 +14,7 @@ import { motion } from 'framer-motion'
 import {
   ChevronLeft,
   Minimize2,
+  RotateCw,
   SlidersHorizontal,
   Square,
   Users,
@@ -65,6 +66,11 @@ export interface DesktopFocusHeaderProps {
   onDetach: () => void
   /** Stop (⌘W): confirm + stop the session, then leave. */
   onStop: () => void
+  /** Refresh: re-pull a clean full-screen snapshot from the server (the manual
+   *  twin of the automatic post-resize resync) to wipe any residual render
+   *  garble without a page reload. Omit to hide the control (e.g. a stopped
+   *  session with no live pty). */
+  onRefresh?: () => void
   /** Open the "Make it a team" sheet for this session. Omit
    *  to hide the affordance entirely (e.g. on a session that's ALREADY a team
    *  lead — the route owns that gating so the header stays presentational). */
@@ -97,6 +103,7 @@ export function DesktopFocusHeader({
   error,
   onDetach,
   onStop,
+  onRefresh,
   onMakeTeam,
   onTitleClick,
   titleRef,
@@ -218,6 +225,28 @@ export function DesktopFocusHeader({
           </Tooltip>
         )}
 
+        {/* Refresh — re-pull a clean screen (manual twin of the server's
+            post-resize auto-resync). Placed before Detach so the destructive
+            Stop button stays last in the cluster. The icon spins on tap for a
+            confirming flick of feedback. */}
+        {onRefresh && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <motion.button
+                type="button"
+                onClick={onRefresh}
+                whileTap={{ scale: 0.96, rotate: -180 }}
+                transition={springs.buttonPress}
+                aria-label="Refresh terminal"
+                className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary"
+              >
+                <RotateCw className="size-4" />
+              </motion.button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh — re-pull a clean screen</TooltipContent>
+          </Tooltip>
+        )}
+
         <Tooltip>
           <TooltipTrigger asChild>
             <motion.button
@@ -274,6 +303,9 @@ export interface FocusHeaderProps {
   /** Unrecovered agent error (hooks-10x) — drives the amber blocked badge. */
   error?: { type: string; message: string }
   onBack: () => void
+  /** Refresh: re-pull a clean full-screen snapshot from the server (manual twin
+   *  of the automatic post-resize resync). Omit to hide the control. */
+  onRefresh?: () => void
   /** Open the session info panel (feat-session-info). When set, the title becomes
    *  a bare button (pixel-identical to the <h1> — no padding/border/extra height,
    *  so NO resting space is added). Mobile anchors the panel to the viewport
@@ -297,6 +329,7 @@ export function FocusHeader({
   subagents,
   error,
   onBack,
+  onRefresh,
   onTitleClick,
   hasLastSend,
   lastSendOpen,
@@ -408,6 +441,20 @@ export function FocusHeader({
             open={!!lastSendOpen}
             // no shortcutHint on mobile — no hardware-keyboard expectation
           />
+        )}
+        {/* Refresh — re-pull a clean screen (manual twin of the server's
+            post-resize auto-resync); spins on tap for feedback. */}
+        {onRefresh && (
+          <motion.button
+            type="button"
+            aria-label="Refresh terminal"
+            whileTap={{ scale: 0.92, rotate: -180 }}
+            transition={springs.buttonPress}
+            onClick={onRefresh}
+            className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
+          >
+            <RotateCw className="size-5" />
+          </motion.button>
         )}
         <motion.button
           type="button"
