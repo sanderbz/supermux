@@ -184,10 +184,29 @@ pub fn run_preflight(latest: Option<LatestRelease>) -> PreflightStatus {
     let current = VersionInfo::current();
     let repo = detect_repo_dir();
 
-    let update_available = version::is_newer(
+    // The version-string verdict: does the latest tag read as newer than the
+    // tag this binary describes itself with?
+    let version_newer = version::is_newer(
         current.tag.as_deref(),
         latest.as_ref().map(|r| r.tag.as_str()),
     );
+
+    // Ancestry override. A binary deployed from `main` BEFORE a release tag was
+    // cut on one of its ancestors describes as the older tag (e.g.
+    // `v0.4.23-27-g114bc2b`) — `git describe` can only anchor to the newest tag
+    // the build clone had. That naively reads as "behind v0.4.24" even though
+    // v0.4.24's commit is already in the running build. When we can PROVE the
+    // latest release's commit is an ancestor of this binary's build commit, the
+    // running code already contains it, so suppress the bogus offer. Falls back
+    // to the version compare when the tag isn't present locally (we never fetch
+    // here) or the build sha is unknown. See `running_binary_contains_release`.
+    let contains_release = match (&repo, latest.as_ref()) {
+        (Some(repo), Some(rel)) if version_newer => {
+            running_binary_contains_release(repo, &rel.tag, &current.sha)
+        }
+        _ => None,
+    };
+    let update_available = decide_update_available(version_newer, contains_release);
 
     let mut blocked = Vec::new();
 
@@ -470,4 +489,152 @@ fn inspect_git(repo: &Path) -> Option<GitSnapshot> {
         dirty_count,
         ahead_count,
     })
+}
+
+/// Reconcile the version-string verdict with what git ancestry can prove.
+///
+/// `version_says_newer` is [`version::is_newer`]'s answer; `contains_release`
+/// is [`running_binary_contains_release`]'s (`None` = couldn't determine). The
+/// only case we OVERRIDE is "the strings say there's an update, but the release
+/// commit is already in our history" — that's the deploy-before-tag false
+/// positive. Everything else trusts the version compare.
+fn decide_update_available(version_says_newer: bool, contains_release: Option<bool>) -> bool {
+    match (version_says_newer, contains_release) {
+        (false, _) => false,             // strings agree we're current-or-ahead
+        (true, Some(true)) => false,     // release commit already in our build
+        (true, Some(false)) => true,     // genuinely ahead of us
+        (true, None) => true,            // undeterminable → trust the strings
+    }
+}
+
+/// Does the running binary's build commit already contain `latest_tag`'s commit?
+///
+/// `Some(true)`  → the release tag's commit is an ancestor of (or equal to) the
+///                 running binary's build commit: the running code already
+///                 includes that release, so it is NOT an update.
+/// `Some(false)` → the release commit is provably NOT in the running build's
+///                 history (a genuinely newer release).
+/// `None`        → undeterminable: the tag isn't in the local clone, the build
+///                 sha is unknown/dev, or git failed. The caller falls back to
+///                 the version-string compare.
+///
+/// Deliberately NETWORK-FREE: it only consults tags already present in the
+/// clone. `deploy-self.sh`/`update.sh` run `git fetch --tags` before a build, so
+/// a freshly-deployed clone has every release tag; a binary stuck on an older
+/// describe (built before the tag existed) self-heals here as soon as the clone
+/// learns the tag, without this hot path ever bursting out to GitHub.
+fn running_binary_contains_release(repo: &Path, latest_tag: &str, running_sha: &str) -> Option<bool> {
+    // A dev build (no real sha) can't be reasoned about by ancestry.
+    if running_sha.is_empty() || running_sha == "dev" {
+        return None;
+    }
+    // Resolve the tag to its commit in the LOCAL clone. `^{commit}` peels an
+    // annotated tag down to the commit it points at. A missing tag makes
+    // `rev-parse --verify --quiet` exit non-zero with empty stdout → None.
+    let rev = format!("{latest_tag}^{{commit}}");
+    let out = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &rev])
+        .current_dir(repo)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let tag_commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if tag_commit.is_empty() {
+        return None;
+    }
+    // Is the release commit an ancestor of (or equal to) the running build's
+    // commit? `merge-base --is-ancestor A B` exits 0 when A is an ancestor of B
+    // (or A == B), 1 when it definitively is not, and 128 when a rev is unknown
+    // (e.g. the build sha isn't in this clone) — which we map to "can't tell".
+    let status = Command::new("git")
+        .args(["merge-base", "--is-ancestor", &tag_commit, running_sha])
+        .current_dir(repo)
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod ancestry_tests {
+    use super::*;
+
+    #[test]
+    fn decide_only_overrides_the_false_positive() {
+        // The whole point: strings say "update", but the release is already ours.
+        assert!(!decide_update_available(true, Some(true)));
+        // A genuinely newer release still advertises.
+        assert!(decide_update_available(true, Some(false)));
+        // Undeterminable ancestry trusts the version compare (either way).
+        assert!(decide_update_available(true, None));
+        // No version-level update → never an update, whatever ancestry says.
+        assert!(!decide_update_available(false, None));
+        assert!(!decide_update_available(false, Some(false)));
+    }
+
+    /// Build a throwaway git repo and exercise the real `git` calls. Layout:
+    ///
+    /// ```text
+    ///   A ─ B(tag v0.4.24) ─ C(HEAD/build commit)      on main
+    ///         └─ D(tag v0.9.9)                          on a side branch
+    /// ```
+    ///
+    /// So v0.4.24 (B) IS an ancestor of the build commit C; v0.9.9 (D) is NOT.
+    #[test]
+    fn ancestry_distinguishes_already_contained_from_genuinely_newer() {
+        let dir = std::env::temp_dir().join(format!("supermux-ancestry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git runs");
+            assert!(ok.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&ok.stderr));
+            String::from_utf8_lossy(&ok.stdout).trim().to_string()
+        };
+
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.invalid"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "A"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "B"]);
+        git(&["tag", "v0.4.24"]); // points at B
+        git(&["commit", "-q", "--allow-empty", "-m", "C"]);
+        let build_sha = git(&["rev-parse", "HEAD"]); // C
+
+        // Side branch off B with its own (higher) tag, not in C's history.
+        git(&["checkout", "-q", "-b", "side", "v0.4.24"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "D"]);
+        git(&["tag", "v0.9.9"]); // points at D
+        git(&["checkout", "-q", "main"]);
+
+        // v0.4.24's commit (B) is already in the build commit (C) → contained.
+        assert_eq!(
+            running_binary_contains_release(&dir, "v0.4.24", &build_sha),
+            Some(true),
+        );
+        // v0.9.9's commit (D) is NOT in C's history → a genuine update.
+        assert_eq!(
+            running_binary_contains_release(&dir, "v0.9.9", &build_sha),
+            Some(false),
+        );
+        // A tag the clone has never heard of → undeterminable, fall back.
+        assert_eq!(
+            running_binary_contains_release(&dir, "v1.2.3", &build_sha),
+            None,
+        );
+        // A dev build can't be reasoned about by ancestry.
+        assert_eq!(running_binary_contains_release(&dir, "v0.4.24", "dev"), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

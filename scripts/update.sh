@@ -47,7 +47,12 @@ die() {
 
 # ── 1. fetch + safety checks ────────────────────────────────────────────────
 step fetching "Fetching the latest changes from GitHub …"
-git fetch --quiet origin || die "git fetch failed"
+# `--tags --force` so release tags cut on commits we already have come in too:
+# a plain fetch only auto-follows tags pointing at newly downloaded commits, so
+# without this the rebuilt binary's `git describe` version could anchor to a
+# stale tag (see deploy-self.sh §1b). deploy-self.sh re-fetches tags as well;
+# doing it here keeps the standalone `bash scripts/update.sh` path correct too.
+git fetch --quiet --tags --force origin || die "git fetch failed"
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [ "$BRANCH" = "main" ] || die "Your supermux folder must be on branch 'main' (currently '$BRANCH'). Run 'git checkout main' to switch."

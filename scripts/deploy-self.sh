@@ -92,6 +92,22 @@ if [ "${SUPERMUX_SELF_NO_PULL:-0}" != "1" ]; then
   fi
 fi
 
+# ── 1b. fetch release tags so build.rs's `git describe` anchors honestly ──────
+# `git pull`/`git fetch <remote>` only auto-follow tags that point at NEWLY
+# downloaded commits. A release tag cut on a commit this clone ALREADY has (the
+# common "deploy from main, tag the same commit a minute later" case) is never
+# pulled in by the step above — so `git describe --tags` in build.rs would
+# anchor to the previous tag and bake a stale version (e.g. v0.4.23-27-g… when
+# the build actually IS v0.4.24). An explicit `--tags --force` closes that gap
+# regardless of SUPERMUX_SELF_NO_PULL (the in-UI path sets it: update.sh already
+# fast-forwarded, but its plain fetch has the same auto-follow blind spot). Best
+# effort: a fetch failure must not abort a deploy that can build from local refs.
+if git remote get-url origin >/dev/null 2>&1; then
+  log "git fetch --tags --force origin (so the build's version string is correct)"
+  git fetch --tags --force origin 2>&1 | sed 's/^/[deploy-self]   /' \
+    || log "tag fetch failed (continuing; the version string may anchor to an older tag)"
+fi
+
 # ── 2. write the deploy request (zero privilege) → triggers the root runner ──
 # The root-side supermux-deploy.path unit watches $REQ_DIR/request; the mv below
 # (a rename) fires PathChanged and starts the root oneshot that builds + installs
