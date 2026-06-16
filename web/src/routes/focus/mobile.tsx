@@ -225,10 +225,14 @@ export function MobileFocus() {
       const dist = Math.hypot(e.clientX - cand.x, e.clientY - cand.y)
       const elapsed = Date.now() - cand.t
       const isTap = dist < TAP_SLOP_PX && elapsed < TAP_MAX_MS
-      // A genuine tap = "I want to type" → focus xterm so iOS raises the keyboard
+      // A genuine tap on a URL OPENS it (PWA-safely) and must NOT summon the
+      // keyboard — that reflow is exactly what fought the link open before. Any
+      // other tap = "I want to type" → focus xterm so iOS raises the keyboard
       // INSIDE this user gesture. A swipe just scrolled the scrollback — do
       // nothing (no keyboard). Stopped sessions never focus.
-      if (isTap && current.status !== 'stopped') focusTerm()
+      if (isTap && current.status !== 'stopped') {
+        if (!termRef.current?.tryOpenLinkAt(e.clientX, e.clientY)) focusTerm()
+      }
     },
     [current.status, focusTerm],
   )

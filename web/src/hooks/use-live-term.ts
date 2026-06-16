@@ -26,6 +26,7 @@ import { authToken, wsUrl } from '@/env'
 import { claim as claimPrewarm } from '@/hooks/peek-prewarm-store'
 import { disableXtermMouseTracking } from '@/lib/disable-xterm-mouse'
 import { attachAndroidImeBridge, isAndroid } from '@/lib/android-ime'
+import { LINK_URL_REGEX, openExternal, findLinkAt } from '@/lib/terminal-links'
 import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
@@ -89,6 +90,12 @@ export interface UseLiveTermResult {
    *  keyboard" affordance / tap-away). No-op on desktop where there is no
    *  on-screen keyboard to dismiss. */
   blur(): void
+  /** If the viewport point (client px) sits on a URL, open it (PWA-safely —
+   *  the addon's window.open silently fails in the installed iOS PWA) and
+   *  return true. Returns false when there's no link there, so the mobile tap
+   *  handler can fall back to focusing the terminal instead of summoning the
+   *  keyboard. The desktop hover-click path opens the same way via the addon. */
+  tryOpenLinkAt(clientX: number, clientY: number): boolean
   /** True when the user has scrolled the viewport up from the live bottom by
    *  more than a few rows — drives the in-terminal "jump to bottom" button.
    *  False while pinned to the bottom (the normal follow-output state). */
@@ -554,6 +561,22 @@ export function useLiveTerm(
     if (active instanceof HTMLElement) active.blur()
   }, [])
 
+  /** Open the URL under a viewport point (PWA-safely) and report whether it hit
+   *  a link — see lib/terminal-links. The mobile tap handler uses the boolean to
+   *  decide between "open the link" and "focus the terminal" (the latter summons
+   *  the soft keyboard, whose reflow used to fight the link open). */
+  const tryOpenLinkAt = React.useCallback(
+    (clientX: number, clientY: number): boolean => {
+      const term = termRef.current
+      if (!term) return false
+      const uri = findLinkAt(term, clientX, clientY)
+      if (!uri) return false
+      openExternal(uri)
+      return true
+    },
+    [],
+  )
+
   /** SD-2: pin the viewport back to the live bottom and resume following output.
    *  The button's onClick. We flip `scrolledUp` off eagerly (the `onScroll` the
    *  scroll triggers would do it too, but eagerly hides the button on the same
@@ -631,7 +654,15 @@ export function useLiveTerm(
     disableXtermMouseTracking(term)
     const fit = new FitAddon()
     term.loadAddon(fit)
-    term.loadAddon(new WebLinksAddon())
+    // Custom handler (not the default `window.open()`, which an installed iOS
+    // PWA silently blocks) + the shared URL regex so this desktop hover-click
+    // path and the mobile tap path (`tryOpenLinkAt` → findLinkAt) open the
+    // exact same spans the exact same way. See lib/terminal-links.ts.
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => openExternal(uri), {
+        urlRegex: LINK_URL_REGEX,
+      }),
+    )
     term.open(container)
     termRef.current = term
     fitRef.current = fit
@@ -1806,6 +1837,7 @@ export function useLiveTerm(
     retry,
     focus,
     blur,
+    tryOpenLinkAt,
     scrolledUp,
     scrollToBottom,
   }
