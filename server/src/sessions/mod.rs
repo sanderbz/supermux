@@ -516,6 +516,14 @@ pub struct CreateInput {
     /// resolver in `pty.rs` / `lifecycle.rs` actually sees a non-NULL row.
     #[serde(default)]
     pub host_id: Option<i64>,
+    /// Boot Claude in bypass-permissions mode (`--permission-mode
+    /// bypassPermissions`). A typed boolean — the server builds the trusted flag
+    /// string, so the web never puts raw text on the `claude` command line
+    /// (`flags` is interpolated unquoted into the launch line). Composes with the
+    /// runtime Shift+Tab mode toggle (same `BYPASS_FLAG`), so a session created
+    /// this way reads as `bypass` and the toggle round-trips.
+    #[serde(default)]
+    pub bypass_permissions: Option<bool>,
 }
 
 pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView, AppError> {
@@ -549,6 +557,16 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         .map(|d| d.trim().to_string())
         .filter(|d| !d.is_empty())
         .unwrap_or_else(|| name.clone());
+    // Build the per-session launch flags. The web sends a typed `bypass_permissions`
+    // boolean (never raw flags — `flags` is interpolated unquoted into the launch
+    // line); the trusted `BYPASS_FLAG` is appended here so the session boots in
+    // bypass mode and the runtime mode toggle round-trips on it.
+    let mut flags = input.flags.unwrap_or_default();
+    if input.bypass_permissions.unwrap_or(false) && !flags.contains(lifecycle::BYPASS_FLAG) {
+        flags = format!("{flags} {}", lifecycle::BYPASS_FLAG)
+            .trim()
+            .to_string();
+    }
     let new = NewSession {
         name: name.clone(),
         display_name,
@@ -556,7 +574,7 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         desc: input.desc.unwrap_or_default(),
         provider,
         creator: input.creator.unwrap_or_default(),
-        flags: input.flags.unwrap_or_default(),
+        flags,
         tags: serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()),
         branch: input.branch.unwrap_or_default(),
         mcp: input.mcp.unwrap_or_default(),

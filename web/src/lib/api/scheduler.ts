@@ -46,6 +46,9 @@ export interface ScheduleRow {
   boot_dir: string
   boot_provider: string
   boot_worktree: number
+  /** Boot bypass-permissions (boot kind only): launch Claude with
+   *  `--permission-mode bypassPermissions`. 0/1. */
+  bypass_permissions: number
   sched_type: string
   recurrence: string | null
   run_at: string | null
@@ -87,6 +90,8 @@ export interface ScheduleCreateInput {
   boot_dir?: string
   boot_provider?: string
   boot_worktree?: boolean
+  /** boot only: launch Claude in bypass-permissions mode. */
+  bypass_permissions?: boolean
   watch?: boolean
   watch_timeout?: number
   done_pattern?: string

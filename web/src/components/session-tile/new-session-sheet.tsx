@@ -1,79 +1,27 @@
 import * as React from 'react'
 import { motion } from 'framer-motion'
-import { FileText, ShieldCheck, Loader2, Sparkles } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { sessionsApi, SessionError, type NewSession } from '@/lib/api'
+import { sessionsApi, SessionError } from '@/lib/api'
 import { HostPicker } from '@/components/host-picker'
 import {
   WherePicker,
   defaultWhereSelection,
   type NewWhereSelection,
+  type WhereSelection,
 } from './where-picker'
-
-// ── Quick-start preset boot configs ─────────────────────────────────────────
-// Each preset prefills the whole form: a name stem, a provider, and the initial
-// prompt (`command`) that boots the agent into the right role. The user can
-// still edit anything in the Advanced tab before submitting.
-
-interface Preset {
-  id: string
-  label: string
-  hint: string
-  icon: React.ComponentType<{ className?: string }>
-  provider: NewSession['provider']
-  /** Initial prompt sent to the agent after boot. Empty = a blank session. */
-  command: string
-  nameStem: string
-}
-
-const PRESETS: Preset[] = [
-  {
-    id: 'blank-claude',
-    label: 'Blank Claude',
-    hint: 'A fresh agent in this directory.',
-    icon: Sparkles,
-    provider: 'claude',
-    command: '',
-    nameStem: 'claude',
-  },
-  {
-    id: 'code-reviewer',
-    label: 'Code reviewer',
-    hint: 'Reviews the working tree and flags issues.',
-    icon: ShieldCheck,
-    provider: 'claude',
-    command:
-      'Review the current working tree. Summarise risky changes, missing tests, and anything I should fix before I ship.',
-    nameStem: 'reviewer',
-  },
-  {
-    id: 'doc-writer',
-    label: 'Doc writer',
-    hint: 'Drafts and updates docs for this repo.',
-    icon: FileText,
-    provider: 'claude',
-    command:
-      'Read this repository and draft or update its documentation. Start with a short summary of what you find, then propose what to write.',
-    nameStem: 'docs',
-  },
-]
-
-function suggestName(stem: string): string {
-  // Short, URL/tmux-safe suffix so two presets don't collide.
-  const suffix = Math.random().toString(36).slice(2, 6)
-  return `${stem}-${suffix}`
-}
+import { createProjectFolder } from '@/lib/create-project-folder'
+import { StartTeamForm } from './start-team-sheet'
 
 /** Derive the immutable slug from the free-typed display name (migration 0019):
  *  whitespace → `-`, drop anything outside the server's `valid_name` charset
  *  (`[A-Za-z0-9_.-]`), bound to 100. The user types a human label; this is the
- *  URL/tmux/identity key created from it. */
+ *  URL/tmux/identity key — and the name of the folder we auto-create for it. */
 function toSlug(raw: string): string {
   return raw
     .trim()
@@ -82,76 +30,28 @@ function toSlug(raw: string): string {
     .slice(0, 100)
 }
 
-interface FormState {
-  name: string
-  /** The "Where" selection. Replaced the old `dir: string`
-   *  with the richer WherePicker selection so the user sees the Projects list
-   *  (and the "Create a new folder" affordance) up front — same picker the
-   *  Start-a-team sheet uses, narrowed to `'new'` picks only via
-   *  `showSessions={false}` (no take-over for a brand-new session). The dir
-   *  string is read out of `where.dir` at submit time. */
-  where: NewWhereSelection
-  provider: NonNullable<NewSession['provider']>
-  command: string
-  worktree: boolean
-  /** Remote host. `null` = LOCAL, the default for every existing
-   *  session and the most common pick — the picker collapses to just "Local"
-   *  when the user has no remote hosts registered. */
-  hostId: number | null
-}
-
-/** Initial form state. The "where" defaults to the Projects root (or the
- *  server's home dir when SUPERMUX_PROJECT_DIRS is unset) so the picker
- *  opens on the Projects list immediately — same default Start-a-team uses
- *  via `defaultWhereSelection()`. */
-const EMPTY_FORM = (defaultDir: string | undefined): FormState => ({
-  name: '',
-  where: defaultDir
-    ? { kind: 'new', dir: defaultDir }
-    : defaultWhereSelection(),
-  provider: 'claude',
-  command: '',
-  worktree: false,
-  hostId: null,
-})
-
 export interface NewSessionSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Pre-filled working directory (pre-filled with cwd + provider=
-   *  claude). When omitted it falls back to the server's home directory
-   *  (`window._SUPERMUX_HOME_DIR`) so a session can be created in one click. */
+  /** Pre-filled working directory. When omitted the Claude side auto-creates a
+   *  folder named after the session; the Team side falls back to the server
+   *  home directory. */
   defaultDir?: string
-  /** Called after a successful create with the new session's name so the route
-   *  can navigate to `/focus/{name}`. */
+  /** Called after a successful create/start with the new session's (or team
+   *  lead's) name so the route can navigate to `/focus/{name}`. */
   onCreated: (name: string) => void
 }
 
-/** The boot affordance. Two tabs: "Quick start" (3 preset boot configs)
- *  and "Advanced" (full fields). On submit it POSTs `/api/sessions` + boots,
- *  then hands the new name to the route to navigate into focus.
- *
- *  The form lives in an inner component remounted (via `key`) each time the
- *  sheet opens, so its state initializes fresh from `defaultDir` — no reset
- *  effect, no synchronous setState-in-effect. */
+/** The single boot panel. A `Claude | Team (beta)` toggle picks the body:
+ *  Claude = one streamlined agent; Team = a lead that spins up teammates. The
+ *  "+" opens this directly — no intermediate menu. The inner panel only mounts
+ *  while the sheet is open, so its state starts fresh each time. */
 export function NewSessionSheet({
   open,
   onOpenChange,
   defaultDir,
   onCreated,
 }: NewSessionSheetProps) {
-  // The working dir is now picked via <WherePicker> rather
-  // than a single free-text field, so the initial value is the picker's
-  // structured default: `projectsDir()` → Projects list opens immediately;
-  // falls back to homeDir() when SUPERMUX_PROJECT_DIRS is unset; an explicit
-  // `defaultDir` override (passed in from the caller) wins. The picker still
-  // accepts free typing too, so a power user can ignore the list entirely.
-  // The shared iOS bottom-sheet (ResponsiveSheet): Vaul drag-detent sheet on
-  // touch — grab-handle + swipe-down/backdrop-tap dismiss, NO ✕ — and the
-  // right-side dialog on desktop, matching every other sheet in the app
-  // (claude-tools, board card editor, scheduler). The inner form only mounts
-  // while the sheet is open, so it starts fresh from `defaultDir` each time —
-  // no reset effect needed.
   return (
     <ResponsiveSheet
       open={open}
@@ -160,7 +60,7 @@ export function NewSessionSheet({
       description="Boot an agent in tmux. It survives restarts."
     >
       {open && (
-        <NewSessionForm
+        <NewSessionPanel
           defaultDir={defaultDir}
           onCancel={() => onOpenChange(false)}
           onCreated={(name) => {
@@ -173,36 +73,130 @@ export function NewSessionSheet({
   )
 }
 
-interface NewSessionFormProps {
+type Kind = 'claude' | 'team'
+
+function NewSessionPanel({
+  defaultDir,
+  onCancel,
+  onCreated,
+}: {
   defaultDir: string | undefined
   onCancel: () => void
   onCreated: (name: string) => void
+}) {
+  const [kind, setKind] = React.useState<Kind>('claude')
+  // The Team body reuses <StartTeamForm>, which lifts its directory selection
+  // (so a picked SESSION row morphs it into a take-over). We own that state here.
+  const [teamWhere, setTeamWhere] = React.useState<WhereSelection>(() =>
+    defaultDir ? { kind: 'new', dir: defaultDir } : defaultWhereSelection(),
+  )
+
+  return (
+    <div className="flex flex-col">
+      <div className="px-6 pt-4">
+        <KindToggle value={kind} onChange={setKind} />
+      </div>
+
+      {kind === 'claude' ? (
+        <ClaudeForm
+          defaultDir={defaultDir}
+          onCancel={onCancel}
+          onCreated={onCreated}
+        />
+      ) : (
+        <StartTeamForm
+          mode="create"
+          where={teamWhere}
+          onWhereChange={setTeamWhere}
+          onCancel={onCancel}
+          onStarted={onCreated}
+        />
+      )}
+    </div>
+  )
 }
 
-function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps) {
-  const [tab, setTab] = React.useState('quick')
-  const [form, setForm] = React.useState<FormState>(() => EMPTY_FORM(defaultDir))
+// ── Claude | Team (beta) segmented toggle ────────────────────────────────────
+// Mirrors the overview ViewToggle: a muted pill rail with an animated `bg-card`
+// thumb (shared layoutId) sliding under the active label. No `transition: all`.
+function KindToggle({
+  value,
+  onChange,
+}: {
+  value: Kind
+  onChange: (k: Kind) => void
+}) {
+  const items: { id: Kind; label: string; beta?: boolean }[] = [
+    { id: 'claude', label: 'Claude' },
+    { id: 'team', label: 'Team', beta: true },
+  ]
+  return (
+    <div
+      role="group"
+      aria-label="Session kind"
+      className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
+    >
+      {items.map((it) => {
+        const active = value === it.id
+        return (
+          <button
+            key={it.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(it.id)}
+            className={cn(
+              'relative flex h-9 items-center justify-center gap-1.5 rounded-md text-sm font-medium transition-colors',
+              active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {active && (
+              <motion.span
+                layoutId="new-session-kind-thumb"
+                transition={springs.snappy}
+                className="absolute inset-0 rounded-md bg-card shadow-sm"
+              />
+            )}
+            <span className="relative">{it.label}</span>
+            {it.beta && (
+              <span className="relative rounded bg-primary/15 px-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                Beta
+              </span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Claude side — one streamlined agent ──────────────────────────────────────
+function ClaudeForm({
+  defaultDir,
+  onCancel,
+  onCreated,
+}: {
+  defaultDir: string | undefined
+  onCancel: () => void
+  onCreated: (name: string) => void
+}) {
+  const [name, setName] = React.useState('')
+  // Default flow: a name auto-creates a folder named after it. The user can
+  // opt into picking their own directory via the link — then we show the
+  // WherePicker and use its selection instead.
+  const [ownFolder, setOwnFolder] = React.useState(false)
+  const [where, setWhere] = React.useState<NewWhereSelection>(() =>
+    defaultDir ? { kind: 'new', dir: defaultDir } : defaultWhereSelection(),
+  )
+  const [hostId, setHostId] = React.useState<number | null>(null)
+  const [worktree, setWorktree] = React.useState(false)
+  const [bypassPermissions, setBypassPermissions] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setForm((f) => ({ ...f, [key]: value }))
-
-  const applyPreset = (preset: Preset) => {
-    setForm((f) => ({
-      ...f,
-      name: f.name || suggestName(preset.nameStem),
-      provider: preset.provider ?? 'claude',
-      command: preset.command,
-    }))
-    setTab('advanced')
-  }
-
-  // A blank directory must NOT block creation: the server defaults an empty/
-  // omitted `dir` to the home directory. Only the name is truly required.
-  // The typed text is the display LABEL; the slug is derived from it. Require a
-  // non-empty slug (a label of only spaces/emoji slugifies to "" → not valid).
-  const slug = toSlug(form.name)
+  // The typed text is the display LABEL; the slug is derived from it and is the
+  // immutable id (URL / tmux / hooks) AND the auto-folder name. A label of only
+  // spaces/emoji slugifies to "" → not valid.
+  const slug = toSlug(name)
   const canSubmit = slug.length > 0
 
   const submit = async (e?: React.FormEvent) => {
@@ -211,43 +205,51 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
     setSubmitting(true)
     setError(null)
     try {
-      // The WherePicker is locked to 'new' picks via `showSessions={false}` so
-      // `where.kind` is always 'new' here. We read the path off `.dir` —
-      // whether the user picked a Project row, typed a path, or used the
-      // "Create a new folder" flow (the picker has already materialised the
-      // folder server-side before advancing). Trim is the same normalisation
-      // the old DirectoryField path did. Empty string is OK — the server
-      // defaults to the home directory.
+      // Resolve the working directory. Default: auto-create a folder named
+      // after the slug under the projects root (same proven PUT /api/file path
+      // the WherePicker's "Create a new folder" uses). Opt-in: the directory
+      // the user picked in the revealed WherePicker.
+      let dir: string
+      if (ownFolder) {
+        dir = where.dir.trim()
+      } else {
+        const folder = await createProjectFolder(slug)
+        if (!folder) {
+          setError('Could not create the folder — pick your own folder instead.')
+          setOwnFolder(true)
+          setSubmitting(false)
+          return
+        }
+        dir = folder
+      }
+
       const created = await sessionsApi.create({
         name: slug,
-        display_name: form.name.trim(),
-        dir: form.where.dir.trim(),
-        provider: form.provider,
-        worktree: form.worktree,
-        command: form.command.trim() || undefined,
-        // Omit when LOCAL so the wire stays clean for the historical
-        // path (server treats missing/null both as LOCAL — no host_id column
-        // update). Only sent when the user picked a remote host.
-        host_id: form.hostId ?? undefined,
+        display_name: name.trim(),
+        dir,
+        provider: 'claude',
+        worktree,
+        // Omit when LOCAL so the wire stays clean (server treats missing/null
+        // both as LOCAL). Only sent for a registered remote host.
+        host_id: hostId ?? undefined,
+        // Boot in bypass-permissions mode (the server appends the trusted flag).
+        bypass_permissions: bypassPermissions || undefined,
       })
-      const name = created?.name ?? slug
-      // Boot tmux + send the initial prompt. Non-fatal — the row exists either
-      // way; focus can retry the start.
+      const sessionName = created?.name ?? slug
+      // Boot tmux. Non-fatal — the row exists either way; focus can retry.
       try {
-        await sessionsApi.start(name, form.command.trim() || undefined)
+        await sessionsApi.start(sessionName, undefined)
       } catch {
         /* ignore — session created, start retryable from focus */
       }
-      onCreated(name)
+      onCreated(sessionName)
     } catch (err) {
       if (err instanceof SessionError && err.status === 409) {
         setError(`The id “${slug}” is taken — tweak the name and try again.`)
       } else if (err instanceof SessionError && err.status === 0) {
         setError('Can’t reach supermux-server. Check it’s running, then try again.')
       } else {
-        setError(
-          err instanceof Error ? err.message : 'Could not create the session.',
-        )
+        setError(err instanceof Error ? err.message : 'Could not create the session.')
       }
     } finally {
       setSubmitting(false)
@@ -255,178 +257,127 @@ function NewSessionForm({ defaultDir, onCancel, onCreated }: NewSessionFormProps
   }
 
   return (
-    <Tabs value={tab} onValueChange={setTab} className="flex-1">
-          <div className="px-6 pt-4">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="quick">Quick start</TabsTrigger>
-              <TabsTrigger value="advanced">Advanced</TabsTrigger>
-            </TabsList>
-          </div>
+    <form onSubmit={submit} className="flex flex-col gap-4 px-6 pb-6 pt-4">
+      <Field label="Name" htmlFor="ns-name">
+        <Input
+          id="ns-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="my-agent"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {!ownFolder && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {slug ? (
+              <>
+                Creates a new folder <code className="font-mono">{slug}</code>.{' '}
+              </>
+            ) : (
+              <>Creates a new folder named after the session. </>
+            )}
+            <button
+              type="button"
+              onClick={() => setOwnFolder(true)}
+              className="text-primary hover:underline"
+            >
+              choose your own folder →
+            </button>
+          </p>
+        )}
+      </Field>
 
-          {/* ── Quick start: 3 preset boot configs ──────────────────────── */}
-          <TabsContent value="quick" className="mt-0 px-6 pb-6 pt-4">
-            <div className="flex flex-col gap-2">
-              {PRESETS.map((preset) => (
-                <motion.button
-                  key={preset.id}
-                  type="button"
-                  whileTap={{ scale: 0.98 }}
-                  transition={springs.buttonPress}
-                  onClick={() => applyPreset(preset)}
-                  className="flex min-h-14 items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
-                    <preset.icon />
-                  </span>
-                  <span className="flex min-w-0 flex-col">
-                    <span className="text-sm font-medium">{preset.label}</span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {preset.hint}
-                    </span>
-                  </span>
-                </motion.button>
-              ))}
-            </div>
-            <p className="mt-4 text-xs text-muted-foreground">
-              Pick one to prefill the form, then review the directory in
-              Advanced.
-            </p>
-          </TabsContent>
+      {/* Own-folder path: the same Projects list + "Create a new folder"
+          picker, narrowed to 'new' picks (no session take-over for a brand-new
+          session). gitHint="info" drops the amber non-git warning — a normal
+          session can run anywhere. */}
+      {ownFolder && (
+        <Field label="Folder" htmlFor="ns-where">
+          <WherePicker
+            id="ns-where"
+            value={where}
+            onChange={setWhere}
+            showSessions={false}
+            gitHint="info"
+          />
+        </Field>
+      )}
 
-          {/* ── Advanced: full field set ────────────────────────────────── */}
-          <TabsContent value="advanced" className="mt-0 px-6 pb-6 pt-4">
-            <form onSubmit={submit} className="flex flex-col gap-4">
-              <Field label="Name" htmlFor="ns-name">
-                <Input
-                  id="ns-name"
-                  value={form.name}
-                  onChange={(e) => set('name', e.target.value)}
-                  placeholder="My agent"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                {/* The slug is the immutable id derived from the name (URL /
-                    tmux / hooks). Shown only when it differs from what was typed
-                    so the user understands the “My agent → my-agent” mapping. */}
-                {slug && slug !== form.name.trim() && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    id <code className="font-mono">{slug}</code>
-                  </p>
-                )}
-              </Field>
+      <Field
+        label="Run on"
+        htmlFor="ns-host"
+        hint="Pick a remote host you registered in Hosts, or stay Local."
+      >
+        <HostPicker
+          id="ns-host"
+          value={hostId}
+          onChange={setHostId}
+          disabled={submitting}
+        />
+      </Field>
 
-              {/* The Projects list + "Use another folder"
-                  + "Create a new folder" affordances from Start-a-team —
-                  narrowed for the New-Session context. `showSessions={false}`
-                  suppresses the take-over section (a brand-new session can't
-                  take over another) AND narrows the value/onChange types so
-                  this consumer can never end up with a `'session'` selection.
-                  `gitHint="info"` drops the amber non-git WARNING banner — a
-                  normal session can run anywhere, the warning would just be
-                  noise (Start-a-team keeps `gitHint="warn"` because teammates
-                  each need their own git worktree). The per-row `git`/`no git`
-                  chip in the Projects list is kept either way. */}
-              <WherePicker
-                id="ns-where"
-                value={form.where}
-                onChange={(value) => set('where', value)}
-                showSessions={false}
-                gitHint="info"
-              />
+      <CheckCard
+        checked={worktree}
+        onChange={setWorktree}
+        title="Isolated worktree"
+        desc="Run in a fresh git worktree so it can’t touch your tree."
+      />
 
-              <fieldset className="flex flex-col gap-2">
-                <legend className="mb-1 text-sm font-medium">Provider</legend>
-                <div className="flex gap-2">
-                  {(['claude', 'shell'] as const).map((p) => (
-                    <button
-                      key={p}
-                      type="button"
-                      onClick={() => set('provider', p)}
-                      aria-pressed={form.provider === p}
-                      className={cn(
-                        'min-h-11 flex-1 rounded-lg border px-3 text-sm capitalize transition-colors',
-                        form.provider === p
-                          ? 'border-primary bg-primary/10 text-foreground'
-                          : 'border-border text-muted-foreground hover:bg-accent/40',
-                      )}
-                    >
-                      {p}
-                    </button>
-                  ))}
-                </div>
-              </fieldset>
+      <CheckCard
+        checked={bypassPermissions}
+        onChange={setBypassPermissions}
+        title="Bypass permissions"
+        desc="Claude runs tools without asking. Use only in directories you trust."
+      />
 
-              {/* Run-on picker. Defaults to "Local" (the historical
-                  behaviour); registered remote hosts surface as additional
-                  options. The picker shows a muted "No remote hosts yet"
-                  hint when the list is empty, so it stays calm for the
-                  majority of users with zero remote hosts. */}
-              <Field
-                label="Run on"
-                htmlFor="ns-host"
-                hint="Pick a remote host you registered in Hosts, or stay Local."
-              >
-                <HostPicker
-                  id="ns-host"
-                  value={form.hostId}
-                  onChange={(id) => set('hostId', id)}
-                  disabled={submitting}
-                />
-              </Field>
+      {error && (
+        <p
+          role="alert"
+          className="rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-sm text-status-error"
+        >
+          {error}
+        </p>
+      )}
 
-              {form.command && (
-                <Field label="Initial prompt" htmlFor="ns-cmd">
-                  <textarea
-                    id="ns-cmd"
-                    value={form.command}
-                    onChange={(e) => set('command', e.target.value)}
-                    rows={3}
-                    className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-              )}
+      <div className="flex gap-2 pt-2">
+        <Button type="button" variant="ghost" className="flex-1" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" className="flex-1" disabled={!canSubmit || submitting}>
+          {submitting && <Loader2 className="animate-spin" />}
+          {submitting ? 'Booting…' : 'Start'}
+        </Button>
+      </div>
+    </form>
+  )
+}
 
-              <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border border-border px-3">
-                <input
-                  type="checkbox"
-                  checked={form.worktree}
-                  onChange={(e) => set('worktree', e.target.checked)}
-                  className="size-4 accent-[hsl(var(--primary))]"
-                />
-                <span className="flex flex-col">
-                  <span className="text-sm font-medium">Isolated worktree</span>
-                  <span className="text-xs text-muted-foreground">
-                    Run in a fresh git worktree so it can&rsquo;t touch your tree.
-                  </span>
-                </span>
-              </label>
-
-              {error && (
-                <p
-                  role="alert"
-                  className="rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-sm text-status-error"
-                >
-                  {error}
-                </p>
-              )}
-
-              <div className="flex gap-2 pt-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="flex-1"
-                  onClick={onCancel}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" className="flex-1" disabled={!canSubmit || submitting}>
-                  {submitting && <Loader2 className="animate-spin" />}
-                  {submitting ? 'Booting…' : 'Boot agent'}
-                </Button>
-              </div>
-            </form>
-          </TabsContent>
-    </Tabs>
+/** A bordered checkbox row with a title + muted description — the Claude form's
+ *  "Isolated worktree" and "Bypass permissions" options share this shape. */
+function CheckCard({
+  checked,
+  onChange,
+  title,
+  desc,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  title: string
+  desc: string
+}) {
+  return (
+    <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border border-border px-3">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="size-4 accent-[hsl(var(--primary))]"
+      />
+      <span className="flex flex-col">
+        <span className="text-sm font-medium">{title}</span>
+        <span className="text-xs text-muted-foreground">{desc}</span>
+      </span>
+    </label>
   )
 }
 

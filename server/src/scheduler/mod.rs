@@ -235,6 +235,11 @@ pub struct CreateScheduleInput {
     /// tier; idle detection stays the fallback.
     #[serde(default)]
     pub confirm_finish: Option<bool>,
+    /// Boot bypass-permissions (boot kind only): launch the booted Claude with
+    /// `--permission-mode bypassPermissions` so it runs tools without asking. A
+    /// typed boolean — the runner builds the trusted flag, never raw text.
+    #[serde(default)]
+    pub bypass_permissions: Option<bool>,
     /// "test fire": create the schedule, run it ONCE immediately, return the
     /// run result, then delete it — so the user can prove a job works before
     /// committing it. Never persists a live schedule.
@@ -284,6 +289,9 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
     // exit; boot spawns a runtime-generated session the footer can't scope to).
     // Clamp it off for other kinds so the column never lies.
     let confirm_finish = kind == "tmux" && input.confirm_finish.unwrap_or(false);
+    // Bypass-permissions only applies to a `boot` job (the only kind that
+    // launches a fresh Claude). Clamp off for other kinds so the column never lies.
+    let bypass_permissions = kind == "boot" && input.bypass_permissions.unwrap_or(false);
 
     // Determine the cadence expression.
     let expr = input
@@ -319,6 +327,7 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
         done_pattern: input.done_pattern,
         done_action,
         confirm_finish: confirm_finish as i64,
+        bypass_permissions: bypass_permissions as i64,
         created: ts,
         updated: ts,
         deleted: None,

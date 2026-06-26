@@ -28,14 +28,13 @@ import {
   type LayoutItem,
 } from '@/lib/overview-layout'
 import {
-  readFocusStripHideStopped,
   readFocusStripViewMode,
   readStripGroupCollapsed,
-  writeFocusStripHideStopped,
   writeFocusStripViewMode,
   writeStripGroupCollapsed,
   type FocusStripViewMode,
 } from '@/lib/focus-strip-layout'
+import { useUI } from '@/stores/ui-store'
 import type { Team } from '@/lib/api/teams'
 import type { TileSession } from '@/components/session-tile/types'
 
@@ -87,14 +86,13 @@ export function useGroupedStrip(
     writeFocusStripViewMode(next)
   }, [])
 
-  // ── Hide stopped (global) ──────────────────────────────────────────────
-  const [hideStopped, setHideStoppedState] = React.useState<boolean>(
-    () => readFocusStripHideStopped(),
-  )
-  const setHideStopped = React.useCallback((next: boolean) => {
-    setHideStoppedState(next)
-    writeFocusStripHideStopped(next)
-  }, [])
+  // ── Hide stopped (global, shared with the overview) ─────────────────────
+  // ONE value in the ui-store backs the focus strip's Eye toggle AND the
+  // overview's hide-stopped — toggle it on either surface, it applies to both.
+  // (The pre-redesign per-strip localStorage flag is migrated once at boot in
+  // the ui-store's onRehydrateStorage, so there's nothing to do here.)
+  const hideStopped = useUI((s) => s.hideStopped)
+  const setHideStopped = useUI((s) => s.setHideStopped)
 
   // ── Per-group sort writes (as-overview only) ───────────────────────────
   // A tick that bumps each time we write a per-group sort row, so the

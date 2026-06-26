@@ -1071,7 +1071,7 @@ pub async fn wake(state: &AppState, name: &str) -> Result<StartResult, AppError>
 /// (and leaving it strips the flag and resumes). The `--permission-mode <value>`
 /// form is the canonical, documented way to set the launch mode and composes with
 /// `--resume <id>` so the conversation carries over.
-const BYPASS_FLAG: &str = "--permission-mode bypassPermissions";
+pub(crate) const BYPASS_FLAG: &str = "--permission-mode bypassPermissions";
 
 /// How many Shift+Tabs to send to advance from `from` to `to` around the runtime
 /// cycle (`Normal → AcceptEdits → Plan → Normal`). Returns `None` for a target

@@ -43,6 +43,7 @@ export function rowToForm(s: ScheduleRow): ScheduleFormValue {
     boot_dir: s.boot_dir,
     boot_provider: s.boot_provider || 'claude',
     boot_worktree: s.boot_worktree === 1,
+    bypass_permissions: s.bypass_permissions === 1,
     notify,
     done_pattern: s.done_pattern ?? '',
     confirm_finish: s.confirm_finish === 1,

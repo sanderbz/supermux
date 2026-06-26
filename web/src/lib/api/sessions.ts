@@ -321,6 +321,10 @@ export interface NewSession {
   worktree?: boolean
   command?: string
   host_id?: number | null
+  /** Boot Claude in bypass-permissions mode (`--permission-mode
+   *  bypassPermissions`) — it runs tools without asking. A typed boolean: the
+   *  server builds the trusted flag, the web never sends raw launch flags. */
+  bypass_permissions?: boolean
 }
 
 /** A failed sessions request; carries the HTTP status so callers can branch on

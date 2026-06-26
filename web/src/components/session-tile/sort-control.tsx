@@ -10,7 +10,7 @@
 // that just shows the current mode glyph, and the popover stays closed until
 // the user pokes it. No badge, no banner, no "DID YOU KNOW?" microcopy.
 
-import { ArrowDownAZ, ArrowUpDown, GripVertical, Sparkles } from 'lucide-react'
+import { ArrowUpDown } from 'lucide-react'
 
 import {
   DropdownMenu,
@@ -20,46 +20,19 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { type SortMode } from '@/lib/overview-layout'
-
-/** Glyph + short label per mode — keyed by `SortMode`. Sentence case. */
-const MODE_META: Record<
-  SortMode,
-  { label: string; hint: string; Icon: typeof Sparkles }
-> = {
-  smart: {
-    label: 'Smart',
-    hint: 'Active and pinned sessions first',
-    Icon: Sparkles,
-  },
-  alpha: {
-    label: 'A–Z',
-    hint: 'Alphabetical by name',
-    Icon: ArrowDownAZ,
-  },
-  custom: {
-    label: 'Custom',
-    hint: 'Drag to reorder, group with section headers',
-    Icon: GripVertical,
-  },
-}
+import { SORT_MODE_META } from '@/lib/sort-modes'
 
 export interface SortControlProps {
   value: SortMode
   onChange: (mode: SortMode) => void
 }
 
-/** Read-only access to the per-mode metadata. The renderer also uses this for
- *  the group header chrome's tooltips so the language is consistent. */
-export function sortLabel(mode: SortMode): string {
-  return MODE_META[mode].label
-}
-
 export function SortControl({ value, onChange }: SortControlProps) {
   // The current-mode icon goes in the trigger so the user sees "what's on"
   // before opening the menu. `ArrowUpDown` (the generic "sort" glyph) appears
   // only in tests + assistive tech — kept for the aria-label fallback.
-  const ActiveIcon = MODE_META[value].Icon
-  const currentLabel = MODE_META[value].label
+  const ActiveIcon = SORT_MODE_META[value].Icon
+  const currentLabel = SORT_MODE_META[value].label
 
   return (
     <DropdownMenu>
@@ -85,8 +58,8 @@ export function SortControl({ value, onChange }: SortControlProps) {
         <TooltipContent side="bottom">Sort</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end" sideOffset={6} className="min-w-44">
-        {(Object.keys(MODE_META) as SortMode[]).map((mode) => {
-          const { Icon, label, hint } = MODE_META[mode]
+        {(Object.keys(SORT_MODE_META) as SortMode[]).map((mode) => {
+          const { Icon, label, hint } = SORT_MODE_META[mode]
           const active = mode === value
           return (
             <DropdownMenuItem

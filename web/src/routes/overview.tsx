@@ -1,20 +1,15 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import {
-  AnimatePresence,
-  LayoutGroup,
-  motion,
-  useReducedMotion,
-} from 'framer-motion'
+import { LayoutGroup, motion, useReducedMotion } from 'framer-motion'
 import {
   Archive,
+  EyeOff,
+  FolderPlus,
   LayoutGrid,
   List,
   Minus,
   Plus,
-  Rows2,
-  Rows3,
   Search,
   TerminalSquare,
   X,
@@ -38,9 +33,11 @@ import {
 } from '@/components/session-tile/jump-index-context'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
-import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
-import { NewActionMenu } from '@/components/session-tile/new-action-menu'
 import { SortControl } from '@/components/session-tile/sort-control'
+import {
+  OverviewDisplayMenu,
+  HideStoppedChip,
+} from '@/components/session-tile/overview-display-menu'
 import { GroupGrid } from '@/components/session-tile/group-grid'
 import { useNewGroupAction } from '@/stores/new-group-store'
 import { EmptyStatePlaceholder } from '@/components/empty-state'
@@ -122,6 +119,8 @@ export function Overview() {
   const { layout, setMode, setLayout } = useOverviewLayout()
   const viewMode = useUI((s) => s.viewMode)
   const setViewMode = useUI((s) => s.setViewMode)
+  const hideStopped = useUI((s) => s.hideStopped)
+  const setHideStopped = useUI((s) => s.setHideStopped)
   const overviewSizeDesktop = useUI((s) => s.overviewSize)
   const setOverviewSizeDesktop = useUI((s) => s.setOverviewSize)
   const overviewSizeMobile = useUI((s) => s.overviewSizeMobile)
@@ -152,7 +151,6 @@ export function Overview() {
   const [rawQuery, setRawQuery] = React.useState('')
   const [query, setQuery] = React.useState('')
   const [sheetOpen, setSheetOpen] = React.useState(false)
-  const [teamSheetOpen, setTeamSheetOpen] = React.useState(false)
 
   useDevMockSeed()
 
@@ -196,8 +194,11 @@ export function Overview() {
 
   // Filter once.
   const filtered = React.useMemo(
-    () => sessions.filter((s) => matches(s, query)),
-    [sessions, query],
+    () =>
+      sessions.filter(
+        (s) => matches(s, query) && (!hideStopped || s.status !== 'stopped'),
+      ),
+    [sessions, query, hideStopped],
   )
 
   // Reconcile the persisted custom order with the LIVE session names.
@@ -411,11 +412,7 @@ export function Overview() {
   const showSkeleton = isLoading && !hasAnyAgent && !isError
 
   const openSheet = () => setSheetOpen(true)
-  const openTeamSheet = () => setTeamSheetOpen(true)
   const onCreated = (name: string) => {
-    navigate(`/focus/${name}`)
-  }
-  const onTeamStarted = (name: string) => {
     navigate(`/focus/${name}`)
   }
 
@@ -433,6 +430,20 @@ export function Overview() {
     if (layout.mode === 'alpha') return nameSort(filtered)
     return filtered
   }, [filtered, layout.mode])
+
+  // The body shows a placeholder (skeleton / unreachable / empty / no-match)
+  // rather than a real grid in these cases. `showGrid` drives the bottom
+  // "New group" affordance so it only appears under an actual grid — never
+  // floating beneath an empty or "no matches" state.
+  const noMatch =
+    (!isCustom && flatSorted.length === 0 && filteredTeams.length === 0) ||
+    (isCustom &&
+      reconciledCustom.filter(
+        (it) => it.type === 'session' && filtered.some((s) => s.name === it.name),
+      ).length === 0 &&
+      filteredTeams.length === 0)
+  const showGrid =
+    hasAnyAgent && !showSkeleton && !(isError && !hasAnyAgent) && !noMatch
 
   // Canonical 1..9 ⌘N slot map for the overview surface. Order:
   //   1. Each team's lead (in `filteredTeams` order) — mirrors the focus
@@ -531,17 +542,36 @@ export function Overview() {
           )}
         </div>
 
-        <ViewToggle value={viewMode} onChange={setViewMode} />
-
-        <SortControl value={layout.mode} onChange={setMode} />
-
-        {viewMode === 'tile' && (
-          <OverviewSizeControl
-            value={overviewSize}
-            onChange={setOverviewSize}
-            max={sizeMax}
-            mobile={isMobile}
+        {/* Display controls. On a coarse pointer the four chips are cramped, so
+            they fold into ONE "Display" sheet (view / sort / size / hide-stopped).
+            Desktop keeps the separate chips and gains an Eye hide-stopped chip. */}
+        {isMobile ? (
+          <OverviewDisplayMenu
+            viewMode={viewMode}
+            onViewMode={setViewMode}
+            sortMode={layout.mode}
+            onSortMode={setMode}
+            size={overviewSize}
+            onSize={setOverviewSize}
+            hideStopped={hideStopped}
+            onHideStopped={setHideStopped}
           />
+        ) : (
+          <>
+            <ViewToggle value={viewMode} onChange={setViewMode} />
+
+            <SortControl value={layout.mode} onChange={setMode} />
+
+            {viewMode === 'tile' && (
+              <OverviewSizeControl
+                value={overviewSize}
+                onChange={setOverviewSize}
+                max={sizeMax}
+              />
+            )}
+
+            <HideStoppedChip value={hideStopped} onChange={setHideStopped} />
+          </>
         )}
 
         <Button
@@ -562,22 +592,20 @@ export function Overview() {
           </span>
         </Button>
 
-        {/* Single primary "+" trigger — consolidates the three previously-
-            separate header CTAs ("New session", "Start a team", "New group")
-            into one iOS-native disclosure menu. Desktop opens a Radix
-            Popover anchored below the trigger; mobile opens a Vaul action
-            sheet from the bottom. See `NewActionMenu` for the full pattern.
-            Both `data-tour="start-team"` and `data-tour="new-action-menu"`
-            land on the same trigger now, so the onboarding tour still points
-            at the right pixel for the team-step. */}
-        <NewActionMenu
-          onNewSession={openSheet}
-          onStartTeam={openTeamSheet}
-          onNewGroup={() => {
-            if (layout.mode !== 'custom') setMode('custom')
-            handleNewGroupAtEnd()
-          }}
-        />
+        {/* The "+" opens the New-session panel DIRECTLY (Claude | Team toggle
+            lives inside it) — no intermediate menu. Group-create moved to the
+            bottom-of-grid affordance (and stays on the `g n` chord + ⌘K). The
+            `data-tour="start-team"` anchor + size/position classes are kept so
+            the onboarding tour still lands on this pixel. */}
+        <Button
+          type="button"
+          aria-label="New session"
+          data-tour="start-team"
+          onClick={openSheet}
+          className="size-9 rounded-md p-0 ml-auto sm:ml-0"
+        >
+          <Plus className="size-4" aria-hidden />
+        </Button>
       </header>
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
@@ -617,20 +645,24 @@ export function Overview() {
               cta={{ label: 'Boot first agent', onClick: openSheet }}
             />
           </div>
-        ) : (!isCustom && flatSorted.length === 0 && filteredTeams.length === 0) ||
-          (isCustom &&
-            reconciledCustom.filter(
-              (it) =>
-                it.type === 'session' &&
-                filtered.some((s) => s.name === it.name),
-            ).length === 0 &&
-            filteredTeams.length === 0) ? (
+        ) : noMatch ? (
           <div className="flex h-full items-center justify-center">
-            <EmptyStatePlaceholder
-              icon={<Search />}
-              message={`No matches for “${query}”.`}
-              cta={{ label: 'Clear search', onClick: () => setRawQuery('') }}
-            />
+            {query.trim() ? (
+              <EmptyStatePlaceholder
+                icon={<Search />}
+                message={`No matches for “${query}”.`}
+                cta={{ label: 'Clear search', onClick: () => setRawQuery('') }}
+              />
+            ) : (
+              // The only non-search way to empty the grid: every session is
+              // stopped and hide-stopped is on. Offer the un-hide, not a useless
+              // "clear search" on an empty query.
+              <EmptyStatePlaceholder
+                icon={<EyeOff />}
+                message="Every session is stopped — they’re hidden."
+                cta={{ label: 'Show stopped', onClick: () => setHideStopped(false) }}
+              />
+            )}
           </div>
         ) : isCustom && viewMode === 'tile' ? (
           <GroupGrid
@@ -692,18 +724,33 @@ export function Overview() {
           </LayoutGroup>
         )}
 
+        {/* All-modes bottom group affordance (replaces the old "+" menu entry).
+            In smart/alpha it flips to custom first so the new section is visible;
+            in custom it appends at the end. Group NAMES only ever show in custom
+            mode (GroupGrid mounts only there), exactly as before. Touch-friendly
+            — the in-grid hover gaps are desktop-only. */}
+        {showGrid && (
+          <div className="mt-4 flex justify-center px-1 pb-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (layout.mode !== 'custom') setMode('custom')
+                handleNewGroupAtEnd()
+              }}
+              className="flex items-center gap-2 rounded-lg border border-dashed border-border/70 px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-border hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <FolderPlus className="size-4" aria-hidden />
+              New group
+            </button>
+          </div>
+        )}
+
       </div>
 
       <NewSessionSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         onCreated={onCreated}
-      />
-
-      <StartTeamSheet
-        open={teamSheetOpen}
-        onOpenChange={setTeamSheetOpen}
-        onStarted={onTeamStarted}
       />
     </div>
     </JumpIndexProvider>
@@ -813,53 +860,11 @@ function OverviewSizeControl({
   value,
   onChange,
   max = MAX_OVERVIEW_SIZE,
-  mobile = false,
 }: {
   value: OverviewSize
   onChange: (s: OverviewSize) => void
   max?: OverviewSize
-  mobile?: boolean
 }) {
-  const reduceMotion = useReducedMotion()
-
-  if (mobile) {
-    const roomy = value >= MAX_OVERVIEW_SIZE_MOBILE
-    const next = (roomy ? MIN_OVERVIEW_SIZE : MAX_OVERVIEW_SIZE_MOBILE) as OverviewSize
-    const Icon = roomy ? Rows2 : Rows3
-    const label = roomy
-      ? 'Tile size: Roomy — tap for Compact'
-      : 'Tile size: Compact — tap for Roomy'
-    return (
-      <motion.button
-        type="button"
-        role="switch"
-        aria-label={label}
-        aria-pressed={roomy}
-        title={label}
-        onClick={() => onChange(next)}
-        whileTap={reduceMotion ? undefined : { scale: 0.9 }}
-        className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:text-foreground"
-      >
-        {reduceMotion ? (
-          <Icon className="size-4" />
-        ) : (
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.span
-              key={roomy ? 'roomy' : 'compact'}
-              initial={{ opacity: 0, scale: 0.6, rotate: -12 }}
-              animate={{ opacity: 1, scale: 1, rotate: 0 }}
-              exit={{ opacity: 0, scale: 0.6, rotate: 12 }}
-              transition={springs.toggleSnap}
-              className="flex items-center justify-center"
-            >
-              <Icon className="size-4" />
-            </motion.span>
-          </AnimatePresence>
-        )}
-      </motion.button>
-    )
-  }
-
   const cfg = getOverviewSizeConfig(value)
   const atMin = value <= MIN_OVERVIEW_SIZE
   const atMax = value >= max

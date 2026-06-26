@@ -146,7 +146,7 @@ export function StartTeamSheet({
   )
 }
 
-interface StartTeamFormProps {
+export interface StartTeamFormProps {
   mode: SheetMode
   sessionName?: string
   sessionDir?: string
@@ -156,7 +156,10 @@ interface StartTeamFormProps {
   onStarted: (name: string) => void
 }
 
-function StartTeamForm({
+/** The Start-a-team form body — exported so the merged New-session panel can
+ *  host it behind the `Claude | Team (beta)` toggle (the standalone
+ *  <StartTeamSheet> keeps using it for the convert/take-over entry). */
+export function StartTeamForm({
   mode,
   sessionName,
   sessionDir,

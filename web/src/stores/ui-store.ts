@@ -69,6 +69,11 @@ interface UIStore {
    *  reloads/navigation — was previously local React state that reset on every
    *  route mount. */
   showHidden: boolean
+  /** Hide `stopped` sessions across the overview AND the focus strip — one
+   *  global filter behind the shared Eye/EyeOff toggle (the focus strip's old
+   *  per-surface localStorage flag folds into this). Default `false`: stopped
+   *  sessions are shown until the user opts to hide them. */
+  hideStopped: boolean
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
@@ -76,6 +81,7 @@ interface UIStore {
   setOverviewSize: (s: OverviewSize) => void
   setOverviewSizeMobile: (s: OverviewSize) => void
   setShowHidden: (v: boolean) => void
+  setHideStopped: (v: boolean) => void
 }
 
 export const useUI = create<UIStore>()(
@@ -88,6 +94,7 @@ export const useUI = create<UIStore>()(
       overviewSize: MIN_OVERVIEW_SIZE,
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
       showHidden: true,
+      hideStopped: false,
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),
@@ -97,7 +104,25 @@ export const useUI = create<UIStore>()(
       setOverviewSizeMobile: (overviewSizeMobile) =>
         set({ overviewSizeMobile: clampOverviewSizeMobile(overviewSizeMobile) }),
       setShowHidden: (showHidden) => set({ showHidden }),
+      setHideStopped: (hideStopped) => set({ hideStopped }),
     }),
-    { name: 'supermux-ui' },
+    {
+      name: 'supermux-ui',
+      // One-time migration: the focus strip used to keep its OWN hide-stopped
+      // flag in localStorage; it's now this shared value. Carry a pre-existing
+      // preference over exactly once — at boot, before any surface can toggle it
+      // (so it can't race a user toggle) — then drop the legacy key.
+      onRehydrateStorage: () => (state) => {
+        if (!state || typeof window === 'undefined') return
+        try {
+          const legacy = window.localStorage.getItem('supermux:focus-strip:hide-stopped')
+          if (legacy === null) return
+          if (legacy === '1' && !state.hideStopped) state.setHideStopped(true)
+          window.localStorage.removeItem('supermux:focus-strip:hide-stopped')
+        } catch {
+          /* private mode / quota — non-fatal */
+        }
+      },
+    },
   ),
 )

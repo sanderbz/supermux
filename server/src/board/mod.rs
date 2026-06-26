@@ -948,6 +948,7 @@ async fn start_handler(
                 provider: spawn.provider,
                 creator: None,
                 flags: None,
+                bypass_permissions: None,
                 tags: None,
                 branch: None,
                 mcp: None,

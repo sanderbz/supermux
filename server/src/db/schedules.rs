@@ -44,6 +44,10 @@ pub struct Schedule {
     /// signals "done" via `/api/hook/schedule/done`. Idle detection remains the
     /// fallback.
     pub confirm_finish: i64,
+    /// Boot bypass-permissions (0021): when 1 (boot kind only), the runner boots
+    /// the Claude session with `--permission-mode bypassPermissions` so it runs
+    /// tools without asking. Defaults to 0 (every existing schedule unchanged).
+    pub bypass_permissions: i64,
     pub created: i64,
     pub updated: i64,
     pub deleted: Option<i64>,
@@ -110,8 +114,9 @@ pub async fn insert(pool: &SqlitePool, s: &Schedule) -> sqlx::Result<()> {
             (id, title, session, command, prompt, kind, boot_dir, boot_provider, boot_worktree,
              sched_type, recurrence, run_at, next_run, last_run, enabled, run_count,
              schedule_expr, watch, watch_timeout, done_pattern, done_action, confirm_finish,
+             bypass_permissions,
              created, updated, deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.title)
@@ -135,6 +140,7 @@ pub async fn insert(pool: &SqlitePool, s: &Schedule) -> sqlx::Result<()> {
     .bind(&s.done_pattern)
     .bind(&s.done_action)
     .bind(s.confirm_finish)
+    .bind(s.bypass_permissions)
     .bind(s.created)
     .bind(s.updated)
     .bind(s.deleted)

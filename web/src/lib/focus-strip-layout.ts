@@ -75,7 +75,6 @@ export function flatSortModeFor(
 // ── localStorage keys ────────────────────────────────────────────────────────
 
 const VIEW_MODE_KEY = 'supermux:focus-strip:view-mode'
-const HIDE_STOPPED_KEY = 'supermux:focus-strip:hide-stopped'
 
 export function stripCollapsedKey(groupId: string): string {
   return `supermux:focus-strip:collapsed:${groupId}`
@@ -130,26 +129,9 @@ export function writeFocusStripViewMode(mode: FocusStripViewMode): void {
   }
 }
 
-// ── Global hide-stopped filter (one toggle, no group id) ─────────────────────
-
-/** Default = show everything. */
-export function readFocusStripHideStopped(): boolean {
-  if (typeof window === 'undefined') return false
-  try {
-    return window.localStorage.getItem(HIDE_STOPPED_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-export function writeFocusStripHideStopped(hidden: boolean): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(HIDE_STOPPED_KEY, hidden ? '1' : '0')
-  } catch {
-    /* private mode / quota — non-fatal */
-  }
-}
+// The global hide-stopped filter now lives in the shared ui-store (one value
+// for the focus strip AND the overview) — see stores/ui-store.ts `hideStopped`
+// and use-grouped-strip.ts's one-time migration off the legacy localStorage key.
 
 // ── Per-group collapse state (unchanged from previous design) ────────────────
 

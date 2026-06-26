@@ -13,7 +13,6 @@ import {
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Input } from '@/components/ui/input'
-import { apiToken, apiUrl } from '@/lib/api/client'
 import {
   displayLabel,
   projectsApi,
@@ -23,6 +22,7 @@ import {
 } from '@/lib/api'
 import { useSessions } from '@/hooks/use-sessions'
 import { homeDir, projectsDir } from '@/env'
+import { createProjectFolder } from '@/lib/create-project-folder'
 import { StatusDot, STATUS_LABEL } from './status-dot'
 
 // ── Where picker ─────────────────────────────────────────────────────────────
@@ -809,36 +809,3 @@ function normaliseDir(dir: string): string {
   return dir.replace(/\/+$/, '')
 }
 
-/** Create a fresh subdir under the projects root (or home if unset).
- *
- *  PRAGMATIC SOLUTION: reuse the existing `PUT /api/file` flow with a
- *  placeholder `README.md` inside the target folder — the server's `put_file`
- *  calls `create_dir_all(parent)` before writing, so the folder springs into
- *  existence as a side-effect. `.md` is in the WRITABLE_EXTS allowlist; a
- *  README is also more useful than a hidden `.gitkeep` (the user can edit it
- *  later, or the agent can fill it in). No new server endpoint needed.
- *  Returns the created folder's absolute path on success, or null on failure. */
-async function createProjectFolder(name: string): Promise<string | null> {
-  const safe = name.replace(/[^A-Za-z0-9._-]/g, '').replace(/^[.]+/, '')
-  if (!safe) return null
-  const root = (projectsDir() || homeDir()).replace(/\/+$/, '')
-  if (!root) return null
-  const folder = `${root}/${safe}`
-  const placeholder = `${folder}/README.md`
-  const initial = `# ${safe}\n`
-  try {
-    const token = apiToken()
-    const res = await fetch(apiUrl('/api/file'), {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ path: placeholder, content: initial }),
-    })
-    if (!res.ok) return null
-    return folder
-  } catch {
-    return null
-  }
-}

@@ -70,6 +70,9 @@ export interface ScheduleFormValue {
   boot_dir: string
   boot_provider: string
   boot_worktree: boolean
+  /** boot only: launch the booted Claude in bypass-permissions mode
+   *  (`--permission-mode bypassPermissions`) so it runs tools without asking. */
+  bypass_permissions: boolean
   /** "Send me notification when done" → maps to watch=true + done_action=notify. */
   notify: boolean
   /** Optional regex; empty = the server's default done marker. */
@@ -91,6 +94,7 @@ export const EMPTY_FORM: ScheduleFormValue = {
   boot_dir: '',
   boot_provider: 'claude',
   boot_worktree: false,
+  bypass_permissions: false,
   notify: false,
   done_pattern: '',
   // Pre-ticked: when the user turns on notify for a Claude/tmux job, the
@@ -135,6 +139,7 @@ export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
     base.boot_dir = v.boot_dir.trim()
     base.boot_provider = v.boot_provider
     base.boot_worktree = v.boot_worktree
+    base.bypass_permissions = v.bypass_permissions
     base.prompt = v.prompt.trim()
   }
   return base
@@ -344,6 +349,13 @@ export function ScheduleForm({
               />
             </Field>
           </div>
+          <Field label="Permissions">
+            <CheckRow
+              checked={value.bypass_permissions}
+              onChange={(c) => set('bypass_permissions', c)}
+              label="Bypass permissions — runs tools without asking"
+            />
+          </Field>
           <Field label="Prompt">
             <PromptField
               value={mergedPrompt}
