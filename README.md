@@ -1,14 +1,17 @@
-# supermux
+<h1 align="center">supermux</h1>
 
-### Claude Code, anywhere. The dashboard for the agentic developer.
+<p align="center"><strong>Your control room for a roomful of Claude&nbsp;Code agents — running on your box, watchable from your phone.</strong></p>
 
-Run a roomful of Claude Code agents on your VPS or home server. Watch, steer, and switch between them from your phone or laptop. Your sessions stay alive whether your laptop is open or closed.
+<p align="center"><em>Close your laptop. Your agents keep running — and your phone buzzes the second one needs you.</em></p>
 
 <p align="center">
-  <a href="docs/screenshots/supermux-detail.png"><img src="docs/screenshots/supermux-detail.png" alt="supermux focus mode: sidebar of live sessions on the left, terminal pane, keyboard-shortcut dock" width="900"></a>
+  <!-- The hero is a GIF embedded as <img> so it autoplays everywhere GitHub renders
+       (web logged-out, iOS Safari, the GitHub mobile app, npm, IDE previews) and
+       degrades to a clean static first frame. Click-through opens the HD MP4. -->
+  <a href="docs/hero.mp4"><img src="docs/hero.gif" alt="supermux — every Claude Code agent in one live dashboard, steered from your phone, with real lock-screen push" width="900"></a>
 </p>
 
-<p align="center"><em>Every Claude Code session at a glance. Hover for a live peek, type without leaving the overview, tap to zoom into focus mode, jump anywhere with ⌘K. Same dashboard on your phone.</em></p>
+<p align="center"><sub>▶ <a href="docs/hero.mp4">Click for HD</a> · the loop above autoplays on GitHub</sub></p>
 
 <p align="center">
   <a href="https://github.com/sanderbz/supermux/releases/latest"><img src="https://img.shields.io/github/v/release/sanderbz/supermux" alt="latest release"></a>
@@ -45,12 +48,16 @@ That's the problem supermux solves.
 - **Native-feeling PWA.** Installs on macOS, Windows, iPhone, Android. iOS gets real push notifications, dictation in the prompt editor, drag-and-drop file uploads on desktop.
 
 <p align="center">
-  <a href="docs/screenshots/mobile-overview.png"><img src="docs/screenshots/mobile-overview.png" alt="supermux on iPhone: vertical list of session tiles" width="260"></a>
-  &nbsp;
-  <a href="docs/screenshots/mobile-detail.png"><img src="docs/screenshots/mobile-detail.png" alt="supermux on iPhone: focus mode inside a session" width="260"></a>
+  <a href="docs/screenshots/overview-desktop.png"><img src="docs/screenshots/overview-desktop.png" alt="supermux desktop overview: a grid of live Claude Code session tiles with color-true terminal previews and 'waiting on you' status pills" width="860"></a>
 </p>
 
-<p align="center"><em>Same dashboard. Every device. Tap to enlarge.</em></p>
+<p align="center"><em>Every agent, live, on one screen — who's working, who's waiting on you, who's idle.</em></p>
+
+<p align="center">
+  <a href="docs/screenshots/overview-mobile-clean.png"><img src="docs/screenshots/overview-mobile-clean.png" alt="supermux on iPhone: the same session overview as a native vertical list with 'Needs input' badges" width="260"></a>
+</p>
+
+<p align="center"><em>The same dashboard, in your pocket. Tap to enlarge.</em></p>
 
 ## What you can do
 
@@ -60,7 +67,7 @@ That's the problem supermux solves.
 - **Focus mode**: tap any tile to zoom into a keyboard-captured xterm.js terminal (desktop) or a detented bottom-sheet (mobile). `⌘1..9` jumps instantly between sessions.
 - **⌘K command palette**: fuzzy search across sessions, board issues, slash commands, MCP tools, and Claude Code skills.
 
-<p align="center"><a href="docs/screenshots/new-claude.png"><img src="docs/screenshots/new-claude.png" alt="New session sheet on the overview: Quick start (Blank Claude / Code reviewer / Doc writer presets) and Advanced" width="780"></a></p>
+<p align="center"><a href="docs/screenshots/new-session.png"><img src="docs/screenshots/new-session.png" alt="New session sheet on the overview: Quick start (Blank Claude / Code reviewer / Doc writer presets) and Advanced" width="780"></a></p>
 
 ### Notifications that find you
 - **Real push notifications** when Claude finishes, asks a question, or stops. Works on iOS too: install the PWA, allow notifications, walk away from your machine.
@@ -95,7 +102,7 @@ That's the problem supermux solves.
 - **Kanban board**: session-scoped issue tracker. Sessions can comment, mark issues done, attach commits, or ask for input via per-session hook tokens. Wire it into your agent flow and let Claude pull its own next task.
 - **Schedules and board updates trigger push notifications** when something needs you.
 
-<p align="center"><a href="docs/screenshots/board.png"><img src="docs/screenshots/board.png" alt="Kanban board with To do, Doing and Done columns, an issue assigned to a session" width="780"></a></p>
+<p align="center"><a href="docs/screenshots/board.png"><img src="docs/screenshots/board.png" alt="Kanban board with To do, Doing and Done columns, a task card assigned to a session" width="780"></a></p>
 
 ### Reach across machines
 - **Add any host you can SSH to** under Settings → Hosts (Tailscale, VPN, public DNS, reverse tunnel). supermux multiplexes one SSH ControlMaster per host.
@@ -114,25 +121,27 @@ That's the problem supermux solves.
 
 ## supermux vs. the alternatives
 
-|                                          | **supermux** | Termius (generic SSH/terminal) | Claude Code's built-in remote |
-|---|:---:|:---:|:---:|
-| Built specifically for Claude Code        | ✅ | ❌ | ✅ |
-| Start / stop / restart Claude sessions from the UI | ✅ | ❌ | ⚠️ best-effort |
-| Many sessions in one live overview        | ✅ | ❌ (tab/window-based) | ❌ |
-| Push notifications when Claude needs you  | ✅ (iOS too) | ❌ | ❌ |
-| Resume any past Claude conversation       | ✅ | ❌ | ⚠️ |
-| Searchable prompt history per project     | ✅ | ❌ | ❌ |
-| Drag-and-drop file upload into the prompt | ✅ | ❌ (pain over SSH) | ❌ |
-| Mobile-first UI (real PWA on iOS/Android) | ✅ | ✅ (paid) | ❌ |
-| Sessions survive your device being offline | ✅ (tmux on server) | ⚠️ via tmux yourself | ❌ |
-| Scheduled prompts / runs                  | ✅ | ❌ | ❌ |
-| Kanban issue board agents read & write    | ✅ | ❌ | ❌ |
-| Agent teams (multi-agent collaboration)   | ✅ | ❌ | ❌ |
-| Self-hosted, MIT, your data on your box   | ✅ | ❌ (proprietary) | ❌ (proprietary; relays via Anthropic) |
+A few good tools run many Claude Code agents. supermux is the only one that adds the whole **mobile + remote + push + self-host** dimension — your agents live on a server you own, not on the laptop in your bag.
 
-**Termius** is a great generic terminal. supermux is a Claude Code *control room*: it knows the agent lifecycle, knows when it's waiting, surfaces its history, and pushes you the moment it asks.
+|  | **supermux** | Conductor<br>(Mac app) | Omnara<br>(cloud) | Happy<br>(mobile) | claude-squad<br>(TUI) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Many agents in one live overview | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Sub-second "who's waiting on you" status | ✅ | ⚠️ | ⚠️ | ❌ | ❌ |
+| Mobile-first PWA (real iOS / Android) | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Real push when an agent needs you | ✅ | ❌ | ⚠️ via cloud | ⚠️ | ❌ |
+| Agents run server-side, survive the laptop closing | ✅ | ❌ | ❌ | ❌ | ⚠️ |
+| Runs on a VPS / Pi / Mac mini, not your laptop | ✅ | ❌ | ❌ | ❌ | ⚠️ |
+| Self-hosted, no vendor cloud in the path | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Full lifecycle harness (start/stop/restart/resume/schedule) | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| Kanban board agents read & write | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Open source | ✅ MIT | ❌ | ⚠️ CLI only | ✅ | ✅ |
 
-**Claude Code's built-in remote** lets you connect to a session that's already running. supermux is the persistent host that orchestrates many of them: it starts them, stops them, restarts them with new flags, resumes old conversations, schedules them, and keeps them alive while your laptop sleeps in your bag.
+<sub>Best-effort snapshot of fast-moving tools — corrections welcome via PR.</sub>
+
+- **Conductor & friends** nail many-agents-on-your-Mac — supermux adds the entire mobile + remote + push + self-host dimension they lack.
+- **Omnara** relays your sessions through a vendor cloud; supermux runs entirely on your box.
+- **Happy** needs your desktop awake and the CLI running; supermux's agents live in tmux on the server and keep going when the laptop closes.
+- **claude-squad** is a great terminal UI — but it's a terminal, on whatever machine you're sitting at. supermux is the persistent host you reach from your phone.
 
 ---
 
