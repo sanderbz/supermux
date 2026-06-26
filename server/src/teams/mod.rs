@@ -28,7 +28,7 @@ pub use start::{
 };
 pub use watcher::{scan_and_enrich, spawn};
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -55,6 +55,11 @@ pub fn router_for(state: AppState) -> Router {
             "/api/teams/start-from-existing",
             post(convert_to_team_handler),
         )
+        // Dismiss an UNMAPPED team card: park its on-disk config under
+        // `.archived/` so the watcher stops surfacing it. The only way to clear a
+        // team whose lead no longer maps to a live session (there's no session to
+        // archive through the normal lifecycle).
+        .route("/api/teams/{name}/dismiss", post(dismiss_team_handler))
         // The single global experimental gate. GET reads the current
         // value; PUT flips it. Default OFF (experimental + ~7× token cost).
         .route(
@@ -113,6 +118,16 @@ async fn convert_to_team_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let result = start::convert_to_team(&state, input).await?;
     Ok((StatusCode::CREATED, Json(json!({ "ok": true, "data": result }))))
+}
+
+/// `POST /api/teams/{name}/dismiss` — park an unmapped team's on-disk config in
+/// `.archived/` so the watcher stops surfacing it. DRY: the same
+/// [`scan::archive_team_config`] move `sessions::lifecycle::archive` performs.
+/// The helper already no-ops on empty/dot-prefixed/missing names (never moves an
+/// arbitrary path), so the path segment needs no extra guarding here.
+async fn dismiss_team_handler(Path(name): Path<String>) -> Result<impl IntoResponse, AppError> {
+    scan::archive_team_config(&name).map_err(|e| AppError::Internal(e.into()))?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// `PUT /api/settings/experimental/agent-teams` body — `{ "enabled": bool }`.

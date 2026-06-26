@@ -24,9 +24,11 @@
 
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { cn } from '@/lib/utils'
 import { useSession } from '@/hooks/use-sessions'
+import { TEAMS_KEY } from '@/hooks/use-teams'
 import { useTeamDensity, type TeamDensity } from '@/stores/team-density-store'
 import {
   useTeamWidth,
@@ -36,7 +38,7 @@ import {
 import { SessionTile } from '@/components/session-tile'
 import type { TileSession } from '@/components/session-tile'
 import type { OverviewSize } from '@/lib/overview-size'
-import { type Team, type TeamMember } from '@/lib/api/teams'
+import { type Team, type TeamMember, teamsApi } from '@/lib/api/teams'
 import { TeamRollupBadges } from './team-rollup-badges'
 import { TeammateChip } from './teammate-chip'
 import { TeammateCard } from './teammate-card'
@@ -71,6 +73,26 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
   const leadSession = useSession(team.lead_supermux_session ?? '').session
 
   const members = team.members
+
+  // Dismiss an UNMAPPED team: archive its on-disk config so the watcher stops
+  // surfacing it, then drop it from the shared cache. The POST has already
+  // succeeded here, and both reconcilers (the SSE snapshot and a hard-reload
+  // GET) exclude the now-archived dir — this just removes the card without
+  // waiting for the next scan. The ONLY way to clear a ghost card whose lead no
+  // longer maps to a live session.
+  const qc = useQueryClient()
+  const [dismissing, setDismissing] = React.useState(false)
+  const dismiss = React.useCallback(async () => {
+    setDismissing(true)
+    try {
+      await teamsApi.dismiss(team.team_name)
+      qc.setQueryData<Team[]>(TEAMS_KEY, (prev) =>
+        (prev ?? []).filter((t) => t.team_name !== team.team_name),
+      )
+    } catch {
+      setDismissing(false) // leave the card in place; the user can retry
+    }
+  }, [qc, team.team_name])
 
   // Navigate to the lead's focus route with `?teammate=<agent_id>` so the focus
   // view auto-selects this teammate. When the lead isn't mapped to a session
@@ -123,11 +145,21 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
           session={leadSession as TileSession}
           sizeTier={sizeTier}
         />
-      ) : (
+      ) : team.lead_supermux_session ? (
         <div className="flex h-16 items-center justify-center rounded-xl border border-dashed border-border/60 px-3 text-center text-xs text-muted-foreground">
-          {team.lead_supermux_session
-            ? 'Lead session starting…'
-            : 'Lead not mapped to a session right now'}
+          Lead session starting…
+        </div>
+      ) : (
+        <div className="flex h-16 items-center justify-between gap-2 rounded-xl border border-dashed border-border/60 px-3 text-xs text-muted-foreground">
+          <span>Lead not mapped to a session right now</span>
+          <button
+            type="button"
+            onClick={dismiss}
+            disabled={dismissing}
+            className="shrink-0 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground/80 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 

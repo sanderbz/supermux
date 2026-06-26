@@ -210,6 +210,27 @@ async function listTeams(): Promise<Team[]> {
   return coerceTeams(env?.data ?? [])
 }
 
+/** POST /api/teams/{name}/dismiss — park an unmapped team's on-disk config under
+ *  `.archived/` so it stops surfacing as a card. The only way to clear a team
+ *  whose lead no longer maps to a live session. */
+async function dismissTeam(name: string): Promise<void> {
+  const token = apiToken()
+  const res = await fetch(apiUrl(`/api/teams/${encodeURIComponent(name)}/dismiss`), {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  if (!res.ok) {
+    let env: TeamsEnvelope | null = null
+    try {
+      env = (await res.json()) as TeamsEnvelope
+    } catch {
+      /* non-JSON */
+    }
+    throw new ApiError(res.status, env?.error ?? res.statusText)
+  }
+}
+
 export const teamsApi = {
   list: listTeams,
+  dismiss: dismissTeam,
 }
