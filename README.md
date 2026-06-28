@@ -1,14 +1,14 @@
 <h1 align="center">supermux</h1>
 
-<p align="center"><strong>Your control room for a roomful of Claude&nbsp;Code agents — running on your box, watchable from your phone.</strong></p>
+<p align="center"><strong>The easiest way to run a roomful of Claude&nbsp;Code agents. Spin them up on any VPS or home server, and steer them all from your phone.</strong></p>
 
-<p align="center"><em>Close your laptop. Your agents keep running — and your phone buzzes the second one needs you.</em></p>
+<p align="center"><em>Close your laptop. Your agents keep running, and your phone buzzes the second one needs you.</em></p>
 
 <p align="center">
   <!-- The hero is a GIF embedded as <img> so it autoplays everywhere GitHub renders
        (web logged-out, iOS Safari, the GitHub mobile app, npm, IDE previews) and
        degrades to a clean static first frame. Click-through opens the HD MP4. -->
-  <a href="docs/hero.mp4"><img src="docs/hero.gif" alt="supermux — every Claude Code agent in one live dashboard, steered from your phone, with real lock-screen push" width="900"></a>
+  <a href="docs/hero.mp4"><img src="docs/hero.gif" alt="supermux — run Claude Code on any VPS and watch the live session from your phone; every agent in one live dashboard with real lock-screen push" width="900"></a>
 </p>
 
 <p align="center"><sub>▶ <a href="docs/hero.mp4">Click for HD</a> · the loop above autoplays on GitHub</sub></p>
