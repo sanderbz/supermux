@@ -45,7 +45,8 @@ That's the problem supermux solves.
 - **Quick peek + type-in-place.** Hover a tile on desktop or long-press it on mobile to read the latest output and type a reply *without leaving the overview*.
 - **Sessions live on your server, not your device.** Run on a VPS, a Raspberry Pi, or your home NAS. Close your laptop. Sessions keep running. Push notifications wake you when they need you.
 - **A full harness, not a thin remote.** Start sessions, stop them, restart with a flag, resume an older conversation, rename inline, archive. All from the UI.
-- **Native-feeling PWA.** Installs on macOS, Windows, iPhone, Android. iOS gets real push notifications, dictation in the prompt editor, drag-and-drop file uploads on desktop.
+- **Schedule recurring prompts.** Have a session run a prompt on its own, daily or weekly or on a full cron, so routine work happens without you. *"Every Monday at 9, resume the repo and draft the weekly changelog."* Fresh-session boots and shell jobs schedule the same way, with an iCal feed.
+- **A Claude Code client, not a dumb terminal.** Even a great SSH app (Termius and friends) just hands you a shell. supermux understands the agent: attach a file or photo and it drops the path straight at Claude's prompt, read the Markdown and code Claude writes rendered with real syntax highlighting instead of raw monospace, edit prompts in a native textarea, and tap the Claude-specific actions a terminal can't know about (cycle permission mode, rewind a step, approve). You work *with* the agent from your phone, not just SSH to a box.
 
 <p align="center">
   <a href="docs/screenshots/overview-desktop.png"><img src="docs/screenshots/overview-desktop.png" alt="supermux desktop overview: a grid of live Claude Code session tiles with color-true terminal previews and 'waiting on you' status pills" width="860"></a>
