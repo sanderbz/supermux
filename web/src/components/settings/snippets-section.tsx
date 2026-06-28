@@ -1,10 +1,13 @@
 import * as React from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Plus, Trash2, TriangleAlert } from 'lucide-react'
+import { ChevronRight, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SnippetEditor } from '@/components/snippets/snippet-editor'
+import type { SnippetRow } from '@/lib/api'
 import {
   useCreateSnippet,
   useDeleteSnippet,
@@ -22,6 +25,20 @@ export function SnippetsSection() {
   const del = useDeleteSnippet()
   const [title, setTitle] = React.useState('')
   const [body, setBody] = React.useState('')
+
+  // Per-row expand toggle (local, non-persisted). Multiple rows may be open.
+  const [expanded, setExpanded] = React.useState<Set<number>>(new Set())
+  const toggleExpanded = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  // Edit sub-sheet: the seeded SnippetEditor (reused as-is) for an existing row.
+  const [editing, setEditing] = React.useState<SnippetRow | null>(null)
+  const [editorOpen, setEditorOpen] = React.useState(false)
 
   const canAdd = title.trim() !== '' && body.trim() !== '' && !create.isPending
 
@@ -64,35 +81,74 @@ export function SnippetsSection() {
       ) : null}
 
       <AnimatePresence initial={false}>
-        {snippets.map((s) => (
-          <motion.div
-            key={s.id}
-            layout
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={springs.smooth}
-            className="flex items-center gap-3 px-4 py-2.5"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="text-[15px] leading-tight text-foreground">
-                {s.title}
-              </div>
-              <div className="truncate font-mono text-[12px] text-muted-foreground">
-                {s.body}
-              </div>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={`Delete ${s.title}`}
-              onClick={() => del.mutate(s.id)}
-              className="size-11 shrink-0 text-muted-foreground hover:text-destructive"
+        {snippets.map((s) => {
+          const isExpanded = expanded.has(s.id)
+          return (
+            <motion.div
+              key={s.id}
+              layout
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={springs.smooth}
+              className="px-4 py-2.5"
             >
-              <Trash2 />
-            </Button>
-          </motion.div>
-        ))}
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={isExpanded ? `Collapse ${s.title}` : `Expand ${s.title}`}
+                  aria-expanded={isExpanded}
+                  onClick={() => toggleExpanded(s.id)}
+                  className="size-11 shrink-0 text-muted-foreground"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'transition-transform duration-200',
+                      isExpanded && 'rotate-90',
+                    )}
+                  />
+                </Button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[15px] leading-tight text-foreground">
+                    {s.title}
+                  </div>
+                  {!isExpanded ? (
+                    <div className="truncate font-mono text-[12px] text-muted-foreground">
+                      {s.body}
+                    </div>
+                  ) : null}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Edit ${s.title}`}
+                  onClick={() => {
+                    setEditing(s)
+                    setEditorOpen(true)
+                  }}
+                  className="size-11 shrink-0 text-muted-foreground"
+                >
+                  <Pencil />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Delete ${s.title}`}
+                  onClick={() => del.mutate(s.id)}
+                  className="size-11 shrink-0 text-muted-foreground hover:text-destructive"
+                >
+                  <Trash2 />
+                </Button>
+              </div>
+              {isExpanded ? (
+                <div className="mt-1 select-text whitespace-pre-wrap break-words pl-[3.125rem] pr-1 font-mono text-[12px] text-muted-foreground">
+                  {s.body}
+                </div>
+              ) : null}
+            </motion.div>
+          )
+        })}
       </AnimatePresence>
 
       <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center">
@@ -120,6 +176,13 @@ export function SnippetsSection() {
           </motion.button>
         </Button>
       </div>
+
+      {/* Reused create/edit sheet — seeded with the row being edited. */}
+      <SnippetEditor
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        snippet={editing}
+      />
     </>
   )
 }

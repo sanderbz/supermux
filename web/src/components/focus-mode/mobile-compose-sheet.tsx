@@ -888,7 +888,12 @@ export function DiscardConfirmSheet({
       {open && (
         <>
           <motion.div
-            className="fixed inset-0 z-[70] bg-black/50"
+            // pointer-events-auto: the desktop editor is a Radix `modal` Dialog,
+            // which sets `body { pointer-events: none }` and re-enables it ONLY
+            // inside its own portal. This confirm sheet renders OUTSIDE that
+            // portal, so without this it inherits `none` and every click falls
+            // through to the dialog content behind it (the Attach button).
+            className="pointer-events-auto fixed inset-0 z-[70] bg-black/50"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -906,7 +911,9 @@ export function DiscardConfirmSheet({
             aria-labelledby="edit-discard-title"
             aria-describedby="edit-discard-body"
             className={cn(
-              'fixed inset-x-3 bottom-3 z-[71] rounded-[14px] bg-card',
+              // pointer-events-auto for the same reason as the backdrop above —
+              // re-enable interaction inside the Radix modal's body-level lock.
+              'pointer-events-auto fixed inset-x-3 bottom-3 z-[71] rounded-[14px] bg-card',
               'border border-border/60 shadow-2xl',
             )}
             data-vr="edit-sheet-discard-confirm"

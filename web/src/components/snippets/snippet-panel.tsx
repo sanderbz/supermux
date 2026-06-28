@@ -30,7 +30,7 @@ import {
   useTransform,
   type PanInfo,
 } from 'framer-motion'
-import { Plus, Pencil, Trash2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, ChevronRight } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
@@ -204,6 +204,9 @@ function SnippetRowItem({
   const reduceMotion = useReducedMotion()
   const deleteSnippet = useDeleteSnippet()
 
+  // Per-row expand toggle (local, non-persisted) — shows the full body below.
+  const [expanded, setExpanded] = React.useState(false)
+
   // Horizontal drag for swipe-left → reveal actions / full-swipe → delete.
   const x = useMotionValue(0)
   const rowRef = React.useRef<HTMLDivElement | null>(null)
@@ -256,11 +259,13 @@ function SnippetRowItem({
 
   return (
     <div ref={rowRef} className="relative overflow-hidden">
-      {/* Action strip beneath the row — Edit + Delete, revealed on swipe-left. */}
+      {/* Action strip beneath the row — Edit + Delete, revealed on swipe-left.
+          Pinned to the row's own height (h-12) so it stays aligned even when the
+          expand panel grows the wrapper below. */}
       <motion.div
         aria-hidden
         style={{ opacity: actionsOpacity }}
-        className="absolute inset-y-0 right-0 flex items-center gap-1 pr-1"
+        className="absolute right-0 top-0 flex h-12 items-center gap-1 pr-1"
       >
         <button
           type="button"
@@ -299,7 +304,8 @@ function SnippetRowItem({
         onClick={onTap}
         className={cn(
           // ≥44pt row (h-12), 8px-ish continuous corner, glass card surface.
-          'relative flex h-12 w-full items-center gap-3 rounded-xl bg-card px-3 text-left',
+          // pr-10 reserves room so the body never slides under the chevron.
+          'relative flex h-12 w-full items-center gap-3 rounded-xl bg-card pl-3 pr-10 text-left',
           'active:bg-secondary',
         )}
       >
@@ -310,6 +316,44 @@ function SnippetRowItem({
           {snippet.body}
         </span>
       </motion.button>
+
+      {/* Expand chevron — an absolute sibling over the row's right edge, NOT a
+          child of the draggable button (no nested <button>). It rides the same
+          `x` so it tracks the row and never lands on the revealed actions; its
+          handlers stopPropagation so a tap never inserts/runs nor arms the drag
+          or long-press. */}
+      <motion.div
+        style={{ x }}
+        className="pointer-events-none absolute right-0 top-0 z-10 flex h-12 items-center pr-1"
+      >
+        <button
+          type="button"
+          aria-label={expanded ? `Collapse ${snippet.title}` : `Expand ${snippet.title}`}
+          aria-expanded={expanded}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            setExpanded((v) => !v)
+          }}
+          className="pointer-events-auto flex size-9 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
+        >
+          <ChevronRight
+            className={cn(
+              'size-4 transition-transform duration-200',
+              expanded && 'rotate-90',
+            )}
+          />
+        </button>
+      </motion.div>
+
+      {/* Full body, revealed below the fixed-height row (outside the button). */}
+      {expanded ? (
+        <div className="px-3 pb-2.5 pt-1">
+          <div className="select-text whitespace-pre-wrap break-words rounded-lg bg-secondary/40 px-3 py-2 font-mono text-[12px] text-muted-foreground">
+            {snippet.body}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
