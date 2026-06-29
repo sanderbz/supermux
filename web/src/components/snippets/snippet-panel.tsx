@@ -206,6 +206,7 @@ function SnippetRowItem({
 
   // Per-row expand toggle (local, non-persisted) — shows the full body below.
   const [expanded, setExpanded] = React.useState(false)
+  const bodyId = `snippet-${snippet.id}-body`
 
   // Horizontal drag for swipe-left → reveal actions / full-swipe → delete.
   const x = useMotionValue(0)
@@ -304,8 +305,10 @@ function SnippetRowItem({
         onClick={onTap}
         className={cn(
           // ≥44pt row (h-12), 8px-ish continuous corner, glass card surface.
-          // pr-10 reserves room so the body never slides under the chevron.
-          'relative flex h-12 w-full items-center gap-3 rounded-xl bg-card pl-3 pr-10 text-left',
+          // pl-12 clears the LEADING 44pt expand chevron (matches the Settings
+          // snippets list) so the title never slides under it; the whole body
+          // stays a clean tap-to-insert target with no trailing trap.
+          'relative flex h-12 w-full items-center gap-3 rounded-xl bg-card pl-12 pr-3 text-left',
           'active:bg-secondary',
         )}
       >
@@ -317,25 +320,27 @@ function SnippetRowItem({
         </span>
       </motion.button>
 
-      {/* Expand chevron — an absolute sibling over the row's right edge, NOT a
-          child of the draggable button (no nested <button>). It rides the same
-          `x` so it tracks the row and never lands on the revealed actions; its
-          handlers stopPropagation so a tap never inserts/runs nor arms the drag
-          or long-press. */}
+      {/* Expand chevron — a LEADING affordance (matches the Settings snippets
+          list), an absolute sibling over the row's left edge, NOT a child of the
+          draggable button (no nested <button>). It rides the same `x` so it
+          tracks the row; its handlers stopPropagation so a tap never inserts/
+          runs nor arms the drag or long-press. Full 44pt (h-11 w-11) target,
+          like the Edit/Delete actions. */}
       <motion.div
         style={{ x }}
-        className="pointer-events-none absolute right-0 top-0 z-10 flex h-12 items-center pr-1"
+        className="pointer-events-none absolute left-0 top-0 z-10 flex h-12 items-center pl-1"
       >
         <button
           type="button"
           aria-label={expanded ? `Collapse ${snippet.title}` : `Expand ${snippet.title}`}
           aria-expanded={expanded}
+          aria-controls={bodyId}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation()
             setExpanded((v) => !v)
           }}
-          className="pointer-events-auto flex size-9 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
+          className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground active:bg-secondary"
         >
           <ChevronRight
             className={cn(
@@ -346,14 +351,20 @@ function SnippetRowItem({
         </button>
       </motion.div>
 
-      {/* Full body, revealed below the fixed-height row (outside the button). */}
-      {expanded ? (
-        <div className="px-3 pb-2.5 pt-1">
-          <div className="select-text whitespace-pre-wrap break-words rounded-lg bg-secondary/40 px-3 py-2 font-mono text-[12px] text-muted-foreground">
-            {snippet.body}
-          </div>
+      {/* Full body — always in the DOM (so `aria-controls` resolves), hidden
+          until expanded. Indented to align under the row title, past the
+          leading chevron. */}
+      <div
+        id={bodyId}
+        role="region"
+        aria-label={`${snippet.title} full text`}
+        hidden={!expanded}
+        className="pb-2.5 pl-12 pr-3 pt-1"
+      >
+        <div className="select-text whitespace-pre-wrap break-words rounded-lg bg-secondary/40 px-3 py-2 font-mono text-[12px] text-muted-foreground">
+          {snippet.body}
         </div>
-      ) : null}
+      </div>
     </div>
   )
 }
