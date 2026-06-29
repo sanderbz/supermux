@@ -185,15 +185,21 @@ async fn persist_team_name(state: &AppState, session_name: &str, team_name: &str
 /// Resolve a team's host supermux session, trying cheapest signals first so the
 /// mapping survives transient teammate-pane churn AND the new-team window before
 /// any teammate is spawned. Order:
-///   (1) `leadSessionId` as a supermux name — true when Start-a-team set it, but
-///       per FIX-TEAMS ground truth (viral-news-hunt) Claude often writes a UUID
-///       there instead; the live-map presence check guards against that case.
-///   (2) `team_name` as a supermux name — Start-a-team's `gen_team_name` often
-///       matches the supermux session name directly (`team-supermux`, etc.).
-///   (3) Pane-id intersection — for any teammate `%id` known to be live in the
-///       roster, find the supermux session whose window contains it. Authoritative
-///       once teammates have spawned, AND it does NOT depend on `leadSessionId`
-///       matching the supermux name (the FIX-TEAMS bug 2 case).
+///   (1) `leadSessionId` as a supermux name — a cheap O(1) fast path, but
+///       Claude Code assigns its OWN session UUID here (FIX-TEAMS ground truth:
+///       viral-news-hunt), so this rarely fires; the live-map presence check
+///       means a non-matching UUID just falls through.
+///   (2) `team_name` as a supermux name — another cheap fast path. As of Claude
+///       Code v2.1.178 the team is auto-named `session-<id8>` (it's the session's
+///       single implicit team — supermux no longer picks the name), so this too
+///       essentially never matches a supermux session name and falls through.
+///       Kept only because it's a free hashmap probe that would still win if a
+///       future Claude build ever named a team after its host.
+///   (3) Pane-id intersection — THE authoritative signal once teammates have
+///       spawned: for any teammate `%id` live in the roster, find the supermux
+///       session whose window contains it. Does NOT depend on `leadSessionId` or
+///       the team name matching anything (the FIX-TEAMS bug 2 case, and what
+///       makes the v2.1.178 auto-naming a non-issue for detection).
 ///   (4) Canonical-cwd match — last resort: a member's `cwd` matching a live
 ///       Claude DB session's `dir` (handles the moment when teammates exist on
 ///       disk but their panes haven't shown up in tmux yet, e.g. mid-spawn).
