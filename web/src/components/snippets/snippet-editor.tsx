@@ -119,14 +119,21 @@ function EditorForm({
 
         <label className="block">
           <span className="mb-1 block text-[12px] font-medium text-muted-foreground">
-            Body
+            Snippet text
           </span>
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
             rows={5}
-            placeholder="The text or /command this snippet inserts…"
-            aria-label="Snippet body"
+            placeholder="The prompt or /command this snippet inserts…"
+            aria-label="Snippet text"
+            // A snippet is sent verbatim to Claude's ❯ prompt or a shell, so iOS
+            // must never "help": no autocapitalize (`/Compact`), autocorrect, or
+            // spellcheck red-underlines on cwd / flags.
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            autoComplete="off"
             className={cn(
               'min-h-[120px] w-full resize-y rounded-xl border border-border bg-background',
               'px-3 py-2.5 font-mono text-base md:text-[14px] leading-5 outline-none focus:ring-2 focus:ring-ring',

@@ -907,12 +907,7 @@ export function Settings() {
 
           <ExperimentalSection />
 
-          <Section
-            title="Snippets"
-            footnote="Saved commands you can fire into a session from the accessory bar."
-          >
-            <SnippetsSection />
-          </Section>
+          <SnippetsSection />
 
           <Section
             title="Audit log"

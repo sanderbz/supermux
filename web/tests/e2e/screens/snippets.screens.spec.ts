@@ -63,39 +63,9 @@ test.beforeAll(async () => {
   await mkdir(OUT, { recursive: true })
 })
 
-test('settings snippets — edit + expand (desktop)', async ({ page }) => {
-  const backend = await startBackend()
-  try {
-    await seedSnippets(backend)
-    await page.setViewportSize({ width: 1280, height: 900 })
-    await page.addInitScript(injectGlobals(backend.token))
-    await page.goto(`${backend.baseUrl}/settings`)
-
-    const expand1 = page.getByRole('button', { name: 'Expand Continue (tests)' })
-    await expand1.waitFor()
-    const heading = page.getByText('Snippets', { exact: true }).first()
-    await heading.evaluate((el) => el.scrollIntoView({ block: 'start' }))
-    await page.waitForTimeout(500)
-
-    // 1) Collapsed — chevron + pencil (edit) + trash per row, two near-identical
-    //    truncated bodies.
-    await page.screenshot({ path: join(OUT, 'settings-snippets-collapsed.png') })
-
-    // 2) Expanded — full body wrapped + selectable.
-    await expand1.click()
-    await page.waitForTimeout(500)
-    await heading.evaluate((el) => el.scrollIntoView({ block: 'start' }))
-    await page.waitForTimeout(300)
-    await page.screenshot({ path: join(OUT, 'settings-snippets-expanded.png') })
-
-    // 3) Editor — reuses the existing SnippetEditor sheet, seeded with the row.
-    await page.getByRole('button', { name: 'Edit Continue (no tests)' }).click()
-    await page.waitForTimeout(700)
-    await page.screenshot({ path: join(OUT, 'settings-snippets-editor.png') })
-  } finally {
-    await backend.dispose()
-  }
-})
+// NOTE: the Settings inline snippets list (edit + expand) was replaced by the
+// dedicated manager sheet — its capture now lives in
+// `snippets-manager.screens.spec.ts`. This file keeps the focus-panel coverage.
 
 test('focus snippet panel — expand (mobile)', async ({ page }) => {
   const backend = await startBackend()

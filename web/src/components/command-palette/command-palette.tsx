@@ -76,6 +76,7 @@ import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewGroupAction } from '@/stores/new-group-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { ClaudeToolsHost } from '@/components/claude-tools/claude-tools-host'
+import { SnippetsManagerHost } from '@/components/snippets/snippets-manager-host'
 import { Kbd } from '@/components/ui/kbd'
 
 // ── Row shape: one normalized item the palette can render & invoke ────────────
@@ -786,6 +787,7 @@ export function CommandPalette() {
      *  the claude-tools store. Opt-in — only in the DOM as an overlay while
      *  open. */}
     <ClaudeToolsHost />
+    <SnippetsManagerHost />
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         className={cn(
