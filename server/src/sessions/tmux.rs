@@ -732,9 +732,10 @@ impl<'a> Tmux<'a> {
 
     /// Inject `text` literally — NO trailing Enter (callers send `Enter`
     /// separately). Short text uses `send-keys -l`; payloads over
-    /// [`PASTE_THRESHOLD`] bytes stream through a tmux paste buffer (the cmux
-    /// large-paste fix — `send-keys` argv is `ARG_MAX`-bounded and corrupts large
-    /// literals).
+    /// [`PASTE_THRESHOLD`] bytes — OR any text ending in `;` (which `send-keys`
+    /// would silently drop, see below) — stream through a tmux paste buffer (the
+    /// cmux large-paste fix — `send-keys` argv is `ARG_MAX`-bounded and corrupts
+    /// large literals).
     ///
     /// The buffer path is **non-bracketed** (raw): `send_text` carries a command
     /// to run, and bracketed paste triggers zsh's `bracketed-paste-magic`, which
@@ -745,7 +746,15 @@ impl<'a> Tmux<'a> {
         if text.is_empty() {
             return Ok(());
         }
-        if text.len() > PASTE_THRESHOLD {
+        // tmux's `cmd_parse_from_arguments` treats a TRAILING ';' in any argv
+        // element as a command separator: it strips the ';' and (unless the
+        // preceding byte is a backslash) ends the command there. This runs
+        // BEFORE `send-keys` parses `-l`/`--`, so neither flag protects it —
+        // `send-keys -l -- ";"` lands as `send-keys -l --` with no key arg and
+        // sends NOTHING (so a lone ';' keystroke, or any chunk ending in ';',
+        // silently vanishes). Route those through the paste buffer, which
+        // streams bytes over stdin and never touches tmux's command lexer.
+        if text.len() > PASTE_THRESHOLD || text.ends_with(';') {
             self.paste_via_buffer(text, false).await
         } else {
             // `--` so a leading '-' in the text isn't parsed as a flag.
@@ -1426,6 +1435,29 @@ mod live_tmux_tests {
         );
         kill_session(&short).await;
         kill_session(&long).await;
+    }
+
+    /// Regression: a lone `;` (and any chunk ending in `;`) must reach the pane.
+    /// `send-keys -l -- ";"` drops it because tmux's arg parser eats a trailing
+    /// `;` as a command separator before `-l` applies; `send_text` dodges that
+    /// by routing trailing-`;` text through the paste buffer.
+    #[tokio::test]
+    #[ignore]
+    async fn send_text_delivers_trailing_semicolon() {
+        let tag = rand_tag();
+        create_session(&tag).await;
+        let tmux = Tmux::new(&tag);
+        // A lone semicolon, then a command that ends in one — both previously lost.
+        tmux.send_text(";").await.expect("send lone ;");
+        tmux.send_text("echo SEMI_OK;").await.expect("send trailing ;");
+        tmux.send_key("Enter").await.expect("enter");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let cap = tmux.capture_pane(40).await.unwrap();
+        assert!(
+            cap.contains(";echo SEMI_OK;"),
+            "pane must show the lone ';' and the trailing ';' verbatim, got: {cap:?}"
+        );
+        kill_session(&tag).await;
     }
 
     /// `exists()` for a non-existent session returns Ok(false) — including
