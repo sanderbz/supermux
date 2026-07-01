@@ -833,6 +833,79 @@ impl<'a> Tmux<'a> {
         .map(|_| ())
     }
 
+    /// Resize the LEAD pane of an Agent-Team window to the client's EXACT
+    /// geometry, growing the shared window FIRST so the pane can actually get
+    /// there.
+    ///
+    /// A team window is `window-size manual` (no tmux client drives it) and its
+    /// panes SHARE one rectangle, so [`resize_pane`](Self::resize_pane) alone can
+    /// never make the lead wider than the current window. A lead window that
+    /// started narrow therefore STAYS narrow while the browser xterm is wide —
+    /// the app repaints only the left columns and the stale wide-layout cells on
+    /// the right are never cleared (the "team-lead render is garbled / unreadable"
+    /// bug). Fix: grow the WINDOW to `cols + <teammate-column reserve>` first (a
+    /// manual window is unbounded, so the extra width is free), THEN pin the lead
+    /// to exactly `cols × rows`. Now browser-width == pane-width and the app
+    /// repaints edge-to-edge. The lead is the full-height LEFT column, so its
+    /// `rows` also drives the window height. A single-pane window (teammates gone)
+    /// degrades to a plain `resize-window` — identical to the non-team path, and
+    /// avoids `resize-pane` wrongly filling the window with the reserve slack.
+    pub async fn resize_lead_pane(&self, cols: u16, rows: u16) -> Result<()> {
+        let target = self.target_match().await;
+        // One round-trip: window width + this (lead) pane's width + pane count.
+        let geom = self
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                &target,
+                "-F",
+                "#{window_width} #{pane_width} #{window_panes}",
+            ])
+            .await
+            .unwrap_or_default();
+        let mut it = geom.split_whitespace();
+        let win_w: u16 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let pane_w: u16 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let panes: u16 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+
+        // No teammates share the window — the window IS the pane, so a plain
+        // window resize is correct (`resize-pane` would fill it with the reserve).
+        if panes <= 1 {
+            return self.resize(cols, rows).await;
+        }
+
+        // Keep the teammate column its current width, but never let it collapse
+        // to nothing: 40 cols keeps teammates legible and costs nothing on a
+        // manual (unbounded) window.
+        const TEAMMATE_COL_MIN: u16 = 40;
+        let reserve = win_w.saturating_sub(pane_w).max(TEAMMATE_COL_MIN);
+        let target_w = cols.saturating_add(reserve);
+
+        // Grow the window first so `resize-pane` isn't clamped, then pin the lead.
+        self.run(&[
+            "resize-window",
+            "-t",
+            &target,
+            "-x",
+            &target_w.to_string(),
+            "-y",
+            &rows.to_string(),
+        ])
+        .await?;
+        self.run(&[
+            "resize-pane",
+            "-t",
+            &target,
+            "-x",
+            &cols.to_string(),
+            "-y",
+            &rows.to_string(),
+        ])
+        .await
+        .map(|_| ())
+    }
+
     /// On-disk log capture: `pipe-pane -O -t <target> 'cat >> <path>'`. Replaces
     /// any existing pipe (idempotent). Superseded by the `tee … > fifo`
     /// form once a WS client subscribes; this gives plain logging meanwhile.
@@ -1457,6 +1530,55 @@ mod live_tmux_tests {
             cap.contains(";echo SEMI_OK;"),
             "pane must show the lone ';' and the trailing ';' verbatim, got: {cap:?}"
         );
+        kill_session(&tag).await;
+    }
+
+    /// Regression: a team-LEAD pane must reach the client's width even when the
+    /// tmux window started NARROWER than the client. Pre-fix the lead used bare
+    /// `resize-pane`, which clamps to the frozen (manual) window width — so the
+    /// browser xterm ended up wider than the pane and the render garbled (stale
+    /// wide-layout cells never cleared). `resize_lead_pane` grows the window
+    /// first, then pins the pane, so browser-width == pane-width.
+    #[tokio::test]
+    #[ignore]
+    async fn resize_lead_pane_grows_past_a_narrow_frozen_window() {
+        let tag = rand_tag();
+        create_session(&tag).await;
+        let full = format!("supermux-{tag}");
+        let sess = Tmux::new(&tag);
+        // Simulate an Agent-Team lead window: a teammate split, a manual
+        // (client-independent) window size, frozen narrow so the lead can't be
+        // wide within it — exactly the state a real team window is in.
+        sess.run(&["set-window-option", "-t", &full, "window-size", "manual"])
+            .await
+            .unwrap();
+        sess.run(&["split-window", "-h", "-t", &full]).await.unwrap();
+        sess.run(&["resize-window", "-t", &full, "-x", "60", "-y", "30"])
+            .await
+            .unwrap();
+        // The lead is pane 0 (the original, left of the split).
+        let lead_id = sess
+            .run(&["list-panes", "-t", &full, "-F", "#{pane_id}"])
+            .await
+            .unwrap()
+            .lines()
+            .next()
+            .expect("a lead pane id")
+            .to_string();
+        let lead = Tmux::for_pane(&tag, lead_id.clone());
+
+        lead.resize_lead_pane(120, 40).await.expect("resize lead");
+
+        // Bare resize-pane would have clamped the lead to ~59 (the 60-col window).
+        // With the window grown first, the lead reaches ~120.
+        let w: u16 = lead
+            .run(&["display-message", "-p", "-t", &lead_id, "-F", "#{pane_width}"])
+            .await
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(w >= 118, "lead pane should reach ~120 cols, got {w}");
         kill_session(&tag).await;
     }
 
