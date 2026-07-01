@@ -1074,18 +1074,19 @@ fn sanitise_prompt(raw: &str) -> String {
 /// - **Non-team (`None`):** `tmux.resize` → `resize-window` (window-scoped),
 ///   unchanged. The session window contains exactly one pane, so window-scoped
 ///   and pane-scoped collapse to the same op.
-/// - **Team lead (`Some(%id)`):** `tmux.resize_pane` → `resize-pane -t %id`.
-///   The lead's xterm shows ONLY the lead pane (teammates render through their
-///   own teammate WS), so the client's `cols×rows` is the LEAD PANE's viewport, not
-///   the whole window's. Using `resize-window` here distributes the window cols
-///   across all N split panes — the lead lands at ≈ `cols/N`, content renders
-///   at ~50% width on mobile (the bug `.claude/team-lead-mobile-width-audit.md`
-///   diagnosed). `resize-pane` keeps tmux managing the joint window geometry
-///   (siblings reflow to make room) and ensures the LEAD owns the client's
-///   reported size. Teammates each carry their own per-pane geometry via the
-///   teammate WS (see [`handle_team_socket`]'s `Resize` arm) and reclaim
-///   their viewport on their next ResizeObserver tick — same idempotent
-///   contract, just with the lead/teammate panes correctly addressed.
+/// - **Team lead (`Some(%id)`):** `tmux.resize_lead_pane` → grow the shared
+///   window, THEN `resize-pane -t %id`. The lead's xterm shows ONLY the lead pane
+///   (teammates render through their own teammate WS), so the client's `cols×rows`
+///   is the LEAD PANE's viewport, not the whole window's. A team window is
+///   `window-size manual`, so bare `resize-pane` can't widen the lead past the
+///   frozen window — it stays narrow while the browser is wide and stale
+///   wide-layout cells never clear (garbled/unreadable). `resize_lead_pane` first
+///   grows the window to `cols + teammate-column`, then pins the lead to exactly
+///   `cols×rows` (a plain `resize-window` instead would split the window across N
+///   panes so the lead lands at ≈`cols/N` — the `.claude/team-lead-mobile-width-
+///   audit.md` bug). Teammates keep their own per-pane geometry via the teammate
+///   WS (see [`handle_team_socket`]'s `Resize` arm) and reclaim their viewport on
+///   their next ResizeObserver tick.
 ///
 /// [`PASTE_THRESHOLD`]: crate::sessions::tmux::PASTE_THRESHOLD
 async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op: Apply) {
@@ -1100,12 +1101,13 @@ async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op:
         Apply::Ctrl(ClientMsg::Input { data }) => tmux.send_text(&data).await,
         Apply::Ctrl(ClientMsg::Key { data }) => tmux.send_key(&data).await,
         Apply::Ctrl(ClientMsg::Resize { cols, rows }) => {
-            // Fork on the routing pin: lead-of-a-team uses pane-scoped resize
-            // so the lead's xterm geometry sizes the lead pane (not the whole
-            // window split across N panes). Non-team uses window-scoped resize
-            // (byte-for-byte unchanged for single-pane sessions).
+            // Fork on the routing pin: a team lead must GROW the shared window
+            // before pinning the lead pane to the client's geometry — bare
+            // resize-pane clamps to the frozen (manual) window width, leaving the
+            // browser xterm wider than the pane and the render garbled. Non-team
+            // uses window-scoped resize (byte-for-byte unchanged for single-pane).
             if lead_pane_id.is_some() {
-                tmux.resize_pane(cols, rows).await
+                tmux.resize_lead_pane(cols, rows).await
             } else {
                 tmux.resize(cols, rows).await
             }
