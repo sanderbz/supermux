@@ -38,6 +38,14 @@ export type HoverPreview = 'live' | 'expanded'
  *    peek connection (no hover-warm, no on-hover connect) — saves resources. */
 export type OverviewPreview = 'live' | 'text'
 
+/** Live-terminal GPU renderer.
+ *  - `webgl` — GPU-accelerated (fastest; default). Best on desktop.
+ *  - `dom`   — plain DOM rows, browser-native scroll paint. No GPU texture
+ *    atlas, so it sidesteps the iOS-WebKit "missing/repeating rows while
+ *    fast-scrolling" artifact — at some perf cost. Applied on the terminal's
+ *    NEXT open. */
+export type TerminalRenderer = 'webgl' | 'dom'
+
 interface UIStore {
   /** Overview default layout. */
   viewMode: ViewMode
@@ -74,6 +82,9 @@ interface UIStore {
    *  per-surface localStorage flag folds into this). Default `false`: stopped
    *  sessions are shown until the user opts to hide them. */
   hideStopped: boolean
+  /** Live-terminal GPU renderer. Default `webgl`; flip to `dom` on the phone to
+   *  test/fix the iOS fast-scroll row artifact. Read at terminal mount. */
+  terminalRenderer: TerminalRenderer
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
@@ -82,6 +93,7 @@ interface UIStore {
   setOverviewSizeMobile: (s: OverviewSize) => void
   setShowHidden: (v: boolean) => void
   setHideStopped: (v: boolean) => void
+  setTerminalRenderer: (r: TerminalRenderer) => void
 }
 
 export const useUI = create<UIStore>()(
@@ -95,6 +107,7 @@ export const useUI = create<UIStore>()(
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
       showHidden: true,
       hideStopped: false,
+      terminalRenderer: 'webgl',
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),
@@ -105,6 +118,7 @@ export const useUI = create<UIStore>()(
         set({ overviewSizeMobile: clampOverviewSizeMobile(overviewSizeMobile) }),
       setShowHidden: (showHidden) => set({ showHidden }),
       setHideStopped: (hideStopped) => set({ hideStopped }),
+      setTerminalRenderer: (terminalRenderer) => set({ terminalRenderer }),
     }),
     {
       name: 'supermux-ui',
