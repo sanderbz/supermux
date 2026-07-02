@@ -221,13 +221,17 @@
 }
 
 /* ── Terminal touch-scroll ──────────────────────────────────────────────────
-   xterm renders its scrollback into `.xterm-viewport`. `touch-action: pan-y`
-   lets a vertical one-finger drag pan the tmux scrollback (xterm's own native
-   touch handler consumes it). `overscroll-behavior: contain` stops the pan from
-   chaining out to the page once the buffer hits an end. !important beats
-   xterm.css's own rule. */
-.xterm-viewport {
-  touch-action: pan-y !important;
+   xterm 6.0 scrolls via its VS Code scrollable element and registers its OWN
+   touch/pointer handlers. `touch-action: none` on the terminal elements hands
+   the whole gesture to those handlers — pan-y would let the browser pre-commit
+   the vertical drag to a native scroll that no longer exists (the `.xterm-viewport`
+   is not a native-overflow scroller anymore), hijacking the pan before xterm can
+   act. `overscroll-behavior: contain` keeps any residual chain off the page.
+   !important beats xterm.css's own rule. */
+.xterm,
+.xterm-viewport,
+.xterm-scrollable-element {
+  touch-action: none !important;
   overscroll-behavior: contain;
 }
 
