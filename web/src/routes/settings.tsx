@@ -29,7 +29,6 @@ import {
   type ViewMode,
   type HoverPreview,
   type OverviewPreview,
-  type TerminalRenderer,
 } from '@/stores/ui-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
@@ -95,11 +94,6 @@ const HOVER_OPTIONS: { value: HoverPreview; label: string }[] = [
 const OVERVIEW_PREVIEW_OPTIONS: { value: OverviewPreview; label: string }[] = [
   { value: 'live', label: 'Live' },
   { value: 'text', label: 'Text' },
-]
-
-const RENDERER_OPTIONS: { value: TerminalRenderer; label: string }[] = [
-  { value: 'webgl', label: 'Fast (WebGL)' },
-  { value: 'dom', label: 'Compatible (DOM)' },
 ]
 
 /** Fixed default-model list. '' = whatever the server is configured to. */
@@ -754,8 +748,6 @@ export function Settings() {
   const setHoverPreview = useUI((s) => s.setHoverPreview)
   const overviewPreview = useUI((s) => s.overviewPreview)
   const setOverviewPreview = useUI((s) => s.setOverviewPreview)
-  const terminalRenderer = useUI((s) => s.terminalRenderer)
-  const setTerminalRenderer = useUI((s) => s.setTerminalRenderer)
   const [sound, setSound] = React.useState(() => getSoundsEnabled())
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
@@ -838,18 +830,6 @@ export function Settings() {
                   value={theme}
                   onChange={setTheme}
                   options={THEME_OPTIONS}
-                />
-              }
-            />
-            <Row
-              label="Terminal renderer"
-              hint="Fast (WebGL, default) or Compatible (DOM). Try Compatible on iOS if scrolling shows missing/repeating rows. Applies next time a terminal opens."
-              control={
-                <SegmentedControl
-                  ariaLabel="Terminal renderer"
-                  value={terminalRenderer}
-                  onChange={setTerminalRenderer}
-                  options={RENDERER_OPTIONS}
                 />
               }
             />

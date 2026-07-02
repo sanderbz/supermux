@@ -27,7 +27,6 @@ import { disableXtermMouseTracking } from '@/lib/disable-xterm-mouse'
 import { attachAndroidImeBridge, isAndroid } from '@/lib/android-ime'
 import { LINK_URL_REGEX, openExternal, findLinkAt } from '@/lib/terminal-links'
 import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
-import { useUI } from '@/stores/ui-store'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
 // session's pty is gone (not running) — there is nothing to reconnect to, so we
@@ -812,15 +811,7 @@ export function useLiveTerm(
       //    immediately) so the correct desktop cols are committed up front.
       safeFit()
       if (term.cols <= 0 || term.rows <= 0) return
-      // 2. Attach the GPU renderer — UNLESS the user picked the DOM renderer
-      //    (Settings → Appearance → Terminal renderer). DOM has no GPU texture
-      //    atlas, so it sidesteps the iOS-WebKit fast-scroll "missing/repeating
-      //    rows" artifact; skipping the WebGL addon leaves xterm on its built-in
-      //    DOM renderer. Read once here at mount (a change applies on next open).
-      if (useUI.getState().terminalRenderer === 'dom') {
-        repaint()
-        return
-      }
+      // 2. Attach the GPU renderer.
       try {
         const webgl = new WebglAddon()
         // Context loss (backgrounded tab, GPU reset): dispose the dead WebGL
