@@ -74,6 +74,32 @@ impl TmuxTarget {
     }
 }
 
+/// One window of tmux-authoritative scrollback, returned by
+/// [`Tmux::capture_history_window`] for copy-mode-over-web. tmux is the single
+/// source of truth for every row above the live viewport; the client renders
+/// these rows in a read-only history term and never reflows them itself (tmux
+/// owns reflow). `rows` are PHYSICAL rows (captured without `-J`) already
+/// wrapped at `cols`, so 1 tmux row = 1 display row and historical + live rows
+/// wrap identically. Serialized into the `history` WS response frame.
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct HistoryWindow {
+    /// The captured rows, top→bottom, ANSI-coloured (`-e`), physical (no `-J`).
+    pub rows: Vec<String>,
+    /// `#{history_size}` at capture time — the absolute-line-id anchor the
+    /// client uses to keep the rendered history from sliding under live output.
+    pub history_size: u32,
+    /// Actual bottom-inclusive scrollback range served (clamped into range).
+    pub start_offset: i64,
+    /// Bottom of the served range (`<= -1`; `-1` = the row just above the
+    /// visible top).
+    pub end_offset: i64,
+    /// `start` reached `-history_size` — no older rows exist (stop fetching).
+    pub hit_top: bool,
+    /// `#{pane_width}` the capture was taken at — the client's width-match guard
+    /// discards rows whose width no longer matches its live grid.
+    pub cols: u16,
+}
+
 /// A handle to one tmux [`TmuxTarget`] (a session OR a pane). Cheap to construct.
 ///
 /// Backwards-compatible: [`Tmux::new`] still takes a bare session name and the
@@ -291,6 +317,13 @@ impl<'a> Tmux<'a> {
     /// history actually exists to replay/scroll. tmux trims oldest lines past
     /// this, so per-session memory stays bounded.
     const HISTORY_LIMIT: u32 = 50_000;
+
+    /// Cap on rows returned by a single [`Tmux::capture_history_window`] call.
+    /// A fling scroll fires many windowed requests back-to-back; bounding each
+    /// window keeps every `capture-pane` fork small (~2 ms) and every response
+    /// frame modest, so the read-only history path never head-of-line-blocks
+    /// the live tail. The client asks in 300-row windows; 500 is the ceiling.
+    const HISTORY_WINDOW_MAX: u32 = 500;
 
     /// Create a detached session running `shell`, with `dir` as the working
     /// directory and `env` injected per-pane. Sets `remain-on-exit on` (so a dead
@@ -728,6 +761,104 @@ impl<'a> Tmux<'a> {
         Ok(frame_alt_screen_seed(&history, &visible, cursor_x, cursor_y))
     }
 
+    /// Windowed scrollback for copy-mode-over-web. Returns up to `count`
+    /// PHYSICAL rows ending at `end_offset` (scrollback coord; `end_offset <=
+    /// -1`, where `-1` is the row just above the visible top), captured at the
+    /// pane's CURRENT width. Read-only — takes no lock, never touches the live
+    /// fan-out or the replay ring; a failed capture is the caller's problem to
+    /// degrade on.
+    ///
+    /// **`-J` decision (corrected from the seed path).** The seed uses `-J` to
+    /// JOIN wrapped lines for a coherent full-screen paint. This windowed path
+    /// deliberately OMITS `-J` so tmux returns physical rows already wrapped at
+    /// the current pane width — 1 tmux row = 1 display row, which is what the
+    /// client's history term needs for exact row math and wrapping identical to
+    /// the live band.
+    ///
+    /// **No alt framing.** The alt buffer has no scrollback of its own; `-S/-E`
+    /// on the pane returns the PRIMARY buffer's history in both primary and
+    /// alt-screen modes, so this rows-only path needs no alt-screen framing
+    /// (framing is a seed concern, not a rows concern).
+    pub async fn capture_history_window(
+        &self,
+        end_offset: i64,
+        count: u32,
+    ) -> Result<HistoryWindow> {
+        let target = self.target_match().await;
+        // 1. Probe history size + width (+ alt, unused here) in one message.
+        let info = self
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                &target,
+                "#{history_size},#{pane_width},#{alternate_on}",
+            ])
+            .await
+            .unwrap_or_default();
+        let (history_size, pane_width, _alt) = parse_hist_info(&info);
+        // 2. Clamp the requested range into [-history_size, -1].
+        let count = count.min(Self::HISTORY_WINDOW_MAX) as i64;
+        let end = end_offset.min(-1).max(-(history_size as i64));
+        let start = (end - count + 1).max(-(history_size as i64));
+        let hit_top = start <= -(history_size as i64);
+        if history_size == 0 || start > end {
+            return Ok(HistoryWindow {
+                rows: vec![],
+                history_size,
+                start_offset: 0,
+                end_offset: 0,
+                hit_top: true,
+                cols: pane_width,
+            });
+        }
+        // 3. Capture: `-e` colours, NO `-J` (physical rows), no screen framing.
+        let body = self
+            .run(&[
+                "capture-pane",
+                "-e",
+                "-p",
+                "-t",
+                &target,
+                "-S",
+                &start.to_string(),
+                "-E",
+                &end.to_string(),
+            ])
+            .await
+            .unwrap_or_default();
+        let rows = body
+            .trim_end_matches('\n')
+            .split('\n')
+            .map(str::to_owned)
+            .collect();
+        Ok(HistoryWindow {
+            rows,
+            history_size,
+            start_offset: start,
+            end_offset: end,
+            hit_top,
+            cols: pane_width,
+        })
+    }
+
+    /// Raw `display-message -p '#{history_size},#{pane_width},#{alternate_on}'`
+    /// output for this pane, for the WS `attach_meta` boundary frame. Parse with
+    /// [`parse_hist_info`]. Read-only; empty string on a probe failure (which
+    /// `parse_hist_info` degrades to size 0 / width 0).
+    pub async fn pane_history_meta(&self) -> String {
+        let target = self.target_match().await;
+        self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            &target,
+            "#{history_size},#{pane_width},#{alternate_on}",
+        ])
+        .await
+        .unwrap_or_default()
+    }
+
     // ── input ────────────────────────────────────────────────────────────────
 
     /// Inject `text` literally — NO trailing Enter (callers send `Enter`
@@ -1048,6 +1179,26 @@ pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32, u32) {
     (alt_on, cursor_x, cursor_y, pane_height)
 }
 
+/// Parse tmux's `display-message -p '#{history_size},#{pane_width},#{alternate_on}'`
+/// output (the probe in [`Tmux::capture_history_window`]) into
+/// `(history_size, pane_width, alternate_on)`. Whitespace-tolerant; malformed
+/// input falls back to `(0, 0, false)` so a probe failure yields an empty
+/// history window (`hit_top`) rather than crashing the WS attach. Free fn so the
+/// parse contract is unit-testable without a live tmux server.
+pub(crate) fn parse_hist_info(info: &str) -> (u32, u16, bool) {
+    let mut parts = info.trim().split(',');
+    let history_size: u32 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let pane_width: u16 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let alt_on = parts.next().map(|s| s.trim() == "1").unwrap_or(false);
+    (history_size, pane_width, alt_on)
+}
+
 /// Parse tmux's `display-message -p '#{cursor_x},#{cursor_y}'` (the Race-B
 /// re-probe in [`Tmux::capture_history_with_alt_screen_aware_visible`]) into
 /// `(cursor_x, cursor_y)`. Returns `None` on malformed/empty input so the
@@ -1160,6 +1311,31 @@ mod seed_tests {
         assert_eq!(parse_pane_info("1,x,y,z"), (true, 0, 0, 0));
         assert_eq!(parse_pane_info("2,5,21,40"), (false, 5, 21, 40)); // `2` != `1` → false
         assert_eq!(parse_pane_info("0,5,21"), (false, 5, 21, 0)); // 3-field → height 0
+    }
+
+    #[test]
+    fn parse_hist_info_happy_path() {
+        // tmux output: `history_size,pane_width,alternate_on`.
+        assert_eq!(parse_hist_info("1234,80,0"), (1234, 80, false));
+        assert_eq!(parse_hist_info("0,120,1"), (0, 120, true));
+        assert_eq!(parse_hist_info("50000,200,0"), (50000, 200, false));
+    }
+
+    #[test]
+    fn parse_hist_info_trims_whitespace_and_trailing_newline() {
+        assert_eq!(parse_hist_info("1234,80,0\n"), (1234, 80, false));
+        assert_eq!(parse_hist_info("  1234 , 80 , 0  "), (1234, 80, false));
+    }
+
+    #[test]
+    fn parse_hist_info_degrades_safely_on_malformed_input() {
+        // Empty / partial / non-numeric → falls back to (0, 0, false), which
+        // yields an empty (hit_top) window rather than crashing the attach.
+        assert_eq!(parse_hist_info(""), (0, 0, false));
+        assert_eq!(parse_hist_info("garbage"), (0, 0, false));
+        assert_eq!(parse_hist_info("1234"), (1234, 0, false)); // width/alt missing
+        assert_eq!(parse_hist_info("1234,80"), (1234, 80, false)); // alt missing
+        assert_eq!(parse_hist_info("x,y,z"), (0, 0, false));
     }
 
     #[test]

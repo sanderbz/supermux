@@ -285,6 +285,21 @@ async fn handle_team_socket(
                             Ok(ClientMsg::Resync) => {
                                 resync_deadline = Some(Instant::now());
                             }
+                            // Copy-mode-over-web scrollback: a windowed, READ-ONLY
+                            // capture answered inline. Fits the teammate read-only
+                            // contract natively (pure read — no lock, no input
+                            // drain), so it's the same arm as the session path.
+                            Ok(ClientMsg::History {
+                                req_id,
+                                end_offset,
+                                count,
+                                ..
+                            }) => {
+                                send_history_window(
+                                    &mut socket, &tmux, req_id, end_offset, count,
+                                )
+                                .await;
+                            }
                             _ => {}
                         }
                     }
@@ -422,9 +437,25 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    captures the lead's content, not whichever pane tmux thinks is active)
     //    — same byte-for-byte behaviour as today for non-team sessions.
     let (_replay, mut rx) = stream.subscribe();
-    let tmux = match lead_pane_id.as_deref() {
-        Some(lp) => Tmux::for_pane(&name, lp.to_string()),
-        None => Tmux::new(&name),
+    // Resolve the session's transport ONCE (local vs remote-host SSH) and build
+    // the `tmux` handle over it. Historically the handle was always local
+    // (`Tmux::new`/`for_pane`), so seed + history captures on a remote-host
+    // session mis-targeted the local box — this threads the same transport the
+    // pty reader uses. `Some/None` fallback to the local builders degrades to
+    // exactly the old behaviour when resolution fails.
+    let transport: Option<std::sync::Arc<crate::sessions::transport::Transport>> =
+        match crate::db::sessions::get(&state.pool, &name).await {
+            Ok(Some(s)) => match s.host_id {
+                Some(h) => state.host_pool.transport_for(h).await.ok(),
+                None => None,
+            },
+            _ => None,
+        };
+    let tmux = match (transport.as_deref(), lead_pane_id.as_deref()) {
+        (Some(t), Some(lp)) => Tmux::for_pane_on(t, &name, lp.to_string()),
+        (Some(t), None) => Tmux::new_on(t, &name),
+        (None, Some(lp)) => Tmux::for_pane(&name, lp.to_string()),
+        (None, None) => Tmux::new(&name),
     };
 
     // 4a. Cursor-row-mismatch fix (Option A — server-side belt). Before the
@@ -555,6 +586,26 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
                                             if input_tx.send(cmd).is_err() {
                                                 break;
                                             }
+                                        }
+                                        // Copy-mode-over-web: a windowed, READ-ONLY
+                                        // scrollback capture answered inline on this
+                                        // socket. NOT routed to the input drain and
+                                        // NOT lock-taking — history is pure read, so
+                                        // it satisfies the teammate read-only contract
+                                        // with no special-casing. A ~2 ms capture-pane
+                                        // fork; promote to a dedicated task only if
+                                        // profiling shows live-tail stutter.
+                                        ClientMsg::History {
+                                            req_id,
+                                            end_offset,
+                                            count,
+                                            ..
+                                        } => {
+                                            send_history_window(
+                                                &mut socket, &tmux, req_id, end_offset,
+                                                count,
+                                            )
+                                            .await;
                                         }
                                         // Everything else: non-blocking hand-off to
                                         // the drain task, which applies it in order.
@@ -831,12 +882,70 @@ async fn send_seed_then_done(
             return false;
         }
     }
+    // Copy-mode-over-web boundary init: hand the client tmux's authoritative
+    // `history_size` + `pane_width` so it can anchor the seam between the live
+    // band (owned by xterm) and the scrollback above it (owned by tmux) before
+    // any `history` request. One extra read-only `display-message` fork. Old
+    // clients ignore unknown text frames, so this is a safe additive frame that
+    // precedes `replay_done`. A probe failure degrades to size 0 / width 0 (the
+    // client treats it as "no history yet" and re-inits on the next resync).
+    {
+        let info = tmux.pane_history_meta().await;
+        let (history_size, cols, _alt) = crate::sessions::tmux::parse_hist_info(&info);
+        let meta = serde_json::json!({
+            "type": "attach_meta",
+            "history_size": history_size,
+            "cols": cols,
+        });
+        if socket
+            .send(Message::Text(meta.to_string().into()))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
     socket
         .send(Message::Text(Utf8Bytes::from_static(
             r#"{"type":"replay_done"}"#,
         )))
         .await
         .is_ok()
+}
+
+/// Answer a [`ClientMsg::History`] inline on the socket. Read-only: a windowed
+/// `capture-pane` over the session's transport, serialized to the `history`
+/// response frame. The `req_id` echoes back so the client can discard a fling's
+/// stale replies (it keeps only the newest inflight). On a capture error we
+/// still send a `history` frame carrying `error:true` so the client can schedule
+/// a backoff retry / fall back to the seed rather than hang waiting.
+async fn send_history_window(
+    socket: &mut WebSocket,
+    tmux: &Tmux<'_>,
+    req_id: u32,
+    end_offset: i64,
+    count: u32,
+) {
+    let payload = match tmux.capture_history_window(end_offset, count).await {
+        Ok(w) => serde_json::json!({
+            "type": "history",
+            "req_id": req_id,
+            "history_size": w.history_size,
+            "start_offset": w.start_offset,
+            "end_offset": w.end_offset,
+            "hit_top": w.hit_top,
+            "cols": w.cols,
+            "rows": w.rows,
+        }),
+        Err(_) => serde_json::json!({
+            "type": "history",
+            "req_id": req_id,
+            "rows": [],
+            "error": true,
+            "hit_top": false,
+        }),
+    };
+    let _ = socket.send(Message::Text(payload.to_string().into())).await;
 }
 
 /// Pure coalescing planner (typing-latency win #2) — single source of the
@@ -1112,11 +1221,17 @@ async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op:
                 tmux.resize(cols, rows).await
             }
         }
-        // Auth-after-auth, client Ping, and Resync are no-ops on the input path.
-        // Resync never reaches here in practice — the main loop intercepts it
-        // before the input hand-off — but a stray one is a harmless no-op (it
-        // carries no tmux side effect; the snapshot push happens on the socket).
-        Apply::Ctrl(ClientMsg::Auth { .. } | ClientMsg::Ping | ClientMsg::Resync) => Ok(()),
+        // Auth-after-auth, client Ping, Resync, and History are no-ops on the
+        // input path. Resync and History never reach here in practice — the main
+        // loop intercepts both before the input hand-off (History is answered
+        // inline by `send_history_window`) — but a stray one is a harmless no-op
+        // (no tmux side effect: the snapshot / history push happens on the socket).
+        Apply::Ctrl(
+            ClientMsg::Auth { .. }
+            | ClientMsg::Ping
+            | ClientMsg::Resync
+            | ClientMsg::History { .. },
+        ) => Ok(()),
     };
     if let Err(e) = res {
         tracing::debug!(session = %name, error = %e, "ws input → tmux failed");
