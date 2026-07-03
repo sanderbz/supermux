@@ -32,6 +32,7 @@ import {
 } from '@/stores/ui-store'
 import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
+import { isTermHistoryEnabled, setTermHistoryEnabled } from '@/lib/term-history-flag'
 import { pushApi, type NotifCategory, type PushAttempt, type PushPrefs } from '@/lib/api'
 import { usePush } from '@/hooks/use-push'
 import {
@@ -749,6 +750,7 @@ export function Settings() {
   const overviewPreview = useUI((s) => s.overviewPreview)
   const setOverviewPreview = useUI((s) => s.setOverviewPreview)
   const [sound, setSound] = React.useState(() => getSoundsEnabled())
+  const [termHistory, setTermHistory] = React.useState(() => isTermHistoryEnabled())
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const { scrollY } = useScroll({ container: scrollRef })
@@ -782,6 +784,14 @@ export function Settings() {
     setSoundsEnabled(next)
     setSound(next)
     if (next) playTone() // immediate preview so the choice is audible
+  }
+
+  // Beta flag: read scroll-up history from tmux's authoritative buffer instead
+  // of rebuilding it in the browser. Read once at terminal mount, so a change
+  // applies on the next terminal (re)load — the hint tells the user to reload.
+  function toggleTermHistory(next: boolean) {
+    setTermHistoryEnabled(next)
+    setTermHistory(next)
   }
 
   return (
@@ -878,6 +888,17 @@ export function Settings() {
                   ariaLabel={MISC.soundsToggleLabel}
                   checked={sound}
                   onCheckedChange={toggleSound}
+                />
+              }
+            />
+            <Row
+              label="Tmux-authoritative scrollback (beta)"
+              hint="Reads scroll-up history straight from tmux instead of rebuilding it in the browser — fixes scrambled/duplicated history. Reload the terminal after changing. Off by default."
+              control={
+                <Switch
+                  ariaLabel="Tmux-authoritative scrollback"
+                  checked={termHistory}
+                  onCheckedChange={toggleTermHistory}
                 />
               }
             />
