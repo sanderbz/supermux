@@ -452,6 +452,16 @@ impl<'a> Tmux<'a> {
         Ok(())
     }
 
+    /// `tmux kill-pane -t %id` — remove ONE teammate pane from its window. Only
+    /// meaningful on a PANE handle ([`Tmux::for_pane`]/[`for_pane_on`]); the
+    /// caller validates the `%id` belongs to the intended session's window (and
+    /// is not the lead pane) BEFORE calling — pane ids are a server-global
+    /// reused counter, so an unvalidated id could hit an unrelated pane.
+    pub async fn kill_pane(&self) -> Result<()> {
+        self.run(&["kill-pane", "-t", &self.target_match().await]).await?;
+        Ok(())
+    }
+
     /// `tmux rename-session -t supermux-<name> supermux-<new>` — rename the LIVE
     /// tmux session so it keeps resolving under the session's NEW name. The
     /// window/pane (and its `pipe-pane` capture) survive the rename untouched —

@@ -22,6 +22,7 @@
 import { cn } from '@/lib/utils'
 import { ActivityLine } from '@/components/session-tile/activity-status'
 import { MemberStatusDot } from './member-status-dot'
+import { KillTeammateButton } from './kill-teammate-button'
 import { tasksForMember, type Team, type TeamMember } from '@/lib/api/teams'
 
 const TASK_DONE = 'completed'
@@ -95,7 +96,8 @@ export function TeammateChip({
       </div>
 
       {/* Trailing (tabular). needs_you → the ONE loud blue pill (tile waiting-pill
-          geometry). Else → muted task-count. */}
+          geometry). Else → muted task-count. Then the kill-pane trash (manual
+          Agent Teams cleanup — renders nothing when there's no live pane). */}
       <div className="flex shrink-0 items-center gap-1">
         {needsYou ? (
           <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
@@ -108,6 +110,7 @@ export function TeammateChip({
             </span>
           )
         )}
+        <KillTeammateButton team={team} member={member} />
       </div>
     </div>
   )

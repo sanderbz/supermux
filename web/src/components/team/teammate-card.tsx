@@ -13,6 +13,7 @@
 
 import { cn } from '@/lib/utils'
 import { MemberStatusDot } from './member-status-dot'
+import { KillTeammateButton } from './kill-teammate-button'
 import { ActivityLine } from '@/components/session-tile/activity-status'
 import { TeammateTerminal } from '@/components/terminal/teammate-terminal'
 import { tasksForMember, type Team, type TeamMember } from '@/lib/api/teams'
@@ -57,24 +58,28 @@ export function TeammateCard({
         style={{ backgroundColor: rail }}
       />
 
-      {/* Header — tap to focus. */}
-      <button
-        type="button"
-        onClick={onFocus}
-        aria-label={`Open ${member.name}${needsYou ? ', needs you' : ''}`}
-        className="flex items-start gap-2 px-3 pl-3.5 pt-2.5 pb-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      >
-        <MemberStatusDot status={member.status} className="mt-0.5" />
-        <div className="min-w-0 flex-1 leading-tight">
-          <div className="truncate text-sm font-medium">{member.name}</div>
-          {activity ? (
-            <ActivityLine activity={activity} className="text-xs" />
-          ) : (
-            <div className="truncate text-xs text-muted-foreground/70">
-              {member.model || 'teammate'}
-            </div>
-          )}
-        </div>
+      {/* Header — the identity block is the tap-to-focus target; the trailing
+          token + kill-pane trash sit BESIDE it (a button can't nest a button,
+          and the trash must never trigger a navigation). */}
+      <div className="flex items-start gap-2 px-3 pl-3.5 pt-2.5 pb-1.5">
+        <button
+          type="button"
+          onClick={onFocus}
+          aria-label={`Open ${member.name}${needsYou ? ', needs you' : ''}`}
+          className="flex min-w-0 flex-1 items-start gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <MemberStatusDot status={member.status} className="mt-0.5" />
+          <div className="min-w-0 flex-1 leading-tight">
+            <div className="truncate text-sm font-medium">{member.name}</div>
+            {activity ? (
+              <ActivityLine activity={activity} className="text-xs" />
+            ) : (
+              <div className="truncate text-xs text-muted-foreground/70">
+                {member.model || 'teammate'}
+              </div>
+            )}
+          </div>
+        </button>
         {needsYou ? (
           <span className="mt-0.5 shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">
             needs you
@@ -86,7 +91,10 @@ export function TeammateCard({
             </span>
           )
         )}
-      </button>
+        {/* Kill-pane trash (manual Agent Teams cleanup — renders nothing when
+            there's no live pane). */}
+        <KillTeammateButton team={team} member={member} className="-mt-0.5" />
+      </div>
 
       {/* Mini read-only live terminal — the at-a-glance live preview, like the
           desktop session tile. Fixed height so the card grid stays tidy.
