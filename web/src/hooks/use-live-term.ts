@@ -28,6 +28,7 @@ import { disableXtermMouseTracking } from '@/lib/disable-xterm-mouse'
 import { attachAndroidImeBridge, isAndroid } from '@/lib/android-ime'
 import { LINK_URL_REGEX, openExternal, findLinkAt } from '@/lib/terminal-links'
 import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
+import { isTermHistoryEnabled } from '@/lib/term-history-flag'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
 // session's pty is gone (not running) — there is nothing to reconnect to, so we
@@ -103,6 +104,22 @@ export interface UseLiveTermResult {
   /** Pin the viewport back to the live bottom (resume following output) and
    *  re-focus the input. Wired to the "jump to bottom" button (SD-2). */
   scrollToBottom(): void
+  /** True when the tmux-authoritative scrollback layer is active for this
+   *  terminal (the `TERM_TMUX_HISTORY` flag was on at mount). False → the
+   *  terminal is on the historical (xterm-owned-scrollback) path.
+   *
+   *  DESIGN (authoritative reseed, single xterm). With the flag on there is
+   *  still exactly ONE xterm. On attach we SEED it with tmux's authoritative,
+   *  already-reflowed scrollback (walking `history` windows up from the seam)
+   *  and PREPEND those rows above the live screen — so native xterm scroll just
+   *  works, with no overlay, no wheel interception, no second surface, and no
+   *  client-side reflow (tmux owns the reflow). Scrolling near the top fetches
+   *  the next older window and grows the seeded block. */
+  historyEnabled: boolean
+  /** The live term's current column count, updated on every fit/resize. Exposed
+   *  for parity with the previous two-term design; harmless when unused. 0 until
+   *  the first fit. */
+  cols: number
 }
 
 // ── Clipboard ────────────────────────────────────────────────────────────────
@@ -199,6 +216,20 @@ const REPLAY_DONE_FALLBACK_MS = 400
 // bottom (or a 1-notch rubber-band) never flickers the button on; scrolling up
 // "a bit" (~a row or two) does. Measured on `.xterm-viewport.scrollTop`.
 const SCROLL_TO_BOTTOM_SLACK_PX = 24
+
+// ── tmux-authoritative scrollback tunables (gated by TERM_TMUX_HISTORY) ──
+// With the flag ON, xterm keeps its FULL scrollback (a single surface) and we
+// SEED it with tmux's authoritative, already-reflowed history on attach, then
+// fetch-older-and-grow as the user scrolls near the top. With the flag OFF none
+// of these are used and the terminal is byte-identical to today.
+//
+// Rows per history request window. Stays at/under the server's
+// HISTORY_WINDOW_MAX (500) so a single capture serves a whole window. Used both
+// for the on-attach authoritative probe and each near-top older fetch.
+const HISTORY_WINDOW = 500
+// How close to the top (px) of the scrollback the viewport must come before we
+// prefetch the next older window. Widened to hide RTT (esp. SSH sessions).
+const HISTORY_PREFETCH_SLACK_PX = 600
 
 // Close codes with explicit v2 semantics.
 const CLOSE_AUTH = 1008 // auth/origin reject — permanent
@@ -471,6 +502,16 @@ export function useLiveTerm(
   // recreating the effect; assigned once below.
   const connectRef = React.useRef<() => void>(() => {})
 
+  // §5 flag, read once at first render (parity with the mount effect, which
+  // reads the SAME localStorage flag independently at mount). `useState` with an
+  // initializer keeps it constant across re-renders for the terminal's lifetime.
+  const [historyEnabled] = React.useState(isTermHistoryEnabled)
+  // Mirrored live-term cols (exposed for parity; harmless when unused).
+  const [cols, setCols] = React.useState(0)
+  const setColsIfChanged = React.useCallback((next: number) => {
+    setCols((prev) => (prev === next ? prev : next))
+  }, [])
+
   // ── Imperative API (stable refs; the dock/joystick call these) ──────────────
   const sendRaw = React.useCallback((data: string) => {
     const ws = wsRef.current
@@ -611,6 +652,193 @@ export function useLiveTerm(
     const container = containerRef.current
     if (!container) return
 
+    // §5 feature flag: read ONCE at mount. When OFF everything below stays on
+    // the historical path (xterm keeps its full 50000 scrollback, no `history`
+    // frames are sent, no history state is tracked) — byte-identical to today.
+    const historyEnabled = isTermHistoryEnabled()
+
+    // ── tmux-authoritative history state (authoritative-reseed design) ───────────
+    // All effect-local (like `pendingWrites`) — the single mount effect owns the
+    // whole lifecycle; a re-subscribe (name/wsPath change) starts fresh. Inert
+    // while `historyEnabled` is false.
+    //
+    // DESIGN (authoritative reseed, single xterm, gap-fill prepend).
+    //
+    // The server's attach SEED already replays tmux's FULL scrollback (`-S -`,
+    // joined = tmux's own reflow) as one binary frame — so for the common case
+    // xterm's single buffer ALREADY holds tmux's authoritative history top→bottom
+    // and native xterm scroll reveals it directly. The old bug was purely that
+    // xterm's scrollback was shrunk to a 200-row band, TRUNCATING that replayed
+    // history into a void; keeping the full 50000 scrollback (above) fixes that.
+    //
+    // On top of that we make tmux the authoritative source on scroll-up:
+    //   • On near-top scroll we send `history` request frames (windowed
+    //     `capture-pane`, absolute-id anchored) — the copy-mode-over-web contract.
+    //   • We PREPEND any fetched rows that sit ABOVE what xterm currently holds
+    //     (the genuine gap case: a history so large the replay seed was truncated,
+    //     or a reconnect where the seed lagged). Prepend = a whole-buffer repaint
+    //     [older history] + [existing buffer text], scroll-position preserved.
+    //   • When xterm already covers the fetched region (the common replay case),
+    //     the fetch is a no-op augmentation — NEVER a destructive reset — so the
+    //     clean replayed buffer is untouched and scroll stays perfectly smooth.
+    //
+    // The seam invariant: while scrolled up the pane keeps producing output, so
+    // tmux's `history_size` grows and negative offsets slide. Absolute ids keep
+    // fetched rows stable regardless of that slide.
+    const histRows = new Map<number, string>() // absLineId → ANSI row (fetched)
+    let histOldestAbs = Infinity // smallest absId fetched
+    let histSeamAbs = -1 // absId of the row directly above the live screen (seam)
+    let histSizeLast = 0 // latest tmux history_size
+    let histHitTop = false // reached -history_size → no older rows exist
+    let histInflightReq: number | null = null
+    let histInflightAt = 0 // epoch ms of the inflight request (stall re-issue)
+    let histWidthMismatches = 0 // consecutive width-guard refetches (loop breaker)
+    let histReqSeq = 0
+    const absId = (histSize: number, offset: number) => histSize + offset
+    // A lost `history` response (socket close race, old server that can't parse
+    // the frame) must not wedge fetching for the rest of the mount: an inflight
+    // older than this is considered stalled and the near-top scroll may re-issue.
+    const HISTORY_INFLIGHT_STALL_MS = 5000
+    // Width-guard refetch cap. Two viewers at different widths fight over the
+    // pane width (last resize wins); without a cap the loser would ping-pong
+    // `history` requests at RTT cadence forever. After this many consecutive
+    // mismatches fetching pauses until the next local resize or reconnect.
+    const HISTORY_WIDTH_MISMATCH_MAX = 3
+
+    // How many rows above the live screen xterm currently holds in its buffer —
+    // i.e. how deep the replay seed reached. The topmost buffer absId is
+    // `histSeamAbs + 1 - rowsAboveScreen`; anything OLDER than that is a gap tmux
+    // must fill on scroll-up. `buffer.baseY` is the number of scrollback rows
+    // above the visible screen.
+    const rowsAboveScreenInBuffer = (t: Terminal): number => t.buffer.active.baseY
+
+    // Absolute id of the OLDEST row xterm currently holds (top of the buffer).
+    const bufferTopAbs = (t: Terminal): number =>
+      histSeamAbs + 1 - rowsAboveScreenInBuffer(t)
+
+    // GAP-FILL prepend. Runs ONLY when the fetched authoritative block extends
+    // ABOVE what xterm's buffer currently holds — the genuine case where the
+    // replay seed was truncated (a very large / evicted history) or a reconnect's
+    // seed lagged. It writes [missing older authoritative rows] + [existing buffer
+    // text] and re-pins the bottom. This is the one path that repaints; the common
+    // full-replay case never reaches it (guarded by the buffer-top check), keeping
+    // that scroll smooth and fully colour-correct. Here the prepended older rows
+    // ARE coloured (authoritative SGR from tmux); the existing rows below are
+    // re-emitted as plain text (xterm exposes no SGR read-back) — an acceptable
+    // trade only taken to avoid a black void on an evicted history.
+    const fillGapAndRepaint = (t: Terminal) => {
+      // Only meaningful when we hold a contiguous authoritative block from
+      // `histOldestAbs` down to the seam that extends ABOVE the buffer top.
+      if (histOldestAbs === Infinity) return
+      if (histOldestAbs >= bufferTopAbs(t)) return // no gap — replay already covers it
+      const viewport =
+        containerRef.current?.querySelector<HTMLElement>('.xterm-viewport')
+      const wasPinnedBottom =
+        !viewport ||
+        viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <=
+          SCROLL_TO_BOTTOM_SLACK_PX
+      // Everything the authoritative block adds ABOVE the current buffer top.
+      const addFrom = histOldestAbs
+      const addTo = bufferTopAbs(t) - 1
+      const older: string[] = []
+      for (let a = addFrom; a <= addTo; a++) older.push(histRows.get(a) ?? '')
+      if (older.length === 0) return
+      // Snapshot the existing buffer (scrollback + screen) as plain text — SGR is
+      // lost for these rows, but this path ONLY runs for very large evicted
+      // histories where the alternative is a black void; the older authoritative
+      // rows we prepend ARE coloured. The common (non-gap) case never gets here.
+      const buf = t.buffer.active
+      const existing: string[] = []
+      for (let i = 0; i < buf.length; i++) {
+        existing.push(buf.getLine(i)?.translateToString(false) ?? '')
+      }
+      while (existing.length > 1 && existing[existing.length - 1].trim() === '') {
+        existing.pop()
+      }
+      try {
+        t.reset()
+        t.write(older.join('\r\n') + '\r\n' + existing.join('\r\n'), () => {
+          if (wasPinnedBottom) {
+            try {
+              t.scrollToBottom()
+            } catch {
+              /* disposed — harmless */
+            }
+          }
+        })
+      } catch {
+        /* disposed mid-repaint — a later fetch repaints again */
+      }
+    }
+
+    // Send a `history` request for `count` rows ending at `endOffset` (scrollback
+    // coord, ≤ -1) at the CURRENT width. `req_id` correlates async replies (a
+    // fling produces many inflight; the newest wins). No-op unless the flag is on,
+    // the socket is open, and there are older rows to fetch.
+    const requestHistory = (endOffset: number, count: number) => {
+      if (!historyEnabled || histHitTop) return
+      const t = termRef.current
+      const ws = wsRef.current
+      // Use the INSTANCE `ws.OPEN` constant (spec-guaranteed === 1), not the
+      // static `WebSocket.OPEN`: a wrapped/shadowed global `WebSocket` (test
+      // harnesses that monkeypatch the constructor, some polyfills) drops the
+      // static class constants, which would make this gate falsely fail. The
+      // instance constant lives on the prototype and always survives.
+      if (!t || !ws || ws.readyState !== ws.OPEN || !authedRef.current) return
+      const reqId = ++histReqSeq
+      histInflightReq = reqId
+      histInflightAt = Date.now()
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'history',
+            req_id: reqId,
+            end_offset: endOffset,
+            count,
+            cols: t.cols,
+          }),
+        )
+      } catch {
+        // Socket died between the readyState check and send — surface via onclose.
+        histInflightReq = null
+      }
+    }
+
+    // Fetch the next OLDER window: the `count` rows ending just above the oldest
+    // absId we already hold (or, before the first fetch, just above the seam).
+    // Converts the absolute bottom id back to a scrollback offset via the LATEST
+    // history_size so a sliding buffer still resolves.
+    const requestOlder = () => {
+      if (!historyEnabled || histHitTop) return
+      // One inflight at a time — but a response that never arrives (lost frame)
+      // must not block forever: past the stall window a new request may be
+      // issued (the old late reply is then discarded by the req_id check).
+      if (
+        histInflightReq !== null &&
+        Date.now() - histInflightAt < HISTORY_INFLIGHT_STALL_MS
+      ) {
+        return
+      }
+      const bottomAbs =
+        histOldestAbs === Infinity ? histSeamAbs : histOldestAbs - 1
+      if (bottomAbs < 0) {
+        histHitTop = true
+        return
+      }
+      requestHistory(bottomAbs - histSizeLast, HISTORY_WINDOW)
+    }
+
+    // Reset ALL history state — on every (re)connect and on a resync boundary.
+    const resetHistory = () => {
+      histRows.clear()
+      histOldestAbs = Infinity
+      histSeamAbs = -1
+      histSizeLast = 0
+      histHitTop = false
+      histInflightReq = null
+      histWidthMismatches = 0
+    }
+
     // 1. Terminal + addons. Canvas renderer for desktop perf; FitAddon
     //    snaps the geometry to the container; WebLinks makes URLs clickable.
     const term = new Terminal({
@@ -628,11 +856,20 @@ export function useLiveTerm(
       // wake even when idle (mobile battery + needless idle repaints). A solid
       // cursor reads as more native/snappy (the iTerm default-feel).
       cursorBlink: false,
-      // Large scrollback so the client never truncates the history the server
-      // replays on connect (replay ring is ≤512 KB ≈ several thousand lines) or
-      // that tmux retains (history-limit = 50000). Kept at/above the tmux limit
-      // so scroll-up reaches as far back as the session actually has. xterm.js
-      // stores lines compactly; 50k lines is a modest memory cost per terminal.
+      // Scrollback. With TERM_TMUX_HISTORY OFF (the default): large so the client
+      // never truncates the history the server replays on connect (replay ring is
+      // ≤512 KB ≈ several thousand lines) or that tmux retains (history-limit =
+      // 50000). Kept at/above the tmux limit so scroll-up reaches as far back as
+      // the session actually has. xterm.js stores lines compactly; 50k lines is a
+      // modest memory cost per terminal.
+      //
+      // With the flag ON: xterm is STILL a single surface with a full scrollback,
+      // but its scrollback is SEEDED from tmux's authoritative, already-reflowed
+      // history on attach (and grown older on demand) rather than filled purely by
+      // the replay ring. Native xterm scroll then serves the whole tmux history —
+      // no overlay, no second term, no client reflow. Same 50000 ceiling as the
+      // flag-off path (at/above tmux's history-limit) so scroll-up reaches as far
+      // back as the session actually has.
       scrollback: 50000,
       disableStdin: readOnly,
       // ⌥-drag forces a LOCAL text selection even if a program holds the mouse
@@ -686,6 +923,23 @@ export function useLiveTerm(
       if (up !== scrolledUpRef.current) {
         scrolledUpRef.current = up
         setScrolledUp(up)
+      }
+      // Near-top prefetch. Scrolling toward the TOP of the buffer means the user
+      // is approaching the oldest replayed/fetched row. Fetch the next OLDER
+      // window from tmux — the authoritative `history` frame verifies against the
+      // replayed rows and, if the replay was truncated (huge/evicted history),
+      // PREPENDS the missing older rows so scroll never bottoms out into a void.
+      // Nothing steals the wheel (single surface), so this fires on every near-top
+      // scroll. In the common (full-replay) case the fetch is a no-op augmentation.
+      // (Inflight gating lives INSIDE requestOlder — including the stalled-
+      // inflight re-issue after HISTORY_INFLIGHT_STALL_MS — so a lost response
+      // can't permanently wedge fetching.)
+      if (
+        historyEnabled &&
+        !histHitTop &&
+        viewportEl.scrollTop < HISTORY_PREFETCH_SLACK_PX
+      ) {
+        requestOlder()
       }
     }
     viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
@@ -839,6 +1093,9 @@ export function useLiveTerm(
       //    buffer (the replay snapshot may have arrived before this rAF). Without
       //    this an idle pane can mount blank until the next live byte.
       repaint()
+      // Publish the first fitted cols so a stacked history term mounts at the
+      // matching width (§2.5). No-op while the flag is off.
+      if (historyEnabled) setColsIfChanged(term.cols)
     })
 
     // Font-ready refit: xterm caches the renderer's character metrics on
@@ -1347,9 +1604,22 @@ export function useLiveTerm(
       ws.onmessage = async (ev: MessageEvent) => {
         const data = ev.data
         if (typeof data === 'string') {
-          // Control frames (JSON): auth_ok / error / pong.
+          // Control frames (JSON): auth_ok / replay_done / attach_meta / history.
           try {
-            const msg = JSON.parse(data) as { type?: string }
+            const msg = JSON.parse(data) as {
+              type?: string
+              // `history` + `attach_meta` fields (§2.2 wire shape). Optional so
+              // the union covers every control frame; the branches below narrow.
+              req_id?: number
+              history_size?: number
+              start_offset?: number
+              end_offset?: number
+              hit_top?: boolean
+              cols?: number
+              at_limit?: boolean
+              rows?: string[]
+              error?: boolean
+            }
             if (msg.type === 'auth_ok') {
               clearAuthTimer()
               authedRef.current = true
@@ -1380,6 +1650,89 @@ export function useLiveTerm(
               pinBottomPending = true
               flushPendingWrites()
               markReady()
+            } else if (historyEnabled && msg.type === 'attach_meta') {
+              // The seam initializer, sent by the server just before `replay_done`.
+              // `history_size` is tmux's authoritative scrollback depth at attach;
+              // the row directly above the live screen has absolute id
+              // `history_size - 1` (the seam). Re-anchor. The replay seed (sent as
+              // the binary frame just before this) already carries tmux's full
+              // scrollback into xterm's buffer, so we do NOT eagerly reseed here —
+              // native xterm scroll already reveals it. We DO fire one
+              // authoritative `history` probe so the client verifies against tmux
+              // (and, for a truncated/evicted replay, begins filling the gap).
+              const n = msg.history_size ?? 0
+              histSizeLast = n
+              histSeamAbs = n - 1
+              histHitTop = n === 0
+              histRows.clear()
+              histOldestAbs = Infinity
+              histInflightReq = null
+              if (n > 0) requestOlder()
+            } else if (historyEnabled && msg.type === 'history') {
+              // A window of authoritative scrollback.
+              // Stale reply from an earlier fling request (error or not) — a
+              // newer request is live; its reply is the one that counts.
+              if (msg.req_id !== histInflightReq) return
+              histInflightReq = null
+              if (msg.error) {
+                // The capture failed server-side (frame omits size/offsets).
+                // Inflight is cleared so a later scroll retries; the replayed
+                // buffer already covers the near-top meanwhile.
+                return
+              }
+              const t = termRef.current
+              // Width changed mid-flight (width-match guard): the rows wrap at the
+              // wrong width now. Drop the cache and refetch from the seam at the
+              // current width — tmux owns the reflow, xterm never reflows history.
+              // CAPPED: two concurrent viewers at different widths never converge
+              // (last resize wins); after HISTORY_WIDTH_MISMATCH_MAX consecutive
+              // mismatches fetching pauses until the next local resize/reconnect
+              // resets the counter, instead of ping-ponging at RTT cadence.
+              if (t && msg.cols !== undefined && msg.cols !== t.cols) {
+                histRows.clear()
+                histOldestAbs = Infinity
+                histHitTop = false
+                histWidthMismatches += 1
+                if (histWidthMismatches < HISTORY_WIDTH_MISMATCH_MAX) {
+                  requestOlder()
+                }
+                return
+              }
+              histWidthMismatches = 0
+              histSizeLast = msg.history_size ?? histSizeLast
+              histHitTop = msg.hit_top ?? false
+              // tmux at its history-limit TRIMS oldest lines as new ones land
+              // while `history_size` stays flat — absolute ids slide under the
+              // cache, so cross-fetch anchors are unreliable. Degrade honestly:
+              // drop the cache, keep only THIS response (self-consistent thanks
+              // to the server's chained capture+re-probe), and skip the
+              // gap-walk/repaint below — stitching a sliding buffer would tear.
+              // Scroll depth is then bounded by the replay seed, which is still
+              // the full ring (~thousands of rows), never corrupted.
+              const atLimit = msg.at_limit === true
+              if (atLimit) {
+                histRows.clear()
+                histOldestAbs = Infinity
+              }
+              const rows = msg.rows ?? []
+              const startOffset = msg.start_offset ?? 0
+              for (let i = 0; i < rows.length; i++) {
+                const abs = absId(histSizeLast, startOffset + i)
+                histRows.set(abs, rows[i])
+                if (abs < histOldestAbs) histOldestAbs = abs
+              }
+              // Non-destructive: only PREPEND rows that sit ABOVE what xterm's
+              // buffer already holds (the genuine gap: a history so large the
+              // replay seed was truncated, or a lagging reconnect). In the common
+              // replay case xterm already covers the fetched region, so this is a
+              // no-op and the smooth, colour-correct replayed scroll is untouched.
+              if (!atLimit && t && histOldestAbs < bufferTopAbs(t) && !histHitTop) {
+                // We have a gap AND more older rows may exist — keep fetching
+                // contiguously up to the buffer top region before one repaint.
+                requestOlder()
+              } else if (!atLimit && t) {
+                fillGapAndRepaint(t)
+              }
             }
           } catch {
             /* ignore non-JSON text frames */
@@ -1462,6 +1815,10 @@ export function useLiveTerm(
       // A fresh connection replays the snapshot again — re-cover + re-pin until
       // the next replay_done so a reconnect never shows the scroll-on-open jank.
       resetReady()
+      // A reconnect re-seeds the live screen and re-sends `attach_meta`, so the
+      // seam + history cache must start clean — the fresh `attach_meta`
+      // re-anchors `histSeamAbs`/`histSizeLast` and kicks a new seed walk.
+      resetHistory()
 
       const base = wsUrl().replace(/\/$/, '')
       // A `wsPath` override (the read-only teammate route) connects there
@@ -1665,10 +2022,26 @@ export function useLiveTerm(
           return
         }
         lastFitWidth = container.clientWidth
-        if (t.cols !== lastSentCols || t.rows !== lastSentRows) {
+        const geometryChanged = t.cols !== lastSentCols || t.rows !== lastSentRows
+        if (geometryChanged) {
           lastSentCols = t.cols
           lastSentRows = t.rows
           resize(t.cols, t.rows)
+        }
+        // Mirror cols out (exposed for parity; harmless when unused).
+        if (historyEnabled) setColsIfChanged(t.cols)
+        // With the flag on, a WIDTH change invalidates the cached FETCHED history
+        // rows (tmux reflowed them at a different width). xterm reflows its own
+        // replayed scrollback natively. DROP the fetched cache and re-probe from
+        // the seam at the new width so a subsequent scroll-up re-fetches at the
+        // correct width — tmux owns the reflow, xterm never reflows fetched rows.
+        if (historyEnabled && geometryChanged) {
+          histRows.clear()
+          histOldestAbs = Infinity
+          histHitTop = histSizeLast === 0
+          histInflightReq = null
+          histWidthMismatches = 0 // a real local resize legitimizes a retry
+          if (histSizeLast > 0) requestOlder()
         }
       }, RESIZE_DEBOUNCE_MS)
     })
@@ -1840,5 +2213,7 @@ export function useLiveTerm(
     tryOpenLinkAt,
     scrolledUp,
     scrollToBottom,
+    historyEnabled,
+    cols,
   }
 }
