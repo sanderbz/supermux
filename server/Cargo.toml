@@ -100,7 +100,7 @@ shellexpand = "3.1"
 url = "2.5"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 dirs = "5.0"                                             # home dir
-which = "7.0"                                            # locate claude/tmux
+which = "8.0"                                            # locate claude/tmux
 
 [features]
 # Gates test-only helpers (e.g. `ReleaseCache::seed`) that would otherwise be
