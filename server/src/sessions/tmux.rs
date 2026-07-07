@@ -98,6 +98,11 @@ pub struct HistoryWindow {
     /// `#{pane_width}` the capture was taken at — the client's width-match guard
     /// discards rows whose width no longer matches its live grid.
     pub cols: u16,
+    /// `history_size` has reached `#{history_limit}` — tmux now trims oldest
+    /// lines as new ones land while the size stays flat, so absolute-line-id
+    /// anchors silently shift. The client must stop trusting its cross-fetch
+    /// cache while this is set (drop + re-anchor per fetch).
+    pub at_limit: bool,
 }
 
 /// A handle to one tmux [`TmuxTarget`] (a session OR a pane). Cheap to construct.
@@ -785,61 +790,89 @@ impl<'a> Tmux<'a> {
         count: u32,
     ) -> Result<HistoryWindow> {
         let target = self.target_match().await;
-        // 1. Probe history size + width (+ alt, unused here) in one message.
-        let info = self
-            .run(&[
-                "display-message",
-                "-p",
-                "-t",
-                &target,
-                "#{history_size},#{pane_width},#{alternate_on}",
-            ])
+        const PROBE_FMT: &str = "#{history_size},#{pane_width},#{alternate_on},#{history_limit}";
+        // 1. Probe history size + width (+ alt, unused; + limit) in one message.
+        //    A probe failure is a real error — degrading to size 0 would tell
+        //    the client "no history exists" (hit_top) when we simply don't know.
+        let mut probe = self
+            .run(&["display-message", "-p", "-t", &target, PROBE_FMT])
             .await
-            .unwrap_or_default();
-        let (history_size, pane_width, _alt) = parse_hist_info(&info);
-        // 2. Clamp the requested range into [-history_size, -1].
-        let count = count.min(Self::HISTORY_WINDOW_MAX) as i64;
-        let end = end_offset.min(-1).max(-(history_size as i64));
-        let start = (end - count + 1).max(-(history_size as i64));
-        let hit_top = start <= -(history_size as i64);
-        if history_size == 0 || start > end {
+            .context("history probe")?;
+        // Two attempts: pane output landing BETWEEN the size probe and the
+        // capture shifts every negative offset by the lines that landed, so the
+        // returned `history_size` would mis-stamp the rows. The capture is
+        // chained with a re-probe in ONE tmux invocation; a moved size fails
+        // the attempt and we retry once from the fresh reading. A pane busy
+        // enough to also slip output into the second attempt gets that
+        // second capture anyway — drift bounded by one ~2 ms capture.
+        for attempt in 0..2 {
+            let (history_size, pane_width, _alt, history_limit) = parse_hist_info(&probe);
+            // At the history-limit tmux TRIMS oldest lines as new ones land
+            // while `history_size` stays flat — absolute-id anchoring shifts
+            // under the client, which must stop trusting its cross-fetch cache.
+            let at_limit = history_limit > 0 && history_size >= history_limit;
+            // 2. Clamp the requested range into [-history_size, -1].
+            let count = count.min(Self::HISTORY_WINDOW_MAX) as i64;
+            let end = end_offset.min(-1).max(-(history_size as i64));
+            let start = (end - count + 1).max(-(history_size as i64));
+            let hit_top = start <= -(history_size as i64);
+            if history_size == 0 || start > end {
+                return Ok(HistoryWindow {
+                    rows: vec![],
+                    history_size,
+                    start_offset: 0,
+                    end_offset: 0,
+                    hit_top: true,
+                    cols: pane_width,
+                    at_limit,
+                });
+            }
+            // 3. Capture (`-e` colours, NO `-J` → physical rows, no screen
+            //    framing) chained with the re-probe; the probe line is the
+            //    LAST line of the combined output.
+            let out = self
+                .run(&[
+                    "capture-pane",
+                    "-e",
+                    "-p",
+                    "-t",
+                    &target,
+                    "-S",
+                    &start.to_string(),
+                    "-E",
+                    &end.to_string(),
+                    ";",
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &target,
+                    PROBE_FMT,
+                ])
+                .await
+                .context("history capture")?;
+            let trimmed = out.trim_end_matches('\n');
+            let (body, post) = match trimmed.rsplit_once('\n') {
+                Some((body, post)) => (body, post),
+                // No newline at all → capture produced no rows (probe line only).
+                None => ("", trimmed),
+            };
+            let (post_size, ..) = parse_hist_info(post);
+            if post_size != history_size && attempt == 0 {
+                probe = post.to_string();
+                continue;
+            }
+            let rows = body.split('\n').map(str::to_owned).collect();
             return Ok(HistoryWindow {
-                rows: vec![],
+                rows,
                 history_size,
-                start_offset: 0,
-                end_offset: 0,
-                hit_top: true,
+                start_offset: start,
+                end_offset: end,
+                hit_top,
                 cols: pane_width,
+                at_limit,
             });
         }
-        // 3. Capture: `-e` colours, NO `-J` (physical rows), no screen framing.
-        let body = self
-            .run(&[
-                "capture-pane",
-                "-e",
-                "-p",
-                "-t",
-                &target,
-                "-S",
-                &start.to_string(),
-                "-E",
-                &end.to_string(),
-            ])
-            .await
-            .unwrap_or_default();
-        let rows = body
-            .trim_end_matches('\n')
-            .split('\n')
-            .map(str::to_owned)
-            .collect();
-        Ok(HistoryWindow {
-            rows,
-            history_size,
-            start_offset: start,
-            end_offset: end,
-            hit_top,
-            cols: pane_width,
-        })
+        unreachable!("capture_history_window: second attempt always returns")
     }
 
     /// Raw `display-message -p '#{history_size},#{pane_width},#{alternate_on}'`
@@ -1179,13 +1212,16 @@ pub(crate) fn parse_pane_info(info: &str) -> (bool, u32, u32, u32) {
     (alt_on, cursor_x, cursor_y, pane_height)
 }
 
-/// Parse tmux's `display-message -p '#{history_size},#{pane_width},#{alternate_on}'`
-/// output (the probe in [`Tmux::capture_history_window`]) into
-/// `(history_size, pane_width, alternate_on)`. Whitespace-tolerant; malformed
-/// input falls back to `(0, 0, false)` so a probe failure yields an empty
-/// history window (`hit_top`) rather than crashing the WS attach. Free fn so the
-/// parse contract is unit-testable without a live tmux server.
-pub(crate) fn parse_hist_info(info: &str) -> (u32, u16, bool) {
+/// Parse tmux's `display-message -p
+/// '#{history_size},#{pane_width},#{alternate_on},#{history_limit}'` output
+/// (the probe in [`Tmux::capture_history_window`]) into
+/// `(history_size, pane_width, alternate_on, history_limit)`. The limit is
+/// optional (the `attach_meta` probe still sends the 3-field format) and
+/// defaults to 0 = "unknown, treat as not-at-limit". Whitespace-tolerant;
+/// malformed input falls back to `(0, 0, false, 0)` so a probe failure yields
+/// an empty history window (`hit_top`) rather than crashing the WS attach.
+/// Free fn so the parse contract is unit-testable without a live tmux server.
+pub(crate) fn parse_hist_info(info: &str) -> (u32, u16, bool, u32) {
     let mut parts = info.trim().split(',');
     let history_size: u32 = parts
         .next()
@@ -1196,7 +1232,11 @@ pub(crate) fn parse_hist_info(info: &str) -> (u32, u16, bool) {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
     let alt_on = parts.next().map(|s| s.trim() == "1").unwrap_or(false);
-    (history_size, pane_width, alt_on)
+    let history_limit: u32 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    (history_size, pane_width, alt_on, history_limit)
 }
 
 /// Parse tmux's `display-message -p '#{cursor_x},#{cursor_y}'` (the Race-B
@@ -1315,27 +1355,29 @@ mod seed_tests {
 
     #[test]
     fn parse_hist_info_happy_path() {
-        // tmux output: `history_size,pane_width,alternate_on`.
-        assert_eq!(parse_hist_info("1234,80,0"), (1234, 80, false));
-        assert_eq!(parse_hist_info("0,120,1"), (0, 120, true));
-        assert_eq!(parse_hist_info("50000,200,0"), (50000, 200, false));
+        // tmux output: `history_size,pane_width,alternate_on[,history_limit]`.
+        assert_eq!(parse_hist_info("1234,80,0,50000"), (1234, 80, false, 50000));
+        assert_eq!(parse_hist_info("0,120,1,50000"), (0, 120, true, 50000));
+        assert_eq!(parse_hist_info("50000,200,0,50000"), (50000, 200, false, 50000));
+        // 3-field form (the attach_meta probe) → limit degrades to 0.
+        assert_eq!(parse_hist_info("1234,80,0"), (1234, 80, false, 0));
     }
 
     #[test]
     fn parse_hist_info_trims_whitespace_and_trailing_newline() {
-        assert_eq!(parse_hist_info("1234,80,0\n"), (1234, 80, false));
-        assert_eq!(parse_hist_info("  1234 , 80 , 0  "), (1234, 80, false));
+        assert_eq!(parse_hist_info("1234,80,0,50000\n"), (1234, 80, false, 50000));
+        assert_eq!(parse_hist_info("  1234 , 80 , 0 , 50000  "), (1234, 80, false, 50000));
     }
 
     #[test]
     fn parse_hist_info_degrades_safely_on_malformed_input() {
-        // Empty / partial / non-numeric → falls back to (0, 0, false), which
+        // Empty / partial / non-numeric → falls back to (0, 0, false, 0), which
         // yields an empty (hit_top) window rather than crashing the attach.
-        assert_eq!(parse_hist_info(""), (0, 0, false));
-        assert_eq!(parse_hist_info("garbage"), (0, 0, false));
-        assert_eq!(parse_hist_info("1234"), (1234, 0, false)); // width/alt missing
-        assert_eq!(parse_hist_info("1234,80"), (1234, 80, false)); // alt missing
-        assert_eq!(parse_hist_info("x,y,z"), (0, 0, false));
+        assert_eq!(parse_hist_info(""), (0, 0, false, 0));
+        assert_eq!(parse_hist_info("garbage"), (0, 0, false, 0));
+        assert_eq!(parse_hist_info("1234"), (1234, 0, false, 0)); // width/alt missing
+        assert_eq!(parse_hist_info("1234,80"), (1234, 80, false, 0)); // alt missing
+        assert_eq!(parse_hist_info("x,y,z"), (0, 0, false, 0));
     }
 
     #[test]

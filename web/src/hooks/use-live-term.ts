@@ -691,8 +691,19 @@ export function useLiveTerm(
     let histSizeLast = 0 // latest tmux history_size
     let histHitTop = false // reached -history_size → no older rows exist
     let histInflightReq: number | null = null
+    let histInflightAt = 0 // epoch ms of the inflight request (stall re-issue)
+    let histWidthMismatches = 0 // consecutive width-guard refetches (loop breaker)
     let histReqSeq = 0
     const absId = (histSize: number, offset: number) => histSize + offset
+    // A lost `history` response (socket close race, old server that can't parse
+    // the frame) must not wedge fetching for the rest of the mount: an inflight
+    // older than this is considered stalled and the near-top scroll may re-issue.
+    const HISTORY_INFLIGHT_STALL_MS = 5000
+    // Width-guard refetch cap. Two viewers at different widths fight over the
+    // pane width (last resize wins); without a cap the loser would ping-pong
+    // `history` requests at RTT cadence forever. After this many consecutive
+    // mismatches fetching pauses until the next local resize or reconnect.
+    const HISTORY_WIDTH_MISMATCH_MAX = 3
 
     // How many rows above the live screen xterm currently holds in its buffer —
     // i.e. how deep the replay seed reached. The topmost buffer absId is
@@ -776,6 +787,7 @@ export function useLiveTerm(
       if (!t || !ws || ws.readyState !== ws.OPEN || !authedRef.current) return
       const reqId = ++histReqSeq
       histInflightReq = reqId
+      histInflightAt = Date.now()
       try {
         ws.send(
           JSON.stringify({
@@ -797,7 +809,16 @@ export function useLiveTerm(
     // Converts the absolute bottom id back to a scrollback offset via the LATEST
     // history_size so a sliding buffer still resolves.
     const requestOlder = () => {
-      if (!historyEnabled || histHitTop || histInflightReq !== null) return
+      if (!historyEnabled || histHitTop) return
+      // One inflight at a time — but a response that never arrives (lost frame)
+      // must not block forever: past the stall window a new request may be
+      // issued (the old late reply is then discarded by the req_id check).
+      if (
+        histInflightReq !== null &&
+        Date.now() - histInflightAt < HISTORY_INFLIGHT_STALL_MS
+      ) {
+        return
+      }
       const bottomAbs =
         histOldestAbs === Infinity ? histSeamAbs : histOldestAbs - 1
       if (bottomAbs < 0) {
@@ -815,6 +836,7 @@ export function useLiveTerm(
       histSizeLast = 0
       histHitTop = false
       histInflightReq = null
+      histWidthMismatches = 0
     }
 
     // 1. Terminal + addons. Canvas renderer for desktop perf; FitAddon
@@ -909,10 +931,12 @@ export function useLiveTerm(
       // PREPENDS the missing older rows so scroll never bottoms out into a void.
       // Nothing steals the wheel (single surface), so this fires on every near-top
       // scroll. In the common (full-replay) case the fetch is a no-op augmentation.
+      // (Inflight gating lives INSIDE requestOlder — including the stalled-
+      // inflight re-issue after HISTORY_INFLIGHT_STALL_MS — so a lost response
+      // can't permanently wedge fetching.)
       if (
         historyEnabled &&
         !histHitTop &&
-        histInflightReq === null &&
         viewportEl.scrollTop < HISTORY_PREFETCH_SLACK_PX
       ) {
         requestOlder()
@@ -1592,6 +1616,7 @@ export function useLiveTerm(
               end_offset?: number
               hit_top?: boolean
               cols?: number
+              at_limit?: boolean
               rows?: string[]
               error?: boolean
             }
@@ -1645,29 +1670,50 @@ export function useLiveTerm(
               if (n > 0) requestOlder()
             } else if (historyEnabled && msg.type === 'history') {
               // A window of authoritative scrollback.
-              if (msg.error) {
-                // The capture failed server-side (frame omits size/offsets). Drop
-                // the inflight marker so a later scroll can retry; the replayed
-                // buffer already covers the near-top meanwhile.
-                histInflightReq = null
-                return
-              }
-              // Stale reply from an earlier fling request — a newer one is live.
+              // Stale reply from an earlier fling request (error or not) — a
+              // newer request is live; its reply is the one that counts.
               if (msg.req_id !== histInflightReq) return
               histInflightReq = null
+              if (msg.error) {
+                // The capture failed server-side (frame omits size/offsets).
+                // Inflight is cleared so a later scroll retries; the replayed
+                // buffer already covers the near-top meanwhile.
+                return
+              }
               const t = termRef.current
               // Width changed mid-flight (width-match guard): the rows wrap at the
               // wrong width now. Drop the cache and refetch from the seam at the
               // current width — tmux owns the reflow, xterm never reflows history.
+              // CAPPED: two concurrent viewers at different widths never converge
+              // (last resize wins); after HISTORY_WIDTH_MISMATCH_MAX consecutive
+              // mismatches fetching pauses until the next local resize/reconnect
+              // resets the counter, instead of ping-ponging at RTT cadence.
               if (t && msg.cols !== undefined && msg.cols !== t.cols) {
                 histRows.clear()
                 histOldestAbs = Infinity
                 histHitTop = false
-                requestOlder()
+                histWidthMismatches += 1
+                if (histWidthMismatches < HISTORY_WIDTH_MISMATCH_MAX) {
+                  requestOlder()
+                }
                 return
               }
+              histWidthMismatches = 0
               histSizeLast = msg.history_size ?? histSizeLast
               histHitTop = msg.hit_top ?? false
+              // tmux at its history-limit TRIMS oldest lines as new ones land
+              // while `history_size` stays flat — absolute ids slide under the
+              // cache, so cross-fetch anchors are unreliable. Degrade honestly:
+              // drop the cache, keep only THIS response (self-consistent thanks
+              // to the server's chained capture+re-probe), and skip the
+              // gap-walk/repaint below — stitching a sliding buffer would tear.
+              // Scroll depth is then bounded by the replay seed, which is still
+              // the full ring (~thousands of rows), never corrupted.
+              const atLimit = msg.at_limit === true
+              if (atLimit) {
+                histRows.clear()
+                histOldestAbs = Infinity
+              }
               const rows = msg.rows ?? []
               const startOffset = msg.start_offset ?? 0
               for (let i = 0; i < rows.length; i++) {
@@ -1680,11 +1726,11 @@ export function useLiveTerm(
               // replay seed was truncated, or a lagging reconnect). In the common
               // replay case xterm already covers the fetched region, so this is a
               // no-op and the smooth, colour-correct replayed scroll is untouched.
-              if (t && histOldestAbs < bufferTopAbs(t) && !histHitTop) {
+              if (!atLimit && t && histOldestAbs < bufferTopAbs(t) && !histHitTop) {
                 // We have a gap AND more older rows may exist — keep fetching
                 // contiguously up to the buffer top region before one repaint.
                 requestOlder()
-              } else if (t) {
+              } else if (!atLimit && t) {
                 fillGapAndRepaint(t)
               }
             }
@@ -1994,6 +2040,7 @@ export function useLiveTerm(
           histOldestAbs = Infinity
           histHitTop = histSizeLast === 0
           histInflightReq = null
+          histWidthMismatches = 0 // a real local resize legitimizes a retry
           if (histSizeLast > 0) requestOlder()
         }
       }, RESIZE_DEBOUNCE_MS)

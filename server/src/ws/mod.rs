@@ -891,7 +891,7 @@ async fn send_seed_then_done(
     // client treats it as "no history yet" and re-inits on the next resync).
     {
         let info = tmux.pane_history_meta().await;
-        let (history_size, cols, _alt) = crate::sessions::tmux::parse_hist_info(&info);
+        let (history_size, cols, _alt, _limit) = crate::sessions::tmux::parse_hist_info(&info);
         let meta = serde_json::json!({
             "type": "attach_meta",
             "history_size": history_size,
@@ -935,6 +935,7 @@ async fn send_history_window(
             "end_offset": w.end_offset,
             "hit_top": w.hit_top,
             "cols": w.cols,
+            "at_limit": w.at_limit,
             "rows": w.rows,
         }),
         Err(_) => serde_json::json!({
