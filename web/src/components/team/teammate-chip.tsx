@@ -96,8 +96,8 @@ export function TeammateChip({
       </div>
 
       {/* Trailing (tabular). needs_you → the ONE loud blue pill (tile waiting-pill
-          geometry). Else → muted task-count. Then the kill-pane trash (manual
-          Agent Teams cleanup — renders nothing when there's no live pane). */}
+          geometry). Else → muted task-count. Then the remove trash (state-aware:
+          "Kill & remove" for a live teammate, "Remove" for an offline one). */}
       <div className="flex shrink-0 items-center gap-1">
         {needsYou ? (
           <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting">

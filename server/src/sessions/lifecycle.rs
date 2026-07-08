@@ -970,6 +970,11 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
         if let Err(e) = crate::teams::scan::archive_team_config(&team) {
             tracing::debug!(team = %team, error = %e, "archive: failed to park team config");
         }
+        // The team's config is parked, so drop its supermux-side dismissals too so
+        // the `dismissed_teammates` table stays bounded to live teams. Best-effort.
+        if let Err(e) = db::teams_dismissed::prune_team(&state.pool, &team).await {
+            tracing::debug!(team = %team, error = %e, "archive: failed to prune team dismissals");
+        }
     }
 
     // Cascade to the teams watcher so an archived team-lead's TEAM CARD

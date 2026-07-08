@@ -146,6 +146,22 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
         scan::validate_pane_ids(team, live_ids);
         scan::map_lead_session(team, |_| host.clone());
 
+        // Drop any member the user has dismissed (supermux-side hide). Loaded
+        // ONCE per team per tick (small table). Unconditional, regardless of
+        // live/offline, so a live-case removal (kill pane THEN dismiss) sticks
+        // across the tick before the killed pane fully leaves the live set.
+        // See [`crate::db::teams_dismissed`] for the no-auto-rearm limitation.
+        match db::teams_dismissed::list_for_team(&state.pool, &team.team_name).await {
+            Ok(dismissed) => retain_undismissed(team, &dismissed),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    team = %team.team_name,
+                    "teams watcher: dismissed-set load failed; showing all members this tick",
+                );
+            }
+        }
+
         // Persist the team_name backlink on the host session so
         // `lifecycle::archive` knows which `~/.claude/teams/<name>/` dir to
         // park in `.archived/` when the user archives the session. Only fires
@@ -157,6 +173,19 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
     }
 
     teams
+}
+
+/// Drop every member the user has dismissed (supermux-side hide). Pure, so the
+/// filter policy is unit-testable apart from the DB. Unconditional, regardless
+/// of a member's live/offline state, so the live-case removal (kill pane THEN
+/// dismiss) sticks across the tick before the killed pane leaves the live set.
+/// A no-op when `dismissed` is empty.
+fn retain_undismissed(team: &mut Team, dismissed: &[String]) {
+    if dismissed.is_empty() {
+        return;
+    }
+    team.members
+        .retain(|m| !dismissed.iter().any(|d| d == &m.agent_id));
 }
 
 /// Cheap-deduped UPDATE: only fire when the session's current team_name
@@ -357,6 +386,12 @@ async fn reconcile_deregistrations(
         if *n >= DEREGISTER_AFTER_ABSENT_TICKS {
             if super::board_sync::deregister_team(state, team_name).await {
                 removed = true;
+            }
+            // The team is gone, so drop its dismissals so the table stays bounded
+            // to live teams. Best-effort: a DB error just leaves stale rows
+            // behind (harmless; they only match a team that no longer exists).
+            if let Err(e) = db::teams_dismissed::prune_team(&state.pool, team_name).await {
+                tracing::debug!(error = %e, team = %team_name, "teams watcher: prune dismissals on deregister failed");
             }
             absent_ticks.remove(team_name);
         }
@@ -859,6 +894,69 @@ mod tests {
             rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
         );
         assert_eq!(host.as_deref(), Some("claude-host"));
+    }
+
+    /// The dismissed-teammate filter: given members [alice, bob] with bob
+    /// dismissed, only alice survives; nothing dismissed → both survive.
+    #[test]
+    fn retain_undismissed_drops_dismissed_members() {
+        use super::super::model::{Member, MemberStatus};
+        let mk = |agent: &str| Member {
+            name: agent.split('@').next().unwrap().into(),
+            agent_id: agent.into(),
+            model: "opus".into(),
+            color: "blue".into(),
+            tmux_pane_id: None,
+            is_active: false,
+            status: MemberStatus::Offline,
+            cwd: String::new(),
+        };
+        let mut t = team("sq");
+        t.members = vec![mk("alice@sq"), mk("bob@sq")];
+
+        // Nothing dismissed → both survive (and the empty-set fast path is a no-op).
+        retain_undismissed(&mut t, &[]);
+        assert_eq!(t.members.len(), 2);
+
+        // bob dismissed → only alice remains.
+        retain_undismissed(&mut t, &["bob@sq".to_string()]);
+        let ids: Vec<&str> = t.members.iter().map(|m| m.agent_id.as_str()).collect();
+        assert_eq!(ids, vec!["alice@sq"]);
+    }
+
+    /// prune-on-deregister: once a team crosses the absence threshold and its
+    /// board is torn down, its dismissals are pruned too (table stays bounded).
+    #[tokio::test]
+    async fn deregister_prunes_team_dismissals() {
+        let (state, dir) = test_state().await;
+        let alpha = team("alpha");
+        board_sync::reconcile_team(&state, &alpha).await;
+
+        // Record a dismissal for the team.
+        db::teams_dismissed::dismiss(&state.pool, "alpha", "bob@alpha", 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            db::teams_dismissed::list_for_team(&state.pool, "alpha").await.unwrap(),
+            vec!["bob@alpha"],
+        );
+
+        // Stay absent for the full threshold → board torn down AND dismissals pruned.
+        let mut absent: HashMap<String, u32> = HashMap::new();
+        for _ in 0..DEREGISTER_AFTER_ABSENT_TICKS {
+            reconcile_deregistrations(&state, &[], &mut absent).await;
+        }
+        assert!(
+            db::boards::get_by_team(&state.pool, "alpha").await.unwrap().is_none(),
+            "board deregistered after the threshold",
+        );
+        assert!(
+            db::teams_dismissed::list_for_team(&state.pool, "alpha").await.unwrap().is_empty(),
+            "the deregistered team's dismissals are pruned",
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A detected team is never deregistered, and its absence counter never grows.

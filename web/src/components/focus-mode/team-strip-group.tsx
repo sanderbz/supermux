@@ -207,9 +207,9 @@ function TeammateStripRow({
             </span>
           )
         )}
-        {/* Kill-pane trash (manual Agent Teams cleanup). Renders nothing when
-            there's no live pane / the lead isn't mapped; swallows the click so
-            it never selects the teammate row. */}
+        {/* Remove trash (state-aware: "Kill & remove" for a live teammate,
+            "Remove" for an offline one). Swallows the click so it never selects
+            the teammate row. */}
         <KillTeammateButton team={team} member={member} />
       </span>
     </div>

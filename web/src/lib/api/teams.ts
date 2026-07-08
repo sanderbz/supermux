@@ -260,8 +260,43 @@ async function killTeammate(leadSession: string, paneId: string): Promise<void> 
   }
 }
 
+/** DELETE /api/teams/{teamName}/members/{agentId}: REMOVE one teammate from
+ *  supermux's team view. A LIVE teammate is killed (its tmux pane) THEN
+ *  dismissed, so it disappears at once instead of lingering as a dead chip; a
+ *  dead/offline teammate is just dismissed. The hide is supermux-side only:
+ *  Claude's on-disk roster (`~/.claude/teams/<team>/config.json`) is NEVER
+ *  edited, and it survives restarts (the watcher filters the teammate out on
+ *  every tick).
+ *
+ *  Unlike `killTeammate` (which addresses the lead session + pane id), this is
+ *  keyed by the stable member identity `(team_name, agent_id)`, so it works even
+ *  when the teammate has no live pane. `agent_id` contains `@`, so both segments
+ *  are URL-encoded. */
+async function removeTeammate(teamName: string, agentId: string): Promise<void> {
+  const token = apiToken()
+  const res = await fetch(
+    apiUrl(
+      `/api/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(agentId)}`,
+    ),
+    {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    },
+  )
+  if (!res.ok) {
+    let env: TeamsEnvelope | null = null
+    try {
+      env = (await res.json()) as TeamsEnvelope
+    } catch {
+      /* non-JSON */
+    }
+    throw new ApiError(res.status, env?.error ?? res.statusText)
+  }
+}
+
 export const teamsApi = {
   list: listTeams,
   dismiss: dismissTeam,
   killTeammate,
+  removeTeammate,
 }
