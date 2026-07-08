@@ -17,7 +17,6 @@
 
 import * as React from 'react'
 import { Terminal } from '@xterm/xterm'
-import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -211,11 +210,12 @@ const REPLAY_DONE_FALLBACK_MS = 400
 // dual-signal detector from `use-keyboard-viewport` (overlay inset on iOS,
 // layout-viewport shrink on Android's resizes-content) so the kick path
 // agrees with the route's keyboard-open state on BOTH platforms.
-// SD-2: how many pixels above the live bottom the viewport must sit before the
-// "jump to bottom" affordance appears. A small slack so sub-pixel rounding at the
-// bottom (or a 1-notch rubber-band) never flickers the button on; scrolling up
-// "a bit" (~a row or two) does. Measured on `.xterm-viewport.scrollTop`.
-const SCROLL_TO_BOTTOM_SLACK_PX = 24
+// SD-2: how many ROWS above the live bottom the viewport must sit before the
+// "jump to bottom" affordance appears. A small slack so a 1-notch rubber-band
+// never flickers the button on; scrolling up "a bit" (a row or two) does.
+// Measured in buffer rows via `baseY - viewportY` (xterm 6.0's viewport moved to
+// a VS Code scrollable element, so the old `.xterm-viewport.scrollTop` is dead).
+const SCROLL_UP_SLACK_ROWS = 1
 
 // ── tmux-authoritative scrollback tunables (gated by TERM_TMUX_HISTORY) ──
 // With the flag ON, xterm keeps its FULL scrollback (a single surface) and we
@@ -227,9 +227,13 @@ const SCROLL_TO_BOTTOM_SLACK_PX = 24
 // HISTORY_WINDOW_MAX (500) so a single capture serves a whole window. Used both
 // for the on-attach authoritative probe and each near-top older fetch.
 const HISTORY_WINDOW = 500
-// How close to the top (px) of the scrollback the viewport must come before we
-// prefetch the next older window. Widened to hide RTT (esp. SSH sessions).
-const HISTORY_PREFETCH_SLACK_PX = 600
+// How close to the top of the scrollback (in BUFFER ROWS) the viewport must
+// come before we prefetch the next older window. Rows, not px: xterm 6.0 moved
+// the viewport onto a VS Code scrollable element, so `.xterm-viewport.scrollTop`
+// is permanently 0 — the renderer-independent `buffer.active.viewportY` (top
+// visible line index; 0 = buffer top) is the reliable near-top signal. Sized to
+// give the fetch RTT lead time (esp. SSH sessions) before the user hits the top.
+const HISTORY_PREFETCH_SLACK_ROWS = 40
 
 // Close codes with explicit v2 semantics.
 const CLOSE_AUTH = 1008 // auth/origin reject — permanent
@@ -731,12 +735,12 @@ export function useLiveTerm(
       // `histOldestAbs` down to the seam that extends ABOVE the buffer top.
       if (histOldestAbs === Infinity) return
       if (histOldestAbs >= bufferTopAbs(t)) return // no gap — replay already covers it
-      const viewport =
-        containerRef.current?.querySelector<HTMLElement>('.xterm-viewport')
+      // Pinned to the live bottom? xterm 6.0's DOM viewport scrollTop is dead;
+      // use the renderer-independent buffer API — viewportY (top visible line)
+      // at/after baseY (the live bottom line) means the user is following output,
+      // not scrolled up, so the repaint should re-pin to the bottom.
       const wasPinnedBottom =
-        !viewport ||
-        viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <=
-          SCROLL_TO_BOTTOM_SLACK_PX
+        t.buffer.active.viewportY >= t.buffer.active.baseY
       // Everything the authoritative block adds ABOVE the current buffer top.
       const addFrom = histOldestAbs
       const addTo = bufferTopAbs(t) - 1
@@ -839,8 +843,9 @@ export function useLiveTerm(
       histWidthMismatches = 0
     }
 
-    // 1. Terminal + addons. Canvas renderer for desktop perf; FitAddon
-    //    snaps the geometry to the container; WebLinks makes URLs clickable.
+    // 1. Terminal + addons. WebGL renderer for perf (DOM fallback on context
+    //    loss / no-GL); FitAddon snaps the geometry to the container; WebLinks
+    //    makes URLs clickable.
     const term = new Terminal({
       // Lead with the self-hosted Nerd Font (see globals.css @font-face +
       // /fonts/NOTICE.md): shell prompts and TUIs ship Powerline / Nerd
@@ -905,21 +910,23 @@ export function useLiveTerm(
     fitRef.current = fit
 
     // SD-2: track whether the viewport is scrolled up so the wrapper can show a
-    // "jump to bottom" button. We read the REAL scroll position off the
-    // `.xterm-viewport` element's native scroll event — xterm's public `onScroll`
-    // only reports buffer GROWTH (output advancing ybase), not the user navigating
-    // back through existing scrollback, which is exactly the gesture we must catch.
-    // "At the bottom" = within a row or two of the max scroll; output that follows
-    // the bottom keeps scrollTop pinned there (no button), scrolling up opens the
-    // gap. Start fresh each (re)subscribe so a prior session's state never leaks.
+    // "jump to bottom" button. xterm 6.0 rewrote the viewport onto a VS Code
+    // scrollable element, so the old `.xterm-viewport.scrollTop` is permanently 0
+    // and its `scroll` event never fires. We track off xterm's PUBLIC,
+    // renderer-independent buffer API instead: `onScroll` fires whenever the
+    // viewport position changes (verified against 6.0 — it DOES fire on user
+    // scroll-back, not just output growth), and `buffer.active.viewportY` vs
+    // `baseY` is the current top-line vs the live bottom. "Scrolled up" = the
+    // viewport sits more than a row or two above the bottom; output that follows
+    // the bottom keeps them equal (no button). Start fresh each (re)subscribe so a
+    // prior session's state never leaks.
     scrolledUpRef.current = false
     setScrolledUp(false)
-    const viewportEl = container.querySelector<HTMLElement>('.xterm-viewport')
     const syncScrolledUp = () => {
-      if (!viewportEl) return
-      const distFromBottom =
-        viewportEl.scrollHeight - viewportEl.clientHeight - viewportEl.scrollTop
-      const up = distFromBottom > SCROLL_TO_BOTTOM_SLACK_PX
+      const t = termRef.current
+      if (!t) return
+      const b = t.buffer.active
+      const up = b.baseY - b.viewportY > SCROLL_UP_SLACK_ROWS
       if (up !== scrolledUpRef.current) {
         scrolledUpRef.current = up
         setScrolledUp(up)
@@ -937,12 +944,12 @@ export function useLiveTerm(
       if (
         historyEnabled &&
         !histHitTop &&
-        viewportEl.scrollTop < HISTORY_PREFETCH_SLACK_PX
+        b.viewportY < HISTORY_PREFETCH_SLACK_ROWS
       ) {
         requestOlder()
       }
     }
-    viewportEl?.addEventListener('scroll', syncScrolledUp, { passive: true })
+    const scrollSub = term.onScroll(syncScrolledUp)
 
     // NOTE (mobile one-finger touch-scroll): xterm's OWN touchstart/touchmove
     // listeners early-return while `coreMouseService.areMouseEventsActive` is
@@ -954,8 +961,10 @@ export function useLiveTerm(
     // server-side). We deliberately do NOT layer a
     // custom touch shim on top: a JS `{passive:false}` touchmove handler competes
     // with xterm's native handler and (per the reverted 7723be1/9c7657d/d2810cb
-    // attempts) regressed iOS feel. `.xterm-viewport { touch-action: pan-y }`
-    // (globals.css) is what lets the native pan through in the mobile focus route.
+    // attempts) regressed iOS feel. In xterm 6.0 the scroll surface is the VS
+    // Code `.xterm-scrollable-element`; globals.css sets `touch-action: none` on
+    // it (and `.xterm`/`.xterm-viewport`) so xterm's own scrollable-element
+    // handler owns the one-finger pan in the mobile focus route.
 
     // De-decorate xterm's hidden capture textarea so iOS Safari / WKWebView does
     // NOT draw its autofill / suggestion / "Done" accessory strip above the
@@ -1038,20 +1047,17 @@ export function useLiveTerm(
         /* renderer not ready — the next write repaints anyway */
       }
     }
-    const loadCanvasFallback = () => {
+    // WebGL failed to construct or lost its context. xterm 6.0 REMOVED the Canvas
+    // renderer, so the fallback is the built-in DOM renderer — which xterm reverts
+    // to automatically the moment the WebGL addon is gone (disposed) or was never
+    // loaded. So all we do is force a repaint of the existing buffer: without it an
+    // idle pane (no further bytes) stays blank after the swap. Robust everywhere
+    // (headless / iOS WKWebView / GPU context loss).
+    const loadDomFallback = () => {
       if (disposedRef.current) return
       const t = termRef.current
       if (!t || t.cols <= 0 || t.rows <= 0) return
-      try {
-        t.loadAddon(new CanvasAddon())
-        // The freshly-swapped Canvas renderer must repaint the existing buffer;
-        // without this an idle pane (no further bytes) stays blank after the
-        // WebGL→Canvas swap (e.g. GPU context loss, or WebGL unavailable).
-        repaint()
-      } catch {
-        // Canvas may be unavailable in some headless/WKWebView contexts; the DOM
-        // renderer (xterm default) is a safe fallback. Non-fatal.
-      }
+      repaint()
     }
     const safeFit = () => {
       try {
@@ -1070,20 +1076,21 @@ export function useLiveTerm(
       try {
         const webgl = new WebglAddon()
         // Context loss (backgrounded tab, GPU reset): dispose the dead WebGL
-        // addon and swap to Canvas so we never leave a frozen/blank canvas.
+        // addon so xterm reverts to its built-in DOM renderer — never leave a
+        // frozen/blank canvas.
         webgl.onContextLoss(() => {
           try {
             webgl.dispose()
           } catch {
             /* already disposed — harmless */
           }
-          loadCanvasFallback()
+          loadDomFallback()
         })
         term.loadAddon(webgl)
       } catch {
         // WebGL unavailable (no GL context / blocklisted GPU / WKWebView): fall
-        // back to the Canvas renderer (the previous default — robust).
-        loadCanvasFallback()
+        // back to xterm's built-in DOM renderer (robust everywhere).
+        loadDomFallback()
       }
       // 3. Re-fit so any cell-width delta the renderer swap introduced is applied
       //    in THIS same rAF, before paint — no intermediate-cols frame is ever
@@ -2180,7 +2187,7 @@ export function useLiveTerm(
         }
         wsRef.current = null
       }
-      viewportEl?.removeEventListener('scroll', syncScrolledUp)
+      scrollSub.dispose()
       disposeAndroidIme?.()
       term.dispose()
       termRef.current = null

@@ -14,7 +14,6 @@ import { motion } from 'framer-motion'
 import {
   ChevronLeft,
   Minimize2,
-  RotateCw,
   SlidersHorizontal,
   Square,
   Users,
@@ -103,7 +102,6 @@ export function DesktopFocusHeader({
   error,
   onDetach,
   onStop,
-  onRefresh,
   onMakeTeam,
   onTitleClick,
   titleRef,
@@ -225,28 +223,6 @@ export function DesktopFocusHeader({
           </Tooltip>
         )}
 
-        {/* Refresh — re-pull a clean screen (manual twin of the server's
-            post-resize auto-resync). Placed before Detach so the destructive
-            Stop button stays last in the cluster. The icon spins on tap for a
-            confirming flick of feedback. */}
-        {onRefresh && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <motion.button
-                type="button"
-                onClick={onRefresh}
-                whileTap={{ scale: 0.96, rotate: -180 }}
-                transition={springs.buttonPress}
-                aria-label="Refresh terminal"
-                className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary"
-              >
-                <RotateCw className="size-4" />
-              </motion.button>
-            </TooltipTrigger>
-            <TooltipContent>Refresh — re-pull a clean screen</TooltipContent>
-          </Tooltip>
-        )}
-
         <Tooltip>
           <TooltipTrigger asChild>
             <motion.button
@@ -329,7 +305,6 @@ export function FocusHeader({
   subagents,
   error,
   onBack,
-  onRefresh,
   onTitleClick,
   hasLastSend,
   lastSendOpen,
@@ -441,20 +416,6 @@ export function FocusHeader({
             open={!!lastSendOpen}
             // no shortcutHint on mobile — no hardware-keyboard expectation
           />
-        )}
-        {/* Refresh — re-pull a clean screen (manual twin of the server's
-            post-resize auto-resync); spins on tap for feedback. */}
-        {onRefresh && (
-          <motion.button
-            type="button"
-            aria-label="Refresh terminal"
-            whileTap={{ scale: 0.92, rotate: -180 }}
-            transition={springs.buttonPress}
-            onClick={onRefresh}
-            className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
-          >
-            <RotateCw className="size-5" />
-          </motion.button>
         )}
         <motion.button
           type="button"
