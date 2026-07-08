@@ -38,6 +38,11 @@ pub struct RawTeamConfig {
     /// The team's roster. A missing/absent array → an empty team (skipped).
     #[serde(default)]
     pub members: Vec<RawMember>,
+    /// Epoch-ms creation timestamp Claude writes as `createdAt`. Absent in an
+    /// older/drifted config → 0. A server-side tiebreak signal only (see
+    /// [`Team::created_at`]); never surfaced on the wire.
+    #[serde(default)]
+    pub created_at: i64,
 }
 
 /// One `members[]` entry from `config.json`.
@@ -202,6 +207,12 @@ pub struct Team {
     pub lead_cwd: String,
     pub members: Vec<Member>,
     pub tasks: Vec<TeamTask>,
+    /// Epoch-ms creation time from the config.json `createdAt` field. A
+    /// server-side tiebreak signal for host-dedup (`dedup_by_host` keeps the
+    /// NEWEST team when two orphans share a host), NOT part of the wire shape —
+    /// hence `skip_serializing`. 0 when the config had no `createdAt`.
+    #[serde(skip_serializing)]
+    pub created_at: i64,
 }
 
 impl From<RawTask> for TeamTask {

@@ -326,6 +326,7 @@ mod remove_member_tests {
             lead_cwd: String::new(),
             members,
             tasks: vec![],
+            created_at: 0,
         }
     }
 
