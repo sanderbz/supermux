@@ -78,8 +78,15 @@ pub fn spawn(state: AppState) {
                 _ = state.teams_wake.notified() => {}
             }
 
-            let teams = scan_and_enrich(&state).await;
-            let payload = serde_json::to_value(&teams).unwrap_or(serde_json::Value::Null);
+            // Boards + deregistration key off the RAW on-disk set (`all_teams`),
+            // NOT the display-filtered `display` below. A team merely hidden from
+            // the sidebar (rosterless after a dismiss, or a dedup loser) still
+            // exists on disk; treating it as deregistered would prune its board +
+            // dismissals and resurrect the dismissed member next tick. Display
+            // filtering is a sidebar-only concern.
+            let all_teams = scan_and_enrich_raw(&state).await;
+            let display = dedup_by_host(drop_rosterless(all_teams.clone()));
+            let payload = serde_json::to_value(&display).unwrap_or(serde_json::Value::Null);
 
             // Wire the detected teams onto their OWN boards: register each
             // team's board idempotently + mirror its on-disk tasks as cards, then
@@ -90,11 +97,11 @@ pub fn spawn(state: AppState) {
             // reconcile independently). Defensive: each team's reconcile swallows
             // its own errors; one bad team never blocks the rest or the broadcast.
             let mut board_changed = false;
-            for team in &teams {
+            for team in &all_teams {
                 board_changed |= super::board_sync::reconcile_team(&state, team).await;
             }
             board_changed |=
-                reconcile_deregistrations(&state, &teams, &mut absent_ticks).await;
+                reconcile_deregistrations(&state, &all_teams, &mut absent_ticks).await;
             if board_changed {
                 crate::board::emit_board(&state).await;
             }
@@ -114,9 +121,15 @@ pub fn spawn(state: AppState) {
 
 /// Scan the on-disk team files, then enrich each team with live tmux truth:
 /// validate every member `%id` against the lead window's live panes and map the
-/// team to the supermux session hosting its lead. The public single-shot used by
-/// both the watcher tick and `GET /api/teams`.
-pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
+/// team to the supermux session hosting its lead.
+///
+/// This is the RAW set: every team that exists on disk this tick, enriched but
+/// NOT display-filtered. Board reconciliation and deregistration key off THIS
+/// (on-disk truth), so a team that is merely hidden from the sidebar
+/// (rosterless after a dismiss, or a dedup loser) is never mistaken for a deleted
+/// team and never has its board or dismissals pruned. Use [`scan_and_enrich`] for
+/// the sidebar / `GET /api/teams` view.
+pub async fn scan_and_enrich_raw(state: &AppState) -> Vec<Team> {
     let mut teams = scan::scan_teams(&scan::claude_config_dir());
     if teams.is_empty() {
         return teams;
@@ -172,15 +185,22 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
         }
     }
 
-    // Post-process the whole set (pure, order matters): (1) hide lead-only teams
-    // whose roster is empty after the lead-filter + dismiss-filter — a solo
-    // session is not a team and already renders as a plain tile; THEN (2) collapse
-    // duplicate host mappings so at most one team card points at any given
-    // supermux session (orphaned `session-<uuid>` dirs from restarts all cwd-match
-    // the one live session — without this they triple the card). Empty-roster drop
-    // runs FIRST so those orphans are gone before dedup even looks at hosts.
-    let teams = drop_rosterless(teams);
-    dedup_by_host(teams)
+    teams
+}
+
+/// The display-filtered team view for the sidebar + `GET /api/teams`. Applies two
+/// pure filters over the raw enriched set (order matters): (1) hide lead-only
+/// teams whose roster is empty after the lead-filter + dismiss-filter — a solo
+/// session is not a team and already renders as a plain tile; THEN (2) collapse
+/// duplicate host mappings so at most one team card points at any given supermux
+/// session (orphaned `session-<uuid>` dirs from restarts all cwd-match the one
+/// live session — without this they triple the card). Empty-roster drop runs
+/// FIRST so those orphans are gone before dedup even looks at hosts.
+///
+/// These filters affect ONLY what renders. Board + deregistration lifecycle key
+/// off [`scan_and_enrich_raw`] (on-disk truth), never this filtered set.
+pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
+    dedup_by_host(drop_rosterless(scan_and_enrich_raw(state).await))
 }
 
 /// Drop every team whose roster is EMPTY (fix 1). After the per-team loop has
@@ -1053,6 +1073,43 @@ mod tests {
         }
         assert!(db::boards::get_by_team(&state.pool, "alpha").await.unwrap().is_some());
         assert!(absent.is_empty(), "present team accrues no absence");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Regression (the dismiss-resurrection loop): dismissing a team's LAST
+    /// teammate makes its roster empty, but the team still EXISTS on disk. The
+    /// watcher tick feeds `reconcile_deregistrations` the RAW on-disk set (which
+    /// includes rosterless teams), so a present-but-rosterless team is never
+    /// deregistered and its dismissals are never pruned. The bug: the tick passed
+    /// the DISPLAY-filtered set (which `drop_rosterless` removes the team from), so
+    /// the team looked deleted, its dismissals were pruned, and the dismissed
+    /// member resurfaced the next tick. This asserts the contract the fix restores.
+    #[tokio::test]
+    async fn rosterless_but_present_team_keeps_its_dismissals() {
+        let (state, dir) = test_state().await;
+
+        // The team's only teammate was just dismissed -> empty roster, but the dir
+        // is still on disk, so it is still in the raw detected set passed here.
+        let mut rosterless = team("alpha");
+        rosterless.members.clear();
+
+        db::teams_dismissed::dismiss(&state.pool, "alpha", "bob@alpha", 1)
+            .await
+            .unwrap();
+
+        let mut absent: HashMap<String, u32> = HashMap::new();
+        for _ in 0..(DEREGISTER_AFTER_ABSENT_TICKS + 5) {
+            reconcile_deregistrations(&state, std::slice::from_ref(&rosterless), &mut absent).await;
+        }
+
+        assert_eq!(
+            db::teams_dismissed::list_for_team(&state.pool, "alpha").await.unwrap(),
+            vec!["bob@alpha"],
+            "a present-but-rosterless team keeps its dismissals (member stays dismissed)",
+        );
+        assert!(absent.is_empty(), "a present team accrues no absence");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
