@@ -31,6 +31,24 @@ pub enum ClientMsg {
     /// the same resync automatically (debounced) after it applies a client
     /// resize, so the common trigger self-heals with no user action.
     Resync,
+    /// Request a window of authoritative scrollback from tmux (copy-mode over
+    /// web). `end_offset <= -1` (scrollback coord; `-1` = the row just above the
+    /// visible top); the server returns up to `count` physical rows ending there,
+    /// captured at the pane's CURRENT width. `req_id` correlates async replies —
+    /// a fling scroll leaves many requests inflight and the client keeps only the
+    /// newest. `cols` is the client's grid width for the width-match guard (the
+    /// client discards rows whose captured width no longer matches its grid).
+    ///
+    /// `rename_all = "lowercase"` makes the wire tag `"history"`. `ClientMsg`
+    /// does NOT set `deny_unknown_fields`, so an OLD server given a `history`
+    /// frame simply fails `from_str` and the loop drops it — graceful downgrade,
+    /// no explicit guard needed.
+    History {
+        req_id: u32,
+        end_offset: i64,
+        count: u32,
+        cols: u16,
+    },
 }
 
 #[cfg(test)]
@@ -47,5 +65,31 @@ mod tests {
         let msg = serde_json::from_str::<ClientMsg>(r#"{"type":"resync"}"#)
             .expect("resync control frame must deserialize");
         assert!(matches!(msg, ClientMsg::Resync));
+    }
+
+    #[test]
+    fn parses_history_control_frame() {
+        // `{"type":"history",...}` is the copy-mode-over-web scrollback request:
+        // the client asks for `count` physical rows ending at `end_offset`,
+        // captured at `cols`, correlated by `req_id` so a fling's stale replies
+        // can be discarded. The `rename_all="lowercase"` tag is `"history"`.
+        let msg = serde_json::from_str::<ClientMsg>(
+            r#"{"type":"history","req_id":7,"end_offset":-1,"count":300,"cols":80}"#,
+        )
+        .expect("history control frame must deserialize");
+        match msg {
+            ClientMsg::History {
+                req_id,
+                end_offset,
+                count,
+                cols,
+            } => {
+                assert_eq!(req_id, 7);
+                assert_eq!(end_offset, -1);
+                assert_eq!(count, 300);
+                assert_eq!(cols, 80);
+            }
+            other => panic!("expected ClientMsg::History, got {other:?}"),
+        }
     }
 }
