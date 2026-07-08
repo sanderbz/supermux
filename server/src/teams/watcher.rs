@@ -234,24 +234,12 @@ async fn resolve_host_session(
     cwd_match_session(state, team).await
 }
 
-/// Find a live Claude session whose `dir` matches one of `team`'s members' cwd.
-/// Used as the final host-session fallback when neither `leadSessionId`, the
-/// team-name, nor pane-id intersection resolves. A DB error or no match yields
-/// `None` — the team is then surfaced as unmapped (a calm UI state, never wrong).
+/// Find a live Claude session whose `dir` matches the team's authoritative host
+/// cwd. Used as the final host-session fallback when neither `leadSessionId`, the
+/// team-name, nor pane-id intersection resolves. A thin DB wrapper over the pure
+/// [`match_host_by_cwd`]: a DB error or no match yields `None` — the team is then
+/// surfaced as unmapped (a calm UI state, never wrong).
 async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
-    // Collect the unique non-empty member cwds (typically all the same — the
-    // lead's dir — but defensive against a future per-teammate-worktree shape).
-    let mut cwds: Vec<&str> = team
-        .members
-        .iter()
-        .map(|m| m.cwd.trim())
-        .filter(|c| !c.is_empty())
-        .collect();
-    cwds.sort();
-    cwds.dedup();
-    if cwds.is_empty() {
-        return None;
-    }
     let sessions = match db::sessions::list(&state.pool).await {
         Ok(s) => s,
         Err(e) => {
@@ -259,16 +247,62 @@ async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
             return None;
         }
     };
-    for s in &sessions {
-        if s.provider != "claude" {
+    match_host_by_cwd(
+        team,
+        sessions
+            .iter()
+            .map(|s| (s.name.as_str(), s.dir.as_str(), s.provider.as_str())),
+    )
+}
+
+/// Pure cwd→session matcher (no DB), so the host-attribution policy is unit
+/// testable. Given the live sessions as `(name, dir, provider)` triples, return
+/// the first `provider == "claude"` session whose `dir` equals the team's host
+/// cwd.
+///
+/// **The lead's cwd is authoritative.** We match on `team.lead_cwd` FIRST — it is
+/// the team's true working directory. Only when it is empty (an in-process lead,
+/// or a drifted config with no lead cwd) do we fall back to the pre-fix behavior
+/// of scanning the teammates' cwds. A teammate can legitimately work in a
+/// worktree/subdir that collides with an UNRELATED session's dir, so a teammate
+/// cwd must never win host attribution over the lead's own cwd.
+///
+/// Normalization matches the rest of the resolver: trailing `/` stripped,
+/// case-insensitive compare.
+fn match_host_by_cwd<'a>(
+    team: &Team,
+    sessions: impl Iterator<Item = (&'a str, &'a str, &'a str)>,
+) -> Option<String> {
+    // Authoritative candidate: the lead's own cwd. Fall back to the unique
+    // non-empty teammate cwds ONLY when the lead cwd is unknown.
+    let lead = team.lead_cwd.trim();
+    let candidates: Vec<String> = if !lead.is_empty() {
+        vec![lead.trim_end_matches('/').to_string()]
+    } else {
+        let mut cwds: Vec<String> = team
+            .members
+            .iter()
+            .map(|m| m.cwd.trim())
+            .filter(|c| !c.is_empty())
+            .map(|c| c.trim_end_matches('/').to_string())
+            .collect();
+        cwds.sort();
+        cwds.dedup();
+        cwds
+    };
+    if candidates.is_empty() {
+        return None;
+    }
+    for (name, dir, provider) in sessions {
+        if provider != "claude" {
             continue;
         }
-        let s_dir = s.dir.trim_end_matches('/');
+        let s_dir = dir.trim_end_matches('/');
         if s_dir.is_empty() {
             continue;
         }
-        if cwds.iter().any(|c| c.trim_end_matches('/').eq_ignore_ascii_case(s_dir)) {
-            return Some(s.name.clone());
+        if candidates.iter().any(|c| c.eq_ignore_ascii_case(s_dir)) {
+            return Some(name.to_string());
         }
     }
     None
@@ -461,6 +495,7 @@ mod tests {
             team_name: name.to_string(),
             lead_session: "lead".into(),
             lead_supermux_session: None,
+            lead_cwd: String::new(),
             members: vec![Member {
                 name: "alice".into(),
                 agent_id: "alice@sq".into(),
@@ -548,6 +583,8 @@ mod tests {
             team_name: team_name.into(),
             lead_session: "8a7e1f9e-10f5-4e9c-a9de-29201ec5708f".into(),
             lead_supermux_session: None,
+            // Empty: these fixtures exercise the teammate-cwd FALLBACK path.
+            lead_cwd: String::new(),
             members: pane_ids
                 .iter()
                 .enumerate()
@@ -719,6 +756,109 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── lead-cwd host attribution (pure match_host_by_cwd) ──────────────────────
+
+    /// Build a team with an explicit `lead_cwd` and a single teammate whose cwd
+    /// may differ (the worktree/subdir case). Panes irrelevant to cwd matching.
+    fn lead_cwd_team(team_name: &str, lead_cwd: &str, teammate_cwd: &str) -> Team {
+        use super::super::model::{Member, MemberStatus};
+        Team {
+            team_name: team_name.into(),
+            lead_session: "some-uuid".into(),
+            lead_supermux_session: None,
+            lead_cwd: lead_cwd.into(),
+            members: vec![Member {
+                name: "m0".into(),
+                agent_id: format!("m0@{team_name}"),
+                model: "opus".into(),
+                color: "blue".into(),
+                tmux_pane_id: Some("%0".into()),
+                is_active: true,
+                status: MemberStatus::Working,
+                cwd: teammate_cwd.into(),
+            }],
+            tasks: vec![],
+        }
+    }
+
+    /// Sessions as the pure helper consumes them: `(name, dir, provider)`.
+    fn sess(rows: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
+        rows.iter()
+            .map(|(n, d, p)| (n.to_string(), d.to_string(), p.to_string()))
+            .collect()
+    }
+
+    /// THE regression test for the mis-attribution bug: a teammate works in a
+    /// worktree (`dirB`) that coincides with an UNRELATED session's dir (App),
+    /// while the lead's cwd (`dirA`) is the true host (Full). The resolver MUST
+    /// pick Full (matched by the lead's cwd), never App (the teammate's cwd).
+    #[test]
+    fn match_host_prefers_lead_cwd_over_teammate_cwd() {
+        let dir_a = "/home/p/projects/mobsters-united";
+        let dir_b = "/home/p/projects/mobsters-united/game.mobsters-united.com";
+        let team = lead_cwd_team("session-37a40788", dir_a, dir_b);
+        let rows = sess(&[
+            ("Mobsters-United-Full", dir_a, "claude"),
+            ("Mobsters-United-Game", dir_b, "claude"),
+        ]);
+
+        let host = match_host_by_cwd(
+            &team,
+            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+        );
+        assert_eq!(host.as_deref(), Some("Mobsters-United-Full"));
+        assert_ne!(host.as_deref(), Some("Mobsters-United-Game"));
+    }
+
+    /// Fallback: when `lead_cwd` is empty (in-process lead / schema drift), the
+    /// teammate cwd still resolves the host — preserves the pre-fix behavior.
+    #[test]
+    fn match_host_falls_back_to_teammate_cwd_when_lead_cwd_empty() {
+        let dir_b = "/opt/projects/ipc-astro";
+        let team = lead_cwd_team("t", "", dir_b);
+        let rows = sess(&[
+            ("other", "/opt/projects/unrelated", "claude"),
+            ("ipc-astro", dir_b, "claude"),
+        ]);
+
+        let host = match_host_by_cwd(
+            &team,
+            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+        );
+        assert_eq!(host.as_deref(), Some("ipc-astro"));
+    }
+
+    /// No session dir matches the lead cwd (nor, in fallback, any teammate) →
+    /// `None`. The team surfaces unmapped rather than pinning to a wrong host.
+    #[test]
+    fn match_host_returns_none_when_nothing_matches() {
+        let team = lead_cwd_team("t", "/no/such/dir", "/also/nope");
+        let rows = sess(&[("live", "/opt/projects/real", "claude")]);
+        let host = match_host_by_cwd(
+            &team,
+            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+        );
+        assert!(host.is_none());
+    }
+
+    /// The `provider == "claude"` filter and trailing-slash/case normalization
+    /// are preserved: a non-claude session with the same dir is skipped, and a
+    /// dir differing only by a trailing slash / letter case still matches.
+    #[test]
+    fn match_host_filters_provider_and_normalizes_dir() {
+        let team = lead_cwd_team("t", "/home/P/Proj", "");
+        // A shell session with the exact dir must NOT win (provider filter).
+        let rows = sess(&[
+            ("shell-host", "/home/P/Proj", "shell"),
+            ("claude-host", "/home/p/proj/", "claude"),
+        ]);
+        let host = match_host_by_cwd(
+            &team,
+            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+        );
+        assert_eq!(host.as_deref(), Some("claude-host"));
     }
 
     /// A detected team is never deregistered, and its absence counter never grows.

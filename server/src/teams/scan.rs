@@ -178,10 +178,21 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
     // match (the canonical, version-stable key) AND by role marker (belt +
     // braces against schema drift / missing leadAgentId).
     let lead_agent_id = config.lead_agent_id.trim().to_string();
+    // Capture the FIRST filtered-out lead entry's cwd — the authoritative host
+    // directory. It's dropped from `members` (FIX-TEAMS phantom-chip fix), but
+    // the watcher's cwd-based host resolver needs it: teammate cwds can collide
+    // with an unrelated session's dir, so only the lead's cwd may decide the host.
+    let mut lead_cwd: Option<String> = None;
     let members = config
         .members
         .into_iter()
-        .filter(|m| !is_lead_entry(m, &lead_agent_id))
+        .filter(|m| {
+            let is_lead = is_lead_entry(m, &lead_agent_id);
+            if is_lead && lead_cwd.is_none() {
+                lead_cwd = Some(m.cwd.trim().to_string());
+            }
+            !is_lead
+        })
         .map(|m| resolve_member(m, &inbox_dir, &tasks))
         .collect();
 
@@ -189,6 +200,7 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
         team_name: team_name.to_string(),
         lead_session: config.lead_session_id,
         lead_supermux_session: None,
+        lead_cwd: lead_cwd.unwrap_or_default(),
         members,
         tasks: tasks.into_iter().map(TeamTask::from).collect(),
     })
@@ -846,6 +858,74 @@ mod tests {
         // Real teammate carries its cwd onto the supermux Member (for the
         // host-session cwd-match fallback in the watcher).
         assert_eq!(t.members[0].cwd, "/p");
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn scan_captures_lead_cwd_and_keeps_only_the_teammate() {
+        // The filtered-out lead row carries the authoritative host directory
+        // (dirA). A teammate works in a DIFFERENT dir (dirB, e.g. a worktree).
+        // The scan must (a) drop the lead from `members`, and (b) still capture
+        // the lead's cwd into `Team.lead_cwd` so the watcher can resolve the host
+        // by it — the whole point of the lead-cwd host-attribution fix.
+        let base = tmp();
+        let tdir = base.join("teams").join("mob");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "37a40788-uuid",
+            "leadAgentId": "team-lead@mob",
+            "members": [
+                { "name": "team-lead", "agentId": "team-lead@mob",
+                  "agentType": "team-lead", "tmuxPaneId": "",
+                  "cwd": "/home/p/projects/mobsters-united" },
+                { "name": "fix-644", "agentId": "fix-644@mob",
+                  "tmuxPaneId": "%0", "color": "blue", "isActive": true,
+                  "backendType": "tmux",
+                  "cwd": "/home/p/projects/mobsters-united/game.mobsters-united.com" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+
+        let teams = scan_teams(&base);
+        assert_eq!(teams.len(), 1);
+        let t = &teams[0];
+        // Lead cwd captured from the (dropped) lead row.
+        assert_eq!(t.lead_cwd, "/home/p/projects/mobsters-united");
+        // Only the teammate survives, carrying its OWN (worktree) cwd.
+        assert_eq!(t.members.len(), 1);
+        assert_eq!(t.members[0].name, "fix-644");
+        assert_eq!(
+            t.members[0].cwd,
+            "/home/p/projects/mobsters-united/game.mobsters-united.com"
+        );
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn scan_lead_cwd_empty_when_no_lead_entry_has_cwd() {
+        // A lead row with no cwd (in-process lead / schema drift) → lead_cwd "".
+        // The watcher then falls back to teammate-cwd matching.
+        let base = tmp();
+        let tdir = base.join("teams").join("nc");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "x",
+            "leadAgentId": "team-lead@nc",
+            "members": [
+                { "name": "team-lead", "agentId": "team-lead@nc",
+                  "agentType": "team-lead", "tmuxPaneId": "" },
+                { "name": "alice", "agentId": "alice@nc", "tmuxPaneId": "%1",
+                  "color": "blue", "isActive": true, "backendType": "tmux",
+                  "cwd": "/w" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+
+        let teams = scan_teams(&base);
+        assert_eq!(teams[0].lead_cwd, "");
+        assert_eq!(teams[0].members.len(), 1);
 
         let _ = fs::remove_dir_all(base);
     }
