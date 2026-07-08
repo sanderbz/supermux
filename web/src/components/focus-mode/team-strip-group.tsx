@@ -20,6 +20,7 @@
 import { cn } from '@/lib/utils'
 import { CompactTile } from './compact-tile'
 import { MemberStatusDot, TeamRollupBadges } from '@/components/team'
+import { KillTeammateButton } from '@/components/team/kill-teammate-button'
 import {
   tasksForMember,
   type Team,
@@ -153,13 +154,25 @@ function TeammateStripRow({
   const rail = member.color || 'hsl(var(--status-idle))'
 
   return (
-    <button
-      type="button"
+    // A `div role="button"` (not a real <button>) so the trailing kill-pane
+    // trash — itself a <button> — nests as valid HTML (no button-in-button).
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
       aria-current={selected ? 'true' : undefined}
       aria-label={`Teammate ${member.name}${needsYou ? ', needs you' : ''} — read-only terminal`}
       className={cn(
-        'relative ml-2 flex h-11 items-center gap-2.5 overflow-hidden rounded-xl border pl-3 pr-2 text-left outline-none',
+        // cursor-pointer + select-none + transition-colors: parity with the
+        // reference teammate-chip role=button (a plain <div> is text-selectable
+        // and has no native pointer cursor, unlike the <button> this replaced).
+        'relative ml-2 flex h-11 cursor-pointer select-none items-center gap-2.5 overflow-hidden rounded-xl border pl-3 pr-2 outline-none transition-colors',
         'focus-visible:ring-2 focus-visible:ring-ring',
         selected
           ? 'border-primary/70 bg-card shadow-sm'
@@ -194,8 +207,12 @@ function TeammateStripRow({
             </span>
           )
         )}
+        {/* Kill-pane trash (manual Agent Teams cleanup). Renders nothing when
+            there's no live pane / the lead isn't mapped; swallows the click so
+            it never selects the teammate row. */}
+        <KillTeammateButton team={team} member={member} />
       </span>
-    </button>
+    </div>
   )
 }
 
