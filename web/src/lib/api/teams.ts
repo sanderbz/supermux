@@ -230,7 +230,38 @@ async function dismissTeam(name: string): Promise<void> {
   }
 }
 
+/** DELETE /api/sessions/{lead}/teammates/{paneId} — kill ONE teammate's tmux
+ *  pane (Agent Teams manual cleanup; the Claude-side graceful shutdown is
+ *  unreliable, so the trash icon is the user's explicit choice). The server
+ *  validates the pane belongs to the lead's window and refuses the lead pane.
+ *  KNOWN TRADE-OFF: the on-disk roster (~/.claude/teams/…/config.json) is NOT
+ *  edited — mid-session edits are unsupported by Claude Code — so the member
+ *  stays listed (flipping to offline / null %id on the watcher's next tick)
+ *  until the lead session ends. */
+async function killTeammate(leadSession: string, paneId: string): Promise<void> {
+  const token = apiToken()
+  const res = await fetch(
+    apiUrl(
+      `/api/sessions/${encodeURIComponent(leadSession)}/teammates/${encodeURIComponent(paneId)}`,
+    ),
+    {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    },
+  )
+  if (!res.ok) {
+    let env: TeamsEnvelope | null = null
+    try {
+      env = (await res.json()) as TeamsEnvelope
+    } catch {
+      /* non-JSON */
+    }
+    throw new ApiError(res.status, env?.error ?? res.statusText)
+  }
+}
+
 export const teamsApi = {
   list: listTeams,
   dismiss: dismissTeam,
+  killTeammate,
 }

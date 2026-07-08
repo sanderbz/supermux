@@ -334,6 +334,37 @@ fn discriminate_lead_pane(
     None
 }
 
+/// Pure guard for the kill-teammate endpoint (`DELETE
+/// /api/sessions/{name}/teammates/{pane_id}`): may `pane_id` be killed inside a
+/// window whose live panes are `live_panes`? The LEAD pane is `lead_pane` when
+/// [`resolve_lead_pane`]'s config-based discrimination resolved one, else the
+/// FIRST-listed pane (tmux lists a window's panes in index order and the lead
+/// is the original, never-moved first pane). Errors map 1:1 onto the HTTP
+/// contract:
+///   * `NotFound` — `pane_id` is not in THIS session's window (unknown, stale,
+///     or another session's pane — never killable through this session).
+///   * `BadRequest` — `pane_id` IS the lead pane (killing it would end the
+///     whole team; the lead tile's Stop owns that path).
+pub fn validate_teammate_pane(
+    live_panes: &[String],
+    lead_pane: Option<&str>,
+    pane_id: &str,
+) -> Result<(), crate::error::AppError> {
+    use crate::error::AppError;
+    if !live_panes.iter().any(|p| p == pane_id) {
+        return Err(AppError::NotFound(format!(
+            "pane '{pane_id}' is not in this session's window"
+        )));
+    }
+    let lead = lead_pane.or_else(|| live_panes.first().map(String::as_str));
+    if lead == Some(pane_id) {
+        return Err(AppError::BadRequest(
+            "refusing to kill the lead pane — use Stop on the lead session".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +482,48 @@ mod tests {
         let live = panes(&["%6", "%10", "%7"]);
         let mates = teammates(&["%7"]);
         assert_eq!(discriminate_lead_pane(&live, &mates), None);
+    }
+
+    // Kill-teammate validation — pins the endpoint's HTTP contract: 404 for a
+    // pane outside this window, 400 for the lead pane (config-resolved OR the
+    // first-listed fallback), Ok only for a genuine teammate pane.
+
+    #[test]
+    fn validate_rejects_pane_outside_window_as_not_found() {
+        let live = panes(&["%6", "%7", "%8"]);
+        // A pane id from some OTHER session's window (or a stale/reused id) —
+        // never killable through this session.
+        let err = validate_teammate_pane(&live, Some("%6"), "%42").unwrap_err();
+        assert!(matches!(err, crate::error::AppError::NotFound(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn validate_rejects_resolved_lead_pane_as_bad_request() {
+        let live = panes(&["%6", "%7", "%8"]);
+        let err = validate_teammate_pane(&live, Some("%6"), "%6").unwrap_err();
+        assert!(matches!(err, crate::error::AppError::BadRequest(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn validate_falls_back_to_first_listed_pane_as_lead() {
+        // Discrimination couldn't resolve the lead (None) → the first-listed
+        // pane (tmux index order; the lead is the original first pane) is
+        // protected instead — the guard never silently disarms.
+        let live = panes(&["%6", "%7"]);
+        let err = validate_teammate_pane(&live, None, "%6").unwrap_err();
+        assert!(matches!(err, crate::error::AppError::BadRequest(_)), "got: {err:?}");
+        // A single-pane window has ONLY the lead — nothing is killable.
+        let solo = panes(&["%6"]);
+        let err = validate_teammate_pane(&solo, None, "%6").unwrap_err();
+        assert!(matches!(err, crate::error::AppError::BadRequest(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn validate_allows_a_genuine_teammate_pane() {
+        let live = panes(&["%6", "%7", "%8"]);
+        assert!(validate_teammate_pane(&live, Some("%6"), "%8").is_ok());
+        // Same with the first-listed fallback.
+        assert!(validate_teammate_pane(&live, None, "%7").is_ok());
     }
 
     #[test]

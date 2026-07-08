@@ -766,6 +766,65 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Kill ONE teammate pane inside `name`'s window (`tmux kill-pane -t %id`) —
+/// the manual Agent-Teams cleanup path. Claude's own graceful teammate shutdown
+/// (asking the lead to dismiss a member) is unreliable in practice, so the user
+/// gets an explicit per-teammate kill; the caller answers 200.
+///
+/// Guards, in order (see [`super::teams::validate_teammate_pane`]):
+///   * 404 — the session doesn't exist, its tmux window is gone, or `pane_id`
+///     is not one of THIS window's live panes (a stale/reused id or another
+///     session's pane is never killable through this session).
+///   * 400 — `pane_id` is the LEAD pane (killing it would end the whole team;
+///     the lead tile's Stop owns that path).
+///
+/// KNOWN TRADE-OFF: we deliberately do NOT touch
+/// `~/.claude/teams/*/config.json` — editing it mid-session is unsupported by
+/// Claude Code — so the Claude-side roster keeps a stale member entry until the
+/// lead session ends. The watcher's `%id` re-validation flips the member to
+/// offline (`tmux_pane_id = None`) on its next tick; killing the pane is the
+/// user's explicit choice.
+pub async fn kill_teammate_pane(
+    state: &AppState,
+    name: &str,
+    pane_id: &str,
+) -> Result<(), AppError> {
+    let lock = state.lock_for(name);
+    let _guard = lock.lock().await;
+
+    let s = require_session(state, name).await?;
+    // Respect the session's transport (local vs remote-host SSH) like the WS
+    // attach path does — a remote lead's panes live on the remote box.
+    let transport = match s.host_id {
+        Some(h) => Some(state.host_pool.transport_for(h).await?),
+        None => None,
+    };
+    let tmux = match transport.as_deref() {
+        Some(t) => Tmux::new_on(t, name),
+        None => Tmux::new(name),
+    };
+    if !tmux.exists().await? {
+        return Err(AppError::NotFound(format!(
+            "session '{name}' has no live tmux session"
+        )));
+    }
+
+    // Membership + lead guard. `list_pane_ids` scopes the check to THIS
+    // session's window; `resolve_lead_pane` is the config-based lead
+    // discrimination (authoritative when it resolves; the validator falls back
+    // to the first-listed pane otherwise, so the lead guard never disarms).
+    let live = tmux.list_pane_ids().await?;
+    let lead_pane = super::teams::resolve_lead_pane(name).await;
+    super::teams::validate_teammate_pane(&live, lead_pane.as_deref(), pane_id)?;
+
+    let pane = match transport.as_deref() {
+        Some(t) => Tmux::for_pane_on(t, name, pane_id.to_string()),
+        None => Tmux::for_pane(name, pane_id.to_string()),
+    };
+    pane.kill_pane().await?;
+    Ok(())
+}
+
 /// Send literal text followed by Enter. Auto-wakes a stopped session.
 pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), AppError> {
     if !db::sessions::exists(&state.pool, name).await? {
