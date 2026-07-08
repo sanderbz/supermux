@@ -24,7 +24,7 @@ use crate::db;
 use crate::sessions::tmux::Tmux;
 use crate::state::{AppState, SseEvent};
 
-use super::model::Team;
+use super::model::{MemberStatus, Team};
 use super::scan;
 
 /// Slow safety re-scan cadence. Tolerates missed FSEvents + schema drift; cheap
@@ -176,7 +176,83 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
         }
     }
 
+    // Post-process the whole set (pure, order matters): (1) hide lead-only teams
+    // whose roster is empty after the lead-filter + dismiss-filter — a solo
+    // session is not a team and already renders as a plain tile; THEN (2) collapse
+    // duplicate host mappings so at most one team card points at any given
+    // supermux session (orphaned `session-<uuid>` dirs from restarts all cwd-match
+    // the one live session — without this they triple the card). Empty-roster drop
+    // runs FIRST so those orphans are gone before dedup even looks at hosts.
+    let teams = drop_rosterless(teams);
+    dedup_by_host(teams)
+}
+
+/// Drop every team whose roster is EMPTY (fix 1). After the per-team loop has
+/// filtered out the lead entry (`scan_one_team`) and the user's dismissed members
+/// (`retain_undismissed`), a team with no members left is a solo session, not a
+/// team — it already renders as a normal SessionTile, so surfacing it as a team
+/// card is the lead-only-orphan duplicate. Pure over `Vec<Team>` (unit-testable).
+fn drop_rosterless(teams: Vec<Team>) -> Vec<Team> {
+    teams.into_iter().filter(|t| !t.members.is_empty()).collect()
+}
+
+/// Enforce "at most one team per host session" (fix 2). When 2+ teams resolved to
+/// the SAME `Some(lead_supermux_session)`, keep the winner and drop the rest;
+/// teams with host `None` are never dropped. Pure over `Vec<Team>`.
+///
+/// Winner = the max of [`dedup_rank_key`]: most live members, then most members
+/// total, then newest `created_at`, then lexically smallest `team_name`. The last
+/// tier makes the choice fully deterministic (no true ties between distinct teams).
+fn dedup_by_host(teams: Vec<Team>) -> Vec<Team> {
+    use std::collections::HashMap;
+
+    // First pass: the winning index for each resolved host (None hosts ignored).
+    let mut winner: HashMap<String, usize> = HashMap::new();
+    for (i, t) in teams.iter().enumerate() {
+        let Some(host) = t.lead_supermux_session.clone() else {
+            continue;
+        };
+        let replace = match winner.get(&host) {
+            Some(&best) => dedup_rank_key(t) > dedup_rank_key(&teams[best]),
+            None => true,
+        };
+        if replace {
+            winner.insert(host, i);
+        }
+    }
+
+    // Second pass: keep host=None teams and the per-host winners only.
     teams
+        .into_iter()
+        .enumerate()
+        .filter(|(i, t)| match t.lead_supermux_session.as_deref() {
+            None => true,
+            Some(host) => winner.get(host) == Some(i),
+        })
+        .map(|(_, t)| t)
+        .collect()
+}
+
+/// A team's LIVE member count (status != Offline). A real team with live
+/// teammates beats an empty/dead orphan in the host-dedup tiebreak.
+fn live_member_count(team: &Team) -> usize {
+    team.members
+        .iter()
+        .filter(|m| m.status != MemberStatus::Offline)
+        .count()
+}
+
+/// The host-dedup ranking key — HIGHER is better, so the winner is the max.
+/// Tiebreak chain (best first): most live members, then most members total, then
+/// newest `created_at`, then lexically smallest `team_name` (wrapped in
+/// [`std::cmp::Reverse`] so a smaller name yields a LARGER key).
+fn dedup_rank_key(team: &Team) -> (usize, usize, i64, std::cmp::Reverse<String>) {
+    (
+        live_member_count(team),
+        team.members.len(),
+        team.created_at,
+        std::cmp::Reverse(team.team_name.clone()),
+    )
 }
 
 /// Drop every member the user has dismissed (supermux-side hide). Pure, so the
@@ -603,6 +679,7 @@ mod tests {
                 blocks: vec![],
                 blocked_by: vec![],
             }],
+            created_at: 0,
         }
     }
 
@@ -688,6 +765,7 @@ mod tests {
                 })
                 .collect(),
             tasks: vec![],
+            created_at: 0,
         }
     }
 
@@ -936,6 +1014,7 @@ mod tests {
                 cwd: teammate_cwd.into(),
             }],
             tasks: vec![],
+            created_at: 0,
         }
     }
 
@@ -1098,5 +1177,202 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── fix: one team card per session (drop_rosterless + dedup_by_host) ─────────
+
+    /// A member with an explicit status. `is_active` tracks the status so the
+    /// fixture stays self-consistent (offline == not active).
+    fn member_with(agent: &str, status: MemberStatus) -> Member {
+        Member {
+            name: agent.split('@').next().unwrap_or(agent).into(),
+            agent_id: agent.into(),
+            model: "opus".into(),
+            color: "blue".into(),
+            tmux_pane_id: None,
+            is_active: status != MemberStatus::Offline,
+            status,
+            cwd: String::new(),
+        }
+    }
+
+    /// A team with an explicit host, roster, and `created_at` for the pure
+    /// post-processing transforms (no tmux/DB).
+    fn host_team(name: &str, host: Option<&str>, members: Vec<Member>, created_at: i64) -> Team {
+        Team {
+            team_name: name.into(),
+            lead_session: "lead".into(),
+            lead_supermux_session: host.map(str::to_string),
+            lead_cwd: String::new(),
+            members,
+            tasks: vec![],
+            created_at,
+        }
+    }
+
+    /// fix 1: a team whose roster is empty (all-lead-only, after the lead filter +
+    /// dismiss filter) is dropped; a team whose only member is OFFLINE-but-present
+    /// is kept — offline is not the same as absent.
+    #[test]
+    fn drop_rosterless_removes_empty_and_keeps_offline_member() {
+        let empty = host_team("empty", Some("Full"), vec![], 0);
+        let offline = host_team(
+            "offline",
+            Some("Full"),
+            vec![member_with("a@offline", MemberStatus::Offline)],
+            0,
+        );
+        let out = drop_rosterless(vec![empty, offline]);
+        let names: Vec<&str> = out.iter().map(|t| t.team_name.as_str()).collect();
+        assert_eq!(names, vec!["offline"], "empty dropped; offline-but-present kept");
+    }
+
+    /// fix 2, tier 1: same host → the team with more LIVE members (status !=
+    /// Offline) wins; a dead orphan loses even if it were newer.
+    #[test]
+    fn dedup_by_host_keeps_more_live_members() {
+        let dead = host_team(
+            "dead",
+            Some("Full"),
+            vec![member_with("a@dead", MemberStatus::Offline)],
+            100,
+        );
+        let live = host_team(
+            "live",
+            Some("Full"),
+            vec![member_with("a@live", MemberStatus::Working)],
+            1,
+        );
+        let out = dedup_by_host(vec![dead, live]);
+        let names: Vec<&str> = out.iter().map(|t| t.team_name.as_str()).collect();
+        assert_eq!(names, vec!["live"], "a live teammate beats a dead orphan");
+    }
+
+    /// fix 2, tier 2: equal live count → more members TOTAL wins.
+    #[test]
+    fn dedup_by_host_breaks_tie_on_total_members() {
+        let more = host_team(
+            "more",
+            Some("Full"),
+            vec![
+                member_with("a@more", MemberStatus::Working),
+                member_with("b@more", MemberStatus::Offline),
+            ],
+            1,
+        );
+        let fewer = host_team(
+            "fewer",
+            Some("Full"),
+            vec![member_with("a@fewer", MemberStatus::Working)],
+            100,
+        );
+        // Both have exactly 1 live member; `more` has 2 total → it wins.
+        let out = dedup_by_host(vec![more, fewer]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].team_name, "more", "equal live → more total members wins");
+    }
+
+    /// fix 2, tier 3: equal live AND total → newest `created_at` wins.
+    #[test]
+    fn dedup_by_host_breaks_tie_on_created_at() {
+        let old = host_team(
+            "old",
+            Some("Full"),
+            vec![member_with("a@old", MemberStatus::Working)],
+            100,
+        );
+        let new = host_team(
+            "new",
+            Some("Full"),
+            vec![member_with("a@new", MemberStatus::Working)],
+            200,
+        );
+        let out = dedup_by_host(vec![old, new]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].team_name, "new", "equal roster → newest created_at wins");
+    }
+
+    /// fix 2, tier 4: full tie on live/total/created_at → lexically smallest
+    /// `team_name` wins (the final deterministic tiebreak).
+    #[test]
+    fn dedup_by_host_breaks_tie_on_team_name() {
+        let b = host_team(
+            "bbb",
+            Some("Full"),
+            vec![member_with("a@bbb", MemberStatus::Working)],
+            50,
+        );
+        let a = host_team(
+            "aaa",
+            Some("Full"),
+            vec![member_with("a@aaa", MemberStatus::Working)],
+            50,
+        );
+        // Insertion order is bbb-then-aaa to prove the winner is chosen by the
+        // key, not by position.
+        let out = dedup_by_host(vec![b, a]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].team_name, "aaa", "full tie → smallest team_name wins");
+    }
+
+    /// fix 2: dedup only collapses teams that SHARE a host — a team mapping to a
+    /// different host is untouched, and a team with host `None` is never dropped
+    /// (two unmapped teams both survive even though they share `None`).
+    #[test]
+    fn dedup_by_host_leaves_other_hosts_and_none_alone() {
+        let full_a = host_team(
+            "full-a",
+            Some("Full"),
+            vec![member_with("a@full-a", MemberStatus::Working)],
+            2,
+        );
+        let full_b = host_team(
+            "full-b",
+            Some("Full"),
+            vec![member_with("a@full-b", MemberStatus::Offline)],
+            1,
+        );
+        let other = host_team(
+            "other",
+            Some("Other"),
+            vec![member_with("a@other", MemberStatus::Working)],
+            1,
+        );
+        let unmapped1 = host_team(
+            "unmapped-1",
+            None,
+            vec![member_with("a@unmapped-1", MemberStatus::Working)],
+            1,
+        );
+        let unmapped2 = host_team(
+            "unmapped-2",
+            None,
+            vec![member_with("a@unmapped-2", MemberStatus::Working)],
+            1,
+        );
+        let out = dedup_by_host(vec![full_a, full_b, other, unmapped1, unmapped2]);
+        let mut names: Vec<&str> = out.iter().map(|t| t.team_name.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["full-a", "other", "unmapped-1", "unmapped-2"],
+            "Full collapses to its live winner; a different host and both host=None teams survive",
+        );
+    }
+
+    /// The exact reported scenario: one live session with THREE orphaned lead-only
+    /// `session-<uuid>` dirs, all cwd-mapped to it. drop_rosterless removes all
+    /// three (empty rosters) BEFORE dedup runs, so nothing is left to collapse and
+    /// the session renders as a plain tile (zero team cards).
+    #[test]
+    fn combined_three_lead_only_teams_sharing_a_host_all_disappear() {
+        let t1 = host_team("session-0a0af9dd", Some("Mobsters-United-Full"), vec![], 3);
+        let t2 = host_team("session-2dbb48ec", Some("Mobsters-United-Full"), vec![], 2);
+        let t3 = host_team("session-37a40788", Some("Mobsters-United-Full"), vec![], 1);
+        let out = dedup_by_host(drop_rosterless(vec![t1, t2, t3]));
+        assert!(
+            out.is_empty(),
+            "all three lead-only cards vanish (empty-drop before dedup)",
+        );
     }
 }

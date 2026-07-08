@@ -366,6 +366,7 @@ mod tests {
                 cwd: String::new(),
             }],
             tasks,
+            created_at: 0,
         }
     }
 
