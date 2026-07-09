@@ -204,14 +204,12 @@ export function LiveTerminal({
     >
       <div
         ref={containerRef}
-        // `touch-action: none` hands the whole vertical drag to xterm 6.0's OWN
-        // touch handlers (its VS Code scrollable element registers touchstart/
-        // touchmove/pointerdown and scrolls the buffer itself). We must NOT use
-        // `pan-y` here anymore: pan-y pre-commits the vertical gesture to a NATIVE
-        // scroll, but xterm 6.0 no longer exposes a native-overflow `.xterm-viewport`
-        // to scroll — so the browser would hijack the drag (scrolling nothing / the
-        // page) before xterm's touchmove could act. `none` lets xterm own it, which
-        // is exactly how VS Code drives the same scrollable element on touch.
+        // `touch-action: none`: xterm 6.0 has no built-in touch-drag scroll, so
+        // we drive the scrollback from a touch→scrollLines handler in
+        // use-live-term. `none` hands us every touch event AND blocks the
+        // browser's native gesture (a vertical drag would otherwise pan the page
+        // / expand the mobile browser chrome instead of scrolling). See the
+        // globals.css `.xterm` touch-action rule.
         //
         // SCROLL-ON-OPEN FIX (cached-tail crossfade). On open we INSTANTLY show
         // the session's already-cached last-screen capture as a static overlay
