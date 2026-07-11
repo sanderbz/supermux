@@ -150,9 +150,13 @@ pub async fn scan_and_enrich(state: &AppState) -> Vec<Team> {
         // `lifecycle::archive` knows which `~/.claude/teams/<name>/` dir to
         // park in `.archived/` when the user archives the session. Only fires
         // when host resolved AND the value would change (cheap dedupe avoids
-        // an UPDATE-per-tick on a steady-state team).
+        // an UPDATE-per-tick on a steady-state team). Then CLEAR the backlink
+        // off any OTHER session that still points at this team — otherwise a
+        // host move leaves a stale backlink whose later archive would park the
+        // LIVE team's config (see `clear_stale_team_backlinks`).
         if let Some(host_name) = host.as_deref() {
             persist_team_name(state, host_name, &team.team_name).await;
+            clear_stale_team_backlinks(state, host_name, &team.team_name).await;
         }
     }
 
@@ -182,6 +186,33 @@ async fn persist_team_name(state: &AppState, session_name: &str, team_name: &str
     }
 }
 
+/// After resolving `host_name` as the team's host, CLEAR the `team_name`
+/// backlink off any OTHER session that still points at this team. When host
+/// resolution MOVES a team to a new session (e.g. the lead's cwd now matches a
+/// different supermux session than last tick's), the OLD host would otherwise
+/// keep `team_name` pointing at the still-live team — and a later
+/// `lifecycle::archive` of that old session reads the stale backlink and parks
+/// the LIVE team's config under `.archived/`, vanishing it from the UI.
+/// Idempotent + cheap: the UPDATE only touches rows where `team_name = team AND
+/// name <> host`, so a steady-state team (only the host points at it) is 0 rows.
+async fn clear_stale_team_backlinks(state: &AppState, host_name: &str, team_name: &str) {
+    match db::sessions::clear_team_name_except(&state.pool, team_name, host_name).await {
+        Ok(0) => {}
+        Ok(n) => tracing::debug!(
+            team = %team_name,
+            host = %host_name,
+            cleared = n,
+            "teams watcher: cleared stale team_name backlink(s) after host move",
+        ),
+        Err(e) => tracing::debug!(
+            error = %e,
+            team = %team_name,
+            host = %host_name,
+            "teams watcher: clear stale team_name backlinks failed",
+        ),
+    }
+}
+
 /// Resolve a team's host supermux session, trying cheapest signals first so the
 /// mapping survives transient teammate-pane churn AND the new-team window before
 /// any teammate is spawned. Order:
@@ -200,9 +231,12 @@ async fn persist_team_name(state: &AppState, session_name: &str, team_name: &str
 ///       session whose window contains it. Does NOT depend on `leadSessionId` or
 ///       the team name matching anything (the FIX-TEAMS bug 2 case, and what
 ///       makes the v2.1.178 auto-naming a non-issue for detection).
-///   (4) Canonical-cwd match — last resort: a member's `cwd` matching a live
+///   (4) Lead-cwd match — last resort: the LEAD's own `cwd` matching a live
 ///       Claude DB session's `dir` (handles the moment when teammates exist on
 ///       disk but their panes haven't shown up in tmux yet, e.g. mid-spawn).
+///       The lead's cwd is authoritative — a teammate can work in a
+///       worktree/subdir that collides with an UNRELATED session's dir, so only
+///       the lead's cwd decides the host (see [`match_host_by_cwd`]).
 async fn resolve_host_session(
     state: &AppState,
     team: &Team,
@@ -226,11 +260,13 @@ async fn resolve_host_session(
     if let Some(host) = host_session_for(team, pane_map) {
         return Some(host);
     }
-    // (4) Canonical-cwd match. A member's `cwd` (raw from config.json) matched
-    //     against the live Claude sessions' `dir` — the lead's working directory
-    //     IS the team's working directory, so the supermux session whose `dir`
-    //     equals a teammate's cwd is the host. Last resort because it scans the
-    //     session list (cheap, but later than the in-pane-map checks above).
+    // (4) Lead-cwd match. The LEAD's `cwd` (captured from the filtered-out lead
+    //     row) matched against the live Claude sessions' `dir` — the lead's
+    //     working directory IS the team's host directory. A teammate can work in
+    //     a worktree/subdir that collides with an unrelated session's dir, so the
+    //     lead's cwd is authoritative here (teammate cwds are only a fallback when
+    //     the lead cwd is unknown). Last resort because it scans the session list
+    //     (cheap, but later than the in-pane-map checks above).
     cwd_match_session(state, team).await
 }
 
@@ -249,16 +285,34 @@ async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
     };
     match_host_by_cwd(
         team,
-        sessions
-            .iter()
-            .map(|s| (s.name.as_str(), s.dir.as_str(), s.provider.as_str())),
+        sessions.iter().map(|s| SessionRef {
+            name: &s.name,
+            dir: &s.dir,
+            provider: &s.provider,
+        }),
     )
 }
 
+/// A live session as the pure cwd matcher consumes it: its `name`, working
+/// `dir`, and `provider`. Borrowed (not owned) so the caller hands the DB rows
+/// straight through without cloning the whole session list.
+#[derive(Clone, Copy)]
+struct SessionRef<'a> {
+    name: &'a str,
+    dir: &'a str,
+    provider: &'a str,
+}
+
+/// Normalize a directory for host-attribution comparison: strip surrounding
+/// whitespace and any trailing `/` so `/a/b`, `/a/b/`, and `" /a/b "` all match.
+/// Case is folded at the comparison site (`eq_ignore_ascii_case`).
+fn norm_dir(s: &str) -> &str {
+    s.trim().trim_end_matches('/')
+}
+
 /// Pure cwd→session matcher (no DB), so the host-attribution policy is unit
-/// testable. Given the live sessions as `(name, dir, provider)` triples, return
-/// the first `provider == "claude"` session whose `dir` equals the team's host
-/// cwd.
+/// testable. Given the live sessions as [`SessionRef`]s, return the first
+/// `provider == "claude"` session whose `dir` equals the team's host cwd.
 ///
 /// **The lead's cwd is authoritative.** We match on `team.lead_cwd` FIRST — it is
 /// the team's true working directory. Only when it is empty (an in-process lead,
@@ -267,42 +321,41 @@ async fn cwd_match_session(state: &AppState, team: &Team) -> Option<String> {
 /// worktree/subdir that collides with an UNRELATED session's dir, so a teammate
 /// cwd must never win host attribution over the lead's own cwd.
 ///
-/// Normalization matches the rest of the resolver: trailing `/` stripped,
-/// case-insensitive compare.
+/// Normalization matches the rest of the resolver via [`norm_dir`]: trailing `/`
+/// stripped, case-insensitive compare.
 fn match_host_by_cwd<'a>(
     team: &Team,
-    sessions: impl Iterator<Item = (&'a str, &'a str, &'a str)>,
+    sessions: impl Iterator<Item = SessionRef<'a>>,
 ) -> Option<String> {
     // Authoritative candidate: the lead's own cwd. Fall back to the unique
     // non-empty teammate cwds ONLY when the lead cwd is unknown.
-    let lead = team.lead_cwd.trim();
-    let candidates: Vec<String> = if !lead.is_empty() {
-        vec![lead.trim_end_matches('/').to_string()]
+    let lead = norm_dir(&team.lead_cwd);
+    let candidates: Vec<&str> = if !lead.is_empty() {
+        vec![lead]
     } else {
-        let mut cwds: Vec<String> = team
+        let mut cwds: Vec<&str> = team
             .members
             .iter()
-            .map(|m| m.cwd.trim())
+            .map(|m| norm_dir(&m.cwd))
             .filter(|c| !c.is_empty())
-            .map(|c| c.trim_end_matches('/').to_string())
             .collect();
-        cwds.sort();
+        cwds.sort_unstable();
         cwds.dedup();
         cwds
     };
     if candidates.is_empty() {
         return None;
     }
-    for (name, dir, provider) in sessions {
-        if provider != "claude" {
+    for s in sessions {
+        if s.provider != "claude" {
             continue;
         }
-        let s_dir = dir.trim_end_matches('/');
+        let s_dir = norm_dir(s.dir);
         if s_dir.is_empty() {
             continue;
         }
         if candidates.iter().any(|c| c.eq_ignore_ascii_case(s_dir)) {
-            return Some(name.to_string());
+            return Some(s.name.to_string());
         }
     }
     None
@@ -741,6 +794,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Host-move safety: when a team's resolved host moves from session A to B,
+    /// the tick MUST clear A's stale `team_name` backlink (else a later archive
+    /// of A would park the LIVE team's config, vanishing it). Reproduces the
+    /// HIGH-severity review finding: persist writes only the new host's backlink,
+    /// so without the explicit clear the old host keeps pointing at the team.
+    ///
+    /// Proves the three post-conditions: (1) B.team_name = team, (2) A.team_name
+    /// cleared to NULL, and (3) the archive path — which keys entirely off
+    /// `db::sessions::team_name(name)` — now reads None for A, so archiving A no
+    /// longer archives the (still-live) team. Idempotent: a repeat clear is 0 rows.
+    #[tokio::test]
+    async fn host_move_clears_old_backlink_so_archiving_old_host_spares_the_team() {
+        let (state, dir) = test_state().await;
+        let mk = |name: &str, d: &str| crate::sessions::CreateInput {
+            name: name.into(),
+            display_name: None,
+            dir: Some(d.into()),
+            desc: None,
+            provider: Some("claude".into()),
+            creator: None,
+            flags: None,
+            bypass_permissions: None,
+            tags: None,
+            branch: None,
+            mcp: None,
+            worktree: None,
+            host_id: None,
+        };
+        crate::sessions::create(&state, mk("old-host", "/old")).await.unwrap();
+        crate::sessions::create(&state, mk("new-host", "/new")).await.unwrap();
+
+        // Pre-move steady state: the team is hosted by old-host.
+        persist_team_name(&state, "old-host", "session-abc").await;
+        clear_stale_team_backlinks(&state, "old-host", "session-abc").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "old-host").await.unwrap(),
+            Some("session-abc".to_string()),
+        );
+
+        // The tick after the host moves to new-host: persist the new backlink,
+        // then clear the stale one — exactly the scan_and_enrich sequence.
+        persist_team_name(&state, "new-host", "session-abc").await;
+        clear_stale_team_backlinks(&state, "new-host", "session-abc").await;
+
+        // (1) new host now carries the backlink …
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "new-host").await.unwrap(),
+            Some("session-abc".to_string()),
+        );
+        // (2) … and the OLD host's stale backlink is cleared, so (3) the archive
+        // path (`if let Ok(Some(team)) = team_name(old-host)`) reads None and the
+        // LIVE team's config is spared.
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "old-host").await.unwrap(),
+            None,
+            "old host's stale team_name must be cleared → archiving it spares the live team",
+        );
+
+        // Idempotent: re-running the clear on a steady-state team touches 0 rows.
+        let again = db::sessions::clear_team_name_except(&state.pool, "session-abc", "new-host")
+            .await
+            .unwrap();
+        assert_eq!(again, 0, "steady-state clear is a no-op");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A truly orphaned team (no UUID match, no name match, no pane match, no
     /// cwd match) stays unmapped — the watcher SURFACES it (so the user can see
     /// the on-disk team) but the card renders the calm "unmapped" placeholder.
@@ -806,7 +927,7 @@ mod tests {
 
         let host = match_host_by_cwd(
             &team,
-            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+            rows.iter().map(|(n, d, p)| SessionRef { name: n, dir: d, provider: p }),
         );
         assert_eq!(host.as_deref(), Some("Mobsters-United-Full"));
         assert_ne!(host.as_deref(), Some("Mobsters-United-Game"));
@@ -825,7 +946,7 @@ mod tests {
 
         let host = match_host_by_cwd(
             &team,
-            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+            rows.iter().map(|(n, d, p)| SessionRef { name: n, dir: d, provider: p }),
         );
         assert_eq!(host.as_deref(), Some("ipc-astro"));
     }
@@ -838,7 +959,7 @@ mod tests {
         let rows = sess(&[("live", "/opt/projects/real", "claude")]);
         let host = match_host_by_cwd(
             &team,
-            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+            rows.iter().map(|(n, d, p)| SessionRef { name: n, dir: d, provider: p }),
         );
         assert!(host.is_none());
     }
@@ -856,7 +977,7 @@ mod tests {
         ]);
         let host = match_host_by_cwd(
             &team,
-            rows.iter().map(|(n, d, p)| (n.as_str(), d.as_str(), p.as_str())),
+            rows.iter().map(|(n, d, p)| SessionRef { name: n, dir: d, provider: p }),
         );
         assert_eq!(host.as_deref(), Some("claude-host"));
     }
