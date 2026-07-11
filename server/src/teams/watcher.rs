@@ -79,17 +79,18 @@ pub fn spawn(state: AppState) {
             }
 
             // Boards + deregistration key off the RAW on-disk set (`all_teams`),
-            // NOT the display-filtered `display` below. A team merely hidden from
+            // NOT the display-filtered view built below. A team merely hidden from
             // the sidebar (rosterless after a dismiss, or a dedup loser) still
             // exists on disk; treating it as deregistered would prune its board +
             // dismissals and resurrect the dismissed member next tick. Display
             // filtering is a sidebar-only concern.
             let all_teams = scan_and_enrich_raw(&state).await;
-            let display = dedup_by_host(drop_rosterless(all_teams.clone()));
-            let payload = serde_json::to_value(&display).unwrap_or(serde_json::Value::Null);
 
-            // Wire the detected teams onto their OWN boards: register each
-            // team's board idempotently + mirror its on-disk tasks as cards, then
+            // Reconcile boards + deregistration FIRST — both only BORROW the raw
+            // set — so the display pipeline below can then CONSUME `all_teams` by
+            // value (no per-tick clone of the whole Vec<Team> just to filter it).
+            // Wire the detected teams onto their OWN boards: register each team's
+            // board idempotently + mirror its on-disk tasks as cards, then
             // (conservatively) deregister boards whose team has ended. Runs every
             // tick regardless of the SSE change-detection below (a team's task
             // files can change without the `teams` DTO diffing — e.g. a task
@@ -105,6 +106,12 @@ pub fn spawn(state: AppState) {
             if board_changed {
                 crate::board::emit_board(&state).await;
             }
+
+            // Build the display-filtered sidebar view by CONSUMING the raw set now
+            // that reconciliation is done with it: hide rosterless teams, then
+            // collapse duplicate host mappings (see [`scan_and_enrich`]).
+            let display = dedup_by_host(drop_rosterless(all_teams));
+            let payload = serde_json::to_value(&display).unwrap_or(serde_json::Value::Null);
 
             // Change-only broadcast (keep it cheap). The
             // first non-empty scan always publishes; thereafter only on a diff.
@@ -1414,6 +1421,41 @@ mod tests {
             names,
             vec!["full-a", "other", "unmapped-1", "unmapped-2"],
             "Full collapses to its live winner; a different host and both host=None teams survive",
+        );
+    }
+
+    /// fix 2, the both-live case the review flagged: two teams share a host and
+    /// BOTH have a LIVE member (live_member_count > 0). In the real system this
+    /// should not persist — a supermux session hosts a SINGLE implicit team (Claude
+    /// Code v2.1.178) and the orphaned `session-<uuid>` dirs that share a host by
+    /// cwd are DEAD (their panes are gone → offline/rosterless), so at most one
+    /// same-host team is ever truly live. The dedup is nonetheless defensive and
+    /// fully deterministic if two live teams transiently overlap (e.g. old panes
+    /// linger a tick after a restart while the new team's panes are already up):
+    /// the ranking key picks ONE winner and the loser's whole card — including its
+    /// members' kill/remove affordances — is dropped for that tick. Here both have
+    /// exactly 1 live member and equal totals, so the newest `created_at` decides
+    /// it; the next tick (orphan panes dead) collapses it permanently.
+    #[test]
+    fn dedup_by_host_two_live_same_host_keeps_one_deterministic_winner() {
+        let older_live = host_team(
+            "session-old",
+            Some("Full"),
+            vec![member_with("a@session-old", MemberStatus::Working)],
+            100,
+        );
+        let newer_live = host_team(
+            "session-new",
+            Some("Full"),
+            vec![member_with("a@session-new", MemberStatus::Working)],
+            200,
+        );
+        // Insertion order older-then-newer to prove position doesn't decide it.
+        let out = dedup_by_host(vec![older_live, newer_live]);
+        assert_eq!(out.len(), 1, "two live same-host teams collapse to exactly one card");
+        assert_eq!(
+            out[0].team_name, "session-new",
+            "both live + equal roster → newest created_at is the deterministic winner",
         );
     }
 

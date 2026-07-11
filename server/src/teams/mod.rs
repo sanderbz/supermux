@@ -26,7 +26,7 @@ pub use model::{Member, MemberStatus, Team, TeamTask};
 pub use start::{
     convert_to_team, start_team, ConvertToTeamInput, StartTeamInput, StartTeamResult,
 };
-pub use watcher::{scan_and_enrich, spawn};
+pub use watcher::{scan_and_enrich, scan_and_enrich_raw, spawn};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
