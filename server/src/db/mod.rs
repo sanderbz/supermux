@@ -22,6 +22,7 @@ pub mod schedules;
 pub mod sessions;
 pub mod skills;
 pub mod steering;
+pub mod teams_dismissed;
 pub mod tracked_files;
 
 /// Open the pool and run migrations.
@@ -111,8 +112,8 @@ mod tests {
             .unwrap()
             .get("n");
         assert_eq!(
-            applied, 20,
-            "expected twenty applied migrations (0001-0005, 0007-0021)"
+            applied, 21,
+            "expected twenty-one applied migrations (0001-0005, 0007-0022)"
         );
 
         pool.close().await;

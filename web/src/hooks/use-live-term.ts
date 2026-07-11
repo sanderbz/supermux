@@ -909,6 +909,91 @@ export function useLiveTerm(
     termRef.current = term
     fitRef.current = fit
 
+    // ── Touch-drag scrollback (xterm 6.0 has NO built-in touch scroll) ─────────
+    // xterm 6.0's scrollable element scrolls on WHEEL but ignores one-finger
+    // touch drags (verified: touch events reach the layer but the buffer never
+    // scrolls, while `term.scrollLines()` works), so mobile scrollback died after
+    // the 6.0 bump. Drive it ourselves: convert a vertical drag to `scrollLines`,
+    // with light inertial momentum so it feels native. `touch-action: none`
+    // (globals.css) blocks the browser's own gesture and delivers every touch
+    // event here. Listeners are passive (touch-action already suppresses the
+    // native scroll, so no preventDefault is needed). Cleaned up via AbortSignal.
+    const touchAbort = new AbortController()
+    {
+      const sig = touchAbort.signal
+      let dragging = false
+      let lastY = 0
+      let lastT = 0
+      let vel = 0 // px per ms (for momentum)
+      let frac = 0 // sub-row px remainder carried between moves
+      let momentum = 0 // rAF handle
+      const cellPx = () => {
+        const d = (
+          term as unknown as {
+            _core?: { _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } } }
+          }
+        )._core?._renderService?.dimensions?.css?.cell?.height
+        return d && d > 0 ? d : fontSize * 1.2
+      }
+      // dyPx > 0 means the finger moved UP → scroll toward the bottom (newer).
+      const scrollPx = (dyPx: number) => {
+        frac += dyPx
+        const rows = Math.trunc(frac / cellPx())
+        if (rows !== 0) {
+          frac -= rows * cellPx()
+          term.scrollLines(rows)
+        }
+      }
+      container.addEventListener(
+        'touchstart',
+        (e) => {
+          if (e.touches.length !== 1) return
+          if (momentum) {
+            cancelAnimationFrame(momentum)
+            momentum = 0
+          }
+          dragging = true
+          lastY = e.touches[0].clientY
+          lastT = e.timeStamp
+          vel = 0
+          frac = 0
+        },
+        { passive: true, signal: sig },
+      )
+      container.addEventListener(
+        'touchmove',
+        (e) => {
+          if (!dragging || e.touches.length !== 1) return
+          const y = e.touches[0].clientY
+          const dy = lastY - y
+          const dt = Math.max(1, e.timeStamp - lastT)
+          vel = dy / dt
+          lastY = y
+          lastT = e.timeStamp
+          scrollPx(dy)
+        },
+        { passive: true, signal: sig },
+      )
+      const endDrag = () => {
+        if (!dragging) return
+        dragging = false
+        if (Math.abs(vel) < 0.04) return // a tap / slow release — no fling
+        let v = vel
+        let last = 0
+        const step = (now: number) => {
+          if (!last) last = now
+          const dt = now - last
+          last = now
+          scrollPx(v * dt)
+          v *= Math.pow(0.94, dt / 16) // ~6%/frame decay at 60fps
+          momentum = Math.abs(v) > 0.02 ? requestAnimationFrame(step) : 0
+        }
+        momentum = requestAnimationFrame(step)
+      }
+      container.addEventListener('touchend', endDrag, { passive: true, signal: sig })
+      container.addEventListener('touchcancel', endDrag, { passive: true, signal: sig })
+    }
+
     // SD-2: track whether the viewport is scrolled up so the wrapper can show a
     // "jump to bottom" button. xterm 6.0 rewrote the viewport onto a VS Code
     // scrollable element, so the old `.xterm-viewport.scrollTop` is permanently 0
@@ -2159,6 +2244,7 @@ export function useLiveTerm(
     return () => {
       disposedRef.current = true
       window.cancelAnimationFrame(raf)
+      touchAbort.abort() // remove the touch-drag scroll listeners + any momentum
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('pageshow', onVisibility)
       window.removeEventListener('online', onVisibility)
