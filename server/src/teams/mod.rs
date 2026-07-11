@@ -205,14 +205,14 @@ fn decide_remove(team: Option<&Team>, agent_id: &str) -> RemoveAction {
             team.team_name
         ));
     }
-    // No such member in the resolved roster → 400 rather than a junk row. (The UI
-    // only mounts the trash on a rendered member, so this is a fabricated /
-    // already-removed request, not a normal flow.)
+    // Member absent from the CURRENT roster but agent_id is well-formed for this
+    // team → idempotent DismissOnly, NOT a 400. The removal exit-animation keeps a
+    // just-removed row briefly tappable, so a double-tap must not surface a
+    // spurious "couldn't remove" error for an action that already succeeded.
+    // Recording a dismissal for a same-team agent_id is harmless + idempotent; a
+    // cross-team agent_id was already rejected as Invalid above.
     let Some(member) = team.members.iter().find(|m| m.agent_id == agent_id) else {
-        return RemoveAction::Invalid(format!(
-            "no member '{agent_id}' in team '{}'",
-            team.team_name
-        ));
+        return RemoveAction::DismissOnly;
     };
     if let (Some(lead), Some(pane_id)) = (
         team.lead_supermux_session.as_deref(),
@@ -268,9 +268,10 @@ where
 /// would dismiss WITHOUT a kill, we re-run ONE fresh scan and take its decision:
 /// a recovered pane routes to `KillThenDismiss`; a genuinely-gone member stays
 /// `DismissOnly`. Only `DismissOnly` is ambiguous — `UnknownTeam` / `Invalid` /
-/// `KillThenDismiss` are all returned as-is (a missing team or member is a
-/// config-file fact, unaffected by tmux churn). `scan` is injected so the guard
-/// is unit-testable without a live tmux/filesystem.
+/// `KillThenDismiss` are all returned as-is (a missing team or a cross-team
+/// agent_id is a request-shape fact, unaffected by tmux churn; an absent
+/// same-team member already resolves to the idempotent `DismissOnly`). `scan` is
+/// injected so the guard is unit-testable without a live tmux/filesystem.
 async fn resolve_remove_action<F, Fut>(team_name: &str, agent_id: &str, mut scan: F) -> RemoveAction
 where
     F: FnMut() -> Fut,
@@ -432,13 +433,14 @@ mod remove_member_tests {
     }
 
     #[test]
-    fn decide_absent_member_is_400_not_junk_dismiss() {
-        // Member absent from the roster → 400, NOT a dismiss: recording it would
-        // persist a junk (team_name, agent_id) row that can never match a member.
+    fn decide_absent_same_team_member_is_idempotent_dismiss() {
+        // Member absent from the CURRENT roster but agent_id belongs to THIS team
+        // → idempotent DismissOnly (a re-tap on a row that's already exiting), not
+        // a 400. A cross-team agent_id is still rejected — see the 400 test below.
         let t = team("t", Some("host"), vec![member("other@t", Some("%1"))]);
         assert!(matches!(
             decide_remove(Some(&t), "fix-644@t"),
-            RemoveAction::Invalid(_)
+            RemoveAction::DismissOnly
         ));
     }
 
@@ -632,15 +634,16 @@ mod remove_member_tests {
 
     #[tokio::test]
     async fn no_reresolve_when_first_pass_is_invalid() {
-        // An absent member (config-file fact, unaffected by tmux churn) is a 400
-        // on the first pass — no re-scan (nothing tmux could recover).
+        // A cross-team agent_id is a request-shape fact (Invalid/400), unaffected
+        // by tmux churn → no re-scan. (An absent SAME-team member is now the
+        // idempotent DismissOnly path, covered separately.)
         let scans = std::cell::Cell::new(0u32);
-        let action = resolve_remove_action("t", "fix-644@t", || {
+        let action = resolve_remove_action("t", "fix-644@other", || {
             scans.set(scans.get() + 1);
-            async move { vec![team("t", Some("host"), vec![member("other@t", Some("%1"))])] }
+            async move { vec![team("t", Some("host"), vec![member("fix-644@t", Some("%1"))])] }
         })
         .await;
         assert!(matches!(action, RemoveAction::Invalid(_)));
-        assert_eq!(scans.get(), 1, "a 400 first pass needs no re-scan");
+        assert_eq!(scans.get(), 1, "an Invalid first pass needs no re-scan");
     }
 }
