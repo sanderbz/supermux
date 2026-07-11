@@ -73,7 +73,7 @@ export interface KeyBarState {
  *  `sendKey` name (the CONTROL_ENTRIES payload for the matching 'key' entry). */
 export const DEFAULT_KEY_BAR_STATE: KeyBarState = {
   open: false,
-  keys: ['Left', 'Up', 'Down', 'Right', 'Enter'],
+  keys: ['Left', 'Up', 'Down', 'Right', 'Enter', 'Esc'],
 }
 
 /** Parse the persisted blob defensively — any malformed value falls back to
