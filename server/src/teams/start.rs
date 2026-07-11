@@ -39,6 +39,7 @@ use crate::db;
 use crate::error::AppError;
 use crate::sessions::{self, lifecycle, tmux::Tmux, CreateInput, SessionView};
 use crate::state::AppState;
+use crate::teams::model::Team;
 
 /// Hard bounds on the teammate count so a typo / hostile client can't ask the
 /// lead to fork an absurd number of real Claude processes (each ≈ the ~7× cost
@@ -333,6 +334,19 @@ pub struct ConvertToTeamInput {
     pub model: Option<String>,
 }
 
+/// The convert-to-team double-conversion guard's predicate, split out so it is
+/// unit-testable without a live scan / tmux / DB: is `session_name` ALREADY the
+/// host lead of some detected team? MUST run over the RAW on-disk set (see the
+/// call site) — a session's team can be hidden from the sidebar by
+/// `drop_rosterless` (a lead-only orphan, or a live lead whose teammates were all
+/// dismissed) yet still be a team lead on disk, and reading the display-filtered
+/// view would miss it and wrongly allow a second conversion.
+fn session_is_team_lead(teams: &[Team], session_name: &str) -> bool {
+    teams
+        .iter()
+        .any(|t| t.lead_supermux_session.as_deref() == Some(session_name))
+}
+
 /// Convert an existing session into a team lead: stop it if running, flip the
 /// per-session Agent Teams force flag, then start it again with the seed prompt
 /// that tells the lead to form the team. Reuses the EXISTING session row — same
@@ -389,9 +403,13 @@ pub async fn convert_to_team(
 
     // 2. Refuse if the detector already sees this session as a team lead (no double
     //    conversion). Cheapest signal: ask the watcher to scan + enrich now and
-    //    look for a team mapped to this supermux session.
-    let teams = crate::teams::scan_and_enrich(state).await;
-    if teams.iter().any(|t| t.lead_supermux_session.as_deref() == Some(name)) {
+    //    look for a team mapped to this supermux session. Key off the RAW on-disk
+    //    set, NOT the display-filtered view: `drop_rosterless` can hide a session's
+    //    team entirely (a lead-only orphan, or a live lead whose teammates were all
+    //    dismissed), and the filtered view would then miss a session that IS a team
+    //    lead on disk and let a re-convert slip through — see [`session_is_team_lead`].
+    let teams = crate::teams::scan_and_enrich_raw(state).await;
+    if session_is_team_lead(&teams, name) {
         return Err(AppError::Conflict(format!(
             "session '{name}' is already a team lead"
         )));
@@ -760,5 +778,45 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    /// FIX (double-conversion guard): the guard MUST run over the RAW on-disk set,
+    /// not the display-filtered view. A session that is a team lead whose roster is
+    /// EMPTY for its host — every teammate dismissed, or a lead-only orphan — is
+    /// hidden from the sidebar by `drop_rosterless`, but it is STILL a team lead on
+    /// disk. If the guard read the filtered view it would not see this team and
+    /// would let `convert_to_team` double-convert a session that is already a lead.
+    /// This asserts the guard predicate catches a rosterless-for-its-host lead on
+    /// the raw set, and that the display filter would have dropped it (reproducing
+    /// the exact miss the raw-set guard prevents).
+    #[test]
+    fn convert_guard_sees_rosterless_lead_on_raw_set() {
+        let rosterless_lead = Team {
+            team_name: "session-abc".into(),
+            lead_session: "lead-uuid".into(),
+            lead_supermux_session: Some("alpha".into()),
+            lead_cwd: String::new(),
+            members: vec![], // all teammates dismissed / lead-only orphan
+            tasks: vec![],
+            created_at: 0,
+        };
+        let raw = vec![rosterless_lead];
+
+        // The guard runs on the RAW set → it sees the rosterless lead and refuses.
+        assert!(
+            session_is_team_lead(&raw, "alpha"),
+            "a rosterless-for-its-host lead is STILL a team lead on the raw set",
+        );
+        // A different session is not a lead here.
+        assert!(!session_is_team_lead(&raw, "beta"));
+
+        // The bug the fix avoids: the display filter (`drop_rosterless`) removes the
+        // empty-roster team, so a guard reading the FILTERED view would MISS it and
+        // wrongly allow the double-conversion.
+        let filtered: Vec<Team> = raw.into_iter().filter(|t| !t.members.is_empty()).collect();
+        assert!(
+            !session_is_team_lead(&filtered, "alpha"),
+            "filtered view drops the rosterless lead — the exact miss the raw-set guard prevents",
+        );
     }
 }

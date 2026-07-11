@@ -166,6 +166,7 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
     if config.members.is_empty() {
         return None;
     }
+    let created_at = config.created_at;
 
     let tasks = read_tasks(&tasks_root.join(team_name));
     let inbox_dir = team_dir.join("inboxes");
@@ -217,6 +218,7 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
         lead_cwd: strong_lead_cwd.or(structural_lead_cwd).unwrap_or_default(),
         members,
         tasks: tasks.into_iter().map(TeamTask::from).collect(),
+        created_at,
     })
 }
 
@@ -1094,6 +1096,52 @@ mod tests {
         let teams = scan_teams(&base);
         assert_eq!(teams[0].members.len(), 1, "unspawned teammate kept");
         assert_eq!(teams[0].members[0].name, "starting");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn scan_captures_created_at_from_camel_case() {
+        // Claude writes `createdAt` (epoch ms); the scan must carry it onto
+        // `Team.created_at` (the host-dedup tiebreak signal). A config without
+        // the field defaults to 0.
+        let base = tmp();
+        let with = base.join("teams").join("dated");
+        fs::create_dir_all(with.join("inboxes")).unwrap();
+        fs::write(
+            with.join("config.json"),
+            serde_json::json!({
+                "leadSessionId": "L",
+                "createdAt": 1_720_000_000_123i64,
+                "members": [
+                    { "name": "alice", "agentId": "alice@dated", "tmuxPaneId": "%1",
+                      "color": "blue", "isActive": true, "backendType": "tmux" }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // A second team with no createdAt → defaults to 0.
+        let without = base.join("teams").join("undated");
+        fs::create_dir_all(without.join("inboxes")).unwrap();
+        fs::write(
+            without.join("config.json"),
+            serde_json::json!({
+                "leadSessionId": "L",
+                "members": [
+                    { "name": "bob", "agentId": "bob@undated", "tmuxPaneId": "%2",
+                      "color": "red", "isActive": true, "backendType": "tmux" }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let teams = scan_teams(&base);
+        let dated = teams.iter().find(|t| t.team_name == "dated").unwrap();
+        let undated = teams.iter().find(|t| t.team_name == "undated").unwrap();
+        assert_eq!(dated.created_at, 1_720_000_000_123);
+        assert_eq!(undated.created_at, 0, "missing createdAt defaults to 0");
+
         let _ = fs::remove_dir_all(base);
     }
 
