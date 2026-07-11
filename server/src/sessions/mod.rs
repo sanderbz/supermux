@@ -74,12 +74,6 @@ pub fn router_for(state: AppState) -> Router {
         // ── tmux lifecycle ──
         .route("/api/sessions/{name}/start", post(start_handler))
         .route("/api/sessions/{name}/stop", post(stop_handler))
-        // Kill ONE teammate pane (Agent Teams manual cleanup — the trash icon
-        // on a teammate chip/card). `{pane_id}` is the URL-encoded `%id`.
-        .route(
-            "/api/sessions/{name}/teammates/{pane_id}",
-            axum::routing::delete(kill_teammate_handler),
-        )
         .route("/api/sessions/{name}/send", post(send_handler))
         .route("/api/sessions/{name}/keys", post(keys_handler))
         .route("/api/sessions/{name}/paste", post(paste_handler))
@@ -980,17 +974,6 @@ async fn stop_handler(
     lifecycle::stop(&state, &name).await?;
     // Stop is async-shaped → 202 Accepted.
     Ok((StatusCode::ACCEPTED, Json(json!({ "ok": true }))))
-}
-
-/// `DELETE /api/sessions/{name}/teammates/{pane_id}` — kill ONE teammate's tmux
-/// pane (Agent Teams manual cleanup). 404 for a pane outside this session's
-/// window, 400 for the lead pane; see [`lifecycle::kill_teammate_pane`].
-async fn kill_teammate_handler(
-    State(state): State<AppState>,
-    Path((name, pane_id)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    lifecycle::kill_teammate_pane(&state, &name, &pane_id).await?;
-    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Debug, Deserialize)]

@@ -334,9 +334,10 @@ fn discriminate_lead_pane(
     None
 }
 
-/// Pure guard for the kill-teammate endpoint (`DELETE
-/// /api/sessions/{name}/teammates/{pane_id}`): may `pane_id` be killed inside a
-/// window whose live panes are `live_panes`? The LEAD pane is `lead_pane` when
+/// Pure guard for the teammate-pane kill primitive
+/// ([`crate::sessions::lifecycle::kill_teammate_pane`], reached via the
+/// remove-a-teammate endpoint): may `pane_id` be killed inside a window whose
+/// live panes are `live_panes`? The LEAD pane is `lead_pane` when
 /// [`resolve_lead_pane`]'s config-based discrimination resolved one, else the
 /// FIRST-listed pane (tmux lists a window's panes in index order and the lead
 /// is the original, never-moved first pane). Errors map 1:1 onto the HTTP

@@ -91,8 +91,8 @@ export function TeammateCard({
             </span>
           )
         )}
-        {/* Kill-pane trash (manual Agent Teams cleanup — renders nothing when
-            there's no live pane). */}
+        {/* Remove trash (state-aware: "Kill & remove" for a live teammate,
+            "Remove" for an offline one). */}
         <KillTeammateButton team={team} member={member} className="-mt-0.5" />
       </div>
 

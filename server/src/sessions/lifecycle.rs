@@ -767,9 +767,13 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
 }
 
 /// Kill ONE teammate pane inside `name`'s window (`tmux kill-pane -t %id`) —
-/// the manual Agent-Teams cleanup path. Claude's own graceful teammate shutdown
-/// (asking the lead to dismiss a member) is unreliable in practice, so the user
-/// gets an explicit per-teammate kill; the caller answers 200.
+/// the manual Agent-Teams cleanup primitive. Claude's own graceful teammate
+/// shutdown (asking the lead to dismiss a member) is unreliable in practice, so
+/// the user gets an explicit per-teammate kill. Now reached only through the
+/// remove-a-teammate endpoint ([`crate::teams`]'s `remove_member`), which kills
+/// the live pane HERE and then records the supermux-side dismissal — so a kill
+/// failure returned here blocks the dismissal (a still-running agent is never
+/// hidden).
 ///
 /// Guards, in order (see [`super::teams::validate_teammate_pane`]):
 ///   * 404 — the session doesn't exist, its tmux window is gone, or `pane_id`
@@ -778,12 +782,11 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
 ///   * 400 — `pane_id` is the LEAD pane (killing it would end the whole team;
 ///     the lead tile's Stop owns that path).
 ///
-/// KNOWN TRADE-OFF: we deliberately do NOT touch
-/// `~/.claude/teams/*/config.json` — editing it mid-session is unsupported by
-/// Claude Code — so the Claude-side roster keeps a stale member entry until the
-/// lead session ends. The watcher's `%id` re-validation flips the member to
-/// offline (`tmux_pane_id = None`) on its next tick; killing the pane is the
-/// user's explicit choice.
+/// INVARIANT: we deliberately do NOT touch `~/.claude/teams/*/config.json` —
+/// editing it mid-session is unsupported by Claude Code — so the Claude-side
+/// roster keeps its member entry until the lead session ends. The "remove"
+/// endpoint's dismissal is what hides the member from supermux's view; killing
+/// the pane just makes that immediate instead of leaving a lingering dead chip.
 pub async fn kill_teammate_pane(
     state: &AppState,
     name: &str,
@@ -969,6 +972,11 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     if let Ok(Some(team)) = db::sessions::team_name(&state.pool, name).await {
         if let Err(e) = crate::teams::scan::archive_team_config(&team) {
             tracing::debug!(team = %team, error = %e, "archive: failed to park team config");
+        }
+        // The team's config is parked, so drop its supermux-side dismissals too so
+        // the `dismissed_teammates` table stays bounded to live teams. Best-effort.
+        if let Err(e) = db::teams_dismissed::prune_team(&state.pool, &team).await {
+            tracing::debug!(team = %team, error = %e, "archive: failed to prune team dismissals");
         }
     }
 

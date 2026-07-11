@@ -1,19 +1,27 @@
-// KillTeammateButton — the trash affordance on a teammate chip/card.
+// KillTeammateButton: the trash affordance on a teammate chip/card.
 //
-// Kills the teammate's tmux pane via
-// `DELETE /api/sessions/{lead}/teammates/{paneId}` — the MANUAL Agent Teams
-// cleanup (the Claude-side graceful shutdown route is unreliable, so the user
-// gets an explicit per-teammate kill). Inline destructive confirm — the idle
-// trash icon morphs into "Cancel / Kill pane" so a stray tap can never nuke a
-// live agent (same pattern as the Archived sheet's per-row delete).
+// REMOVES a teammate from supermux's team view via
+// `DELETE /api/teams/{team_name}/members/{agent_id}` (`teamsApi.removeTeammate`).
+// State-aware:
+//   • LIVE teammate (has a tmux pane this tick) → the server kills the pane THEN
+//     records the dismissal, so the chip disappears at once instead of lingering
+//     as a dead/offline chip. Confirm label + tooltip: "Kill & remove".
+//   • DEAD/offline teammate (no pane) → the server just records the dismissal.
+//     Confirm label + tooltip: "Remove".
 //
-// KNOWN TRADE-OFF: killing the pane does NOT remove the member from Claude's
-// on-disk roster (~/.claude/teams/…/config.json — mid-session edits are
-// unsupported), so the member stays on the card as offline (null %id, at which
-// point this button renders nothing) until the lead session ends.
+// A dismissal is a SUPERMUX-SIDE hide keyed by (team_name, agent_id): Claude's
+// on-disk roster (~/.claude/teams/…/config.json) is NEVER edited (mid-session
+// edits are unsupported by Claude Code), and the hide survives restarts (the
+// teams watcher filters the teammate out on every tick). This is why the button
+// now renders for offline members too: it needs only the stable
+// (team_name, agent_id) identity, not a live pane.
 //
-// Renders null when there's nothing killable: no live pane this tick, or the
-// lead isn't mapped to a supermux session (no endpoint to address).
+// Inline destructive confirm: the idle trash icon morphs into "Cancel / <verb>"
+// so a stray tap can never nuke a live agent (same pattern as the Archived
+// sheet's per-row delete).
+//
+// Renders null only when there's no addressable identity (no team_name or
+// agent_id): nothing we could dismiss.
 
 import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
@@ -37,28 +45,31 @@ export function KillTeammateButton({
   member,
   className,
 }: KillTeammateButtonProps) {
-  const lead = team.lead_supermux_session
-  const paneId = member.tmux_pane_id
+  const teamName = team.team_name
+  const agentId = member.agent_id
+  // "Live" = has a validated pane this tick. Drives the verb: killing the pane
+  // is only relevant when there IS one; an offline teammate is just removed.
+  const isLive = Boolean(member.tmux_pane_id)
+  const verb = isLive ? 'Kill & remove' : 'Remove'
   const qc = useQueryClient()
   const { toast } = useToast()
   const reduce = useReducedMotion()
   const [confirming, setConfirming] = React.useState(false)
 
-  const kill = useMutation({
+  const remove = useMutation({
     // Non-null asserted via the render gate below (button never mounts without both).
-    mutationFn: () => teamsApi.killTeammate(lead as string, paneId as string),
+    mutationFn: () => teamsApi.removeTeammate(teamName, agentId),
     onSuccess: () => {
-      toast({ message: `Killed ${member.name}’s pane` })
-      // Re-pull the roster now: the watcher's next tick flips the member to
-      // offline (null %id) — invalidating gets the UI there without waiting
-      // for the SSE snapshot.
+      toast({ message: `Removed ${member.name}` })
+      // Re-pull the roster now so the chip disappears without waiting for the
+      // watcher's next SSE snapshot (which also drops the dismissed member).
       void qc.invalidateQueries({ queryKey: TEAMS_KEY })
     },
-    onError: () => toast({ message: 'Couldn’t kill teammate pane', tone: 'error' }),
+    onError: () => toast({ message: `Couldn’t remove ${member.name}`, tone: 'error' }),
     onSettled: () => setConfirming(false),
   })
 
-  if (!lead || !paneId) return null
+  if (!teamName || !agentId) return null
 
   // stopPropagation on click AND keydown: the chip's whole row is a
   // role="button" tap-to-focus target, so inner interactions must never bubble
@@ -78,19 +89,19 @@ export function KillTeammateButton({
         <button
           type="button"
           onClick={() => setConfirming(false)}
-          disabled={kill.isPending}
-          className="flex h-7 items-center rounded-md px-2 text-[12px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          disabled={remove.isPending}
+          className="flex h-11 items-center rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
           Cancel
         </button>
         <button
           type="button"
-          onClick={() => kill.mutate()}
-          disabled={kill.isPending}
-          className="flex h-7 items-center gap-1 rounded-md bg-destructive px-2 text-[12px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          onClick={() => remove.mutate()}
+          disabled={remove.isPending}
+          className="flex h-11 items-center gap-1.5 rounded-md bg-destructive px-3 text-[13px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
-          <Trash2 className="size-3.5" aria-hidden />
-          Kill pane
+          <Trash2 className="size-4" aria-hidden />
+          {verb}
         </button>
       </motion.div>
     )
@@ -104,11 +115,13 @@ export function KillTeammateButton({
         setConfirming(true)
       }}
       onKeyDown={swallow}
-      disabled={kill.isPending}
-      aria-label={`Kill ${member.name}’s pane`}
-      title="Kill pane"
+      disabled={remove.isPending}
+      aria-label={`${verb} ${member.name}`}
+      title={verb}
       className={cn(
-        'flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+        // 44px hit target (size-11) — matches the Archived sheet's destructive
+        // per-row pattern; the icon stays size-4 so only the tap area grows.
+        'flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
         className,
       )}
     >
