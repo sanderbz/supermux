@@ -290,8 +290,15 @@ where
 
 /// Resolve the action (with the transient-hiccup re-scan guard), then execute it
 /// against the live tmux + DB. The thin I/O wrapper over the pure pieces above.
+///
+/// Scans the RAW on-disk set, not the display-filtered view: removing the LAST
+/// teammate makes its team rosterless, which `drop_rosterless` hides from the
+/// sidebar — so a double-tap on that last row during the exit animation would
+/// otherwise miss the (just-emptied) team and 404 instead of resolving to the
+/// idempotent `DismissOnly`. Keying off the raw set keeps remove idempotent and
+/// consistent with the convert-to-team guard (which also reads the raw set).
 async fn remove_member(state: &AppState, team_name: &str, agent_id: &str) -> Result<(), AppError> {
-    let action = resolve_remove_action(team_name, agent_id, || scan_and_enrich(state)).await;
+    let action = resolve_remove_action(team_name, agent_id, || scan_and_enrich_raw(state)).await;
     execute_remove(
         action,
         &state.pool,
@@ -441,6 +448,20 @@ mod remove_member_tests {
         let t = team("t", Some("host"), vec![member("other@t", Some("%1"))]);
         assert!(matches!(
             decide_remove(Some(&t), "fix-644@t"),
+            RemoveAction::DismissOnly
+        ));
+    }
+
+    #[test]
+    fn decide_rosterless_team_member_is_idempotent_dismiss_not_404() {
+        // Removing the LAST teammate leaves the team ROSTERLESS (empty members).
+        // `drop_rosterless` hides such a team from the display view, so the remove
+        // flow scans the RAW set (see `remove_member`) to keep the team visible
+        // here — a double-tap on that last row during its exit animation then
+        // resolves to the idempotent DismissOnly instead of an UnknownTeam/404.
+        let t = team("t", Some("host"), vec![]);
+        assert!(matches!(
+            decide_remove(Some(&t), "gone@t"),
             RemoveAction::DismissOnly
         ));
     }
