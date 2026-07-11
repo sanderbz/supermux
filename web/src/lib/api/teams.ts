@@ -185,28 +185,46 @@ function coerceStringArray(raw: unknown): string[] {
   return raw.filter((x): x is string => typeof x === 'string')
 }
 
-/** GET /api/teams — initial load. Reads the bearer off `apiToken()` at call time
- *  (never embedded in source), unwraps `{ ok, data }`, and coerces defensively. */
 interface TeamsEnvelope {
   ok?: boolean
   data?: unknown
   error?: string
 }
 
-async function listTeams(): Promise<Team[]> {
+/** The ONE canonical teams-client request. Attaches the bearer read off
+ *  `apiToken()` at call time (never embedded in source), parses the JSON
+ *  `{ ok, data?, error? }` envelope, and throws `ApiError` (carrying the HTTP
+ *  status + the envelope's `error`) on any non-2xx. Returns the parsed envelope
+ *  so `listTeams` can read `data`; the void mutations (`dismissTeam`,
+ *  `removeTeammate`) ignore the return. Factored out of what were three verbatim
+ *  fetch + bearer-header + envelope-unwrap copies — behaviour is unchanged. */
+async function teamsRequest(
+  path: string,
+  init?: RequestInit,
+): Promise<TeamsEnvelope | null> {
   const token = apiToken()
-  const res = await fetch(apiUrl('/api/teams'), {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  const res = await fetch(apiUrl(path), {
+    ...init,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
   })
   let env: TeamsEnvelope | null = null
   try {
     env = (await res.json()) as TeamsEnvelope
   } catch {
-    /* non-JSON (HTML 404) — fall through to status check */
+    /* non-JSON (e.g. an HTML 404 page) — fall through to the status check */
   }
   if (!res.ok) {
     throw new ApiError(res.status, env?.error ?? res.statusText)
   }
+  return env
+}
+
+/** GET /api/teams — initial load. Unwraps `{ ok, data }` and coerces defensively. */
+async function listTeams(): Promise<Team[]> {
+  const env = await teamsRequest('/api/teams')
   return coerceTeams(env?.data ?? [])
 }
 
@@ -214,50 +232,9 @@ async function listTeams(): Promise<Team[]> {
  *  `.archived/` so it stops surfacing as a card. The only way to clear a team
  *  whose lead no longer maps to a live session. */
 async function dismissTeam(name: string): Promise<void> {
-  const token = apiToken()
-  const res = await fetch(apiUrl(`/api/teams/${encodeURIComponent(name)}/dismiss`), {
+  await teamsRequest(`/api/teams/${encodeURIComponent(name)}/dismiss`, {
     method: 'POST',
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
-  if (!res.ok) {
-    let env: TeamsEnvelope | null = null
-    try {
-      env = (await res.json()) as TeamsEnvelope
-    } catch {
-      /* non-JSON */
-    }
-    throw new ApiError(res.status, env?.error ?? res.statusText)
-  }
-}
-
-/** DELETE /api/sessions/{lead}/teammates/{paneId} — kill ONE teammate's tmux
- *  pane (Agent Teams manual cleanup; the Claude-side graceful shutdown is
- *  unreliable, so the trash icon is the user's explicit choice). The server
- *  validates the pane belongs to the lead's window and refuses the lead pane.
- *  KNOWN TRADE-OFF: the on-disk roster (~/.claude/teams/…/config.json) is NOT
- *  edited — mid-session edits are unsupported by Claude Code — so the member
- *  stays listed (flipping to offline / null %id on the watcher's next tick)
- *  until the lead session ends. */
-async function killTeammate(leadSession: string, paneId: string): Promise<void> {
-  const token = apiToken()
-  const res = await fetch(
-    apiUrl(
-      `/api/sessions/${encodeURIComponent(leadSession)}/teammates/${encodeURIComponent(paneId)}`,
-    ),
-    {
-      method: 'DELETE',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    },
-  )
-  if (!res.ok) {
-    let env: TeamsEnvelope | null = null
-    try {
-      env = (await res.json()) as TeamsEnvelope
-    } catch {
-      /* non-JSON */
-    }
-    throw new ApiError(res.status, env?.error ?? res.statusText)
-  }
 }
 
 /** DELETE /api/teams/{teamName}/members/{agentId}: REMOVE one teammate from
@@ -268,35 +245,18 @@ async function killTeammate(leadSession: string, paneId: string): Promise<void> 
  *  edited, and it survives restarts (the watcher filters the teammate out on
  *  every tick).
  *
- *  Unlike `killTeammate` (which addresses the lead session + pane id), this is
- *  keyed by the stable member identity `(team_name, agent_id)`, so it works even
+ *  Keyed by the stable member identity `(team_name, agent_id)`, so it works even
  *  when the teammate has no live pane. `agent_id` contains `@`, so both segments
  *  are URL-encoded. */
 async function removeTeammate(teamName: string, agentId: string): Promise<void> {
-  const token = apiToken()
-  const res = await fetch(
-    apiUrl(
-      `/api/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(agentId)}`,
-    ),
-    {
-      method: 'DELETE',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    },
+  await teamsRequest(
+    `/api/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(agentId)}`,
+    { method: 'DELETE' },
   )
-  if (!res.ok) {
-    let env: TeamsEnvelope | null = null
-    try {
-      env = (await res.json()) as TeamsEnvelope
-    } catch {
-      /* non-JSON */
-    }
-    throw new ApiError(res.status, env?.error ?? res.statusText)
-  }
 }
 
 export const teamsApi = {
   list: listTeams,
   dismiss: dismissTeam,
-  killTeammate,
   removeTeammate,
 }

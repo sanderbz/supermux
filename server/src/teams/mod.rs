@@ -166,11 +166,27 @@ async fn remove_member_handler(
 enum RemoveAction {
     /// The team is unknown → 404 (a genuinely absent on-disk team).
     UnknownTeam,
+    /// A malformed request → 400, and we write NOTHING: the `agent_id`'s embedded
+    /// team suffix doesn't match this team, or no such member is in the roster.
+    /// Either way, recording the dismissal would only persist a junk
+    /// `(team_name, agent_id)` row that can never match a real member.
+    Invalid(String),
     /// The member has a LIVE pane on a mapped lead → kill it, THEN dismiss.
     KillThenDismiss { lead: String, pane_id: String },
-    /// No live pane (offline / already gone / lead unmapped) → just dismiss.
-    /// Also the idempotent path for a member no longer in the roster.
+    /// The member IS in the roster but has no live pane / no mapped lead → just
+    /// dismiss (the dead-offline-teammate case this whole feature targets). Also
+    /// the ambiguous case a transient tmux hiccup can fake, which
+    /// [`resolve_remove_action`] disambiguates with a fresh re-scan.
     DismissOnly,
+}
+
+/// Does `agent_id` (`"{name}@{team}"`) belong to `team_name`? The team is the
+/// segment after the LAST `@` (member names are `@`-free, and team dir names are
+/// sanitized so they never contain `@` either). A missing `@` or a mismatched
+/// suffix means the caller addressed a member of a DIFFERENT team through this
+/// team's URL — a junk request we must never persist as a dismissal.
+fn agent_id_in_team(agent_id: &str, team_name: &str) -> bool {
+    matches!(agent_id.rsplit_once('@'), Some((_, team)) if team == team_name)
 }
 
 /// Decide the removal action from the resolved team (or `None` when the team
@@ -181,16 +197,31 @@ fn decide_remove(team: Option<&Team>, agent_id: &str) -> RemoveAction {
     let Some(team) = team else {
         return RemoveAction::UnknownTeam;
     };
-    if let Some(member) = team.members.iter().find(|m| m.agent_id == agent_id) {
-        if let (Some(lead), Some(pane_id)) = (
-            team.lead_supermux_session.as_deref(),
-            member.tmux_pane_id.as_deref(),
-        ) {
-            return RemoveAction::KillThenDismiss {
-                lead: lead.to_string(),
-                pane_id: pane_id.to_string(),
-            };
-        }
+    // Reject a request whose `agent_id` belongs to a different team before it can
+    // write a junk dismissal row keyed to a member that can never exist here.
+    if !agent_id_in_team(agent_id, &team.team_name) {
+        return RemoveAction::Invalid(format!(
+            "agent_id '{agent_id}' does not belong to team '{}'",
+            team.team_name
+        ));
+    }
+    // No such member in the resolved roster → 400 rather than a junk row. (The UI
+    // only mounts the trash on a rendered member, so this is a fabricated /
+    // already-removed request, not a normal flow.)
+    let Some(member) = team.members.iter().find(|m| m.agent_id == agent_id) else {
+        return RemoveAction::Invalid(format!(
+            "no member '{agent_id}' in team '{}'",
+            team.team_name
+        ));
+    };
+    if let (Some(lead), Some(pane_id)) = (
+        team.lead_supermux_session.as_deref(),
+        member.tmux_pane_id.as_deref(),
+    ) {
+        return RemoveAction::KillThenDismiss {
+            lead: lead.to_string(),
+            pane_id: pane_id.to_string(),
+        };
     }
     RemoveAction::DismissOnly
 }
@@ -214,6 +245,10 @@ where
         RemoveAction::UnknownTeam => {
             return Err(AppError::NotFound(format!("team '{team_name}'")));
         }
+        RemoveAction::Invalid(msg) => {
+            // 400, and we record NOTHING — never persist a junk dismissal row.
+            return Err(AppError::BadRequest(msg));
+        }
         RemoveAction::KillThenDismiss { lead, pane_id } => {
             // `?` short-circuits on a kill failure, so the dismiss below never runs.
             kill(lead, pane_id).await?;
@@ -224,19 +259,47 @@ where
     Ok(())
 }
 
-/// Resolve the team from the same scan the watcher uses, decide the action, then
-/// execute it against the live tmux + DB. The thin I/O wrapper over the two pure
-/// pieces above.
-async fn remove_member(
-    state: &AppState,
-    team_name: &str,
-    agent_id: &str,
-) -> Result<(), AppError> {
-    let teams = scan_and_enrich(state).await;
+/// Resolve the removal action from a fresh scan, guarding against a transient
+/// whole-tick tmux hiccup. A single missed tick can null a LIVE member's `%id`
+/// ([`scan::validate_pane_ids`]) AND drop the lead→session mapping at the same
+/// time, which would downgrade a genuinely-live teammate to
+/// [`RemoveAction::DismissOnly`] and hide it FOR GOOD (dismissals don't
+/// auto-re-arm) while its Claude pane keeps running. So whenever the first pass
+/// would dismiss WITHOUT a kill, we re-run ONE fresh scan and take its decision:
+/// a recovered pane routes to `KillThenDismiss`; a genuinely-gone member stays
+/// `DismissOnly`. Only `DismissOnly` is ambiguous — `UnknownTeam` / `Invalid` /
+/// `KillThenDismiss` are all returned as-is (a missing team or member is a
+/// config-file fact, unaffected by tmux churn). `scan` is injected so the guard
+/// is unit-testable without a live tmux/filesystem.
+async fn resolve_remove_action<F, Fut>(team_name: &str, agent_id: &str, mut scan: F) -> RemoveAction
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Vec<Team>>,
+{
+    let teams = scan().await;
     let action = decide_remove(teams.iter().find(|t| t.team_name == team_name), agent_id);
-    execute_remove(action, &state.pool, team_name, agent_id, |lead, pane_id| async move {
-        crate::sessions::lifecycle::kill_teammate_pane(state, &lead, &pane_id).await
-    })
+    if !matches!(action, RemoveAction::DismissOnly) {
+        return action;
+    }
+    // Ambiguous: the member is in the roster but looked offline this tick. A fresh
+    // scan tells a genuinely-offline teammate apart from a one-tick tmux hiccup.
+    let teams = scan().await;
+    decide_remove(teams.iter().find(|t| t.team_name == team_name), agent_id)
+}
+
+/// Resolve the action (with the transient-hiccup re-scan guard), then execute it
+/// against the live tmux + DB. The thin I/O wrapper over the pure pieces above.
+async fn remove_member(state: &AppState, team_name: &str, agent_id: &str) -> Result<(), AppError> {
+    let action = resolve_remove_action(team_name, agent_id, || scan_and_enrich(state)).await;
+    execute_remove(
+        action,
+        &state.pool,
+        team_name,
+        agent_id,
+        |lead, pane_id| async move {
+            crate::sessions::lifecycle::kill_teammate_pane(state, &lead, &pane_id).await
+        },
+    )
     .await
 }
 
@@ -369,11 +432,40 @@ mod remove_member_tests {
     }
 
     #[test]
-    fn decide_already_gone_member_dismiss_only() {
-        // Member absent from the roster (already killed/dismissed) → idempotent
-        // dismiss, never a 404.
+    fn decide_absent_member_is_400_not_junk_dismiss() {
+        // Member absent from the roster → 400, NOT a dismiss: recording it would
+        // persist a junk (team_name, agent_id) row that can never match a member.
         let t = team("t", Some("host"), vec![member("other@t", Some("%1"))]);
-        assert_eq!(decide_remove(Some(&t), "fix-644@t"), RemoveAction::DismissOnly);
+        assert!(matches!(
+            decide_remove(Some(&t), "fix-644@t"),
+            RemoveAction::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn decide_agent_id_wrong_team_is_400() {
+        // The agent_id embeds a DIFFERENT team than the URL → 400, never a junk
+        // cross-team dismissal row. Even though a same-named member exists here.
+        let t = team(
+            "session-A",
+            Some("host"),
+            vec![member("fix-644@session-A", Some("%7"))],
+        );
+        assert!(matches!(
+            decide_remove(Some(&t), "fix-644@session-B"),
+            RemoveAction::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn agent_id_in_team_matches_suffix() {
+        assert!(agent_id_in_team("fix-644@session-A", "session-A"));
+        assert!(!agent_id_in_team("fix-644@session-A", "session-B"));
+        // No `@` at all → not addressable to any team.
+        assert!(!agent_id_in_team("fix-644", "session-A"));
+        // Only the trailing segment is the team (member names are `@`-free, but be
+        // robust if one ever weren't).
+        assert!(agent_id_in_team("odd@name@team", "team"));
     }
 
     #[tokio::test]
@@ -450,5 +542,105 @@ mod remove_member_tests {
         assert!(db::teams_dismissed::list_for_team(&pool, "ghost").await.unwrap().is_empty());
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn execute_invalid_is_400_and_no_dismiss() {
+        // A junk request (wrong team suffix / absent member) is a 400 that writes
+        // NOTHING — no junk dismissal row survives.
+        let (pool, dir) = test_pool().await;
+        let mut killed = false;
+        let res = execute_remove(
+            RemoveAction::Invalid("bad".into()),
+            &pool,
+            "t",
+            "fix-644@other",
+            |_, _| {
+                killed = true;
+                async { Ok(()) }
+            },
+        )
+        .await;
+        assert!(matches!(res, Err(AppError::BadRequest(_))));
+        assert!(!killed, "an invalid request never attempts a kill");
+        assert!(
+            db::teams_dismissed::list_for_team(&pool, "t").await.unwrap().is_empty(),
+            "a junk request leaves no dismissal row behind",
+        );
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── the transient-tmux-hiccup re-resolve guard (Fix: RACE) ──────────────────
+
+    #[tokio::test]
+    async fn reresolve_recovers_live_pane_after_transient_miss() {
+        // First scan: a transient whole-tick tmux hiccup nulled the LIVE member's
+        // pane AND dropped the lead mapping (the member is STILL in the roster) →
+        // this pass would be DismissOnly and hide a running agent for good. Second
+        // (fresh) scan: tmux recovered, pane + lead are back → KillThenDismiss.
+        // The guard MUST take the recovered kill path.
+        let scans = std::cell::Cell::new(0u32);
+        let action = resolve_remove_action("t", "fix-644@t", || {
+            let n = scans.get();
+            scans.set(n + 1);
+            async move {
+                if n == 0 {
+                    vec![team("t", None, vec![member("fix-644@t", None)])]
+                } else {
+                    vec![team("t", Some("host"), vec![member("fix-644@t", Some("%7"))])]
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            action,
+            RemoveAction::KillThenDismiss { lead: "host".into(), pane_id: "%7".into() },
+        );
+        assert_eq!(scans.get(), 2, "a DismissOnly first pass triggers exactly one re-scan");
+    }
+
+    #[tokio::test]
+    async fn reresolve_keeps_dismiss_when_still_offline() {
+        // A genuinely dead teammate looks offline on BOTH scans → DismissOnly
+        // stands (the re-scan just confirms it; it never invents a kill).
+        let scans = std::cell::Cell::new(0u32);
+        let action = resolve_remove_action("t", "fix-644@t", || {
+            scans.set(scans.get() + 1);
+            async move { vec![team("t", Some("host"), vec![member("fix-644@t", None)])] }
+        })
+        .await;
+        assert_eq!(action, RemoveAction::DismissOnly);
+        assert_eq!(scans.get(), 2, "DismissOnly is re-resolved exactly once");
+    }
+
+    #[tokio::test]
+    async fn no_reresolve_when_first_pass_is_live() {
+        // A live member on the first pass is unambiguous → no second scan.
+        let scans = std::cell::Cell::new(0u32);
+        let action = resolve_remove_action("t", "fix-644@t", || {
+            scans.set(scans.get() + 1);
+            async move { vec![team("t", Some("host"), vec![member("fix-644@t", Some("%7"))])] }
+        })
+        .await;
+        assert_eq!(
+            action,
+            RemoveAction::KillThenDismiss { lead: "host".into(), pane_id: "%7".into() },
+        );
+        assert_eq!(scans.get(), 1, "a live first pass needs no re-scan");
+    }
+
+    #[tokio::test]
+    async fn no_reresolve_when_first_pass_is_invalid() {
+        // An absent member (config-file fact, unaffected by tmux churn) is a 400
+        // on the first pass — no re-scan (nothing tmux could recover).
+        let scans = std::cell::Cell::new(0u32);
+        let action = resolve_remove_action("t", "fix-644@t", || {
+            scans.set(scans.get() + 1);
+            async move { vec![team("t", Some("host"), vec![member("other@t", Some("%1"))])] }
+        })
+        .await;
+        assert!(matches!(action, RemoveAction::Invalid(_)));
+        assert_eq!(scans.get(), 1, "a 400 first pass needs no re-scan");
     }
 }

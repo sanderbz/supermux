@@ -90,7 +90,7 @@ export function KillTeammateButton({
           type="button"
           onClick={() => setConfirming(false)}
           disabled={remove.isPending}
-          className="flex h-7 items-center rounded-md px-2 text-[12px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          className="flex h-11 items-center rounded-md px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
           Cancel
         </button>
@@ -98,9 +98,9 @@ export function KillTeammateButton({
           type="button"
           onClick={() => remove.mutate()}
           disabled={remove.isPending}
-          className="flex h-7 items-center gap-1 rounded-md bg-destructive px-2 text-[12px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          className="flex h-11 items-center gap-1.5 rounded-md bg-destructive px-3 text-[13px] font-medium text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
-          <Trash2 className="size-3.5" aria-hidden />
+          <Trash2 className="size-4" aria-hidden />
           {verb}
         </button>
       </motion.div>
@@ -119,7 +119,9 @@ export function KillTeammateButton({
       aria-label={`${verb} ${member.name}`}
       title={verb}
       className={cn(
-        'flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+        // 44px hit target (size-11) — matches the Archived sheet's destructive
+        // per-row pattern; the icon stays size-4 so only the tap area grows.
+        'flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
         className,
       )}
     >

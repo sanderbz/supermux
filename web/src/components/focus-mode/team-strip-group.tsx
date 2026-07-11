@@ -17,7 +17,10 @@
 // bolt-on: same rounded-xl rows, status-dot leading, calm `needs you` treatment
 // (never alarmist red), colour rail = member.color.
 
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+
 import { cn } from '@/lib/utils'
+import { springs } from '@/lib/springs'
 import { CompactTile } from './compact-tile'
 import { MemberStatusDot, TeamRollupBadges } from '@/components/team'
 import { KillTeammateButton } from '@/components/team/kill-teammate-button'
@@ -61,6 +64,10 @@ export function TeamStripGroup({
   onSelectTeammate,
   jumpIndexBySession,
 }: TeamStripGroupProps) {
+  // Removal collapses the row (height + opacity) instead of hard-cutting, so
+  // siblings reflow smoothly — mirrors the Archived sheet's per-row motion.
+  // Reduced-motion → opacity-only.
+  const reduce = useReducedMotion()
   return (
     <section
       aria-label={`Team ${team.team_name}`}
@@ -90,16 +97,29 @@ export function TeamStripGroup({
           </div>
         )}
 
-        {/* Teammates — rendered ONLY from the team payload (not sessions). */}
-        {members.map((m) => (
-          <TeammateStripRow
-            key={m.agent_id}
-            team={team}
-            member={m}
-            selected={selectedTeammateId === m.agent_id}
-            onSelect={() => onSelectTeammate(team, m)}
-          />
-        ))}
+        {/* Teammates — rendered ONLY from the team payload (not sessions).
+            AnimatePresence so a removed teammate collapses out (height + opacity)
+            rather than hard-cutting; siblings reflow via layout. */}
+        <AnimatePresence initial={false}>
+          {members.map((m) => (
+            <motion.div
+              key={m.agent_id}
+              layout={!reduce}
+              initial={reduce ? false : { opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
+              transition={springs.smooth}
+              className="overflow-hidden"
+            >
+              <TeammateStripRow
+                team={team}
+                member={m}
+                selected={selectedTeammateId === m.agent_id}
+                onSelect={() => onSelectTeammate(team, m)}
+              />
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </section>
   )

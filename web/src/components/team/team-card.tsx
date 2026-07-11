@@ -25,8 +25,10 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
+import { springs } from '@/lib/springs'
 import { useSession } from '@/hooks/use-sessions'
 import { TEAMS_KEY } from '@/hooks/use-teams'
 import { useTeamDensity, type TeamDensity } from '@/stores/team-density-store'
@@ -66,6 +68,10 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
   // the max-width below `sm` so every card is full-width there — see below).
   const [width, setWidth] = useTeamWidth(team.team_name)
   const navigate = useNavigate()
+  // Removal is a deliberate, destructive action — collapse the removed row
+  // (height + opacity) so it doesn't hard-cut and siblings reflow smoothly.
+  // Mirrors the Archived sheet's per-row motion; reduced-motion → opacity-only.
+  const reduce = useReducedMotion()
 
   // The lead IS a normal supermux session — read it from the shared sessions
   // cache by `lead_supermux_session`. Null when unmapped this tick or not yet in
@@ -170,25 +176,47 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
         </div>
       ) : density === 'cards' ? (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {members.map((m) => (
-            <TeammateCard
-              key={m.agent_id}
-              team={team}
-              member={m}
-              onFocus={() => openFocus(m)}
-            />
-          ))}
+          <AnimatePresence initial={false}>
+            {members.map((m) => (
+              <motion.div
+                key={m.agent_id}
+                layout={!reduce}
+                initial={reduce ? false : { opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
+                transition={springs.smooth}
+                className="overflow-hidden"
+              >
+                <TeammateCard
+                  team={team}
+                  member={m}
+                  onFocus={() => openFocus(m)}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
-          {members.map((m) => (
-            <TeammateChip
-              key={m.agent_id}
-              team={team}
-              member={m}
-              onFocus={() => openFocus(m)}
-            />
-          ))}
+          <AnimatePresence initial={false}>
+            {members.map((m) => (
+              <motion.div
+                key={m.agent_id}
+                layout={!reduce}
+                initial={reduce ? false : { opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
+                transition={springs.smooth}
+                className="overflow-hidden"
+              >
+                <TeammateChip
+                  team={team}
+                  member={m}
+                  onFocus={() => openFocus(m)}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
       )}
 
