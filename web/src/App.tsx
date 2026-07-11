@@ -28,6 +28,12 @@ const DevTerm = import.meta.env.DEV
 const DevFocus = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-focus'))
   : null
+// Mobile focus-mode review page (floating KeyBar / dock / accessory strip —
+// mobile-focus-keybar spec). Renders the real <MobileFocus> regardless of
+// viewport width so it's screenshot-able from a wide dev browser window.
+const DevFocusMobile = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-focus-mobile'))
+  : null
 // TEAM CARD / teammate-chip / density-toggle verification harness.
 const DevTeams = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-teams'))
@@ -110,6 +116,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevFocus />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevFocusMobile && (
+                <Route
+                  path="/dev/focus-mobile/:name?"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevFocusMobile />
                     </Suspense>
                   }
                 />

@@ -221,12 +221,15 @@
 }
 
 /* ── Terminal touch-scroll ──────────────────────────────────────────────────
-   xterm 6.0 scrolls via its VS Code scrollable element and registers its OWN
-   touch/pointer handlers. `touch-action: none` on the terminal elements hands
-   the whole gesture to those handlers — pan-y would let the browser pre-commit
-   the vertical drag to a native scroll that no longer exists (the `.xterm-viewport`
-   is not a native-overflow scroller anymore), hijacking the pan before xterm can
-   act. `overscroll-behavior: contain` keeps any residual chain off the page.
+   xterm 6.0 has NO built-in touch-drag scroll: its VS Code scrollable element
+   scrolls on WHEEL (desktop) but ignores one-finger touch drags, and its
+   `.xterm-viewport` is not a native-overflow scroller for the content
+   (scrollHeight == clientHeight). So neither native touch-pan nor xterm handles
+   a mobile drag. We drive it ourselves with a touch→scrollLines handler in
+   use-live-term. `touch-action: none` here hands us every touch event and
+   BLOCKS the browser's native gesture — critical, else a vertical drag pans the
+   page / expands the mobile browser chrome instead of scrolling the scrollback.
+   `overscroll-behavior: contain` keeps any residual chain off the page.
    !important beats xterm.css's own rule. */
 .xterm,
 .xterm-viewport,
