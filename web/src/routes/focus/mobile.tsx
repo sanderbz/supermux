@@ -11,21 +11,26 @@
 //                              Android share one path. Dismiss = the back
 //                              chevron in FocusHeader or the existing left-edge
 //                              swipe-back. Vaul still owns the other mobile
-//                              sheets below (picker/specials/etc.) where the
-//                              drawer-over-content model fits.
+//                              sheets below (picker/key-bar-customize/etc.)
+//                              where the drawer-over-content model fits.
 //     <FocusHeader minimal />← 44px top bar
 //     <LiveTerminal />       ← the terminal (flex-1) — REUSED, the LIVE-TYPE
 //                              keystroke-capture (tap focuses it → keyboard up)
-//     <MobileDock />         ← accessory bar: session-pill + ⌨ + slash + specials
+//     <KeyBar />             ← floating glass pill (mobile-focus-keybar spec):
+//                              arrow/Enter-style key chips pinned just under
+//                              the header, toggled by the dock's `···` icon.
+//     <MobileDock />         ← accessory bar: session-pill + ⌨ + key-bar toggle
 //                              + snippets + dictate + keyboard-pinned key strip
 //                              (Esc/Tab/^C/arrows). NO text composer (live-type).
 //   <SessionPickerSheet />   ← Vaul half-sheet (full list)
-//   <QuickKeysSheet /> + <SnippetPanel />
+//   <KeyBar>'s picker + <SnippetPanel />
 //                            ← the two action panels, both hosted in the ONE
-//                              shared Vaul shell (<MobileActionSheet>) so dots/+
-//                              share one quirk-free sheet. (DOCK: the slash sheet
-//                              was removed — slash commands now run from the
-//                              Claude Tools sheet's Commands tab.)
+//                              shared Vaul shell (<MobileActionSheet>) so
+//                              edit/+ share one quirk-free sheet. (DOCK: the
+//                              slash sheet was removed — slash commands now
+//                              run from the Claude Tools sheet's Commands
+//                              tab; the old Quick-keys drawer was replaced by
+//                              the KeyBar — see key-bar.tsx.)
 //   edge-of-next peek         ← left-edge drag reveals the next session
 //
 // Edge gestures: left-edge swipe-right → overview;
@@ -33,7 +38,7 @@
 // drag renders a live peek-of-next that springs back below 40% width.
 //
 // Single source of truth: the terminal handle from <LiveTerminal onReady> drives
-// EVERY key path (dock send, specials, joystick) — the same `useLiveTerm` the
+// EVERY key path (dock send, KeyBar, joystick) — the same `useLiveTerm` the
 // desktop tile/focus use. No duplicate WS, no second xterm. The auth token is
 // never referenced here; it lives in `window._SUPERMUX_AUTH_TOKEN` (env.ts).
 
@@ -66,13 +71,14 @@ import { MobileDock } from '@/components/focus-mode/dock'
 import { MobileBottomPanel } from '@/components/focus-mode/mobile-bottom-panel'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { SessionPickerSheet } from '@/components/focus-mode/session-picker-sheet'
-import { QuickKeysSheet } from '@/components/focus-mode/quick-keys-sheet'
+import { KeyBar, useKeyBar } from '@/components/focus-mode/key-bar'
 import { SnippetPanel } from '@/components/snippets/snippet-panel'
 import { MobileComposeSheet } from '@/components/focus-mode/mobile-compose-sheet'
 import { useExternalEdit } from '@/components/focus-mode/use-external-edit'
 import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
+import type { TileSession } from '@/components/session-tile/types'
 
 /** Synthesize a minimal session from the route param so the terminal mounts even
  *  before the sessions query has delivered this row. */
@@ -87,9 +93,18 @@ function placeholderSession(name: string): ApiSession {
   }
 }
 
+export interface MobileFocusProps {
+  /** DEV-only mock injection (the /dev/focus-mobile verification page).
+   *  Production omits it → the real `useSessions` store. Mirrors
+   *  `DesktopFocusProps.mockSessions` (focus/desktop.tsx). */
+  mockSessions?: TileSession[]
+  /** DEV-only mock teams injection, same pattern as `DesktopFocusProps`. */
+  mockTeams?: Team[]
+}
+
 // Self-contained route component (reads the `:name` param like
 // <DesktopFocus />) so the focus.tsx fork can call it with no props.
-export function MobileFocus() {
+export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) {
   const { name = '' } = useParams()
   const navigate = useNavigate()
   // View-Transition navigate: used by the discrete back-button tap so
@@ -98,11 +113,16 @@ export function MobileFocus() {
   // and a View Transition would fight the live drag transform.
   const navigateMorph = useNavigateMorph()
   const reduceMotion = useReducedMotion()
-  const { sessions } = useSessions()
+  const { sessions: liveSessions } = useSessions()
+  // DEV-only override (the /dev/focus-mobile harness) — TileSession is a
+  // superset-compatible shape (see session-tile/types.ts), so it slots in
+  // wherever the route otherwise reads the live `ApiSession[]`.
+  const sessions: ApiSession[] = mockSessions ?? liveSessions
   // Detected Agent Teams — the shared `['teams']` cache (GET on mount + SSE-live),
   // the SAME source the overview TEAM CARD reads. Drives the team-aware picker +
   // the read-only teammate focus overlay.
-  const { teams } = useTeams()
+  const liveTeams = useTeams()
+  const teams = mockTeams ?? liveTeams.teams
   // Remember the focused session as the app-wide "last-active" pick so /files
   // (no `:name`) lands in this session's dir on the next visit. See
   // stores/board-create-session-store.ts.
@@ -293,7 +313,15 @@ export function MobileFocus() {
     next.delete('teammate')
     setSearchParams(next, { replace: true })
   }, [teammateParam, teams, name, searchParams, setSearchParams])
-  const [specialsOpen, setSpecialsOpen] = React.useState(false)
+  // Floating KeyBar (mobile-focus-keybar spec) — persisted open/keys state
+  // (localStorage, `focus_key_bar` — independent of the legacy `quick_keys`
+  // server pref). The dock's `···` icon now toggles `keyBar.open` instead of
+  // opening the old QuickKeysSheet bottom drawer.
+  const keyBar = useKeyBar()
+  // The KeyBar's own "customize keys" picker sheet — lifted here (rather than
+  // local to <KeyBar>) purely so `useEdgeGestures`'s `enabled` gate below can
+  // disable edge-swipe nav while it's open, matching `pickerOpen`.
+  const [keyBarPickerOpen, setKeyBarPickerOpen] = React.useState(false)
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
   // The on-demand native EDITOR sheet (feat-edit-in-native-editor). The dock's
   // bottom-left Edit field is its trigger: tapping it sends Ctrl+G to the pty,
@@ -365,7 +393,7 @@ export function MobileFocus() {
 
   // Edge gestures — disable while a half-sheet is open so they don't double-fire.
   const edge = useEdgeGestures({
-    enabled: !pickerOpen && !specialsOpen,
+    enabled: !pickerOpen && !keyBarPickerOpen,
     onSwipeRight: goOverview,
     onSwipeLeft: () => next && goSession(next.name),
     resolveNext: () => next,
@@ -382,6 +410,18 @@ export function MobileFocus() {
         )}
       </AnimatePresence>
 
+      {/* Floating KeyBar (mobile-focus-keybar spec) — `position: fixed`, so it
+          renders as a top-level sibling rather than inside the peek-tracking
+          `<motion.div>` below (it must NOT slide with the left-edge drag). */}
+      <KeyBar
+        open={keyBar.open}
+        keys={keyBar.keys}
+        onKeysChange={keyBar.setKeys}
+        onSendKey={(key) => termRef.current?.sendKey(key)}
+        pickerOpen={keyBarPickerOpen}
+        onPickerOpenChange={setKeyBarPickerOpen}
+      />
+
       <motion.div
         // The whole focus surface tracks the left-edge drag so the peek-of-next
         // reads as "the next session sliding in behind."
@@ -397,7 +437,7 @@ export function MobileFocus() {
               SessionPickerSheet the bottom-left session pill already opens (the
               pill is the richer, more discoverable affordance — name + status +
               swipe). Dropping the redundant dots clears the naming confusion so
-              the only "dots" left is the bottom Specials/Quick-keys trigger. */}
+              the only "dots" left is the bottom dock's KeyBar toggle. */}
           <FocusHeader
             name={current.name}
             title={sessionTitle(current)}
@@ -478,9 +518,9 @@ export function MobileFocus() {
               the terminal imperative handle wasn't registered until after the
               terminal mounted via onTermReady — leaving users tapping a dead
               bar. The lower MobileDock already covers the same shortcuts
-              (keyboard toggle, specials/SpecialsSheet, snippets, send),
-              and `kbdGroups` are still exposed via the "···" Specials sheet
-              below. Clean removal — no orphaned import. */}
+              (keyboard toggle, KeyBar toggle, snippets, send), and the
+              floating <KeyBar> above (mobile-focus-keybar spec) now owns
+              arrow/Enter-style key-nav. Clean removal — no orphaned import. */}
 
           {/* The unified mobile bottom panel:
               ONE positioned element holds the session-pills
@@ -506,7 +546,8 @@ export function MobileFocus() {
               prevSession={prev}
               nextSession={next}
               onOpenPicker={() => setPickerOpen(true)}
-              onOpenSpecials={() => setSpecialsOpen(true)}
+              onToggleKeyBar={keyBar.toggleOpen}
+              keyBarOpen={keyBar.open}
               onOpenSnippets={() => setSnippetsOpen(true)}
               // Edit-in-native-editor uses Claude's Ctrl+G bridge; no-op on
               // codex/shell — only surface it for Claude sessions.
@@ -535,17 +576,13 @@ export function MobileFocus() {
       />
 
       {/* DOCK — the action panels share the one Vaul shell
-          (<MobileActionSheet>): the quick-keys sheet (was SpecialsSheet) and the
-          snippets sheet. Each opens with a backdrop + tap-away + drag-down
-          dismiss; only their CONTENT differs. (The slash sheet was removed —
-          slash commands now run from the Claude Tools sheet's Commands tab.) */}
-      <QuickKeysSheet
-        open={specialsOpen}
-        onOpenChange={setSpecialsOpen}
-        onKey={(key) => termRef.current?.sendKey(key)}
-        onSend={(text) => termRef.current?.send(text)}
-      />
-
+          (<MobileActionSheet>): the KeyBar's own "customize keys" picker
+          (rendered inside <KeyBar> above, gated by `keyBarPickerOpen`) and the
+          snippets sheet below. Each opens with a backdrop + tap-away +
+          drag-down dismiss; only their CONTENT differs. (The slash sheet was
+          removed — slash commands now run from the Claude Tools sheet's
+          Commands tab. The old Quick-keys drawer was replaced by the
+          KeyBar — see key-bar.tsx.) */}
       <SnippetPanel
         open={snippetsOpen}
         onOpenChange={setSnippetsOpen}

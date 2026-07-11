@@ -318,7 +318,9 @@ export default DesktopDock
 //     dot + session name live ONLY in the top focus-header title. Same width as the
 //     old pill (`maxWidth: '40%'`). (feat-edit-in-native-editor)
 //   • ⌨ toggle       — focuses/blurs the TERMINAL (summons/dismisses keyboard).
-//   • Specials (···) — opens the QuickKeysSheet (curated tap-to-send chips).
+//   • Key bar (···)   — toggles the floating KeyBar (mobile-focus-keybar
+//     spec); no longer opens the QuickKeysSheet bottom drawer directly (that
+//     sheet is now the KeyBar's "customize keys" picker, see key-bar.tsx).
 //   • ＋ snippets     — opens the snippet panel; snippet run → term.send.
 //   • 🎙 dictate      — Web Speech; the transcript is sent to the terminal +'\r'.
 //   • ↵ Enter        — sends Enter (`\r`) to the terminal via `onSendKey('Enter')`
@@ -360,7 +362,16 @@ export interface MobileDockProps {
   prevSession: ApiSession | null
   nextSession: ApiSession | null
   onOpenPicker: () => void
-  onOpenSpecials: () => void
+  /** Toggle the floating KeyBar (mobile-focus-keybar spec) — the `···` icon
+   *  used to open the QuickKeysSheet bottom drawer; it now flips the bar's
+   *  persisted open/closed state instead. The sheet lives on as the KeyBar's
+   *  "customize keys" picker, opened from an edit affordance on the bar
+   *  itself, not from here. */
+  onToggleKeyBar: () => void
+  /** True when the floating KeyBar is open — flips the `···` icon to its
+   *  active (primary-tinted + `aria-pressed`) state, matching the ⌨/mic
+   *  toggles in the same row. */
+  keyBarOpen?: boolean
   /** Switch focus to a neighbour session (committed pill swipe). */
   onSwitchSession: (name: string) => void
   /** Send literal text to the pty — used by dictation (transcript +'\r'). */
@@ -400,7 +411,8 @@ export function MobileDock({
   prevSession,
   nextSession,
   onOpenPicker,
-  onOpenSpecials,
+  onToggleKeyBar,
+  keyBarOpen,
   onSwitchSession,
   onSend,
   onSendKey,
@@ -626,7 +638,11 @@ export function MobileDock({
           <Keyboard className="size-5" strokeWidth={1.75} />
         </DockIcon>
 
-        <DockIcon label="Specials" onClick={onOpenSpecials}>
+        {/* KeyBar toggle (mobile-focus-keybar spec) — was "open the
+            QuickKeysSheet bottom drawer"; now flips the floating KeyBar's
+            persisted open state. The `···` glyph is kept (still reads as
+            "more controls"). */}
+        <DockIcon label="Key bar" active={keyBarOpen} onClick={onToggleKeyBar}>
           <Ellipsis className="size-5" strokeWidth={1.75} />
         </DockIcon>
 
