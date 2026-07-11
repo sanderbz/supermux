@@ -51,7 +51,7 @@ export interface QuickEntry {
    *  Stable so a selection survives a catalog edit; slash/snippet ids dedupe
    *  against the live lists. */
   id: string
-  /** Chip face, sentence-case (e.g. "Interrupt", "Continue"). */
+  /** Chip face, sentence-case (e.g. "Esc (interrupt)", "Continue"). */
   label: string
   kind: QuickKind
   /** What gets sent (see the send-path table at the top). */
@@ -77,7 +77,7 @@ export const GROUP_ORDER: QuickGroup[] = ['control', 'replies', 'slash', 'snippe
 // no new key names introduced.
 
 export const CONTROL_ENTRIES: QuickEntry[] = [
-  { id: 'key:Esc', label: 'Interrupt', kind: 'key', payload: 'Esc', icon: Square, group: 'control' },
+  { id: 'key:Esc', label: 'Esc (interrupt)', kind: 'key', payload: 'Esc', icon: Square, group: 'control' },
   { id: 'key:Ctrl-C', label: 'Stop', kind: 'key', payload: 'Ctrl-C', icon: Square, group: 'control' },
   // Paste the device clipboard into the pty (no Enter). The soft keyboard has no
   // paste affordance on a raw terminal screen, so pasting e.g. the Anthropic
