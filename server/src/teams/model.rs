@@ -193,6 +193,13 @@ pub struct Team {
     /// The supermux session that hosts the lead, when we could map it
     /// (`supermux-<name>`); `None` when unmapped (still surfaced).
     pub lead_supermux_session: Option<String>,
+    /// The lead's working directory (from the filtered-out lead members[] entry).
+    /// The authoritative host directory for cwd-based host resolution: a teammate
+    /// may work in a worktree/subdir that collides with an UNRELATED session's dir,
+    /// so teammate cwds must never win host attribution over the lead's own cwd.
+    /// Empty when the lead entry had no cwd (in-process lead / schema drift).
+    #[serde(skip_serializing)]
+    pub lead_cwd: String,
     pub members: Vec<Member>,
     pub tasks: Vec<TeamTask>,
 }

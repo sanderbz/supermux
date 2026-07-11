@@ -178,10 +178,35 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
     // match (the canonical, version-stable key) AND by role marker (belt +
     // braces against schema drift / missing leadAgentId).
     let lead_agent_id = config.lead_agent_id.trim().to_string();
+    // Capture the filtered-out lead entry's cwd — the authoritative host
+    // directory. It's dropped from `members` (FIX-TEAMS phantom-chip fix), but
+    // the watcher's cwd-based host resolver needs it: teammate cwds can collide
+    // with an unrelated session's dir, so only the lead's cwd may decide the host.
+    //
+    // PREFER a STRONG lead (rule a/b) over the structural blank-row fallback
+    // (rule c): a not-yet-spawned blank teammate ordered BEFORE the real lead can
+    // trip rule c, and taking the first is-lead hit unconditionally would let it
+    // hijack `lead_cwd` (the sole host candidate). Keep the strong lead's cwd if
+    // we ever see one; fall back to a structural match's cwd only when no strong
+    // lead exists at all.
+    let mut strong_lead_cwd: Option<String> = None;
+    let mut structural_lead_cwd: Option<String> = None;
     let members = config
         .members
         .into_iter()
-        .filter(|m| !is_lead_entry(m, &lead_agent_id))
+        .filter(|m| {
+            if !is_lead_entry(m, &lead_agent_id) {
+                return true;
+            }
+            if is_strong_lead_entry(m, &lead_agent_id) {
+                if strong_lead_cwd.is_none() {
+                    strong_lead_cwd = Some(m.cwd.trim().to_string());
+                }
+            } else if structural_lead_cwd.is_none() {
+                structural_lead_cwd = Some(m.cwd.trim().to_string());
+            }
+            false
+        })
         .map(|m| resolve_member(m, &inbox_dir, &tasks))
         .collect();
 
@@ -189,6 +214,7 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
         team_name: team_name.to_string(),
         lead_session: config.lead_session_id,
         lead_supermux_session: None,
+        lead_cwd: strong_lead_cwd.or(structural_lead_cwd).unwrap_or_default(),
         members,
         tasks: tasks.into_iter().map(TeamTask::from).collect(),
     })
@@ -210,25 +236,38 @@ fn scan_one_team(team_dir: &Path, tasks_root: &Path, team_name: &str) -> Option<
 ///       lead, not a teammate. This catches forward-drifted configs that
 ///       drop the role marker.
 fn is_lead_entry(m: &RawMember, lead_agent_id: &str) -> bool {
+    if is_strong_lead_entry(m, lead_agent_id) {
+        return true;
+    }
+    // Structural fallback (rule c): the lead's roster row has no pane, no
+    // backend, no color (a real teammate ALWAYS has at minimum a tmuxPaneId once
+    // spawned, plus a backendType the lead lacks). Don't filter a member that
+    // just hasn't spawned yet — gate on the conjunction of all three blank
+    // fields. NOTE: a not-yet-spawned teammate whose pane/backend/color are ALL
+    // still blank IS indistinguishable from the lead here and WILL be filtered;
+    // that boundary is why `lead_cwd` capture prefers a STRONG lead (rule a/b)
+    // over this structural match — see `scan_one_team`.
+    let no_pane = m.tmux_pane_id.trim().is_empty();
+    let no_backend = m.backend_type.trim().is_empty();
+    let no_color = m.color.trim().is_empty();
+    no_pane && no_backend && no_color
+}
+
+/// The STRONG lead signals only — rules (a) and (b): an explicit `leadAgentId`
+/// match, or a role marker (`team-lead` / `orchestrator` / `leader`). These
+/// definitively identify the lead; the structural blank-row rule (c) in
+/// [`is_lead_entry`] can also match a not-yet-spawned blank teammate, so
+/// `lead_cwd` capture keys off THIS predicate to keep a blank teammate (ordered
+/// before the lead) from hijacking the authoritative host cwd.
+fn is_strong_lead_entry(m: &RawMember, lead_agent_id: &str) -> bool {
     let aid = m.agent_id.trim();
     if !lead_agent_id.is_empty() && aid.eq_ignore_ascii_case(lead_agent_id) {
         return true;
     }
     let role = m.agent_type.trim();
-    if role.eq_ignore_ascii_case("team-lead")
+    role.eq_ignore_ascii_case("team-lead")
         || role.eq_ignore_ascii_case("orchestrator")
         || role.eq_ignore_ascii_case("leader")
-    {
-        return true;
-    }
-    // Structural fallback: the lead's roster row has no pane, no backend, no
-    // color (a real teammate ALWAYS has at minimum a tmuxPaneId once spawned,
-    // plus a backendType the lead lacks). Don't filter a member that just hasn't
-    // spawned yet — gate on the conjunction of all three blank fields.
-    let no_pane = m.tmux_pane_id.trim().is_empty();
-    let no_backend = m.backend_type.trim().is_empty();
-    let no_color = m.color.trim().is_empty();
-    no_pane && no_backend && no_color
 }
 
 /// Parse a `config.json`. Returns `None` (logged) on any read/parse failure so a
@@ -846,6 +885,117 @@ mod tests {
         // Real teammate carries its cwd onto the supermux Member (for the
         // host-session cwd-match fallback in the watcher).
         assert_eq!(t.members[0].cwd, "/p");
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn scan_captures_lead_cwd_and_keeps_only_the_teammate() {
+        // The filtered-out lead row carries the authoritative host directory
+        // (dirA). A teammate works in a DIFFERENT dir (dirB, e.g. a worktree).
+        // The scan must (a) drop the lead from `members`, and (b) still capture
+        // the lead's cwd into `Team.lead_cwd` so the watcher can resolve the host
+        // by it — the whole point of the lead-cwd host-attribution fix.
+        let base = tmp();
+        let tdir = base.join("teams").join("mob");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "37a40788-uuid",
+            "leadAgentId": "team-lead@mob",
+            "members": [
+                { "name": "team-lead", "agentId": "team-lead@mob",
+                  "agentType": "team-lead", "tmuxPaneId": "",
+                  "cwd": "/home/p/projects/mobsters-united" },
+                { "name": "fix-644", "agentId": "fix-644@mob",
+                  "tmuxPaneId": "%0", "color": "blue", "isActive": true,
+                  "backendType": "tmux",
+                  "cwd": "/home/p/projects/mobsters-united/game.mobsters-united.com" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+
+        let teams = scan_teams(&base);
+        assert_eq!(teams.len(), 1);
+        let t = &teams[0];
+        // Lead cwd captured from the (dropped) lead row.
+        assert_eq!(t.lead_cwd, "/home/p/projects/mobsters-united");
+        // Only the teammate survives, carrying its OWN (worktree) cwd.
+        assert_eq!(t.members.len(), 1);
+        assert_eq!(t.members[0].name, "fix-644");
+        assert_eq!(
+            t.members[0].cwd,
+            "/home/p/projects/mobsters-united/game.mobsters-united.com"
+        );
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn scan_lead_cwd_empty_when_no_lead_entry_has_cwd() {
+        // A lead row with no cwd (in-process lead / schema drift) → lead_cwd "".
+        // The watcher then falls back to teammate-cwd matching.
+        let base = tmp();
+        let tdir = base.join("teams").join("nc");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "x",
+            "leadAgentId": "team-lead@nc",
+            "members": [
+                { "name": "team-lead", "agentId": "team-lead@nc",
+                  "agentType": "team-lead", "tmuxPaneId": "" },
+                { "name": "alice", "agentId": "alice@nc", "tmuxPaneId": "%1",
+                  "color": "blue", "isActive": true, "backendType": "tmux",
+                  "cwd": "/w" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+
+        let teams = scan_teams(&base);
+        assert_eq!(teams[0].lead_cwd, "");
+        assert_eq!(teams[0].members.len(), 1);
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn lead_cwd_prefers_strong_lead_over_blank_teammate_ordered_first() {
+        // Regression for the rule-c boundary: a not-yet-spawned teammate whose
+        // pane/backend/color are ALL blank is structurally indistinguishable from
+        // the lead and is dropped by rule c — but it must NOT capture `lead_cwd`.
+        // Here that blank teammate is ordered BEFORE the real (strong-signal) lead
+        // and carries a DIFFERENT cwd (a worktree). Taking the first is-lead hit
+        // would wrongly pin `lead_cwd` to the worktree; the strong-lead preference
+        // keeps the authoritative host dir from the real lead's row.
+        let base = tmp();
+        let tdir = base.join("teams").join("ord");
+        fs::create_dir_all(tdir.join("inboxes")).unwrap();
+        let config = serde_json::json!({
+            "leadSessionId": "u",
+            "leadAgentId": "team-lead@ord",
+            "members": [
+                // Blank not-yet-spawned teammate FIRST (rule-c match), own cwd.
+                { "name": "pending", "agentId": "pending@ord",
+                  "cwd": "/home/p/worktrees/pending" },
+                // The REAL lead (strong: agentType=team-lead) with the host dir.
+                { "name": "team-lead", "agentId": "team-lead@ord",
+                  "agentType": "team-lead", "tmuxPaneId": "",
+                  "cwd": "/home/p/projects/ord" },
+                // A genuine spawned teammate so the roster isn't empty.
+                { "name": "real", "agentId": "real@ord", "tmuxPaneId": "%1",
+                  "color": "blue", "backendType": "tmux", "isActive": true,
+                  "cwd": "/home/p/worktrees/real" }
+            ]
+        });
+        fs::write(tdir.join("config.json"), config.to_string()).unwrap();
+
+        let teams = scan_teams(&base);
+        assert_eq!(teams.len(), 1);
+        // Strong lead's cwd wins — NOT the blank teammate ordered before it.
+        assert_eq!(teams[0].lead_cwd, "/home/p/projects/ord");
+        assert_ne!(teams[0].lead_cwd, "/home/p/worktrees/pending");
+        // Only the genuine spawned teammate survives (pending + lead filtered).
+        assert_eq!(teams[0].members.len(), 1);
+        assert_eq!(teams[0].members[0].name, "real");
 
         let _ = fs::remove_dir_all(base);
     }

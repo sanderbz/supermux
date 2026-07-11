@@ -354,6 +354,7 @@ mod tests {
             team_name: name.to_string(),
             lead_session: "lead".into(),
             lead_supermux_session: None,
+            lead_cwd: String::new(),
             members: vec![Member {
                 name: "alice".into(),
                 agent_id: "alice@sq".into(),

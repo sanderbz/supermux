@@ -401,6 +401,25 @@ pub async fn set_team_name(
         .map(|_| ())
 }
 
+/// Clear the `team_name` backlink on every session that still points at `team`
+/// EXCEPT `keep` (the currently-resolved host). Returns the number of rows
+/// cleared so a caller can skip a no-op log.
+///
+/// Guards a mis-attribution → archive hazard: when host resolution MOVES a team
+/// to a new session, the OLD host would otherwise keep `team_name` pointing at
+/// the (still-live) team, and a later `lifecycle::archive` of that old session
+/// would read the stale backlink and park the LIVE team's config under
+/// `.archived/` — vanishing it from the UI. Idempotent + cheap: a steady-state
+/// team (only its host points at it) matches 0 rows.
+pub async fn clear_team_name_except(pool: &SqlitePool, team: &str, keep: &str) -> sqlx::Result<u64> {
+    let res = sqlx::query("UPDATE sessions SET team_name = NULL WHERE team_name = ? AND name <> ?")
+        .bind(team)
+        .bind(keep)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 /// Read the `team_name` backlink. `Ok(None)` covers both "no such session" and
 /// "session exists but no team mapped" — the caller treats both the same way.
 pub async fn team_name(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<String>> {
