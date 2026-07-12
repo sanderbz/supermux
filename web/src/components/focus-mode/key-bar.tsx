@@ -47,6 +47,7 @@ import {
   ArrowRight,
   ArrowUp,
   Check,
+  ClipboardPaste,
   CornerDownLeft,
   SlidersHorizontal,
 } from 'lucide-react'
@@ -141,19 +142,29 @@ export function useKeyBar(): UseKeyBarResult {
 
 // ── key catalog reuse (customize picker) ────────────────────────────────────
 
-/** Only the `kind: 'key'` entries — their `payload` IS a `sendKey`-understood
- *  name, so the picker's toggle id doubles as the bar's stored key string
- *  (no separate id↔payload mapping to keep in sync). This drops the one
- *  `kind: 'paste'` control entry (clipboard paste needs `send`, not
- *  `sendKey`) — out of scope for a KEY bar. */
-const KEY_ENTRIES: QuickEntry[] = CONTROL_ENTRIES.filter((e) => e.kind === 'key')
+/** The clipboard-paste entry's stored key. It's the ONE `kind: 'paste'` catalog
+ *  entry (its `payload` is empty), so we key it by its stable `id` and dispatch
+ *  it via the text `send` path (clipboard → pty) instead of `sendKey`. */
+const PASTE_KEY = 'paste:clipboard'
 
-/** payload → the catalog's human label (the picker's own wording) so a chip's
- *  aria-label announces "Send Stop" / "Send Cycle mode (⇧⇥)" rather than the
- *  opaque internal token "Send Ctrl-C" / "Send BackTab" — matters once the
- *  picker lets users add non-default keys. */
+/** A catalog entry's stable key string as stored in the bar: the `sendKey` name
+ *  for `kind: 'key'` entries, or the `id` for the paste entry (empty payload). */
+function entryKey(e: QuickEntry): string {
+  return e.payload || e.id
+}
+
+/** The catalog entries offered in the picker: every `kind: 'key'` entry PLUS the
+ *  `kind: 'paste'` clipboard entry — Paste is invaluable on a phone (an OAuth
+ *  code with no keyboard). Drops Clear screen (Ctrl-L), which is rarely useful
+ *  on the bar; Paste takes its slot. */
+const KEY_ENTRIES: QuickEntry[] = CONTROL_ENTRIES.filter(
+  (e) => (e.kind === 'key' && e.payload !== 'Ctrl-L') || e.kind === 'paste',
+)
+
+/** stored-key → the catalog's human label (the picker's own wording) so a chip's
+ *  aria-label announces "Send Stop" / "Paste" rather than an opaque token. */
 const KEY_LABELS: Map<string, string> = new Map(
-  KEY_ENTRIES.map((e) => [e.payload, e.label]),
+  KEY_ENTRIES.map((e) => [entryKey(e), e.label]),
 )
 
 /** Arrow glyphs mirror the dock's accessory strip (`ArrowUp`/`Down`/`Left`/
@@ -166,6 +177,7 @@ const KEY_GLYPHS: Partial<Record<string, LucideIcon>> = {
   Down: ArrowDown,
   Right: ArrowRight,
   Enter: CornerDownLeft,
+  [PASTE_KEY]: ClipboardPaste,
 }
 
 /** Held-and-repeats: only the 4 arrows (navigating a long option list). */
@@ -207,6 +219,9 @@ export interface KeyBarProps {
   /** Send a named key to the pty — the SAME `termRef.current?.sendKey` handle
    *  every other key path in the route uses. */
   onSendKey: (key: string) => void
+  /** Send literal text to the pty (no Enter) — used by the Paste chip after it
+   *  reads the clipboard. The route wires this to `termRef.current?.send`. */
+  onSendText: (text: string) => void
   /** Whether the customize-keys picker sheet is open. Lifted to the route
    *  (rather than kept as local state) so `useEdgeGestures`'s `enabled` gate
    *  can disable edge-swipe nav while the picker's Vaul sheet is up — the
@@ -220,10 +235,33 @@ export function KeyBar({
   keys,
   onKeysChange,
   onSendKey,
+  onSendText,
   pickerOpen,
   onPickerOpenChange,
 }: KeyBarProps) {
   const reduceMotion = useReducedMotion()
+
+  // Dispatch a chip: every key is a `sendKey`, EXCEPT the paste chip, which
+  // reads the clipboard at tap time (a user gesture) and sends the text (no
+  // Enter). A denied/empty clipboard is a silent no-op, matching the old
+  // quick-keys paste behaviour.
+  const dispatch = React.useCallback(
+    (key: string) => {
+      if (key !== PASTE_KEY) {
+        onSendKey(key)
+        return
+      }
+      void (async () => {
+        try {
+          const text = await navigator.clipboard.readText()
+          if (text) onSendText(text)
+        } catch {
+          /* clipboard denied / empty — no-op */
+        }
+      })()
+    },
+    [onSendKey, onSendText],
+  )
   // Respect the accessibility "reduce transparency" preference the same way
   // the shared `glass` utility does, since this pill overrides the utility's
   // background to be a touch MORE transparent (62% vs 72%) — that override
@@ -283,7 +321,7 @@ export function KeyBar({
                   index={i}
                   reduceMotion={!!reduceMotion}
                   keyName={key}
-                  onSend={() => onSendKey(key)}
+                  onSend={() => dispatch(key)}
                 />
               ))}
               <span className="h-5 w-px shrink-0 bg-border/50" aria-hidden />
@@ -569,8 +607,8 @@ function KeyBarPicker({ open, onOpenChange, keys, onKeysChange }: KeyBarPickerPr
             <PickerChip
               key={entry.id}
               entry={entry}
-              selected={selectedSet.has(entry.payload)}
-              onClick={() => onToggle(entry.payload)}
+              selected={selectedSet.has(entryKey(entry))}
+              onClick={() => onToggle(entryKey(entry))}
             />
           ))}
         </div>
