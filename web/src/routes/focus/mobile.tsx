@@ -418,6 +418,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
         keys={keyBar.keys}
         onKeysChange={keyBar.setKeys}
         onSendKey={(key) => termRef.current?.sendKey(key)}
+        onSendText={(text) => termRef.current?.send(text)}
         pickerOpen={keyBarPickerOpen}
         onPickerOpenChange={setKeyBarPickerOpen}
       />
