@@ -23,7 +23,22 @@ struct Rollout {
     id: String,
     cwd: String,
     started_at: i64,
+}
+
+/// A discovered rollout file plus its mtime — obtained from the directory
+/// entry alone, WITHOUT opening the file. `read_meta` turns one of these into
+/// a `Rollout` (which does require reading the file's `session_meta` header).
+struct Candidate {
+    path: PathBuf,
     modified: SystemTime,
+}
+
+// Counts `read_meta` calls (each opens+reads a rollout header) so tests can
+// assert Session scope doesn't touch unrelated rollouts. Thread-local so
+// parallel tests don't interfere; compiled out of release builds.
+#[cfg(test)]
+thread_local! {
+    static META_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) fn gather(
@@ -67,35 +82,106 @@ fn gather_in_root(
     before: Option<&str>,
     limit: usize,
 ) -> RecallResponse {
-    let mut rollouts = discover_rollouts(root)
-        .into_iter()
-        .filter(|r| same_dir(&r.cwd, dir))
-        .collect::<Vec<_>>();
-
-    rollouts.sort_by(|a, b| b.modified.cmp(&a.modified));
-    if scope == super::Scope::Session {
-        let selected = if !session_id.is_empty() {
-            rollouts.iter().position(|r| r.id == session_id)
-        } else if last_started > 0 {
-            // The DB has carried `codex_session_id` since v1 but older launchers
-            // never populated it. Match the rollout whose creation time is
-            // closest to this supermux start; this is deterministic and avoids
-            // incorrectly taking the newest thread in the same project.
-            rollouts
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, r)| r.started_at.abs_diff(last_started))
-                .map(|(i, _)| i)
-        } else {
-            (!rollouts.is_empty()).then_some(0)
-        };
-        rollouts = selected
-            .and_then(|i| (i < rollouts.len()).then(|| vec![rollouts.remove(i)]))
-            .unwrap_or_default();
-    }
+    // Codex keeps no per-project index — a rollout's project lives in its
+    // `cwd`, inside the file — so any project match still needs the header
+    // read. What we CAN avoid is reading every file up front: enumerate the
+    // rollout paths (with mtimes, no opens) and read headers lazily.
+    let target = resolve_dir(dir);
+    let mut candidates = Vec::new();
+    collect_jsonl(root, &mut candidates);
+    // mtime desc, stable. Filtering `same_dir` afterwards preserves this order,
+    // so a sorted-then-filtered stream is identical to the previous
+    // filtered-then-sorted `Vec` — including the tie order among equal mtimes.
+    candidates.sort_by(|a, b| b.modified.cmp(&a.modified));
 
     let search = (!search.is_empty()).then(|| search.to_lowercase());
     let cursor = before.and_then(decode_cursor);
+
+    match scope {
+        super::Scope::Session => {
+            let selected = select_session(&candidates, &target, session_id, last_started);
+            collect_entries(selected.into_iter(), &search, &cursor, limit)
+        }
+        super::Scope::Project => {
+            // Lazily resolve same-project rollouts in mtime order. `collect_entries`
+            // stops pulling once it has `limit + 1` entries (limit ≤ 100), so we
+            // only `read_meta` as far as the requested page needs — not the whole
+            // sessions tree. (Non-matching files still cost one open apiece to
+            // learn their cwd; that's inherent without a project index.)
+            let matches = candidates
+                .iter()
+                .filter_map(read_meta)
+                .filter(|r| same_dir(&r.cwd, &target));
+            collect_entries(matches, &search, &cursor, limit)
+        }
+    }
+}
+
+/// Pick the single rollout that Session scope should return, cheaply.
+///
+/// Semantically identical to the old "filter same_dir, sort by mtime desc,
+/// then select" — but selects by PATH first so the common case opens one file.
+fn select_session(
+    candidates: &[Candidate],
+    target: &DirMatch,
+    session_id: &str,
+    last_started: i64,
+) -> Option<Rollout> {
+    if !session_id.is_empty() {
+        // Codex names rollouts `rollout-<ts>-<uuid>.jsonl` and that uuid is the
+        // session id (verified: filename uuid == `session_meta.payload.id`), so
+        // the target thread is selectable by filename. Read only the file(s)
+        // whose name carries the id instead of every rollout in the tree.
+        let by_name = candidates
+            .iter()
+            .filter(|c| name_contains(&c.path, session_id))
+            .filter_map(read_meta)
+            .find(|r| r.id == session_id && same_dir(&r.cwd, target));
+        if by_name.is_some() {
+            return by_name;
+        }
+        // Fallback for a rollout whose filename somehow omits its id (e.g. a
+        // hand-written file): preserve the original exhaustive scan so a match
+        // is never missed. Never hit by real Codex output.
+        return candidates
+            .iter()
+            .filter_map(read_meta)
+            .find(|r| r.id == session_id && same_dir(&r.cwd, target));
+    }
+
+    if last_started > 0 {
+        // The DB has carried `codex_session_id` since v1 but older launchers
+        // never populated it. Match the rollout whose creation time is closest
+        // to this supermux start; deterministic, and avoids incorrectly taking
+        // the newest thread in the same project.
+        //
+        // This case is inherently exhaustive: both the `cwd` (for same_dir) and
+        // the authoritative `started_at` live inside the file, and the
+        // filename's timestamp is local-tz with no offset so it can't stand in
+        // for `started_at`. Kept reading every rollout on purpose.
+        return candidates
+            .iter()
+            .filter_map(read_meta)
+            .filter(|r| same_dir(&r.cwd, target))
+            .min_by_key(|r| r.started_at.abs_diff(last_started));
+    }
+
+    // No id and no start time: the newest same-project rollout. Pull in mtime
+    // order and stop at the first same-dir hit rather than reading every file.
+    candidates
+        .iter()
+        .filter_map(read_meta)
+        .find(|r| same_dir(&r.cwd, target))
+}
+
+/// Walk the selected rollouts (already in the right order) and build the page.
+/// Consumes the iterator lazily so an early `break` skips unread rollouts.
+fn collect_entries(
+    rollouts: impl Iterator<Item = Rollout>,
+    search: &Option<String>,
+    cursor: &Option<(String, String)>,
+    limit: usize,
+) -> RecallResponse {
     let mut cursor_consumed = cursor.is_none();
     let mut entries = Vec::new();
 
@@ -142,13 +228,7 @@ fn gather_in_root(
     }
 }
 
-fn discover_rollouts(root: &Path) -> Vec<Rollout> {
-    let mut paths = Vec::new();
-    collect_jsonl(root, &mut paths);
-    paths.into_iter().filter_map(read_meta).collect()
-}
-
-fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect_jsonl(dir: &Path, out: &mut Vec<Candidate>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -165,18 +245,29 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if file_type.is_file()
             && path.extension().and_then(|v| v.to_str()) == Some("jsonl")
         {
-            out.push(path);
+            // mtime straight from the dir entry — no open. Regular files only
+            // (symlinks skipped above), so this is the same value the old code
+            // read from the opened file's metadata.
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            out.push(Candidate { path, modified });
         }
     }
 }
 
-fn read_meta(path: PathBuf) -> Option<Rollout> {
-    let file = fs::File::open(&path).ok()?;
-    let modified = file
-        .metadata()
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+fn name_contains(path: &Path, needle: &str) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.contains(needle))
+}
+
+fn read_meta(candidate: &Candidate) -> Option<Rollout> {
+    #[cfg(test)]
+    META_READS.with(|c| c.set(c.get() + 1));
+    let file = fs::File::open(&candidate.path).ok()?;
     for line in BufReader::new(file).lines().map_while(Result::ok).take(20) {
         if !line.contains("\"type\":\"session_meta\"") {
             continue;
@@ -184,20 +275,34 @@ fn read_meta(path: PathBuf) -> Option<Rollout> {
         let value: Value = serde_json::from_str(&line).ok()?;
         let payload = value.get("payload")?;
         return Some(Rollout {
-            path,
+            path: candidate.path.clone(),
             id: payload.get("id")?.as_str()?.to_string(),
             cwd: payload.get("cwd")?.as_str()?.to_string(),
             started_at: parse_ts(value.get("timestamp").and_then(Value::as_str)),
-            modified,
         });
     }
     None
 }
 
-fn same_dir(a: &str, b: &str) -> bool {
-    match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a.trim_end_matches('/') == b.trim_end_matches('/'),
+/// The query directory resolved once, so `same_dir` need not re-`canonicalize`
+/// it per rollout. Mirrors the old two-branch compare: the canonical form is
+/// used only when BOTH sides canonicalize, otherwise a trimmed string compare.
+struct DirMatch {
+    canonical: Option<PathBuf>,
+    trimmed: String,
+}
+
+fn resolve_dir(dir: &str) -> DirMatch {
+    DirMatch {
+        canonical: fs::canonicalize(dir).ok(),
+        trimmed: dir.trim_end_matches('/').to_string(),
+    }
+}
+
+fn same_dir(cwd: &str, target: &DirMatch) -> bool {
+    match (fs::canonicalize(cwd), &target.canonical) {
+        (Ok(cwd), Some(canonical)) => &cwd == canonical,
+        _ => cwd.trim_end_matches('/') == target.trimmed,
     }
 }
 
@@ -366,5 +471,65 @@ mod tests {
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].text, "needle one");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_scope_reads_only_the_target_rollout() {
+        let root = std::env::temp_dir().join(format!(
+            "supermux-codex-session-fast-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        // Real Codex scheme: the filename embeds the session uuid (== payload.id),
+        // so `write_rollout(name = "<ts>-<id>", id = "<id>")` yields
+        // `rollout-<ts>-<id>.jsonl` — a name that carries the id.
+        let ids = [
+            "019f0000-0000-7000-8000-000000000001",
+            "019f0000-0000-7000-8000-000000000002",
+            "019f0000-0000-7000-8000-000000000003",
+            "019f0000-0000-7000-8000-000000000004",
+        ];
+        for (n, id) in ids.iter().enumerate() {
+            write_rollout(
+                &root,
+                &format!("2026-07-13T1{n}-00-00-{id}"),
+                id,
+                &project,
+                &format!("2026-07-13T1{n}:00:00Z"),
+                &format!("prompt {n}"),
+            );
+        }
+
+        let target = ids[1];
+        reset_meta_reads();
+        let response = gather_in_root(
+            &root,
+            project.to_str().unwrap(),
+            target,
+            0,
+            super::super::Scope::Session,
+            "",
+            None,
+            20,
+        );
+
+        assert_eq!(response.entries.len(), 1);
+        assert_eq!(response.entries[0].session_id, target);
+        assert_eq!(response.entries[0].text, "prompt 1");
+        // The whole point: only the target rollout's header was read, not the
+        // other three. (Old code `read_meta`-d all four before scoping.)
+        assert_eq!(meta_reads(), 1);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn meta_reads() -> usize {
+        META_READS.with(|c| c.get())
+    }
+
+    fn reset_meta_reads() {
+        META_READS.with(|c| c.set(0));
     }
 }
