@@ -399,7 +399,18 @@ pub fn spawn_status_loop(state: AppState, name: String) {
         // `active` (a one-shot seed-on-spawn would miss it — `spawn_status_loop`
         // is called from `sessions::create` BEFORE `start` sets `active`, so a
         // seed at spawn time would always see `unknown`).
-        let mut detector = StatusDetector::new();
+        // Provider is fixed for a session's lifetime; read it ONCE so the
+        // detector can use provider-specific capture heuristics (Codex's TUI
+        // differs from Claude's). An empty read (row not yet visible) defaults to
+        // the generic/Claude banks — harmless, and Codex rows exist by the time
+        // `create`/`spawn_all` start this loop.
+        let provider = db::sessions::get(&state.pool, &name)
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.provider)
+            .unwrap_or_default();
+        let mut detector = StatusDetector::for_provider(&provider);
         // Per-session broadcast memo: the last preview tail we pushed over SSE, so
         // a tick re-emits a `sessions` delta only when the visible tail changed.
         let mut last_tail: Option<Vec<String>> = None;
