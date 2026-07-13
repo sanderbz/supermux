@@ -441,6 +441,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               the only "dots" left is the bottom dock's KeyBar toggle. */}
           <FocusHeader
             name={current.name}
+            provider={current.provider}
             title={sessionTitle(current)}
             status={current.status}
             activity={current.activity}

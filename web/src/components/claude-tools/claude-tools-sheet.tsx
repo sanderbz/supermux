@@ -1,4 +1,4 @@
-// ClaudeToolsSheet — the Claude tools manager.
+// AgentToolsSheet — provider-aware Claude/Codex session tools.
 //
 // One <ResponsiveSheet> (Vaul bottom-sheet on touch / right-side dialog on
 // desktop) listing MCP servers · skills · slash commands, grouped by SCOPE, each
@@ -79,24 +79,28 @@ import type {
 } from '@/lib/api/claude'
 import { AddMcpForm } from './add-mcp-form'
 
-export interface ClaudeToolsSheetProps {
+export interface AgentToolsSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Focused session working dir — scopes the project reads / writes. */
   cwd?: string
   /** Focused session name (for the subtitle). */
   sessionName?: string | null
+  /** Selects the provider-native body when scoped to a focused session. */
+  provider?: string
 }
 
 type TabKey = 'mcp' | 'skills' | 'commands'
 
-export function ClaudeToolsSheet({
+export function AgentToolsSheet({
   open,
   onOpenChange,
   cwd,
   sessionName,
-}: ClaudeToolsSheetProps) {
+  provider,
+}: AgentToolsSheetProps) {
   const description = sessionName ? `Scoped to ${sessionName}` : 'Global scope'
+  const isCodex = provider === 'codex'
   // The body only mounts while the sheet is open, so its transient view-state
   // (active tab + add-form) initializes fresh each open — no reset effect (which
   // the lint rule rightly flags as a cascading-render risk). Mirrors the
@@ -105,18 +109,88 @@ export function ClaudeToolsSheet({
     <ResponsiveSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Claude tools"
+      title={isCodex ? 'Codex tools' : 'Claude tools'}
       description={description}
       className="sm:max-w-lg"
     >
       {open && (
-        <ClaudeToolsBody
-          cwd={cwd}
-          sessionName={sessionName}
-          onClose={() => onOpenChange(false)}
-        />
+        isCodex ? (
+          <CodexToolsBody
+            sessionName={sessionName}
+            onClose={() => onOpenChange(false)}
+          />
+        ) : (
+          <ClaudeToolsBody
+            cwd={cwd}
+            sessionName={sessionName}
+            onClose={() => onOpenChange(false)}
+          />
+        )
       )}
     </ResponsiveSheet>
+  )
+}
+
+const CODEX_ACTIONS = [
+  { command: 'permissions', title: 'Permissions', detail: 'Choose what Codex may do', icon: ShieldAlert },
+  { command: 'model', title: 'Model', detail: 'Change model and reasoning effort', icon: Sparkles },
+  { command: 'mcp', title: 'MCP tools', detail: 'Inspect configured MCP servers and tools', icon: ServerCog },
+  { command: 'skills', title: 'Skills', detail: 'Browse skills available to this project', icon: Puzzle },
+  { command: 'review', title: 'Review changes', detail: 'Review the current working tree', icon: Check },
+  { command: 'diff', title: 'Show diff', detail: 'Open the current Git diff', icon: SlashSquare },
+  { command: 'status', title: 'Session status', detail: 'Show model, usage, and configuration', icon: Activity },
+  { command: 'compact', title: 'Compact context', detail: 'Summarise the thread to free context', icon: RefreshCw },
+] as const
+
+/** Codex owns these interactive panels natively. Sending the slash command into
+ * the focused pane keeps supermux compatible as Codex evolves and avoids a
+ * second config parser that could drift from `~/.codex/config.toml`. */
+function CodexToolsBody({
+  sessionName,
+  onClose,
+}: {
+  sessionName?: string | null
+  onClose: () => void
+}) {
+  const { toast } = useToast()
+
+  const run = React.useCallback(
+    (command: string) => {
+      if (!sessionName) return
+      onClose()
+      void settingsRequest(
+        `/api/sessions/${encodeURIComponent(sessionName)}/send`,
+        { method: 'POST', body: JSON.stringify({ text: `/${command}\r` }) },
+      ).catch((e) => {
+        console.warn('codex-tools: run command failed', e)
+        toast({ message: 'Couldn’t open the Codex tool.', tone: 'error' })
+      })
+    },
+    [onClose, sessionName, toast],
+  )
+
+  return (
+    <div className="grid grid-cols-1 gap-2 px-4 py-4 sm:grid-cols-2 sm:px-5">
+      {CODEX_ACTIONS.map(({ command, title, detail, icon: Icon }) => (
+        <motion.button
+          key={command}
+          type="button"
+          onClick={() => run(command)}
+          whileTap={{ scale: 0.985 }}
+          transition={springs.buttonPress}
+          className="flex min-h-[4.5rem] items-start gap-3 rounded-xl border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <Icon className="size-4" aria-hidden />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-sm font-medium text-foreground">{title}</span>
+            <span className="text-xs leading-snug text-muted-foreground">{detail}</span>
+            <code className="mt-0.5 font-mono text-[11px] text-muted-foreground/80">/{command}</code>
+          </span>
+        </motion.button>
+      ))}
+    </div>
   )
 }
 
@@ -1189,4 +1263,4 @@ function CommandRowView({
   )
 }
 
-export default ClaudeToolsSheet
+export default AgentToolsSheet

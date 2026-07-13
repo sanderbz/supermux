@@ -556,6 +556,7 @@ export function DesktopSplit({
         <>
         <DesktopFocusHeader
           name={name}
+          provider={current?.provider}
           title={title}
           status={status}
           activity={current?.activity}

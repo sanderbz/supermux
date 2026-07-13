@@ -30,7 +30,7 @@ import {
   type HoverPreview,
   type OverviewPreview,
 } from '@/stores/ui-store'
-import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
+import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { getSoundsEnabled, playTone, primeAudio, setSoundsEnabled } from '@/lib/sound'
 import { pushApi, type NotifCategory, type PushAttempt, type PushPrefs } from '@/lib/api'
 import { usePush } from '@/hooks/use-push'
@@ -385,7 +385,7 @@ function OnboardingSection() {
  *  the same manager sheet the ⌘K command + focus title-bar icon open, scoped to
  *  global (no session in this context). */
 function ClaudeToolsSection() {
-  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
+  const openClaudeTools = useAgentToolsSheet((s) => s.openSheet)
   return (
     <Section
       title="Claude tools"

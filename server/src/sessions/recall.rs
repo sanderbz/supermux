@@ -12,6 +12,8 @@
 //! `sessions::mod::resumable_list_handler` — so the async runtime stays cool
 //! even on multi-MB transcripts.
 
+mod codex;
+
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -173,18 +175,33 @@ pub async fn handler(
     let limit = q.limit.clamp(1, LIMIT_MAX);
     let dir = session.dir.clone();
     let cc_id = session.cc_conversation_id.clone();
+    let codex_id = session.codex_session_id.clone();
+    let provider = session.provider.clone();
+    let last_started = session.last_started;
 
     let result = tokio::task::spawn_blocking(move || {
-        gather(
-            &dir,
-            &cc_id,
-            q.scope,
-            &q.q,
-            q.include_sidechains,
-            q.include_system_events,
-            q.before.as_deref(),
-            limit,
-        )
+        if provider == "codex" {
+            codex::gather(
+                &dir,
+                &codex_id,
+                last_started,
+                q.scope,
+                &q.q,
+                q.before.as_deref(),
+                limit,
+            )
+        } else {
+            gather(
+                &dir,
+                &cc_id,
+                q.scope,
+                &q.q,
+                q.include_sidechains,
+                q.include_system_events,
+                q.before.as_deref(),
+                limit,
+            )
+        }
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;

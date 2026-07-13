@@ -143,7 +143,8 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   )
   const { toast } = useToast()
   const [convertOpen, setConvertOpen] = React.useState(false)
-  const eligibleForTeamConversion = !!current && !isTeamLead
+  const eligibleForTeamConversion =
+    !!current && current.provider === 'claude' && !isTeamLead
   const onMakeTeam = React.useMemo(
     () =>
       eligibleForTeamConversion ? () => setConvertOpen(true) : undefined,
