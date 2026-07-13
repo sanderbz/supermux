@@ -438,6 +438,11 @@ impl TurnState {
 /// pure function of its inputs (single source of truth).
 pub struct StatusDetector {
     last_status: Status,
+    /// The session's provider, fixed for its lifetime. Selects the capture
+    /// heuristics: `"codex"` classifies off Codex's TUI (its own working footer
+    /// / selector prompts), everything else off the Claude banks. Empty =
+    /// generic/Claude (the cold-start + every existing test default).
+    provider: String,
 }
 
 impl Default for StatusDetector {
@@ -456,6 +461,18 @@ impl StatusDetector {
     pub fn new() -> Self {
         Self {
             last_status: Status::Unknown,
+            provider: String::new(),
+        }
+    }
+
+    /// Cold-start a detector bound to a specific `provider`. The detector loop
+    /// uses this so a Codex session is classified off Codex's TUI rather than
+    /// the Claude capture banks (whose `approve` token false-matches Codex's
+    /// auto-reviewer "approved" scrollback → a constant false "needs input").
+    pub fn for_provider(provider: &str) -> Self {
+        Self {
+            last_status: Status::Unknown,
+            provider: provider.to_string(),
         }
     }
 
@@ -540,14 +557,34 @@ impl StatusDetector {
         }
 
         // ── 2. capture-pane regex bank ───────────────────────────────────────
-        if ACTIVE_BANK.is_match(capture) {
-            return Status::Active;
-        }
-        if WAITING_BANK.is_match(capture) {
-            return Status::Waiting;
-        }
-        if IDLE_BANK.is_match(capture) {
-            return Status::Idle;
+        // Codex has NO supermux hooks (step 1 always None for it), so it relies
+        // entirely on the capture — but its TUI is NOT Claude's. Classify it off
+        // Codex-specific markers and NEVER the Claude banks: Codex's auto-reviewer
+        // prints informational scrollback like "✔ Auto-reviewer approved codex to
+        // run …", whose "approved" tripped the Claude WAITING_BANK `approve` token
+        // → a constant false "needs your input" (the reported bug). Codex's real
+        // states (captured live from codex 0.144.3):
+        //   working → `◦ Working (Ns • esc to interrupt)`         → Active
+        //   waiting → a `› N.` selector / "Press enter to confirm" → Waiting
+        // A bare `›` composer is present even mid-turn, so IDLE is left to the
+        // heartbeat + idle-timeout fallback below (same as a hookless Claude).
+        if self.provider == "codex" {
+            if CODEX_ACTIVE_BANK.is_match(capture) {
+                return Status::Active;
+            }
+            if CODEX_WAITING_BANK.is_match(capture) {
+                return Status::Waiting;
+            }
+        } else {
+            if ACTIVE_BANK.is_match(capture) {
+                return Status::Active;
+            }
+            if WAITING_BANK.is_match(capture) {
+                return Status::Waiting;
+            }
+            if IDLE_BANK.is_match(capture) {
+                return Status::Idle;
+            }
         }
 
         // ── 3. PTY heartbeat fallback (NON-HOOK sessions only) ───────────────
@@ -706,6 +743,24 @@ static WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
+/// CODEX ACTIVE marker: Codex's working footer is `◦ Working (Ns • esc to
+/// interrupt)`, pinned the whole time a turn runs. Anchored on `esc to interrupt`
+/// (Codex's, like Claude's, phrasing) — note the `/model` etc. selectors show
+/// `esc to go back`, NOT `esc to interrupt`, so they never false-match Active.
+static CODEX_ACTIVE_BANK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)esc to interrupt").unwrap());
+
+/// CODEX WAITING marker: a GENUINE interactive prompt — a numbered selector whose
+/// rows start with Codex's `›` cursor (`› 1. …`), or the selector's
+/// "Press enter to confirm" / a command-approval "Do you want to …" line.
+/// Deliberately does NOT include a bare `approve`: Codex's auto-reviewer emits
+/// "approved" as passive scrollback, which is NOT a prompt and must not read as
+/// needs-input (the exact false positive this fix removes).
+static CODEX_WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?im)^\s*›\s*\d+\.|press enter to confirm|do you want to (run|proceed|allow)")
+        .unwrap()
+});
+
 /// USER-INTERRUPT marker: the literal prompt Claude Code shows after the user
 /// presses Esc twice mid-turn. Unique enough to pre-empt the turn state
 /// machine (Claude Code doesn't emit a `Stop` hook for user-interrupts, so the
@@ -742,6 +797,73 @@ mod tests {
     /// bank/heartbeat path is exercised exactly as the golden fixtures expect.
     fn fresh(cap: &str) -> Status {
         StatusDetector::new().detect(cap, neutral_pty(), TurnState::default(), false)
+    }
+
+    /// Classify with a fresh Codex-bound detector (neutral pty so the bank
+    /// decides). `neutral_pty` is >PTY_ACTIVE_WINDOW old, so a non-matching
+    /// capture falls through to Idle-timeout territory, not the heartbeat.
+    fn fresh_codex(cap: &str) -> Status {
+        StatusDetector::for_provider("codex").detect(
+            cap,
+            neutral_pty(),
+            TurnState::default(),
+            false,
+        )
+    }
+
+    // Codex TUI strings below are captured LIVE from codex-cli 0.144.3.
+
+    #[test]
+    fn codex_auto_review_approved_scrollback_is_not_waiting() {
+        // THE BUG: Codex's auto-reviewer prints these as passive scrollback all
+        // turn long. Under the Claude banks the "approved" tripped WAITING_BANK's
+        // `approve` token → a constant false "needs your input". A Codex-bound
+        // detector must NOT read Waiting off them.
+        let cap = "\
+✔ Auto-reviewer approved codex to run nl -ba sample1.txt this time
+⚠ Automatic approval review approved (risk: low, authorization: unknown): Auto-review returned a low-risk allow decision.
+
+› Implement {feature}
+  gpt-5.6-sol default · /tmp/cxprobe";
+        assert_ne!(fresh_codex(cap), Status::Waiting, "auto-review logs are not a prompt");
+        // And the SAME text still trips the Claude bank (proving the fix is the
+        // provider branch, not a change to the shared bank).
+        assert_eq!(fresh(cap), Status::Waiting);
+    }
+
+    #[test]
+    fn codex_working_footer_is_active() {
+        let cap = "\
+• I'll take a fresh inventory, read every file found, and summarize each one.
+
+◦ Working (6s • esc to interrupt)
+
+› Implement {feature}
+  gpt-5.6-sol default · /tmp/cxprobe";
+        assert_eq!(fresh_codex(cap), Status::Active);
+    }
+
+    #[test]
+    fn codex_selector_prompt_is_waiting() {
+        // A genuine interactive prompt (the /model selector). `esc to go back`
+        // must NOT read Active (it's not `esc to interrupt`).
+        let cap = "\
+  Select Model and Effort
+› 1. gpt-5.6-sol (current)  Latest frontier agentic coding model.
+  2. gpt-5.6-terra          Balanced agentic coding model for everyday work.
+  Press enter to confirm or esc to go back";
+        assert_eq!(fresh_codex(cap), Status::Waiting);
+    }
+
+    #[test]
+    fn codex_idle_composer_is_not_waiting_or_active() {
+        // At rest: the bare composer + status bar, no Working line, no selector.
+        // Not Active, not Waiting — resolves via the heartbeat/idle-timeout
+        // fallback (here neutral_pty → Idle), never a false needs-input.
+        let cap = "› Implement {feature}\n  gpt-5.6-sol default · /tmp/cxprobe";
+        let s = fresh_codex(cap);
+        assert_ne!(s, Status::Waiting);
+        assert_ne!(s, Status::Active);
     }
 
     /// A `TurnState` whose only hook is `event`, fired `ago` in the past.
