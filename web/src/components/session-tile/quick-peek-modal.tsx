@@ -151,7 +151,7 @@ export function QuickPeekModal({
               onClick={doRestart}
               disabled={busy}
             />
-            {!isAlreadyLead && (
+            {session.provider === 'claude' && !isAlreadyLead && (
               <PeekAction
                 label="Make team"
                 icon={Users}
@@ -232,19 +232,20 @@ export function QuickPeekModal({
           Vaul-managed peek closing/opening doesn't tear the sheet down. On
           success we dismiss the peek AND navigate to the (now team-lead) focus
           view — the team's TEAM CARD is the natural next surface. */}
-      <StartTeamSheet
-        mode="convert"
-        sessionName={session.name}
-        sessionDir={session.dir}
-        open={convertOpen}
-        onOpenChange={setConvertOpen}
-        onStarted={(name) => {
-          onOpenChange(false)
-          void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
-          toast({ message: 'Team starting', tone: 'active' })
-          navigate(`/focus/${encodeURIComponent(name)}`)
-        }}
-      />
+      {session.provider === 'claude' && (
+        <StartTeamSheet
+          sessionName={session.name}
+          sessionDir={session.dir}
+          open={convertOpen}
+          onOpenChange={setConvertOpen}
+          onStarted={(name) => {
+            onOpenChange(false)
+            void qc.invalidateQueries({ queryKey: SESSIONS_KEY })
+            toast({ message: 'Team starting', tone: 'active' })
+            navigate(`/focus/${encodeURIComponent(name)}`)
+          }}
+        />
+      )}
 
       {/* Session info (mobile parity) — the same Info panel the focus-page
           title-click opens. Mounted OUTSIDE Drawer.Portal so the Vaul peek

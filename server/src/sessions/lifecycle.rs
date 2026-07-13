@@ -257,14 +257,78 @@ fn build_env(
 
 /// Build the agent launch command sent into the freshly-spawned shell. Profiles
 /// are sourced first so `claude`/`codex` are on PATH in a non-login pane.
-/// Resume strategy: `cc_session_name` → `cc_conversation_id` → fresh `--name`.
-fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
-    let agent = match s.provider.as_str() {
-        // Codex is no longer an OFFERED provider (Claude-only). The validator
-        // still ACCEPTS `provider="codex"` (accept-but-never-offer) so existing
-        // scheduled jobs don't 400; such sessions launch via the claude default
-        // below, same as any non-shell provider.
-        // default to claude
+/// Claude resumes via `cc_session_name` → `cc_conversation_id` → fresh `--name`.
+/// Codex starts a fresh interactive session: supermux does not yet persist the
+/// session id Codex assigns after startup, so passing a resume argument would be
+/// misleading. Its native `codex resume` picker remains available in the pane.
+///
+/// Returns `(command, resume_intended)`. `resume_intended` is TRUE iff the launch
+/// actually carries a `--resume <id|name>` — i.e. the user (via the Resume picker)
+/// or a prior run's persisted cc link asked to continue a specific conversation.
+/// It is the single source of truth `wait_for_agent_ready` reads to decide whether
+/// a resume-picker escape (+ destructive `clear_cc`) is safe: it NEVER is on an
+/// intended resume (escaping abandons the exact conversation asked for and wiping
+/// the cc link breaks every later Start/Resume too). Always false for codex/shell.
+fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String, bool) {
+    let (agent, resume_intended) = match s.provider.as_str() {
+        "codex" => {
+            // Keep Codex in the normal terminal buffer so the browser terminal
+            // retains scrollback. This is Codex CLI's documented TUI flag.
+            let mut parts = vec!["codex".to_string(), "--no-alt-screen".to_string()];
+            let defaults = config.provider_defaults.codex_flags.trim();
+            if !defaults.is_empty() {
+                parts.push(defaults.to_string());
+            }
+            if !s.flags.trim().is_empty() {
+                parts.push(s.flags.trim().to_string());
+            }
+            let codex = parts.join(" ");
+
+            // Codex is an optional provider, so make its first launch
+            // self-contained for the service user (and for remote hosts). The
+            // official standalone installer is user-scoped and needs no Node
+            // runtime. Download it to a file rather than piping into `sh`: a
+            // failed curl must never look like a successful empty install.
+            // `CODEX_NON_INTERACTIVE=1` suppresses the installer's optional
+            // "start now" prompt because supermux owns the subsequent launch.
+            //
+            // Authentication deliberately happens in the tmux pane. Device
+            // auth is suitable for a headless host and leaves the browser
+            // terminal showing the URL/code. Once authenticated, subsequent
+            // starts skip it through `codex login status`.
+            let agent = format!(
+                "if ! command -v codex >/dev/null 2>&1; then \
+                   printf '\\nCodex CLI is not installed; installing it for this user…\\n'; \
+                   _supermux_codex_installer=$(mktemp) && \
+                   curl -fsSL https://chatgpt.com/codex/install.sh \
+                     -o \"$_supermux_codex_installer\" && \
+                   CODEX_NON_INTERACTIVE=1 sh \"$_supermux_codex_installer\"; \
+                   _supermux_codex_install_status=$?; \
+                   if [ -n \"${{_supermux_codex_installer:-}}\" ]; then \
+                     rm -f \"$_supermux_codex_installer\"; \
+                   fi; \
+                   export PATH=\"$HOME/.local/bin:$PATH\"; hash -r 2>/dev/null || true; \
+                   if [ \"$_supermux_codex_install_status\" -ne 0 ]; then \
+                     printf '\\nCodex CLI installation failed. Check the output above, then retry this session.\\n'; \
+                   fi; \
+                 fi; \
+                 if command -v codex >/dev/null 2>&1; then \
+                   if codex login status >/dev/null 2>&1; then \
+                     {codex}; \
+                   else \
+                     printf '\\nCodex needs a one-time login for this user.\\n'; \
+                     codex login --device-auth && {codex}; \
+                   fi; \
+                 else \
+                   printf '\\nCodex CLI is unavailable. Install it and retry this session.\\n'; \
+                 fi"
+            );
+            // Codex has no supermux-driven resume: the command never carries
+            // `--resume`, so `wait_for_agent_ready` treats it as a fresh start.
+            (agent, false)
+        }
+        // `shell` never reaches this builder; retaining Claude as the fallback
+        // keeps legacy/unknown non-shell rows launchable.
         _ => {
             let mut parts = vec!["claude".to_string()];
             let defaults = config.provider_defaults.claude_flags.trim();
@@ -280,17 +344,20 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
             // anyway: the wrap is audit-obvious shell-injection-safe (the
             // validated charset has no single quote), and it survives any
             // stray legacy row from before the boundary check existed.
-            if !s.cc_session_name.is_empty() {
+            let resume_intended = if !s.cc_session_name.is_empty() {
                 parts.push("--resume".to_string());
                 parts.push(format!("'{}'", s.cc_session_name));
+                true
             } else if !s.cc_conversation_id.is_empty() {
                 parts.push("--resume".to_string());
                 parts.push(format!("'{}'", s.cc_conversation_id));
+                true
             } else {
                 parts.push("--name".to_string());
                 parts.push(s.name.clone());
-            }
-            parts.join(" ")
+                false
+            };
+            (parts.join(" "), resume_intended)
         }
     };
     // "Edit in native editor": point `$EDITOR`/
@@ -303,10 +370,11 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
     // ignore it). Single-quoted so a data-dir path with spaces never word-splits.
     let bridge = config.data_dir.join("bin/supermux-edit");
     let bridge = bridge.display();
-    format!(
+    let command = format!(
         "source ~/.zprofile 2>/dev/null; source ~/.bash_profile 2>/dev/null; \
          source ~/.profile 2>/dev/null; export EDITOR='{bridge}' VISUAL='{bridge}'; {agent}"
-    )
+    );
+    (command, resume_intended)
 }
 
 /// True once the Claude/Codex TUI prompt is visible.
@@ -336,6 +404,22 @@ fn at_trust_dialog(capture: &str) -> bool {
         || (c.contains("safety check") && c.contains("trust"))
 }
 
+/// Should `wait_for_agent_ready` ESCAPE the resume picker (Escape Escape C-c +
+/// `clear_cc`)? Pure so the fix is unit-tested without driving real tmux.
+///
+/// The escape is an ANTI-HANG fallback for a FRESH start only: a `--name` launch
+/// should never sit at Claude's `--resume` picker, so if it somehow does we bail
+/// to a usable prompt. On an INTENDED resume it is destructive TWICE over — it
+/// abandons the exact conversation the user (or a prior run's cc link) asked to
+/// continue, AND `clear_cc` PERMANENTLY wipes the resume handle so every later
+/// Start/Resume boots fresh too. So on an intended resume we NEVER escape: we
+/// leave the picker for the user (its `❯` cursor trips `agent_ui_visible`, so the
+/// session still reads ready) and the cc link is preserved. `already_escaped`
+/// gates the one-shot so we don't spam the fallback across poll ticks.
+fn should_escape_resume_picker(capture: &str, resume_intended: bool, already_escaped: bool) -> bool {
+    !resume_intended && !already_escaped && at_resume_picker(capture)
+}
+
 /// Confirm the pane shell is live (and let it print a prompt).
 async fn settle_shell(tmux: &Tmux<'_>) -> bool {
     for _ in 0..10 {
@@ -349,10 +433,23 @@ async fn settle_shell(tmux: &Tmux<'_>) -> bool {
 }
 
 /// Poll `capture-pane` for up to 10s for the agent UI; one resume-picker escape
-/// fallback (Escape Escape C-c + clear cc ids), and one
-/// trust-dialog auto-accept (Enter on the default "Yes, I trust this folder") so
-/// a first-launch in a never-seen project dir does not hang forever.
-async fn wait_for_agent_ready(tmux: &Tmux<'_>, state: &AppState, name: &str) -> bool {
+/// fallback (Escape Escape C-c + clear cc ids — FRESH starts only, see
+/// [`should_escape_resume_picker`]), and one trust-dialog auto-accept (Enter on
+/// the default "Yes, I trust this folder") so a first-launch in a never-seen
+/// project dir does not hang forever.
+///
+/// `resume_intended` (from [`build_launch_command`]) is TRUE when the launch
+/// carried `--resume`. On an intended resume the picker escape is SUPPRESSED: it
+/// would abandon the requested conversation and `clear_cc` would permanently break
+/// resuming it — the root cause of "Resume of a stopped Claude session doesn't
+/// always work". The trust-dialog gate still runs on both paths (auto-accepting is
+/// non-destructive and needed so a resume in a never-trusted dir doesn't hang).
+async fn wait_for_agent_ready(
+    tmux: &Tmux<'_>,
+    state: &AppState,
+    name: &str,
+    resume_intended: bool,
+) -> bool {
     let mut escaped = false;
     let mut trusted = false;
     for _ in 0..10 {
@@ -379,7 +476,7 @@ async fn wait_for_agent_ready(tmux: &Tmux<'_>, state: &AppState, name: &str) -> 
                 trusted = true;
                 continue;
             }
-            if !escaped && at_resume_picker(&cap) {
+            if should_escape_resume_picker(&cap, resume_intended, escaped) {
                 let _ = tmux.send_key("Escape").await;
                 let _ = tmux.send_key("Escape").await;
                 let _ = tmux.send_key("C-c").await;
@@ -630,10 +727,10 @@ pub async fn start(
         _ => {
             // Give the new shell a beat, then launch the agent.
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let cmd = build_launch_command(&state.config, &s);
+            let (cmd, resume_intended) = build_launch_command(&state.config, &s);
             tmux.send_text(&cmd).await?;
             tmux.send_key("Enter").await?;
-            wait_for_agent_ready(&tmux, state, name).await
+            wait_for_agent_ready(&tmux, state, name, resume_intended).await
         }
     };
 
@@ -1403,6 +1500,36 @@ mod agent_ready_heuristics_tests {
         assert!(agent_ui_visible("? for shortcuts"));
         assert!(!at_resume_picker("Yes, I trust this folder"));
     }
+
+    /// THE resume-reliability fix: on an INTENDED resume we must never escape the
+    /// picker (+ `clear_cc`). Escaping abandons the exact conversation the user
+    /// asked to continue and `clear_cc` permanently wipes the resume handle, so a
+    /// later Start/Resume can't resume it either — the "Resume doesn't always work"
+    /// bug. The escape stays armed only for a FRESH start (anti-hang), one-shot.
+    #[test]
+    fn intended_resume_never_escapes_the_picker() {
+        let picker = "Resume a conversation\n❯ 1. Fix the parser  2h ago";
+        // Intended resume: NEVER escape, no matter the capture.
+        assert!(!should_escape_resume_picker(picker, true, false));
+        // A resumed transcript whose scrollback merely MENTIONS the picker phrase
+        // must not trip the destructive fallback either (the false-positive path).
+        assert!(!should_escape_resume_picker(
+            "…as we discussed, select a session to resume later\n❯ ",
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn fresh_start_escapes_a_stale_picker_once() {
+        let picker = "Select a session to resume\n❯ 1. old chat";
+        // Fresh start (not resume-intended): a stale picker IS escaped, once.
+        assert!(should_escape_resume_picker(picker, false, false));
+        // One-shot: after we've escaped, don't spam the fallback on later ticks.
+        assert!(!should_escape_resume_picker(picker, false, true));
+        // Normal agent UI is never mistaken for the picker.
+        assert!(!should_escape_resume_picker("❯ Try \"fix tests\"", false, false));
+    }
 }
 
 #[cfg(test)]
@@ -1449,6 +1576,161 @@ mod build_env_tests {
             env.get("CLAUDE_CODE_FORCE_SYNC_OUTPUT").map(String::as_str),
             Some("1"),
         );
+    }
+
+    #[test]
+    fn codex_launch_uses_its_binary_defaults_and_inline_terminal() {
+        let mut config = cfg();
+        config.provider_defaults.codex_flags = "--model gpt-5-codex".into();
+        let session = Session {
+            name: "codex-worker".into(),
+            display_name: "Codex worker".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "codex".into(),
+            flags: "--ask-for-approval never".into(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+        };
+
+        let (command, resume_intended) = build_launch_command(&config, &session);
+        let invocation = "codex --no-alt-screen --model gpt-5-codex --ask-for-approval never";
+        assert!(command.contains("https://chatgpt.com/codex/install.sh"));
+        assert!(command.contains("CODEX_NON_INTERACTIVE=1"));
+        assert!(command.contains("codex login status >/dev/null 2>&1"));
+        assert!(command.contains("codex login --device-auth"));
+        assert_eq!(command.matches(invocation).count(), 2);
+        assert!(!command.contains("claude"));
+        // Codex never carries a supermux `--resume`, so it is NEVER a resume-intended
+        // launch — the picker-escape anti-hang stays armed for it (a fresh start).
+        assert!(!resume_intended, "codex launch must not be resume-intended");
+        assert!(!command.contains("--resume"));
+    }
+
+    /// `resume_intended` mirrors whether the Claude launch actually carries
+    /// `--resume` — the single source of truth `wait_for_agent_ready` reads to
+    /// decide the picker-escape is safe. A cc_session_name OR a cc_conversation_id
+    /// makes it a resume; a bare `--name` launch does not.
+    #[test]
+    fn claude_resume_intended_tracks_the_resume_flag() {
+        let config = cfg();
+        let base = Session {
+            name: "worker".into(),
+            display_name: "Worker".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "claude".into(),
+            flags: String::new(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+        };
+
+        // Fresh: no cc handles → `--name`, not resume-intended.
+        let (cmd, resume) = build_launch_command(&config, &base);
+        assert!(cmd.contains("--name worker"));
+        assert!(!cmd.contains("--resume"));
+        assert!(!resume);
+
+        // A persisted conversation id → `--resume '<id>'`, resume-intended.
+        let by_id = Session { cc_conversation_id: "abc-123".into(), ..base.clone() };
+        let (cmd, resume) = build_launch_command(&config, &by_id);
+        assert!(cmd.contains("--resume 'abc-123'"));
+        assert!(resume);
+
+        // A named session takes precedence and is likewise resume-intended.
+        let by_name = Session {
+            cc_session_name: "my-chat".into(),
+            cc_conversation_id: "abc-123".into(),
+            ..base
+        };
+        let (cmd, resume) = build_launch_command(&config, &by_name);
+        assert!(cmd.contains("--resume 'my-chat'"));
+        assert!(resume);
+    }
+
+    #[test]
+    fn codex_bootstrap_is_valid_shell() {
+        let config = cfg();
+        let session = Session {
+            name: "codex-shell-check".into(),
+            display_name: "Codex shell check".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "codex".into(),
+            flags: String::new(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+        };
+
+        let (command, _resume) = build_launch_command(&config, &session);
+        let status = std::process::Command::new("bash")
+            .args(["-n", "-c", &command])
+            .status()
+            .expect("bash must be available to validate the launch command");
+        assert!(status.success(), "generated Codex bootstrap must parse as shell");
     }
 }
 

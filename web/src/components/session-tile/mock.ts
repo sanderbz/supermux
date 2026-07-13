@@ -66,6 +66,27 @@ const shellTailAnsi = (cmd: string): string[] => [
 
 export const MOCK_TILES: TileSession[] = [
   {
+    // A Codex-provider session so the dev harness can review Codex-only
+    // affordances (e.g. "Edit in native editor", which Codex opens with the
+    // same Ctrl+G $EDITOR bridge as Claude). Visit /dev/focus/codex-app.
+    name: 'codex-app',
+    task_summary: 'Port the retry backoff to the exec-server transport',
+    status: 'waiting',
+    dir: '/opt/projects/codex-app',
+    provider: 'codex',
+    tokens: 21400,
+    branch: 'feat/exec-backoff',
+    preview_lines: [
+      '› codex',
+      '',
+      '• Proposed patch: add decorrelated jitter to the retry loop.',
+      '',
+      '  Apply this change? (y/n)',
+      '›',
+    ],
+    updated_at: new Date().toISOString(),
+  },
+  {
     name: 'web-app',
     task_summary: 'Wire the SSE delta merge into the sessions cache',
     status: 'active',

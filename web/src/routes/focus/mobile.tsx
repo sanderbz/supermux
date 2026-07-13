@@ -441,6 +441,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               the only "dots" left is the bottom dock's KeyBar toggle. */}
           <FocusHeader
             name={current.name}
+            provider={current.provider}
             title={sessionTitle(current)}
             status={current.status}
             activity={current.activity}
@@ -550,9 +551,15 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               onToggleKeyBar={keyBar.toggleOpen}
               keyBarOpen={keyBar.open}
               onOpenSnippets={() => setSnippetsOpen(true)}
-              // Edit-in-native-editor uses Claude's Ctrl+G bridge; no-op on
-              // codex/shell — only surface it for Claude sessions.
-              onEdit={current.provider === 'claude' ? onEdit : undefined}
+              // Edit-in-native-editor uses the Ctrl+G $EDITOR bridge. Both Claude
+              // (`chat:externalEditor`) and Codex (`open_external_editor`) bind
+              // Ctrl+G to open $EDITOR → same supermux-edit bridge / `external-edit`
+              // SSE. No-op on shell — surface it for both agent providers.
+              onEdit={
+                current.provider === 'claude' || current.provider === 'codex'
+                  ? onEdit
+                  : undefined
+              }
               editOpen={edit.open}
               onSwitchSession={goSession}
               onSend={sendToTerm}

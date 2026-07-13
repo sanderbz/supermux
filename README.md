@@ -167,6 +167,8 @@ sudo bash install.sh
 
 **Claude Code**: the installer offers to install it for the service user if missing (official native installer, no Node). Log in once with `sudo -u supermux -i claude` → `/login`.
 
+**Codex CLI**: the New session panel keeps Claude as its default and offers Codex alongside it. On the first Codex start, supermux installs the official user-scoped standalone CLI if needed and opens Codex's device-login flow in the terminal; later starts reuse that login. Codex launches with `--no-alt-screen` so its output stays usable in supermux.
+
 **After install**: open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
 
 ### Other paths
@@ -193,7 +195,7 @@ This is about where the *server* runs. The dashboard itself works in any modern 
 - **macOS**: works, manual install. Nothing in supermux itself is Linux-only; a Mac mini in a closet makes a fine supermux box (that's a real deployment). Build from source (`bash scripts/build.sh`, see [`docs/TESTING.md`](docs/TESTING.md)) and run the binary; keep it alive with `launchd` or tmux. The one-line installer and the auto-updater don't cover macOS yet.
 - **Windows**: not supported (relies on Unix-only primitives like `tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
 
-Building from source needs: `rustc 1.83+`, a recent `bun` 1.x, and the system build deps `build-essential pkg-config libssl-dev cmake unzip`. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you).
+Building from source needs: `rustc 1.83+`, a recent `bun` 1.x, and the system build deps `build-essential pkg-config libssl-dev cmake unzip`. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you). [Codex CLI](https://developers.openai.com/codex/cli/) is an optional second provider; its first session bootstraps the service-user install and login.
 
 ### Tailscale-ready
 

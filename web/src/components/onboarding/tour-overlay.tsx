@@ -7,10 +7,7 @@
 //   2. the focus / agent     — "focus on one agent"       ([data-tour="tile"] too,
 //      the tap-target is the same tile; the tile IS the focus entry point)
 //   3. the scheduler tab     — "schedule the routine"     ([data-tour="scheduler"])
-//   4. the Start-a-team CTA  — "run a team in parallel"   ([data-tour="start-team"])
-//      The Agent Teams explainer: introduces the lead +
-//      teammate-pane model as the heavier sibling of New Session, without ever
-//      requiring the user to actually start one.
+//   4. the new-session button — "start another agent"     ([data-tour="new-session"])
 //
 // Dismissable via the tip's X or by finishing the last step ("Got it") — both
 // call `onComplete`, which the host turns into `completeFirstLaunch()`.
@@ -36,7 +33,7 @@ const STEP_TARGETS: TourStep[] = [
   { anchor: '[data-tour="tile"]', placement: 'bottom' },
   { anchor: '[data-tour="tile"]', placement: 'bottom' },
   { anchor: '[data-tour="scheduler"]', placement: 'top' },
-  { anchor: '[data-tour="start-team"]', placement: 'bottom' },
+  { anchor: '[data-tour="new-session"]', placement: 'bottom' },
 ]
 
 export interface TourOverlayProps {

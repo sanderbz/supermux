@@ -1,8 +1,8 @@
-// ClaudeToolsHost — the single shell-level mount of the Claude tools manager.
+// AgentToolsHost — the single shell-level mount of the provider-aware tools manager.
 //
 // All three entry points (focus title-bar icon · ⌘K command · Settings section)
-// call `useClaudeToolsSheet().openSheet(sessionName?)`; this host renders the ONE
-// <ClaudeToolsSheet> instance bound to that store, so they share state without
+// call `useAgentToolsSheet().openSheet(sessionName?)`; this host renders the ONE
+// <AgentToolsSheet> instance bound to that store, so they share state without
 // prop-drilling. It is mounted from <CommandPalette> (already mounted once in
 // <Layout>), giving it shell scope with no layout.tsx change.
 //
@@ -11,29 +11,31 @@
 // scopes `.mcp.json` / `.claude/skills` / `.claude/commands` to the right
 // project. `null` session → global-only (no cwd).
 
-import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
+import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { useSessions } from '@/hooks/use-sessions'
-import { ClaudeToolsSheet } from './claude-tools-sheet'
+import { AgentToolsSheet } from './claude-tools-sheet'
 
-export function ClaudeToolsHost() {
-  const open = useClaudeToolsSheet((s) => s.open)
-  const setOpen = useClaudeToolsSheet((s) => s.setOpen)
-  const sessionName = useClaudeToolsSheet((s) => s.sessionName)
+export function AgentToolsHost() {
+  const open = useAgentToolsSheet((s) => s.open)
+  const setOpen = useAgentToolsSheet((s) => s.setOpen)
+  const sessionName = useAgentToolsSheet((s) => s.sessionName)
   const { sessions } = useSessions()
 
-  const cwd =
+  const session =
     sessionName != null
-      ? sessions.find((s) => s.name === sessionName)?.dir || undefined
+      ? sessions.find((s) => s.name === sessionName)
       : undefined
+  const cwd = session?.dir || undefined
 
   return (
-    <ClaudeToolsSheet
+    <AgentToolsSheet
       open={open}
       onOpenChange={setOpen}
       cwd={cwd}
       sessionName={sessionName}
+      provider={session?.provider}
     />
   )
 }
 
-export default ClaudeToolsHost
+export default AgentToolsHost

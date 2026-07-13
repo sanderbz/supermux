@@ -6,135 +6,73 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
 import { teamsStartApi, SessionError } from '@/lib/api'
-import {
-  WherePicker,
-  defaultWhereSelection,
-  type WhereSelection,
-} from './where-picker'
 
-// "Start a team". Reuses the iOS-style ResponsiveSheet
-// (Vaul drag-detent bottom sheet on touch, right-side dialog on desktop) — the
-// exact pattern <NewSessionSheet> uses — so the affordance feels native to the
-// app. Fields: goal/task (textarea), # teammates (stepper), optional model.
+// "Make <name> a team" — convert an EXISTING session into a team lead IN PLACE.
+// Reuses the iOS-style ResponsiveSheet (Vaul drag-detent bottom sheet on touch,
+// right-side dialog on desktop) — the same pattern <NewSessionSheet> uses — so
+// the affordance feels native. Fields: goal/task (textarea), # teammates
+// (stepper), optional model.
 //
-// On submit it POSTs /api/teams/start, which creates + boots a Claude LEAD with
-// Agent Teams enabled for it and a seed prompt that tells it to form the team;
-// then we navigate to the lead's focus view. The TEAM CARD appears via
-// detection once the lead spawns its teammate panes.
+// The directory is FIXED (the existing session's — a conversion reuses the row,
+// it never moves), shown as a muted `In: <dir>` footnote so the user sees WHERE
+// the team will run without a field they can wander away from. Submit POSTs
+// /api/teams/start-from-existing; the confirm copy spells out the restart, since
+// the Agent Teams env+settings only take effect at process launch — Claude has
+// to be restarted (fresh conversation) for the team flag to apply.
 //
-// Convert mode (mode='convert'). Same sheet, "Make <name> a team" variant —
-// converts an EXISTING session into a team lead in place. The directory field
-// is hidden (we never move a converted session — it reuses the existing row's
-// dir); shown instead as a muted footnote so the user sees WHERE the team will
-// run. Submit calls /api/teams/start-from-existing instead of /start. The
-// confirm copy spells out the restart, since the Agent Teams env+settings only
-// take effect at process launch — Claude has to be restarted (fresh
-// conversation) for the team flag to apply.
-//
-// Where picker. The create-mode directory field is replaced by the
-// <WherePicker>: a three-section list (Your sessions / Projects / Use another
-// folder) the user can scroll without a `+N more` cap. Picking a SESSION row
-// morphs the sheet into a take-over flow on the fly: title, description and
-// submit copy switch to the convert-team voice, and submit calls
-// /api/teams/start-from-existing instead of /start — without leaving the
-// sheet. This is the user's "select an existing one (like one of the session)
-// or folder" ask, addressed from the same entry point.
+// (The from-scratch "Start a team" create flow + WherePicker morph were removed
+// with the New Session panel's Team toggle: teams are now formed by converting
+// an existing session, which is this sheet's sole entry.)
 
 /** Bounds mirror the server clamp (teams/start.rs MIN/MAX_TEAMMATES). */
 const MIN_TEAMMATES = 1
 const MAX_TEAMMATES = 8
 const DEFAULT_TEAMMATES = 3
 
-/** Calm cost framing: N agents == the multiplier, never alarmist. The
- *  total processes = lead + teammates. The convert/take-over variant prepends
- *  a calm one-liner spelling out the restart (the Agent Teams env+settings only
- *  take effect at process launch, so we MUST restart — the user sees this
- *  up-front, not after the click). */
-function costNote(teammates: number, takeoverName?: string): string {
+/** Calm cost framing: N agents == the multiplier, never alarmist. Prepends the
+ *  restart-fact (the Agent Teams env+settings only take effect at process
+ *  launch, so we MUST restart) so the user sees it up-front, not after the
+ *  click. total processes = lead + teammates. */
+function costNote(teammates: number, name: string): string {
   const total = teammates + 1
   const runsLine = `Runs ${total} agents in parallel (1 lead + ${teammates} teammate${
     teammates === 1 ? '' : 's'
   }) — more agents, more tokens.`
-  if (takeoverName) {
-    return `Stops ${takeoverName} and restarts it as the lead of a team — the conversation starts fresh in its directory. ${runsLine}`
-  }
-  return runsLine
+  return `Stops ${name} and restarts it as the lead of a team — the conversation starts fresh in its directory. ${runsLine}`
 }
-
-/** create = new session + new team (the original flow).
- *  convert = take an EXISTING session and turn it into a team lead in place. */
-export type SheetMode = 'create' | 'convert'
 
 export interface StartTeamSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Sheet mode. Defaults to `'create'` for back-compat with every existing
-   *  caller (the overview's "Start a team" entry). `'convert'` swaps the title
-   *  / dir field / submit copy / submit endpoint. */
-  mode?: SheetMode
-  /** Convert mode only: the existing session's name + dir. The name is
-   *  read-only in the sheet (rendered in the title `Make <name> a team`); the
-   *  dir is shown as a muted `In: <dir>` footnote (the user can't change it —
-   *  conversion REUSES the existing row). Ignored in create mode. */
-  sessionName?: string
+  /** The existing session's name — read-only, rendered in the title `Take over
+   *  <name> as a team`; the conversion reuses this row (the name is unchanged). */
+  sessionName: string
+  /** The existing session's dir — shown as a muted `In: <dir>` footnote (fixed;
+   *  a conversion never moves the session). */
   sessionDir?: string
-  /** Create mode only: working directory for the lead. Falls back to the
-   *  server home server-side. Ignored in convert mode. */
-  defaultDir?: string
-  /** Called with the LEAD session's name on success so the route can navigate
-   *  to focus. Same in both modes (in convert mode the name is unchanged). */
+  /** Called with the lead session's name on success so the route can navigate
+   *  to focus (unchanged for a convert). */
   onStarted: (name: string) => void
 }
 
 export function StartTeamSheet({
   open,
   onOpenChange,
-  mode = 'create',
   sessionName,
   sessionDir,
-  defaultDir,
   onStarted,
 }: StartTeamSheetProps) {
-  // In create mode the user can morph this sheet into a
-  // take-over flow by picking a session row in the WherePicker. We lift the
-  // current selection up to the sheet so the title/description morph live —
-  // see <StartTeamForm> for the actual selection logic + endpoint switch.
-  const [where, setWhere] = React.useState<WhereSelection>(() =>
-    defaultDir ? { kind: 'new', dir: defaultDir } : defaultWhereSelection(),
-  )
-  // Reset to the default selection each time the sheet opens (parity with
-  // the existing remount-on-open pattern below).
-  React.useEffect(() => {
-    if (open) {
-      setWhere(defaultDir ? { kind: 'new', dir: defaultDir } : defaultWhereSelection())
-    }
-  }, [open, defaultDir])
-
-  const takeoverName =
-    mode === 'convert'
-      ? sessionName
-      : where.kind === 'session'
-        ? where.session.name
-        : undefined
-
-  const title = takeoverName ? `Take over ${takeoverName} as a team` : 'Start a team'
-  const description = takeoverName
-    ? 'Restarts the session as the lead of a team — the current conversation is replaced.'
-    : 'A lead agent spins up teammates to work in parallel.'
   return (
     <ResponsiveSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={title}
-      description={description}
+      title={`Take over ${sessionName} as a team`}
+      description="Restarts the session as the lead of a team — the current conversation is replaced."
     >
       {open && (
         <StartTeamForm
-          mode={mode}
           sessionName={sessionName}
           sessionDir={sessionDir}
-          where={where}
-          onWhereChange={setWhere}
           onCancel={() => onOpenChange(false)}
           onStarted={(name) => {
             onOpenChange(false)
@@ -146,25 +84,18 @@ export function StartTeamSheet({
   )
 }
 
-export interface StartTeamFormProps {
-  mode: SheetMode
-  sessionName?: string
+interface StartTeamFormProps {
+  sessionName: string
   sessionDir?: string
-  where: WhereSelection
-  onWhereChange: (next: WhereSelection) => void
   onCancel: () => void
   onStarted: (name: string) => void
 }
 
-/** The Start-a-team form body — exported so the merged New-session panel can
- *  host it behind the `Claude | Team (beta)` toggle (the standalone
- *  <StartTeamSheet> keeps using it for the convert/take-over entry). */
-export function StartTeamForm({
-  mode,
+/** The convert/take-over form body — turns the passed-in session into a team
+ *  lead in place via /api/teams/start-from-existing. */
+function StartTeamForm({
   sessionName,
   sessionDir,
-  where,
-  onWhereChange,
   onCancel,
   onStarted,
 }: StartTeamFormProps) {
@@ -176,52 +107,24 @@ export function StartTeamForm({
 
   const canSubmit = task.trim().length > 0
 
-  // Convert mode is the legacy "Make <name> a team" entry from the session
-  // overflow — sticky to the passed-in session. Create mode reads the
-  // WherePicker's selection: a `session` pick converts; a `new` pick starts
-  // fresh. Both branches use the same SAME endpoints they always did.
-  const isLegacyConvert = mode === 'convert'
-  const isPickedSession = !isLegacyConvert && where.kind === 'session'
-  const isTakeover = isLegacyConvert || isPickedSession
-  const takeoverName = isLegacyConvert
-    ? sessionName
-    : isPickedSession
-      ? where.session.name
-      : undefined
-  const takeoverDir = isLegacyConvert
-    ? sessionDir
-    : isPickedSession
-      ? where.session.dir
-      : undefined
-
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault()
     if (!canSubmit || submitting) return
     setSubmitting(true)
     setError(null)
     try {
-      const result = isTakeover && takeoverName
-        ? await teamsStartApi.convert({
-            name: takeoverName,
-            task: task.trim(),
-            teammates,
-            model: model.trim() || undefined,
-          })
-        : await teamsStartApi.start({
-            task: task.trim(),
-            teammates,
-            model: model.trim() || undefined,
-            dir: where.kind === 'new' ? where.dir.trim() || undefined : undefined,
-          })
+      const result = await teamsStartApi.convert({
+        name: sessionName,
+        task: task.trim(),
+        teammates,
+        model: model.trim() || undefined,
+      })
       onStarted(result.lead.name)
     } catch (err) {
       if (err instanceof SessionError && err.status === 409) {
-        // 409 = "already a team lead" in convert/takeover mode, "name
-        // collision" in create mode.
+        // 409 = "already a team lead", or the session is archived.
         setError(
-          isTakeover
-            ? 'This session can’t be converted — it’s already a team, or archived. Reload to see its current state.'
-            : 'A session with that name already exists — try again.',
+          'This session can’t be converted — it’s already a team, or archived. Reload to see its current state.',
         )
       } else if (err instanceof SessionError && err.status === 404) {
         setError('This session no longer exists. Reload the overview and try again.')
@@ -229,11 +132,7 @@ export function StartTeamForm({
         setError('Can’t reach supermux-server. Check it’s running, then try again.')
       } else {
         setError(
-          err instanceof Error
-            ? err.message
-            : isTakeover
-              ? 'Could not take over this session.'
-              : 'Could not start the team.',
+          err instanceof Error ? err.message : 'Could not take over this session.',
         )
       }
     } finally {
@@ -241,36 +140,26 @@ export function StartTeamForm({
     }
   }
 
-  // Legacy convert mode: dir is fixed (the existing session's). Surface as a
-  // muted footnote so the user SEES where the team will run — without giving
-  // them a field they can wander away from.
-  const dirFootnote = isLegacyConvert && takeoverDir ? takeoverDir : null
-
   return (
     <form onSubmit={submit} className="flex flex-col gap-4 px-6 pb-6 pt-4">
-      {dirFootnote && (
+      {sessionDir && (
         <p
           className="-mt-1 truncate text-xs text-muted-foreground"
-          title={dirFootnote}
+          title={sessionDir}
         >
-          In: <span className="font-mono">{dirFootnote}</span>
+          In: <span className="font-mono">{sessionDir}</span>
         </p>
       )}
 
       <Field
         label="Goal"
         htmlFor="st-task"
-        hint={
-          isTakeover
-            ? 'What should the team work on? The session restarts and starts fresh.'
-            : 'What should the team accomplish?'
-        }
+        hint="What should the team work on? The session restarts and starts fresh."
       >
         {/* NO autoFocus — same iOS-PWA Vaul keyboard-during-open race as the
             board-card-editor. The keyboard popping mid-slide-in makes Vaul
-            cache `initialDrawerHeight` from the still-translated drawer and
-            the sheet ends up half-cropped. The proven-working New Session
-            sheet has no autoFocus either; users tap to focus. */}
+            cache `initialDrawerHeight` from the still-translated drawer and the
+            sheet ends up half-cropped. Users tap to focus. */}
         <textarea
           id="st-task"
           value={task}
@@ -280,26 +169,6 @@ export function StartTeamForm({
           className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-base md:text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
       </Field>
-
-      {/* Legacy convert mode: hide the picker entirely — the existing
-          session's dir is authoritative (surfaced as the footnote above).
-          Create mode (new + take-over picks): show the WherePicker so the
-          user can choose either fresh dir, an existing project, or take over
-          an existing session — without leaving the sheet.
-          showSessions + gitHint are passed EXPLICITLY (matching the defaults)
-          so a future reader sees why New Session — which passes the OPPOSITE
-          values — diverges: Start-a-team teammates each need their own git
-          worktree (warn appropriate; take-over reachable), a normal session
-          can run anywhere (warn off; no take-over). */}
-      {!isLegacyConvert && (
-        <WherePicker
-          id="st-where"
-          value={where}
-          onChange={onWhereChange}
-          showSessions={true}
-          gitHint="warn"
-        />
-      )}
 
       <Field label="Teammates" htmlFor="st-count" hint="How many agents work alongside the lead.">
         <div className="flex items-center gap-3">
@@ -330,12 +199,10 @@ export function StartTeamForm({
         />
       </Field>
 
-      {/* Calm cost note — muted, informational, never a red banner.
-          The take-over path prepends the restart-fact so the user sees it
-          before the click, not after. */}
+      {/* Calm cost note — muted, informational, never a red banner. */}
       <p className="flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
         <Users className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-        <span>{costNote(teammates, takeoverName)}</span>
+        <span>{costNote(teammates, sessionName)}</span>
       </p>
 
       {error && (
@@ -353,13 +220,7 @@ export function StartTeamForm({
         </Button>
         <Button type="submit" className="flex-1" disabled={!canSubmit || submitting}>
           {submitting && <Loader2 className="animate-spin" />}
-          {submitting
-            ? isTakeover
-              ? 'Taking over…'
-              : 'Starting…'
-            : isTakeover
-              ? 'Take over'
-              : 'Start team'}
+          {submitting ? 'Taking over…' : 'Take over'}
         </Button>
       </div>
     </form>

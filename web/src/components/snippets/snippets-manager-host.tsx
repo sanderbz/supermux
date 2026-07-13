@@ -1,6 +1,6 @@
 // SnippetsManagerHost — the single shell-level mount of the snippets manager.
 //
-// Mirrors ClaudeToolsHost: every entry point (Settings → Manage snippets, and
+// Mirrors AgentToolsHost: every entry point (Settings → Manage snippets, and
 // any future ⌘K / focus opener) calls `useSnippetsManager().openSheet()`; this
 // host renders the ONE <SnippetsManagerSheet> bound to that store, so they share
 // state without prop-drilling. Mounted from <CommandPalette> (already mounted

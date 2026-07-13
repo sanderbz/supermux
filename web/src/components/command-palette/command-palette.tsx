@@ -74,8 +74,8 @@ import {
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewGroupAction } from '@/stores/new-group-store'
-import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
-import { ClaudeToolsHost } from '@/components/claude-tools/claude-tools-host'
+import { useAgentToolsSheet } from '@/stores/claude-tools-store'
+import { AgentToolsHost } from '@/components/claude-tools/claude-tools-host'
 import { SnippetsManagerHost } from '@/components/snippets/snippets-manager-host'
 import { Kbd } from '@/components/ui/kbd'
 
@@ -252,7 +252,7 @@ export function CommandPalette() {
   const regMcp = React.useMemo(() => regData?.mcp ?? [], [regData])
   const regCommands = React.useMemo(() => regData?.commands ?? [], [regData])
   const openArchived = useArchivedSheet((s) => s.openSheet)
-  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
+  const openClaudeTools = useAgentToolsSheet((s) => s.openSheet)
   // The Overview installs its handler while mounted; absent on every other
   // route, so the "New group" row is conditionally surfaced below.
   const newGroupAction = useNewGroupAction((s) => s.action)
@@ -786,7 +786,7 @@ export function CommandPalette() {
      *  title-bar icon, and the Settings section all open this ONE instance via
      *  the claude-tools store. Opt-in — only in the DOM as an overlay while
      *  open. */}
-    <ClaudeToolsHost />
+    <AgentToolsHost />
     <SnippetsManagerHost />
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent

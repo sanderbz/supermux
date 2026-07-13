@@ -115,6 +115,13 @@ export function StoppedSessionActions({
   )
   const canMakeTeam =
     showMakeTeam && !isAlreadyLead && !!currentRow && currentRow.provider === 'claude'
+  // Resume is a Claude-only affordance: `resumable` reads Claude conversation
+  // transcripts, and the launch builder only turns a picked id into
+  // `claude --resume <id>`. Codex has NO supermux resume path (its own
+  // `codex resume` picker lives in the pane), so gate the probe + button on the
+  // provider — otherwise a Codex session that happened to share a dir with past
+  // Claude chats would show a Resume that just relaunches Codex fresh (misleading).
+  const isClaude = currentRow?.provider === 'claude'
   // Resume affordance — lazily probes the dir's Claude conversations so the
   // button only appears when there's something to resume (no empty picker).
   const [conversations, setConversations] = React.useState<
@@ -143,23 +150,36 @@ export function StoppedSessionActions({
   }, [onResumeOpenChange])
 
   React.useEffect(() => {
-    if (!name) return
+    // Skip entirely for non-Claude (Codex/shell) sessions — no supermux resume.
+    if (!name || !isClaude) return
     let cancelled = false
-    sessionsApi
-      .resumable(name)
-      .then((list) => {
-        if (!cancelled) setConversations(list)
-      })
-      .catch(() => {
-        // Resume just stays hidden on failure — Start is always available.
-        if (!cancelled) setConversations([])
-      })
+    // Probe the dir's resumable Claude conversations. A TRANSIENT probe failure
+    // (network blip, server mid-restart) must NOT permanently hide Resume — a
+    // conversation the user wants to continue would silently vanish. So retry
+    // once with a short backoff before giving up, and on failure LEAVE the prior
+    // state intact rather than force it to empty: a real "no conversations" result
+    // arrives as a resolved `[]` (Resume stays hidden, correct), while a network
+    // error no longer masquerades as an empty list.
+    const load = (attempt: number) => {
+      sessionsApi
+        .resumable(name)
+        .then((list) => {
+          if (!cancelled) setConversations(list)
+        })
+        .catch(() => {
+          if (cancelled || attempt >= 1) return
+          window.setTimeout(() => {
+            if (!cancelled) load(attempt + 1)
+          }, 800)
+        })
+    }
+    load(0)
     return () => {
       cancelled = true
     }
-  }, [name])
+  }, [name, isClaude])
 
-  const canResume = conversations.length > 0
+  const canResume = isClaude && conversations.length > 0
 
   const onStart = React.useCallback(() => {
     if (busy || !name) return
@@ -340,7 +360,6 @@ export function StoppedSessionActions({
           parent route's <StoppedSession> swaps to <LiveTerminal>. */}
       {canMakeTeam && currentRow && (
         <StartTeamSheet
-          mode="convert"
           sessionName={name}
           sessionDir={currentRow.dir}
           open={convertOpen}

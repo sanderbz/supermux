@@ -22,7 +22,7 @@ import {
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import type { SessionStatus } from '@/lib/api'
-import { useClaudeToolsSheet } from '@/stores/claude-tools-store'
+import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import {
   ActivityLine,
@@ -52,6 +52,8 @@ import {
 
 export interface DesktopFocusHeaderProps {
   name: string
+  /** Session provider. Agent-specific controls are hidden for shell panes. */
+  provider?: string
   title?: string
   status: SessionStatus
   /** Live "what the agent is doing now" label (hooks-10x) — shown next to the
@@ -95,6 +97,7 @@ export interface DesktopFocusHeaderProps {
 
 export function DesktopFocusHeader({
   name,
+  provider,
   title,
   status,
   activity,
@@ -110,9 +113,11 @@ export function DesktopFocusHeader({
   onToggleLastSend,
   lastSendButtonRef,
 }: DesktopFocusHeaderProps) {
-  // The Claude tools manager entry point,
-  // pre-scoped to THIS session's project so .mcp.json / .claude/* resolve.
-  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
+  // One provider-aware tools entry point. The host renders Claude's registry
+  // manager or Codex's native quick actions from the same focused session.
+  const openAgentTools = useAgentToolsSheet((s) => s.openSheet)
+  const toolsLabel = provider === 'codex' ? 'Codex tools' : 'Claude tools'
+  const showAgentTools = provider === 'claude' || provider === 'codex'
   return (
     <header
       className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3"
@@ -182,24 +187,25 @@ export function DesktopFocusHeader({
             shortcutHint="⌘G"
           />
         )}
-        {/* Claude tools sheet — opens MCP / Skills / Commands AND (since v0.4.15)
-            the permission-mode switcher, which moved here from the header so the
-            chrome stays a single-row cluster of session-level actions. */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <motion.button
-              type="button"
-              onClick={() => openClaudeTools(name)}
-              whileTap={{ scale: 0.96 }}
-              transition={springs.buttonPress}
-              aria-label="Claude tools"
-              className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary"
-            >
-              <SlidersHorizontal className="size-4" />
-            </motion.button>
-          </TooltipTrigger>
-          <TooltipContent>Claude tools</TooltipContent>
-        </Tooltip>
+        {/* Provider-aware tools: Claude opens its registry + permission modes;
+            Codex opens native high-use slash panels. */}
+        {showAgentTools && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <motion.button
+                type="button"
+                onClick={() => openAgentTools(name)}
+                whileTap={{ scale: 0.96 }}
+                transition={springs.buttonPress}
+                aria-label={toolsLabel}
+                className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground/80 hover:bg-secondary"
+              >
+                <SlidersHorizontal className="size-4" />
+              </motion.button>
+            </TooltipTrigger>
+            <TooltipContent>{toolsLabel}</TooltipContent>
+          </Tooltip>
+        )}
 
         {/* "Make it a team": only rendered when the route
             decides this session is eligible (not already a team lead, not
@@ -266,6 +272,8 @@ export function DesktopFocusHeader({
 
 export interface FocusHeaderProps {
   name: string
+  /** Session provider. Agent-specific controls are hidden for shell panes. */
+  provider?: string
   /** Visible title text (defaults to `name`). `name` stays the view-transition
    *  anchor + identity; this is only what's rendered. Matches the desktop
    *  header's `title` prop. */
@@ -299,6 +307,7 @@ export interface FocusHeaderProps {
 
 export function FocusHeader({
   name,
+  provider,
   title,
   status,
   activity,
@@ -315,10 +324,11 @@ export function FocusHeader({
   const showActivity =
     (status === 'active' || status === 'starting') && !!activity?.trim()
   // Mobile: the right slot — a bare spacer since the redundant "···" was
-  // removed — now hosts the Claude tools
-  // icon, pre-scoped to THIS session's project. Keeps the title centred against
+  // removed — now hosts the provider-aware tools icon. Keeps the title centred against
   // the left back-button (same 44pt footprint as the old spacer).
-  const openClaudeTools = useClaudeToolsSheet((s) => s.openSheet)
+  const openAgentTools = useAgentToolsSheet((s) => s.openSheet)
+  const toolsLabel = provider === 'codex' ? 'Codex tools' : 'Claude tools'
+  const showAgentTools = provider === 'claude' || provider === 'codex'
   return (
     <header
       className={cn(
@@ -404,9 +414,9 @@ export function FocusHeader({
         )}
       </div>
 
-      {/* Right cluster: optional Recall icon (feat-last-prompt) + Claude tools.
-          Since v0.4.15 the permission-mode switcher lives INSIDE the Claude tools
-          sheet (the panel above the tabs), so this cluster stays narrow — the
+      {/* Right cluster: optional Recall icon + provider-aware agent tools.
+          Claude's permission-mode switcher lives inside its tools sheet, so
+          this cluster stays narrow — the
           right-side counterweight to the back-chevron, with the title centred
           between them. */}
       <div className="flex shrink-0 items-center">
@@ -417,16 +427,18 @@ export function FocusHeader({
             // no shortcutHint on mobile — no hardware-keyboard expectation
           />
         )}
-        <motion.button
-          type="button"
-          aria-label="Claude tools"
-          whileTap={{ scale: 0.92 }}
-          transition={springs.buttonPress}
-          onClick={() => openClaudeTools(name)}
-          className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
-        >
-          <SlidersHorizontal className="size-5" />
-        </motion.button>
+        {showAgentTools && (
+          <motion.button
+            type="button"
+            aria-label={toolsLabel}
+            whileTap={{ scale: 0.92 }}
+            transition={springs.buttonPress}
+            onClick={() => openAgentTools(name)}
+            className="flex size-11 shrink-0 items-center justify-center rounded-lg text-foreground/80 active:bg-secondary"
+          >
+            <SlidersHorizontal className="size-5" />
+          </motion.button>
+        )}
       </div>
     </header>
   )

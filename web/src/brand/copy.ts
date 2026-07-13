@@ -198,10 +198,7 @@ export const ONBOARDING = {
   tourSkip: 'Skip',
   tourDone: 'Got it',
   /** 4-step tour copy — anchored to a tile, the focus button, the scheduler,
-   *  then the "Start a team" button. The final step introduces Agent Teams as a
-   *  power-user surface — a lead Claude that spawns teammates as tmux split
-   *  panes, each its own Claude process. Calm + factual; the cost line frames
-   *  the multiplier without alarm. */
+   *  then the create menu. */
   tour: [
     {
       title: 'Peek without leaving',
@@ -216,8 +213,8 @@ export const ONBOARDING = {
       body: 'Boot agents or send commands on a cron expression. Set it once, walk away.',
     },
     {
-      title: 'Run a team in parallel',
-      body: 'Start a team to put several Claude agents on one goal. A lead spawns teammates as tmux split panes — each a full Claude process, coordinating through a shared task list. Pick the count to match the cost: roughly N× the tokens of a single session.',
+      title: 'Start another agent',
+      body: 'Use New session to pick Claude or Codex, choose a directory, and boot another tmux-backed workspace.',
     },
   ],
   /** Fresh install — the secondary demo CTA under the empty-state primary. */
