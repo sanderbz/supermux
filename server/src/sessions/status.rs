@@ -566,8 +566,7 @@ impl StatusDetector {
         // states (captured live from codex 0.144.3):
         //   working → `◦ Working (Ns • esc to interrupt)`         → Active
         //   waiting → a `› N.` selector / "Press enter to confirm" → Waiting
-        // A bare `›` composer is present even mid-turn, so IDLE is left to the
-        // heartbeat + idle-timeout fallback below (same as a hookless Claude).
+        //   else    → Idle (positively — see below)
         if self.provider == "codex" {
             if CODEX_ACTIVE_BANK.is_match(capture) {
                 return Status::Active;
@@ -575,6 +574,20 @@ impl StatusDetector {
             if CODEX_WAITING_BANK.is_match(capture) {
                 return Status::Waiting;
             }
+            // Codex ALWAYS shows `esc to interrupt` while a turn runs, so the
+            // ABSENCE of it (with no selector) is a reliable REST signal → Idle.
+            // Crucially we do NOT fall through to the PTY heartbeat below: Codex's
+            // idle TUI emits periodic (often invisible) repaint bytes, and the
+            // heartbeat would misread those as `Active` — flapping the spinner
+            // on↔off at rest (the reported bug; Claude never flaps because its
+            // hooks already suppress the heartbeat). An empty capture (still
+            // booting, nothing drawn) holds the current status rather than forcing
+            // a premature Idle, matching the non-codex cold-start guard.
+            return if capture.trim().is_empty() {
+                self.last_status
+            } else {
+                Status::Idle
+            };
         } else {
             if ACTIVE_BANK.is_match(capture) {
                 return Status::Active;
@@ -853,6 +866,27 @@ mod tests {
   2. gpt-5.6-terra          Balanced agentic coding model for everyday work.
   Press enter to confirm or esc to go back";
         assert_eq!(fresh_codex(cap), Status::Waiting);
+    }
+
+    #[test]
+    fn codex_idle_with_fresh_pty_bytes_stays_idle_not_active() {
+        // THE FLAP BUG: Codex has no hooks, and its idle TUI emits periodic
+        // repaint bytes, so `last_pty` stays fresh at rest. The raw heartbeat
+        // (`!has_hooks && silent < PTY_ACTIVE_WINDOW → Active`) therefore flipped
+        // the spinner on↔off while Codex did nothing. A Codex-bound detector must
+        // read Idle off the resting composer regardless of fresh bytes.
+        let cap = "› Explain this codebase\n  gpt-5.6-sol default · /x · Main";
+        let mut d = StatusDetector::for_provider("codex");
+        // fresh bytes (just now) — the exact condition that used to force Active.
+        assert_eq!(d.detect(cap, Instant::now(), TurnState::default(), false), Status::Idle);
+        // A hookless SHELL with the same fresh bytes (and a capture that matches
+        // no bank) still uses the heartbeat → Active. Proves the fix is scoped to
+        // Codex, not a global heartbeat removal.
+        let mut sh = StatusDetector::new();
+        assert_eq!(
+            sh.detect("building the project", Instant::now(), TurnState::default(), false),
+            Status::Active,
+        );
     }
 
     #[test]
