@@ -126,6 +126,26 @@ async fn hook_handler(
         .unwrap_or_default();
     apply_payload(&state, &body.session, &body.event, &payload);
 
+    // Track the LIVE Claude conversation id so "this session" prompt-recall reads
+    // the CURRENT transcript, not a stale one. Claude rotates conversation files
+    // (a restart / `/clear` / compaction forks a fresh `<session_id>.jsonl`) and
+    // the resume-only `set_cc_conversation_id` never followed — so a long-lived
+    // session's `cc_conversation_id` drifted days behind the real conversation
+    // (the stale-recall bug). Only on the two events that reliably carry a
+    // main-session id (SessionStart = a fresh process; UserPromptSubmit = the user
+    // acting) — NOT per-tool events, whose subagent hooks would otherwise thrash
+    // it. The DB write is conditional (no-op unless the id changed).
+    if matches!(
+        body.event.as_str(),
+        "session_start" | "SessionStart" | "user_prompt" | "user_prompt_submit" | "UserPromptSubmit"
+    ) {
+        if let Some(id) = payload.session_id.as_deref() {
+            if !id.is_empty() {
+                let _ = db::sessions::track_cc_conversation_id(&state.pool, &body.session, id).await;
+            }
+        }
+    }
+
     // Re-tick the detector now so the status (e.g. Notification → waiting,
     // SessionEnd → stopped) is broadcast within ~1s, not at the next tier edge.
     state.wake_detector(&body.session);
