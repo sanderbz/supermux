@@ -31,6 +31,14 @@ const MAX_LABEL: usize = 40;
 /// `pattern`, `url`) and ignore the big ones (e.g. Edit/Write `content`).
 #[derive(Debug, Default, Deserialize)]
 pub struct HookPayload {
+    /// Claude's CURRENT conversation UUID (the transcript file stem
+    /// `<session_id>.jsonl`). Every Claude Code hook carries it. We capture it on
+    /// `SessionStart`/`UserPromptSubmit` to keep the session's `cc_conversation_id`
+    /// pointing at the LIVE conversation, so "this session" prompt-recall reads the
+    /// current transcript instead of a stale one from an earlier resume. Aliased to
+    /// cover the camelCase form some payload shapes use.
+    #[serde(default, alias = "sessionId")]
+    pub session_id: Option<String>,
     /// The tool being invoked (`Bash`, `Edit`, `Read`, `mcp__server__method`, …).
     #[serde(default)]
     pub tool_name: Option<String>,
@@ -324,6 +332,19 @@ mod tests {
         assert!(
             serde_json::from_str::<HookPayload>(r#"{"tool_name":"Bash","extra":true}"#).is_ok()
         );
+    }
+
+    #[test]
+    fn captures_session_id_for_conversation_tracking() {
+        // Claude's hook carries the live conversation UUID as `session_id`; the
+        // hook handler stores it as `cc_conversation_id` so "this session" recall
+        // reads the CURRENT transcript. Accept the camelCase alias too.
+        let p = parse(r#"{"session_id":"d93e672d-8080-49db-ad69-5e1bcc647291","cwd":"/x"}"#);
+        assert_eq!(p.session_id.as_deref(), Some("d93e672d-8080-49db-ad69-5e1bcc647291"));
+        let c = parse(r#"{"sessionId":"abc123"}"#);
+        assert_eq!(c.session_id.as_deref(), Some("abc123"));
+        // Absent → None (a no-op, never clobbers a stored id).
+        assert_eq!(parse(r#"{"tool_name":"Bash"}"#).session_id, None);
     }
 
     #[test]

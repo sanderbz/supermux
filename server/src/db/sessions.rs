@@ -541,6 +541,34 @@ pub async fn set_cc_conversation_id(
     Ok(())
 }
 
+/// Track the LIVE Claude conversation id from a hook (`SessionStart` /
+/// `UserPromptSubmit` carry it), WITHOUT touching `cc_session_name`. This keeps
+/// "this session" prompt-recall pointed at the current transcript as Claude
+/// rotates conversation files (a restart / `/clear` / compaction forks a new
+/// `<uuid>.jsonl`), which `set_cc_conversation_id` (resume-only) never did — the
+/// stale-recall bug. Conditional so a no-op hook doesn't write: only updates when
+/// the id actually changed, and never blanks a known id with an empty hook value.
+/// Returns whether a row was updated.
+pub async fn track_cc_conversation_id(
+    pool: &SqlitePool,
+    name: &str,
+    id: &str,
+) -> sqlx::Result<bool> {
+    if id.is_empty() {
+        return Ok(false);
+    }
+    let res = sqlx::query(
+        "UPDATE sessions SET cc_conversation_id = ? \
+         WHERE name = ? AND cc_conversation_id <> ?",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Set the hibernated flag in `session_runtime` (cleared by `wake`).
 pub async fn set_hibernated(pool: &SqlitePool, name: &str, hibernated: bool) -> sqlx::Result<()> {
     sqlx::query("UPDATE session_runtime SET hibernated = ? WHERE name = ?")
