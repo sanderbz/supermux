@@ -165,7 +165,6 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
       />
       {current && (
         <StartTeamSheet
-          mode="convert"
           sessionName={name}
           sessionDir={current.dir}
           open={convertOpen}

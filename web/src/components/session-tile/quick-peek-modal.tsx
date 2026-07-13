@@ -234,7 +234,6 @@ export function QuickPeekModal({
           view — the team's TEAM CARD is the natural next surface. */}
       {session.provider === 'claude' && (
         <StartTeamSheet
-          mode="convert"
           sessionName={session.name}
           sessionDir={session.dir}
           open={convertOpen}

@@ -360,7 +360,6 @@ export function StoppedSessionActions({
           parent route's <StoppedSession> swaps to <LiveTerminal>. */}
       {canMakeTeam && currentRow && (
         <StartTeamSheet
-          mode="convert"
           sessionName={name}
           sessionDir={currentRow.dir}
           open={convertOpen}
