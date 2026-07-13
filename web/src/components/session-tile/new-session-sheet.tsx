@@ -13,10 +13,8 @@ import {
   WherePicker,
   defaultWhereSelection,
   type NewWhereSelection,
-  type WhereSelection,
 } from './where-picker'
 import { createProjectFolder } from '@/lib/create-project-folder'
-import { StartTeamForm } from './start-team-sheet'
 
 /** Derive the immutable slug from the free-typed display name (migration 0019):
  *  whitespace → `-`, drop anything outside the server's `valid_name` charset
@@ -33,19 +31,17 @@ function toSlug(raw: string): string {
 export interface NewSessionSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Pre-filled working directory. When omitted the Claude side auto-creates a
-   *  folder named after the session; the Team side falls back to the server
-   *  home directory. */
+  /** Pre-filled working directory. When omitted a folder named after the
+   *  session is created under the projects root. */
   defaultDir?: string
-  /** Called after a successful create/start with the new session's (or team
-   *  lead's) name so the route can navigate to `/focus/{name}`. */
+  /** Called after a successful create/start so the route can navigate to focus. */
   onCreated: (name: string) => void
 }
 
-/** The single boot panel. A `Claude | Team (beta)` toggle picks the body:
- *  Claude = one streamlined agent; Team = a lead that spins up teammates. The
- *  "+" opens this directly — no intermediate menu. The inner panel only mounts
- *  while the sheet is open, so its state starts fresh each time. */
+/** The single boot panel. A `Claude | Codex` toggle selects an equivalent
+ *  single-agent launch form. The "+" opens this directly — no intermediate
+ *  menu. The inner panel only mounts while the sheet is open, so its state
+ *  starts fresh each time. */
 export function NewSessionSheet({
   open,
   onOpenChange,
@@ -73,7 +69,7 @@ export function NewSessionSheet({
   )
 }
 
-type Kind = 'claude' | 'team'
+type Kind = 'claude' | 'codex'
 
 function NewSessionPanel({
   defaultDir,
@@ -85,11 +81,6 @@ function NewSessionPanel({
   onCreated: (name: string) => void
 }) {
   const [kind, setKind] = React.useState<Kind>('claude')
-  // The Team body reuses <StartTeamForm>, which lifts its directory selection
-  // (so a picked SESSION row morphs it into a take-over). We own that state here.
-  const [teamWhere, setTeamWhere] = React.useState<WhereSelection>(() =>
-    defaultDir ? { kind: 'new', dir: defaultDir } : defaultWhereSelection(),
-  )
 
   return (
     <div className="flex flex-col">
@@ -97,26 +88,17 @@ function NewSessionPanel({
         <KindToggle value={kind} onChange={setKind} />
       </div>
 
-      {kind === 'claude' ? (
-        <ClaudeForm
-          defaultDir={defaultDir}
-          onCancel={onCancel}
-          onCreated={onCreated}
-        />
-      ) : (
-        <StartTeamForm
-          mode="create"
-          where={teamWhere}
-          onWhereChange={setTeamWhere}
-          onCancel={onCancel}
-          onStarted={onCreated}
-        />
-      )}
+      <AgentForm
+        provider={kind}
+        defaultDir={defaultDir}
+        onCancel={onCancel}
+        onCreated={onCreated}
+      />
     </div>
   )
 }
 
-// ── Claude | Team (beta) segmented toggle ────────────────────────────────────
+// ── Claude | Codex segmented toggle ──────────────────────────────────────────
 // Mirrors the overview ViewToggle: a muted pill rail with an animated `bg-card`
 // thumb (shared layoutId) sliding under the active label. No `transition: all`.
 function KindToggle({
@@ -126,9 +108,9 @@ function KindToggle({
   value: Kind
   onChange: (k: Kind) => void
 }) {
-  const items: { id: Kind; label: string; beta?: boolean }[] = [
+  const items: { id: Kind; label: string }[] = [
     { id: 'claude', label: 'Claude' },
-    { id: 'team', label: 'Team', beta: true },
+    { id: 'codex', label: 'Codex' },
   ]
   return (
     <div
@@ -157,11 +139,6 @@ function KindToggle({
               />
             )}
             <span className="relative">{it.label}</span>
-            {it.beta && (
-              <span className="relative rounded bg-primary/15 px-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                Beta
-              </span>
-            )}
           </button>
         )
       })}
@@ -169,12 +146,14 @@ function KindToggle({
   )
 }
 
-// ── Claude side — one streamlined agent ──────────────────────────────────────
-function ClaudeForm({
+// ── Agent form — shared by Claude and Codex ──────────────────────────────────
+function AgentForm({
+  provider,
   defaultDir,
   onCancel,
   onCreated,
 }: {
+  provider: 'claude' | 'codex'
   defaultDir: string | undefined
   onCancel: () => void
   onCreated: (name: string) => void
@@ -227,13 +206,15 @@ function ClaudeForm({
         name: slug,
         display_name: name.trim(),
         dir,
-        provider: 'claude',
+        provider,
         worktree,
         // Omit when LOCAL so the wire stays clean (server treats missing/null
         // both as LOCAL). Only sent for a registered remote host.
         host_id: hostId ?? undefined,
-        // Boot in bypass-permissions mode (the server appends the trusted flag).
-        bypass_permissions: bypassPermissions || undefined,
+        // Claude-only: the server appends its trusted bypass flag. Codex has its
+        // own approval settings, configured through its CLI flags/profile.
+        bypass_permissions:
+          provider === 'claude' && bypassPermissions ? true : undefined,
       })
       const sessionName = created?.name ?? slug
       // Boot tmux. Non-fatal — the row exists either way; focus can retry.
@@ -323,12 +304,14 @@ function ClaudeForm({
         desc="Run in a fresh git worktree so it can’t touch your tree."
       />
 
-      <CheckCard
-        checked={bypassPermissions}
-        onChange={setBypassPermissions}
-        title="Bypass permissions"
-        desc="Claude runs tools without asking. Use only in directories you trust."
-      />
+      {provider === 'claude' && (
+        <CheckCard
+          checked={bypassPermissions}
+          onChange={setBypassPermissions}
+          title="Bypass permissions"
+          desc="Claude runs tools without asking. Use only in directories you trust."
+        />
+      )}
 
       {error && (
         <p

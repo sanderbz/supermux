@@ -592,15 +592,13 @@ export function Overview() {
           </span>
         </Button>
 
-        {/* The "+" opens the New-session panel DIRECTLY (Claude | Team toggle
-            lives inside it) — no intermediate menu. Group-create moved to the
-            bottom-of-grid affordance (and stays on the `g n` chord + ⌘K). The
-            `data-tour="start-team"` anchor + size/position classes are kept so
-            the onboarding tour still lands on this pixel. */}
+        {/* The "+" opens the New-session panel directly (Claude | Codex lives
+            inside it). Team creation remains available from its existing
+            dedicated entry points. */}
         <Button
           type="button"
           aria-label="New session"
-          data-tour="start-team"
+          data-tour="new-session"
           onClick={openSheet}
           className="size-9 rounded-md p-0 ml-auto sm:ml-0"
         >

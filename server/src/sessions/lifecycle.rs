@@ -257,14 +257,67 @@ fn build_env(
 
 /// Build the agent launch command sent into the freshly-spawned shell. Profiles
 /// are sourced first so `claude`/`codex` are on PATH in a non-login pane.
-/// Resume strategy: `cc_session_name` → `cc_conversation_id` → fresh `--name`.
+/// Claude resumes via `cc_session_name` → `cc_conversation_id` → fresh `--name`.
+/// Codex starts a fresh interactive session: supermux does not yet persist the
+/// session id Codex assigns after startup, so passing a resume argument would be
+/// misleading. Its native `codex resume` picker remains available in the pane.
 fn build_launch_command(config: &crate::config::Config, s: &Session) -> String {
     let agent = match s.provider.as_str() {
-        // Codex is no longer an OFFERED provider (Claude-only). The validator
-        // still ACCEPTS `provider="codex"` (accept-but-never-offer) so existing
-        // scheduled jobs don't 400; such sessions launch via the claude default
-        // below, same as any non-shell provider.
-        // default to claude
+        "codex" => {
+            // Keep Codex in the normal terminal buffer so the browser terminal
+            // retains scrollback. This is Codex CLI's documented TUI flag.
+            let mut parts = vec!["codex".to_string(), "--no-alt-screen".to_string()];
+            let defaults = config.provider_defaults.codex_flags.trim();
+            if !defaults.is_empty() {
+                parts.push(defaults.to_string());
+            }
+            if !s.flags.trim().is_empty() {
+                parts.push(s.flags.trim().to_string());
+            }
+            let codex = parts.join(" ");
+
+            // Codex is an optional provider, so make its first launch
+            // self-contained for the service user (and for remote hosts). The
+            // official standalone installer is user-scoped and needs no Node
+            // runtime. Download it to a file rather than piping into `sh`: a
+            // failed curl must never look like a successful empty install.
+            // `CODEX_NON_INTERACTIVE=1` suppresses the installer's optional
+            // "start now" prompt because supermux owns the subsequent launch.
+            //
+            // Authentication deliberately happens in the tmux pane. Device
+            // auth is suitable for a headless host and leaves the browser
+            // terminal showing the URL/code. Once authenticated, subsequent
+            // starts skip it through `codex login status`.
+            format!(
+                "if ! command -v codex >/dev/null 2>&1; then \
+                   printf '\\nCodex CLI is not installed; installing it for this user…\\n'; \
+                   _supermux_codex_installer=$(mktemp) && \
+                   curl -fsSL https://chatgpt.com/codex/install.sh \
+                     -o \"$_supermux_codex_installer\" && \
+                   CODEX_NON_INTERACTIVE=1 sh \"$_supermux_codex_installer\"; \
+                   _supermux_codex_install_status=$?; \
+                   if [ -n \"${{_supermux_codex_installer:-}}\" ]; then \
+                     rm -f \"$_supermux_codex_installer\"; \
+                   fi; \
+                   export PATH=\"$HOME/.local/bin:$PATH\"; hash -r 2>/dev/null || true; \
+                   if [ \"$_supermux_codex_install_status\" -ne 0 ]; then \
+                     printf '\\nCodex CLI installation failed. Check the output above, then retry this session.\\n'; \
+                   fi; \
+                 fi; \
+                 if command -v codex >/dev/null 2>&1; then \
+                   if codex login status >/dev/null 2>&1; then \
+                     {codex}; \
+                   else \
+                     printf '\\nCodex needs a one-time login for this user.\\n'; \
+                     codex login --device-auth && {codex}; \
+                   fi; \
+                 else \
+                   printf '\\nCodex CLI is unavailable. Install it and retry this session.\\n'; \
+                 fi"
+            )
+        }
+        // `shell` never reaches this builder; retaining Claude as the fallback
+        // keeps legacy/unknown non-shell rows launchable.
         _ => {
             let mut parts = vec!["claude".to_string()];
             let defaults = config.provider_defaults.claude_flags.trim();
@@ -1449,6 +1502,95 @@ mod build_env_tests {
             env.get("CLAUDE_CODE_FORCE_SYNC_OUTPUT").map(String::as_str),
             Some("1"),
         );
+    }
+
+    #[test]
+    fn codex_launch_uses_its_binary_defaults_and_inline_terminal() {
+        let mut config = cfg();
+        config.provider_defaults.codex_flags = "--model gpt-5-codex".into();
+        let session = Session {
+            name: "codex-worker".into(),
+            display_name: "Codex worker".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "codex".into(),
+            flags: "--ask-for-approval never".into(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+        };
+
+        let command = build_launch_command(&config, &session);
+        let invocation = "codex --no-alt-screen --model gpt-5-codex --ask-for-approval never";
+        assert!(command.contains("https://chatgpt.com/codex/install.sh"));
+        assert!(command.contains("CODEX_NON_INTERACTIVE=1"));
+        assert!(command.contains("codex login status >/dev/null 2>&1"));
+        assert!(command.contains("codex login --device-auth"));
+        assert_eq!(command.matches(invocation).count(), 2);
+        assert!(!command.contains("claude"));
+    }
+
+    #[test]
+    fn codex_bootstrap_is_valid_shell() {
+        let config = cfg();
+        let session = Session {
+            name: "codex-shell-check".into(),
+            display_name: "Codex shell check".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "codex".into(),
+            flags: String::new(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+        };
+
+        let command = build_launch_command(&config, &session);
+        let status = std::process::Command::new("bash")
+            .args(["-n", "-c", &command])
+            .status()
+            .expect("bash must be available to validate the launch command");
+        assert!(status.success(), "generated Codex bootstrap must parse as shell");
     }
 }
 
