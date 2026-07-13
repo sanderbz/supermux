@@ -1511,6 +1511,38 @@ export function useLiveTerm(
     let writeFlushRaf: number | null = null
     let writeFlushTimeout: number | null = null
     let capWarned = false
+    // Post-snapshot SETTLE pins. The one-shot `replay_done` scroll-to-bottom
+    // lands the viewport at the live bottom — but an inline-TUI (Codex runs
+    // `--no-alt-screen`) REDRAWS its composer/footer as live frames that arrive
+    // just AFTER the pin, and that late redraw leaves the viewport a row or two
+    // above the true bottom (the "come back to focus, not scrolled down" bug).
+    // So after the boundary pin we re-pin a few times across a short window to
+    // absorb the trailing redraw. Scoped to the connection; cleared on the next
+    // boundary + on teardown. UNCONDITIONAL within the window (a resync/attach
+    // already yanks to bottom by design, and the redraw itself transiently spoofs
+    // the scrolled-up check, so gating on it would defeat the fix); the window is
+    // short enough (≤650ms, the reveal moment) that a deliberate user scroll-up
+    // happens after it, in the normal live-follow path.
+    let settleTimers: number[] = []
+    const clearSettleTimers = () => {
+      for (const id of settleTimers) window.clearTimeout(id)
+      settleTimers = []
+    }
+    const settlePinToBottom = () => {
+      clearSettleTimers()
+      for (const ms of [80, 200, 400, 650]) {
+        settleTimers.push(
+          window.setTimeout(() => {
+            if (disposedRef.current || !readyRef.current) return
+            try {
+              termRef.current?.scrollToBottom()
+            } catch {
+              /* disposed mid-pin — harmless */
+            }
+          }, ms),
+        )
+      }
+    }
     // Set by the `replay_done` handler to request a scroll-to-bottom that lands
     // AFTER the queued snapshot bytes are parsed (via the flush's write
     // callback) — NOT before, while they're still in the queue. A mid-stream
@@ -1541,6 +1573,9 @@ export function useLiveTerm(
       } catch {
         /* disposed mid-pin — harmless */
       }
+      // Keep re-pinning briefly so a late inline-TUI redraw (Codex --no-alt-screen)
+      // can't leave the viewport a hair above the bottom on (re)focus.
+      settlePinToBottom()
     }
     const flushPendingWrites = () => {
       if (writeFlushRaf !== null) {
@@ -2256,6 +2291,7 @@ export function useLiveTerm(
       if (renderKickRaf !== null) window.cancelAnimationFrame(renderKickRaf)
       if (writeFlushRaf !== null) window.cancelAnimationFrame(writeFlushRaf)
       if (writeFlushTimeout !== null) window.clearTimeout(writeFlushTimeout)
+      clearSettleTimers()
       pendingWrites = []
       pendingBytes = 0
       ro.disconnect()
