@@ -657,9 +657,15 @@ export function DesktopSplit({
             setSnippetsOpen(true)
           }}
           onAttach={attach.handleFiles}
-          // "Edit in native editor" relies on Claude's Ctrl+G ($EDITOR bridge),
-          // so it's a no-op on codex/shell panes — hide it for non-Claude sessions.
-          onEdit={current?.provider === 'claude' ? onEdit : undefined}
+          // "Edit in native editor" relies on the Ctrl+G ($EDITOR bridge). Both
+          // Claude (`chat:externalEditor`) and Codex (`open_external_editor`) bind
+          // Ctrl+G to open $EDITOR, so both open the same supermux-edit bridge →
+          // same `external-edit` SSE. It's a no-op on shell panes — hide it there.
+          onEdit={
+            current?.provider === 'claude' || current?.provider === 'codex'
+              ? onEdit
+              : undefined
+          }
           onDetach={onDetach}
           onStop={onStop}
         />
