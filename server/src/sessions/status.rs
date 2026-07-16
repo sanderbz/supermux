@@ -809,12 +809,14 @@ static CODEX_WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
 
 /// KIMI ACTIVE marker: Kimi Code animates a moon-phase spinner on its status line
 /// the whole time a turn runs — the glyph cycles across 🌑🌒🌓🌔🌕🌖🌗🌘
-/// (U+1F311..U+1F318). Any one of them present ⇒ a turn is live. The bottom bar's
-/// persistent "<model> thinking" decoration is deliberately NOT matched (it shows
-/// at idle too). Tool-execution phases where the moon isn't drawn are caught by
-/// the fresh-PTY-bytes fallback in `classify`, not this bank.
+/// (U+1F311..U+1F318), always rendered as `<moon> · <tip>`. Anchored to the
+/// trailing ` ·` so a stray phase glyph in assistant OUTPUT text can't read as
+/// Active (the branding crescent 🌙 U+1F319 is outside the range regardless).
+/// The bottom bar's persistent "<model> thinking" decoration is deliberately NOT
+/// matched (it shows at idle too). Tool-execution phases where the moon isn't
+/// drawn are caught by the fresh-PTY-bytes fallback in `classify`, not this bank.
 static KIMI_ACTIVE_BANK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[\x{1F311}-\x{1F318}]").unwrap());
+    Lazy::new(|| Regex::new(r"[\x{1F311}-\x{1F318}] ·").unwrap());
 
 /// KIMI WAITING marker: a GENUINE approval / selection prompt. Kimi's command
 /// approval shows "Run this command?" with an "Approve once / Approve for this
@@ -894,6 +896,15 @@ mod tests {
             let cap = format!("{moon} · Tip: /plugins: manage plugins\n K2.7 Coding thinking  /x");
             assert_eq!(kimi(&cap, neutral_pty()), Status::Active, "moon {moon}");
         }
+    }
+
+    #[test]
+    fn kimi_moon_glyph_in_output_text_is_not_active() {
+        // A phase glyph in ASSISTANT OUTPUT (not the `<moon> · ` spinner line)
+        // must NOT read Active — the bank is anchored to the trailing ` ·`.
+        // Stale pty so only the bank decides.
+        let cap = "● The 🌑 new moon marks the start of the lunar cycle.\n K2.7 Coding thinking  /x";
+        assert_eq!(kimi(cap, neutral_pty()), Status::Idle);
     }
 
     #[test]

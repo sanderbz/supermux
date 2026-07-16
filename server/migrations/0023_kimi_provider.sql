@@ -8,7 +8,10 @@
 -- and wipe those children — unacceptable on a live install. Instead relax ONLY
 -- the CHECK text via a targeted sqlite_master edit: no data movement, no table
 -- drop, no cascade, children untouched. `writable_schema = RESET` reparses the
--- schema in-process so the running connection immediately honours the new set.
+-- schema on the MIGRATION connection (a writable_schema edit does not bump the
+-- schema cookie, so it can't signal SQLITE_SCHEMA to other connections). That is
+-- safe here because the pool is lazy (min_connections = 0) and `sqlx::migrate!`
+-- runs before any `sessions` query, so no connection ever parsed the old schema.
 --
 -- Verified on a byte copy of a live 42-session DB: data counts unchanged, FK and
 -- integrity checks clean, provider='kimi' now accepted, unknown providers still

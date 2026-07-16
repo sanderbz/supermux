@@ -1850,6 +1850,49 @@ mod build_env_tests {
             .expect("bash must be available to validate the launch command");
         assert!(status.success(), "generated Codex bootstrap must parse as shell");
     }
+
+    #[test]
+    fn kimi_bootstrap_is_valid_shell() {
+        let config = cfg();
+        let session = Session {
+            name: "kimi-shell-check".into(),
+            display_name: "Kimi shell check".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "kimi".into(),
+            flags: "--yolo".into(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+        };
+
+        let (command, _resume) = build_launch_command(&config, &session);
+        let status = std::process::Command::new("bash")
+            .args(["-n", "-c", &command])
+            .status()
+            .expect("bash must be available to validate the launch command");
+        assert!(status.success(), "generated Kimi bootstrap must parse as shell");
+    }
 }
 
 #[cfg(test)]
