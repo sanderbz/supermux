@@ -443,6 +443,15 @@ pub struct StatusDetector {
     /// / selector prompts), everything else off the Claude banks. Empty =
     /// generic/Claude (the cold-start + every existing test default).
     provider: String,
+    /// Kimi TURN LATCH: `true` from the first moon-spinner frame of a turn until
+    /// the session settles back to a quiet Idle. While open, fresh PTY bytes
+    /// mean the turn is still running (moon-less streaming / tool phases) →
+    /// Active. While CLOSED, fresh bytes are echo, not work — a resize repaint
+    /// (opening the mobile focus view / the phone keyboard resizes the pane and
+    /// Kimi repaints ~40KB) or the user typing at the prompt must not flip the
+    /// card to "Running" (the reported idle-loading bug). Kimi-only state;
+    /// stays `false` for every other provider.
+    kimi_turn_open: bool,
 }
 
 impl Default for StatusDetector {
@@ -462,6 +471,7 @@ impl StatusDetector {
         Self {
             last_status: Status::Unknown,
             provider: String::new(),
+            kimi_turn_open: false,
         }
     }
 
@@ -473,6 +483,7 @@ impl StatusDetector {
         Self {
             last_status: Status::Unknown,
             provider: provider.to_string(),
+            kimi_turn_open: false,
         }
     }
 
@@ -519,7 +530,7 @@ impl StatusDetector {
         status
     }
 
-    fn classify(&self, capture: &str, last_pty: Instant, turn: TurnState, has_hooks: bool) -> Status {
+    fn classify(&mut self, capture: &str, last_pty: Instant, turn: TurnState, has_hooks: bool) -> Status {
         // ── 0. user-interrupt pre-emption ────────────────────────────────────
         // When the user presses Esc twice in the Claude TUI, the current turn
         // is interrupted and the TUI shows the literal "Interrupted · What
@@ -591,36 +602,46 @@ impl StatusDetector {
         } else if self.provider == "kimi" {
             // Kimi Code (Moonshot) — also hookless, also NOT Claude's TUI. States
             // captured live from kimi-code 0.26.0:
-            //   working  → an animated moon-phase spinner (🌑🌒🌓🌔🌕🌖🌗🌘) on the
-            //              status line the whole time a turn runs
+            //   working  → an animated moon-phase spinner (🌑🌒🌓🌔🌕🌖🌗🌘) drawn
+            //              alone on its own line while the model thinks/responds
             //   waiting  → an approval prompt ("Run this command?" / "Approve once"
             //              / "Approve for this session" + a 1/2/3/4 selector)
-            //   idle     → neither; the composer at rest, and — unlike Codex —
-            //              Kimi's idle TUI is STATIC (no repaint bytes at rest)
+            //   idle     → neither; the composer at rest. Kimi's idle TUI is
+            //              static AT REST, but it does a full ~40KB repaint on any
+            //              pane RESIZE — and the mobile focus view / phone
+            //              keyboard resize the pane constantly, so raw bytes
+            //              alone must never mean "working" (the reported bug:
+            //              the tile spun "Running" on every focus-open at idle).
             // NB: the bottom bar always reads "<model> thinking" (e.g. "K2.7
             // Coding thinking") as DECORATION — it is NOT a work signal and must
             // never be matched.
+            //
+            // The moon is Kimi's turn-state signal, so it drives a TURN LATCH
+            // (the hookless analogue of Claude's turn state machine): a moon
+            // frame opens it; a settled quiet Idle closes it. Fresh bytes count
+            // as work ONLY while the latch is open — that keeps the moon-less
+            // streaming/tool phases Active mid-turn, while resize repaints and
+            // typing echo at rest stay Idle.
             if KIMI_ACTIVE_BANK.is_match(capture) {
+                self.kimi_turn_open = true;
                 return Status::Active;
             }
             if KIMI_WAITING_BANK.is_match(capture) {
                 return Status::Waiting;
             }
-            // No spinner / approval drawn. Because Kimi's idle TUI is STATIC,
-            // FRESH bytes here mean a tool is still executing (its output
-            // streaming between spinner frames, where the moon isn't drawn) →
-            // Active. Once bytes stop it is genuinely at rest → Idle IMMEDIATELY:
-            // idle being static means the heartbeat can't flap it (the Codex bug)
-            // and we don't need the 30s idle-timeout lag. An empty capture (still
-            // booting) holds the current status.
-            if last_pty.elapsed() < PTY_ACTIVE_WINDOW {
+            if self.kimi_turn_open && last_pty.elapsed() < PTY_ACTIVE_WINDOW {
                 return Status::Active;
             }
-            return if capture.trim().is_empty() {
-                self.last_status
-            } else {
-                Status::Idle
-            };
+            // An empty capture (still booting) holds the current status and the
+            // latch: nothing has settled yet.
+            if capture.trim().is_empty() {
+                return self.last_status;
+            }
+            // Genuinely at rest (or bytes with no turn open — echo, not work) →
+            // Idle immediately, and the turn latch closes: from here only a new
+            // moon frame reads as work again.
+            self.kimi_turn_open = false;
+            return Status::Idle;
         } else {
             if ACTIVE_BANK.is_match(capture) {
                 return Status::Active;
@@ -807,16 +828,19 @@ static CODEX_WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
-/// KIMI ACTIVE marker: Kimi Code animates a moon-phase spinner on its status line
-/// the whole time a turn runs — the glyph cycles across 🌑🌒🌓🌔🌕🌖🌗🌘
-/// (U+1F311..U+1F318), always rendered as `<moon> · <tip>`. Anchored to the
-/// trailing ` ·` so a stray phase glyph in assistant OUTPUT text can't read as
-/// Active (the branding crescent 🌙 U+1F319 is outside the range regardless).
-/// The bottom bar's persistent "<model> thinking" decoration is deliberately NOT
-/// matched (it shows at idle too). Tool-execution phases where the moon isn't
-/// drawn are caught by the fresh-PTY-bytes fallback in `classify`, not this bank.
+/// KIMI ACTIVE marker: Kimi Code animates a moon-phase spinner while the model
+/// thinks/responds — the glyph cycles across 🌑🌒🌓🌔🌕🌖🌗🌘 (U+1F311..U+1F318).
+/// Live 0.26.0 draws it ALONE on its own line (`  🌑`); a `<moon> · <tip>`
+/// variant also exists. Matched LINE-ANCHORED (bare glyph to end-of-line, or
+/// glyph followed by ` ·`) so a stray phase glyph inside assistant OUTPUT prose
+/// can't read as Active (the branding crescent 🌙 U+1F319 is outside the range
+/// regardless). The bottom bar's persistent "<model> thinking" decoration is
+/// deliberately NOT matched (it shows at idle too). Beyond marking Active, a
+/// match OPENS the kimi turn latch in `classify` — the signal that a turn is
+/// running, which is what lets fresh bytes cover the moon-less streaming/tool
+/// phases without resize repaints at idle reading as work.
 static KIMI_ACTIVE_BANK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[\x{1F311}-\x{1F318}] ·").unwrap());
+    Lazy::new(|| Regex::new(r"(?m)^\s*[\x{1F311}-\x{1F318}]\s*(·.*)?$").unwrap());
 
 /// KIMI WAITING marker: a GENUINE approval / selection prompt. Kimi's command
 /// approval shows "Run this command?" with an "Approve once / Approve for this
@@ -891,20 +915,88 @@ mod tests {
     #[test]
     fn kimi_moon_spinner_is_active() {
         // The moon-phase spinner cycles while a turn runs; any glyph ⇒ Active,
-        // even with a stale heartbeat.
+        // even with a stale heartbeat. Live 0.26.0 draws the glyph ALONE on its
+        // own line (`  🌑`); older captures showed a `🌑 · <tip>` variant — the
+        // bank must match both shapes.
         for moon in ["🌑", "🌓", "🌕", "🌘"] {
-            let cap = format!("{moon} · Tip: /plugins: manage plugins\n K2.7 Coding thinking  /x");
-            assert_eq!(kimi(&cap, neutral_pty()), Status::Active, "moon {moon}");
+            let cap = format!("  {moon}\n K2.7 Coding thinking  /x");
+            assert_eq!(kimi(&cap, neutral_pty()), Status::Active, "bare moon {moon}");
         }
+        let cap = "🌒 · Tip: /plugins: manage plugins\n K2.7 Coding thinking  /x";
+        assert_eq!(kimi(cap, neutral_pty()), Status::Active, "moon with tip");
     }
 
     #[test]
     fn kimi_moon_glyph_in_output_text_is_not_active() {
-        // A phase glyph in ASSISTANT OUTPUT (not the `<moon> · ` spinner line)
-        // must NOT read Active — the bank is anchored to the trailing ` ·`.
-        // Stale pty so only the bank decides.
+        // A phase glyph in ASSISTANT OUTPUT (not the spinner line) must NOT read
+        // Active — the bank is line-anchored (bare glyph, or `glyph ·`), so a
+        // glyph mid-prose or starting a prose line stays quiet. Stale pty so
+        // only the bank decides.
         let cap = "● The 🌑 new moon marks the start of the lunar cycle.\n K2.7 Coding thinking  /x";
-        assert_eq!(kimi(cap, neutral_pty()), Status::Idle);
+        assert_eq!(kimi(cap, neutral_pty()), Status::Idle, "glyph mid-prose");
+        let cap = "🌑 De nieuwe maan is het begin van de cyclus.\n K2.7 Coding thinking  /x";
+        assert_eq!(kimi(cap, neutral_pty()), Status::Idle, "glyph starting a prose line");
+    }
+
+    #[test]
+    fn kimi_resize_repaint_at_idle_is_not_active() {
+        // THE BUG (reported live): opening the mobile focus view / popping the
+        // phone keyboard resizes the pane, Kimi's TUI does a full ~40KB repaint,
+        // and the fresh-bytes fallback read that echo as work — the tile spun
+        // "Running" for a few seconds on every resize while the agent sat at the
+        // idle composer doing nothing. Repaint bytes with NO turn open (no moon
+        // seen since the last settled Idle) must stay Idle.
+        let idle_cap = "\
+ │ >                                                                  │
+ K2.7 Coding thinking  /tmp/kimiprobe   ask Kimi to schedule tasks   context: 9% (20k/256k)";
+        assert_eq!(kimi(idle_cap, Instant::now()), Status::Idle, "repaint echo at rest");
+    }
+
+    #[test]
+    fn kimi_moonless_streaming_stays_active_while_turn_open() {
+        // Mid-turn, Kimi hides the moon during some streaming/tool phases. A
+        // moon frame OPENS the turn latch; from then on fresh bytes keep the
+        // session Active through those moon-less phases.
+        let mut det = StatusDetector::for_provider("kimi");
+        let moon_cap = "  🌓\n K2.7 Coding thinking  /x";
+        assert_eq!(
+            det.detect(moon_cap, neutral_pty(), TurnState::default(), false),
+            Status::Active,
+            "moon opens the turn"
+        );
+        let streaming_cap = "  ● Running\n  tick 3\n K2.7 Coding thinking  /x   context: 8%";
+        assert_eq!(
+            det.detect(streaming_cap, Instant::now(), TurnState::default(), false),
+            Status::Active,
+            "fresh bytes mid-turn → still active"
+        );
+    }
+
+    #[test]
+    fn kimi_turn_end_closes_latch_so_later_bytes_stay_idle() {
+        // Once a turn settles to Idle (quiet, at the composer) the latch closes:
+        // later byte echoes (resize repaint, the user typing at the prompt) must
+        // NOT re-read as work without a new moon frame.
+        let mut det = StatusDetector::for_provider("kimi");
+        let moon_cap = "  🌕\n K2.7 Coding thinking  /x";
+        let idle_cap = "\
+ │ >                                                                  │
+ K2.7 Coding thinking  /x   context: 9% (20k/256k)";
+        assert_eq!(
+            det.detect(moon_cap, neutral_pty(), TurnState::default(), false),
+            Status::Active,
+            "turn running"
+        );
+        assert_eq!(
+            det.detect(idle_cap, neutral_pty(), TurnState::default(), false),
+            Status::Idle,
+            "turn settled → idle"
+        );
+        assert_eq!(
+            det.detect(idle_cap, Instant::now(), TurnState::default(), false),
+            Status::Idle,
+            "post-turn byte echo stays idle"
+        );
     }
 
     #[test]
@@ -932,12 +1024,23 @@ mod tests {
 
     #[test]
     fn kimi_tool_execution_without_moon_is_active_via_fresh_bytes() {
-        // A tool is running (output streaming, no moon frame captured). Kimi's
-        // idle is STATIC, so fresh bytes here mean work → Active; the same capture
-        // with a stale heartbeat is genuinely at rest → Idle.
+        // A tool is running (output streaming, no moon frame captured) DURING a
+        // turn (a moon frame opened the latch). Fresh bytes mean work → Active;
+        // the same capture once quiet is at rest → Idle (and closes the turn).
+        let mut det = StatusDetector::for_provider("kimi");
+        let moon_cap = "  🌑\n K2.7 Coding thinking  /x";
+        det.detect(moon_cap, neutral_pty(), TurnState::default(), false);
         let cap = "  ● Running\n  tick 3\n K2.7 Coding thinking  /x   context: 8%";
-        assert_eq!(kimi(cap, Instant::now()), Status::Active, "fresh bytes → active");
-        assert_eq!(kimi(cap, neutral_pty()), Status::Idle, "quiet → idle, no flap");
+        assert_eq!(
+            det.detect(cap, Instant::now(), TurnState::default(), false),
+            Status::Active,
+            "fresh bytes mid-turn → active"
+        );
+        assert_eq!(
+            det.detect(cap, neutral_pty(), TurnState::default(), false),
+            Status::Idle,
+            "quiet → idle, no flap"
+        );
     }
 
     // Codex TUI strings below are captured LIVE from codex-cli 0.144.3.
