@@ -114,10 +114,16 @@ export function DesktopFocusHeader({
   lastSendButtonRef,
 }: DesktopFocusHeaderProps) {
   // One provider-aware tools entry point. The host renders Claude's registry
-  // manager or Codex's native quick actions from the same focused session.
+  // manager or Codex/Kimi's native quick actions from the same focused session.
   const openAgentTools = useAgentToolsSheet((s) => s.openSheet)
-  const toolsLabel = provider === 'codex' ? 'Codex tools' : 'Claude tools'
-  const showAgentTools = provider === 'claude' || provider === 'codex'
+  const toolsLabel =
+    provider === 'codex'
+      ? 'Codex tools'
+      : provider === 'kimi'
+        ? 'Kimi tools'
+        : 'Claude tools'
+  const showAgentTools =
+    provider === 'claude' || provider === 'codex' || provider === 'kimi'
   return (
     <header
       className="glass flex h-11 shrink-0 items-center gap-2.5 border-b border-border px-3"
@@ -188,7 +194,7 @@ export function DesktopFocusHeader({
           />
         )}
         {/* Provider-aware tools: Claude opens its registry + permission modes;
-            Codex opens native high-use slash panels. */}
+            Codex and Kimi open native high-use slash panels. */}
         {showAgentTools && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -327,8 +333,14 @@ export function FocusHeader({
   // removed — now hosts the provider-aware tools icon. Keeps the title centred against
   // the left back-button (same 44pt footprint as the old spacer).
   const openAgentTools = useAgentToolsSheet((s) => s.openSheet)
-  const toolsLabel = provider === 'codex' ? 'Codex tools' : 'Claude tools'
-  const showAgentTools = provider === 'claude' || provider === 'codex'
+  const toolsLabel =
+    provider === 'codex'
+      ? 'Codex tools'
+      : provider === 'kimi'
+        ? 'Kimi tools'
+        : 'Claude tools'
+  const showAgentTools =
+    provider === 'claude' || provider === 'codex' || provider === 'kimi'
   return (
     <header
       className={cn(

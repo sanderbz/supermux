@@ -588,6 +588,39 @@ impl StatusDetector {
             } else {
                 Status::Idle
             };
+        } else if self.provider == "kimi" {
+            // Kimi Code (Moonshot) — also hookless, also NOT Claude's TUI. States
+            // captured live from kimi-code 0.26.0:
+            //   working  → an animated moon-phase spinner (🌑🌒🌓🌔🌕🌖🌗🌘) on the
+            //              status line the whole time a turn runs
+            //   waiting  → an approval prompt ("Run this command?" / "Approve once"
+            //              / "Approve for this session" + a 1/2/3/4 selector)
+            //   idle     → neither; the composer at rest, and — unlike Codex —
+            //              Kimi's idle TUI is STATIC (no repaint bytes at rest)
+            // NB: the bottom bar always reads "<model> thinking" (e.g. "K2.7
+            // Coding thinking") as DECORATION — it is NOT a work signal and must
+            // never be matched.
+            if KIMI_ACTIVE_BANK.is_match(capture) {
+                return Status::Active;
+            }
+            if KIMI_WAITING_BANK.is_match(capture) {
+                return Status::Waiting;
+            }
+            // No spinner / approval drawn. Because Kimi's idle TUI is STATIC,
+            // FRESH bytes here mean a tool is still executing (its output
+            // streaming between spinner frames, where the moon isn't drawn) →
+            // Active. Once bytes stop it is genuinely at rest → Idle IMMEDIATELY:
+            // idle being static means the heartbeat can't flap it (the Codex bug)
+            // and we don't need the 30s idle-timeout lag. An empty capture (still
+            // booting) holds the current status.
+            if last_pty.elapsed() < PTY_ACTIVE_WINDOW {
+                return Status::Active;
+            }
+            return if capture.trim().is_empty() {
+                self.last_status
+            } else {
+                Status::Idle
+            };
         } else {
             if ACTIVE_BANK.is_match(capture) {
                 return Status::Active;
@@ -774,6 +807,25 @@ static CODEX_WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
+/// KIMI ACTIVE marker: Kimi Code animates a moon-phase spinner on its status line
+/// the whole time a turn runs — the glyph cycles across 🌑🌒🌓🌔🌕🌖🌗🌘
+/// (U+1F311..U+1F318). Any one of them present ⇒ a turn is live. The bottom bar's
+/// persistent "<model> thinking" decoration is deliberately NOT matched (it shows
+/// at idle too). Tool-execution phases where the moon isn't drawn are caught by
+/// the fresh-PTY-bytes fallback in `classify`, not this bank.
+static KIMI_ACTIVE_BANK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[\x{1F311}-\x{1F318}]").unwrap());
+
+/// KIMI WAITING marker: a GENUINE approval / selection prompt. Kimi's command
+/// approval shows "Run this command?" with an "Approve once / Approve for this
+/// session / Reject" selector (`↑/↓ select · 1/2/3/4 choose · ↵ confirm`); file-edit
+/// and plan approvals reuse the same "Approve …" selector. These strings never
+/// appear at idle or mid-turn, so they are unambiguous needs-input signals.
+static KIMI_WAITING_BANK: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)approve (once|for this session|all)|run this command\?|choose · ↵ confirm")
+        .unwrap()
+});
+
 /// USER-INTERRUPT marker: the literal prompt Claude Code shows after the user
 /// presses Esc twice mid-turn. Unique enough to pre-empt the turn state
 /// machine (Claude Code doesn't emit a `Stop` hook for user-interrupts, so the
@@ -822,6 +874,59 @@ mod tests {
             TurnState::default(),
             false,
         )
+    }
+
+    /// Classify with a fresh Kimi-bound detector. `pty` lets a test choose a
+    /// stale heartbeat (`neutral_pty`, rest) or fresh bytes (`Instant::now()`,
+    /// tool-execution) since Kimi uses the fresh-bytes fallback for its
+    /// moon-less tool phases.
+    fn kimi(cap: &str, pty: Instant) -> Status {
+        StatusDetector::for_provider("kimi").detect(cap, pty, TurnState::default(), false)
+    }
+
+    // Kimi TUI strings below are captured LIVE from kimi-code 0.26.0.
+
+    #[test]
+    fn kimi_moon_spinner_is_active() {
+        // The moon-phase spinner cycles while a turn runs; any glyph ⇒ Active,
+        // even with a stale heartbeat.
+        for moon in ["🌑", "🌓", "🌕", "🌘"] {
+            let cap = format!("{moon} · Tip: /plugins: manage plugins\n K2.7 Coding thinking  /x");
+            assert_eq!(kimi(&cap, neutral_pty()), Status::Active, "moon {moon}");
+        }
+    }
+
+    #[test]
+    fn kimi_approval_prompt_is_waiting() {
+        let cap = "\
+  ▶ Run this command?
+  cwd: /x
+  $ for i in {1..60}; do echo \"$i\"; sleep 0.5; done
+  ▶ 1. Approve once
+    2. Approve for this session
+    3. Reject
+  ↑/↓ select · 1/2/3/4 choose · ↵ confirm";
+        assert_eq!(kimi(cap, Instant::now()), Status::Waiting, "approval outranks fresh bytes");
+    }
+
+    #[test]
+    fn kimi_idle_composer_is_idle_even_with_the_thinking_decoration() {
+        // At rest (stale pty): the composer + the ALWAYS-present "<model> thinking"
+        // decoration must NOT read Active, and no moon/approval → Idle.
+        let cap = "\
+ │ >                                                                  │
+ K2.7 Coding thinking  /tmp/kimiprobe   ask Kimi to schedule tasks   context: 9% (20k/256k)";
+        assert_eq!(kimi(cap, neutral_pty()), Status::Idle);
+    }
+
+    #[test]
+    fn kimi_tool_execution_without_moon_is_active_via_fresh_bytes() {
+        // A tool is running (output streaming, no moon frame captured). Kimi's
+        // idle is STATIC, so fresh bytes here mean work → Active; the same capture
+        // with a stale heartbeat is genuinely at rest → Idle.
+        let cap = "  ● Running\n  tick 3\n K2.7 Coding thinking  /x   context: 8%";
+        assert_eq!(kimi(cap, Instant::now()), Status::Active, "fresh bytes → active");
+        assert_eq!(kimi(cap, neutral_pty()), Status::Idle, "quiet → idle, no flap");
     }
 
     // Codex TUI strings below are captured LIVE from codex-cli 0.144.3.

@@ -87,6 +87,27 @@ export const MOCK_TILES: TileSession[] = [
     updated_at: new Date().toISOString(),
   },
   {
+    // A Kimi-provider session so the dev harness can review Kimi-only
+    // affordances (e.g. "Edit in native editor", which Kimi opens with the
+    // same Ctrl+G $EDITOR bridge as Claude/Codex). Visit /dev/focus/kimi-app.
+    name: 'kimi-app',
+    task_summary: 'Trace the K2.7 tool-call streaming regression',
+    status: 'waiting',
+    dir: '/opt/projects/kimi-app',
+    provider: 'kimi',
+    tokens: 18700,
+    branch: 'fix/stream-tool-calls',
+    preview_lines: [
+      '🌙 Kimi · K2.7 Coding',
+      '',
+      '• Proposed patch: flush the tool-call buffer before the final chunk.',
+      '',
+      '  Apply this change? (y/n)',
+      '›',
+    ],
+    updated_at: new Date().toISOString(),
+  },
+  {
     name: 'web-app',
     task_summary: 'Wire the SSE delta merge into the sessions cache',
     status: 'active',

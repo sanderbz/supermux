@@ -13,6 +13,7 @@
 //! even on multi-MB transcripts.
 
 mod codex;
+mod kimi;
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -184,6 +185,20 @@ pub async fn handler(
             codex::gather(
                 &dir,
                 &codex_id,
+                last_started,
+                q.scope,
+                &q.q,
+                q.before.as_deref(),
+                limit,
+            )
+        } else if provider == "kimi" {
+            // The DB carries no `kimi_session_id` yet, so Session scope resolves
+            // to the newest Kimi session for the working dir (see kimi.rs). Pass
+            // an empty id; the lead can thread a real id through here once the
+            // column lands, mirroring `codex_id`.
+            kimi::gather(
+                &dir,
+                "",
                 last_started,
                 q.scope,
                 &q.q,

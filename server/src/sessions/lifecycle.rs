@@ -327,6 +327,60 @@ fn build_launch_command(config: &crate::config::Config, s: &Session) -> (String,
             // `--resume`, so `wait_for_agent_ready` treats it as a fresh start.
             (agent, false)
         }
+        "kimi" => {
+            // Kimi Code CLI (Moonshot). It runs INLINE in the normal terminal
+            // buffer by default (no alternate screen), so the browser terminal
+            // keeps its scrollback with no extra flag. Bypass/approval mode flows
+            // through the flags string (`--yolo` skips most approvals) exactly
+            // like Codex's approval flag — no special-casing here.
+            let mut parts = vec!["kimi".to_string()];
+            let defaults = config.provider_defaults.kimi_flags.trim();
+            if !defaults.is_empty() {
+                parts.push(defaults.to_string());
+            }
+            if !s.flags.trim().is_empty() {
+                parts.push(s.flags.trim().to_string());
+            }
+            let kimi = parts.join(" ");
+
+            // Optional provider → make first launch self-contained for the
+            // service user. The official installer is user-scoped and bundles a
+            // Node runtime, so it needs no system Node. Download to a file (a
+            // failed curl must never look like a successful empty install), then
+            // add Kimi's user bin to PATH so the freshly-installed binary is
+            // found in this same non-login pane. Auth happens IN the pane via
+            // `kimi login` — the device-code flow (headless-friendly, shows the
+            // URL/code in the terminal). `kimi login` is IDEMPOTENT: when already
+            // authenticated it prints "Logged in…" and exits 0 immediately, so we
+            // gate the launch on it unconditionally (no separate status probe) and
+            // `&&` into the TUI only on success.
+            let agent = format!(
+                "export PATH=\"$HOME/.kimi-code/bin:$PATH\"; \
+                 if ! command -v kimi >/dev/null 2>&1; then \
+                   printf '\\nKimi Code CLI is not installed; installing it for this user…\\n'; \
+                   _supermux_kimi_installer=$(mktemp) && \
+                   curl -fsSL https://code.kimi.com/kimi-code/install.sh \
+                     -o \"$_supermux_kimi_installer\" && \
+                   bash \"$_supermux_kimi_installer\"; \
+                   _supermux_kimi_install_status=$?; \
+                   if [ -n \"${{_supermux_kimi_installer:-}}\" ]; then \
+                     rm -f \"$_supermux_kimi_installer\"; \
+                   fi; \
+                   export PATH=\"$HOME/.kimi-code/bin:$PATH\"; hash -r 2>/dev/null || true; \
+                   if [ \"$_supermux_kimi_install_status\" -ne 0 ]; then \
+                     printf '\\nKimi Code CLI installation failed. Check the output above, then retry this session.\\n'; \
+                   fi; \
+                 fi; \
+                 if command -v kimi >/dev/null 2>&1; then \
+                   kimi login && {kimi}; \
+                 else \
+                   printf '\\nKimi Code CLI is unavailable. Install it and retry this session.\\n'; \
+                 fi"
+            );
+            // Like Codex, Kimi carries no supermux-driven `--resume`, so
+            // `wait_for_agent_ready` treats it as a fresh start.
+            (agent, false)
+        }
         // `shell` never reaches this builder; retaining Claude as the fallback
         // keeps legacy/unknown non-shell rows launchable.
         _ => {
@@ -1625,6 +1679,56 @@ mod build_env_tests {
         // Codex never carries a supermux `--resume`, so it is NEVER a resume-intended
         // launch — the picker-escape anti-hang stays armed for it (a fresh start).
         assert!(!resume_intended, "codex launch must not be resume-intended");
+        assert!(!command.contains("--resume"));
+    }
+
+    #[test]
+    fn kimi_launch_uses_its_binary_defaults_and_inline_terminal() {
+        let mut config = cfg();
+        config.provider_defaults.kimi_flags = "--model kimi-for-coding".into();
+        let session = Session {
+            name: "kimi-worker".into(),
+            display_name: "Kimi worker".into(),
+            dir: "/tmp".into(),
+            desc: String::new(),
+            provider: "kimi".into(),
+            // bypass mode flows through the flags string, exactly like Codex.
+            flags: "--yolo".into(),
+            pinned: 0,
+            archived: 0,
+            auto_continue: 0,
+            auto_continue_msg: String::new(),
+            rate_limit_resume_text: String::new(),
+            tags: "[]".into(),
+            creator: String::new(),
+            branch: String::new(),
+            worktree: 0,
+            worktree_repo: String::new(),
+            mcp: String::new(),
+            created_at: 0,
+            start_count: 0,
+            last_started: 0,
+            last_send: 0,
+            last_send_text: String::new(),
+            task_summary: String::new(),
+            cc_session_name: String::new(),
+            cc_conversation_id: String::new(),
+            codex_session_id: String::new(),
+            start_error: String::new(),
+            team_name: None,
+            host_id: None,
+        };
+
+        let (command, resume_intended) = build_launch_command(&config, &session);
+        // Kimi runs inline (no alt-screen flag); bypass rides in via `--yolo`.
+        let invocation = "kimi --model kimi-for-coding --yolo";
+        assert!(command.contains("https://code.kimi.com/kimi-code/install.sh"));
+        assert!(command.contains("kimi login && "), "login gates the launch");
+        assert!(!command.contains("--no-alt-screen"), "kimi is inline by default");
+        assert_eq!(command.matches(invocation).count(), 1);
+        assert!(!command.contains("claude"));
+        // Like Codex, Kimi carries no supermux `--resume`.
+        assert!(!resume_intended, "kimi launch must not be resume-intended");
         assert!(!command.contains("--resume"));
     }
 
