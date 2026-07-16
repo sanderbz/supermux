@@ -990,9 +990,23 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
         start(state, name, None).await?;
     }
 
+    // Kimi's TUI uses TIMING-based paste detection: a literal-text send followed
+    // immediately by Enter is absorbed as one paste (the Enter becomes a newline
+    // in the composer, not a submit — the message just sits there unsent). A short
+    // gap lets Kimi's input loop settle out of paste mode so the Enter registers
+    // as a submit. ~150ms is the observed threshold; 200ms is a safe margin.
+    // Claude/Codex accept the back-to-back Enter, so this is scoped to kimi.
+    let is_kimi = db::sessions::get(&state.pool, name)
+        .await?
+        .map(|s| s.provider == "kimi")
+        .unwrap_or(false);
+
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
     tmux.send_text(text).await?;
+    if is_kimi {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
     tmux.send_key("Enter").await?;
     let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
     broadcast_send(state, name, &preview, at);
