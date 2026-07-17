@@ -1,4 +1,4 @@
-// AgentToolsSheet — provider-aware Claude/Codex session tools.
+// AgentToolsSheet — provider-aware Claude/Codex/Kimi session tools.
 //
 // One <ResponsiveSheet> (Vaul bottom-sheet on touch / right-side dialog on
 // desktop) listing MCP servers · skills · slash commands, grouped by SCOPE, each
@@ -42,9 +42,16 @@ import {
   Check,
   ChevronDown,
   CircleSlash,
+  ClipboardList,
+  FolderPlus,
+  HelpCircle,
+  History,
   Loader2,
   Lock,
+  LogIn,
+  LogOut,
   Play,
+  Plug,
   Plus,
   Puzzle,
   RefreshCw,
@@ -52,7 +59,9 @@ import {
   ShieldAlert,
   SlashSquare,
   Sparkles,
+  Target,
   Trash2,
+  Zap,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -101,6 +110,7 @@ export function AgentToolsSheet({
 }: AgentToolsSheetProps) {
   const description = sessionName ? `Scoped to ${sessionName}` : 'Global scope'
   const isCodex = provider === 'codex'
+  const isKimi = provider === 'kimi'
   // The body only mounts while the sheet is open, so its transient view-state
   // (active tab + add-form) initializes fresh each open — no reset effect (which
   // the lint rule rightly flags as a cascading-render risk). Mirrors the
@@ -109,13 +119,18 @@ export function AgentToolsSheet({
     <ResponsiveSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={isCodex ? 'Codex tools' : 'Claude tools'}
+      title={isCodex ? 'Codex tools' : isKimi ? 'Kimi tools' : 'Claude tools'}
       description={description}
       className="sm:max-w-lg"
     >
       {open && (
         isCodex ? (
           <CodexToolsBody
+            sessionName={sessionName}
+            onClose={() => onOpenChange(false)}
+          />
+        ) : isKimi ? (
+          <KimiToolsBody
             sessionName={sessionName}
             onClose={() => onOpenChange(false)}
           />
@@ -172,6 +187,79 @@ function CodexToolsBody({
   return (
     <div className="grid grid-cols-1 gap-2 px-4 py-4 sm:grid-cols-2 sm:px-5">
       {CODEX_ACTIONS.map(({ command, title, detail, icon: Icon }) => (
+        <motion.button
+          key={command}
+          type="button"
+          onClick={() => run(command)}
+          whileTap={{ scale: 0.985 }}
+          transition={springs.buttonPress}
+          className="flex min-h-[4.5rem] items-start gap-3 rounded-xl border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <Icon className="size-4" aria-hidden />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-sm font-medium text-foreground">{title}</span>
+            <span className="text-xs leading-snug text-muted-foreground">{detail}</span>
+            <code className="mt-0.5 font-mono text-[11px] text-muted-foreground/80">/{command}</code>
+          </span>
+        </motion.button>
+      ))}
+    </div>
+  )
+}
+
+// Kimi's real slash commands (Kimi Code CLI v0.26.0). Mirrors CODEX_ACTIONS:
+// each row sends `/<command>\r` into the focused pane, letting Kimi own its
+// native interactive panels rather than reimplementing them in supermux.
+const KIMI_ACTIONS = [
+  { command: 'model', title: 'Model', detail: 'Switch the active model (K2.7 Coding)', icon: Sparkles },
+  { command: 'provider', title: 'Provider', detail: 'Switch the API provider', icon: Plug },
+  { command: 'new', title: 'New session', detail: 'Start a fresh conversation', icon: Plus },
+  { command: 'sessions', title: 'Sessions', detail: 'Browse and resume past sessions', icon: History },
+  { command: 'add-dir', title: 'Add directory', detail: 'Add a working directory to context', icon: FolderPlus },
+  { command: 'mcp-config', title: 'MCP servers', detail: 'Configure MCP servers', icon: ServerCog },
+  { command: 'plugins', title: 'Plugins', detail: 'Manage installed plugins', icon: Puzzle },
+  { command: 'plan', title: 'Plan mode', detail: 'Plan first, execute after approval', icon: ClipboardList },
+  { command: 'auto', title: 'Auto mode', detail: 'Toggle autonomous execution', icon: Zap },
+  { command: 'yolo', title: 'YOLO mode', detail: 'Run tools without approvals', icon: ShieldAlert },
+  { command: 'goal', title: 'Goal', detail: 'Set the session goal', icon: Target },
+  { command: 'compact', title: 'Compact context', detail: 'Summarise the thread to free context', icon: RefreshCw },
+  { command: 'login', title: 'Login', detail: 'Sign in to Moonshot', icon: LogIn },
+  { command: 'logout', title: 'Logout', detail: 'Sign out of Moonshot', icon: LogOut },
+  { command: 'help', title: 'Help', detail: 'Show available commands', icon: HelpCircle },
+] as const
+
+/** Kimi owns these interactive panels natively. Sending the slash command into
+ * the focused pane keeps supermux compatible as Kimi evolves and avoids a second
+ * config parser. Parallel to CodexToolsBody. */
+function KimiToolsBody({
+  sessionName,
+  onClose,
+}: {
+  sessionName?: string | null
+  onClose: () => void
+}) {
+  const { toast } = useToast()
+
+  const run = React.useCallback(
+    (command: string) => {
+      if (!sessionName) return
+      onClose()
+      void settingsRequest(
+        `/api/sessions/${encodeURIComponent(sessionName)}/send`,
+        { method: 'POST', body: JSON.stringify({ text: `/${command}\r` }) },
+      ).catch((e) => {
+        console.warn('kimi-tools: run command failed', e)
+        toast({ message: 'Couldn’t open the Kimi tool.', tone: 'error' })
+      })
+    },
+    [onClose, sessionName, toast],
+  )
+
+  return (
+    <div className="grid grid-cols-1 gap-2 px-4 py-4 sm:grid-cols-2 sm:px-5">
+      {KIMI_ACTIONS.map(({ command, title, detail, icon: Icon }) => (
         <motion.button
           key={command}
           type="button"

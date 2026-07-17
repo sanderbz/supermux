@@ -1513,7 +1513,8 @@ export function useLiveTerm(
     let capWarned = false
     // Post-snapshot SETTLE pins. The one-shot `replay_done` scroll-to-bottom
     // lands the viewport at the live bottom — but an inline-TUI (Codex runs
-    // `--no-alt-screen`) REDRAWS its composer/footer as live frames that arrive
+    // `--no-alt-screen`; Kimi likewise renders inline in the normal buffer)
+    // REDRAWS its composer/footer as live frames that arrive
     // just AFTER the pin, and that late redraw leaves the viewport a row or two
     // above the true bottom (the "come back to focus, not scrolled down" bug).
     // So after the boundary pin we re-pin a few times across a short window to
@@ -1573,8 +1574,9 @@ export function useLiveTerm(
       } catch {
         /* disposed mid-pin — harmless */
       }
-      // Keep re-pinning briefly so a late inline-TUI redraw (Codex --no-alt-screen)
-      // can't leave the viewport a hair above the bottom on (re)focus.
+      // Keep re-pinning briefly so a late inline-TUI redraw (Codex --no-alt-screen
+      // or Kimi's inline redraw) can't leave the viewport a hair above the bottom
+      // on (re)focus.
       settlePinToBottom()
     }
     const flushPendingWrites = () => {

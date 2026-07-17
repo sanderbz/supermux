@@ -338,7 +338,7 @@ fn last_n_lines(capture: &str, n: usize) -> Vec<String> {
 // ── validation helpers ───────────────────────────────────────────────────────
 
 static NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9_.-]+$").unwrap());
-const PROVIDERS: [&str; 3] = ["claude", "codex", "shell"];
+const PROVIDERS: [&str; 4] = ["claude", "codex", "kimi", "shell"];
 
 /// Session-name slug rule: `[a-zA-Z0-9_.-]+`, bounded. The FIRST char must NOT
 /// be `-` — the session name flows through to argv for the provider CLI

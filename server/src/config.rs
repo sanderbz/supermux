@@ -125,6 +125,8 @@ pub struct ProviderDefaults {
     #[serde(default)]
     pub codex_flags: String,
     #[serde(default)]
+    pub kimi_flags: String,
+    #[serde(default)]
     pub default_model: String,
 }
 
