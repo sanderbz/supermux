@@ -67,6 +67,7 @@ That's the problem supermux solves.
 - **Quick peek**: hover a tile (desktop) or long-press it (mobile) to read the latest output, type a reply, or hit a quick action without leaving the overview.
 - **Focus mode**: tap any tile to zoom into a keyboard-captured xterm.js terminal (desktop) or a detented bottom-sheet (mobile). `⌘1..9` jumps instantly between sessions.
 - **⌘K command palette**: fuzzy search across sessions, board issues, slash commands, MCP tools, and Claude Code skills.
+- **Mixed fleets welcome**: Claude Code is the default, but the same overview runs [Codex CLI](https://developers.openai.com/codex/cli/) and [Kimi Code](https://code.kimi.com) sessions side by side — same live status, push notifications, and prompt history.
 
 <p align="center"><a href="docs/screenshots/new-session.png"><img src="docs/screenshots/new-session.png" alt="New session sheet on the overview: Quick start (Blank Claude / Code reviewer / Doc writer presets) and Advanced" width="780"></a></p>
 
@@ -167,7 +168,7 @@ sudo bash install.sh
 
 **Claude Code**: the installer offers to install it for the service user if missing (official native installer, no Node). Log in once with `sudo -u supermux -i claude` → `/login`.
 
-**Codex CLI**: the New session panel keeps Claude as its default and offers Codex alongside it. On the first Codex start, supermux installs the official user-scoped standalone CLI if needed and opens Codex's device-login flow in the terminal; later starts reuse that login. Codex launches with `--no-alt-screen` so its output stays usable in supermux.
+**Codex & Kimi**: the New session panel keeps Claude as its default and offers OpenAI's Codex CLI and Moonshot's Kimi Code alongside it. The first start of either installs the official CLI (user-scoped) if needed and opens its login flow right in the terminal; later starts reuse that login. Both get the launch flags that keep their output readable in a supermux tile, and both feed the same status detection — the tile knows when Codex or Kimi is working, waiting on an approval, or done, just like Claude.
 
 **After install**: open the printed URL on any device. On mobile, "Add to Home Screen" gives you the full PWA experience including push notifications.
 
@@ -195,7 +196,7 @@ This is about where the *server* runs. The dashboard itself works in any modern 
 - **macOS**: works, manual install. Nothing in supermux itself is Linux-only; a Mac mini in a closet makes a fine supermux box (that's a real deployment). Build from source (`bash scripts/build.sh`, see [`docs/TESTING.md`](docs/TESTING.md)) and run the binary; keep it alive with `launchd` or tmux. The one-line installer and the auto-updater don't cover macOS yet.
 - **Windows**: not supported (relies on Unix-only primitives like `tmux`, ptys, SIGWINCH, Unix domain sockets). WSL2 works as a Linux host.
 
-Building from source needs: `rustc 1.83+`, a recent `bun` 1.x, and the system build deps `build-essential pkg-config libssl-dev cmake unzip`. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you). [Codex CLI](https://developers.openai.com/codex/cli/) is an optional second provider; its first session bootstraps the service-user install and login.
+Building from source needs: `rustc 1.83+`, a recent `bun` 1.x, and the system build deps `build-essential pkg-config libssl-dev cmake unzip`. `tmux` is a runtime dep; [Claude Code](https://code.claude.com/docs/en/setup) is the default agent (the one-line installer offers to install it for you). [Codex CLI](https://developers.openai.com/codex/cli/) and [Kimi Code](https://code.kimi.com) are optional additional providers; the first session of either bootstraps the service-user install and login.
 
 ### Tailscale-ready
 
