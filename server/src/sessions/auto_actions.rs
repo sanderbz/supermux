@@ -109,16 +109,20 @@ pub async fn reconcile_on_boot(state: &AppState) {
     // The remote-aware iteration below explicitly skips local sessions, so the
     // local loop is the sole writer for the local fleet (no double-write).
     for s in sessions.iter().filter(|s| s.host_id.is_none()) {
-        // NATIVE rows are marked `stopped` on boot, deliberately and for now.
-        // The native runtime's pty holder is a separate process that CAN
-        // survive a supermux restart, so the eventual behaviour is a
-        // holder-REATTACH probe here (same shape as the tmux `has-session`
-        // probe below). That probe lands with the native lifecycle slice; until
-        // then the honest answer for a freshly-booted server is "not attached",
-        // and `stopped` is the safe status — it never claims a session is
-        // serveable when nothing is wired to serve it.
+        // NATIVE rows get the same treatment as tmux ones, via the holder probe.
+        // The native pty holder is `setsid`-detached and survives a daemon
+        // restart exactly as the tmux server does, so hardcoding `stopped` here
+        // was a LIE with teeth: the overview showed a live agent as stopped, and
+        // pressing Start on it skipped the spawn (the terminal really is alive)
+        // but still typed the launch command — straight into the running agent's
+        // composer. `start()` now refuses that too, but the honest status is the
+        // real fix.
+        //
+        // The probe is deliberately non-destructive (`meta.json` pid + `kill 0`
+        // + the `exit` marker): connecting to the holder's socket would evict
+        // whatever daemon connection is being established alongside this pass.
         let alive = if s.runtime == RUNTIME_NATIVE {
-            false
+            crate::sessions::native::holder_alive(&s.name, &state.config.data_dir)
         } else {
             let tmux = Tmux::new(&s.name);
             // A failed `has-session` probe is treated as "not running" — the pane
@@ -134,7 +138,7 @@ pub async fn reconcile_on_boot(state: &AppState) {
             tracing::warn!(name = %s.name, error = %e, "status reconcile: set_last_status failed");
             continue;
         }
-        tracing::info!(name = %s.name, "status reconcile: tmux pane gone → stopped");
+        tracing::info!(name = %s.name, runtime = %s.runtime, "status reconcile: terminal gone → stopped");
     }
 
     // ── REMOTE pass — per-host `tmux ls` with a 5s timeout each ──────────────
@@ -1128,7 +1132,7 @@ mod board_reaction_tests {
         assert!(push_should_fire(NotifCategory::AgentStopped, "stopped", 2), "stopped always tells");
     }
 
-    async fn test_state() -> (AppState, std::path::PathBuf) {
+    pub(super) async fn test_state() -> (AppState, std::path::PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("supermux-react-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1291,6 +1295,105 @@ mod board_reaction_tests {
         assert!(db::board::comments_for(&state.pool, "B-1").await.unwrap().is_empty());
         assert!(!saw_board_event(&mut rx), "no emit_board when nothing reacted");
 
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod boot_reconcile_tests {
+    //! Boot reconcile for NATIVE rows. The native pty holder is `setsid`-
+    //! detached and survives a daemon restart (that is the whole point of the
+    //! split), so boot must PROBE it like it probes tmux — hardcoding `stopped`
+    //! showed a live agent as stopped, and pressing Start on that row skipped the
+    //! spawn (the terminal really was alive) while still typing the launch
+    //! command into the running agent.
+    use super::board_reaction_tests::test_state;
+    use super::*;
+    use crate::sessions::native::spool;
+
+    /// Write the on-disk state a holder leaves behind: `meta.json` with a pid
+    /// that is alive (our own) or not, plus the `exit` marker for a dead one.
+    fn fake_holder_state(dir: &std::path::Path, name: &str, running: bool) {
+        let sdir = spool::session_dir(dir, name);
+        std::fs::create_dir_all(&sdir).unwrap();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: name.into(),
+                pid: if running { std::process::id() } else { 0 },
+                cols: 80,
+                rows: 24,
+                started_at: 0,
+                command: "claude".into(),
+            },
+        )
+        .unwrap();
+        if running {
+            spool::clear_exit(&sdir);
+        } else {
+            spool::mark_exit(&sdir, 0);
+        }
+    }
+
+    async fn native_row(state: &AppState, name: &str, status: &str) {
+        let inp = crate::sessions::CreateInput {
+            name: name.into(),
+            display_name: None,
+            dir: Some("/tmp".into()),
+            desc: None,
+            provider: Some("claude".into()),
+            creator: None,
+            flags: None,
+            bypass_permissions: None,
+            tags: None,
+            branch: None,
+            mcp: None,
+            worktree: None,
+            host_id: None,
+            runtime: Some("native".into()),
+        };
+        crate::sessions::create(state, inp).await.expect("create");
+        db::sessions::set_last_status(&state.pool, name, status).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn boot_keeps_a_native_session_whose_holder_survived_and_stops_the_rest() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "survivor", "active").await;
+        native_row(&state, "goner", "active").await;
+        fake_holder_state(&dir, "survivor", true);
+        fake_holder_state(&dir, "goner", false);
+
+        reconcile_on_boot(&state).await;
+
+        let survivor = db::sessions::runtime(&state.pool, "survivor").await.unwrap().unwrap();
+        assert_eq!(
+            survivor.last_status, "active",
+            "a native session whose holder survived must keep its status — the \
+             detector re-classifies it on its next tick",
+        );
+        let goner = db::sessions::runtime(&state.pool, "goner").await.unwrap().unwrap();
+        assert_eq!(goner.last_status, "stopped", "a dead holder reconciles to stopped");
+
+        crate::sessions::native::forget("survivor");
+        crate::sessions::native::forget("goner");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A native row that never spawned a holder at all (no `meta.json`) is
+    /// stopped — the probe must not fail OPEN into "alive".
+    #[tokio::test]
+    async fn boot_stops_a_native_session_that_never_had_a_holder() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "never-ran", "idle").await;
+
+        reconcile_on_boot(&state).await;
+
+        let row = db::sessions::runtime(&state.pool, "never-ran").await.unwrap().unwrap();
+        assert_eq!(row.last_status, "stopped");
+        crate::sessions::native::forget("never-ran");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

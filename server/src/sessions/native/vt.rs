@@ -137,9 +137,25 @@ impl Vt {
         if !self.alt_active() {
             self.alt_history = None;
         }
-        let keep = bytes.len().min(ALT_CARRY);
-        self.carry.clear();
-        self.carry.extend_from_slice(&bytes[bytes.len() - keep..]);
+        self.slide_carry(bytes);
+    }
+
+    /// Keep the last [`ALT_CARRY`] bytes of `carry ++ bytes` — a SLIDING
+    /// window, not the tail of `bytes` alone.
+    ///
+    /// Truncating to `bytes`'s own tail only catches a marker split across TWO
+    /// reads. A pty hands out whatever the kernel had: `\x1b[?` / `104` / `9h`
+    /// across three reads is ordinary, and used to reset the carry to `9h` and
+    /// miss the transition entirely — no main-scrollback snapshot, so
+    /// `history_size` collapsed to the alt grid's 0 while the TUI was up and
+    /// the client's scrollback vanished. Sliding makes the detector independent
+    /// of chunk boundaries, down to one byte per read.
+    fn slide_carry(&mut self, bytes: &[u8]) {
+        self.carry.extend_from_slice(bytes);
+        let excess = self.carry.len().saturating_sub(ALT_CARRY);
+        if excess > 0 {
+            self.carry.drain(..excess);
+        }
     }
 
     /// Index in `bytes` at which the earliest alt-enter sequence begins, or 0
@@ -209,9 +225,31 @@ impl Vt {
         }
     }
 
+    /// The width the HISTORY rows are wrapped at.
+    ///
+    /// While alt is up that is the frozen snapshot's width, not the live grid's
+    /// — a resize during a fullscreen TUI reflows the alt grid but cannot
+    /// reflow a main buffer we can no longer reach, so the snapshot keeps the
+    /// width it was taken at. Reporting the live width instead would describe
+    /// the rows [`Vt::history_window`] actually returns incorrectly. Same
+    /// choice tmux makes: `capture-pane -S` on an alt pane returns the primary
+    /// buffer's rows as they were wrapped.
+    pub fn history_cols(&self) -> u16 {
+        match &self.alt_history {
+            Some(h) => h.cols,
+            None => self.cols(),
+        }
+    }
+
     /// `(history_size, cols)` — the WS `attach_meta` pair.
+    ///
+    /// `cols` is [`Vt::history_cols`], NOT the live grid width, so this pair and
+    /// [`Vt::history_window`] always describe the same rows at the same width.
+    /// They used to disagree during alt-after-resize (live width here, snapshot
+    /// width there), which is the kind of inconsistency the client's
+    /// width-matching history cache is entitled to treat as corruption.
     pub fn history_meta(&self) -> (u32, u16) {
-        (self.history_size(), self.cols())
+        (self.history_size(), self.history_cols())
     }
 
     /// Cursor position as `(x, y)`, viewport-relative and 0-based (tmux's
@@ -340,10 +378,10 @@ impl Vt {
     /// caches. Same field, same meaning as the tmux path.
     pub fn history_window(&self, end_offset: i64, count: u32) -> HistoryWindow {
         let hist = self.history_size() as i64;
-        let cols = match &self.alt_history {
-            Some(h) => h.cols,
-            None => self.cols(),
-        };
+        // The width these rows are wrapped at — frozen while alt is up. Kept in
+        // lockstep with `history_meta` through the shared accessor, so the two
+        // can never drift apart after a resize.
+        let cols = self.history_cols();
         let at_limit = self.history_size() as usize >= HISTORY_LINES;
         let count = count.min(HISTORY_WINDOW_MAX) as i64;
         let end = end_offset.min(-1).max(-hist);
@@ -522,6 +560,93 @@ mod tests {
         let seed = v.seed();
         assert!(!seed.contains("\x1b[?1049h"), "primary seed must not switch buffers");
         assert!(seed.ends_with(&format!("\x1b[{};{}H", v.cursor().1 + 1, v.cursor().0 + 1)));
+    }
+
+    #[test]
+    fn an_alt_marker_delivered_one_byte_at_a_time_is_still_caught() {
+        // `\x1b[?1049h` is 8 bytes; a pty read can split it anywhere, including
+        // into 8 separate chunks. The carry has to SLIDE across all of them,
+        // not restart at every chunk.
+        for chunk_size in [1usize, 2, 3, 5, 7, 8] {
+            let mut v = Vt::new(80, 24);
+            for i in 0..100 {
+                v.advance(format!("main-{i:03}\r\n").as_bytes());
+            }
+            let hist_before = v.history_size();
+            let window_before = v.history_window(-3, 3).rows;
+            assert!(hist_before >= 70, "history_size={hist_before}");
+
+            for chunk in b"\x1b[?1049h".chunks(chunk_size) {
+                v.advance(chunk);
+            }
+            v.advance(b"\x1b[2J\x1b[HFULLSCREEN");
+            assert!(v.alt_active(), "chunk_size={chunk_size}: alt never engaged");
+            assert_eq!(
+                v.history_size(),
+                hist_before,
+                "chunk_size={chunk_size}: the main-scrollback snapshot was missed",
+            );
+            assert_eq!(v.history_window(-3, 3).rows, window_before, "chunk_size={chunk_size}");
+            assert!(v.seed().contains("main-050"), "chunk_size={chunk_size}");
+
+            // …and leaving alt (also split) hands history back to the grid.
+            for chunk in b"\x1b[?1049l".chunks(chunk_size) {
+                v.advance(chunk);
+            }
+            assert!(!v.alt_active(), "chunk_size={chunk_size}");
+            assert_eq!(v.history_size(), hist_before, "chunk_size={chunk_size}");
+        }
+    }
+
+    #[test]
+    fn a_stray_prefix_does_not_make_the_sliding_carry_misfire() {
+        // The carry must not manufacture a marker out of unrelated bytes, and a
+        // marker fully inside the carry must not be re-detected on the next
+        // chunk (which would re-snapshot an alt grid as "history").
+        let mut v = Vt::new(80, 24);
+        v.advance(b"\x1b[?104");
+        v.advance(b"7l"); // …not an alt-enter at all
+        assert!(!v.alt_active());
+        v.advance(b"9h"); // "1049h" is NOT reachable from "…7l9h"
+        assert!(!v.alt_active(), "the carry must not stitch a marker out of thin air");
+
+        for i in 0..50 {
+            v.advance(format!("row-{i}\r\n").as_bytes());
+        }
+        let hist = v.history_size();
+        v.advance(b"\x1b[?1049h");
+        assert!(v.alt_active());
+        assert_eq!(v.history_size(), hist);
+        // A follow-up chunk must not re-run the snapshot against the alt grid.
+        v.advance(b"x");
+        assert_eq!(v.history_size(), hist, "the marker was re-detected from the carry");
+    }
+
+    #[test]
+    fn history_meta_and_history_window_agree_on_width_during_alt() {
+        // Enter alt at 80 cols, then resize. The alt grid reflows; the frozen
+        // main-buffer snapshot cannot. `attach_meta` must describe the rows
+        // `history_window` actually serves, or the client's width guard throws
+        // every fetched row away.
+        let mut v = Vt::new(80, 24);
+        for i in 0..100 {
+            v.advance(format!("main-{i:03} {}\r\n", "y".repeat(20)).as_bytes());
+        }
+        v.advance(b"\x1b[?1049h\x1b[2J\x1b[HTUI");
+        assert!(v.alt_active());
+
+        v.resize(40, 20);
+        assert_eq!(v.cols(), 40, "the LIVE grid follows the resize");
+        let (meta_hist, meta_cols) = v.history_meta();
+        let w = v.history_window(-1, 5);
+        assert_eq!(meta_cols, 80, "history is still wrapped at the snapshot width");
+        assert_eq!(meta_cols, w.cols, "attach_meta and history must not disagree");
+        assert_eq!(meta_hist, w.history_size);
+
+        // Back on the primary screen the pair tracks the live grid again.
+        v.advance(b"\x1b[?1049l");
+        assert_eq!(v.history_meta().1, 40);
+        assert_eq!(v.history_window(-1, 5).cols, 40);
     }
 
     #[test]

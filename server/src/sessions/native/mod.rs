@@ -97,9 +97,62 @@ pub fn reader_for(name: &str, data_dir: &Path) -> Result<Box<dyn PtyReader>> {
     Ok(Box::new(NativePtyReader::new(runtime_for(name, data_dir))))
 }
 
-/// Forget the cached handle for `name` (session deleted/renamed). The pump
-/// stops once the last `Arc` goes away; the holder is unaffected — kill it via
+/// Forget the cached handle for `name` (session deleted/renamed) and STOP its
+/// connection pump. The holder is unaffected — kill it via
 /// [`NativeSession::kill`] first if that is what you meant.
+///
+/// Dropping the registry entry alone is not enough: for as long as a holder
+/// connection is being served the pump holds a strong `Arc`, so it (and its
+/// socket, and its grid) would outlive the session forever. [`NativeSession::stop_pump`]
+/// aborts the task and closes the connection.
 pub fn forget(name: &str) {
-    SESSIONS.remove(name);
+    if let Some((_, session)) = SESSIONS.remove(name) {
+        session.stop_pump();
+    }
+}
+
+/// Is `name`'s holder + child still running, WITHOUT attaching to it?
+///
+/// The boot reconcile needs this before any session handle exists, and it must
+/// not dial the holder's socket — the holder would treat that as the incoming
+/// daemon and evict the real one. See [`runtime::probe_alive`].
+pub fn holder_alive(name: &str, data_dir: &Path) -> bool {
+    runtime::probe_alive(&spool::session_dir(data_dir, name))
+}
+
+/// Delete `name`'s on-disk state (`<data_dir>/native/<name>`: spool, meta,
+/// socket, exit marker) and forget its handle. Called after the session's holder
+/// has been killed, from the session-delete path — otherwise weeks of churn
+/// leave tens of MiB of spool per deleted session behind, and a later session
+/// that reuses the name would adopt the dead one's history.
+pub fn remove_session_data(name: &str, data_dir: &Path) {
+    forget(name);
+    let dir = spool::session_dir(data_dir, name);
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(session = %name, dir = %dir.display(), error = %e, "native: could not remove session data");
+        }
+    }
+}
+
+/// Move `old`'s on-disk state to `new` (the slug rename path).
+///
+/// The spool dir and the holder socket are NAME-KEYED, so a rename that only
+/// touched the DB would orphan them. Callers MUST have established that the
+/// session is not running: a live holder holds an open fd on the socket path it
+/// was told at spawn, and it can not be told a new one without a protocol
+/// change — hence `sessions::config_patch` refuses to rename a running native
+/// session at all.
+pub fn rename_session_data(old: &str, new: &str, data_dir: &Path) -> std::io::Result<()> {
+    forget(old);
+    forget(new);
+    let from = spool::session_dir(data_dir, old);
+    if !from.exists() {
+        return Ok(());
+    }
+    let to = spool::session_dir(data_dir, new);
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(&from, &to)
 }

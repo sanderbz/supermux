@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::runtime::NativeSession;
-use super::{holder, spool};
+use super::{holder, proto, spool};
 
 /// A unique temp data dir per test.
 fn data_dir(tag: &str) -> PathBuf {
@@ -308,6 +308,171 @@ async fn a_second_daemon_connection_replaces_the_first() {
     );
 
     b.kill().await.unwrap();
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every `L<n>.` token in `bytes`, in order. The child prints exactly one of
+/// each, so the sequence a daemon receives must be strictly consecutive: a gap
+/// is a lost chunk, a repeat is a duplicated one.
+fn tokens(bytes: &[u8]) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'L' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        // Require the closing `.` so a token cut by the end of the capture (or
+        // by the head of a truncated replay tail) is skipped rather than
+        // misread as a smaller number.
+        if j > i + 1 && j < bytes.len() && bytes[j] == b'.' {
+            if let Ok(n) = std::str::from_utf8(&bytes[i + 1..j]).unwrap_or("x").parse::<u64>() {
+                out.push(n);
+            }
+            i = j + 1;
+        } else {
+            i = j.max(i + 1);
+        }
+    }
+    out
+}
+
+/// (S5) The attach seam is exactly-once even though the replay tail is now read
+/// OUTSIDE the holder's `Inner` lock.
+///
+/// Under the lock the holder only fixes the tail's end offset and installs the
+/// live queue; the (up to 8 MiB) `pread` happens afterwards, concurrently with
+/// the child still writing. This attaches to a holder whose child is streaming
+/// at full tilt and checks the received byte stream for BOTH failure modes: a
+/// byte that made it into neither the snapshot nor the queue (gap), and one
+/// that made it into both (duplicate).
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn attaching_mid_stream_neither_loses_nor_duplicates_bytes() {
+    const LINES: u64 = 200_000;
+    let dir = data_dir("seam");
+    let sdir = spool::session_dir(&dir, "seam");
+    let h = start_holder(
+        &dir,
+        "seam",
+        200,
+        50,
+        &format!("for i in $(seq 1 {LINES}); do echo \"L$i.\"; done; sleep 30"),
+    );
+
+    // Attach MID-stream: as soon as a slice of output has landed, while the
+    // child is still pouring the rest in. That is the only interesting timing —
+    // it puts bytes on both sides of the cutover.
+    let spooled = || {
+        std::fs::metadata(spool::spool_path(&sdir))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline && spooled() < 100_000 {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(spooled() >= 100_000, "the child never produced enough output to attach mid-stream");
+
+    let mut stream = tokio::net::UnixStream::connect(spool::socket_path(&dir, "seam"))
+        .await
+        .expect("connect to the holder");
+
+    let (kind, payload) = proto::read_frame(&mut stream).await.unwrap().unwrap();
+    assert_eq!(kind, proto::HELLO, "HELLO must be the first frame");
+    let hello: proto::Hello = serde_json::from_slice(&payload).unwrap();
+    assert!(hello.replay_bytes > 0, "the snapshot must carry the pre-attach output");
+
+    // Drain until the child's last line shows up (or the holder decides we are
+    // a lagging daemon and drops us — a documented, lossless outcome: whatever
+    // we DID receive must still be gap- and duplicate-free).
+    let mut bytes: Vec<u8> = Vec::new();
+    let last = format!("L{LINES}.");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut done = false;
+    while !done && Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(5), proto::read_frame(&mut stream)).await {
+            Ok(Ok(Some((proto::OUTPUT, p)))) => {
+                done = p.windows(last.len()).any(|w| w == last.as_bytes());
+                bytes.extend_from_slice(&p);
+            }
+            Ok(Ok(Some(_))) => continue,
+            _ => break,
+        }
+    }
+
+    // Both sides of the cutover are represented: the snapshot carried
+    // pre-attach output, and more output arrived through the live queue after
+    // it. Without both, the seam would not have been crossed at all.
+    assert!(
+        bytes.len() as u64 > hello.replay_bytes,
+        "nothing arrived after the cutover ({} bytes vs {} of replay)",
+        bytes.len(),
+        hello.replay_bytes,
+    );
+    // The token sequence is the proof: consecutive means every byte the child
+    // wrote crossed exactly once.
+    let seen = tokens(&bytes);
+    assert!(seen.len() > 5_000, "only {} tokens — too short to be meaningful", seen.len());
+    for w in seen.windows(2) {
+        assert!(
+            w[1] == w[0] + 1,
+            "seam broken at L{}→L{}: {}",
+            w[0],
+            w[1],
+            if w[1] <= w[0] { "DUPLICATED bytes" } else { "LOST bytes" },
+        );
+    }
+    // The seam itself: the token that straddles `replay_bytes` had its front
+    // half from the spool snapshot and its back half from the live queue.
+    let across = tokens(&bytes[..(hello.replay_bytes as usize).min(bytes.len())]);
+    assert!(!across.is_empty() && across.len() < seen.len(), "the cutover was not crossed");
+    assert_eq!(
+        seen[across.len() - 1],
+        across[across.len() - 1],
+        "the snapshot's last token must be the same token in the full stream",
+    );
+
+    drop(stream);
+    let session = NativeSession::new("seam", &dir);
+    let _ = session.kill().await;
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (S4) A live holder's directory, socket and spool are owner-only. The socket
+/// is the sharp one: `connect()` on it is a shell as the service user.
+#[tokio::test]
+async fn holder_files_and_socket_are_not_world_accessible() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = data_dir("perms");
+    let sdir = spool::session_dir(&dir, "perms");
+    let sock = spool::socket_path(&dir, "perms");
+    let h = start_holder(&dir, "perms", 80, 24, "echo hi; sleep 30");
+    assert!(
+        wait_until!(
+            Duration::from_secs(10),
+            sock.exists() && spool::read_meta(&sdir).is_some()
+        ),
+        "the holder never came up",
+    );
+
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().mode() & 0o777;
+    assert_eq!(mode(&sdir), 0o700, "the session dir must not be traversable by others");
+    assert_eq!(mode(&sock), 0o600, "holder.sock must not be world-connectable");
+    assert_eq!(mode(&spool::spool_path(&sdir)), 0o600, "out.raw is raw terminal bytes");
+    assert_eq!(mode(&sdir.join("meta.json")), 0o600);
+
+    let session = NativeSession::new("perms", &dir);
+    let _ = session.kill().await;
+    assert!(wait_until!(Duration::from_secs(5), sdir.join("exit").exists()));
+    assert_eq!(mode(&sdir.join("exit")), 0o600);
+
     h.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

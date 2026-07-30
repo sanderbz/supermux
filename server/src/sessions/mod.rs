@@ -664,8 +664,18 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
     // `kill-session` as before. Best-effort BOTH ways: an unresolvable runtime
     // (e.g. a native row on a build where the native core isn't wired) must
     // never block deleting the row.
+    let is_native = !state.is_tmux_runtime(name).await;
     if let Ok(rt) = state.runtime_for(name).await {
         let _ = rt.kill().await;
+    }
+    // A native session owns a directory under the data dir (spool, `meta.json`,
+    // the holder socket, the exit marker). The kill above ends the holder; this
+    // reclaims the disk — up to `SPOOL_CAP` (64 MiB) per session — and makes
+    // sure a LATER session created with the same name starts from a blank grid
+    // instead of adopting this one's history. Ordered after the kill so the
+    // holder can not still be writing into a directory we are removing.
+    if is_native {
+        native::remove_session_data(name, &state.config.data_dir);
     }
     db::sessions::delete(&state.pool, name).await?;
 
@@ -787,12 +797,21 @@ pub async fn config_patch(
             // survive the rename untouched.
             //
             // Runtime seam: the tmux rename is a TMUX-SHAPED step — it renames
-            // an EXTERNAL multiplexer session that the DB row points at. The
-            // native runtime has no such external name (its holder is keyed by
-            // the row itself), so for a native session the rename is DB-only
-            // and there is nothing that can fail before the DB write. The
-            // `state.rename_session` below drops the cached runtime handle for
-            // both names, so the next resolve rebuilds against the new name.
+            // an EXTERNAL multiplexer session that the DB row points at.
+            //
+            // The NATIVE runtime is name-keyed too, just on disk instead of in a
+            // multiplexer: `<data>/native/<name>/` holds the spool, `meta.json`
+            // and the holder's unix socket, and the running holder was told that
+            // socket PATH at spawn — it can not be moved underneath it without a
+            // protocol change. A DB-only rename therefore ORPHANED the holder
+            // (and its agent, and the daemon's pump): the renamed row resolved to
+            // a fresh, empty session dir while the old holder kept running
+            // forever with nothing attached.
+            //
+            // So: refuse the rename while it is running (409, the same shape the
+            // rest of the API uses for "wrong state"), and MOVE the directory
+            // when it is not. Moving first keeps the tmux ordering discipline —
+            // the fallible external step happens before the DB write.
             let live = if state.is_tmux_runtime(&current).await {
                 let tmux = tmux::Tmux::new(&current);
                 let live = tmux.exists().await.unwrap_or(false);
@@ -801,6 +820,17 @@ pub async fn config_patch(
                 }
                 live
             } else {
+                if state.runtime_for(&current).await?.alive().await {
+                    return Err(AppError::Conflict(format!(
+                        "session '{current}' is running — stop it before renaming \
+                         (a native session's pty holder is keyed by its name and \
+                         can not follow the rename while live)"
+                    )));
+                }
+                native::rename_session_data(&current, target, &state.config.data_dir)
+                    .map_err(|e| {
+                        anyhow::anyhow!("moving native session data for '{current}': {e}")
+                    })?;
                 false
             };
             db::sessions::rename(&state.pool, &current, target).await?;
@@ -1508,6 +1538,135 @@ mod tests {
         ok.runtime = Some("native".into());
         create(&state, ok).await.expect("native without a host is fine");
         crate::sessions::native::forget("remote-nat");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Fake a native session's on-disk state: `<data>/native/<name>/meta.json`
+    /// with `pid` (our own pid = "running"; `0` = gone) and, optionally, the
+    /// exit marker a holder writes when its child dies.
+    fn fake_native_state(dir: &std::path::Path, name: &str, running: bool) -> std::path::PathBuf {
+        let sdir = native::spool::session_dir(dir, name);
+        std::fs::create_dir_all(&sdir).unwrap();
+        std::fs::write(native::spool::spool_path(&sdir), b"scrollback").unwrap();
+        native::spool::write_meta(
+            &sdir,
+            &native::spool::Meta {
+                session: name.into(),
+                pid: if running { std::process::id() } else { 0 },
+                cols: 80,
+                rows: 24,
+                started_at: 0,
+                command: "claude".into(),
+            },
+        )
+        .unwrap();
+        if running {
+            native::spool::clear_exit(&sdir);
+        } else {
+            native::spool::mark_exit(&sdir, 0);
+        }
+        sdir
+    }
+
+    /// A native session's spool dir AND its holder's unix socket are keyed by
+    /// the session name, and a running holder was told that socket path at spawn
+    /// — it can not be moved underneath it. Renaming a RUNNING one used to be a
+    /// DB-only write, which orphaned the holder (and the agent inside it) with
+    /// nothing attached, forever. It is now a 409.
+    #[tokio::test]
+    async fn renaming_a_running_native_session_is_refused_with_409() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("live-nat");
+        inp.runtime = Some("native".into());
+        create(&state, inp).await.expect("create");
+        let sdir = fake_native_state(&dir, "live-nat", true);
+
+        let err = config_patch(
+            &state,
+            "live-nat",
+            ConfigInput {
+                rename: Some("renamed-nat".into()),
+                display_name: None,
+                desc: None,
+                dir: None,
+                branch: None,
+                mcp: None,
+                tags: None,
+                toggle_pin: None,
+                toggle_auto_continue: None,
+            },
+        )
+        .await
+        .expect_err("a running native session must not be renamable");
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+        assert!(err.to_string().contains("stop it before renaming"), "{err}");
+        // Nothing moved, nothing was renamed: the row and the dir are intact.
+        assert!(db::sessions::exists(&state.pool, "live-nat").await.unwrap());
+        assert!(!db::sessions::exists(&state.pool, "renamed-nat").await.unwrap());
+        assert!(sdir.exists());
+
+        crate::sessions::native::forget("live-nat");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Stopped, it renames — and the spool dir MOVES with it. Leaving it behind
+    /// would strand the scrollback under the old name and let a future session
+    /// with that name adopt it.
+    #[tokio::test]
+    async fn renaming_a_stopped_native_session_moves_its_spool_dir() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("dead-nat");
+        inp.runtime = Some("native".into());
+        create(&state, inp).await.expect("create");
+        let old_dir = fake_native_state(&dir, "dead-nat", false);
+
+        let view = config_patch(
+            &state,
+            "dead-nat",
+            ConfigInput {
+                rename: Some("moved-nat".into()),
+                display_name: None,
+                desc: None,
+                dir: None,
+                branch: None,
+                mcp: None,
+                tags: None,
+                toggle_pin: None,
+                toggle_auto_continue: None,
+            },
+        )
+        .await
+        .expect("a stopped native session renames");
+        assert_eq!(view.name, "moved-nat");
+        assert_eq!(view.runtime, "native");
+
+        assert!(!old_dir.exists(), "the old spool dir must not be left behind");
+        let new_dir = native::spool::session_dir(&dir, "moved-nat");
+        assert_eq!(
+            std::fs::read(native::spool::spool_path(&new_dir)).unwrap(),
+            b"scrollback",
+            "the scrollback must follow the rename",
+        );
+
+        crate::sessions::native::forget("moved-nat");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Deleting a native session reclaims its on-disk state — otherwise every
+    /// deleted session leaves up to `SPOOL_CAP` (64 MiB) behind, and a later
+    /// session created with the same name would adopt the dead one's grid.
+    #[tokio::test]
+    async fn deleting_a_native_session_removes_its_spool_dir() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("gone-nat");
+        inp.runtime = Some("native".into());
+        create(&state, inp).await.expect("create");
+        let sdir = fake_native_state(&dir, "gone-nat", false);
+        assert!(sdir.exists());
+
+        delete(&state, "gone-nat").await.expect("delete");
+        assert!(!sdir.exists(), "the spool dir must be removed with the row");
+        assert!(!db::sessions::exists(&state.pool, "gone-nat").await.unwrap());
         let _ = std::fs::remove_dir_all(dir);
     }
 

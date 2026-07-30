@@ -67,11 +67,7 @@ pub fn key_bytes(name: &str, app_cursor: bool) -> Option<Vec<u8>> {
                 return ctrl_bytes(rest);
             }
             if let Some(rest) = s.strip_prefix("M-") {
-                // Meta = ESC prefix (tmux's default, and what every readline
-                // app expects for M-b / M-f / M-d).
-                let mut v = vec![0x1b];
-                v.extend_from_slice(rest.as_bytes());
-                return Some(v);
+                return meta_bytes(rest);
             }
             // A single character is literal (`y`, `n`, `q`, `~`, `|`, `$`, …).
             let mut it = s.chars();
@@ -82,6 +78,23 @@ pub fn key_bytes(name: &str, app_cursor: bool) -> Option<Vec<u8>> {
         }
     };
     Some(out)
+}
+
+/// `M-<x>` → `ESC` + `x`. Meta is the ESC prefix (tmux's default, and what
+/// every readline app expects for `M-b` / `M-f` / `M-d`).
+///
+/// `x` must be exactly ONE printable ASCII character. `M-` used to append the
+/// rest of the token verbatim, so `M-<anything>` was a hole straight through
+/// the key-name allowlist into the pty: `M-` + arbitrary UTF-8 wrote arbitrary
+/// bytes, and `M-[200~…` could forge control sequences. Named meta chords
+/// (`M-Up`) are not part of supermux's key vocabulary, so rejecting every
+/// multi-character form costs nothing and closes the hole.
+fn meta_bytes(rest: &str) -> Option<Vec<u8>> {
+    let mut it = rest.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) if c.is_ascii_graphic() || c == ' ' => Some(vec![0x1b, c as u8]),
+        _ => None,
+    }
 }
 
 /// `C-<x>` → the control byte. Letters fold to `x & 0x1f`; the punctuation
@@ -226,5 +239,23 @@ mod tests {
         assert!(key_bytes("", false).is_none());
         // …but any single char is literal.
         assert_eq!(key_bytes("!", false).unwrap(), b"!");
+    }
+
+    #[test]
+    fn meta_takes_one_ascii_char_and_nothing_else() {
+        // The forms that are actually used.
+        assert_eq!(key_bytes("M-b", false).unwrap(), b"\x1bb");
+        assert_eq!(key_bytes("Alt-x", false).unwrap(), b"\x1bx");
+        assert_eq!(key_bytes("Meta-.", false).unwrap(), b"\x1b.");
+        assert_eq!(key_bytes("M- ", false).unwrap(), b"\x1b ");
+
+        // `M-` used to splice the remainder of the token straight into the pty.
+        assert!(key_bytes("M-", false).is_none());
+        assert!(key_bytes("M-Up", false).is_none(), "named meta chords are not our vocabulary");
+        assert!(key_bytes("M-rm -rf /", false).is_none());
+        assert!(key_bytes("M-[200~", false).is_none(), "must not forge control sequences");
+        assert!(key_bytes("M-é", false).is_none(), "non-ASCII must not reach the pty");
+        assert!(key_bytes("M-\x1b", false).is_none(), "no injecting a bare ESC");
+        assert!(key_bytes("M-\n", false).is_none());
     }
 }

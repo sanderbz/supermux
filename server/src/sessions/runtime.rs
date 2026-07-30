@@ -27,9 +27,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use tokio::sync::watch;
 
 use super::tmux::{parse_hist_info, Tmux};
 use super::transport::Transport;
@@ -167,6 +169,41 @@ pub trait SessionRuntime: Send + Sync {
     /// `None` (a non-tmux runtime has no tmux session-name mapping, so the
     /// catcher simply has nothing to compare and stays silent).
     async fn resolved_session_name(&self) -> Option<String> {
+        None
+    }
+
+    /// Pause required BETWEEN literal text and the `Enter` that submits it.
+    ///
+    /// tmux gets one for free: `send-keys <text>` and `send-keys Enter` are two
+    /// forks, so the child sees two separate `read()`s. A backend that writes
+    /// straight to the pty does not — text and `\r` arrive in ONE read, and
+    /// Ink-style TUIs (Claude, Codex) classify that as a paste, turning the
+    /// carriage return into a composer newline instead of a submit.
+    ///
+    /// Default `ZERO` keeps every tmux call site byte-for-byte and timing-for-
+    /// timing identical; the native runtime overrides it. Callers apply it at
+    /// EVERY text-then-Enter site (see `lifecycle::submit_gap`).
+    fn submit_gap(&self) -> Duration {
+        Duration::ZERO
+    }
+
+    /// Is the terminal sitting at its SHELL PROMPT (no program running in the
+    /// foreground)? `None` = "can not tell", which every caller must treat as
+    /// the historical behaviour.
+    ///
+    /// Exists so `start()` can refuse to type a launch command into a terminal
+    /// that is already running the agent (which would inject `claude --resume …`
+    /// into the live agent's composer). tmux keeps the default `None` — its
+    /// behaviour is unchanged.
+    async fn shell_is_foreground(&self) -> Option<bool> {
+        None
+    }
+
+    /// A watch that TICKS whenever the backend re-attached to its terminal and
+    /// rebuilt its grid from scratch, meaning every attached client's view is
+    /// now stale and must be re-seeded. `None` for a backend that can not lose
+    /// and re-acquire its terminal mid-session (tmux: the pane is the state).
+    fn attach_generation(&self) -> Option<watch::Receiver<u64>> {
         None
     }
 }
@@ -422,6 +459,23 @@ impl SessionRuntime for NativeRuntime {
     fn target(&self) -> String {
         self.session.name().to_string()
     }
+
+    /// The native path writes text and `Enter` into the SAME pty, so it needs the
+    /// inter-`read()` gap tmux's two forks provided implicitly.
+    fn submit_gap(&self) -> Duration {
+        super::native::runtime::SUBMIT_GAP
+    }
+
+    async fn shell_is_foreground(&self) -> Option<bool> {
+        self.session.shell_is_foreground().await
+    }
+
+    /// The holder connection CAN drop and come back (deploy, lag-disconnect),
+    /// and each reconnect rebuilds the grid from the spool — so the native
+    /// runtime is exactly the case this hook exists for.
+    fn attach_generation(&self) -> Option<watch::Receiver<u64>> {
+        Some(self.session.attach_generation())
+    }
 }
 
 /// Build the NATIVE runtime for `name`.
@@ -543,6 +597,41 @@ mod tests {
         assert_eq!(v["hit_top"], false);
         assert_eq!(v["cols"], 80);
         assert_eq!(v["at_limit"], true);
+    }
+
+    /// The three seam hooks the native fixes hang off must be INERT for tmux —
+    /// that is what makes "zero behaviour change for tmux" checkable rather than
+    /// asserted. A `submit_gap` that is not zero would insert a sleep into every
+    /// tmux send; an `attach_generation` that is `Some` would make the WS
+    /// re-seed on a tick nothing ever produces; a `shell_is_foreground` that is
+    /// not `None` would change which starts type the launch command.
+    #[test]
+    fn the_native_hooks_are_inert_on_the_tmux_runtime() {
+        let rt = TmuxRuntime::local("demo");
+        assert_eq!(rt.submit_gap(), Duration::ZERO);
+        assert!(rt.attach_generation().is_none());
+        let rt: Arc<dyn SessionRuntime> = Arc::new(TmuxRuntime::local("demo"));
+        assert_eq!(rt.submit_gap(), Duration::ZERO);
+        assert!(rt.attach_generation().is_none());
+    }
+
+    /// …and LIVE on the native runtime: the 50ms gap an Ink TUI needs to see the
+    /// Enter as a keypress instead of the tail of a paste, plus the generation
+    /// watch the WS attach re-seeds on.
+    #[tokio::test]
+    async fn the_native_runtime_declares_a_submit_gap_and_an_attach_generation() {
+        let dir = std::env::temp_dir()
+            .join(format!("supermux-seam-hooks-{}", std::process::id()));
+        let rt: Arc<dyn SessionRuntime> =
+            native_runtime_for("hooks-demo", &dir).expect("native runtime resolves");
+        assert_eq!(rt.submit_gap(), Duration::from_millis(50));
+        assert_eq!(rt.submit_gap(), crate::sessions::native::runtime::SUBMIT_GAP);
+        let ticks = rt.attach_generation().expect("native exposes an attach generation");
+        assert_eq!(*ticks.borrow(), 0, "no attach has completed yet");
+        // No holder, no `meta.json` → nothing to read a foreground group from.
+        assert_eq!(rt.shell_is_foreground().await, None);
+        crate::sessions::native::forget("hooks-demo");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The type is re-exported from `sessions::tmux` for source compatibility —

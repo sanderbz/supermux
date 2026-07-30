@@ -576,6 +576,34 @@ pub(crate) fn broadcast_send(state: &AppState, name: &str, text: &str, at: i64) 
 const STOP_GRACE_POLL: Duration = Duration::from_millis(50);
 const STOP_GRACE_CAP: Duration = Duration::from_millis(1_500);
 
+/// Would typing the launch command now land it in a program that is ALREADY
+/// running in the session's terminal?
+///
+/// | `freshly_spawned` | `shell_is_foreground` | result | why |
+/// |---|---|---|---|
+/// | `true`  | any           | `false` | brand-new terminal: nothing is running |
+/// | `false` | `Some(false)` | `true`  | a program owns the pty — do not type at it |
+/// | `false` | `Some(true)`  | `false` | shell prompt waiting: this is the recovery path (the agent exited, the terminal did not) |
+/// | `false` | `None`        | `false` | backend can not tell (tmux) — historical behaviour, byte-for-byte |
+fn agent_already_running(freshly_spawned: bool, shell_is_foreground: Option<bool>) -> bool {
+    !freshly_spawned && shell_is_foreground == Some(false)
+}
+
+/// Pause between literal text and the `Enter` that submits it, as the session's
+/// backend requires ([`SessionRuntime::submit_gap`]).
+///
+/// MUST be called at every text-then-Enter site. On tmux the gap is `ZERO` and
+/// this compiles down to a branch (no sleep, no timer, and — unlike the DB
+/// `runtime` lookup this replaced — no query while the per-session lock is
+/// held). On the native runtime it is the 50 ms that keeps an Ink TUI from
+/// reading text+`\r` as one paste, turning the submit into a newline.
+async fn submit_gap(rt: &dyn SessionRuntime) {
+    let gap = rt.submit_gap();
+    if !gap.is_zero() {
+        tokio::time::sleep(gap).await;
+    }
+}
+
 async fn require_session(state: &AppState, name: &str) -> Result<Session, AppError> {
     db::sessions::get(&state.pool, name)
         .await?
@@ -690,8 +718,8 @@ pub async fn start(
 
     let freshly_spawned = !rt.alive().await;
     if freshly_spawned {
-        // A genuinely new tmux pane is about to exist for this name. Drop any
-        // cached live pty stream first: it is bound to a PRIOR (now-dead) pane,
+        // A genuinely new pane/pty is about to exist for this name. Drop any
+        // cached live pty stream: it is bound to a PRIOR (now-dead) pane,
         // and because the new session reuses the same name the stream's liveness
         // poll would never invalidate it on its own. `stop` already does this on
         // the restart path; this also covers a start that follows an external
@@ -700,8 +728,15 @@ pub async fn start(
         // A SERVER restart starts with an empty registry and never hits this
         // `freshly_spawned` branch (it re-attaches to the surviving session), so
         // session-survival is untouched.
-        state.pty_invalidate(name);
+        //
+        // AFTER the spawn, not before: pre-seam the liveness probe was fallible
+        // (`tmux has-session` + `?`) and a probe fault propagated BEFORE anything
+        // was invalidated. `SessionRuntime::alive` is infallible by contract
+        // ("a fault reads as gone"), so a transient probe glitch on a session
+        // that is actually running now lands here — and must not tear down that
+        // live session's cached stream on the way to a spawn that fails.
         rt.spawn(&dir, &env, &shell).await?;
+        state.pty_invalidate(name);
     }
 
     // BOOTING window (overview UX): mark the session `starting` before
@@ -733,13 +768,40 @@ pub async fn start(
         payload: json!({ "delta": [{ "name": name, "status": "starting" }] }),
     });
 
+    // DOUBLE-LAUNCH GUARD. `start()` on a session whose terminal is already up
+    // skips the spawn but historically still typed the launch command — harmless
+    // on tmux (that path is reached when the pane exists but its program died,
+    // i.e. a bash prompt is waiting for exactly that command), catastrophic when
+    // the program is in fact still RUNNING: `claude --resume …` gets typed into
+    // the live agent's composer.
+    //
+    // The native runtime can reach that state for real — its holder survives a
+    // daemon restart, so a post-deploy Start finds `alive() == true` with Claude
+    // still at the wheel (that path is also why the boot reconcile now probes
+    // native liveness instead of assuming `stopped`).
+    //
+    // See [`agent_already_running`] for the decision table.
+    let already_running =
+        agent_already_running(freshly_spawned, rt.shell_is_foreground().await);
+
     let ready = match s.provider.as_str() {
         "shell" => settle_shell(rt.as_ref()).await,
+        _ if already_running => {
+            tracing::info!(
+                name = %name,
+                "start: terminal already running its program — not re-typing the launch command",
+            );
+            // A program owning the pty IS the ready condition; poking it with the
+            // boot-gate keys `wait_for_agent_ready` sends would be input into a
+            // live agent.
+            true
+        }
         _ => {
             // Give the new shell a beat, then launch the agent.
             tokio::time::sleep(Duration::from_millis(300)).await;
             let (cmd, resume_intended) = build_launch_command(&state.config, &s);
             rt.send_text(&cmd).await?;
+            submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
             wait_for_agent_ready(rt.as_ref(), state, name, resume_intended).await
         }
@@ -764,6 +826,7 @@ pub async fn start(
     if let Some(p) = prompt {
         if !p.trim().is_empty() {
             rt.send_text(p).await?;
+            submit_gap(rt.as_ref()).await;
             rt.send_key("Enter").await?;
             let (preview, at) = db::sessions::set_last_send(&state.pool, name, p).await?;
             broadcast_send(state, name, &preview, at);
@@ -812,12 +875,17 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     match s.provider.as_str() {
         "shell" => {
             let _ = rt.send_text("exit").await;
+            submit_gap(rt.as_ref()).await;
             let _ = rt.send_key("Enter").await;
         }
         _ => {
             let _ = rt.send_key("C-c").await;
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = rt.send_text("/exit").await;
+            // Without the gap the agent reads `/exit\r` as a paste and never
+            // submits it — so the graceful exit silently never happens and every
+            // native Stop burns the full `STOP_GRACE_CAP` before the hard kill.
+            submit_gap(rt.as_ref()).await;
             let _ = rt.send_key("Enter").await;
         }
     }
@@ -952,15 +1020,11 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
     rt.send_text(text).await?;
-    // Native runtime: text and Enter would otherwise land in the SAME stdin
-    // read() of the child — Ink-style TUIs (Claude) then treat the whole chunk
-    // as one paste and the trailing \r becomes a composer newline, not a
-    // submit (verified live: the prompt sat unsent). tmux's two send-keys
-    // invocations had an inherent inter-command gap; reproduce a small one so
-    // the Enter arrives as its own keypress. Tmux keeps the old timing.
-    if !state.is_tmux_runtime(name).await {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    // Backend-declared gap between the text and its submit (see `submit_gap`).
+    // Was a `runtime` column read here — a DB query per keystroke-batch, taken
+    // while the per-session lock is held, to learn something the runtime handle
+    // already knows.
+    submit_gap(rt.as_ref()).await;
     rt.send_key("Enter").await?;
     let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
     broadcast_send(state, name, &preview, at);
@@ -1005,6 +1069,7 @@ pub async fn paste(
     }
     rt.paste(text, true).await?;
     if submit {
+        submit_gap(rt.as_ref()).await;
         rt.send_key("Enter").await?;
     }
     let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
@@ -1932,5 +1997,86 @@ mod link_liveness_tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod submit_and_launch_tests {
+    //! Two start/send invariants that are easy to regress and expensive to
+    //! notice: the text→Enter gap (a missing one turns a submit into a newline
+    //! inside the agent's composer) and the double-launch guard (a missing one
+    //! types `claude --resume …` into a RUNNING agent).
+    use super::agent_already_running;
+
+    /// Source of this module's own file, minus its test modules — the scan
+    /// below must not match on its own assertions.
+    fn lifecycle_source() -> &'static str {
+        const SRC: &str = include_str!("lifecycle.rs");
+        let end = SRC.find("\n#[cfg(test)]").unwrap_or(SRC.len());
+        &SRC[..end]
+    }
+
+    /// EVERY "send literal text, then Enter to submit it" site must go through
+    /// [`super::submit_gap`]. There are five (start's launch command, start's
+    /// initial prompt, `send_text`, `paste(submit)`, and both stop nudges), and
+    /// the one that was fixed first — `send_text` — was for months the only one:
+    /// the others silently did not submit on the native runtime, which is how
+    /// Stop ended up always burning the full grace window.
+    ///
+    /// A structural scan rather than five behavioural tests: the alternative
+    /// needs a live pty per site, and this catches the actual failure mode (a
+    /// NEW text→Enter site added without the gap).
+    #[test]
+    fn every_text_then_enter_site_applies_the_backend_submit_gap() {
+        let src = lifecycle_source();
+        let enter = format!("send_key({:?})", "Enter");
+        let mut sites = 0;
+        for (i, _) in src.match_indices(&enter) {
+            let mut start = i.saturating_sub(600);
+            while !src.is_char_boundary(start) {
+                start += 1;
+            }
+            let window = &src[start..i];
+            // The nearest preceding literal-text send, if any. A bare key send
+            // (the trust-dialog Enter in `wait_for_agent_ready`) has none.
+            let text_at = [window.rfind("send_text("), window.rfind(".paste(")]
+                .into_iter()
+                .flatten()
+                .max();
+            let Some(t) = text_at else { continue };
+            sites += 1;
+            assert!(
+                window[t..].contains("submit_gap("),
+                "a text→Enter site (byte {i}) does not apply the backend submit gap:\n{}",
+                &window[t..],
+            );
+        }
+        assert!(
+            sites >= 5,
+            "expected at least 5 text→Enter sites, found {sites} — did the scan stop matching?",
+        );
+    }
+
+    /// The launch command is typed ONLY when nothing is running in the terminal.
+    /// `None` (tmux — it cannot tell) must keep the historical behaviour exactly.
+    #[test]
+    fn the_launch_command_is_never_typed_into_a_running_program() {
+        // Brand-new terminal: always launch, whatever the probe says.
+        assert!(!agent_already_running(true, None));
+        assert!(!agent_already_running(true, Some(false)));
+        assert!(!agent_already_running(true, Some(true)));
+        // Re-start on a live terminal…
+        assert!(
+            agent_already_running(false, Some(false)),
+            "a program owns the pty — typing the launch line would land in it",
+        );
+        assert!(
+            !agent_already_running(false, Some(true)),
+            "shell prompt waiting: this IS the recovery path, the command must be typed",
+        );
+        assert!(
+            !agent_already_running(false, None),
+            "tmux cannot tell, and its behaviour must not change",
+        );
     }
 }

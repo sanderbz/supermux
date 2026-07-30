@@ -546,8 +546,25 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         }
     }
 
+    // 4b. Attach-generation watch (native runtime; `None` for tmux). It ticks
+    //     when the backend LOST and re-acquired its terminal — a holder
+    //     reconnect after a deploy or a lag-disconnect. The grid is rebuilt from
+    //     the spool then, and the bytes that flowed during the gap are
+    //     deliberately NOT replayed to subscribers (that would re-print
+    //     history), so this socket's view is stale by exactly that gap. Every
+    //     tick therefore schedules the same authoritative re-seed an explicit
+    //     `Resync` does.
+    let mut attach_gen = rt.attach_generation();
+
     if !send_seed_then_done(&mut socket, rt.as_ref(), &mut rx, &name).await {
         return;
+    }
+    // The seed WAITED for any in-flight replay (the runtime's ready gate), so it
+    // already reflects the current generation — mark it seen. Without this, the
+    // common "first attach after a daemon restart" case (the replay finishes
+    // while the seed is being built) would immediately re-seed itself.
+    if let Some(rx) = attach_gen.as_mut() {
+        rx.borrow_and_update();
     }
 
     // 5. Per-session input task (typing-latency win #1 + #2). The recv branch
@@ -606,6 +623,17 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         let resync_tick = async {
             match resync_deadline {
                 Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        // The backend re-attached to its terminal (native holder reconnect).
+        // Cancel-safe by contract (`watch::Receiver::changed`), so losing this
+        // branch to another arm never drops a generation bump.
+        let reattached = async {
+            match attach_gen.as_mut() {
+                Some(rx) => {
+                    let _ = rx.changed().await;
+                }
                 None => std::future::pending::<()>().await,
             }
         };
@@ -689,6 +717,14 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
                 if !send_seed_then_done(&mut socket, rt.as_ref(), &mut rx, &name).await {
                     break;
                 }
+            }
+            // Holder reconnect: the grid was rebuilt from the spool, so this
+            // socket missed everything printed during the gap. Schedule the
+            // resync rather than pushing the seed inline — that reuses the one
+            // snapshot path (and coalesces with a resize resync in flight).
+            _ = reattached => {
+                tracing::debug!(session = %name, "ws: backend re-attached — re-seeding");
+                resync_deadline = Some(Instant::now());
             }
             outbound = rx.recv() => {
                 match outbound {
@@ -1662,5 +1698,62 @@ mod recall_tests {
         // A buffer of pure cursor noise commits nothing — pairs with the
         // `if committed.is_empty()` gate in `inspect_for_prompt`.
         assert_eq!(sanitise_prompt("\x1b[A\x1b[B\x1b[C\x1b[D"), "");
+    }
+}
+
+#[cfg(test)]
+mod reattach_reseed_tests {
+    //! The holder-reconnect self-heal. A native session that loses and regains
+    //! its holder connection rebuilds its grid by replaying the spool, and those
+    //! replay bytes are deliberately NOT forwarded to subscribers (they would
+    //! re-print history). So an attached browser is stale by exactly the gap and
+    //! nothing else tells it: the attach-generation tick is the signal, and this
+    //! socket must answer it with the same authoritative snapshot `Resync` does.
+    //!
+    //! The tick itself is covered end-to-end in
+    //! `sessions::native::runtime::tests`; what can only be checked HERE is that
+    //! `handle_socket` subscribes to it and turns it into a re-seed. A live-WS
+    //! test would need a browser, a holder and a pty, so this pins the wiring
+    //! structurally — the failure mode being guarded against is the branch being
+    //! dropped in a future edit of this `select!`, which the scan catches.
+
+    const SRC: &str = include_str!("mod.rs");
+
+    fn handle_socket_body() -> &'static str {
+        let start = SRC.find("async fn handle_socket(").expect("handle_socket exists");
+        let end = SRC[start..]
+            .find("\nasync fn input_drain_loop")
+            .map(|e| start + e)
+            .unwrap_or(SRC.len());
+        &SRC[start..end]
+    }
+
+    #[test]
+    fn the_attach_generation_is_subscribed_and_re_seeds_the_socket() {
+        let body = handle_socket_body();
+        assert!(
+            body.contains("rt.attach_generation()"),
+            "handle_socket must subscribe to the runtime's attach generation",
+        );
+        let arm = body
+            .find("_ = reattached =>")
+            .expect("the select! must have a re-attach arm");
+        let mut end = arm + 400.min(body.len() - arm);
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        let tail = &body[arm..end];
+        assert!(
+            tail.contains("resync_deadline = Some(Instant::now())"),
+            "a re-attach must schedule an IMMEDIATE resync (the same snapshot \
+             path `Resync` uses):\n{tail}",
+        );
+        // …and that scheduled resync is what pushes the seed.
+        assert!(
+            body.contains("_ = resync_tick =>")
+                && body[body.find("_ = resync_tick =>").unwrap()..]
+                    .contains("send_seed_then_done"),
+            "the resync tick must re-push the authoritative seed",
+        );
     }
 }

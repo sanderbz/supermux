@@ -37,6 +37,7 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -46,7 +47,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use super::proto;
-use super::spool::{self, Spool};
+use super::spool::{self, Spool, TailReader};
 
 /// Pty read chunk (matches the tmux-path reader's `READ_CHUNK`).
 pub const CHUNK: usize = 8192;
@@ -60,6 +61,20 @@ const QUEUE_DEPTH: usize = 1024;
 const DRAIN: std::time::Duration = std::time::Duration::from_millis(500);
 /// Grace period for the connection writer to flush the final `EXIT` frame.
 const EXIT_FLUSH: std::time::Duration = std::time::Duration::from_millis(150);
+/// Mode forced on `holder.sock` right after `bind`. Anyone who can `connect()`
+/// this socket can write arbitrary bytes to the pty — i.e. run commands as the
+/// service user — and read every byte the child prints. `bind` applies the
+/// process umask (0755 under the default 022), so it is chmod'ed explicitly.
+const SOCKET_MODE: u32 = 0o600;
+/// Signals the daemon may ask us to deliver to the child's process group.
+///
+/// The `SIGNAL` frame carries an arbitrary `i32` that used to be handed
+/// straight to `killpg`. Anything else is dropped with a log line: the daemon
+/// only ever needs terminate-shaped signals ([`super::runtime::NativeSession::kill`]
+/// sends `SIGHUP` then `SIGKILL`), and an allowlist means a compromised or
+/// buggy peer cannot aim `SIGSTOP`/`SIGCONT`/`SIGUSR*`/realtime signals at an
+/// agent's process group.
+const SIGNAL_ALLOWLIST: [i32; 4] = [libc::SIGHUP, libc::SIGINT, libc::SIGTERM, libc::SIGKILL];
 
 /// Parsed `supermux-server pty-holder …` command line.
 #[derive(Debug, Clone)]
@@ -246,7 +261,7 @@ pub async fn run(args: Args) -> Result<()> {
     //    fails with EADDRINUSE on an existing path even when nothing listens,
     //    and the daemon's `spawn` guarantees no live holder is bound here.
     if let Some(parent) = socket.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        spool::ensure_dir(parent)?;
     }
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket).with_context(|| {
@@ -256,6 +271,13 @@ pub async fn run(args: Args) -> Result<()> {
             socket.as_os_str().len(),
         )
     })?;
+    // Close the world-connectable window immediately (the containing dir is
+    // already 0700, so this is the second lock on the same door).
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(SOCKET_MODE))
+        .with_context(|| format!("chmod {SOCKET_MODE:o} {}", socket.display()))?;
+    // Identity of the socket WE bound. On exit we unlink the path only if it
+    // still resolves to this inode — see `remove_socket_if_ours`.
+    let socket_id = path_id(&socket);
 
     // 1. pty pair, sized before the child ever runs so its first paint is
     //    already at the right geometry.
@@ -352,12 +374,45 @@ pub async fn run(args: Args) -> Result<()> {
     }
     spool::mark_exit(&dir, code);
     holder.publish(proto::EXIT, code.to_be_bytes().to_vec());
-    // Give the connection writer a moment to push the EXIT frame out.
+    // Unlink BEFORE the flush grace, not after. The daemon treats a connectable
+    // socket as "holder alive", so the moment `EXIT` lands it may `spawn` a
+    // successor for the same name — which binds a FRESH socket at this path.
+    // Unlinking after a 150 ms sleep would delete that successor's socket,
+    // orphaning its child. Unlinking first shrinks the window to nothing, and
+    // the inode check closes what is left of it.
+    remove_socket_if_ours(&socket, socket_id);
+    // Give the connection writer a moment to push the EXIT frame out. We are
+    // still listening (on an unlinked inode) — harmless: nobody can reach it.
     tokio::time::sleep(EXIT_FLUSH).await;
     acceptor.abort();
-    let _ = std::fs::remove_file(&socket);
     tracing::info!(session = %session, code, "native holder: child exited, holder done");
     Ok(())
+}
+
+/// `(st_dev, st_ino)` of `path`, without following symlinks.
+fn path_id(path: &Path) -> Option<(u64, u64)> {
+    std::fs::symlink_metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// Unlink `socket` only if the path still names the inode we bound.
+///
+/// A successor holder that already re-bound the path has a DIFFERENT inode
+/// there; removing it would leave its child running with no reachable holder
+/// (and the daemon spawning a third one). Note `fstat` on the listener fd is
+/// useless for this on Linux — an `AF_UNIX` fd stats to an anonymous sockfs
+/// inode, never to the filesystem inode the path resolves to — so the identity
+/// is taken from the PATH right after `bind` instead.
+fn remove_socket_if_ours(socket: &Path, ours: Option<(u64, u64)>) {
+    match (ours, path_id(socket)) {
+        (Some(a), Some(b)) if a == b => {
+            let _ = std::fs::remove_file(socket);
+        }
+        (_, None) => {} // already gone
+        _ => tracing::info!(
+            socket = %socket.display(),
+            "native holder: socket was replaced by a successor — leaving it alone",
+        ),
+    }
 }
 
 /// pty master → spool + connected daemon. Ends on EOF/`EIO` (the child and all
@@ -402,12 +457,34 @@ async fn accept_loop(holder: Arc<Holder>, listener: UnixListener) {
                 continue;
             }
         };
-        // Cutover under the lock: snapshot the spool tail and install the new
-        // queue atomically, so no byte is duplicated or lost across the seam.
-        let (hello, replay) = {
+        // Cutover under the lock — but WITHOUT the I/O. What has to be atomic
+        // with respect to `on_output` is (a) fixing the replay tail's END
+        // boundary and (b) installing the new queue; both are O(1) here.
+        // Reading those bytes (up to 8 MiB) is deliberately left to
+        // `serve_conn`, because this lock is the one every pty chunk needs and
+        // holding it across a multi-MiB read makes the CHILD block in `write()`.
+        //
+        // Exactly-once still holds, and is now easier to see:
+        //   * a chunk appended BEFORE the cutover is inside the snapshot's
+        //     byte range and is not in the queue (the queue did not exist);
+        //   * a chunk appended AFTER it goes to the queue, and lands in the
+        //     spool strictly past the snapshot's end offset, so the replay read
+        //     cannot pick it up;
+        //   * the boundary is a single point in time under one lock, so there
+        //     is no "neither" case either.
+        // The snapshot survives the lock release because spool segments are
+        // append-only and `TailReader` holds fds that pin them (see
+        // `spool::Spool::tail_reader`).
+        let (hello, tail, rx) = {
             let mut g = holder.inner.lock().unwrap();
             let (tx, rx) = mpsc::channel::<Frame>(QUEUE_DEPTH);
-            let tail = g.spool.replay_tail(spool::REPLAY_TAIL).unwrap_or_default();
+            let tail = match g.spool.tail_reader(spool::REPLAY_TAIL) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(session = %holder.session, error = %e, "native holder: replay snapshot failed");
+                    continue;
+                }
+            };
             g.live = Some(tx);
             let hello = proto::Hello {
                 session: holder.session.clone(),
@@ -415,12 +492,11 @@ async fn accept_loop(holder: Arc<Holder>, listener: UnixListener) {
                 cols: g.cols,
                 rows: g.rows,
                 started_at: holder.started_at,
-                replay_bytes: tail.len() as u64,
+                replay_bytes: tail.len(),
                 spool_total: g.spool.total(),
             };
-            (hello, (tail, rx))
+            (hello, tail, rx)
         };
-        let (tail, rx) = replay;
         tokio::spawn(serve_conn(holder.clone(), stream, hello, tail, rx));
     }
 }
@@ -431,7 +507,7 @@ async fn serve_conn(
     holder: Arc<Holder>,
     stream: UnixStream,
     hello: proto::Hello,
-    replay: Vec<u8>,
+    tail: TailReader,
     mut rx: mpsc::Receiver<Frame>,
 ) {
     let (mut rd, mut wr) = tokio::io::split(stream);
@@ -439,6 +515,16 @@ async fn serve_conn(
     let writer = async move {
         let payload = serde_json::to_vec(&hello).unwrap_or_default();
         proto::write_frame(&mut wr, proto::HELLO, &payload).await?;
+        // The 8 MiB `pread`, off both the holder's lock and the reactor. Live
+        // output arriving meanwhile buffers in `rx` (and, if the daemon is that
+        // slow, gets it disconnected — which replays losslessly).
+        let replay = tokio::task::spawn_blocking(move || tail.read())
+            .await
+            .map_err(|e| std::io::Error::other(format!("replay read task: {e}")))??;
+        // `HELLO.replay_bytes` promised exactly this many bytes and the daemon
+        // counts them off to separate replay from live, so a short read must
+        // kill the connection rather than desynchronise that boundary — the
+        // `?`s above do exactly that; the daemon reconnects and re-snapshots.
         for chunk in replay.chunks(REPLAY_CHUNK) {
             proto::write_frame(&mut wr, proto::OUTPUT, chunk).await?;
         }
@@ -489,11 +575,15 @@ async fn handle_frame(holder: &Arc<Holder>, kind: u8, payload: Vec<u8>) {
                 }
             }
         }
-        proto::SIGNAL => {
-            if let Some(sig) = proto::parse_i32(&payload) {
-                signal_child(holder.pid, sig);
-            }
-        }
+        proto::SIGNAL => match proto::parse_i32(&payload) {
+            Some(sig) if SIGNAL_ALLOWLIST.contains(&sig) => signal_child(holder.pid, sig),
+            Some(sig) => tracing::warn!(
+                session = %holder.session,
+                sig,
+                "native holder: refusing a signal outside the allowlist",
+            ),
+            None => tracing::debug!("native holder: malformed SIGNAL payload"),
+        },
         proto::QUERY => {
             let info = {
                 let g = holder.inner.lock().unwrap();
@@ -521,11 +611,8 @@ fn signal_child(pid: u32, sig: i32) {
     }
 }
 
-/// Best-effort "is a holder listening at `socket`?" — used by the daemon to
-/// decide spawn-vs-reattach and to answer `alive()`.
-pub async fn socket_live(socket: &Path) -> bool {
-    UnixStream::connect(socket).await.is_ok()
-}
+// (socket_live was removed: the B3 fix made liveness probing meta/pid-based —
+// dialling the socket evicted the live daemon connection. See runtime::probe_alive.)
 
 #[cfg(test)]
 mod tests {
@@ -558,5 +645,59 @@ mod tests {
         assert_eq!(a.socket, PathBuf::from("/tmp/x/holder.sock"));
         assert!(Args::parse(["--session", "s"].into_iter().map(String::from)).is_err());
         assert!(Args::parse(["--bogus"].into_iter().map(String::from)).is_err());
+    }
+
+    #[test]
+    fn the_signal_allowlist_admits_terminate_shaped_signals_only() {
+        for sig in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM, libc::SIGKILL] {
+            assert!(SIGNAL_ALLOWLIST.contains(&sig), "kill path needs {sig}");
+        }
+        // The daemon has no business asking for any of these, and a hostile
+        // peer must not be able to stop/continue/confuse an agent's group.
+        for sig in [
+            libc::SIGSTOP,
+            libc::SIGCONT,
+            libc::SIGUSR1,
+            libc::SIGUSR2,
+            libc::SIGSEGV,
+            libc::SIGWINCH,
+            0,
+            -1,
+            libc::SIGRTMIN(),
+            9999,
+        ] {
+            assert!(!SIGNAL_ALLOWLIST.contains(&sig), "{sig} must be refused");
+        }
+    }
+
+    #[test]
+    fn a_dying_holder_never_unlinks_a_successors_socket() {
+        let dir = std::env::temp_dir().join(format!("supermux-sockid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("holder.sock");
+
+        // "Our" socket: we unlink it, because the path still resolves to it.
+        std::fs::write(&path, b"ours").unwrap();
+        let ours = path_id(&path);
+        assert!(ours.is_some());
+
+        // A successor replaces the path with a socket of its OWN before our
+        // shutdown gets around to cleaning up. (Renamed into place so the
+        // successor's inode is allocated while ours still exists — otherwise
+        // the filesystem happily hands the freed inode number straight back.)
+        let successor = dir.join("successor.sock");
+        std::fs::write(&successor, b"successor").unwrap();
+        std::fs::rename(&successor, &path).unwrap();
+        assert_ne!(ours, path_id(&path), "the successor must have a new inode");
+        remove_socket_if_ours(&path, ours);
+        assert!(path.exists(), "the successor's socket must survive");
+
+        // The matching-inode case still cleans up.
+        remove_socket_if_ours(&path, path_id(&path));
+        assert!(!path.exists(), "our own socket must be removed");
+
+        // A vanished path is a no-op, not a panic.
+        remove_socket_if_ours(&path, ours);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
