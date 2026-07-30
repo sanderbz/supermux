@@ -313,6 +313,18 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
 /// resolver ([`crate::state::AppState::runtime_for`]) calls this on a cache
 /// miss, so it stays a single narrow column read rather than a full row fetch.
 /// `Ok(None)` = no such session row.
+/// Durably set the session's runtime kind. Callers must also invalidate the
+/// AppState runtime cache (`runtime_invalidate`) or the daemon keeps serving
+/// the old backend until restart.
+pub async fn set_runtime(pool: &SqlitePool, name: &str, runtime: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET runtime = ? WHERE name = ?")
+        .bind(runtime)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn runtime_kind(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT runtime FROM sessions WHERE name = ?")
         .bind(name)

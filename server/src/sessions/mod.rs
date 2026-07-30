@@ -560,13 +560,22 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
     if !valid_provider(&provider) {
         return Err(AppError::BadRequest(format!("invalid provider '{provider}'")));
     }
-    // Runtime selection (migration 0024). Absent → `tmux`, so every pre-existing
-    // client body creates exactly the session it always did.
+    // Runtime selection (migration 0024). Absent → NATIVE for local sessions
+    // (the tmux-less runtime is the default: the daemon is the terminal), but
+    // tmux for remote-host sessions (a holder is definitionally local — see the
+    // native+host_id refusal below). Team lead/teammate creation passes an
+    // explicit `tmux` (their panes ARE tmux constructs).
     let runtime_kind = input
         .runtime
         .map(|r| r.trim().to_string())
         .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| runtime::RUNTIME_TMUX.to_string());
+        .unwrap_or_else(|| {
+            if input.host_id.is_some() {
+                runtime::RUNTIME_TMUX.to_string()
+            } else {
+                runtime::RUNTIME_NATIVE.to_string()
+            }
+        });
     if !runtime::valid_runtime(&runtime_kind) {
         return Err(AppError::BadRequest(format!(
             "invalid runtime '{runtime_kind}' (allowed: {}, {})",
@@ -1482,20 +1491,25 @@ mod tests {
     /// `SessionView`, and OMITTING it yields `tmux` at every layer (the
     /// zero-behaviour-change default the whole existing fleet lands on).
     #[tokio::test]
-    async fn runtime_defaults_to_tmux_through_the_whole_create_path() {
+    async fn runtime_defaults_to_native_through_the_whole_create_path() {
+        // Native is the product default for LOCAL sessions (the tmux-less
+        // runtime); remote-host creation defaults to tmux inside `create` (a
+        // pty holder is local by definition — branch covered by the explicit
+        // native+host rejection test).
         let (state, dir) = test_state().await;
         let view = create(&state, input("plain")).await.expect("create");
-        assert_eq!(view.runtime, "tmux");
+        assert_eq!(view.runtime, "native");
         let row = db::sessions::get(&state.pool, "plain").await.unwrap().unwrap();
-        assert_eq!(row.runtime, "tmux");
+        assert_eq!(row.runtime, "native");
         assert_eq!(
             db::sessions::runtime_kind(&state.pool, "plain").await.unwrap(),
-            Some("tmux".to_string())
+            Some("native".to_string())
         );
-        // …and the resolver hands back the tmux backend for it.
+        // …and the resolver hands back the native backend for it.
         let rt = state.runtime_for("plain").await.expect("resolves");
-        assert_eq!(rt.target(), "supermux-plain");
-        assert!(state.is_tmux_runtime("plain").await);
+        assert_eq!(rt.target(), "plain");
+        assert!(!state.is_tmux_runtime("plain").await);
+        crate::sessions::native::forget("plain");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -275,8 +275,8 @@ pub async fn start_team(
             host_id: None,
             // A team LEAD is tmux by definition — Claude renders teammates as
             // tmux split-window panes, which the native runtime has no analogue
-            // for. Explicitly the default rather than an option we forward.
-            runtime: None,
+            // for. EXPLICIT since the create default became native.
+            runtime: Some(crate::sessions::runtime::RUNTIME_TMUX.to_string()),
         },
     )
     .await?;
@@ -405,18 +405,24 @@ pub async fn convert_to_team(
         )));
     }
     if row.runtime == crate::sessions::runtime::RUNTIME_NATIVE {
-        // Agent teams is equally TMUX-only: Claude Code lands teammates as
+        // Agent teams is TMUX-only: Claude Code lands teammates as
         // `tmux split-window` panes (`teammateMode:"tmux"`), and supermux
-        // streams each one by its `%id`. A native session owns a single pty
-        // holder with no window to split, so converting it would produce a
-        // "team lead" whose teammates could never be spawned OR streamed.
-        // 409 (not 400): the request is well-formed, the session is simply in a
-        // state that can't host a team — same shape as the archived and
-        // already-a-lead refusals around it.
-        return Err(AppError::Conflict(format!(
-            "session '{name}' uses the native runtime — agent teams needs the tmux runtime \
-             (teammates are tmux split-window panes); create a tmux-runtime session for the lead"
-        )));
+        // streams each one by its `%id` — a native session owns a single pty
+        // holder with no window to split. With native as the CREATE DEFAULT this
+        // can't be a refusal (it would make teams unreachable for normal
+        // sessions): the conversion RESTARTS the session anyway (the whole
+        // point — Agent Teams env only applies at process launch), so flip the
+        // runtime back to tmux as part of the same restart. The inverse of the
+        // fresh-start tmux→native migration in `lifecycle::start`, which
+        // deliberately skips team leads (`team_name` is set by then).
+        db::sessions::set_runtime(
+            &state.pool,
+            name,
+            crate::sessions::runtime::RUNTIME_TMUX,
+        )
+        .await?;
+        state.runtime_invalidate(name);
+        tracing::info!(session = name, "runtime flipped native → tmux for team conversion");
     }
 
     // 2. Refuse if the detector already sees this session as a team lead (no double
@@ -668,7 +674,7 @@ mod tests {
     /// request, wrong session state) rather than booting a lead whose teammates
     /// could never spawn.
     #[tokio::test]
-    async fn convert_rejects_a_native_runtime_session() {
+    async fn convert_flips_a_native_session_to_tmux() {
         let (state, _dir) = test_state().await;
         crate::sessions::create(
             &state,
@@ -700,13 +706,18 @@ mod tests {
                 model: None,
             },
         )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(err, AppError::Conflict(_)),
-            "expected Conflict, got {err:?}"
+        .await;
+        // With native as the create default, conversion can't be a refusal — it
+        // FLIPS the runtime back to tmux (durably) as part of the restart the
+        // conversion performs anyway. The convert may still fail LATER in this
+        // harness (no real tmux/claude to boot), so the assertion is the flip
+        // itself, which happens before any of that.
+        let _ = err;
+        assert_eq!(
+            db::sessions::runtime_kind(&state.pool, "nativelead").await.unwrap(),
+            Some("tmux".to_string()),
+            "conversion must flip a native session back to the tmux runtime"
         );
-        assert!(err.to_string().contains("native runtime"), "{err}");
         crate::sessions::native::forget("nativelead");
     }
 

@@ -638,10 +638,30 @@ pub async fn start(
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
 
-    let s = require_session(state, name).await?;
-    // Runtime seam: `runtime_for` returns the tmux backend for every row whose
-    // `runtime` column is `'tmux'` (the column DEFAULT, so the entire existing
-    // fleet), built exactly as `Tmux::new(name)` built it here before.
+    let mut s = require_session(state, name).await?;
+    // NATIVE-BY-DEFAULT MIGRATION. The tmux-less runtime is the product default;
+    // a legacy `runtime='tmux'` row upgrades AT THE FIRST FRESH START — i.e. when
+    // its tmux pane is gone, so a live pane (and its scrollback) is never yanked
+    // from under a running agent. Teams stay tmux (Claude renders teammates as
+    // tmux panes) and remote-host sessions stay tmux (a pty holder is local by
+    // definition). The flip is durable (column write) + the runtime cache is
+    // invalidated so `runtime_for` below builds the native backend immediately.
+    // (`force_agent_teams` marks an in-flight team-lead conversion — its start
+    // must stay tmux even though `team_name` is only set by detection later.)
+    if s.runtime == crate::sessions::runtime::RUNTIME_TMUX
+        && s.host_id.is_none()
+        && s.team_name.is_none()
+        && !state.force_agent_teams(name)
+        && !Tmux::new(name).exists().await.unwrap_or(true)
+    {
+        db::sessions::set_runtime(&state.pool, name, crate::sessions::runtime::RUNTIME_NATIVE)
+            .await?;
+        state.runtime_invalidate(name);
+        s.runtime = crate::sessions::runtime::RUNTIME_NATIVE.to_string();
+        tracing::info!(session = name, "runtime migrated tmux → native on fresh start");
+    }
+    // Runtime seam: `runtime_for` returns the backend for the row's `runtime`
+    // column, built exactly as `Tmux::new(name)` built it here before.
     let rt = state.runtime_for(name).await?;
 
     // Rotate the hook token on every start to avoid long-lived env secrets.
