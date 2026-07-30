@@ -592,8 +592,8 @@ export function Overview() {
           </span>
         </Button>
 
-        {/* The "+" opens the New-session panel directly (Claude | Codex lives
-            inside it). Team creation remains available from its existing
+        {/* The "+" opens the New-session panel directly (Claude | Codex | Kimi
+            lives inside it). Team creation remains available from its existing
             dedicated entry points. */}
         <Button
           type="button"

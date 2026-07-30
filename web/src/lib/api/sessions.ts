@@ -316,7 +316,7 @@ export interface NewSession {
    *  from this typed text. */
   display_name?: string
   dir: string
-  provider?: 'claude' | 'codex' | 'shell'
+  provider?: 'claude' | 'codex' | 'kimi' | 'shell'
   desc?: string
   worktree?: boolean
   command?: string

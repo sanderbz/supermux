@@ -73,10 +73,10 @@ export interface DesktopDockProps {
   /** "+" snippet-drawer toggle — opens the snippet side-sheet. */
   onSnippets?: () => void
   /** ✎ Edit — lift the agent's current `❯` input into the native editor sheet
-   *  (feat-edit-in-native-editor). The caller sends Ctrl+G — the key BOTH Claude
-   *  (`chat:externalEditor`) and Codex (`open_external_editor`) bind to open
-   *  $EDITOR; the sheet opens on the resulting `external-edit` SSE event, pre-filled.
-   *  Absent for shell docks (no $EDITOR-driven composer). */
+   *  (feat-edit-in-native-editor). The caller sends Ctrl+G — the key Claude
+   *  (`chat:externalEditor`), Codex (`open_external_editor`) and Kimi all bind to
+   *  open $EDITOR; the sheet opens on the resulting `external-edit` SSE event,
+   *  pre-filled. Absent for shell docks (no $EDITOR-driven composer). */
   onEdit?: () => void
   /** 📎 attach — picked files go to the upload+inject flow (parent's
    *  `useAttachmentUpload.handleFiles`). Drives the desktop file picker. */

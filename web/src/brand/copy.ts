@@ -214,7 +214,7 @@ export const ONBOARDING = {
     },
     {
       title: 'Start another agent',
-      body: 'Use New session to pick Claude or Codex, choose a directory, and boot another tmux-backed workspace.',
+      body: 'Use New session to pick Claude, Codex or Kimi, choose a directory, and boot another tmux-backed workspace.',
     },
   ],
   /** Fresh install — the secondary demo CTA under the empty-state primary. */
