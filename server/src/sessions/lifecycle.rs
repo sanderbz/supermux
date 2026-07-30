@@ -653,19 +653,38 @@ pub async fn start(
     // stop→start cycle — `stop` leaves the dead pane for capturability). Only a
     // pane with a LIVE agent blocks the migration: this start() is then just a
     // wake/ensure and yanking a running pty is never acceptable.
+    //
+    // Teams are detected PHYSICALLY (>1 live tmux pane), NOT via `team_name`:
+    // with the global agent-teams pref on, Claude writes an IMPLICIT solo team
+    // (`session-<id8>`, members = just the lead, in-process) for every plain
+    // session, and the watcher stamps `team_name` on those rows — a label that
+    // says nothing about tmux panes. Blocking on it froze half the fleet on
+    // tmux (found live: a hand-started single session refused to migrate).
+    // `start_count > 0` scopes the migration to rows that have RUN before (the
+    // legacy fleet being upgraded): a freshly-created row that explicitly chose
+    // tmux (tests, tooling, the team-convert flip) gets its first start on the
+    // runtime it asked for. New rows default to native at create anyway.
     if s.runtime == crate::sessions::runtime::RUNTIME_TMUX
+        && s.start_count > 0
         && s.host_id.is_none()
-        && s.team_name.is_none()
         && !state.force_agent_teams(name)
     {
         let tmux = Tmux::new(name);
         let texists = tmux.exists().await.unwrap_or(true);
+        // A REAL rendered team = more than one live pane → never migrate it.
+        let multi_pane = texists
+            && tmux
+                .list_pane_ids()
+                .await
+                .map(|p| p.len() > 1)
+                .unwrap_or(true);
         // Fresh = no session, a dead pane, OR a pane whose foreground process
         // group is the shell itself (the agent exited back to bash — the shape
         // `stop` actually leaves behind, since /exit ends claude but not the
         // pane's bash). Only a pane with a live FOREGROUND AGENT blocks.
-        let mut fresh = !texists || tmux.pane_dead().await.unwrap_or(false);
-        if !fresh {
+        let mut fresh =
+            !texists || (!multi_pane && tmux.pane_dead().await.unwrap_or(false));
+        if !fresh && !multi_pane {
             if let Ok(Some(pid)) = tmux.pane_pid().await {
                 fresh = crate::sessions::native::runtime::foreground_pgid(pid) == Some(pid);
             }

@@ -116,7 +116,7 @@ async fn start_send_peek_stop_shell_session() {
         &app,
         Method::POST,
         "/api/sessions",
-        Some(json!({ "name": name, "provider": "shell", "dir": "/tmp" })),
+        Some(json!({ "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux" })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -167,7 +167,7 @@ async fn short_send_via_send_keys_literal() {
         &app,
         Method::POST,
         "/api/sessions",
-        Some(json!({ "name": name, "provider": "shell", "dir": "/tmp" })),
+        Some(json!({ "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux" })),
     )
     .await;
     let (status, _) = send(&app, Method::POST, &format!("/api/sessions/{name}/start"), None).await;
@@ -204,7 +204,7 @@ async fn large_paste_via_load_buffer_round_trips() {
         &app,
         Method::POST,
         "/api/sessions",
-        Some(json!({ "name": name, "provider": "shell", "dir": "/tmp" })),
+        Some(json!({ "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux" })),
     )
     .await;
     let (status, _) = send(&app, Method::POST, &format!("/api/sessions/{name}/start"), None).await;
@@ -267,7 +267,7 @@ async fn keys_endpoint_enforces_allowlist() {
         &app,
         Method::POST,
         "/api/sessions",
-        Some(json!({ "name": name, "provider": "shell" })),
+        Some(json!({ "name": name, "provider": "shell", "runtime": "tmux" })),
     )
     .await;
 
