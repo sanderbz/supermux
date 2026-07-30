@@ -952,6 +952,15 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
     rt.send_text(text).await?;
+    // Native runtime: text and Enter would otherwise land in the SAME stdin
+    // read() of the child — Ink-style TUIs (Claude) then treat the whole chunk
+    // as one paste and the trailing \r becomes a composer newline, not a
+    // submit (verified live: the prompt sat unsent). tmux's two send-keys
+    // invocations had an inherent inter-command gap; reproduce a small one so
+    // the Enter arrives as its own keypress. Tmux keeps the old timing.
+    if !state.is_tmux_runtime(name).await {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     rt.send_key("Enter").await?;
     let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
     broadcast_send(state, name, &preview, at);
