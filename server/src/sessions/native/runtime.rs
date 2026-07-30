@@ -808,7 +808,7 @@ fn pid_alive(pid: u32) -> bool {
 ///
 /// The `comm` field can contain spaces AND parentheses, so the fixed fields are
 /// parsed from after the LAST `)` — the standard way to read this file.
-fn foreground_pgid(pid: u32) -> Option<u32> {
+pub(crate) fn foreground_pgid(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
     // After comm: state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5).

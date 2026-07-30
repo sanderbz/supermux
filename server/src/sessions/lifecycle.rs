@@ -660,7 +660,16 @@ pub async fn start(
     {
         let tmux = Tmux::new(name);
         let texists = tmux.exists().await.unwrap_or(true);
-        let fresh = !texists || tmux.pane_dead().await.unwrap_or(false);
+        // Fresh = no session, a dead pane, OR a pane whose foreground process
+        // group is the shell itself (the agent exited back to bash — the shape
+        // `stop` actually leaves behind, since /exit ends claude but not the
+        // pane's bash). Only a pane with a live FOREGROUND AGENT blocks.
+        let mut fresh = !texists || tmux.pane_dead().await.unwrap_or(false);
+        if !fresh {
+            if let Ok(Some(pid)) = tmux.pane_pid().await {
+                fresh = crate::sessions::native::runtime::foreground_pgid(pid) == Some(pid);
+            }
+        }
         if fresh {
             if texists {
                 // Kill the dead-pane remnant so the native spawn owns the name.
