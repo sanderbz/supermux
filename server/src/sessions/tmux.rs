@@ -74,36 +74,16 @@ impl TmuxTarget {
     }
 }
 
-/// One window of tmux-authoritative scrollback, returned by
-/// [`Tmux::capture_history_window`] for copy-mode-over-web. tmux is the single
-/// source of truth for every row above the live viewport; the client renders
-/// these rows in a read-only history term and never reflows them itself (tmux
-/// owns reflow). `rows` are PHYSICAL rows (captured without `-J`) already
-/// wrapped at `cols`, so 1 tmux row = 1 display row and historical + live rows
-/// wrap identically. Serialized into the `history` WS response frame.
-#[derive(serde::Serialize, Debug, Clone)]
-pub struct HistoryWindow {
-    /// The captured rows, top→bottom, ANSI-coloured (`-e`), physical (no `-J`).
-    pub rows: Vec<String>,
-    /// `#{history_size}` at capture time — the absolute-line-id anchor the
-    /// client uses to keep the rendered history from sliding under live output.
-    pub history_size: u32,
-    /// Actual bottom-inclusive scrollback range served (clamped into range).
-    pub start_offset: i64,
-    /// Bottom of the served range (`<= -1`; `-1` = the row just above the
-    /// visible top).
-    pub end_offset: i64,
-    /// `start` reached `-history_size` — no older rows exist (stop fetching).
-    pub hit_top: bool,
-    /// `#{pane_width}` the capture was taken at — the client's width-match guard
-    /// discards rows whose width no longer matches its live grid.
-    pub cols: u16,
-    /// `history_size` has reached `#{history_limit}` — tmux now trims oldest
-    /// lines as new ones land while the size stays flat, so absolute-line-id
-    /// anchors silently shift. The client must stop trusting its cross-fetch
-    /// cache while this is set (drop + re-anchor per fetch).
-    pub at_limit: bool,
-}
+/// One window of tmux-authoritative scrollback — **defined in
+/// [`super::runtime`]** and re-exported here unchanged.
+///
+/// It moved with the runtime seam because it is the return type of a
+/// [`SessionRuntime::history_window`](super::runtime::SessionRuntime::history_window)
+/// call that any backend must be able to answer, not a tmux-private shape. The
+/// struct body is byte-identical to the one that lived here, so the `history`
+/// WS frame it feeds is unchanged; this re-export keeps
+/// `crate::sessions::tmux::HistoryWindow` resolving for existing imports.
+pub use super::runtime::HistoryWindow;
 
 /// A handle to one tmux [`TmuxTarget`] (a session OR a pane). Cheap to construct.
 ///

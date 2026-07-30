@@ -158,6 +158,12 @@ pub struct SessionView {
     pub mcp: String,
     pub worktree: bool,
     pub creator: String,
+    /// Which terminal backend drives this session (migration 0024): `"tmux"` or
+    /// `"native"`. ADDITIVE field — always present, `"tmux"` for the entire
+    /// existing fleet, so no client that ignores it sees any change. Exposed so
+    /// the UI can badge a native session (and so a native-vs-tmux bug report
+    /// carries the answer without a DB dump).
+    pub runtime: String,
     /// Last 6 lines of `last_capture`, ANSI-stripped.
     pub preview_lines: Vec<String>,
     /// Same last 6 lines, with SGR escape sequences preserved — the colour-true
@@ -249,6 +255,14 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         mcp: s.mcp.clone(),
         worktree: s.worktree != 0,
         creator: s.creator.clone(),
+        // Rows written before migration 0024 (and the test-only
+        // `insert_minimal`) can read back empty; present them as the tmux
+        // default so the field is never blank on the wire.
+        runtime: if s.runtime.is_empty() {
+            runtime::RUNTIME_TMUX.to_string()
+        } else {
+            s.runtime.clone()
+        },
         preview_lines: preview_lines(last_capture),
         preview_ansi: last_n_lines(last_capture_ansi, 20),
         activity: act.as_ref().and_then(|a| a.activity.clone()),
@@ -526,6 +540,13 @@ pub struct CreateInput {
     /// this way reads as `bypass` and the toggle round-trips.
     #[serde(default)]
     pub bypass_permissions: Option<bool>,
+    /// Which terminal backend drives this session (migration 0024): `"tmux"`
+    /// (the default and the whole existing fleet) or `"native"` (the tmux-less
+    /// pty holder). Absent = `"tmux"`, so every existing client body creates
+    /// exactly the session it always did. Anything else is a 400; `"native"`
+    /// combined with a `host_id` is a 400 too (see [`create`]).
+    #[serde(default)]
+    pub runtime: Option<String>,
 }
 
 pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView, AppError> {
@@ -538,6 +559,32 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
     let provider = input.provider.unwrap_or_else(|| "claude".into());
     if !valid_provider(&provider) {
         return Err(AppError::BadRequest(format!("invalid provider '{provider}'")));
+    }
+    // Runtime selection (migration 0024). Absent → `tmux`, so every pre-existing
+    // client body creates exactly the session it always did.
+    let runtime_kind = input
+        .runtime
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| runtime::RUNTIME_TMUX.to_string());
+    if !runtime::valid_runtime(&runtime_kind) {
+        return Err(AppError::BadRequest(format!(
+            "invalid runtime '{runtime_kind}' (allowed: {}, {})",
+            runtime::RUNTIME_TMUX,
+            runtime::RUNTIME_NATIVE
+        )));
+    }
+    // The native runtime is a LOCAL pty holder: supermux owns the child process
+    // on THIS box. A remote-host session is driven over an SSH ControlMaster,
+    // which has no holder to own — the two are definitionally exclusive, so
+    // refuse the combination up front rather than create a row no runtime can
+    // serve.
+    if runtime_kind == runtime::RUNTIME_NATIVE && input.host_id.is_some() {
+        return Err(AppError::BadRequest(
+            "runtime 'native' cannot be combined with a remote host — the native runtime owns a \
+             local pty holder; use runtime 'tmux' for remote-host sessions"
+                .into(),
+        ));
     }
     if db::sessions::exists(&state.pool, &name).await? {
         return Err(AppError::Conflict(format!(
@@ -583,6 +630,7 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         worktree: input.worktree.unwrap_or(false),
         worktree_repo: String::new(),
         host_id: input.host_id,
+        runtime: runtime_kind,
     };
     db::sessions::create(&state.pool, &new).await?;
     let hook_token = gen_hook_token();
@@ -610,8 +658,15 @@ pub async fn delete(state: &AppState, name: &str) -> Result<(), AppError> {
         .await
         .unwrap_or_default()
         .is_empty();
-    // Best-effort tmux teardown so a deleted session leaves no orphan pane/FIFO.
-    let _ = tmux::Tmux::new(name).kill_session().await;
+    // Best-effort runtime teardown so a deleted session leaves no orphan
+    // pane/holder/FIFO. Resolved through the seam so a native session's holder
+    // is torn down by its own runtime; for tmux this is the same
+    // `kill-session` as before. Best-effort BOTH ways: an unresolvable runtime
+    // (e.g. a native row on a build where the native core isn't wired) must
+    // never block deleting the row.
+    if let Ok(rt) = state.runtime_for(name).await {
+        let _ = rt.kill().await;
+    }
     db::sessions::delete(&state.pool, name).await?;
 
     // Audit row — every destructive HTTP call records an entry. `delete` is
@@ -730,11 +785,24 @@ pub async fn config_patch(
             // tmux FIRST (the only fallible external step) so a failure aborts
             // before the DB drifts; the window/pane (and its pipe-pane capture)
             // survive the rename untouched.
-            let tmux = tmux::Tmux::new(&current);
-            let live = tmux.exists().await.unwrap_or(false);
-            if live {
-                tmux.rename_session(target).await?;
-            }
+            //
+            // Runtime seam: the tmux rename is a TMUX-SHAPED step — it renames
+            // an EXTERNAL multiplexer session that the DB row points at. The
+            // native runtime has no such external name (its holder is keyed by
+            // the row itself), so for a native session the rename is DB-only
+            // and there is nothing that can fail before the DB write. The
+            // `state.rename_session` below drops the cached runtime handle for
+            // both names, so the next resolve rebuilds against the new name.
+            let live = if state.is_tmux_runtime(&current).await {
+                let tmux = tmux::Tmux::new(&current);
+                let live = tmux.exists().await.unwrap_or(false);
+                if live {
+                    tmux.rename_session(target).await?;
+                }
+                live
+            } else {
+                false
+            };
             db::sessions::rename(&state.pool, &current, target).await?;
             // Carry the per-session in-memory maps (lock/watch/hook token) over.
             state.rename_session(&current, target);
@@ -1336,5 +1404,177 @@ mod tests {
         // Length cap (>128 rejected).
         let too_long: String = std::iter::repeat('a').take(129).collect();
         assert!(!valid_cc_id(&too_long));
+    }
+
+    // ── runtime seam: the `runtime` column, end to end ───────────────────────
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("supermux-runtime-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (AppState::new(pool, config), dir)
+    }
+
+    fn input(name: &str) -> CreateInput {
+        CreateInput {
+            name: name.into(),
+            display_name: None,
+            dir: Some("/tmp".into()),
+            desc: None,
+            provider: Some("shell".into()),
+            creator: None,
+            flags: None,
+            bypass_permissions: None,
+            tags: None,
+            branch: None,
+            mcp: None,
+            worktree: None,
+            host_id: None,
+            runtime: None,
+        }
+    }
+
+    /// The column threads CreateInput → NewSession → INSERT → `Session` row →
+    /// `SessionView`, and OMITTING it yields `tmux` at every layer (the
+    /// zero-behaviour-change default the whole existing fleet lands on).
+    #[tokio::test]
+    async fn runtime_defaults_to_tmux_through_the_whole_create_path() {
+        let (state, dir) = test_state().await;
+        let view = create(&state, input("plain")).await.expect("create");
+        assert_eq!(view.runtime, "tmux");
+        let row = db::sessions::get(&state.pool, "plain").await.unwrap().unwrap();
+        assert_eq!(row.runtime, "tmux");
+        assert_eq!(
+            db::sessions::runtime_kind(&state.pool, "plain").await.unwrap(),
+            Some("tmux".to_string())
+        );
+        // …and the resolver hands back the tmux backend for it.
+        let rt = state.runtime_for("plain").await.expect("resolves");
+        assert_eq!(rt.target(), "supermux-plain");
+        assert!(state.is_tmux_runtime("plain").await);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An EXPLICIT `runtime: "native"` persists and is visible on the API view.
+    #[tokio::test]
+    async fn explicit_native_runtime_persists_and_surfaces_on_the_view() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("nat");
+        inp.runtime = Some("native".into());
+        let view = create(&state, inp).await.expect("create");
+        assert_eq!(view.runtime, "native");
+        let row = db::sessions::get(&state.pool, "nat").await.unwrap().unwrap();
+        assert_eq!(row.runtime, "native");
+        assert!(!state.is_tmux_runtime("nat").await);
+        // A native session is never a team host — the lead-pane resolver
+        // short-circuits without ever forking `tmux list-panes`.
+        assert!(teams::resolve_lead_pane(&state, "nat").await.is_none());
+        crate::sessions::native::forget("nat");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `native` + a remote `host_id` is a definitional contradiction (the native
+    /// runtime owns a LOCAL pty holder) → 400, and NO row is written.
+    #[tokio::test]
+    async fn native_plus_host_id_is_rejected_with_400() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("remote-nat");
+        inp.runtime = Some("native".into());
+        inp.host_id = Some(7);
+        let err = create(&state, inp).await.expect_err("must refuse");
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        // The message must name the combination, not just "bad request" — this
+        // is the refusal the API surfaces verbatim.
+        assert!(err.to_string().contains("native"), "{err}");
+        assert!(err.to_string().contains("remote host"), "{err}");
+        assert!(!db::sessions::exists(&state.pool, "remote-nat").await.unwrap());
+        // The refusal is about the COMBINATION: the identical body minus the
+        // host_id creates cleanly.
+        let mut ok = input("remote-nat");
+        ok.runtime = Some("native".into());
+        create(&state, ok).await.expect("native without a host is fine");
+        crate::sessions::native::forget("remote-nat");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An unknown runtime kind is a 400 — never silently coerced to tmux, which
+    /// would hand the caller a session that is not what they asked for.
+    #[tokio::test]
+    async fn unknown_runtime_kind_is_rejected_with_400() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("weird");
+        inp.runtime = Some("screen".into());
+        let err = create(&state, inp).await.expect_err("must refuse");
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        assert!(!db::sessions::exists(&state.pool, "weird").await.unwrap());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `duplicate` carries the runtime kind to the clone — a native session's
+    /// copy must not silently become a tmux one.
+    #[tokio::test]
+    async fn duplicate_carries_the_runtime_kind() {
+        let (state, dir) = test_state().await;
+        let mut inp = input("src-nat");
+        inp.runtime = Some("native".into());
+        create(&state, inp).await.expect("create");
+        db::sessions::duplicate(&state.pool, "src-nat", "copy-nat")
+            .await
+            .expect("duplicate");
+        let row = db::sessions::get(&state.pool, "copy-nat").await.unwrap().unwrap();
+        assert_eq!(row.runtime, "native");
+        crate::sessions::native::forget("src-nat");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The resolver CACHES per session name, and both cleanup paths evict:
+    /// `forget_session` (delete) and `rename_session`. A stale handle would keep
+    /// addressing the old `supermux-<name>` after a rename.
+    #[tokio::test]
+    async fn runtime_cache_is_populated_and_evicted() {
+        let (state, dir) = test_state().await;
+        create(&state, input("cached")).await.expect("create");
+        assert!(state.session_runtimes.get("cached").is_none());
+        let _ = state.runtime_for("cached").await.expect("resolves");
+        assert!(state.session_runtimes.get("cached").is_some());
+
+        state.rename_session("cached", "renamed");
+        assert!(state.session_runtimes.get("cached").is_none());
+
+        let _ = state.runtime_for("renamed").await.expect("resolves");
+        assert!(state.session_runtimes.get("renamed").is_some());
+        state.forget_session("renamed");
+        assert!(state.session_runtimes.get("renamed").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A row with no `runtime` value on record (a pre-0024 row, or the
+    /// test-only `insert_minimal`) reads as tmux everywhere — the backfill
+    /// contract the DEFAULT encodes.
+    #[tokio::test]
+    async fn minimal_insert_backfills_to_tmux() {
+        let (state, dir) = test_state().await;
+        db::sessions::insert_minimal(&state.pool, "legacy", "/tmp", "shell")
+            .await
+            .expect("insert");
+        let row = db::sessions::get(&state.pool, "legacy").await.unwrap().unwrap();
+        assert_eq!(row.runtime, "tmux");
+        let rt = state.runtime_for("legacy").await.expect("resolves");
+        assert_eq!(rt.target(), "supermux-legacy");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -326,6 +326,8 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
         mcp: None,
         worktree: Some(sched.boot_worktree == 1),
         host_id: None,
+        // Scheduler-booted sessions take the default (tmux) runtime.
+        runtime: None,
     };
     if let Err(e) = sessions::create(state, input).await {
         return JobOutcome {

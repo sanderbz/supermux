@@ -273,6 +273,10 @@ pub async fn start_team(
             mcp: None,
             worktree: None,
             host_id: None,
+            // A team LEAD is tmux by definition — Claude renders teammates as
+            // tmux split-window panes, which the native runtime has no analogue
+            // for. Explicitly the default rather than an option we forward.
+            runtime: None,
         },
     )
     .await?;
@@ -398,6 +402,20 @@ pub async fn convert_to_team(
         return Err(AppError::BadRequest(format!(
             "session '{name}' uses provider '{}' — only Claude sessions can become teams",
             row.provider
+        )));
+    }
+    if row.runtime == crate::sessions::runtime::RUNTIME_NATIVE {
+        // Agent teams is equally TMUX-only: Claude Code lands teammates as
+        // `tmux split-window` panes (`teammateMode:"tmux"`), and supermux
+        // streams each one by its `%id`. A native session owns a single pty
+        // holder with no window to split, so converting it would produce a
+        // "team lead" whose teammates could never be spawned OR streamed.
+        // 409 (not 400): the request is well-formed, the session is simply in a
+        // state that can't host a team — same shape as the archived and
+        // already-a-lead refusals around it.
+        return Err(AppError::Conflict(format!(
+            "session '{name}' uses the native runtime — agent teams needs the tmux runtime \
+             (teammates are tmux split-window panes); create a tmux-runtime session for the lead"
         )));
     }
 
@@ -644,6 +662,54 @@ mod tests {
         );
     }
 
+    /// Runtime guardrail: a NATIVE session can never become a team lead.
+    /// Claude renders teammates as tmux `split-window` panes, so a session with
+    /// no tmux window has nothing to split — refuse with 409 (well-formed
+    /// request, wrong session state) rather than booting a lead whose teammates
+    /// could never spawn.
+    #[tokio::test]
+    async fn convert_rejects_a_native_runtime_session() {
+        let (state, _dir) = test_state().await;
+        crate::sessions::create(
+            &state,
+            CreateInput {
+                name: "nativelead".into(),
+                display_name: None,
+                dir: None,
+                desc: None,
+                provider: Some("claude".into()),
+                creator: None,
+                flags: None,
+                bypass_permissions: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+                host_id: None,
+                runtime: Some("native".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let err = convert_to_team(
+            &state,
+            ConvertToTeamInput {
+                name: "nativelead".into(),
+                task: "ship the thing".into(),
+                teammates: None,
+                model: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+        assert!(err.to_string().contains("native runtime"), "{err}");
+        crate::sessions::native::forget("nativelead");
+    }
+
     #[tokio::test]
     async fn convert_rejects_empty_task() {
         let (state, _dir) = test_state().await;
@@ -664,6 +730,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                runtime: None,
             },
         )
         .await
@@ -701,6 +768,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                runtime: None,
             },
         )
         .await
@@ -745,6 +813,7 @@ mod tests {
                 mcp: None,
                 worktree: None,
                 host_id: None,
+                runtime: None,
             },
         )
         .await

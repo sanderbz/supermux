@@ -1,0 +1,19 @@
+-- Per-session RUNTIME selector: which terminal backend drives this session.
+--
+-- `'tmux'`  — the historical backend: a `supermux-<name>` tmux session driven by
+--             the `tmux` CLI (see `sessions::tmux`). Every pre-existing row
+--             backfills to this via the DEFAULT, so the entire fleet keeps its
+--             exact behaviour and no call site changes meaning.
+-- `'native'`— the tmux-less backend (`sessions::native`): supermux owns the pty
+--             holder + grid itself. Opt-in per session at create time.
+--
+-- NOT NULL + DEFAULT so `sessions::create`'s explicit column list, the
+-- test-only `insert_minimal`, and `duplicate`'s SELECT-INSERT all stay valid
+-- without touching a single existing statement. No CHECK constraint: the
+-- allowed set is validated in `sessions::create` (400 on anything else), and a
+-- CHECK here would make a future runtime kind a schema migration rather than a
+-- code change.
+--
+-- Numbering: 0023 is reserved by an in-flight branch; sqlx tolerates gaps in the
+-- version sequence (0006 is already skipped) and orders purely by version.
+ALTER TABLE sessions ADD COLUMN runtime TEXT NOT NULL DEFAULT 'tmux';

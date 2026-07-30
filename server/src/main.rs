@@ -22,6 +22,19 @@ async fn main() -> anyhow::Result<()> {
         return external_edit::run_bridge(std::env::args().nth(2)).await;
     }
 
+    // NATIVE (tmux-less) session runtime: the pty holder. The daemon spawns
+    // THIS binary as `pty-holder …` for every native session; the holder owns
+    // the pty master, spools raw output to disk and serves one daemon
+    // connection over a unix socket. Because the unit uses `KillMode=process`,
+    // a deploy restarts only the daemon — holders (and the agents inside them)
+    // survive, and the new daemon reconnects + replays the spool. Dispatched
+    // here, alongside `__edit` and before any server boot, so the holder
+    // process stays lean: no config, no DB, no listener.
+    if std::env::args().nth(1).as_deref() == Some("pty-holder") {
+        init_tracing();
+        return sessions::native::holder::main(std::env::args().skip(2)).await;
+    }
+
     init_tracing();
 
     let config = config::load()?;

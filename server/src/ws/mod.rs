@@ -17,6 +17,7 @@ pub mod protocol;
 pub mod streamer;
 
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{close_code, CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
@@ -33,6 +34,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::db;
 use crate::sessions;
+use crate::sessions::runtime::SessionRuntime;
 use crate::sessions::teams;
 use crate::sessions::tmux::Tmux;
 use crate::state::AppState;
@@ -206,7 +208,18 @@ async fn handle_team_socket(
     //    history the multiplexer is still holding. The in-memory replay ring is
     //    discarded for the WS path (still maintained by pty.rs for tail/preview).
     let (_replay, mut rx) = stream.subscribe();
+    // A teammate pane is a TMUX-ONLY concept (Claude Agent Teams renders
+    // teammates as `split-window` panes), so this path is pinned to the tmux
+    // runtime by construction — no `runtime_for` lookup, no native branch. The
+    // concrete `tmux` handle stays for the pane-scoped `resize_pane`; the
+    // seed / history / meta reads go through the same pane-pinned
+    // `TmuxRuntime`, which delegates to this exact handle.
     let tmux = Tmux::for_pane(&resolved.lead_session, &resolved.pane_id);
+    let rt = crate::sessions::runtime::TmuxRuntime::on(
+        None,
+        &resolved.lead_session,
+        Some(resolved.pane_id.clone()),
+    );
 
     // 4a. Pre-seed Resize peek — mirrors `handle_socket`'s `peek_initial_resize`
     //     so the teammate's xterm geometry is applied to ITS pane BEFORE the
@@ -222,12 +235,12 @@ async fn handle_team_socket(
     //     See `.claude/peek-diff-audit.md` Deferred #2 and
     //     `.claude/team-lead-mobile-width-audit.md` for the full rationale.
     if let Err(()) =
-        peek_initial_resize(&mut socket, &state, &resolved.lead_session, &tmux, true).await
+        peek_initial_resize(&mut socket, &state, &resolved.lead_session, &rt, Some(&tmux)).await
     {
         return;
     }
 
-    if !send_seed_then_done(&mut socket, &tmux, &mut rx, &resolved.lead_session).await {
+    if !send_seed_then_done(&mut socket, &rt, &mut rx, &resolved.lead_session).await {
         return;
     }
 
@@ -296,7 +309,7 @@ async fn handle_team_socket(
                                 ..
                             }) => {
                                 send_history_window(
-                                    &mut socket, &tmux, req_id, end_offset, count,
+                                    &mut socket, &rt, req_id, end_offset, count,
                                 )
                                 .await;
                             }
@@ -312,7 +325,7 @@ async fn handle_team_socket(
             // session path, scoped to this teammate pane.
             _ = resync_tick => {
                 resync_deadline = None;
-                if !send_seed_then_done(&mut socket, &tmux, &mut rx, &resolved.lead_session).await {
+                if !send_seed_then_done(&mut socket, &rt, &mut rx, &resolved.lead_session).await {
                     break;
                 }
             }
@@ -378,12 +391,24 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         return;
     }
 
-    // 2. Up-front liveness check: if the tmux session is gone (a `stopped`
+    // 2. Up-front liveness check: if the session's terminal is gone (a `stopped`
     //    session — DB row survived a reboot but the pty did not), close with the
     //    explicit terminal code 4404 so the client STOPS reconnecting instead of
     //    storming this endpoint. This is logged at debug, not warn: a stopped
     //    session being opened is expected, not a server fault.
-    if !Tmux::new(&name).exists().await.unwrap_or(false) {
+    //
+    //    Runtime seam: resolved through `runtime_for`, which for the tmux
+    //    runtime is the same local `has-session` probe `Tmux::new(&name)` did.
+    //    An unresolvable runtime reads as "not running" — the same 4404 the
+    //    client already knows how to handle.
+    let alive = match state.runtime_for(&name).await {
+        Ok(rt) => rt.alive().await,
+        Err(e) => {
+            tracing::debug!(session = %name, error = %e, "ws closed: runtime unavailable");
+            false
+        }
+    };
+    if !alive {
         tracing::debug!(session = %name, "ws closed: session not running");
         close(&mut socket, CLOSE_NOT_RUNNING, "session not running").await;
         return;
@@ -398,7 +423,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //     would land in the teammate's pty (see [`teams::resolve_lead_pane`]).
     //     `None` for a non-team session preserves the historical session-target
     //     byte-for-byte (zero regression for single-pane sessions).
-    let lead_pane_id: Option<String> = teams::resolve_lead_pane(&name).await;
+    let lead_pane_id: Option<String> = teams::resolve_lead_pane(&state, &name).await;
 
     // 3. Ensure the per-session reader is running and enforce the subscriber cap.
     //    When `lead_pane_id` is `Some`, build the stream PINNED to that pane id
@@ -443,7 +468,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     // session mis-targeted the local box — this threads the same transport the
     // pty reader uses. `Some/None` fallback to the local builders degrades to
     // exactly the old behaviour when resolution fails.
-    let transport: Option<std::sync::Arc<crate::sessions::transport::Transport>> =
+    let transport: Option<Arc<crate::sessions::transport::Transport>> =
         match crate::db::sessions::get(&state.pool, &name).await {
             Ok(Some(s)) => match s.host_id {
                 Some(h) => state.host_pool.transport_for(h).await.ok(),
@@ -451,11 +476,32 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
             },
             _ => None,
         };
-    let tmux = match (transport.as_deref(), lead_pane_id.as_deref()) {
-        (Some(t), Some(lp)) => Tmux::for_pane_on(t, &name, lp.to_string()),
-        (Some(t), None) => Tmux::new_on(t, &name),
-        (None, Some(lp)) => Tmux::for_pane(&name, lp.to_string()),
-        (None, None) => Tmux::new(&name),
+    // Runtime seam. `runtime_for_attach` reproduces the exact four-way handle
+    // the WS built before the seam — `(transport, lead_pane)` → `for_pane_on` /
+    // `new_on` / `for_pane` / `new` — for the tmux runtime, and returns the
+    // native holder for a native row (which is never remote and never a team
+    // host, so both extras are inert there).
+    let rt: Arc<dyn SessionRuntime> = match state
+        .runtime_for_attach(&name, transport.clone(), lead_pane_id.clone())
+        .await
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::warn!(session = %name, error = %e, "ws closed: runtime unavailable");
+            close(&mut socket, close_code::ERROR, "runtime unavailable").await;
+            return;
+        }
+    };
+    // PANE-SCOPED resize target for an Agent-Teams LEAD. `resize-pane` is a
+    // tmux-shaped op with no native analogue and is deliberately NOT on the
+    // runtime trait, so the pre-seed peek keeps a concrete handle for it. `None`
+    // for every non-team session (and for native, whose `resolve_lead_pane`
+    // always answers `None`) — the runtime's window-scoped `resize` is used
+    // then, byte-for-byte as before.
+    let lead_tmux: Option<Tmux<'_>> = match (transport.as_deref(), lead_pane_id.as_deref()) {
+        (Some(t), Some(lp)) => Some(Tmux::for_pane_on(t, &name, lp.to_string())),
+        (None, Some(lp)) => Some(Tmux::for_pane(&name, lp.to_string())),
+        (_, None) => None,
     };
 
     // 4a. Cursor-row-mismatch fix (Option A — server-side belt). Before the
@@ -469,8 +515,8 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         &mut socket,
         &state,
         &name,
-        &tmux,
-        lead_pane_id.is_some(),
+        rt.as_ref(),
+        lead_tmux.as_ref(),
     )
     .await
     {
@@ -483,7 +529,12 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     // session, the attach is about to seed/stream the WRONG pane — log hard
     // proof so a "text from another session got injected" report becomes a
     // grep-able journal line instead of an unverifiable hunch. Read-only.
-    if let Some(actual) = tmux.resolved_session_name().await {
+    //
+    // Runtime seam: this is a TMUX-shaped diagnostic (it compares against a
+    // `supermux-<name>` tmux session name). `SessionRuntime::resolved_session_name`
+    // defaults to `None` for any non-tmux runtime, so a native attach simply
+    // has nothing to compare and the catcher stays silent.
+    if let Some(actual) = rt.resolved_session_name().await {
         let expected = format!("supermux-{name}");
         if actual != expected {
             tracing::error!(
@@ -495,7 +546,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
         }
     }
 
-    if !send_seed_then_done(&mut socket, &tmux, &mut rx, &name).await {
+    if !send_seed_then_done(&mut socket, rt.as_ref(), &mut rx, &name).await {
         return;
     }
 
@@ -602,7 +653,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
                                             ..
                                         } => {
                                             send_history_window(
-                                                &mut socket, &tmux, req_id, end_offset,
+                                                &mut socket, rt.as_ref(), req_id, end_offset,
                                                 count,
                                             )
                                             .await;
@@ -635,7 +686,7 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
             // idempotent no-op once already revealed.
             _ = resync_tick => {
                 resync_deadline = None;
-                if !send_seed_then_done(&mut socket, &tmux, &mut rx, &name).await {
+                if !send_seed_then_done(&mut socket, rt.as_ref(), &mut rx, &name).await {
                     break;
                 }
             }
@@ -699,14 +750,16 @@ enum Apply {
 /// `web/src/hooks/use-live-term.ts`); together they make the happy path
 /// "resize-then-seed" instead of "seed-with-stale-geometry-then-resize".
 ///
-/// `pane_scoped` mirrors the same fork that [`apply_one`] makes: when the WS is
+/// `pane` mirrors the same fork that [`apply_one`] makes: when the WS is
 /// pinned to a tmux pane (Agent Teams lead OR teammate), the resize must hit
 /// `resize-pane -t %id` so ONLY the subscribed pane is sized to the client's
 /// geometry. Calling `resize-window` on a multi-pane lead window would reflow
 /// every sibling pane to share the lead's xterm cols (`cols/N` per pane) —
 /// see `.claude/team-lead-mobile-width-audit.md` for the full mechanism.
-/// Non-team sessions still take the window-scoped path (window == single pane,
-/// no reflow).
+/// Non-team sessions pass `None` and take the runtime's window-scoped `resize`
+/// (window == single pane, no reflow) — byte-for-byte the pre-seam behaviour.
+/// `resize_pane` is deliberately absent from [`SessionRuntime`]: split-window
+/// panes are a tmux-only concept, so the pane arm keeps a concrete [`Tmux`].
 ///
 /// Returns `Ok(held)`:
 /// - `Ok(None)` — peek timed out OR the peeked frame was a `Resize` we already
@@ -723,8 +776,8 @@ async fn peek_initial_resize(
     socket: &mut WebSocket,
     state: &AppState,
     name: &str,
-    tmux: &Tmux<'_>,
-    pane_scoped: bool,
+    rt: &dyn SessionRuntime,
+    pane: Option<&Tmux<'_>>,
 ) -> Result<Option<ClientMsg>, ()> {
     let inbound = match tokio::time::timeout(PRESEED_RESIZE_PEEK, socket.recv()).await {
         // Peek window expired. Common when the client never sends a resize
@@ -757,10 +810,9 @@ async fn peek_initial_resize(
             // — same as the no-peek world).
             let lock = state.lock_for(name);
             let _guard = lock.lock().await;
-            let res = if pane_scoped {
-                tmux.resize_pane(cols, rows).await
-            } else {
-                tmux.resize(cols, rows).await
+            let res = match pane {
+                Some(tmux) => tmux.resize_pane(cols, rows).await,
+                None => rt.resize(cols, rows).await,
             };
             if let Err(e) = res {
                 tracing::debug!(session = %name, error = %e, "pre-seed resize failed");
@@ -848,14 +900,11 @@ fn drain_queued_overlap(rx: &mut tokio::sync::broadcast::Receiver<Bytes>) -> (us
 
 async fn send_seed_then_done(
     socket: &mut WebSocket,
-    tmux: &Tmux<'_>,
+    rt: &dyn SessionRuntime,
     rx: &mut tokio::sync::broadcast::Receiver<Bytes>,
     name: &str,
 ) -> bool {
-    let body = tmux
-        .capture_history_with_alt_screen_aware_visible()
-        .await
-        .ok();
+    let body = rt.seed().await.ok();
     // The capture above is the seed's authoritative snapshot of tmux up to NOW.
     // Every byte the broadcast queued between `subscribe()` and this point is
     // ALSO baked into that snapshot — discard the queued copies so the live
@@ -890,8 +939,7 @@ async fn send_seed_then_done(
     // precedes `replay_done`. A probe failure degrades to size 0 / width 0 (the
     // client treats it as "no history yet" and re-inits on the next resync).
     {
-        let info = tmux.pane_history_meta().await;
-        let (history_size, cols, _alt, _limit) = crate::sessions::tmux::parse_hist_info(&info);
+        let (history_size, cols) = rt.history_meta().await;
         let meta = serde_json::json!({
             "type": "attach_meta",
             "history_size": history_size,
@@ -921,12 +969,12 @@ async fn send_seed_then_done(
 /// a backoff retry / fall back to the seed rather than hang waiting.
 async fn send_history_window(
     socket: &mut WebSocket,
-    tmux: &Tmux<'_>,
+    rt: &dyn SessionRuntime,
     req_id: u32,
     end_offset: i64,
     count: u32,
 ) {
-    let payload = match tmux.capture_history_window(end_offset, count).await {
+    let payload = match rt.history_window(end_offset, count).await {
         Ok(w) => serde_json::json!({
             "type": "history",
             "req_id": req_id,
@@ -1200,42 +1248,75 @@ fn sanitise_prompt(raw: &str) -> String {
 ///
 /// [`PASTE_THRESHOLD`]: crate::sessions::tmux::PASTE_THRESHOLD
 async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op: Apply) {
-    let tmux = match lead_pane_id {
-        Some(lp) => Tmux::for_pane(name, lp.to_string()),
-        None => Tmux::new(name),
+    // Runtime seam. A TEAM LEAD (`lead_pane_id = Some`) stays on the concrete
+    // pane-pinned `Tmux`: its ops are pane-scoped tmux concepts
+    // (`resize_lead_pane` grows the shared window then pins the pane) that have
+    // no native analogue, and a native session can never be a team host. Every
+    // other session — i.e. the entire single-pane path, which is where the
+    // native runtime lives — dispatches through `runtime_for`.
+    //
+    // The runtime is resolved BEFORE the lock so a cache-miss DB read is never
+    // held across the per-session mutex the input drain serializes on.
+    let rt = match lead_pane_id {
+        Some(_) => None,
+        None => match state.runtime_for(name).await {
+            Ok(rt) => Some(rt),
+            Err(e) => {
+                tracing::debug!(session = %name, error = %e, "ws input: runtime unavailable");
+                return;
+            }
+        },
     };
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
-    let res = match op {
-        Apply::Text(text) => tmux.send_text(&text).await,
-        Apply::Ctrl(ClientMsg::Input { data }) => tmux.send_text(&data).await,
-        Apply::Ctrl(ClientMsg::Key { data }) => tmux.send_key(&data).await,
-        Apply::Ctrl(ClientMsg::Resize { cols, rows }) => {
-            // Fork on the routing pin: a team lead must GROW the shared window
-            // before pinning the lead pane to the client's geometry — bare
-            // resize-pane clamps to the frozen (manual) window width, leaving the
-            // browser xterm wider than the pane and the render garbled. Non-team
-            // uses window-scoped resize (byte-for-byte unchanged for single-pane).
-            if lead_pane_id.is_some() {
-                tmux.resize_lead_pane(cols, rows).await
-            } else {
-                tmux.resize(cols, rows).await
+    let res = match (lead_pane_id, rt) {
+        (Some(lp), _) => {
+            let tmux = Tmux::for_pane(name, lp.to_string());
+            match op {
+                Apply::Text(text) => tmux.send_text(&text).await,
+                Apply::Ctrl(ClientMsg::Input { data }) => tmux.send_text(&data).await,
+                Apply::Ctrl(ClientMsg::Key { data }) => tmux.send_key(&data).await,
+                // A team lead must GROW the shared window before pinning the
+                // lead pane to the client's geometry — bare resize-pane clamps
+                // to the frozen (manual) window width, leaving the browser xterm
+                // wider than the pane and the render garbled.
+                Apply::Ctrl(ClientMsg::Resize { cols, rows }) => {
+                    tmux.resize_lead_pane(cols, rows).await
+                }
+                Apply::Ctrl(
+                    ClientMsg::Auth { .. }
+                    | ClientMsg::Ping
+                    | ClientMsg::Resync
+                    | ClientMsg::History { .. },
+                ) => Ok(()),
             }
         }
-        // Auth-after-auth, client Ping, Resync, and History are no-ops on the
-        // input path. Resync and History never reach here in practice — the main
-        // loop intercepts both before the input hand-off (History is answered
-        // inline by `send_history_window`) — but a stray one is a harmless no-op
-        // (no tmux side effect: the snapshot / history push happens on the socket).
-        Apply::Ctrl(
-            ClientMsg::Auth { .. }
-            | ClientMsg::Ping
-            | ClientMsg::Resync
-            | ClientMsg::History { .. },
-        ) => Ok(()),
+        (None, Some(rt)) => match op {
+            Apply::Text(text) => rt.send_text(&text).await,
+            Apply::Ctrl(ClientMsg::Input { data }) => rt.send_text(&data).await,
+            Apply::Ctrl(ClientMsg::Key { data }) => rt.send_key(&data).await,
+            // Window-scoped resize — byte-for-byte unchanged for a single-pane
+            // session (window == pane).
+            Apply::Ctrl(ClientMsg::Resize { cols, rows }) => rt.resize(cols, rows).await,
+            // Auth-after-auth, client Ping, Resync, and History are no-ops on
+            // the input path. Resync and History never reach here in practice —
+            // the main loop intercepts both before the input hand-off (History
+            // is answered inline by `send_history_window`) — but a stray one is
+            // a harmless no-op (no runtime side effect: the snapshot / history
+            // push happens on the socket).
+            Apply::Ctrl(
+                ClientMsg::Auth { .. }
+                | ClientMsg::Ping
+                | ClientMsg::Resync
+                | ClientMsg::History { .. },
+            ) => Ok(()),
+        },
+        // Unreachable: `rt` is `None` only when `lead_pane_id` is `Some`, which
+        // the first arm consumes.
+        (None, None) => Ok(()),
     };
     if let Err(e) = res {
-        tracing::debug!(session = %name, error = %e, "ws input → tmux failed");
+        tracing::debug!(session = %name, error = %e, "ws input → runtime failed");
     }
 }
 

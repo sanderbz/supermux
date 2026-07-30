@@ -24,6 +24,7 @@ use crate::error::AppError;
 use crate::files::transport::{FileTransport, LocalFileTransport, SshFileTransport};
 use crate::state::{AppState, SseEvent};
 
+use super::runtime::SessionRuntime;
 use super::status::{self, Mode};
 use super::tmux::Tmux;
 use super::transport::HostId;
@@ -421,9 +422,9 @@ fn should_escape_resume_picker(capture: &str, resume_intended: bool, already_esc
 }
 
 /// Confirm the pane shell is live (and let it print a prompt).
-async fn settle_shell(tmux: &Tmux<'_>) -> bool {
+async fn settle_shell(rt: &dyn SessionRuntime) -> bool {
     for _ in 0..10 {
-        if tmux.exists().await.unwrap_or(false) {
+        if rt.alive().await {
             tokio::time::sleep(Duration::from_millis(150)).await;
             return true;
         }
@@ -445,7 +446,7 @@ async fn settle_shell(tmux: &Tmux<'_>) -> bool {
 /// always work". The trust-dialog gate still runs on both paths (auto-accepting is
 /// non-destructive and needed so a resume in a never-trusted dir doesn't hang).
 async fn wait_for_agent_ready(
-    tmux: &Tmux<'_>,
+    rt: &dyn SessionRuntime,
     state: &AppState,
     name: &str,
     resume_intended: bool,
@@ -454,7 +455,7 @@ async fn wait_for_agent_ready(
     let mut trusted = false;
     for _ in 0..10 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        if let Ok(cap) = tmux.capture_pane(40).await {
+        if let Ok(cap) = rt.capture_plain(40).await {
             // Dismiss the first-run BOOT GATES *before* the ready-check. Both the
             // trust dialog and the resume picker draw a numbered menu whose cursor
             // is `❯` — the exact glyph `agent_ui_visible` keys on — so a ready-check
@@ -472,14 +473,14 @@ async fn wait_for_agent_ready(
             if !trusted && at_trust_dialog(&cap) {
                 // Default option is "1. Yes, I trust this folder"; a bare Enter
                 // accepts it (and persists the trust so it never reappears).
-                let _ = tmux.send_key("Enter").await;
+                let _ = rt.send_key("Enter").await;
                 trusted = true;
                 continue;
             }
             if should_escape_resume_picker(&cap, resume_intended, escaped) {
-                let _ = tmux.send_key("Escape").await;
-                let _ = tmux.send_key("Escape").await;
-                let _ = tmux.send_key("C-c").await;
+                let _ = rt.send_key("Escape").await;
+                let _ = rt.send_key("Escape").await;
+                let _ = rt.send_key("C-c").await;
                 let _ = db::sessions::clear_cc(&state.pool, name).await;
                 escaped = true;
                 continue;
@@ -610,7 +611,10 @@ pub async fn start(
     let _guard = lock.lock().await;
 
     let s = require_session(state, name).await?;
-    let tmux = Tmux::new(name);
+    // Runtime seam: `runtime_for` returns the tmux backend for every row whose
+    // `runtime` column is `'tmux'` (the column DEFAULT, so the entire existing
+    // fleet), built exactly as `Tmux::new(name)` built it here before.
+    let rt = state.runtime_for(name).await?;
 
     // Rotate the hook token on every start to avoid long-lived env secrets.
     let hook_token = super::gen_hook_token();
@@ -653,7 +657,14 @@ pub async fn start(
         // When teams is enabled, also force `teammateMode:"tmux"` so a
         // lead spawns teammates as split-panes on supermux's socket (not the
         // invisible in-process backend). Gated + Claude-only; non-fatal on error.
-        if agent_teams {
+        //
+        // ALSO runtime-gated: `teammateMode:"tmux"` tells Claude Code to
+        // `split-window` on the tmux server supermux owns. A native session has
+        // no tmux window to split into, so writing that setting would point
+        // Claude at a multiplexer this session doesn't use. Native sessions skip
+        // it (and `teams::start` refuses to convert one, so a native lead can
+        // never exist in the first place).
+        if agent_teams && s.runtime != super::runtime::RUNTIME_NATIVE {
             if let Err(e) = crate::claude_config::install_agent_teams_setting(
                 name,
                 transport.as_ref(),
@@ -677,7 +688,7 @@ pub async fn start(
     let dir = PathBuf::from(&s.dir);
     let shell = user_shell();
 
-    let freshly_spawned = !tmux.exists().await?;
+    let freshly_spawned = !rt.alive().await;
     if freshly_spawned {
         // A genuinely new tmux pane is about to exist for this name. Drop any
         // cached live pty stream first: it is bound to a PRIOR (now-dead) pane,
@@ -690,7 +701,7 @@ pub async fn start(
         // `freshly_spawned` branch (it re-attaches to the surviving session), so
         // session-survival is untouched.
         state.pty_invalidate(name);
-        tmux.new_session(&dir, &env, &shell).await?;
+        rt.spawn(&dir, &env, &shell).await?;
     }
 
     // BOOTING window (overview UX): mark the session `starting` before
@@ -723,14 +734,14 @@ pub async fn start(
     });
 
     let ready = match s.provider.as_str() {
-        "shell" => settle_shell(&tmux).await,
+        "shell" => settle_shell(rt.as_ref()).await,
         _ => {
             // Give the new shell a beat, then launch the agent.
             tokio::time::sleep(Duration::from_millis(300)).await;
             let (cmd, resume_intended) = build_launch_command(&state.config, &s);
-            tmux.send_text(&cmd).await?;
-            tmux.send_key("Enter").await?;
-            wait_for_agent_ready(&tmux, state, name, resume_intended).await
+            rt.send_text(&cmd).await?;
+            rt.send_key("Enter").await?;
+            wait_for_agent_ready(rt.as_ref(), state, name, resume_intended).await
         }
     };
 
@@ -752,8 +763,8 @@ pub async fn start(
 
     if let Some(p) = prompt {
         if !p.trim().is_empty() {
-            tmux.send_text(p).await?;
-            tmux.send_key("Enter").await?;
+            rt.send_text(p).await?;
+            rt.send_key("Enter").await?;
             let (preview, at) = db::sessions::set_last_send(&state.pool, name, p).await?;
             broadcast_send(state, name, &preview, at);
         }
@@ -763,7 +774,7 @@ pub async fn start(
         name: name.to_string(),
         started: true,
         ready,
-        target: tmux.target(),
+        target: rt.target(),
     })
 }
 
@@ -782,9 +793,11 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     let _guard = lock.lock().await;
 
     let s = require_session(state, name).await?;
-    let tmux = Tmux::new(name);
+    // Runtime seam — the graceful-exit nudge, the liveness/dead poll, the PID
+    // hard-kill and the definitive teardown are all backend-agnostic.
+    let rt = state.runtime_for(name).await?;
 
-    if !tmux.exists().await? {
+    if !rt.alive().await {
         db::sessions::set_last_status(&state.pool, name, "stopped").await?;
         broadcast_status(state, name, "stopped");
         emit_board_if_linked(state, name).await;
@@ -798,14 +811,14 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     //    mid-stream buffer.
     match s.provider.as_str() {
         "shell" => {
-            let _ = tmux.send_text("exit").await;
-            let _ = tmux.send_key("Enter").await;
+            let _ = rt.send_text("exit").await;
+            let _ = rt.send_key("Enter").await;
         }
         _ => {
-            let _ = tmux.send_key("C-c").await;
+            let _ = rt.send_key("C-c").await;
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let _ = tmux.send_text("/exit").await;
-            let _ = tmux.send_key("Enter").await;
+            let _ = rt.send_text("/exit").await;
+            let _ = rt.send_key("Enter").await;
         }
     }
 
@@ -818,7 +831,7 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     let deadline = tokio::time::Instant::now() + STOP_GRACE_CAP;
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(STOP_GRACE_POLL).await;
-        if !tmux.exists().await.unwrap_or(true) || tmux.pane_dead().await.unwrap_or(false) {
+        if !rt.alive().await || rt.dead().await.unwrap_or(false) {
             graceful = true;
             break;
         }
@@ -826,13 +839,13 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
 
     // 3. Hard kill if the grace window elapsed (the agent didn't exit on its own).
     if !graceful {
-        if let Ok(Some(pid)) = tmux.pane_pid().await {
+        if let Ok(Some(pid)) = rt.pane_pid().await {
             hard_kill(pid).await;
         }
     }
 
     // 4. Definitive teardown. A failure here is surfaced but status still cleans.
-    if let Err(e) = tmux.kill_session().await {
+    if let Err(e) = rt.kill().await {
         emit_alert(state, name, "error", &format!("stop teardown failed: {e}"));
     }
 
@@ -914,7 +927,7 @@ pub async fn kill_teammate_pane(
     // discrimination (authoritative when it resolves; the validator falls back
     // to the first-listed pane otherwise, so the lead guard never disarms).
     let live = tmux.list_pane_ids().await?;
-    let lead_pane = super::teams::resolve_lead_pane(name).await;
+    let lead_pane = super::teams::resolve_lead_pane(state, name).await;
     super::teams::validate_teammate_pane(&live, lead_pane.as_deref(), pane_id)?;
 
     let pane = match transport.as_deref() {
@@ -930,16 +943,16 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
-    let tmux = Tmux::new(name);
+    let rt = state.runtime_for(name).await?;
     // Auto-wake BEFORE taking the lock (start() acquires it itself).
-    if !tmux.exists().await? {
+    if !rt.alive().await {
         start(state, name, None).await?;
     }
 
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
-    tmux.send_text(text).await?;
-    tmux.send_key("Enter").await?;
+    rt.send_text(text).await?;
+    rt.send_key("Enter").await?;
     let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
     broadcast_send(state, name, &preview, at);
     Ok(())
@@ -956,11 +969,11 @@ pub async fn send_keys(state: &AppState, name: &str, key: &str) -> Result<(), Ap
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
-    let tmux = Tmux::new(name);
-    if !tmux.exists().await? {
+    let rt = state.runtime_for(name).await?;
+    if !rt.alive().await {
         return Err(AppError::Conflict(format!("session '{name}' is not running")));
     }
-    tmux.send_key(key).await?;
+    rt.send_key(key).await?;
     Ok(())
 }
 
@@ -977,13 +990,13 @@ pub async fn paste(
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
-    let tmux = Tmux::new(name);
-    if !tmux.exists().await? {
+    let rt = state.runtime_for(name).await?;
+    if !rt.alive().await {
         return Err(AppError::Conflict(format!("session '{name}' is not running")));
     }
-    tmux.paste_via_buffer(text, true).await?;
+    rt.paste(text, true).await?;
     if submit {
-        tmux.send_key("Enter").await?;
+        rt.send_key("Enter").await?;
     }
     let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
     broadcast_send(state, name, &preview, at);
@@ -996,12 +1009,12 @@ pub async fn peek(state: &AppState, name: &str, lines: usize) -> Result<String, 
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
-    let tmux = Tmux::new(name);
-    if !tmux.exists().await? {
+    let rt = state.runtime_for(name).await?;
+    if !rt.alive().await {
         return Ok(String::new());
     }
     let lines = lines.clamp(1, 10_000);
-    Ok(tmux.capture_pane(lines).await?)
+    Ok(rt.capture_plain(lines).await?)
 }
 
 /// Archive (async-job-shaped): returns a `job_id` immediately; the
@@ -1088,11 +1101,11 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
     let name = name.to_string();
     let job = job_id.clone();
     tokio::spawn(async move {
-        let tmux = Tmux::new(&name);
-        let content = if tmux.exists().await.unwrap_or(false) {
-            tmux.capture_full().await.unwrap_or_default()
-        } else {
-            String::new()
+        // Runtime seam. Best-effort: an unresolvable runtime dumps an empty
+        // archive rather than failing the (already-202'd) job.
+        let content = match state.runtime_for(&name).await {
+            Ok(rt) if rt.alive().await => rt.capture_full().await.unwrap_or_default(),
+            _ => String::new(),
         };
 
         // Filesystem-bound dump runs on the blocking pool.
@@ -1107,7 +1120,11 @@ pub async fn archive(state: &AppState, name: &str) -> Result<String, AppError> {
         })
         .await;
 
-        let _ = tmux.kill_session().await;
+        // Definitive teardown through the seam (best-effort — the archive row
+        // is already flipped and the job already answered 202).
+        if let Ok(rt) = state.runtime_for(&name).await {
+            let _ = rt.kill().await;
+        }
 
         // Nudge both per-session background loops to re-check their guard NOW
         // rather than at their next interval (detector: 2s; steering: 60s):
@@ -1215,13 +1232,13 @@ pub async fn wake(state: &AppState, name: &str) -> Result<StartResult, AppError>
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
     db::sessions::set_hibernated(&state.pool, name, false).await?;
-    let tmux = Tmux::new(name);
-    if tmux.exists().await? {
+    let rt = state.runtime_for(name).await?;
+    if rt.alive().await {
         return Ok(StartResult {
             name: name.to_string(),
             started: false,
             ready: true,
-            target: tmux.target(),
+            target: rt.target(),
         });
     }
     start(state, name, None).await
@@ -1255,8 +1272,8 @@ fn cycle_steps(from: Mode, to: Mode) -> Option<u8> {
 /// Read the session's CURRENT parsed mode from a fresh capture (mode-shift). Read-
 /// only — no lock (mirrors the detector rule for `capture-pane`). Falls
 /// back to `Normal` when the pane can't be captured.
-async fn read_mode(tmux: &Tmux<'_>) -> Mode {
-    match tmux.capture_pane(status::CAPTURE_LINES).await {
+async fn read_mode(rt: &dyn SessionRuntime) -> Mode {
+    match rt.capture_plain(status::CAPTURE_LINES).await {
         Ok(raw) => status::parse_mode(&status::prepare_capture(&raw)),
         Err(_) => Mode::Normal,
     }
@@ -1309,8 +1326,8 @@ pub async fn set_mode(state: &AppState, name: &str, target: Mode) -> Result<SetM
 /// one press at a time toward `target`, re-reading after each press. Capped so a
 /// stuck cycle can never loop forever. Returns the REAL mode it ended on.
 async fn cycle_to(state: &AppState, name: &str, target: Mode) -> Result<SetModeResult, AppError> {
-    let tmux = Tmux::new(name);
-    if !tmux.exists().await? {
+    let rt = state.runtime_for(name).await?;
+    if !rt.alive().await {
         return Err(AppError::Conflict(format!(
             "session '{name}' is not running — start it before switching mode"
         )));
@@ -1319,7 +1336,7 @@ async fn cycle_to(state: &AppState, name: &str, target: Mode) -> Result<SetModeR
     // At most 4 presses: a 3-mode ring needs ≤2 to reach any target, +2 slack for
     // a transient prompt that mis-seats a press (robust, never blind-spam).
     const MAX_PRESSES: u8 = 4;
-    let mut current = read_mode(&tmux).await;
+    let mut current = read_mode(rt.as_ref()).await;
     let mut presses = 0u8;
     while current != target && presses < MAX_PRESSES {
         // Guard: if the live mode ever reads Bypass here, the cycle can't reach a
@@ -1334,13 +1351,13 @@ async fn cycle_to(state: &AppState, name: &str, target: Mode) -> Result<SetModeR
             Some(_) => {
                 let lock = state.lock_for(name);
                 let guard = lock.lock().await;
-                tmux.send_key("BTab").await?;
+                rt.send_key("BTab").await?;
                 drop(guard);
                 presses += 1;
                 // Let the status bar repaint before re-reading (it updates within
                 // a frame or two; the detector cadence is slower so we read here).
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                current = read_mode(&tmux).await;
+                current = read_mode(rt.as_ref()).await;
             }
             None => break, // target not on the cycle (shouldn't happen — Bypass handled above)
         }
@@ -1394,9 +1411,10 @@ async fn relaunch_for_bypass(
     };
 
     // 3. Stop the running agent (best-effort: a not-running session just starts).
-    let tmux = Tmux::new(name);
-    if tmux.exists().await.unwrap_or(false) {
-        stop(state, name).await?;
+    if let Ok(rt) = state.runtime_for(name).await {
+        if rt.alive().await {
+            stop(state, name).await?;
+        }
     }
 
     // 4. Apply the flags + (re-)seed the resume id, then start. set_cc_conversation_id
@@ -1612,6 +1630,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            runtime: "tmux".into(),
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -1665,6 +1684,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            runtime: "tmux".into(),
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
@@ -1723,6 +1743,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            runtime: "tmux".into(),
         };
 
         let (command, _resume) = build_launch_command(&config, &session);

@@ -24,6 +24,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
 use super::tmux;
+use crate::state::AppState;
 
 /// One teammate as recorded in `config.json` `members[]`. Only the fields
 /// needed are typed; the rest of the (drift-prone) schema is ignored.
@@ -244,7 +245,18 @@ pub async fn resolve_member_pane(
 /// directory walk of `~/.claude/teams/`. Never cached — pane ids can churn
 /// across ticks, and the team config can change on disk while the user is on
 /// the focus route (`pane_override` is a hint, not a contract).
-pub async fn resolve_lead_pane(session_name: &str) -> Option<String> {
+pub async fn resolve_lead_pane(state: &AppState, session_name: &str) -> Option<String> {
+    // 0. RUNTIME GUARDRAIL — a NATIVE session is never a team host.
+    //    Claude Agent Teams renders teammates as tmux `split-window` panes, so
+    //    the whole lead-pane discrimination below is tmux-shaped: it lists the
+    //    panes of `supermux-<name>`, which a native session does not have.
+    //    `teams::start` refuses to convert a native session for the same reason,
+    //    so this is belt-and-braces — but making it EXPLICIT means a native
+    //    attach can never be routed to a stale `%id` from another session's
+    //    window, and it skips a `tmux list-panes` fork per attach.
+    if !state.is_tmux_runtime(session_name).await {
+        return None;
+    }
     // 1. List the live panes in this session's window.
     let lead_tmux = tmux::Tmux::new(session_name);
     let live_panes = match lead_tmux.list_pane_ids().await {

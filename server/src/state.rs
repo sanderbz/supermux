@@ -16,7 +16,9 @@ use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
 use crate::config::Config;
 use crate::sessions::host_pool::HostPool;
 use crate::sessions::pty::PtyStream;
+use crate::sessions::runtime::{self, SessionRuntime, TmuxRuntime};
 use crate::sessions::status::{HookEvent, Status, TurnState};
+use crate::sessions::transport::Transport;
 use crate::ws::streamer::PtyStreamer;
 
 /// Cold-start PTY sentinel: until the live reader records a real byte for a
@@ -322,6 +324,18 @@ pub struct AppState {
     /// first use, reaped after 10min idle. Cheap `Arc` clone — actual state
     /// lives inside the [`HostPool`].
     pub host_pool: Arc<HostPool>,
+    /// Per-session RUNTIME handles (the tmux-less-terminal seam). Keyed by
+    /// session name, resolved lazily from the `sessions.runtime` column
+    /// (migration 0024) by [`runtime_for`](Self::runtime_for) and cached here so
+    /// the hot paths (every keystroke, every 2s detector tick) don't pay a DB
+    /// read per operation.
+    ///
+    /// **Lifetime = the row's.** A session's runtime kind is fixed at create
+    /// time, so a cached handle can never go stale in-place; it is dropped on
+    /// `delete` (via [`forget_session`](Self::forget_session)) and re-keyed on
+    /// rename (via [`rename_session`](Self::rename_session)) exactly like every
+    /// other per-session map here.
+    pub session_runtimes: Arc<DashMap<String, Arc<dyn SessionRuntime>>>,
     /// In-UI update mechanism (v0.3.0): cached latest GitHub release + the
     /// per-job broadcast registry the SSE progress endpoint subscribes to.
     /// Cheap `Arc` clone; created once in `new()` so every handler shares the
@@ -370,6 +384,7 @@ impl AppState {
             forced_status: Arc::new(DashMap::new()),
             force_agent_teams: Arc::new(DashMap::new()),
             pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            session_runtimes: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
         }
@@ -489,6 +504,103 @@ impl AppState {
             .get(name)
             .map(|c| c.load(Ordering::SeqCst))
             .unwrap_or(0)
+    }
+
+    // ── runtime seam: which terminal backend drives a session ─────────────────
+
+    /// The [`SessionRuntime`] for `name`, resolved from the row's `runtime`
+    /// column (migration 0024) and cached in [`session_runtimes`](Self::session_runtimes).
+    ///
+    /// This is the ONE replacement for the historical `Tmux::new(name)` at every
+    /// session-scoped call site. For `runtime = 'tmux'` (the entire pre-existing
+    /// fleet, by column DEFAULT) it hands back a [`TmuxRuntime`] built LOCALLY —
+    /// deliberately identical to what `Tmux::new(name)` produced, so no swapped
+    /// call site changes meaning, including for a `host_id`-bearing row whose
+    /// pre-seam call was also local. The WS attach path, which resolved an SSH
+    /// transport for itself before the seam, keeps doing so through
+    /// [`runtime_for_attach`](Self::runtime_for_attach).
+    ///
+    /// An UNKNOWN session name is not an error: it resolves to tmux, matching
+    /// `Tmux::new` on a name with no row (the call then fails naturally with
+    /// tmux's own "session not found"). A row whose column holds an
+    /// unrecognised value is likewise treated as tmux — a forward-compat row
+    /// written by a newer build must never take a live session down.
+    pub async fn runtime_for(&self, name: &str) -> anyhow::Result<Arc<dyn SessionRuntime>> {
+        if let Some(rt) = self.session_runtimes.get(name) {
+            return Ok(rt.value().clone());
+        }
+        let kind = crate::db::sessions::runtime_kind(&self.pool, name)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_else(|| runtime::RUNTIME_TMUX.to_string());
+        let rt = self.build_runtime(name, &kind, None, None)?;
+        // `insert` (not `entry`) — a concurrent resolver for the same name built
+        // an equivalent handle, so last-writer-wins is correct and lock-free.
+        self.session_runtimes.insert(name.to_string(), rt.clone());
+        Ok(rt)
+    }
+
+    /// The runtime for a WS ATTACH, honouring the two things that attach path
+    /// resolves for itself: the session's `transport` (local vs remote-host SSH)
+    /// and an optional Agent-Teams LEAD `pane_id` to pin every capture to.
+    ///
+    /// NOT cached — both inputs are per-attach (a lead's pane id churns across
+    /// team config writes), and the cached session-scoped handle from
+    /// [`runtime_for`](Self::runtime_for) must never be replaced by a
+    /// pane-pinned one.
+    ///
+    /// Both extras are tmux-only by construction: a native session can be
+    /// neither remote (refused at create) nor a team host
+    /// (`teams::resolve_lead_pane` returns `None` for it), so the native branch
+    /// ignores them.
+    pub async fn runtime_for_attach(
+        &self,
+        name: &str,
+        transport: Option<Arc<Transport>>,
+        pane_id: Option<String>,
+    ) -> anyhow::Result<Arc<dyn SessionRuntime>> {
+        let kind = crate::db::sessions::runtime_kind(&self.pool, name)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_else(|| runtime::RUNTIME_TMUX.to_string());
+        self.build_runtime(name, &kind, transport, pane_id)
+    }
+
+    /// Is this session backed by the tmux runtime? Cheap column read used by the
+    /// tmux-shaped guardrails (Agent Teams conversion, the `teammateMode`
+    /// settings install, the lead-pane resolver). Fails OPEN to `true`: an
+    /// unreadable / missing row is treated as tmux, which is what every code
+    /// path assumed before the seam existed.
+    pub async fn is_tmux_runtime(&self, name: &str) -> bool {
+        crate::db::sessions::runtime_kind(&self.pool, name)
+            .await
+            .unwrap_or(None)
+            .map(|k| k != runtime::RUNTIME_NATIVE)
+            .unwrap_or(true)
+    }
+
+    /// Shared constructor behind both resolvers.
+    fn build_runtime(
+        &self,
+        name: &str,
+        kind: &str,
+        transport: Option<Arc<Transport>>,
+        pane_id: Option<String>,
+    ) -> anyhow::Result<Arc<dyn SessionRuntime>> {
+        if kind == runtime::RUNTIME_NATIVE {
+            // The native backend keeps its spool + holder state under the data
+            // dir, so that is the one thing its constructor needs besides the
+            // name. Until the native-core slice lands this returns a descriptive
+            // Err rather than silently falling back to tmux.
+            return runtime::native_runtime_for(name, &self.config.data_dir);
+        }
+        Ok(Arc::new(TmuxRuntime::on(transport, name, pane_id)))
+    }
+
+    /// Drop the cached runtime handle for `name` (session deleted / renamed
+    /// away). The next [`runtime_for`](Self::runtime_for) re-reads the column.
+    pub fn runtime_invalidate(&self, name: &str) {
+        self.session_runtimes.remove(name);
     }
 
     /// Get (creating on first use) the per-session [`PtyStream`] and ensure its
@@ -870,6 +982,11 @@ impl AppState {
         self.session_activity.remove(name);
         self.forced_status.remove(name);
         self.force_agent_teams.remove(name);
+        self.session_runtimes.remove(name);
+        // The native module memoizes its own session handles (one holder
+        // connection + one grid per name), so dropping only OUR cache entry
+        // would leak that. A no-op for a tmux session.
+        crate::sessions::native::forget(name);
         // Abort any pending debounce timer so a deleted session can't fire a
         // push 2-15s later for a session row that no longer exists. The
         // timer task's own re-read would land `Ok(None)` and skip the send,
@@ -948,6 +1065,14 @@ impl AppState {
         if let Some((_, v)) = self.force_agent_teams.remove(old) {
             self.force_agent_teams.insert(new.to_string(), v);
         }
+        // The runtime handle is NAME-BOUND (a `TmuxRuntime` owns the bare name
+        // it builds `supermux-<name>` from), so it can NOT be carried across a
+        // rename the way the maps above are — it would keep addressing the old
+        // tmux session. Drop it; the next `runtime_for(new)` rebuilds against
+        // the renamed row. Same discipline as `pty_invalidate` on this path.
+        self.session_runtimes.remove(old);
+        self.session_runtimes.remove(new);
+        crate::sessions::native::forget(old);
         // Carry the debounce handle across the rename: a rename mid-debounce
         // would otherwise leak the handle under `old` and never fire (the
         // task's own re-read uses the captured task_name, which is the old

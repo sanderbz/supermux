@@ -2,7 +2,7 @@
 name = "supermux-server"
 version = "3.0.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 authors = ["Sander van Meggelen"]
 description = "Self-hosted dashboard for running a roomful of AI coding agents (Claude Code, Codex, shells) on top of tmux. Single Rust binary, embedded PWA."
 license = "MIT"
@@ -18,7 +18,7 @@ publish = false
 
 # server/ is its own workspace root (the repo top is intentionally NOT a Cargo
 # workspace). resolver "3" is MSRV-aware: it honours the
-# `rust-version = "1.83"` floor above when selecting transitive dep versions,
+# `rust-version = "1.85"` floor above when selecting transitive dep versions,
 # so the resulting Cargo.lock builds on the pinned toolchain.
 [workspace]
 resolver = "3"
@@ -93,7 +93,20 @@ thiserror = "2.0"
 once_cell = "1.20"
 dashmap = "6.1"                                          # per-session lock/stream maps (AppState)
 regex = "1.11"
-nix = { version = "0.29", features = ["signal", "process", "fs"] }  # SIGTERM Claude; fs = mkfifo/open/Mode (pty FIFO)
+# `term` (added for the NATIVE runtime) unlocks `nix::pty::{openpty, Winsize}`
+# and the termios/ioctl bits the pty holder needs. Feature-only — no new crate.
+nix = { version = "0.29", features = ["signal", "process", "fs", "term"] }  # SIGTERM Claude; fs = mkfifo/open/Mode (pty FIFO)
+# Already in the tree transitively (nix/tokio/openssl all depend on it); made a
+# DIRECT dep so the pty holder can name `libc::TIOCSWINSZ` / `TIOCSCTTY` and the
+# `pre_exec` setsid dance. Adds 0 crates to the lockfile.
+libc = "0.2"
+# ── native (tmux-less) session runtime ──
+# Server-side VT: parses the holder's pty byte stream into a real terminal grid
+# (viewport + reflowing scrollback) so the daemon can serve captures, seeds and
+# history windows WITHOUT shelling out to `tmux capture-pane`. Chosen after a
+# spike (see sessions::native docs): +7 crates against this lockfile, 8.6 MiB/s
+# parse at 200x50, 9.7 MiB/session at a 2000-line history cap.
+alacritty_terminal = "0.26"
 notify = "7.0"                                           # FS watch for hot-reload (optional)
 shell-escape = "0.1"
 shellexpand = "3.1"

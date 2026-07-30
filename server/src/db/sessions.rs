@@ -54,6 +54,15 @@ pub struct Session {
     /// 0018). The entire pre-remote-host fleet backfills to `NULL` so existing
     /// call sites that don't yet pass a host_id keep their local-only semantics.
     pub host_id: Option<i64>,
+    /// Which terminal backend drives this session (migration 0024):
+    /// `"tmux"` (the historical `supermux-<name>` tmux session) or `"native"`
+    /// (the tmux-less pty holder in `sessions::native`). The whole pre-existing
+    /// fleet backfills to `"tmux"` via the column DEFAULT, so every call site
+    /// that resolves a runtime keeps its exact behaviour. Validated on create
+    /// (`sessions::create`), never mutated afterwards — a session cannot switch
+    /// backends under a live pane.
+    #[serde(default)]
+    pub runtime: String,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).
@@ -264,6 +273,11 @@ pub struct NewSession {
     /// The full create path (CreateInput → NewSession → INSERT) carries this
     /// through so the API's `POST /api/sessions {host_id: N}` actually persists.
     pub host_id: Option<i64>,
+    /// Terminal backend for this session (migration 0024): `"tmux"` or
+    /// `"native"`. Validated by `sessions::create` BEFORE it reaches here, so
+    /// this is already one of the two literals. Mirrors `host_id`: the create
+    /// path (CreateInput → NewSession → INSERT) carries it end-to-end.
+    pub runtime: String,
 }
 
 /// Insert a full session config row. `created_at` is set to now.
@@ -272,8 +286,8 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, creator, flags, tags, branch, mcp,
-             worktree, worktree_repo, host_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             worktree, worktree_repo, host_id, runtime, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.name)
     .bind(&s.display_name)
@@ -288,10 +302,23 @@ pub async fn create(pool: &SqlitePool, s: &NewSession) -> sqlx::Result<()> {
     .bind(s.worktree as i64)
     .bind(&s.worktree_repo)
     .bind(s.host_id)
+    .bind(&s.runtime)
     .bind(now)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Read just the `runtime` column (migration 0024) for `name`. The runtime
+/// resolver ([`crate::state::AppState::runtime_for`]) calls this on a cache
+/// miss, so it stays a single narrow column read rather than a full row fetch.
+/// `Ok(None)` = no such session row.
+pub async fn runtime_kind(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT runtime FROM sessions WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(v,)| v))
 }
 
 /// Copy a session's CONFIG (not its runtime/counters) under `new_name`. Pinned
@@ -304,10 +331,10 @@ pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Re
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, created_at)
+             host_id, runtime, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, ?
+                host_id, runtime, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)

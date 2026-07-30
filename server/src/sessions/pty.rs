@@ -60,6 +60,7 @@ use tokio::process::Child;
 use tokio::sync::{broadcast, Notify, OnceCell};
 
 use super::host_pool::HostPool;
+use super::runtime::SessionRuntime;
 use super::status::Status;
 use super::tmux::{Tmux, TmuxTarget};
 use super::transport::{HostId, Transport};
@@ -192,17 +193,6 @@ impl PtyStream {
             alive: Arc::new(AtomicBool::new(true)),
             shutdown: Arc::new(Notify::new()),
             started: OnceCell::new(),
-        }
-    }
-
-    /// Build a [`Tmux`] handle for this stream's target (session or pane), on
-    /// the given transport. The reader uses this to seed (capture-pane) +
-    /// attach (pipe-pane) + poll liveness (has-session / list-panes) — local
-    /// readers thread `&LOCAL`, the SSH reader threads its own `&Transport::Ssh`.
-    fn tmux_on<'a>(&'a self, transport: &'a Transport) -> Tmux<'a> {
-        match &self.target {
-            TmuxTarget::Session(n) => Tmux::new_on(transport, n),
-            TmuxTarget::Pane(id) => Tmux::for_pane_on(transport, &self.name, id.clone()),
         }
     }
 
@@ -347,6 +337,20 @@ impl PtyStream {
             }
             Err(e) => return Err(anyhow!("looking up session '{}': {e}", self.name)),
         };
+        // ── NATIVE arm — checked BEFORE `host_id` ────────────────────────────
+        // A native session has no tmux `pipe-pane` to tee into a FIFO: its bytes
+        // come off the pty holder's raw spool, so neither the local FIFO reader
+        // nor the SSH one can serve it. This arm is deliberately first because
+        // `runtime = 'native'` also implies `host_id IS NULL` (the create path
+        // refuses the combination), so it can never shadow a legitimate remote
+        // session.
+        //
+        // `sessions::native::reader_for(name, data_dir)` is the coordinated
+        // entry point (it shares the SAME memoized session handle the runtime
+        // seam resolves, so the reader and the grid never diverge).
+        if session.runtime == super::runtime::RUNTIME_NATIVE {
+            return super::native::reader_for(&self.name, &self.data_dir());
+        }
         match session.host_id {
             None => Ok(Box::new(LocalPtyReader::new(self))),
             Some(host_id) => Ok(Box::new(SshPtyReader::new(
@@ -420,11 +424,61 @@ impl PtyStream {
         Ok(())
     }
 
+    /// The supermux DATA DIR these stream paths were derived from —
+    /// `PtyStreamer::new` builds `fifo` as `<data_dir>/pty/<key>.fifo`, so the
+    /// FIFO's grandparent IS the data dir. The native runtime keys its holder +
+    /// raw spool off the data dir, and the stream is constructed deep inside the
+    /// streamer registry where no `Config` is in scope; deriving it from the
+    /// path we already hold beats threading a new field through
+    /// `PtyStreamer::new` for a value the path already encodes.
+    fn data_dir(&self) -> PathBuf {
+        self.fifo
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Resolve THIS stream's [`SessionRuntime`] (the seam), honouring the
+    /// session's transport and this stream's tmux target.
+    ///
+    /// A PANE stream (a teammate, or a lead pinned by `%id`) is tmux by
+    /// construction — split-window panes are a tmux-only concept — and a stream
+    /// key with no `sessions` row (every teammate key) resolves to tmux too,
+    /// which is exactly the "always local tmux for pane streams" behaviour that
+    /// predates the seam.
+    async fn runtime_for_stream(
+        &self,
+        pool: &SqlitePool,
+        transport: Option<Arc<Transport>>,
+    ) -> Result<Arc<dyn SessionRuntime>> {
+        let native = !self.target.is_pane()
+            && matches!(
+                crate::db::sessions::runtime_kind(pool, &self.name).await,
+                Ok(Some(ref k)) if k == super::runtime::RUNTIME_NATIVE
+            );
+        if native {
+            return super::runtime::native_runtime_for(&self.name, &self.data_dir());
+        }
+        Ok(Arc::new(super::runtime::TmuxRuntime::on(
+            transport,
+            match &self.target {
+                TmuxTarget::Session(n) => n,
+                TmuxTarget::Pane(_) => &self.name,
+            },
+            match &self.target {
+                TmuxTarget::Session(_) => None,
+                TmuxTarget::Pane(id) => Some(id.clone()),
+            },
+        )))
+    }
+
     /// Best-effort pre-seed of the replay buffer with the current visible
-    /// screen — runs `tmux capture-pane -p -e` over whatever transport the
-    /// session uses. A capture failure (transport down, session just spawned,
-    /// permission error) is treated as "skip the seed" rather than an error
-    /// because the live stream itself will populate the replay as bytes flow.
+    /// screen — one `capture_screen_ansi` on the session's runtime (for tmux:
+    /// `capture-pane -p -e` over whatever transport the session uses). A capture
+    /// failure (transport down, session just spawned, permission error) is
+    /// treated as "skip the seed" rather than an error because the live stream
+    /// itself will populate the replay as bytes flow.
     async fn seed_screen(&self, host_pool: &Arc<HostPool>, pool: &SqlitePool) -> Option<Bytes> {
         // Pick the same transport the reader will use, but ONLY for the
         // capture — we don't store the Transport on the stream itself, and a
@@ -441,11 +495,8 @@ impl PtyStream {
             }
         };
 
-        let tmux = match &transport_arc {
-            Some(arc) => self.tmux_on(arc),
-            None => self.tmux_on(&Transport::Local),
-        };
-        match tmux.capture_screen_ansi().await {
+        let rt = self.runtime_for_stream(pool, transport_arc).await.ok()?;
+        match rt.capture_screen_ansi().await {
             Ok(s) if !s.trim_end().is_empty() => {
                 let body = s.trim_end_matches('\n').replace('\n', "\r\n");
                 Some(Bytes::from(format!("\x1b[2J\x1b[3J\x1b[H{body}")))

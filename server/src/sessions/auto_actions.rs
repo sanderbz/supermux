@@ -42,6 +42,7 @@ use crate::db;
 use crate::db::hosts::{Host, HostStatus};
 use crate::state::{AppState, SseEvent};
 
+use super::runtime::RUNTIME_NATIVE;
 use super::status::{self, Status, StatusDetector};
 use super::tmux::Tmux;
 use super::transport::{HostId, Transport};
@@ -108,10 +109,22 @@ pub async fn reconcile_on_boot(state: &AppState) {
     // The remote-aware iteration below explicitly skips local sessions, so the
     // local loop is the sole writer for the local fleet (no double-write).
     for s in sessions.iter().filter(|s| s.host_id.is_none()) {
-        let tmux = Tmux::new(&s.name);
-        // A failed `has-session` probe is treated as "not running" — the pane
-        // cannot be served either way, so `stopped` is the safe, correct status.
-        let alive = tmux.exists().await.unwrap_or(false);
+        // NATIVE rows are marked `stopped` on boot, deliberately and for now.
+        // The native runtime's pty holder is a separate process that CAN
+        // survive a supermux restart, so the eventual behaviour is a
+        // holder-REATTACH probe here (same shape as the tmux `has-session`
+        // probe below). That probe lands with the native lifecycle slice; until
+        // then the honest answer for a freshly-booted server is "not attached",
+        // and `stopped` is the safe status — it never claims a session is
+        // serveable when nothing is wired to serve it.
+        let alive = if s.runtime == RUNTIME_NATIVE {
+            false
+        } else {
+            let tmux = Tmux::new(&s.name);
+            // A failed `has-session` probe is treated as "not running" — the pane
+            // cannot be served either way, so `stopped` is the safe, correct status.
+            tmux.exists().await.unwrap_or(false)
+        };
         if alive {
             continue;
         }
@@ -581,8 +594,14 @@ pub async fn tick(
         return Ok(held);
     }
 
-    let tmux = Tmux::new(name);
-    if !tmux.exists().await.unwrap_or(false) {
+    // Runtime seam — the detector only ever needs liveness + one capture, both
+    // backend-agnostic. A runtime that can't be resolved reads as "not running",
+    // exactly like a failed `has-session` probe.
+    let rt = match state.runtime_for(name).await {
+        Ok(rt) => rt,
+        Err(_) => return Ok(held),
+    };
+    if !rt.alive().await {
         // Not running: the detector cannot capture. Leave the status untouched —
         // a never-started session stays Unknown (API renders 'stopped'), and the
         // explicit 'Any → Stopped' transition + side-effects on tmux death are a
@@ -606,7 +625,7 @@ pub async fn tick(
     // ONE capture with `-e` (escapes preserved): the detector + plain preview
     // read the ANSI-stripped form, the colour-true tile preview reads the raw
     // form. A single shell-out feeds both — no extra `capture-pane` per tick.
-    let raw_ansi = tmux.capture_pane_ansi(status::CAPTURE_LINES).await?;
+    let raw_ansi = rt.capture_ansi(status::CAPTURE_LINES).await?;
     // Stamp the capture time the moment a shell-out succeeds so the per-tier skip
     // bound (status::cadence_for) measures from the last REAL capture.
     *last_capture_at = Instant::now();
