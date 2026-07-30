@@ -29,6 +29,8 @@ pub mod steering;
 pub mod teams;
 pub mod tmux;
 pub mod transport;
+pub mod native;
+pub mod runtime;
 
 pub use host_pool::{spawn_reaper, HostPool};
 pub use transport::{HostId, Transport, LOCAL as LOCAL_TRANSPORT};
