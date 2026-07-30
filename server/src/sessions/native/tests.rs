@@ -202,10 +202,15 @@ async fn send_text_and_keys_reach_the_child() {
 
     session.send_text("hello-native").await.unwrap();
     session.send_key("Enter").await.unwrap();
-    let cap = wait_for_text(&session, "hello-native", Duration::from_secs(10)).await;
+    // Wait for BOTH copies (terminal echo + cat's write). On a slow runner the
+    // echo lands first — asserting right after the first appearance raced.
     assert!(
-        cap.matches("hello-native").count() >= 2,
-        "expected echo + cat's copy:\n{cap}",
+        wait_until!(
+            Duration::from_secs(10),
+            session.capture_full().await.matches("hello-native").count() >= 2
+        ),
+        "expected echo + cat's copy:\n{}",
+        session.capture_full().await,
     );
 
     // A literal that tmux's send-keys lexer would have swallowed (trailing `;`).
