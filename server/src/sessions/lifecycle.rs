@@ -648,17 +648,31 @@ pub async fn start(
     // invalidated so `runtime_for` below builds the native backend immediately.
     // (`force_agent_teams` marks an in-flight team-lead conversion — its start
     // must stay tmux even though `team_name` is only set by detection later.)
+    // "Fresh start" covers BOTH shapes a restart takes: the tmux session is
+    // fully gone, OR it lingers as a remain-on-exit DEAD pane (the normal
+    // stop→start cycle — `stop` leaves the dead pane for capturability). Only a
+    // pane with a LIVE agent blocks the migration: this start() is then just a
+    // wake/ensure and yanking a running pty is never acceptable.
     if s.runtime == crate::sessions::runtime::RUNTIME_TMUX
         && s.host_id.is_none()
         && s.team_name.is_none()
         && !state.force_agent_teams(name)
-        && !Tmux::new(name).exists().await.unwrap_or(true)
     {
-        db::sessions::set_runtime(&state.pool, name, crate::sessions::runtime::RUNTIME_NATIVE)
-            .await?;
-        state.runtime_invalidate(name);
-        s.runtime = crate::sessions::runtime::RUNTIME_NATIVE.to_string();
-        tracing::info!(session = name, "runtime migrated tmux → native on fresh start");
+        let tmux = Tmux::new(name);
+        let texists = tmux.exists().await.unwrap_or(true);
+        let fresh = !texists || tmux.pane_dead().await.unwrap_or(false);
+        if fresh {
+            if texists {
+                // Kill the dead-pane remnant so the native spawn owns the name.
+                let _ = tmux.kill_session().await;
+            }
+            db::sessions::set_runtime(&state.pool, name, crate::sessions::runtime::RUNTIME_NATIVE)
+                .await?;
+            state.runtime_invalidate(name);
+            s.runtime = crate::sessions::runtime::RUNTIME_NATIVE.to_string();
+            state.pty_invalidate(name);
+            tracing::info!(session = name, "runtime migrated tmux → native on fresh start");
+        }
     }
     // Runtime seam: `runtime_for` returns the backend for the row's `runtime`
     // column, built exactly as `Tmux::new(name)` built it here before.
