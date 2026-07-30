@@ -72,7 +72,7 @@ async fn detector_publishes_sessions_delta_for_live_pane() {
     // Create (spawns the 2s detector loop) + start (tmux pane goes live).
     assert_eq!(
         api(&app, Method::POST, "/api/sessions", Some(serde_json::json!({
-            "name": name, "provider": "shell", "dir": "/tmp"
+            "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux"
         }))).await,
         StatusCode::CREATED
     );
@@ -137,7 +137,7 @@ async fn lifecycle_start_emits_status_active_sse() {
 
     assert_eq!(
         api(&app, Method::POST, "/api/sessions", Some(serde_json::json!({
-            "name": name, "provider": "shell", "dir": "/tmp"
+            "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux"
         }))).await,
         StatusCode::CREATED
     );
@@ -233,7 +233,7 @@ async fn subagent_stop_does_not_finish_a_live_session_e2e() {
 
     assert_eq!(
         api(&app, Method::POST, "/api/sessions", Some(serde_json::json!({
-            "name": name, "provider": "shell", "dir": "/tmp"
+            "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux"
         }))).await,
         StatusCode::CREATED
     );
