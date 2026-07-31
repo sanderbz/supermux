@@ -980,6 +980,8 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
         db::sessions::set_last_status(&state.pool, name, "stopped").await?;
         broadcast_status(state, name, "stopped");
         emit_board_if_linked(state, name).await;
+        // Scheduler-booted disposable sessions archive themselves on stop.
+        maybe_archive_on_stop(state, name).await;
         return Ok(());
     }
 
@@ -1057,6 +1059,8 @@ pub async fn stop(state: &AppState, name: &str) -> Result<(), AppError> {
     // the board card mirrors the linked session's state — re-publish so a linked
     // card reflects the now-stopped session rather than a stale running dot.
     emit_board_if_linked(state, name).await;
+    // Scheduler-booted disposable sessions archive themselves on stop.
+    maybe_archive_on_stop(state, name).await;
     Ok(())
 }
 
@@ -1220,6 +1224,31 @@ pub async fn peek(state: &AppState, name: &str, lines: usize) -> Result<String, 
     }
     let lines = lines.clamp(1, 10_000);
     Ok(rt.capture_plain(lines).await?)
+}
+
+/// Archive `name` IFF it is a live, `archive_on_stop`-flagged session -- the
+/// shared hook behind "scheduler-booted sessions clean themselves up when they
+/// stop". Best-effort and idempotent: the `archive_pending` gate (row live AND
+/// flagged AND not already archived) means a duplicate call -- e.g. an explicit
+/// Stop racing the Claude `SessionEnd` hook -- is a no-op in practice: the gate
+/// suppresses it. The check and the flip are separate statements, so a rare
+/// exactly-simultaneous race could still write one extra `session.archive` audit
+/// row, but the SSE delta and teardown are both idempotent. `archive()` takes no
+/// session lock, so this is
+/// safe to call from `stop()` while it still holds one. Errors are logged, never
+/// propagated (archiving is a courtesy, not part of the stop contract).
+pub async fn maybe_archive_on_stop(state: &AppState, name: &str) {
+    match db::sessions::archive_pending(&state.pool, name).await {
+        Ok(true) => {
+            if let Err(e) = archive(state, name).await {
+                tracing::warn!(name = %name, error = %e, "auto-archive on stop failed");
+            } else {
+                tracing::info!(name = %name, "auto-archived scheduler-booted session on stop");
+            }
+        }
+        Ok(false) => {}
+        Err(e) => tracing::debug!(name = %name, error = %e, "archive_pending check failed"),
+    }
 }
 
 /// Archive (async-job-shaped): returns a `job_id` immediately; the
@@ -1836,6 +1865,7 @@ mod build_env_tests {
             team_name: None,
             host_id: None,
             runtime: "tmux".into(),
+            archive_on_stop: 0,
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -1888,6 +1918,7 @@ mod build_env_tests {
             team_name: None,
             host_id: None,
             runtime: "tmux".into(),
+            archive_on_stop: 0,
         };
 
         let (command, resume_intended) = build_launch_command(&config, &session);
@@ -1941,6 +1972,7 @@ mod build_env_tests {
             team_name: None,
             host_id: None,
             runtime: "tmux".into(),
+            archive_on_stop: 0,
         };
 
         // Fresh: no cc handles → `--name`, not resume-intended.
@@ -2000,6 +2032,7 @@ mod build_env_tests {
             team_name: None,
             host_id: None,
             runtime: "tmux".into(),
+            archive_on_stop: 0,
         };
 
         let (command, _resume) = build_launch_command(&config, &session);
@@ -2044,6 +2077,7 @@ mod build_env_tests {
             team_name: None,
             host_id: None,
             runtime: "tmux".into(),
+            archive_on_stop: 0,
         };
 
         let (command, _resume) = build_launch_command(&config, &session);

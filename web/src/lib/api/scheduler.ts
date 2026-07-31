@@ -49,6 +49,8 @@ export interface ScheduleRow {
   /** Boot bypass-permissions (boot kind only): launch Claude with
    *  `--permission-mode bypassPermissions`. 0/1. */
   bypass_permissions: number
+  /** Auto-archive the spawned session on stop (boot kind only). 0/1. */
+  archive_on_stop: number
   sched_type: string
   recurrence: string | null
   run_at: string | null
@@ -92,6 +94,8 @@ export interface ScheduleCreateInput {
   boot_worktree?: boolean
   /** boot only: launch Claude in bypass-permissions mode. */
   bypass_permissions?: boolean
+  /** boot only: auto-archive the spawned session when it stops. */
+  archive_on_stop?: boolean
   watch?: boolean
   watch_timeout?: number
   done_pattern?: string
@@ -113,6 +117,7 @@ export interface SchedulePatchInput {
   done_pattern?: string
   done_action?: string
   confirm_finish?: boolean
+  archive_on_stop?: boolean
   schedule_expr?: string
 }
 

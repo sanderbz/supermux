@@ -48,6 +48,11 @@ pub struct Schedule {
     /// the Claude session with `--permission-mode bypassPermissions` so it runs
     /// tools without asking. Defaults to 0 (every existing schedule unchanged).
     pub bypass_permissions: i64,
+    /// Auto-archive the spawned session on stop (0023): when 1 (boot kind only),
+    /// the runner stamps the booted session so it archives itself when it stops.
+    /// Defaults to 0 (existing schedules unchanged; "default on" for new boot
+    /// schedules is applied in the create handler).
+    pub archive_on_stop: i64,
     pub created: i64,
     pub updated: i64,
     pub deleted: Option<i64>,
@@ -114,9 +119,9 @@ pub async fn insert(pool: &SqlitePool, s: &Schedule) -> sqlx::Result<()> {
             (id, title, session, command, prompt, kind, boot_dir, boot_provider, boot_worktree,
              sched_type, recurrence, run_at, next_run, last_run, enabled, run_count,
              schedule_expr, watch, watch_timeout, done_pattern, done_action, confirm_finish,
-             bypass_permissions,
+             bypass_permissions, archive_on_stop,
              created, updated, deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.title)
@@ -141,6 +146,7 @@ pub async fn insert(pool: &SqlitePool, s: &Schedule) -> sqlx::Result<()> {
     .bind(&s.done_action)
     .bind(s.confirm_finish)
     .bind(s.bypass_permissions)
+    .bind(s.archive_on_stop)
     .bind(s.created)
     .bind(s.updated)
     .bind(s.deleted)
@@ -253,6 +259,7 @@ pub struct SchedulePatch {
     pub done_pattern: Option<String>,
     pub done_action: Option<String>,
     pub confirm_finish: Option<bool>,
+    pub archive_on_stop: Option<bool>,
     pub schedule_expr: Option<String>,
     pub next_run: Option<DateTime<Utc>>,
     pub sched_type: Option<String>,
@@ -294,6 +301,9 @@ pub async fn patch(pool: &SqlitePool, id: &str, p: &SchedulePatch) -> sqlx::Resu
     }
     if p.confirm_finish.is_some() {
         sets.push("confirm_finish = ?");
+    }
+    if p.archive_on_stop.is_some() {
+        sets.push("archive_on_stop = ?");
     }
     if p.schedule_expr.is_some() {
         sets.push("schedule_expr = ?");
@@ -339,6 +349,9 @@ pub async fn patch(pool: &SqlitePool, id: &str, p: &SchedulePatch) -> sqlx::Resu
         q = q.bind(v);
     }
     if let Some(v) = p.confirm_finish {
+        q = q.bind(v as i64);
+    }
+    if let Some(v) = p.archive_on_stop {
         q = q.bind(v as i64);
     }
     if let Some(v) = &p.schedule_expr {

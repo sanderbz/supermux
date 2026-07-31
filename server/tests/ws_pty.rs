@@ -152,6 +152,7 @@ async fn make_session(state: &AppState, name: &str) {
             creator: None,
             flags: None,
             bypass_permissions: None,
+            archive_on_stop: None,
             tags: None,
             branch: None,
             mcp: None,

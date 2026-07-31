@@ -284,6 +284,7 @@ fn force_stopped(state: &AppState, session: &str) {
             event: "sessions".to_string(),
             payload: json!({ "delta": [{ "name": session, "status": Status::Stopped.as_str() }] }),
         });
+        crate::sessions::lifecycle::maybe_archive_on_stop(&state, &session).await;
     });
 }
 

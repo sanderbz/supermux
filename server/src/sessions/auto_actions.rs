@@ -1352,6 +1352,7 @@ mod boot_reconcile_tests {
             worktree: None,
             host_id: None,
             runtime: Some("native".into()),
+            archive_on_stop: None,
         };
         crate::sessions::create(state, inp).await.expect("create");
         db::sessions::set_last_status(&state.pool, name, status).await.unwrap();

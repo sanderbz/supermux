@@ -240,6 +240,11 @@ pub struct CreateScheduleInput {
     /// typed boolean — the runner builds the trusted flag, never raw text.
     #[serde(default)]
     pub bypass_permissions: Option<bool>,
+    /// Auto-archive the spawned session when it stops (boot kind only). Omitted
+    /// -> defaults OFF (backward compatible: schedules never archive unless the
+    /// user opts in); the server clamps it off for non-boot kinds.
+    #[serde(default)]
+    pub archive_on_stop: Option<bool>,
     /// "test fire": create the schedule, run it ONCE immediately, return the
     /// run result, then delete it — so the user can prove a job works before
     /// committing it. Never persists a live schedule.
@@ -292,6 +297,11 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
     // Bypass-permissions only applies to a `boot` job (the only kind that
     // launches a fresh Claude). Clamp off for other kinds so the column never lies.
     let bypass_permissions = kind == "boot" && input.bypass_permissions.unwrap_or(false);
+    // Auto-archive-on-stop only applies to a `boot` job (the only kind that
+    // spawns a disposable session). Defaults OFF when the client omits it (an
+    // opt-in, so existing callers keep today's behavior); clamped off for other
+    // kinds so the column never lies.
+    let archive_on_stop = kind == "boot" && input.archive_on_stop.unwrap_or(false);
 
     // Determine the cadence expression.
     let expr = input
@@ -328,6 +338,7 @@ pub async fn create(state: &AppState, input: CreateScheduleInput) -> Result<Sche
         done_action,
         confirm_finish: confirm_finish as i64,
         bypass_permissions: bypass_permissions as i64,
+        archive_on_stop: archive_on_stop as i64,
         created: ts,
         updated: ts,
         deleted: None,
@@ -384,6 +395,7 @@ struct PatchInput {
     done_pattern: Option<String>,
     done_action: Option<String>,
     confirm_finish: Option<bool>,
+    archive_on_stop: Option<bool>,
     schedule_expr: Option<String>,
     recurrence: Option<String>,
     run_at: Option<String>,
@@ -622,6 +634,7 @@ async fn patch_handler(
         done_pattern: input.done_pattern,
         done_action: input.done_action,
         confirm_finish: input.confirm_finish,
+        archive_on_stop: input.archive_on_stop,
         schedule_expr: new_expr,
         next_run,
         sched_type,

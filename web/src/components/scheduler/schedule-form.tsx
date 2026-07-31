@@ -73,6 +73,8 @@ export interface ScheduleFormValue {
   /** boot only: launch the booted Claude in bypass-permissions mode
    *  (`--permission-mode bypassPermissions`) so it runs tools without asking. */
   bypass_permissions: boolean
+  /** boot only: auto-archive the spawned session when it stops. */
+  archive_on_stop: boolean
   /** "Send me notification when done" → maps to watch=true + done_action=notify. */
   notify: boolean
   /** Optional regex; empty = the server's default done marker. */
@@ -95,6 +97,10 @@ export const EMPTY_FORM: ScheduleFormValue = {
   boot_provider: 'claude',
   boot_worktree: false,
   bypass_permissions: false,
+  // Off by default (opt-in): archiving a session on stop discards its pane, so
+  // the user ticks it per schedule. Only ever sent for boot jobs (see
+  // toCreateInput). Existing schedules keep their stored value via rowToForm.
+  archive_on_stop: false,
   notify: false,
   done_pattern: '',
   // Pre-ticked: when the user turns on notify for a Claude/tmux job, the
@@ -140,6 +146,7 @@ export function toCreateInput(v: ScheduleFormValue): ScheduleCreateInput {
     base.boot_provider = v.boot_provider
     base.boot_worktree = v.boot_worktree
     base.bypass_permissions = v.bypass_permissions
+    base.archive_on_stop = v.archive_on_stop
     base.prompt = v.prompt.trim()
   }
   return base
@@ -354,6 +361,13 @@ export function ScheduleForm({
               checked={value.bypass_permissions}
               onChange={(c) => set('bypass_permissions', c)}
               label="Bypass permissions — runs tools without asking"
+            />
+          </Field>
+          <Field label="On stop">
+            <CheckRow
+              checked={value.archive_on_stop}
+              onChange={(c) => set('archive_on_stop', c)}
+              label="Archive this session when it stops"
             />
           </Field>
           <Field label="Prompt">

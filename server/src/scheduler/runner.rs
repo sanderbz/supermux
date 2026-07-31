@@ -321,6 +321,7 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
         // The schedule's bypass-permissions choice → the trusted launch flag,
         // built server-side by `sessions::create` (never raw flags on the wire).
         bypass_permissions: Some(sched.bypass_permissions == 1),
+        archive_on_stop: Some(sched.archive_on_stop == 1),
         tags: None,
         branch: None,
         mcp: None,
@@ -444,6 +445,7 @@ mod tests {
             done_action: "disable".into(),
             confirm_finish: 0,
             bypass_permissions: 0,
+            archive_on_stop: 0,
             created: 0,
             updated: 0,
             deleted: None,

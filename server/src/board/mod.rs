@@ -949,6 +949,7 @@ async fn start_handler(
                 creator: None,
                 flags: None,
                 bypass_permissions: None,
+                archive_on_stop: None,
                 tags: None,
                 branch: None,
                 mcp: None,
