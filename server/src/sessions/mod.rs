@@ -501,7 +501,7 @@ pub async fn purge(state: &AppState, name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct CreateInput {
     pub name: String,
     /// Human label for the UI (migration 0019). Free-form; the immutable slug
@@ -541,17 +541,40 @@ pub struct CreateInput {
     #[serde(default)]
     pub bypass_permissions: Option<bool>,
     /// Which terminal backend drives this session (migration 0024): `"tmux"`
-    /// (the default and the whole existing fleet) or `"native"` (the tmux-less
-    /// pty holder). Absent = `"tmux"`, so every existing client body creates
-    /// exactly the session it always did. Anything else is a 400; `"native"`
-    /// combined with a `host_id` is a 400 too (see [`create`]).
+    /// or `"native"` (the tmux-less pty holder). Absent resolves in
+    /// [`create`]: `"native"` for local sessions (the tmux-less runtime is
+    /// the default), `"tmux"` for remote (`host_id`-carrying) sessions, since
+    /// a holder is definitionally local. Anything else is a 400; `"native"`
+    /// combined with a `host_id` is a 400 too.
     #[serde(default)]
     pub runtime: Option<String>,
     /// Stamp the created session so it auto-archives when it stops. Set by the
     /// scheduler for booted sessions; `None`/`false` for every other caller.
     #[serde(default)]
     pub archive_on_stop: Option<bool>,
+    /// Deliver this prompt and start the agent right after create (the
+    /// create + start sequence every scheduler boot already does), so one
+    /// API call replaces the disabled-stub-schedule + run-now pattern.
+    /// Consumed by the HTTP handler, not by [`create`] itself.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Server-side singleton guard: refuse (409) when a non-archived
+    /// session whose name starts with this prefix is still live. Checked
+    /// and inserted under a per-prefix lock, so concurrent spawns with the
+    /// same prefix cannot double-boot. An empty string is treated as absent
+    /// (it would match every session name).
+    #[serde(default)]
+    pub unless_live_prefix: Option<String>,
+    /// Quiet bound for the guard's idle/waiting classification, seconds.
+    /// Default [`GUARD_QUIET_SECS`].
+    #[serde(default)]
+    pub max_quiet_secs: Option<i64>,
 }
+
+/// Default quiet bound for `unless_live_prefix`, seconds: 120 minutes,
+/// proven in production dispatcher use. An idle session that has said nothing
+/// for longer than this no longer blocks a respawn of its identity.
+pub const GUARD_QUIET_SECS: i64 = 7200;
 
 pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView, AppError> {
     let name = input.name.trim().to_string();
@@ -599,6 +622,31 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
                 .into(),
         ));
     }
+    // Spawn guard (`unless_live_prefix`). The lock is taken BEFORE the liveness
+    // check and released only after the INSERT: check-then-insert has to be one
+    // critical section per prefix, or two dispatch cycles racing on the same
+    // identity both read "nothing live" and both boot. An empty prefix is
+    // treated as absent, because it matches every session name: honoring it
+    // would block every create instead of one identity's.
+    let guard_prefix = input
+        .unless_live_prefix
+        .as_deref()
+        .filter(|p| !p.is_empty());
+    let guard_lock = guard_prefix.map(|prefix| state.spawn_guard_for(prefix));
+    // `held` is the critical section; it lives until the explicit `drop` below.
+    let held = match guard_lock.as_ref() {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
+    if let Some(prefix) = guard_prefix {
+        let quiet = input.max_quiet_secs.unwrap_or(GUARD_QUIET_SECS).max(0);
+        if let Some(live) = db::sessions::live_with_prefix(&state.pool, prefix, quiet).await? {
+            return Err(AppError::Conflict(format!(
+                "live session '{live}' matches prefix '{prefix}'"
+            )));
+        }
+    }
+
     if db::sessions::exists(&state.pool, &name).await? {
         return Err(AppError::Conflict(format!(
             "session '{name}' already exists"
@@ -647,6 +695,10 @@ pub async fn create(state: &AppState, input: CreateInput) -> Result<SessionView,
         archive_on_stop: input.archive_on_stop.unwrap_or(false),
     };
     db::sessions::create(&state.pool, &new).await?;
+    // End of the guarded section: the row exists now, so a concurrent spawn on
+    // the same prefix reads it as live and backs off. Everything below is slow
+    // (runtime setup, loop spawns) and must not be serialized behind this lock.
+    drop(held);
     let hook_token = gen_hook_token();
     db::sessions::ensure_runtime(&state.pool, &name, &hook_token).await?;
     state.hook_tokens.insert(name.clone(), hook_token);
@@ -998,11 +1050,30 @@ async fn get_handler(
     Ok(ok(get(&state, &name).await?))
 }
 
+/// `POST /api/sessions`. With a non-blank `prompt` this also boots the session,
+/// so one call does what previously took a disabled stub schedule plus a
+/// run-now. The split of duties is deliberate: [`create`] owns the
+/// `unless_live_prefix` guard (it has to, the check and the INSERT are one
+/// critical section), and this handler owns the boot, which must stay OUTSIDE
+/// that lock.
+///
+/// A blank or whitespace-only prompt counts as absent, so a client that always
+/// sends the field gets exactly the old behaviour when it has nothing to say.
+///
+/// A failed start propagates (5xx) and the session row REMAINS: no rollback.
+/// The row is the record that the spawn was requested, and it is what the
+/// caller retries against; deleting it would also make the guard forget the
+/// identity it just claimed. The returned view is the PRE-start snapshot, so
+/// callers watch the status endpoints for the boot, not this response.
 async fn create_handler(
     State(state): State<AppState>,
-    Json(input): Json<CreateInput>,
+    Json(mut input): Json<CreateInput>,
 ) -> Result<impl IntoResponse, AppError> {
+    let prompt = input.prompt.take().filter(|p| !p.trim().is_empty());
     let v = create(&state, input).await?;
+    if let Some(p) = prompt {
+        lifecycle::start(&state, &v.name, Some(&p)).await?;
+    }
     Ok((StatusCode::CREATED, ok(v)))
 }
 
@@ -1490,6 +1561,7 @@ mod tests {
             host_id: None,
             runtime: None,
             archive_on_stop: None,
+            ..Default::default()
         }
     }
 

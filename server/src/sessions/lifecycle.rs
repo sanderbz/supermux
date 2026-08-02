@@ -684,6 +684,11 @@ async fn emit_board_if_linked(state: &AppState, name: &str) {
 // ── public lifecycle API ────────────────────────────────────────────────────
 
 /// Spawn (or re-attach to) the session's tmux session and launch the agent.
+///
+/// Thin wrapper over [`start_inner`] so every failure exit runs
+/// [`mark_boot_failed`] before the error propagates. The per-session lock is
+/// taken HERE, not inside, so the failure stamp lands in the same critical
+/// section as the boot it is correcting.
 pub async fn start(
     state: &AppState,
     name: &str,
@@ -692,6 +697,84 @@ pub async fn start(
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
 
+    match start_inner(state, name, prompt).await {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            mark_boot_failed(state, name).await;
+            Err(e)
+        }
+    }
+}
+
+/// Best-effort: record a failed boot as `stopped` so the row stops reading LIVE.
+///
+/// Without this a failed `start` leaves the runtime status at one of two values,
+/// and `db::sessions::live_with_prefix` reads BOTH as live:
+///   * `''` (the `ensure_runtime` default) when the failure beat the `starting`
+///     write below. Empty falls to the freshness arm, and `created_at` is
+///     seconds old, so the dead row blocks its own prefix for the whole quiet
+///     window (2h by default).
+///   * `starting` for any failure after that write. That one is live
+///     unconditionally, so it blocks forever.
+///
+/// Either way the spawn guard would refuse to respawn the identity whose boot
+/// just died, which is exactly backwards. The status detector cannot repair it
+/// either: it declines to reclassify a session whose runtime is not alive.
+///
+/// `stopped`, not `error`: the `session_runtime` status CHECK (migration 0009)
+/// rejects `error`.
+///
+/// Skipped when the runtime is in fact alive. A failure that leaves the agent
+/// running (a send that did not land, say) belongs to the detector, and writing
+/// `stopped` over a live session would be a lie its next tick has to undo.
+/// Everything here is best-effort: the caller propagates the ORIGINAL error, so
+/// a failed stamp is logged and never raised.
+///
+/// A stamped failure also runs the normal stop-time cleanup
+/// ([`maybe_archive_on_stop`]), because a dead row is only half the problem: the
+/// status detector and the steering deliver loop both hang off `exists_active`,
+/// which filters `archived = 0`, so an unarchived dead row keeps two tokio loops
+/// alive for the life of the process. The gate is `archive_on_stop = 1`, i.e.
+/// exactly the scheduler/dispatcher's disposable spawns; human-, board- and
+/// team-created sessions stay visible for inspection. Safe under the per-session
+/// lock `start()` holds around this call for the same reason `stop()`'s call is:
+/// `archive()` takes no session lock and its teardown is async-job-shaped, so it
+/// never waits on this task.
+async fn mark_boot_failed(state: &AppState, name: &str) {
+    // No runtime row means no session to stamp (a start that failed on
+    // `require_session`), and the write would be a silent no-op anyway.
+    match db::sessions::runtime(&state.pool, name).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(name = %name, error = %e, "mark_boot_failed: runtime lookup failed");
+            return;
+        }
+    }
+    if let Ok(rt) = state.runtime_for(name).await {
+        if rt.alive().await {
+            return;
+        }
+    }
+    match db::sessions::set_last_status(&state.pool, name, "stopped").await {
+        Ok(()) => {
+            broadcast_status(state, name, "stopped");
+            // A failed boot IS a stop, so it gets the same cleanup: disposable
+            // spawns archive themselves, which also ends their detector and
+            // steering loops.
+            maybe_archive_on_stop(state, name).await;
+        }
+        Err(e) => {
+            tracing::warn!(name = %name, error = %e, "mark_boot_failed: could not stamp 'stopped'; the spawn guard may block this prefix until the quiet window elapses")
+        }
+    }
+}
+
+async fn start_inner(
+    state: &AppState,
+    name: &str,
+    prompt: Option<&str>,
+) -> Result<StartResult, AppError> {
     let mut s = require_session(state, name).await?;
     // NATIVE-BY-DEFAULT MIGRATION. The tmux-less runtime is the product default;
     // a legacy `runtime='tmux'` row upgrades AT THE FIRST FRESH START — i.e. when

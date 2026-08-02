@@ -575,6 +575,55 @@ pub async fn archive_pending(pool: &SqlitePool, name: &str) -> sqlx::Result<bool
     Ok(row.is_some())
 }
 
+/// One live, non-archived session whose name starts with `prefix`, or `None`.
+///
+/// Liveness: `active`/`starting` count as live at any age; `stopped`/`error`
+/// never do (`error` is not in the `last_status` CHECK today, but a dead
+/// session must never block its own respawn if it is added); everything else
+/// (`idle`, `waiting`, `unknown`, and the missing runtime row a just-created
+/// session has) only while its newest activity stamp is younger than
+/// `max_quiet_secs`.
+///
+/// This is the spawn guard's (`unless_live_prefix`) sole gate, so "unsure"
+/// must read as live: a stale false-positive delays a boot by one cycle, a
+/// false-negative double-boots. That is also why an unrecognised status falls
+/// into the freshness branch rather than being treated as free.
+///
+/// The prefix match is an exact, case-sensitive `substr` comparison, not LIKE:
+/// SQLite's default LIKE is ASCII-case-insensitive and treats `%`/`_` as
+/// wildcards, either of which would let one identity's prefix swallow another
+/// and block its spawn indefinitely.
+pub async fn live_with_prefix(
+    pool: &SqlitePool,
+    prefix: &str,
+    max_quiet_secs: i64,
+) -> sqlx::Result<Option<String>> {
+    let cutoff = chrono::Utc::now().timestamp() - max_quiet_secs;
+    // MAX() with several arguments is SQLite's scalar max, not the aggregate.
+    // `length()` is evaluated by SQLite on the same value it compares, so the
+    // character counting can't drift from Rust's notion of string length.
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT s.name FROM sessions s
+         LEFT JOIN session_runtime r ON r.name = s.name
+         WHERE s.archived = 0
+           AND substr(s.name, 1, length(?)) = ?
+           AND CASE COALESCE(r.last_status, '')
+                 WHEN 'active' THEN 1
+                 WHEN 'starting' THEN 1
+                 WHEN 'stopped' THEN 0
+                 WHEN 'error' THEN 0
+                 ELSE MAX(COALESCE(r.last_status_at, 0), s.last_started, s.last_send, s.created_at) > ?
+               END
+         LIMIT 1",
+    )
+    .bind(prefix)
+    .bind(prefix)
+    .bind(cutoff)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(n,)| n))
+}
+
 /// Clear the Claude resume identifiers (used by the resume-picker fallback when
 /// `--resume` gets stuck).
 pub async fn clear_cc(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {

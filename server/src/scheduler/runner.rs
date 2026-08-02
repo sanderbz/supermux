@@ -327,8 +327,14 @@ async fn execute_boot(state: &AppState, sched: &Schedule) -> JobOutcome {
         mcp: None,
         worktree: Some(sched.boot_worktree == 1),
         host_id: None,
-        // Scheduler-booted sessions take the default (tmux) runtime.
+        // No host_id here, so leaving runtime absent resolves to native (the
+        // local-session default in `sessions::create`), not tmux.
         runtime: None,
+        // The runner delivers its own opening prompt below, and a schedule's
+        // singleton behaviour is the schedule's own (not the create guard).
+        prompt: None,
+        unless_live_prefix: None,
+        max_quiet_secs: None,
     };
     if let Err(e) = sessions::create(state, input).await {
         return JobOutcome {

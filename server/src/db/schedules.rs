@@ -50,8 +50,8 @@ pub struct Schedule {
     pub bypass_permissions: i64,
     /// Auto-archive the spawned session on stop (0023): when 1 (boot kind only),
     /// the runner stamps the booted session so it archives itself when it stops.
-    /// Defaults to 0 (existing schedules unchanged; "default on" for new boot
-    /// schedules is applied in the create handler).
+    /// Opt-in: defaults to 0 for every schedule, new or existing, unless the
+    /// caller explicitly sets it on create.
     pub archive_on_stop: i64,
     pub created: i64,
     pub updated: i64,
