@@ -311,3 +311,30 @@ async fn start_nonexistent_returns_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn start_missing_dir_returns_clear_error() {
+    let (app, dir) = test_app().await;
+    let name = format!("nodir{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let missing = format!("/nonexistent/supermux-test-{name}");
+
+    // Creating the session succeeds; the directory is only needed at start.
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/api/sessions",
+        Some(json!({ "name": name, "provider": "shell", "dir": missing })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Start must fail with a 400 that names the missing directory, not an
+    // opaque 500 from the failed pty/tmux spawn.
+    let (status, body) = send(&app, Method::POST, &format!("/api/sessions/{name}/start"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(err.contains(&missing), "error should name the directory: {err}");
+    assert!(err.contains("does not exist"), "error should say it is missing: {err}");
+
+    teardown(&app, &name, dir).await;
+}

@@ -851,6 +851,16 @@ pub async fn start(
         // ("a fault reads as gone"), so a transient probe glitch on a session
         // that is actually running now lands here — and must not tear down that
         // live session's cached stream on the way to a spawn that fails.
+        // A missing working directory would surface as an opaque spawn
+        // failure ("spawn pty holder" / a tmux error), so name the real
+        // problem before spawning. Local sessions only: a remote session's
+        // dir lives on the remote host and cannot be probed here.
+        if s.host_id.is_none() && !dir.is_dir() {
+            return Err(AppError::BadRequest(format!(
+                "session directory '{}' does not exist; create it or update the session's directory",
+                s.dir
+            )));
+        }
         rt.spawn(&dir, &env, &shell).await?;
         state.pty_invalidate(name);
     }
