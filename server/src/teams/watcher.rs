@@ -166,21 +166,9 @@ pub async fn scan_and_enrich_raw(state: &AppState) -> Vec<Team> {
         scan::validate_pane_ids(team, live_ids);
         scan::map_lead_session(team, |_| host.clone());
 
-        // Drop any member the user has dismissed (supermux-side hide). Loaded
-        // ONCE per team per tick (small table). Unconditional, regardless of
-        // live/offline, so a live-case removal (kill pane THEN dismiss) sticks
-        // across the tick before the killed pane fully leaves the live set.
-        // See [`crate::db::teams_dismissed`] for the no-auto-rearm limitation.
-        match db::teams_dismissed::list_for_team(&state.pool, &team.team_name).await {
-            Ok(dismissed) => retain_undismissed(team, &dismissed),
-            Err(e) => {
-                tracing::debug!(
-                    error = %e,
-                    team = %team.team_name,
-                    "teams watcher: dismissed-set load failed; showing all members this tick",
-                );
-            }
-        }
+        // Auto-dismiss the dead teammates of a stopped host, then hide every
+        // dismissed member from this tick's roster.
+        apply_dismissals(state, team, host.as_deref()).await;
 
         // Persist the team_name backlink on the host session so
         // `lifecycle::archive` knows which `~/.claude/teams/<name>/` dir to
@@ -283,16 +271,210 @@ fn dedup_rank_key(team: &Team) -> (usize, usize, i64, std::cmp::Reverse<String>)
 }
 
 /// Drop every member the user has dismissed (supermux-side hide). Pure, so the
-/// filter policy is unit-testable apart from the DB. Unconditional, regardless
-/// of a member's live/offline state, so the live-case removal (kill pane THEN
-/// dismiss) sticks across the tick before the killed pane leaves the live set.
-/// A no-op when `dismissed` is empty.
+/// filter policy is unit-testable apart from the DB. A no-op when `dismissed` is
+/// empty.
+///
+/// **A LIVE pane always wins over a dismissal row.** A member whose `%id` was
+/// validated against the host's live panes THIS tick (`tmux_pane_id.is_some()`
+/// after [`scan::validate_pane_ids`]) stays visible even if a dismissal row
+/// exists for it. Dismissals never auto-re-arm, so without this rule a row left
+/// behind by [`auto_dismiss_dead_members`] (or an old manual dismiss) would hide
+/// a genuinely RUNNING agent after a stopped session restarts and its re-formed
+/// team reuses the same `name@team` ids, the one thing this feature must never
+/// do. The trade-off is the mirror case: after a manual live-removal (kill pane
+/// THEN dismiss) the row only takes effect once the killed pane actually leaves
+/// tmux's live set, so a pane that lingers one tick shows one extra tick. The row
+/// itself is never deleted here, so the hide re-applies the moment the pane is
+/// gone (nothing is un-dismissed for good).
 fn retain_undismissed(team: &mut Team, dismissed: &[String]) {
     if dismissed.is_empty() {
         return;
     }
     team.members
-        .retain(|m| !dismissed.iter().any(|d| d == &m.agent_id));
+        .retain(|m| m.tmux_pane_id.is_some() || !dismissed.iter().any(|d| d == &m.agent_id));
+}
+
+/// The dismissal step of one team's tick, split out of [`scan_and_enrich_raw`]
+/// so the whole wiring (auto-record → hide, in the SAME tick) is testable
+/// without a real scan.
+///
+/// The dismissed set is loaded ONCE per team per tick (small table). Before
+/// filtering, every dead teammate of a host session that is settled `stopped` is
+/// AUTO-recorded as dismissed: Claude leaves the dead members in `config.json`
+/// when the stop grace window cuts its graceful team shutdown short, so without
+/// this a stopped session's teammates hang around as cards forever (see
+/// [`auto_dismiss_dead_members`]). The ids recorded this tick are appended to the
+/// loaded set, so they leave THIS tick's payload with no second query and a
+/// single SSE broadcast. A member with a LIVE pane is never hidden (see
+/// [`retain_undismissed`]). See [`crate::db::teams_dismissed`] for the
+/// no-auto-rearm limitation. `host` is `None` for an unmapped team, which only
+/// skips the auto-dismiss step; manual dismissals still apply.
+async fn apply_dismissals(state: &AppState, team: &mut Team, host: Option<&str>) {
+    match db::teams_dismissed::list_for_team(&state.pool, &team.team_name).await {
+        Ok(mut dismissed) => {
+            if let Some(host_name) = host {
+                let recorded = auto_dismiss_dead_members(state, team, host_name, &dismissed).await;
+                dismissed.extend(recorded);
+            }
+            retain_undismissed(team, &dismissed);
+        }
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                team = %team.team_name,
+                "teams watcher: dismissed-set load failed; showing all members this tick",
+            );
+        }
+    }
+}
+
+/// How long a session's status must have READ `stopped` before the watcher
+/// auto-dismisses its dead teammates. Longer than a couple of poll ticks so a
+/// stop→start bounce (or a status write that is about to be corrected by the
+/// reconciler) never dismisses the teammates of a session that is coming back.
+const AUTO_DISMISS_SETTLE_SECS: i64 = 10;
+
+/// Is this session's runtime row a SETTLED `stopped`? Pure over the row so the
+/// gate is unit-testable: the status must be `stopped` AND have been so for at
+/// least [`AUTO_DISMISS_SETTLE_SECS`].
+fn settled_stopped(rt: &db::sessions::SessionRuntime, now: i64) -> bool {
+    rt.last_status == crate::sessions::status::Status::Stopped.as_str()
+        && now.saturating_sub(rt.last_status_at) >= AUTO_DISMISS_SETTLE_SECS
+}
+
+/// The members to auto-dismiss for a team whose host session is settled stopped:
+/// every member with NO live pane this tick (`tmux_pane_id` nulled by
+/// [`scan::validate_pane_ids`]) that is not dismissed already. Pure, so the
+/// policy is unit-testable apart from the DB, and the `already` filter is what
+/// keeps repeated ticks from re-writing (and re-logging) the same rows.
+///
+/// The lead is never a candidate: [`scan::scan_teams`] filters the lead's own
+/// roster row out of `members` (it renders as the session tile itself), so a
+/// team's `members` only ever holds real teammates.
+fn dead_members_to_dismiss(team: &Team, already: &[String]) -> Vec<String> {
+    team.members
+        .iter()
+        .filter(|m| m.tmux_pane_id.is_none())
+        .map(|m| m.agent_id.clone())
+        .filter(|id| !already.iter().any(|d| d == id))
+        .collect()
+}
+
+/// Auto-dismiss the dead teammates of a team whose host session is settled
+/// `stopped`, and return the ids actually recorded this tick (so the caller can
+/// apply them to THIS tick's roster without a second query).
+///
+/// Why: Claude's own graceful team shutdown removes members from `config.json`
+/// one at a time, but the stop grace window hard-kills the lead long before it
+/// finishes. The teammate PROCESSES die, yet their member entries stay in
+/// `config.json` forever, so supermux rendered a stopped session's dead
+/// teammates as sub-task cards until each was dismissed by hand. This records
+/// exactly the dismissal the manual `DELETE /api/teams/{team}/members/{id}`
+/// endpoint records for a dead member.
+///
+/// Guarantees: never touches Claude's `config.json`; never kills anything (by
+/// definition these panes are already gone); never dismisses a member with a
+/// LIVE pane (a restarting session's teammates must survive); idempotent and
+/// quiet (rows are `INSERT OR IGNORE` keyed on `(team, agent_id)`, already-known
+/// ids are filtered out BEFORE the write, and the info log only fires on the
+/// tick that actually records something). Best-effort throughout: any DB error
+/// is logged at debug and the tick continues.
+async fn auto_dismiss_dead_members(
+    state: &AppState,
+    team: &Team,
+    host: &str,
+    already: &[String],
+) -> Vec<String> {
+    // Candidates first: a team with nothing new to dismiss (every member live, or
+    // every dead one already recorded) costs ZERO queries, so the steady state of
+    // a healthy team and of an already-settled stopped one are both free.
+    let targets = dead_members_to_dismiss(team, already);
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let rt = match db::sessions::runtime(&state.pool, host).await {
+        Ok(Some(rt)) => rt,
+        Ok(None) => return Vec::new(),
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                session = %host,
+                "teams watcher: runtime read failed; no auto-dismiss this tick",
+            );
+            return Vec::new();
+        }
+    };
+    let now = chrono::Utc::now().timestamp();
+    if !settled_stopped(&rt, now) {
+        return Vec::new();
+    }
+
+    // AMBIGUITY GUARD. A stopped session has no tmux window, so its team is
+    // almost always attributed by cwd ([`match_host_by_cwd`]), which takes the
+    // FIRST claude session whose dir matches, in list order (pinned, then last
+    // send) and with no liveness preference. When two claude sessions share that
+    // dir, the winner is decided by sort order rather than evidence, so a stopped
+    // sibling can be handed the team of a still-RUNNING lead. For a team whose
+    // teammates are paneless but alive (in-process teammates, or a native
+    // tmux-less runtime where nothing shows up in the tmux pane map) that
+    // mis-attribution would dismiss live agents, and the hide would be permanent
+    // because the live-pane un-hide in [`retain_undismissed`] can never fire for
+    // a member that never has a pane. So: dismiss nothing while the cwd
+    // attribution is ambiguous. Manual dismissal still works, and the guard
+    // relaxes by itself once one of the colliding sessions goes away.
+    // Best-effort like the rest: an unreadable session list dismisses nothing.
+    match db::sessions::list(&state.pool).await {
+        Ok(sessions) => {
+            let matches = cwd_host_match_count(
+                team,
+                sessions.iter().map(|s| SessionRef {
+                    name: &s.name,
+                    dir: &s.dir,
+                    provider: &s.provider,
+                }),
+            );
+            if matches > 1 {
+                tracing::debug!(
+                    team = %team.team_name,
+                    session = %host,
+                    matches,
+                    "teams watcher: ambiguous cwd host attribution; skipping auto-dismiss",
+                );
+                return Vec::new();
+            }
+        }
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                team = %team.team_name,
+                "teams watcher: session list failed; skipping auto-dismiss this tick",
+            );
+            return Vec::new();
+        }
+    }
+
+    let mut recorded = Vec::with_capacity(targets.len());
+    for agent_id in targets {
+        match db::teams_dismissed::dismiss(&state.pool, &team.team_name, &agent_id, now).await {
+            Ok(()) => recorded.push(agent_id),
+            Err(e) => tracing::debug!(
+                error = %e,
+                team = %team.team_name,
+                agent = %agent_id,
+                "teams watcher: auto-dismiss insert failed",
+            ),
+        }
+    }
+    if !recorded.is_empty() {
+        tracing::info!(
+            team = %team.team_name,
+            session = %host,
+            count = recorded.len(),
+            "teams watcher: auto-dismissed dead teammates of a stopped session",
+        );
+    }
+    recorded
 }
 
 /// Cheap-deduped UPDATE: only fire when the session's current team_name
@@ -459,22 +641,7 @@ fn match_host_by_cwd<'a>(
     team: &Team,
     sessions: impl Iterator<Item = SessionRef<'a>>,
 ) -> Option<String> {
-    // Authoritative candidate: the lead's own cwd. Fall back to the unique
-    // non-empty teammate cwds ONLY when the lead cwd is unknown.
-    let lead = norm_dir(&team.lead_cwd);
-    let candidates: Vec<&str> = if !lead.is_empty() {
-        vec![lead]
-    } else {
-        let mut cwds: Vec<&str> = team
-            .members
-            .iter()
-            .map(|m| norm_dir(&m.cwd))
-            .filter(|c| !c.is_empty())
-            .collect();
-        cwds.sort_unstable();
-        cwds.dedup();
-        cwds
-    };
+    let candidates = host_cwd_candidates(team);
     if candidates.is_empty() {
         return None;
     }
@@ -491,6 +658,50 @@ fn match_host_by_cwd<'a>(
         }
     }
     None
+}
+
+/// The directories that may legitimately claim this team in a cwd-based host
+/// attribution: the LEAD's own cwd when known (authoritative), else the unique
+/// non-empty teammate cwds. Shared by [`match_host_by_cwd`], which PICKS a host
+/// from them, and [`cwd_host_match_count`], which measures how ambiguous that
+/// pick was. Normalized via [`norm_dir`]; compared case-insensitively.
+fn host_cwd_candidates(team: &Team) -> Vec<&str> {
+    let lead = norm_dir(&team.lead_cwd);
+    if !lead.is_empty() {
+        return vec![lead];
+    }
+    let mut cwds: Vec<&str> = team
+        .members
+        .iter()
+        .map(|m| norm_dir(&m.cwd))
+        .filter(|c| !c.is_empty())
+        .collect();
+    cwds.sort_unstable();
+    cwds.dedup();
+    cwds
+}
+
+/// How many claude sessions a cwd-based host attribution has to choose from.
+/// Counts every NON-ARCHIVED claude session on the team's cwd, stopped ones
+/// included: the caller feeds it `db::sessions::list` (archived rows excluded,
+/// running and stopped alike), and counting the stopped siblings is the whole
+/// point, since a stopped session is exactly what can win the pick and be handed
+/// a running lead's team. `match_host_by_cwd` returns the FIRST match in list
+/// order (pinned, then most recently sent to) with no liveness preference, so a
+/// count above 1 means the winner was decided by list order, not by evidence.
+/// Pure, so the ambiguity policy is unit-testable apart from the DB.
+fn cwd_host_match_count<'a>(team: &Team, sessions: impl Iterator<Item = SessionRef<'a>>) -> usize {
+    let candidates = host_cwd_candidates(team);
+    if candidates.is_empty() {
+        return 0;
+    }
+    sessions
+        .filter(|s| s.provider == "claude")
+        .filter(|s| {
+            let d = norm_dir(s.dir);
+            !d.is_empty() && candidates.iter().any(|c| c.eq_ignore_ascii_case(d))
+        })
+        .count()
 }
 
 /// Tear down team boards whose team has ENDED, conservatively. For
@@ -1152,6 +1363,375 @@ mod tests {
         retain_undismissed(&mut t, &["bob@sq".to_string()]);
         let ids: Vec<&str> = t.members.iter().map(|m| m.agent_id.as_str()).collect();
         assert_eq!(ids, vec!["alice@sq"]);
+    }
+
+    // ── auto-dismiss dead teammates of a STOPPED lead session ───────────────────
+
+    /// A member with an explicit pane state: `Some(%id)` = validated live this
+    /// tick, `None` = dead or absent (what `validate_pane_ids` leaves behind).
+    fn member_pane(agent: &str, pane: Option<&str>) -> Member {
+        Member {
+            name: agent.split('@').next().unwrap_or(agent).into(),
+            agent_id: agent.into(),
+            model: "opus".into(),
+            color: "blue".into(),
+            tmux_pane_id: pane.map(str::to_string),
+            is_active: pane.is_some(),
+            status: if pane.is_some() {
+                MemberStatus::Working
+            } else {
+                MemberStatus::Offline
+            },
+            cwd: String::new(),
+        }
+    }
+
+    /// Force a session's runtime status + its age (the settle clock), which
+    /// `set_last_status` always stamps as "now".
+    async fn force_status(state: &AppState, name: &str, status: &str, age_secs: i64) {
+        let at = chrono::Utc::now().timestamp() - age_secs;
+        sqlx::query("UPDATE session_runtime SET last_status = ?, last_status_at = ? WHERE name = ?")
+            .bind(status)
+            .bind(at)
+            .bind(name)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+
+    /// Create a plain claude session row for the auto-dismiss tests. `dir` is
+    /// explicit so a test can make two sessions COLLIDE on the same directory.
+    async fn make_session_in(state: &AppState, name: &str, dir: &str) {
+        crate::sessions::create(
+            state,
+            crate::sessions::CreateInput {
+                name: name.into(),
+                display_name: None,
+                dir: Some(dir.to_string()),
+                desc: None,
+                provider: Some("claude".into()),
+                creator: None,
+                flags: None,
+                bypass_permissions: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+                host_id: None,
+                runtime: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The auto-dismiss candidate policy: only members with NO live pane, and
+    /// never one that already carries a dismissal row (that filter is what keeps
+    /// repeated ticks from re-writing and re-logging the same rows).
+    #[test]
+    fn dead_members_to_dismiss_skips_live_panes_and_known_rows() {
+        let mut t = team("sq");
+        t.members = vec![
+            member_pane("alice@sq", None),
+            member_pane("bob@sq", Some("%42")),
+            member_pane("carol@sq", None),
+        ];
+
+        assert_eq!(
+            dead_members_to_dismiss(&t, &[]),
+            vec!["alice@sq".to_string(), "carol@sq".to_string()],
+            "dead panes are candidates; a live pane never is",
+        );
+        assert_eq!(
+            dead_members_to_dismiss(&t, &["alice@sq".to_string()]),
+            vec!["carol@sq".to_string()],
+            "an already-dismissed member is not a candidate again",
+        );
+        assert!(
+            dead_members_to_dismiss(&t, &["alice@sq".into(), "carol@sq".into()]).is_empty(),
+            "a settled team produces no writes on later ticks (quiet + idempotent)",
+        );
+    }
+
+    /// The status gate: only a `stopped` status that has HELD for the settle
+    /// window opens auto-dismiss. A live/starting session, or a `stopped` that
+    /// was just written (a stop→start bounce), keeps its teammates.
+    #[test]
+    fn settled_stopped_requires_stopped_status_and_the_settle_window() {
+        let now = 1_000_000;
+        let rt = |status: &str, at: i64| db::sessions::SessionRuntime {
+            name: "s".into(),
+            rate_limit_reset_at: 0,
+            hibernated: 0,
+            restarting: 0,
+            last_claude_alive_pid: 0,
+            last_status: status.into(),
+            last_status_at: at,
+            last_capture: String::new(),
+            last_capture_ansi: String::new(),
+            hook_token: String::new(),
+        };
+
+        assert!(settled_stopped(
+            &rt("stopped", now - AUTO_DISMISS_SETTLE_SECS),
+            now
+        ));
+        assert!(
+            !settled_stopped(&rt("stopped", now - AUTO_DISMISS_SETTLE_SECS + 1), now),
+            "a just-stopped session is not settled yet (stop→start bounce guard)",
+        );
+        for live in ["active", "waiting", "idle", "starting", "unknown"] {
+            assert!(
+                !settled_stopped(&rt(live, now - 3600), now),
+                "'{live}' must never open auto-dismiss",
+            );
+        }
+    }
+
+    /// The incident this feature fixes: a stopped session whose teammates all
+    /// died leaves their entries in Claude's `config.json` forever. The watcher
+    /// records a dismissal for each dead member, leaves a live one alone, and the
+    /// NEXT tick writes nothing (idempotent + quiet).
+    #[tokio::test]
+    async fn auto_dismiss_records_dead_members_of_a_settled_stopped_session() {
+        let (state, dir) = test_state().await;
+        make_session_in(&state, "flirty", "/opt/projects/flirty").await;
+        force_status(&state, "flirty", "stopped", AUTO_DISMISS_SETTLE_SECS + 5).await;
+
+        let mut t = team("session-abc");
+        t.members = vec![
+            member_pane("alice@session-abc", None),
+            member_pane("bob@session-abc", Some("%42")),
+        ];
+
+        let recorded = auto_dismiss_dead_members(&state, &t, "flirty", &[]).await;
+        assert_eq!(
+            recorded,
+            vec!["alice@session-abc".to_string()],
+            "the dead teammate is auto-dismissed; the live one is untouched",
+        );
+        assert_eq!(
+            db::teams_dismissed::list_for_team(&state.pool, "session-abc").await.unwrap(),
+            vec!["alice@session-abc"],
+            "the same row the manual DELETE endpoint writes",
+        );
+
+        // Next tick: the caller passes the known set → nothing new is written and
+        // nothing is logged (the info line only fires on a non-empty record).
+        let again = auto_dismiss_dead_members(
+            &state,
+            &t,
+            "flirty",
+            &["alice@session-abc".to_string()],
+        )
+        .await;
+        assert!(again.is_empty(), "repeat ticks are silent no-ops");
+        assert_eq!(
+            db::teams_dismissed::list_for_team(&state.pool, "session-abc").await.unwrap().len(),
+            1,
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A session that is NOT settled-stopped never has its teammates dismissed:
+    /// neither a running one, nor one that stopped a moment ago (it may be
+    /// restarting), nor a host with no runtime row at all.
+    #[tokio::test]
+    async fn auto_dismiss_leaves_running_and_just_stopped_sessions_alone() {
+        let (state, dir) = test_state().await;
+        make_session_in(&state, "busy", "/opt/projects/busy").await;
+
+        let mut t = team("session-xyz");
+        t.members = vec![member_pane("alice@session-xyz", None)];
+
+        force_status(&state, "busy", "active", 3600).await;
+        assert!(
+            auto_dismiss_dead_members(&state, &t, "busy", &[]).await.is_empty(),
+            "a running session's dead-looking teammate is never auto-dismissed",
+        );
+
+        force_status(&state, "busy", "stopped", 0).await;
+        assert!(
+            auto_dismiss_dead_members(&state, &t, "busy", &[]).await.is_empty(),
+            "a just-stopped session is still inside the settle window",
+        );
+
+        // An unknown host (no session/runtime row) is a clean no-op.
+        assert!(
+            auto_dismiss_dead_members(&state, &t, "no-such-session", &[]).await.is_empty(),
+        );
+        assert!(
+            db::teams_dismissed::list_for_team(&state.pool, "session-xyz").await.unwrap().is_empty(),
+            "no rows are written while the gate is closed",
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The wiring inside one tick: with a settled-stopped host, the dead member
+    /// is recorded AND is already gone from the roster the tick hands to the SSE
+    /// payload (no reload needed), while the live member survives. The next tick
+    /// over the same roster is stable and writes nothing new.
+    #[tokio::test]
+    async fn apply_dismissals_drops_the_auto_dismissed_member_in_the_same_tick() {
+        let (state, dir) = test_state().await;
+        make_session_in(&state, "flirty", "/opt/projects/flirty").await;
+        force_status(&state, "flirty", "stopped", AUTO_DISMISS_SETTLE_SECS + 5).await;
+
+        let mut t = team("session-abc");
+        t.members = vec![
+            member_pane("alice@session-abc", None),
+            member_pane("bob@session-abc", Some("%42")),
+        ];
+
+        apply_dismissals(&state, &mut t, Some("flirty")).await;
+        let ids: Vec<&str> = t.members.iter().map(|m| m.agent_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["bob@session-abc"],
+            "the dead teammate leaves the payload in the very tick it is recorded",
+        );
+        assert_eq!(
+            db::teams_dismissed::list_for_team(&state.pool, "session-abc").await.unwrap(),
+            vec!["alice@session-abc"],
+        );
+
+        // A second tick over the same (now shorter) roster changes nothing.
+        apply_dismissals(&state, &mut t, Some("flirty")).await;
+        assert_eq!(t.members.len(), 1, "steady state after the first tick");
+        assert_eq!(
+            db::teams_dismissed::list_for_team(&state.pool, "session-abc").await.unwrap().len(),
+            1,
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The ambiguity measure behind the guard: every non-archived claude session
+    /// on the team's host cwd counts, stopped ones included (a stopped sibling is
+    /// exactly what can win the pick); non-claude sessions do not. Normalization
+    /// matches the resolver (trailing slash, case), and a team with no cwd
+    /// candidates at all counts 0 (its host came from a stronger signal, so it is
+    /// not ambiguous).
+    #[test]
+    fn cwd_host_match_count_counts_only_claude_sessions_on_the_team_cwd() {
+        let dir = "/home/p/projects/mobsters-united";
+        let team = lead_cwd_team("session-abc", dir, "");
+        let rows = sess(&[
+            ("live-lead", dir, "claude"),
+            ("stopped-sibling", &format!("{dir}/"), "claude"),
+            ("a-shell", dir, "shell"),
+            ("elsewhere", "/opt/other", "claude"),
+        ]);
+        let count = cwd_host_match_count(
+            &team,
+            rows.iter().map(|(n, d, p)| SessionRef { name: n, dir: d, provider: p }),
+        );
+        assert_eq!(count, 2, "two claude sessions share the cwd (the shell doesn't count)");
+
+        let only_one = sess(&[("live-lead", dir, "claude"), ("elsewhere", "/opt/other", "claude")]);
+        assert_eq!(
+            cwd_host_match_count(
+                &team,
+                only_one.iter().map(|(n, d, p)| SessionRef { name: n, dir: d, provider: p }),
+            ),
+            1,
+        );
+
+        let no_cwd = lead_cwd_team("session-xyz", "", "");
+        assert_eq!(
+            cwd_host_match_count(
+                &no_cwd,
+                rows.iter().map(|(n, d, p)| SessionRef { name: n, dir: d, provider: p }),
+            ),
+            0,
+            "no cwd candidates → not ambiguous (the host came from a stronger signal)",
+        );
+    }
+
+    /// THE mis-attribution guard. A team whose teammates are PANELESS but alive
+    /// (in-process teammates, or a native tmux-less runtime) resolves its host by
+    /// cwd only, and `match_host_by_cwd` takes the FIRST claude session with that
+    /// dir in list order, so a STOPPED sibling sharing the directory can be
+    /// handed a running lead's team. Auto-dismissing there would hide live agents
+    /// FOR GOOD (the live-pane un-hide can never fire for a member that has no
+    /// pane), so an ambiguous cwd attribution must dismiss nothing. The positive
+    /// control in the same test proves the guard is not a blanket off-switch: the
+    /// identical team on a cwd only ONE session claims is dismissed as before.
+    #[tokio::test]
+    async fn auto_dismiss_skips_when_two_claude_sessions_share_the_team_cwd() {
+        let (state, dir) = test_state().await;
+        let shared = "/home/p/projects/shared";
+        make_session_in(&state, "stopped-sibling", shared).await;
+        make_session_in(&state, "live-lead", shared).await;
+        force_status(&state, "stopped-sibling", "stopped", AUTO_DISMISS_SETTLE_SECS + 5).await;
+        force_status(&state, "live-lead", "active", 5).await;
+
+        // Paneless-but-alive teammates of the team the LIVE lead actually owns.
+        let mut ambiguous = team("session-shared");
+        ambiguous.lead_cwd = shared.into();
+        ambiguous.members = vec![
+            member_pane("alice@session-shared", None),
+            member_pane("bob@session-shared", None),
+        ];
+
+        let recorded =
+            auto_dismiss_dead_members(&state, &ambiguous, "stopped-sibling", &[]).await;
+        assert!(
+            recorded.is_empty(),
+            "an ambiguous cwd attribution must dismiss nothing, even from a stopped host",
+        );
+        assert!(
+            db::teams_dismissed::list_for_team(&state.pool, "session-shared")
+                .await
+                .unwrap()
+                .is_empty(),
+            "no dismissal rows are written for a team whose host is a coin flip",
+        );
+
+        // Positive control: same shape, but only ONE session claims that cwd.
+        let solo = "/home/p/projects/solo";
+        make_session_in(&state, "solo-lead", solo).await;
+        force_status(&state, "solo-lead", "stopped", AUTO_DISMISS_SETTLE_SECS + 5).await;
+        let mut unambiguous = team("session-solo");
+        unambiguous.lead_cwd = solo.into();
+        unambiguous.members = vec![member_pane("alice@session-solo", None)];
+
+        assert_eq!(
+            auto_dismiss_dead_members(&state, &unambiguous, "solo-lead", &[]).await,
+            vec!["alice@session-solo".to_string()],
+            "an unambiguous stopped host still auto-dismisses its dead teammates",
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Un-hide safety: a dismissal row must NEVER hide a member whose pane is
+    /// LIVE this tick. Covers the restarted session whose re-formed team reuses
+    /// the same `name@team` ids: its running teammates stay visible even though
+    /// the previous stop's auto-dismissal rows are still there. The dead member
+    /// with the same stale row stays hidden.
+    #[test]
+    fn retain_undismissed_keeps_a_live_member_despite_a_stale_dismissal() {
+        let mut t = team("sq");
+        t.members = vec![
+            member_pane("alice@sq", Some("%7")), // respawned after a restart
+            member_pane("bob@sq", None),         // still dead
+        ];
+        let stale = vec!["alice@sq".to_string(), "bob@sq".to_string()];
+
+        retain_undismissed(&mut t, &stale);
+        let ids: Vec<&str> = t.members.iter().map(|m| m.agent_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["alice@sq"],
+            "a live pane beats a stale dismissal row; the dead member stays hidden",
+        );
     }
 
     /// prune-on-deregister: once a team crosses the absence threshold and its
