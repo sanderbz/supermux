@@ -60,6 +60,44 @@ function mergeRow(prev: ApiSession, delta: Partial<ApiSession>): ApiSession {
   return next
 }
 
+/** Names dropped by an `archived: true` delta, mapped to the epoch ms we saw it.
+ *
+ *  Archiving a session also stops it, and the stop path broadcasts its own
+ *  `{name, status:'stopped'}` `sessions` delta from a separate task, so that
+ *  partial row can land AFTER the archive removal and re-add a stub tile that
+ *  only a reload clears. A tombstone makes the removal sticky: while a name is
+ *  listed here, a delta that does not explicitly say `archived: false` is
+ *  ignored. */
+const archiveTombstones = new Map<string, number>()
+
+/** How long a tombstone suppresses a name. Long enough to outlive the trailing
+ *  stop/status deltas of an archive (they follow within seconds), short enough
+ *  that a session unarchived elsewhere is never suppressed for a whole session:
+ *  the unarchive broadcast carries `archived: false` and clears the tombstone at
+ *  once, but a client that was disconnected for that event only learns about the
+ *  row again from a full `GET /api/sessions` refetch, which replaces the cache
+ *  without passing through `applyDelta`. The TTL is what lets that restored row
+ *  start receiving deltas again. */
+const ARCHIVE_TOMBSTONE_TTL_MS = 5 * 60_000
+
+/** Forget the tombstones for every name in a full list response. `GET
+ *  /api/sessions` filters archived rows out, so anything it returns is live and
+ *  must be free to take deltas again instead of waiting out the TTL. */
+export function forgetTombstonesFor(rows: ApiSession[]): ApiSession[] {
+  for (const r of rows) archiveTombstones.delete(r.name)
+  return rows
+}
+
+function isTombstoned(name: string): boolean {
+  const at = archiveTombstones.get(name)
+  if (at === undefined) return false
+  if (Date.now() - at >= ARCHIVE_TOMBSTONE_TTL_MS) {
+    archiveTombstones.delete(name)
+    return false
+  }
+  return true
+}
+
 /** Apply a `sessions` SSE payload to the cached list. The payload is an array of
  *  delta rows keyed by `name`; unknown names are appended (a session created in
  *  another tab), known names are merged. A row carrying `missing: true` /
@@ -70,8 +108,13 @@ function mergeRow(prev: ApiSession, delta: Partial<ApiSession>): ApiSession {
  *  `allowAdd` gates the "append unknown name" branch: full `sessions` deltas
  *  may add (a session created in another tab); status-only deltas may NOT
  *  (otherwise a `stopped`-status event from a session we just optimistically
- *  removed via archive would re-add it — the archive bug). */
-function applyDelta(
+ *  removed via archive would re-add it — the archive bug).
+ *
+ *  `allowAdd` alone is not enough: the stop that accompanies an archive also
+ *  goes out as a `sessions` delta, which is allowed to add. `archiveTombstones`
+ *  closes that hole by making the removal stick until the session is explicitly
+ *  unarchived (or the tombstone ages out). */
+export function applyDelta(
   prev: ApiSession[] | undefined,
   delta: Partial<ApiSession>[],
   allowAdd: boolean,
@@ -87,6 +130,7 @@ function applyDelta(
     // DB flag — drop the row immediately so every tab's overview updates
     // without waiting for a refetch.
     if (row.archived === true) {
+      archiveTombstones.set(row.name, Date.now())
       if (idx !== undefined) {
         list.splice(idx, 1)
         removed = true
@@ -95,6 +139,13 @@ function applyDelta(
         indexByName.clear()
         list.forEach((s, i) => indexByName.set(s.name, i))
       }
+      continue
+    }
+    // The unarchive path broadcasts the FULL row with an explicit
+    // `archived: false`, which is the one delta allowed to bring a name back.
+    if (row.archived === false) {
+      archiveTombstones.delete(row.name)
+    } else if (isTombstoned(row.name)) {
       continue
     }
     if (idx === undefined) {
@@ -148,7 +199,7 @@ export function useSessions(): UseSessionsResult {
 
   const query = useQuery({
     queryKey: SESSIONS_KEY,
-    queryFn: sessionsApi.list,
+    queryFn: async () => forgetTombstonesFor(await sessionsApi.list()),
     staleTime: 30_000,
     enabled: !mock,
   })
