@@ -9,7 +9,8 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { applyDelta, forgetTombstonesFor } from '@/hooks/use-sessions'
+import { applyDelta } from '@/hooks/use-sessions'
+import { forgetTombstonesFor } from '@/lib/archive-tombstones'
 import type { ApiSession } from '@/lib/api'
 
 function row(name: string, extra: Partial<ApiSession> = {}): ApiSession {
@@ -47,6 +48,22 @@ describe('applyDelta', () => {
     expect(after.map((s) => s.name)).toEqual(['keeper'])
   })
 
+  it('does not merge into a row that came back while tombstoned', () => {
+    // A row that IS in the cache, archived, then targeted by a partial delta:
+    // it must be neither re-added nor merged, even if something else put it
+    // back in the list (a stale in-flight refetch, an optimistic write).
+    const archived = applyDelta([row('no-merge')], [{ name: 'no-merge', archived: true }], true)
+    expect(archived).toEqual([])
+    const resurrected = [row('no-merge')]
+    const after = applyDelta(
+      resurrected,
+      [{ name: 'no-merge', status: 'stopped', preview_lines: ['ghost'] }],
+      true,
+    )
+    expect(after[0].status).toBe('idle')
+    expect(after[0].preview_lines).toEqual(['hello'])
+  })
+
   it('re-adds the row when the unarchive broadcast arrives', () => {
     const archived = applyDelta([row('comes-back')], [{ name: 'comes-back', archived: true }], true)
     const back = applyDelta(archived, [{ ...row('comes-back'), archived: false }], true)
@@ -59,19 +76,11 @@ describe('applyDelta', () => {
 
   it('stops suppressing an archived name once the tombstone expires', () => {
     vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-08-12T10:00:00Z'))
     const archived = applyDelta([row('expires')], [{ name: 'expires', archived: true }], true)
     expect(archived).toEqual([])
-    vi.setSystemTime(new Date('2026-08-12T10:06:00Z'))
+    vi.advanceTimersByTime(6 * 60_000)
     const later = applyDelta(archived, [{ name: 'expires', status: 'stopped' }], true)
     expect(later.map((s) => s.name)).toEqual(['expires'])
-  })
-
-  it('lets a full list response lift the tombstone', () => {
-    applyDelta([row('relisted')], [{ name: 'relisted', archived: true }], true)
-    const listed = forgetTombstonesFor([row('relisted')])
-    const after = applyDelta(listed, [{ name: 'relisted', status: 'stopped' }], true)
-    expect(after[0].status).toBe('stopped')
   })
 
   it('still adds an unknown session from a partial delta', () => {
@@ -84,5 +93,24 @@ describe('applyDelta', () => {
   it('never adds an unknown session when adds are disallowed', () => {
     const list = applyDelta([row('a')], [{ name: 'status-only', status: 'stopped' }], false)
     expect(list.map((s) => s.name)).toEqual(['a'])
+  })
+})
+
+describe('forgetTombstonesFor', () => {
+  // The choke point: `sessionsApi.list` calls this on every full list response,
+  // whichever observer of the ['sessions'] key owns the fetch.
+  it('lets a listed session take deltas again', () => {
+    const listed = [row('relisted')]
+    applyDelta(listed, [{ name: 'relisted', archived: true }], true)
+    forgetTombstonesFor(listed)
+    const after = applyDelta(listed, [{ name: 'relisted', status: 'stopped' }], true)
+    expect(after[0].status).toBe('stopped')
+  })
+
+  it('leaves the tombstone of a name the server did not list', () => {
+    applyDelta([row('still-gone')], [{ name: 'still-gone', archived: true }], true)
+    forgetTombstonesFor([row('someone-else')])
+    const after = applyDelta([], [{ name: 'still-gone', status: 'stopped' }], true)
+    expect(after).toEqual([])
   })
 })
