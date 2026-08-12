@@ -19,6 +19,11 @@ import {
   type NewSession,
 } from '@/lib/api'
 import { useSse, type SseEventType } from '@/hooks/use-sse'
+import {
+  isArchiveTombstoned,
+  forgetTombstone,
+  tombstoneArchived,
+} from '@/lib/archive-tombstones'
 import { OVERVIEW_LAYOUT_KEY } from '@/hooks/use-overview-layout'
 import {
   parseLayout,
@@ -70,8 +75,13 @@ function mergeRow(prev: ApiSession, delta: Partial<ApiSession>): ApiSession {
  *  `allowAdd` gates the "append unknown name" branch: full `sessions` deltas
  *  may add (a session created in another tab); status-only deltas may NOT
  *  (otherwise a `stopped`-status event from a session we just optimistically
- *  removed via archive would re-add it — the archive bug). */
-function applyDelta(
+ *  removed via archive would re-add it — the archive bug).
+ *
+ *  `allowAdd` alone is not enough: the stop that accompanies an archive also
+ *  goes out as a `sessions` delta, which is allowed to add. The tombstones in
+ *  `lib/archive-tombstones.ts` close that hole by making the removal stick until
+ *  the session is explicitly unarchived (or the tombstone ages out). */
+export function applyDelta(
   prev: ApiSession[] | undefined,
   delta: Partial<ApiSession>[],
   allowAdd: boolean,
@@ -87,6 +97,7 @@ function applyDelta(
     // DB flag — drop the row immediately so every tab's overview updates
     // without waiting for a refetch.
     if (row.archived === true) {
+      tombstoneArchived(row.name)
       if (idx !== undefined) {
         list.splice(idx, 1)
         removed = true
@@ -95,6 +106,13 @@ function applyDelta(
         indexByName.clear()
         list.forEach((s, i) => indexByName.set(s.name, i))
       }
+      continue
+    }
+    // The unarchive path broadcasts the FULL row with an explicit
+    // `archived: false`, which is the one delta allowed to bring a name back.
+    if (row.archived === false) {
+      forgetTombstone(row.name)
+    } else if (isArchiveTombstoned(row.name)) {
       continue
     }
     if (idx === undefined) {

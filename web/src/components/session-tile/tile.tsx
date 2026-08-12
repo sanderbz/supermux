@@ -7,6 +7,7 @@ import { springs, eases } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { displayLabel, sessionsApi, sessionTitle, type ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
+import { forgetTombstone } from '@/lib/archive-tombstones'
 import { ARCHIVED_SESSIONS_KEY } from '@/hooks/use-archived-sessions'
 import { useToast } from '@/components/ui/use-toast'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -419,6 +420,9 @@ export function SessionTile({
   // also optimistically re-insert here so the local tab doesn't wait on the
   // round-trip — `applyDelta` merges the authoritative SSE row in by name.
   const undoArchive = React.useCallback(() => {
+    // Lift the archive tombstone first, otherwise the row we re-insert below is
+    // deaf to every delta until the tombstone expires.
+    forgetTombstone(session.name)
     const snapshot = qc.getQueryData<ApiSession[]>(SESSIONS_KEY)
     const has = snapshot?.some((s) => s.name === session.name)
     if (!has && snapshot) {

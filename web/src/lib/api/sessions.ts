@@ -12,6 +12,7 @@
 // NEVER embedded here.
 
 import { apiToken, apiUrl } from './client'
+import { forgetTombstonesFor } from '../archive-tombstones'
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -390,8 +391,14 @@ function asSessions(body: unknown): ApiSession[] {
 
 export const sessionsApi = {
   /** `GET /api/sessions` — the tile list incl. `preview_lines`. */
-  list: async (): Promise<ApiSession[]> =>
-    asSessions(await sessReq<unknown>('/api/sessions')),
+  list: async (): Promise<ApiSession[]> => {
+    const rows = asSessions(await sessReq<unknown>('/api/sessions'))
+    // This endpoint filters archived rows out, so every name it returns is
+    // live: lift its archive tombstone here (the ONE place every observer of
+    // the list goes through) rather than in one query registration.
+    forgetTombstonesFor(rows)
+    return rows
+  },
 
   /** `GET /api/sessions/archived` — the archived (soft-deleted) rows for the
    *  Archived sheet. Mirror of `list` but on `WHERE archived = 1`, ordered

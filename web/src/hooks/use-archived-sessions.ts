@@ -22,6 +22,7 @@ import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { sessionsApi, type ApiSession } from '@/lib/api'
+import { forgetTombstone } from '@/lib/archive-tombstones'
 
 export const ARCHIVED_SESSIONS_KEY = ['sessions', 'archived'] as const
 
@@ -88,6 +89,9 @@ export function useArchivedSessions(
     onSuccess: (_data, name) => {
       // The live overview re-adds the row via the unarchive SSE delta; here we
       // only need to remove it from the archived list so the sheet updates.
+      // The archive tombstone goes too, so the restored row is not deaf to
+      // deltas if the unarchive broadcast never reaches this tab.
+      forgetTombstone(name)
       dropFromArchivedCache(qc, name)
     },
     onSettled: (_d, _e, name) => mark(name, false),
