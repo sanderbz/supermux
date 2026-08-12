@@ -28,6 +28,7 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('web/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
+      - run: bun run test
       - run: bun run build
 
   server:
