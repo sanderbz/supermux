@@ -357,6 +357,7 @@ fn read_rollout(rollout: &Rollout) -> Vec<RecallEntry> {
                         Kind::Prompt
                     },
                     label: slash,
+                    ok: None,
                 });
                 pending = Some(entries.len() - 1);
             }

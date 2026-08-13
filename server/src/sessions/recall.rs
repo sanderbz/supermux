@@ -67,6 +67,13 @@ pub struct RecallQuery {
     /// full conversation flow.
     #[serde(default)]
     pub include_system_events: bool,
+    /// Chat view (fase A1): emit the full-fidelity chronological tail — user
+    /// prompts + assistant `text` blocks (FULL text, not the 600-char reply
+    /// preview) + `tool_use`/`tool_result` pairs — instead of the legacy
+    /// prompt+reply pairing. Additive: absent/false keeps the popover shape
+    /// byte-identical.
+    #[serde(default)]
+    pub chat: bool,
     #[serde(default)]
     pub before: Option<String>,
     #[serde(default = "default_limit")]
@@ -97,6 +104,10 @@ pub struct RecallEntry {
     /// schema migration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Chat view only: success flag of the paired `tool_result` (`Some(false)`
+    /// = `is_error`). `None` until the result lands / for non-tool entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
 }
 
 /// What flavour of "user" turn the transcript line represents. The JSONL
@@ -127,6 +138,11 @@ pub enum Kind {
     Tool,
     /// Image-only attachment (`[Image: WxH, displayed at …]`).
     Image,
+    /// Chat view only: an assistant `text` block, full text (wire-clamped).
+    Assistant,
+    /// Chat view only: an assistant `tool_use` block; `reply`/`ok` carry the
+    /// paired `tool_result` preview + success flag.
+    ToolUse,
 }
 
 impl Kind {
@@ -213,6 +229,7 @@ pub async fn handler(
                 &q.q,
                 q.include_sidechains,
                 q.include_system_events,
+                q.chat,
                 q.before.as_deref(),
                 limit,
             )
@@ -238,6 +255,7 @@ fn gather(
     search: &str,
     include_sidechains: bool,
     include_system_events: bool,
+    chat: bool,
     before: Option<&str>,
     limit: usize,
 ) -> RecallResponse {
@@ -249,6 +267,7 @@ fn gather(
         search,
         include_sidechains,
         include_system_events,
+        chat,
         before,
         limit,
     )
@@ -264,6 +283,7 @@ fn gather_in_proj(
     search: &str,
     include_sidechains: bool,
     include_system_events: bool,
+    chat: bool,
     before: Option<&str>,
     limit: usize,
 ) -> RecallResponse {
@@ -288,7 +308,11 @@ fn gather_in_proj(
     'files: for path in &files {
         // `read_user_turns` walks the file FORWARD and reverses its own output
         // so the file's own entries arrive newest-first.
-        let file_entries = read_user_turns(path, include_sidechains);
+        let file_entries = if chat {
+            read_chat_turns_cached(path)
+        } else {
+            read_user_turns(path, include_sidechains)
+        };
         for entry in file_entries {
             if !cursor_consumed {
                 if let Some((ref c_sid, ref c_uuid)) = cursor {
@@ -302,7 +326,7 @@ fn gather_in_proj(
             // for the full audit view. The cursor still consumes them above —
             // omitting from the response only changes what the popover renders,
             // not what counts toward pagination position.
-            if !include_system_events && !entry.kind.is_user_initiated() {
+            if !chat && !include_system_events && !entry.kind.is_user_initiated() {
                 continue;
             }
             if let Some(ref needle) = search_lc {
@@ -472,6 +496,7 @@ fn read_user_turns(path: &Path, include_sidechains: bool) -> Vec<RecallEntry> {
                     sidechain,
                     kind: classified.kind,
                     label: classified.label,
+                    ok: None,
                 });
                 // Non-prompt turns aren't a "user asking a question" — don't
                 // arm a reply pairing on them. (A `<task-notification>` is
@@ -514,6 +539,278 @@ fn read_user_turns(path: &Path, include_sidechains: bool) -> Vec<RecallEntry> {
 
     entries.reverse();
     entries
+}
+
+/// Chat-view reader (fase A1): stream one transcript forward and emit the
+/// full-fidelity chronological tail — user turns (prompt/command/teammate
+/// only), assistant `text` blocks as their OWN entries (full text), and
+/// assistant `tool_use` blocks paired with their `tool_result` (matched by
+/// `tool_use_id`, folded into `reply`/`ok` — a result is never its own
+/// entry). Sidechains are always hidden (subagent detail is a later fase);
+/// `thinking` and image blocks are skipped in A1. Newest-first on return,
+/// mirroring `read_user_turns`.
+fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let session_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let reader = BufReader::new(file);
+
+    let mut entries: Vec<RecallEntry> = Vec::new();
+    // tool_use id → index in `entries`, so the wrapped user-role tool_result
+    // can fold into its receipt.
+    let mut tool_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut latest_title: Option<String> = None;
+
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let is_user = line.contains("\"type\":\"user\"");
+        let is_assistant = line.contains("\"type\":\"assistant\"");
+        let is_title = line.contains("\"ai-title\"");
+        if !is_user && !is_assistant && !is_title {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if v.get("isSidechain")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let ts = parse_ts(v.get("timestamp").and_then(|t| t.as_str()));
+        let uuid = v
+            .get("uuid")
+            .and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        match ty {
+            "ai-title" => {
+                if let Some(t) = v.get("aiTitle").and_then(|t| t.as_str()) {
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        latest_title = Some(t.to_string());
+                    }
+                }
+            }
+            "user" => {
+                // A tool_result carrier folds into its pending receipt and is
+                // never its own entry.
+                if let Some(blocks) = v
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    let mut folded = false;
+                    for b in blocks {
+                        if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                            continue;
+                        }
+                        folded = true;
+                        let id = b.get("tool_use_id").and_then(|t| t.as_str()).unwrap_or("");
+                        if let Some(&idx) = tool_idx.get(id) {
+                            let is_err =
+                                b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                            entries[idx].ok = Some(!is_err);
+                            let preview =
+                                clamp(&sanitise_text(&tool_result_text(b)), REPLY_MAX_CHARS);
+                            if !preview.is_empty() {
+                                entries[idx].reply = Some(preview);
+                            }
+                        }
+                    }
+                    if folded {
+                        continue;
+                    }
+                }
+                if uuid.is_empty() {
+                    continue;
+                }
+                let Some(c) = classify_user(&v) else { continue };
+                // Chat tail shows only user-initiated turns — system noise
+                // (reminders, notifications, caveats) stays out of the calm view.
+                if !matches!(c.kind, Kind::Prompt | Kind::Command | Kind::Teammate) {
+                    continue;
+                }
+                entries.push(RecallEntry {
+                    uuid,
+                    ts,
+                    session_id: session_id.clone(),
+                    session_title: None,
+                    text: c.text,
+                    reply: None,
+                    sidechain: false,
+                    kind: c.kind,
+                    label: c.label,
+                    ok: None,
+                });
+            }
+            "assistant" => {
+                if uuid.is_empty() {
+                    continue;
+                }
+                let Some(content) = v.get("message").and_then(|m| m.get("content")) else {
+                    continue;
+                };
+                let blocks: Vec<serde_json::Value> = match content {
+                    serde_json::Value::String(s) => {
+                        vec![serde_json::json!({"type": "text", "text": s})]
+                    }
+                    serde_json::Value::Array(a) => a.clone(),
+                    _ => continue,
+                };
+                for (i, b) in blocks.iter().enumerate() {
+                    // A0 fact: one block per line is TYPICAL, not guaranteed
+                    // (1 multi-block in 21,431) — suffix uuids keep cursor
+                    // identity unique either way.
+                    let buuid = if i == 0 {
+                        uuid.clone()
+                    } else {
+                        format!("{uuid}#{i}")
+                    };
+                    match b.get("type").and_then(|t| t.as_str()) {
+                        Some("text") => {
+                            let text = sanitise_text(
+                                b.get("text").and_then(|t| t.as_str()).unwrap_or("").trim(),
+                            );
+                            if text.is_empty() {
+                                continue;
+                            }
+                            entries.push(RecallEntry {
+                                uuid: buuid,
+                                ts,
+                                session_id: session_id.clone(),
+                                session_title: None,
+                                text,
+                                reply: None,
+                                sidechain: false,
+                                kind: Kind::Assistant,
+                                label: None,
+                                ok: None,
+                            });
+                        }
+                        Some("tool_use") => {
+                            let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                            if let Some(id) = b.get("id").and_then(|x| x.as_str()) {
+                                tool_idx.insert(id.to_string(), entries.len());
+                            }
+                            entries.push(RecallEntry {
+                                uuid: buuid,
+                                ts,
+                                session_id: session_id.clone(),
+                                session_title: None,
+                                text: tool_line(name, b.get("input")),
+                                reply: None,
+                                sidechain: false,
+                                kind: Kind::ToolUse,
+                                label: Some(name.to_string()),
+                                ok: None,
+                            });
+                        }
+                        // thinking / image / unknown block types: skipped in A1.
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(title) = latest_title {
+        for e in &mut entries {
+            e.session_title = Some(title.clone());
+        }
+    }
+    entries.reverse();
+    entries
+}
+
+/// One-line receipt label for a `tool_use` block: tool name + its most salient
+/// input field, clipped. Mirrors `activity::activity_label`'s field priorities
+/// WITHOUT the emoji taxonomy (chat receipts are icon-free — master plan §4.2 P3).
+fn tool_line(name: &str, input: Option<&serde_json::Value>) -> String {
+    let detail = input.and_then(|i| {
+        for key in [
+            "file_path",
+            "command",
+            "pattern",
+            "url",
+            "description",
+            "prompt",
+        ] {
+            if let Some(s) = i.get(key).and_then(|v| v.as_str()) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+        None
+    });
+    match detail {
+        Some(d) => format!("{name} {}", clamp(&sanitise_text(&d), 120)),
+        None => name.to_string(),
+    }
+}
+
+/// Printable text of a `tool_result` block: string content verbatim, array
+/// content = concatenated `text` sub-blocks. Anything else → empty.
+fn tool_result_text(b: &serde_json::Value) -> String {
+    match b.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Single-slot parse cache for the chat view (the A1 poll-cost guard): the A1
+/// client re-pulls the FOCUSED session's tail on every SSE tick, and
+/// `read_chat_turns` otherwise re-streams the entire JSONL each time (a0
+/// measured 21k+ line transcripts with single lines up to ~950 KB). Keyed on
+/// (path, mtime, len): an unchanged file costs one stat + a clone. One slot is
+/// enough — only the focused session polls. The A2 chat WS replaces this whole
+/// read path.
+static CHAT_PARSE_CACHE: std::sync::Mutex<
+    Option<(std::path::PathBuf, std::time::SystemTime, u64, Vec<RecallEntry>)>,
+> = std::sync::Mutex::new(None);
+
+fn read_chat_turns_cached(path: &Path) -> Vec<RecallEntry> {
+    let key = fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+    if let Some((mtime, len)) = key {
+        if let Ok(guard) = CHAT_PARSE_CACHE.lock() {
+            if let Some((p, t, l, cached)) = guard.as_ref() {
+                if p == path && *t == mtime && *l == len {
+                    return cached.clone();
+                }
+            }
+        }
+    }
+    let parsed = read_chat_turns(path);
+    if let Some((mtime, len)) = key {
+        if let Ok(mut guard) = CHAT_PARSE_CACHE.lock() {
+            *guard = Some((path.to_path_buf(), mtime, len, parsed.clone()));
+        }
+    }
+    parsed
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
@@ -882,6 +1179,15 @@ mod tests {
         path
     }
 
+    fn append_jsonl(dir: &Path, name: &str, lines: &[&str]) -> PathBuf {
+        let path = dir.join(format!("{name}.jsonl"));
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+        path
+    }
+
     fn user_line(uuid: &str, ts: &str, text: &str, sidechain: bool) -> String {
         serde_json::json!({
             "type": "user",
@@ -1056,7 +1362,7 @@ mod tests {
         assert_eq!(got[0].text.chars().count(), PROMPT_MAX_CHARS + 200);
 
         // Wire: clamp applied.
-        let resp = gather_in_proj(&td, "c2", Scope::Session, "", false, true, None, 10);
+        let resp = gather_in_proj(&td, "c2", Scope::Session, "", false, true, false, None, 10);
         assert_eq!(resp.entries[0].text.chars().count(), PROMPT_MAX_CHARS);
     }
 
@@ -1075,7 +1381,7 @@ mod tests {
         );
         // Sanity: file actually wrote our 8K+ prompt.
         let _ = path;
-        let resp = gather_in_proj(&td, "s", Scope::Session, "needle-here", false, true, None, 10);
+        let resp = gather_in_proj(&td, "s", Scope::Session, "needle-here", false, true, false, None, 10);
         assert_eq!(resp.entries.len(), 1, "needle past 8K must still match");
     }
 
@@ -1139,7 +1445,7 @@ mod tests {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         write_jsonl(&proj, cc, &refs);
 
-        let page1 = gather_in_proj(&proj, cc, Scope::Session, "", false, true, None, 2);
+        let page1 = gather_in_proj(&proj, cc, Scope::Session, "", false, true, false, None, 2);
         assert_eq!(page1.entries.len(), 2);
         assert!(page1.has_more);
         // Newest-first → "prompt 4", "prompt 3".
@@ -1147,7 +1453,7 @@ mod tests {
         assert_eq!(page1.entries[1].text, "prompt 3");
         let cursor = page1.next_before.expect("cursor on hasMore");
 
-        let page2 = gather_in_proj(&proj, cc, Scope::Session, "", false, true, Some(&cursor), 2);
+        let page2 = gather_in_proj(&proj, cc, Scope::Session, "", false, true, false, Some(&cursor), 2);
         assert_eq!(page2.entries.len(), 2);
         assert_eq!(page2.entries[0].text, "prompt 2");
         assert_eq!(page2.entries[1].text, "prompt 1");
@@ -1159,6 +1465,7 @@ mod tests {
             "",
             false,
             true,
+            false,
             page2.next_before.as_deref(),
             2,
         );
@@ -1181,7 +1488,7 @@ mod tests {
                 &assistant_line("a2", "2026-01-01T10:01:05Z", "OAuth tested.", false),
             ],
         );
-        let r = gather_in_proj(&proj, cc, Scope::Session, "oauth", false, true, None, 10);
+        let r = gather_in_proj(&proj, cc, Scope::Session, "oauth", false, true, false, None, 10);
         // Only "Fix OAuth flow" matches; the reply mentioning OAuth must NOT
         // surface "ship it" as a hit.
         assert_eq!(r.entries.len(), 1);
@@ -1211,7 +1518,7 @@ mod tests {
             ],
         );
 
-        let r = gather_in_proj(&proj, "newer", Scope::Project, "", false, true, None, 10);
+        let r = gather_in_proj(&proj, "newer", Scope::Project, "", false, true, false, None, 10);
         assert_eq!(r.entries.len(), 2);
         // Newer file first.
         assert_eq!(r.entries[0].text, "newer prompt");
@@ -1399,13 +1706,13 @@ please prepare the next stacked branch
 
         // Default: only the typed prompt.
         let hidden =
-            gather_in_proj(&td, cc, Scope::Session, "", false, false, None, 10);
+            gather_in_proj(&td, cc, Scope::Session, "", false, false, false, None, 10);
         assert_eq!(hidden.entries.len(), 1);
         assert_eq!(hidden.entries[0].text, "real prompt");
 
         // Toggle on: both visible, notification rendered as its summary.
         let shown =
-            gather_in_proj(&td, cc, Scope::Session, "", false, true, None, 10);
+            gather_in_proj(&td, cc, Scope::Session, "", false, true, false, None, 10);
         assert_eq!(shown.entries.len(), 2);
         assert_eq!(shown.entries[0].kind, Kind::Notification);
         assert_eq!(shown.entries[0].text, "Agent X completed");
@@ -1415,7 +1722,7 @@ please prepare the next stacked branch
     fn empty_when_no_cc_id_or_no_file() {
         let proj = temp_dir();
         // Empty cc_id + Session scope → empty.
-        let r = gather_in_proj(&proj, "", Scope::Session, "", false, true, None, 10);
+        let r = gather_in_proj(&proj, "", Scope::Session, "", false, true, false, None, 10);
         assert!(r.entries.is_empty());
         assert!(!r.has_more);
 
@@ -1427,13 +1734,188 @@ please prepare the next stacked branch
             "",
             false,
             true,
+            false,
             None,
             10,
         );
         assert!(r.entries.is_empty());
 
         // Empty project dir + Project scope → empty.
-        let r = gather_in_proj(&proj, "", Scope::Project, "", false, true, None, 10);
+        let r = gather_in_proj(&proj, "", Scope::Project, "", false, true, false, None, 10);
         assert!(r.entries.is_empty());
+    }
+
+    // ── chat view (fase A1) ─────────────────────────────────────────────────
+
+    fn assistant_tool_use_line(
+        uuid: &str,
+        ts: &str,
+        id: &str,
+        name: &str,
+        input: serde_json::Value,
+    ) -> String {
+        serde_json::json!({
+            "type": "assistant", "uuid": uuid, "timestamp": ts, "isSidechain": false,
+            "message": { "role": "assistant", "content": [
+                {"type": "tool_use", "id": id, "name": name, "input": input}
+            ]},
+        })
+        .to_string()
+    }
+
+    fn user_tool_result_line(
+        uuid: &str,
+        ts: &str,
+        id: &str,
+        text: &str,
+        is_error: bool,
+    ) -> String {
+        serde_json::json!({
+            "type": "user", "uuid": uuid, "timestamp": ts, "isSidechain": false,
+            "message": { "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": id, "content": text, "is_error": is_error}
+            ]},
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn chat_view_emits_assistant_and_tool_entries_newest_first() {
+        let proj = temp_dir();
+        let cc = "chat1";
+        write_jsonl(
+            &proj,
+            cc,
+            &[
+                &user_line("u1", "2026-01-01T10:00:00Z", "do the thing", false),
+                &assistant_tool_use_line("a1", "2026-01-01T10:00:02Z", "tu_1", "Read",
+                    serde_json::json!({"file_path": "src/tile.tsx"})),
+                &user_tool_result_line("r1", "2026-01-01T10:00:03Z", "tu_1", "file contents here", false),
+                &assistant_line("a2", "2026-01-01T10:00:05Z", "done, looks good.", false),
+            ],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        // Newest-first: text, tool_use, prompt. The tool_result is FOLDED, not its own entry.
+        assert_eq!(r.entries.len(), 3);
+        assert_eq!(r.entries[0].kind, Kind::Assistant);
+        assert_eq!(r.entries[0].text, "done, looks good.");
+        assert_eq!(r.entries[1].kind, Kind::ToolUse);
+        assert_eq!(r.entries[1].text, "Read src/tile.tsx");
+        assert_eq!(r.entries[1].label.as_deref(), Some("Read"));
+        assert_eq!(r.entries[1].reply.as_deref(), Some("file contents here"));
+        assert_eq!(r.entries[1].ok, Some(true));
+        assert_eq!(r.entries[2].kind, Kind::Prompt);
+        assert_eq!(r.entries[2].text, "do the thing");
+    }
+
+    #[test]
+    fn chat_view_assistant_text_is_full_not_reply_preview() {
+        // The legacy view clamps replies at REPLY_MAX_CHARS (600); the chat view
+        // must carry the FULL text (up to the 8K wire clamp).
+        let proj = temp_dir();
+        let cc = "chat2";
+        let long = "x".repeat(REPLY_MAX_CHARS + 500); // 1100 chars — over 600, under 8000
+        write_jsonl(
+            &proj,
+            cc,
+            &[
+                &user_line("u1", "2026-01-01T10:00:00Z", "q", false),
+                &assistant_line("a1", "2026-01-01T10:00:05Z", &long, false),
+            ],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        let text_entry = r.entries.iter().find(|e| e.kind == Kind::Assistant).unwrap();
+        assert_eq!(text_entry.text.chars().count(), REPLY_MAX_CHARS + 500);
+    }
+
+    #[test]
+    fn chat_view_tool_result_error_sets_ok_false() {
+        let proj = temp_dir();
+        let cc = "chat3";
+        write_jsonl(
+            &proj,
+            cc,
+            &[
+                &assistant_tool_use_line("a1", "2026-01-01T10:00:02Z", "tu_9", "Bash",
+                    serde_json::json!({"command": "cargo test"})),
+                &user_tool_result_line("r1", "2026-01-01T10:00:04Z", "tu_9", "error: test failed", true),
+            ],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        assert_eq!(r.entries.len(), 1);
+        assert_eq!(r.entries[0].ok, Some(false));
+        assert_eq!(r.entries[0].reply.as_deref(), Some("error: test failed"));
+    }
+
+    #[test]
+    fn chat_view_hides_sidechains_and_system_noise() {
+        let proj = temp_dir();
+        let cc = "chat4";
+        write_jsonl(
+            &proj,
+            cc,
+            &[
+                &user_line("u1", "2026-01-01T10:00:00Z", "main q", false),
+                &user_line("u2", "2026-01-01T10:00:01Z", "sub q", true),
+                &assistant_line("a1", "2026-01-01T10:00:02Z", "sub r", true),
+                &user_line(
+                    "u3",
+                    "2026-01-01T10:00:03Z",
+                    "<task-notification><summary>Agent X done</summary></task-notification>",
+                    false,
+                ),
+                &assistant_line("a2", "2026-01-01T10:00:05Z", "main r", false),
+            ],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        // Only: main r (assistant), main q (prompt). Sidechains + notification hidden.
+        assert_eq!(r.entries.len(), 2);
+        assert_eq!(r.entries[0].text, "main r");
+        assert_eq!(r.entries[1].text, "main q");
+    }
+
+    #[test]
+    fn chat_view_paginates_with_cursor_across_mixed_kinds() {
+        let proj = temp_dir();
+        let cc = "chat5";
+        write_jsonl(
+            &proj,
+            cc,
+            &[
+                &user_line("u1", "2026-01-01T10:00:00Z", "q1", false),
+                &assistant_line("a1", "2026-01-01T10:00:02Z", "r1", false),
+                &user_line("u2", "2026-01-01T10:01:00Z", "q2", false),
+                &assistant_line("a2", "2026-01-01T10:01:02Z", "r2", false),
+            ],
+        );
+        let p1 = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 2);
+        assert_eq!(p1.entries.len(), 2);
+        assert!(p1.has_more);
+        assert_eq!(p1.entries[0].text, "r2");
+        assert_eq!(p1.entries[1].text, "q2");
+        let cur = p1.next_before.expect("cursor");
+        let p2 = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, Some(&cur), 2);
+        assert_eq!(p2.entries[0].text, "r1");
+        assert_eq!(p2.entries[1].text, "q1");
+        assert!(!p2.has_more);
+    }
+
+    #[test]
+    fn chat_view_parse_cache_serves_unchanged_files_and_invalidates_on_append() {
+        // The A1 client re-pulls the focused tail on every SSE tick; an
+        // unchanged transcript must cost a stat, and an append must invalidate.
+        let proj = temp_dir();
+        let cc = "chat6";
+        write_jsonl(&proj, cc, &[&user_line("u1", "2026-01-01T10:00:00Z", "q1", false)]);
+        let r1 = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        assert_eq!(r1.entries.len(), 1);
+        // Second read of the unchanged file: identical tail (served from cache).
+        let r2 = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        assert_eq!(r2.entries.len(), 1);
+        // Append (mtime/len change) → the new entry appears.
+        append_jsonl(&proj, cc, &[&assistant_line("a1", "2026-01-01T10:00:05Z", "r1", false)]);
+        let r3 = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        assert_eq!(r3.entries.len(), 2);
+        assert_eq!(r3.entries[0].text, "r1");
     }
 }
