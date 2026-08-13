@@ -168,17 +168,42 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
                 None => false,
             }
         }
-        // A tool FAILED → transient `✗ {tool} failed`. Claude has no dedicated
-        // PostToolUseFailure event, so we ALSO treat a `post_tool` whose payload
-        // carries an error as a failure; a clean PostToolUse is a no-op (it falls
-        // through to the turn state machine for status, untouched here).
+        // A tool FAILED → transient `✗ {tool} failed`. Claude DOES have a
+        // dedicated `PostToolUseFailure` event (live-verified on 2.1.227 +
+        // 2.1.231; its payload adds `tool_use_id`, a top-level `error` string,
+        // `is_interrupt` and `duration_ms` — all of which the lenient parse
+        // either uses or ignores), and supermux installs it. We ALSO keep
+        // treating a `post_tool` whose payload carries an error as a failure:
+        // it is the fallback for sessions whose settings.json predates the new
+        // entry. Either way the tool call is over, so any pending permission
+        // dialog for it is resolved.
         "post_tool_failure" | "PostToolUseFailure" => {
-            state.set_activity(session, activity::failed_label(payload), "failed".into())
+            let cleared = state.clear_permission_request(session);
+            let set = state.set_activity(session, activity::failed_label(payload), "failed".into());
+            cleared || set
         }
-        "post_tool" | "post_tool_use" | "PostToolUse"
-            if payload.error_type.is_some() || payload.error.is_some() =>
-        {
-            state.set_activity(session, activity::failed_label(payload), "failed".into())
+        // A clean PostToolUse is a no-op for the activity label (it falls through
+        // to the turn state machine for status, untouched here) — but it still
+        // resolves a pending permission dialog.
+        "post_tool" | "post_tool_use" | "PostToolUse" => {
+            let cleared = state.clear_permission_request(session);
+            let failed = if payload.error_type.is_some() || payload.error.is_some() {
+                state.set_activity(session, activity::failed_label(payload), "failed".into())
+            } else {
+                false
+            };
+            cleared || failed
+        }
+        // Claude is DISPLAYING a permission dialog for this tool call and is
+        // blocked on a human. Fires before any decision; no hook ever reports the
+        // outcome, so this state is cleared by whatever happens next (see the
+        // clears in the arms around here). A payload with no tool name has
+        // nothing to show → no-op.
+        "permission_request" | "PermissionRequest" => {
+            match activity::permission_ask(payload) {
+                Some(ask) => state.set_permission_request(session, ask),
+                None => false,
+            }
         }
         // A Task sub-agent STARTED → bump the live outstanding count (the
         // display-only parallelism signal). Never touches the turn boundary.
@@ -190,7 +215,8 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "stop" | "Stop" => {
             let act = state.clear_activity(session);
             let sub = state.reset_subagents(session);
-            act || sub
+            let perm = state.clear_permission_request(session);
+            act || sub || perm
         }
         // A Task sub-agent finished. It shares the parent session token and the
         // MAIN agent is still working, so do NOT wipe the main activity label or
@@ -203,7 +229,8 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => {
             let err = state.clear_error(session);
             let sub = state.reset_subagents(session);
-            err || sub
+            let perm = state.clear_permission_request(session);
+            err || sub || perm
         }
         // Session lifecycle ───────────────────────────────────────────────────
         // Start: clear a stale error AND any pending forced-stopped override so
@@ -216,7 +243,9 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
             // effect; wake_detector (in the handler) re-ticks the status.
             state.reset_turn_state(session);
             state.clear_forced_status(session);
-            state.clear_error(session)
+            let err = state.clear_error(session);
+            let perm = state.clear_permission_request(session);
+            err || perm
         }
         // End: clear activity AND force Stopped now (the capture classifier can't
         // infer a clean exit). The forced status is applied by the detector loop;
@@ -225,12 +254,13 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "session_end" | "SessionEnd" => {
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
+            let perm_changed = state.clear_permission_request(session);
             // The turn is definitively over when the session ends — drop it so a
             // later restart can't inherit it (belt-and-suspenders with the
             // SessionStart reset above).
             state.reset_turn_state(session);
             force_stopped(state, session);
-            act_changed || sub_changed
+            act_changed || sub_changed || perm_changed
         }
         // A turn failed with an agent error → record `{type, message}` for the
         // error badge (also clear the now-irrelevant activity).
@@ -294,6 +324,9 @@ fn force_stopped(state: &AppState, session: &str) {
 fn broadcast_activity_delta(state: &AppState, session: &str) {
     let act = state.session_activity(session).unwrap_or_default();
     let error = act.error.as_ref().map(|(t, m)| json!({ "type": t, "message": m }));
+    let permission = act.permission.as_ref().map(|a| {
+        json!({ "tool": a.tool, "summary": a.summary, "kind": a.kind, "mode": a.mode })
+    });
     let _ = state.sse_tx.send(SseEvent {
         event: "sessions".to_string(),
         payload: json!({ "delta": [{
@@ -302,6 +335,9 @@ fn broadcast_activity_delta(state: &AppState, session: &str) {
             "activity": act.activity,
             "activity_kind": act.activity_kind,
             "error": error,
+            // The live permission dialog (`null` once it resolved — the client
+            // must drop the card, so this is always present).
+            "permission_request": permission,
             // Live outstanding-subagent count (display-only parallelism signal).
             // Always present so a drop back to 0 clears the client's clause.
             "subagents": act.subagents,
@@ -599,6 +635,133 @@ mod tests {
         apply_payload(&state, s, "pre_tool", &p(r#"{"tool_name":"Read","tool_input":{"file_path":"a.rs"}}"#));
         let ev = rx.try_recv().expect("activity change broadcasts");
         assert_eq!(ev.event, "sessions");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The two VERBATIM live captures (Claude Code 2.1.227, byte-identical on
+    /// 2.1.231) the new events actually deliver.
+    const LIVE_PERMISSION_REQUEST: &str = r#"{"session_id":"a2a3a5c5","permission_mode":"default","hook_event_name":"PermissionRequest","tool_name":"Read","tool_input":{"file_path":"/nonexistent-a0-probe.txt"},"permission_suggestions":[]}"#;
+    const LIVE_POST_TOOL_FAILURE: &str = r#"{"session_id":"a2a3a5c5","permission_mode":"default","hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_input":{"file_path":"/nonexistent-a0-probe.txt"},"tool_use_id":"toolu_01XvHoKvEax8CniDEibaznWN","error":"File does not exist.","is_interrupt":false,"duration_ms":34}"#;
+
+    /// Drain the channel and return the LAST `sessions` delta object for `s`.
+    fn last_delta(rx: &mut tokio::sync::broadcast::Receiver<SseEvent>, s: &str) -> Option<Value> {
+        let mut last = None;
+        while let Ok(ev) = rx.try_recv() {
+            if ev.event != "sessions" {
+                continue;
+            }
+            if let Some(d) = ev.payload.get("delta").and_then(|d| d.as_array()).and_then(|a| a.first())
+            {
+                if d.get("name").and_then(|n| n.as_str()) == Some(s) {
+                    last = Some(d.clone());
+                }
+            }
+        }
+        last
+    }
+
+    #[tokio::test]
+    async fn permission_request_sets_live_state_and_rides_the_sessions_delta() {
+        let (state, dir) = test_state().await;
+        let s = "worker-perm";
+        let mut rx = state.sse_tx.subscribe();
+
+        apply_payload(&state, s, "permission_request", &p(LIVE_PERMISSION_REQUEST));
+
+        let ask = state
+            .session_activity(s)
+            .and_then(|a| a.permission)
+            .expect("the live permission-request state is set");
+        assert_eq!(ask.tool, "Read");
+        assert_eq!(ask.summary, "📖 nonexistent-a0-probe.txt");
+        assert_eq!(ask.kind, "read");
+        assert_eq!(ask.mode.as_deref(), Some("default"));
+
+        // It rides the SAME change-only `sessions` delta the activity line does.
+        let d = last_delta(&mut rx, s).expect("permission_request broadcasts a delta");
+        assert_eq!(d["permission_request"]["tool"], json!("Read"));
+        assert_eq!(d["permission_request"]["summary"], json!("📖 nonexistent-a0-probe.txt"));
+        assert_eq!(d["permission_request"]["kind"], json!("read"));
+        assert_eq!(d["permission_request"]["mode"], json!("default"));
+
+        // Re-firing the identical dialog is not a change → no second broadcast.
+        apply_payload(&state, s, "permission_request", &p(LIVE_PERMISSION_REQUEST));
+        assert!(rx.try_recv().is_err(), "an unchanged ask must not re-broadcast");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn permission_request_is_cleared_by_post_tool_stop_and_next_prompt() {
+        // The dialog's OUTCOME is never reported by a hook, so the ask is cleared
+        // by the next event that can only happen after it resolved: the tool ran
+        // (post_tool / post_tool_failure), the turn ended (Stop/SessionEnd), or
+        // the user moved on (UserPromptSubmit / SessionStart).
+        for (event, payload) in [
+            ("post_tool", r#"{"tool_name":"Read"}"#),
+            ("post_tool_failure", LIVE_POST_TOOL_FAILURE),
+            ("stop", "{}"),
+            ("session_end", "{}"),
+            ("user_prompt", "{}"),
+            ("session_start", "{}"),
+        ] {
+            let (state, dir) = test_state().await;
+            let s = "worker-perm";
+            apply_payload(&state, s, "permission_request", &p(LIVE_PERMISSION_REQUEST));
+            assert!(
+                state.session_activity(s).and_then(|a| a.permission).is_some(),
+                "{event}: precondition — an ask is live"
+            );
+
+            let mut rx = state.sse_tx.subscribe();
+            apply_payload(&state, s, event, &p(payload));
+            assert!(
+                state.session_activity(s).and_then(|a| a.permission).is_none(),
+                "{event} must clear the live permission request"
+            );
+            // The clear is a change → the client is told (explicit null).
+            let d = last_delta(&mut rx, s).unwrap_or_else(|| panic!("{event}: clear broadcasts"));
+            assert_eq!(d["permission_request"], Value::Null, "{event}: cleared as null");
+
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_request_survives_a_pre_tool_and_a_subagent_stop() {
+        // PreToolUse fires BEFORE the permission check, and a subagent finishing
+        // says nothing about the main agent's dialog — neither may clear the ask.
+        let (state, dir) = test_state().await;
+        let s = "worker-perm";
+        apply_payload(&state, s, "permission_request", &p(LIVE_PERMISSION_REQUEST));
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        assert!(state.session_activity(s).and_then(|a| a.permission).is_some());
+        apply_payload(&state, s, "pre_tool", &p(r#"{"tool_name":"Read","tool_input":{"file_path":"a.rs"}}"#));
+        assert!(
+            state.session_activity(s).and_then(|a| a.permission).is_some(),
+            "PreToolUse precedes the dialog; it must not clear the ask"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn dedicated_post_tool_failure_event_sets_the_failed_label() {
+        // The real event (not the `error`-carrying-PostToolUse heuristic), with
+        // the verbatim live payload: `tool_use_id`/`is_interrupt`/`duration_ms`
+        // are extras the lenient parse ignores; the label comes off `tool_name`.
+        let (state, dir) = test_state().await;
+        let s = "worker-fail";
+
+        apply_payload(&state, s, "post_tool_failure", &p(LIVE_POST_TOOL_FAILURE));
+        let act = state.session_activity(s).unwrap();
+        assert_eq!(act.activity.as_deref(), Some("✗ Read failed"));
+        assert_eq!(act.activity_kind.as_deref(), Some("failed"));
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);

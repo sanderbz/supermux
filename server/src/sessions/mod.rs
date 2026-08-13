@@ -195,6 +195,14 @@ pub struct SessionView {
     /// when 0 (the common case) so a resting session's wire shape is unchanged.
     #[serde(skip_serializing_if = "is_zero", default)]
     pub subagents: u32,
+    /// The LIVE permission dialog, from the `PermissionRequest` hook: Claude is
+    /// displaying a permission prompt for this tool call and is blocked on a
+    /// human. In-memory only; cleared as soon as anything proves the dialog
+    /// resolved (`PostToolUse*`/`Stop`/`SessionEnd`/`UserPromptSubmit`/
+    /// `SessionStart`) — no hook reports the user's choice. Omitted when there is
+    /// no pending dialog, so a resting session's wire shape is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_request: Option<PermissionRequestInfo>,
     /// The Claude Code permission MODE parsed from the persistent status bar in
     /// `last_capture`: `normal` / `accept_edits` / `plan` / `bypass`.
     /// `None` until the first capture (the menu then defaults to `normal`). Drives
@@ -228,6 +236,24 @@ pub struct ErrorInfo {
     pub error_type: String,
     /// The human-readable error message (may be empty).
     pub message: String,
+}
+
+/// The `SessionView.permission_request` shape — the wire form of
+/// [`activity::PermissionAsk`]. Display-only and size-capped upstream; in-memory
+/// only, never persisted.
+#[derive(Debug, Clone, Serialize)]
+pub struct PermissionRequestInfo {
+    /// The tool being asked about (`Bash`, `Edit`, `mcp__a__b`, …).
+    pub tool: String,
+    /// The short, secret-conscious summary (same derivation as `activity`).
+    pub summary: String,
+    /// The activity class of `summary` (`bash`/`edit`/`read`/…).
+    pub kind: String,
+    /// The permission mode the dialog was raised under (`default`/`acceptEdits`/
+    /// `plan`/`bypassPermissions`), when the payload carried one. Hooks are the
+    /// only live source of this — the statusline JSON does not carry it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) -> SessionView {
@@ -268,6 +294,14 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         activity: act.as_ref().and_then(|a| a.activity.clone()),
         activity_kind: act.as_ref().and_then(|a| a.activity_kind.clone()),
         subagents: act.as_ref().map(|a| a.subagents).unwrap_or(0),
+        permission_request: act.as_ref().and_then(|a| {
+            a.permission.as_ref().map(|ask| PermissionRequestInfo {
+                tool: ask.tool.clone(),
+                summary: ask.summary.clone(),
+                kind: ask.kind.clone(),
+                mode: ask.mode.clone(),
+            })
+        }),
         error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
             error_type,
             message,

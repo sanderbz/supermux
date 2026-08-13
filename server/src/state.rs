@@ -14,6 +14,7 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
 
 use crate::config::Config;
+use crate::sessions::activity::PermissionAsk;
 use crate::sessions::host_pool::HostPool;
 use crate::sessions::pty::PtyStream;
 use crate::sessions::runtime::{self, SessionRuntime, TmuxRuntime};
@@ -42,6 +43,8 @@ pub type StatusUpdate = (String, u64);
 ///   `PostToolUseFailure` sets a transient `✗ {tool} failed` (kind `failed`).
 /// * `error` — the latest `StopFailure` `(type, message)`; cleared on the next
 ///   `UserPromptSubmit`/`SessionStart`.
+/// * `permission` — the live `PermissionRequest` ask (the dialog is UP); cleared
+///   the moment anything proves it resolved.
 #[derive(Debug, Clone, Default)]
 pub struct SessionActivity {
     /// The display label, e.g. `⚡ npm test` / `✎ tile.tsx`. `None` = no activity.
@@ -59,6 +62,14 @@ pub struct SessionActivity {
     /// fix. Best-effort (subagents share the parent token, no per-subagent id):
     /// saturating, reset on a new prompt, force-0 on the main `Stop`.
     pub subagents: u32,
+    /// The LIVE permission request: Claude is displaying a permission dialog for
+    /// this tool call and is blocked on a human. Set by the `PermissionRequest`
+    /// hook (which fires when the dialog DISPLAYS, before any decision) and
+    /// cleared by the next event that can only occur after it resolved
+    /// (`PostToolUse`/`PostToolUseFailure`/`Stop`/`SessionEnd`/`UserPromptSubmit`/
+    /// `SessionStart`) — no hook ever reports the user's choice. In-memory only,
+    /// like everything else here.
+    pub permission: Option<PermissionAsk>,
 }
 
 impl SessionActivity {
@@ -70,6 +81,7 @@ impl SessionActivity {
             && self.activity_kind.is_none()
             && self.error.is_none()
             && self.subagents == 0
+            && self.permission.is_none()
     }
 }
 
@@ -773,7 +785,8 @@ impl AppState {
         let changed = entry.activity != before.activity
             || entry.activity_kind != before.activity_kind
             || entry.error != before.error
-            || entry.subagents != before.subagents;
+            || entry.subagents != before.subagents
+            || entry.permission != before.permission;
         let empty = entry.is_empty();
         drop(entry);
         if empty {
@@ -840,6 +853,25 @@ impl AppState {
     pub fn reset_subagents(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.subagents = 0;
+        })
+    }
+
+    /// Set `name`'s live permission request (from a `PermissionRequest` payload:
+    /// the dialog is UP and Claude is blocked on a human). Returns whether it
+    /// changed — re-firing the identical dialog broadcasts nothing.
+    pub fn set_permission_request(&self, name: &str, ask: PermissionAsk) -> bool {
+        self.mutate_activity(name, |a| {
+            a.permission = Some(ask);
+        })
+    }
+
+    /// Clear `name`'s live permission request. Called from every event that can
+    /// only happen once the dialog resolved — the outcome itself is never
+    /// reported by a hook, so "something else happened" IS the resolution signal.
+    /// Returns whether it changed.
+    pub fn clear_permission_request(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.permission = None;
         })
     }
 

@@ -8,6 +8,8 @@
 //!
 //!   * [`activity_label`] — a `PreToolUse` payload → `("✎ tile.tsx", "edit")` etc.
 //!   * [`failed_label`]    — a `PostToolUseFailure` payload → `"✗ Bash failed"`.
+//!   * [`permission_ask`]  — a `PermissionRequest` payload → the live
+//!     [`PermissionAsk`]: what Claude is asking to do + the permission mode.
 //!   * [`HookPayload`]     — the LENIENT (every field optional) parse of `payload`.
 //!
 //! **Security.** Everything here is in-memory only and display
@@ -54,6 +56,39 @@ pub struct HookPayload {
     /// Some events carry the error text at the top level rather than `message`.
     #[serde(default)]
     pub error: Option<String>,
+    /// Claude's CURRENT permission mode (`default` / `acceptEdits` / `plan` /
+    /// `bypassPermissions`). EVERY Claude hook stdin carries it — and the
+    /// statusLine JSON does NOT (verified on 2.1.227 + 2.1.231), so hooks are the
+    /// only live source of the mode. Surfaced on the `PermissionRequest` ask so
+    /// the UI can say *which* mode the pending dialog is being asked under.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+}
+
+/// The live "Claude is asking permission to do X" state, derived from a
+/// `PermissionRequest` hook payload. In-memory only, display only — same posture
+/// as the activity line (see the module docs): the dialog's *content* is
+/// deliberately a short summary, never the raw tool input, so a long
+/// secret-bearing command can't be surfaced in full.
+///
+/// This is a "the dialog is UP" signal, not a decision: the `PermissionRequest`
+/// hook fires when the dialog DISPLAYS, before any choice, and no hook ever
+/// reports the outcome. It is therefore cleared by the next event that can only
+/// happen once the dialog resolved (`PostToolUse*` / `Stop` / `SessionEnd` /
+/// `UserPromptSubmit` / `SessionStart`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PermissionAsk {
+    /// The tool being asked about, verbatim (`Bash`, `Edit`, `mcp__a__b`, …).
+    pub tool: String,
+    /// The same short, secret-conscious summary the activity line uses
+    /// (`⚡ run the test suite`, `✎ tile.tsx`) so both read identically.
+    pub summary: String,
+    /// The activity class of [`summary`](Self::summary) (`bash`/`edit`/…), for
+    /// styling without re-parsing the emoji.
+    pub kind: String,
+    /// The permission mode the dialog is being raised under, when the payload
+    /// carried one.
+    pub mode: Option<String>,
 }
 
 /// The handful of small `tool_input` fields we surface. Anything else (notably
@@ -183,6 +218,30 @@ pub fn failed_label(p: &HookPayload) -> String {
         Some(tool) => format!("✗ {} failed", truncate(tool)),
         None => "✗ tool failed".to_string(),
     }
+}
+
+/// Derive the live [`PermissionAsk`] for a `PermissionRequest` payload, or
+/// `None` when the payload names no tool (nothing to show — the endpoint stays a
+/// no-op rather than surfacing an empty card).
+///
+/// The summary reuses [`activity_label`] verbatim so the pending-permission line
+/// and the activity line are the same sentence about the same tool call.
+pub fn permission_ask(p: &HookPayload) -> Option<PermissionAsk> {
+    let (summary, kind) = activity_label(p)?;
+    // activity_label already established a non-empty tool name.
+    let tool = truncate(p.tool_name.as_deref().unwrap_or_default());
+    let mode = p
+        .permission_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(truncate);
+    Some(PermissionAsk {
+        tool,
+        summary,
+        kind,
+        mode,
+    })
 }
 
 /// Derive a `(type, message)` error pair from a `StopFailure` payload.
@@ -345,6 +404,60 @@ mod tests {
         assert_eq!(c.session_id.as_deref(), Some("abc123"));
         // Absent → None (a no-op, never clobbers a stored id).
         assert_eq!(parse(r#"{"tool_name":"Bash"}"#).session_id, None);
+    }
+
+    /// VERBATIM `PermissionRequest` stdin, captured live off Claude Code 2.1.227
+    /// (byte-identical on 2.1.231). The parse + derivation must hold on the real
+    /// shape, not a hand-written approximation.
+    const LIVE_PERMISSION_REQUEST: &str = r#"{"session_id":"a2a3a5c5-02de-4f07-93a4-98dc74507d0c","transcript_path":"/tmp/ccfg/projects/-home-supermux-spike-a0-hookprobe/a2a3a5c5.jsonl","cwd":"/home/supermux/spike-a0/hookprobe","prompt_id":"ea0e1860-1175-4005-810b-ae005b85e6a6","permission_mode":"default","effort":{"level":"high"},"hook_event_name":"PermissionRequest","tool_name":"Read","tool_input":{"file_path":"/nonexistent-a0-probe.txt"},"permission_suggestions":[]}"#;
+
+    /// VERBATIM `PostToolUseFailure` stdin from the same live capture. Note the
+    /// four fields that distinguish it from `PermissionRequest`: `tool_use_id`,
+    /// `error` (a plain string), `is_interrupt`, `duration_ms`.
+    const LIVE_POST_TOOL_FAILURE: &str = r#"{"session_id":"a2a3a5c5-02de-4f07-93a4-98dc74507d0c","transcript_path":"/tmp/ccfg/x.jsonl","cwd":"/home/supermux/spike-a0/hookprobe","prompt_id":"ea0e1860-1175-4005-810b-ae005b85e6a6","permission_mode":"default","effort":{"level":"high"},"hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_input":{"file_path":"/nonexistent-a0-probe.txt"},"tool_use_id":"toolu_01XvHoKvEax8CniDEibaznWN","error":"File does not exist. Note: your current working directory is /home/supermux/spike-a0/hookprobe.","is_interrupt":false,"duration_ms":34}"#;
+
+    #[test]
+    fn permission_ask_from_the_live_payload() {
+        let ask = permission_ask(&parse(LIVE_PERMISSION_REQUEST))
+            .expect("a permission dialog for a named tool is an ask");
+        assert_eq!(ask.tool, "Read");
+        // Same derivation as the activity line, so the two read identically.
+        assert_eq!(ask.summary, "📖 nonexistent-a0-probe.txt");
+        assert_eq!(ask.kind, "read");
+        // Hooks are the ONLY source of the permission mode (the statusline JSON
+        // does not carry it) — it must survive the parse.
+        assert_eq!(ask.mode.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn permission_ask_needs_a_tool_name() {
+        // A payload with nothing to name has nothing to show → no ask (the
+        // endpoint stays a no-op rather than surfacing an empty card).
+        assert!(permission_ask(&parse("{}")).is_none());
+        assert!(permission_ask(&parse(r#"{"permission_mode":"plan"}"#)).is_none());
+    }
+
+    #[test]
+    fn permission_ask_without_a_mode_is_still_an_ask() {
+        let ask = permission_ask(&parse(r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}"#))
+            .expect("tool name is enough");
+        assert_eq!(ask.tool, "Bash");
+        assert_eq!(ask.summary, "⚡ rm -rf /");
+        assert_eq!(ask.mode, None);
+    }
+
+    #[test]
+    fn live_post_tool_failure_payload_parses_and_labels() {
+        // The dedicated PostToolUseFailure event: `tool_use_id`/`is_interrupt`/
+        // `duration_ms` are unknown-to-us extras and must not break the lenient
+        // parse, `error` lands at the TOP level (not `message`), and the label
+        // comes off `tool_name`.
+        let p = parse(LIVE_POST_TOOL_FAILURE);
+        assert_eq!(failed_label(&p), "✗ Read failed");
+        assert!(p.error.as_deref().unwrap().starts_with("File does not exist."));
+        let (etype, msg) = error_info(&p);
+        assert_eq!(etype, "error", "no error_type on this event → the default class");
+        assert!(msg.starts_with("File does not exist."));
     }
 
     #[test]
