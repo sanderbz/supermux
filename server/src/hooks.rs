@@ -345,6 +345,10 @@ fn broadcast_activity_delta(state: &AppState, session: &str) {
             // Live outstanding-subagent count (display-only parallelism signal).
             // Always present so a drop back to 0 clears the client's clause.
             "subagents": act.subagents,
+            // Server-clock ms stamp: the fase-A1 hook→UI latency anchor AND
+            // the chat client's clock-skew source — every chat supersede
+            // comparison runs in this clock domain (a0-findings §1 item 3).
+            "activity_at": chrono::Utc::now().timestamp_millis(),
         }] }),
     });
 }
@@ -785,6 +789,29 @@ mod tests {
         let act = state.session_activity(s).unwrap();
         assert_eq!(act.activity.as_deref(), Some("✗ Bash failed"));
         assert_eq!(act.activity_kind.as_deref(), Some("failed"));
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn activity_delta_carries_the_server_clock_stamp() {
+        let (state, dir) = test_state().await;
+        let s = "worker-at";
+        let mut rx = state.sse_tx.subscribe();
+
+        apply_payload(
+            &state,
+            s,
+            "pre_tool",
+            &p(r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#),
+        );
+        let ev = rx.try_recv().expect("activity broadcasts");
+        assert_eq!(ev.event, "sessions");
+        let d = ev.payload["delta"][0].clone();
+        let at = d["activity_at"].as_i64().expect("activity_at present");
+        let now = chrono::Utc::now().timestamp_millis();
+        assert!((now - at).abs() < 5_000, "server-clock ms stamp, fresh");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
