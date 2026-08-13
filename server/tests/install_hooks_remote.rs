@@ -165,7 +165,7 @@ async fn fresh_install_writes_marker_entry_via_transport() {
     let bytes = mock.read_final(&final_path).expect("final settings exist");
     let v: Value = serde_json::from_slice(&bytes).expect("written body must be valid JSON");
 
-    // All 9 events have exactly one supermux-marked entry.
+    // Every installed event has exactly one supermux-marked entry.
     let hooks = v["hooks"].as_object().expect("hooks is an object");
     let events = [
         "UserPromptSubmit",
@@ -173,10 +173,13 @@ async fn fresh_install_writes_marker_entry_via_transport() {
         "PostToolUse",
         "Notification",
         "Stop",
+        "SubagentStart",
         "SubagentStop",
         "SessionStart",
         "SessionEnd",
         "StopFailure",
+        "PostToolUseFailure",
+        "PermissionRequest",
     ];
     for ev in events {
         let arr = hooks[ev].as_array().unwrap_or_else(|| panic!("{ev} is array"));
@@ -262,10 +265,13 @@ async fn reinstall_is_byte_for_byte_idempotent() {
         "PostToolUse",
         "Notification",
         "Stop",
+        "SubagentStart",
         "SubagentStop",
         "SessionStart",
         "SessionEnd",
         "StopFailure",
+        "PostToolUseFailure",
+        "PermissionRequest",
     ] {
         let arr = v["hooks"][ev].as_array().unwrap();
         assert_eq!(arr.len(), 1, "{ev}: re-install must not duplicate");

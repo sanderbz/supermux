@@ -51,7 +51,21 @@ const MARKER: &str = "supermux-hook";
 /// for the lifecycle + error-badge features: `SessionStart` clears a stale
 /// stopped/error, `SessionEnd` forces `Stopped` + clears activity, `StopFailure`
 /// records the agent error (`rate_limit`/`billing_error`/…).
-const EVENTS: [(&str, &str); 10] = [
+///
+/// `PostToolUseFailure` + `PermissionRequest` are the chat data plane's live
+/// overlay (both verified firing on Claude Code 2.1.227 and 2.1.231):
+/// * `PostToolUseFailure` — the DEDICATED tool-failure event (payload adds
+///   `tool_use_id`, `error`, `is_interrupt`, `duration_ms`); it makes the
+///   `error`-carrying-`PostToolUse` heuristic a fallback rather than the only
+///   signal.
+/// * `PermissionRequest` — fires the moment Claude DISPLAYS a permission dialog,
+///   BEFORE any decision, carrying `tool_name` / `tool_input` /
+///   `permission_mode`. **Trigger-only, and it must stay that way**: this hook's
+///   STDOUT is how a hook decides the dialog, so supermux's entry is observe-only
+///   — `-o /dev/null` (plus nothing else printing) keeps it inert, verified live
+///   (the dialog displayed and behaved normally) and pinned by
+///   `permission_request_command_is_inert_emits_no_stdout`.
+const EVENTS: [(&str, &str); 12] = [
     ("UserPromptSubmit", "user_prompt"),
     ("PreToolUse", "pre_tool"),
     ("PostToolUse", "post_tool"),
@@ -65,6 +79,9 @@ const EVENTS: [(&str, &str); 10] = [
     ("SessionStart", "session_start"),
     ("SessionEnd", "session_end"),
     ("StopFailure", "stop_failure"),
+    ("PostToolUseFailure", "post_tool_failure"),
+    // Observe-only (see the note above): NEVER give this entry stdout.
+    ("PermissionRequest", "permission_request"),
 ];
 
 /// Install (or idempotently refresh) supermux's Claude hooks for a session.
@@ -506,20 +523,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn installs_the_post_tool_failure_hook() {
+        // Claude Code DOES have a dedicated `PostToolUseFailure` event
+        // (live-verified on 2.1.227 + 2.1.231): the payload adds `tool_use_id`,
+        // `error`, `is_interrupt`, `duration_ms` to the usual tool fields. Without
+        // this entry a failed tool is only visible via the `error`-carrying
+        // `PostToolUse` heuristic.
+        let dir = temp_dir();
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&dir.join("settings.json"));
+        let arr = v["hooks"]["PostToolUseFailure"]
+            .as_array()
+            .expect("PostToolUseFailure hook installed");
+        assert_eq!(arr.len(), 1);
+        let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            cmd.contains("\\\"event\\\":\\\"post_tool_failure\\\""),
+            "PostToolUseFailure must POST the post_tool_failure token"
+        );
+    }
+
+    #[tokio::test]
+    async fn installs_the_permission_request_hook() {
+        // Fires when Claude DISPLAYS a permission dialog, before any decision —
+        // the live "waiting on you, for this tool" signal (payload carries
+        // `tool_name`, `tool_input`, `permission_mode`).
+        let dir = temp_dir();
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&dir.join("settings.json"));
+        let arr = v["hooks"]["PermissionRequest"]
+            .as_array()
+            .expect("PermissionRequest hook installed");
+        assert_eq!(arr.len(), 1);
+        let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            cmd.contains("\\\"event\\\":\\\"permission_request\\\""),
+            "PermissionRequest must POST the permission_request token"
+        );
+    }
+
+    /// SAFETY PIN for the trigger-only `PermissionRequest` entry: a
+    /// `PermissionRequest` hook that writes to STDOUT can DECIDE the dialog
+    /// (allow/deny) on the user's behalf. supermux's entry must be inert —
+    /// observe only. This RUNS the real command in `sh` (pointed at a dead port
+    /// so curl fails fast) and asserts it emits not one byte on stdout and
+    /// still exits 0, which is exactly what Claude evaluates.
+    #[tokio::test]
+    async fn permission_request_command_is_inert_emits_no_stdout() {
+        let cmd = hook_command("permission_request");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            // 127.0.0.1:1 refuses instantly → curl errors, `|| true` swallows it.
+            .env("SUPERMUX_URL", "http://127.0.0.1:1")
+            .env("SUPERMUX_HOOK_TOKEN", "t")
+            .env("SUPERMUX_SESSION", "s")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run the hook command");
+        assert!(
+            out.stdout.is_empty(),
+            "a PermissionRequest hook that prints to stdout can auto-decide the \
+             dialog; got {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(out.status.success(), "the hook must always exit 0");
+    }
+
+    #[tokio::test]
     async fn upgrade_adds_a_newly_added_event_without_duplicating_or_clobbering() {
         // THE upgrade path: a user already running supermux has a settings.json
-        // with the OLD hook set (no SubagentStart). Upgrading the binary + starting
-        // any session re-runs install_hooks, which must ADD the new SubagentStart
-        // event to the existing config — without duplicating the events already
-        // there and without touching the user's own foreign hooks/keys.
+        // with the OLD hook set (no SubagentStart / PostToolUseFailure /
+        // PermissionRequest). Upgrading the binary + starting any session re-runs
+        // install_hooks, which must ADD each new event to the existing config —
+        // without duplicating the events already there and without touching the
+        // user's own foreign hooks/keys.
+        const ADDED_LATER: [(&str, &str); 3] = [
+            ("SubagentStart", "subagent_start"),
+            ("PostToolUseFailure", "post_tool_failure"),
+            ("PermissionRequest", "permission_request"),
+        ];
         let dir = temp_dir();
         let path = dir.join("settings.json");
 
-        // 1. Simulate a PRE-UPGRADE install: write the current set, then strip
-        //    SubagentStart so the file looks like an older supermux version.
+        // 1. Simulate a PRE-UPGRADE install: write the current set, then strip the
+        //    later-added events so the file looks like an older supermux version.
         install_hooks_at(&dir).await.unwrap();
         let mut old = read_json(&path);
-        old["hooks"].as_object_mut().unwrap().remove("SubagentStart");
+        for (event, _) in ADDED_LATER {
+            old["hooks"].as_object_mut().unwrap().remove(event);
+        }
         // 2. Add a foreign top-level key + a foreign Stop hook the user owns.
         old.as_object_mut().unwrap().insert("theirSetting".into(), json!("keep-me"));
         old["hooks"]["Stop"].as_array_mut().unwrap().push(json!({
@@ -527,16 +620,22 @@ mod tests {
             "hooks": [ { "type": "command", "command": "echo their-own-stop-hook" } ]
         }));
         std::fs::write(&path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
-        assert!(old["hooks"].get("SubagentStart").is_none(), "precondition: no SubagentStart");
+        for (event, _) in ADDED_LATER {
+            assert!(old["hooks"].get(event).is_none(), "precondition: no {event}");
+        }
 
         // 3. The UPGRADE: a session start re-installs hooks.
         install_hooks_at(&dir).await.unwrap();
         let v = read_json(&path);
 
-        // SubagentStart was added.
-        let ss = v["hooks"]["SubagentStart"].as_array().expect("SubagentStart added on upgrade");
-        assert_eq!(ss.len(), 1, "exactly one SubagentStart entry");
-        assert!(ss[0]["hooks"][0]["command"].as_str().unwrap().contains("subagent_start"));
+        // Each later-added event is now present, exactly once, with its token.
+        for (event, token) in ADDED_LATER {
+            let arr = v["hooks"][event]
+                .as_array()
+                .unwrap_or_else(|| panic!("{event} added on upgrade"));
+            assert_eq!(arr.len(), 1, "exactly one {event} entry");
+            assert!(arr[0]["hooks"][0]["command"].as_str().unwrap().contains(token));
+        }
 
         // No supermux event got duplicated (each has exactly ONE marked entry).
         for (event, _) in EVENTS {
