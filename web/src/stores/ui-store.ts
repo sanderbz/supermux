@@ -74,6 +74,14 @@ interface UIStore {
    *  per-surface localStorage flag folds into this). Default `false`: stopped
    *  sessions are shown until the user opts to hide them. */
   hideStopped: boolean
+  /** Fase A1 chat renderer (Track A). When ON, eligible LOCAL Claude sessions
+   *  default to the read-only chat renderer at the desktop focus seam, with
+   *  the terminal one tap away. Kill-switch:
+   *  `localStorage['supermux:chat-renderer'] = '0'` force-disables regardless
+   *  of this toggle (checked in components/chat/flag.ts). Default OFF — the
+   *  default flip ships in fase A7, never here. */
+  chatRenderer: boolean
+  setChatRenderer: (v: boolean) => void
   setViewMode: (v: ViewMode) => void
   setDefaultModel: (m: string) => void
   setHoverPreview: (h: HoverPreview) => void
@@ -95,6 +103,8 @@ export const useUI = create<UIStore>()(
       overviewSizeMobile: MIN_OVERVIEW_SIZE,
       showHidden: true,
       hideStopped: false,
+      chatRenderer: false,
+      setChatRenderer: (chatRenderer) => set({ chatRenderer }),
       setViewMode: (viewMode) => set({ viewMode }),
       setDefaultModel: (defaultModel) => set({ defaultModel }),
       setHoverPreview: (hoverPreview) => set({ hoverPreview }),

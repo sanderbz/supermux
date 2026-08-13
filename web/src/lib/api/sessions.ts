@@ -64,6 +64,17 @@ export interface SessionSummary {
 // Real sessions client.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The live, undecided `PermissionRequest` dialog (fase A1 chat renderer).
+ *  `summary` is the same secret-conscious derivation as `activity` (emoji
+ *  included — strip client-side for chat); `kind` is the activity class;
+ *  `mode` the permission mode when the payload carried one. */
+export interface PermissionRequestInfo {
+  tool: string
+  summary: string
+  kind: string
+  mode?: string
+}
+
 /** The fields the SSE `sessions` delta / the `GET /api/sessions` list carry for
  *  a tile. A superset of `SessionSummary` with the optional hero display fields
  *  the detector populates when it has them. Mirrors `TileSession` but
@@ -149,6 +160,14 @@ export interface ApiSession {
    *  cleared on the next `UserPromptSubmit`/`SessionStart`. Drives the amber
    *  error badge on the card (Track 3). */
   error?: { type: string; message: string }
+  /** A live, undecided permission dialog is on screen for this tool call.
+   *  In-memory server-side; rides the `sessions` SSE delta (`null` clears —
+   *  mergeRow passes null through, so always optional-chain). Fase A1
+   *  renders the "Waiting for permission" row from it. */
+  permission_request?: PermissionRequestInfo | null
+  /** Server-clock ms stamp on the latest activity delta — the fase-A1
+   *  hook→UI latency anchor and the client's clock-skew sample. */
+  activity_at?: number
   /** Remote host the session runs on. FK into the `hosts` table; `null` means
    *  LOCAL (the historical default + the in-flight behaviour for every existing
    *  row). The session tile renders a small globe badge when this is set; the
@@ -210,6 +229,9 @@ export interface RecallEntry {
    *  teammate routing, task-id for notifications, the leading wrapper tag
    *  for unknown system events. */
   label?: string
+  /** Success flag of the paired `tool_result` (chat view only, `?chat=true`):
+   *  `false` marks a failed tool call so the receipt row can say so. */
+  ok?: boolean
 }
 
 /** Mirrored from `Kind` in `server/src/sessions/recall.rs`. `'prompt'`,
@@ -224,6 +246,10 @@ export type RecallEntryKind =
   | 'system'
   | 'tool'
   | 'image'
+  // Chat-view kinds (fase A1, `?chat=true` only): full assistant prose and the
+  // tool_use/tool_result pairs behind the receipt rows.
+  | 'assistant'
+  | 'tool_use'
 
 export interface RecallResponse {
   entries: RecallEntry[]
@@ -240,6 +266,8 @@ export interface RecallQueryParams {
   includeSystemEvents?: boolean
   before?: string
   limit?: number
+  /** Fase A1 chat view: full assistant text + tool_use/result pairs. */
+  chat?: boolean
 }
 
 export interface ResumableConversation {
@@ -566,12 +594,19 @@ export const sessionsApi = {
     if (q.includeSystemEvents) params.set('include_system_events', 'true')
     if (q.before) params.set('before', q.before)
     if (q.limit != null) params.set('limit', String(q.limit))
+    if (q.chat) params.set('chat', 'true')
     const qs = params.toString()
     return sessReq<RecallResponse>(
       `/api/sessions/${encodeURIComponent(name)}/recall${qs ? `?${qs}` : ''}`,
     )
   },
 
+  /** `GET /api/sessions/{name}/peek?ansi=1&lines=N` — colour-true pty tail
+   *  (SGR preserved), the fase-A1 P13 provisional-tail channel. Read-only. */
+  peekAnsi: (name: string, lines = 30): Promise<string> =>
+    sessReq<string>(
+      `/api/sessions/${encodeURIComponent(name)}/peek?ansi=1&lines=${lines}`,
+    ),
 
   /** `GET /api/autocomplete/dir?q=…[&hidden=0]` — directory typeahead for the
    *  Advanced tab. Pass `noHidden:true` to filter the

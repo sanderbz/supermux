@@ -266,10 +266,12 @@ function ExperimentalSection() {
   const { data, isError } = useAgentTeams()
   const patch = usePatchAgentTeams()
   const enabled = !!data?.enabled
+  const chatRenderer = useUI((s) => s.chatRenderer)
+  const setChatRenderer = useUI((s) => s.setChatRenderer)
 
   const footnote = isError
     ? 'This server build doesn’t support Agent Teams yet.'
-    : 'Runs several Claude agents in parallel for one task — expect roughly a few times the tokens of a single session. Applies only when you start a team.'
+    : 'Runs several Claude agents in parallel for one task — expect roughly a few times the tokens of a single session. Applies only when you start a team. Chat renderer: read-only preview of Claude sessions in focus mode (terminal one tap away) — early A1 dogfood, local Claude sessions only.'
 
   return (
     <Section title="Experimental" footnote={footnote}>
@@ -281,6 +283,16 @@ function ExperimentalSection() {
             checked={enabled}
             onCheckedChange={(v) => patch.mutate(v)}
             disabled={isError}
+          />
+        }
+      />
+      <Row
+        label="Chat renderer (preview)"
+        control={
+          <Switch
+            ariaLabel="Enable the chat renderer for local Claude sessions"
+            checked={chatRenderer}
+            onCheckedChange={setChatRenderer}
           />
         }
       />

@@ -1,4 +1,5 @@
 import type { SessionSummary } from '@/lib/api'
+import type { PermissionRequestInfo } from '@/lib/api/sessions'
 
 /** Display fields the hero tile layers on top of the canonical `SessionSummary`.
  *  All optional, so a plain `SessionSummary` from
@@ -33,4 +34,10 @@ export interface TileSession extends SessionSummary {
    *  undefined = LOCAL — the historical default. The tile renders a small
    *  <HostBadge> when this is set. */
   host_id?: number | null
+  /** Live, undecided permission dialog for the current tool call. Rides the
+   *  `sessions` SSE delta; `null` clears it (always optional-chain). */
+  permission_request?: PermissionRequestInfo | null
+  /** Server-clock ms stamp on the latest activity delta — the fase-A1
+   *  hook→UI latency anchor. */
+  activity_at?: number
 }

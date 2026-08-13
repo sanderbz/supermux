@@ -477,6 +477,10 @@ const KIND_BADGE: Record<
   system: { label: 'system', Icon: Info },
   tool: { label: 'tool', Icon: Wrench },
   image: { label: 'image', Icon: ImageIcon },
+  // Chat-view kinds (fase A1): only ever returned for `?chat=true`, which this
+  // popover never requests. Listed so the map stays total over the union.
+  assistant: { label: 'assistant', Icon: Info },
+  tool_use: { label: 'tool', Icon: Wrench },
 }
 
 /** Small chip rendered after the timestamp on every non-prompt row. Prompts
