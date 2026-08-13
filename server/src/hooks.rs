@@ -46,8 +46,12 @@ pub fn router_for(state: AppState) -> Router {
 struct HookBody {
     /// The supermux session name (`$SUPERMUX_SESSION`); scopes the token check.
     session: String,
-    /// The Claude event kind (`pre_tool` | `post_tool` | `notification` | `stop`
-    /// | `subagent_stop` | `session_start` | `session_end` | `stop_failure`).
+    /// The Claude event kind, as installed by [`crate::claude_config`]:
+    /// `user_prompt` | `pre_tool` | `post_tool` | `post_tool_failure` |
+    /// `permission_request` | `notification` | `stop` | `subagent_start` |
+    /// `subagent_stop` | `session_start` | `session_end` | `stop_failure`.
+    /// An unrecognised kind is a 200 no-op, never a 400 (a future Claude event
+    /// type must never trip a tool call).
     event: String,
     /// The forwarded Claude hook JSON: the event's STDIN payload,
     /// size-capped by the hook command. Parsed LENIENTLY into [`HookPayload`]
