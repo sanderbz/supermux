@@ -380,6 +380,11 @@ fn supermux_entry(event_token: &str) -> Value {
 /// **Robustness.** `--max-time 1` + `|| true` (and `blocking:false` upstream)
 /// guarantee a down/slow supermux-server never stalls a Claude tool call.
 ///
+/// **Silence.** `-o /dev/null` discards the server's `{"ok":true}` response
+/// body: a hook's stdout is fed back into Claude's context as a
+/// `hook_success` attachment, so without it every hook fire injected a noise
+/// line (measured: 832 of 3397 lines (~25%) of a live transcript).
+///
 /// **Security.** Uses `$SUPERMUX_HOOK_TOKEN` (the per-session secret, NOT
 /// the dashboard `$SUPERMUX_TOKEN`) and `$SUPERMUX_URL` (so a reconfigured bind
 /// doesn't break hooks). The payload is held in-memory only server-side and is
@@ -394,7 +399,7 @@ fn hook_command(event_token: &str) -> String {
     // flip a session to busy. Sending the header makes the hooks actually land.
     format!(
         ": {MARKER}; D=$(head -c 16384); [ -z \"$D\" ] && D='{{}}'; \
-         curl -fsS --max-time 1 -X POST \
+         curl -fsS -o /dev/null --max-time 1 -X POST \
          -H \"Content-Type: application/json\" \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
          \"$SUPERMUX_URL/api/_internal/hook\" \
@@ -458,6 +463,13 @@ mod tests {
             assert!(!cmd.contains("$SUPERMUX_TOKEN"), "{event} must NOT leak the dashboard bearer");
             assert!(cmd.contains("--max-time 1"), "{event} must bound curl");
             assert!(cmd.contains("|| true"), "{event} must never fail the tool call");
+            // The response body ({"ok":true}) must be discarded: hook stdout is
+            // re-injected into Claude's context as a `hook_success` attachment,
+            // and without -o /dev/null it was ~25% of a live transcript.
+            assert!(
+                cmd.contains("-o /dev/null"),
+                "{event} must discard curl stdout or the hook response pollutes Claude's context"
+            );
             // Content-Type is REQUIRED — axum's Json extractor 415s a curl `-d`
             // POST (default form-urlencoded) without it, silently killing every
             // hook (the regression that left the turn state machine dead).
