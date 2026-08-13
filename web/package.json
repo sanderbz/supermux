@@ -10,6 +10,7 @@
     "perf:size": "node scripts/size-budget.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test:unit": "bun test tests/unit",
     "test:e2e": "playwright test",
     "test:e2e:smoke": "playwright test tests/e2e/smoke"
   },
