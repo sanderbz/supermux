@@ -503,3 +503,50 @@ async fn child_exit_marks_the_session_dead_with_its_status() {
     h.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The two capture modes `GET /peek` serves: `capture_plain` is ANSI-stripped,
+/// `capture_ansi` is the SAME rows with their SGR escapes intact. Pinned on the
+/// native runtime because that is the backend the `?ansi=1` mini-view reads
+/// through, and a silently plain "ansi" capture would render a colour-coded
+/// dialog as flat grey text with nothing failing.
+#[tokio::test]
+async fn capture_plain_strips_sgr_and_capture_ansi_keeps_it() {
+    let dir = data_dir("captmodes");
+    let h = start_holder(
+        &dir,
+        "captmodes",
+        80,
+        24,
+        r"printf '\033[31mREDTOKEN\033[0m\n'; sleep 30",
+    );
+    let session = NativeSession::new("captmodes", &dir);
+
+    let plain_full = wait_for_text(&session, "REDTOKEN", Duration::from_secs(10)).await;
+    assert!(plain_full.contains("REDTOKEN"), "grid never got the token");
+
+    let plain = session.capture_plain(50).await;
+    assert!(plain.contains("REDTOKEN"), "plain capture:\n{plain:?}");
+    assert!(
+        !plain.contains('\u{1b}'),
+        "capture_plain must be ANSI-stripped, got:\n{plain:?}"
+    );
+
+    let ansi = session.capture_ansi(50).await;
+    assert!(ansi.contains("REDTOKEN"), "ansi capture:\n{ansi:?}");
+    assert!(
+        ansi.contains('\u{1b}'),
+        "capture_ansi must preserve the SGR escapes, got:\n{ansi:?}"
+    );
+    // Same rows, one just carries colour: stripping the ansi one reproduces
+    // the plain one.
+    let stripped: String = ansi
+        .lines()
+        .map(|l| super::serialize::strip_sgr(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(stripped.trim_end(), plain.trim_end(), "same rows, colour aside");
+
+    session.kill().await.unwrap();
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}

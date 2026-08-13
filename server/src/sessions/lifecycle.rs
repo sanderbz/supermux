@@ -1208,9 +1208,34 @@ pub async fn paste(
     Ok(())
 }
 
-/// Capture the last `lines` of scrollback (read-only — no lock). Empty if the
-/// session isn't running.
+/// Capture the last `lines` of scrollback as PLAIN text, ANSI-stripped
+/// (read-only — no lock). Empty if the session isn't running.
 pub async fn peek(state: &AppState, name: &str, lines: usize) -> Result<String, AppError> {
+    peek_capture(state, name, lines, false).await
+}
+
+/// Capture the last `lines` of scrollback with their SGR escapes INTACT — the
+/// colour-true channel (`GET /peek?ansi=1`). Identical contract to [`peek`]
+/// (read-only, no lock, empty when the session isn't running, same clamp); the
+/// only difference is `capture_ansi` instead of `capture_plain`.
+///
+/// Why it exists: a read-only mini-view of what the terminal is actually showing
+/// (a permission dialog, a picker) is only faithful in colour — the plain
+/// channel renders a colour-coded dialog as flat grey text. Both runtimes
+/// implement `capture_ansi` already (`tmux capture-pane -pe` / the native VT
+/// grid), so this is a passthrough, not new capture machinery.
+pub async fn peek_ansi(state: &AppState, name: &str, lines: usize) -> Result<String, AppError> {
+    peek_capture(state, name, lines, true).await
+}
+
+/// The shared body of [`peek`] / [`peek_ansi`] — one existence check, one
+/// liveness check, one clamp, so the two modes can never drift apart.
+async fn peek_capture(
+    state: &AppState,
+    name: &str,
+    lines: usize,
+    ansi: bool,
+) -> Result<String, AppError> {
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
@@ -1219,7 +1244,11 @@ pub async fn peek(state: &AppState, name: &str, lines: usize) -> Result<String, 
         return Ok(String::new());
     }
     let lines = lines.clamp(1, 10_000);
-    Ok(rt.capture_plain(lines).await?)
+    Ok(if ansi {
+        rt.capture_ansi(lines).await?
+    } else {
+        rt.capture_plain(lines).await?
+    })
 }
 
 /// Archive (async-job-shaped): returns a `job_id` immediately; the

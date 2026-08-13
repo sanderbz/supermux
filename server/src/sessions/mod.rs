@@ -1190,10 +1190,31 @@ async fn paste_handler(
 struct PeekQuery {
     #[serde(default = "default_peek_lines")]
     lines: usize,
+    /// `?ansi=1` → return the capture with its SGR escapes intact instead of the
+    /// default ANSI-stripped text. Taken as a raw string rather than a `bool` so
+    /// `1`/`true`/`yes`/`on`/a bare `?ansi` all work and an unparseable value
+    /// can never 400 a read-only endpoint (it just reads as off).
+    #[serde(default)]
+    ansi: Option<String>,
 }
 
 fn default_peek_lines() -> usize {
     40
+}
+
+/// Read a query-string flag the forgiving way: present-and-not-falsey is on. A
+/// bare `?ansi` (empty value) counts as on, `0`/`false`/`no`/`off`/whitespace as
+/// off.
+fn is_truthy_flag(v: &str) -> bool {
+    // A bare `?ansi` (no `=value`) is the flag being SET.
+    if v.is_empty() {
+        return true;
+    }
+    match v.trim().to_ascii_lowercase().as_str() {
+        // A blank value is not an intent; the rest are the usual falsey words.
+        "" | "0" | "false" | "no" | "off" => false,
+        _ => true,
+    }
 }
 
 async fn peek_handler(
@@ -1201,7 +1222,11 @@ async fn peek_handler(
     Path(name): Path<String>,
     axum::extract::Query(q): axum::extract::Query<PeekQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let text = lifecycle::peek(&state, &name, q.lines).await?;
+    // Same envelope for both modes — only the capture channel differs.
+    let text = match q.ansi.as_deref() {
+        Some(v) if is_truthy_flag(v) => lifecycle::peek_ansi(&state, &name, q.lines).await?,
+        _ => lifecycle::peek(&state, &name, q.lines).await?,
+    };
     Ok(Json(json!({ "ok": true, "data": text })))
 }
 
@@ -1423,6 +1448,19 @@ async fn steer_clear_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peek_ansi_flag_accepts_the_usual_truthy_spellings() {
+        // `?ansi=1` is the documented spelling, but a hand-typed `true`/`yes`/a
+        // bare `?ansi` must not silently fall back to the plain mode (a silently
+        // colourless capture is invisible until a mini-view renders flat grey).
+        for yes in ["1", "true", "TRUE", "yes", "on", ""] {
+            assert!(is_truthy_flag(yes), "{yes:?} should read as on");
+        }
+        for no in ["0", "false", "no", "off", "  "] {
+            assert!(!is_truthy_flag(no), "{no:?} should read as off");
+        }
+    }
 
     #[test]
     fn valid_name_basics_and_leading_dash() {

@@ -311,3 +311,104 @@ async fn start_nonexistent_returns_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `GET /peek` serves BOTH capture modes off one endpoint: the default
+/// plain-text scrollback, and — with `?ansi=1` — the same rows with their SGR
+/// escapes intact (`rt.capture_ansi`), in the SAME `{ok,data}` envelope. The
+/// colour channel is what lets a read-only mini-view render a dialog faithfully
+/// instead of as flat grey text.
+#[tokio::test]
+async fn peek_serves_plain_by_default_and_ansi_on_request() {
+    if !tmux_available() {
+        eprintln!("skipping: tmux not on PATH");
+        return;
+    }
+    let (app, dir) = test_app().await;
+    let name = format!("ansi{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+
+    send(
+        &app,
+        Method::POST,
+        "/api/sessions",
+        Some(json!({ "name": name, "provider": "shell", "dir": "/tmp", "runtime": "tmux" })),
+    )
+    .await;
+    let (status, _) = send(&app, Method::POST, &format!("/api/sessions/{name}/start"), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Print a token in red: the rendered row carries a real SGR sequence.
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        &format!("/api/sessions/{name}/send"),
+        Some(json!({ "text": r"printf '\033[31mREDTOKEN\033[0m\n'" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let plain = peek_until(&app, &name, "REDTOKEN", 20).await;
+    assert!(plain.contains("REDTOKEN"), "token missing from plain peek:\n{plain}");
+    // Default mode is ANSI-STRIPPED: not one ESC byte reaches the client.
+    assert!(
+        !plain.contains('\u{1b}'),
+        "default peek must stay plain text, got escapes:\n{plain:?}"
+    );
+
+    // ?ansi=1 → the same rows, escapes preserved, same envelope.
+    let (status, body) = send(
+        &app,
+        Method::GET,
+        &format!("/api/sessions/{name}/peek?ansi=1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], json!(true), "same envelope as the plain mode");
+    let ansi = body["data"].as_str().expect("data is a string").to_string();
+    assert!(ansi.contains("REDTOKEN"), "token missing from ansi peek:\n{ansi:?}");
+    assert!(
+        ansi.contains('\u{1b}'),
+        "?ansi=1 must preserve SGR escapes, got:\n{ansi:?}"
+    );
+
+    // `lines` (how far back into history to reach) composes with `ansi` and is
+    // honoured IDENTICALLY in both modes — the two share one clamp + one capture
+    // path, so a request for the same window returns the same rows, colour aside.
+    let (status, body) = send(
+        &app,
+        Method::GET,
+        &format!("/api/sessions/{name}/peek?ansi=1&lines=2"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let ansi_2 = body["data"].as_str().unwrap().to_string();
+    let (_, body) = send(
+        &app,
+        Method::GET,
+        &format!("/api/sessions/{name}/peek?lines=2"),
+        None,
+    )
+    .await;
+    let plain_2 = body["data"].as_str().unwrap();
+    assert_eq!(
+        ansi_2.lines().count(),
+        plain_2.lines().count(),
+        "both modes must honour `lines` the same way"
+    );
+    assert!(ansi_2.contains('\u{1b}') && !plain_2.contains('\u{1b}'));
+
+    // A falsey/absent flag keeps the historical behaviour byte-for-byte.
+    let (_, body) = send(
+        &app,
+        Method::GET,
+        &format!("/api/sessions/{name}/peek?ansi=0"),
+        None,
+    )
+    .await;
+    assert!(
+        !body["data"].as_str().unwrap().contains('\u{1b}'),
+        "?ansi=0 is the plain mode"
+    );
+
+    teardown(&app, &name, dir).await;
+}
