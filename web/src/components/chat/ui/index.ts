@@ -46,6 +46,7 @@ export {
   RECEIPT_DEFAULT_MAX,
 } from './metrics'
 export {
+  capReceipts,
   coalesceReceipts,
   ReceiptGroup,
   type CoalescedReceipt,

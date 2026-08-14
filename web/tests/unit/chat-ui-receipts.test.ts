@@ -9,7 +9,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 
-import { coalesceReceipts } from '../../src/components/chat/ui/receipt-group'
+import { capReceipts, coalesceReceipts } from '../../src/components/chat/ui/receipt-group'
 
 describe('coalesceReceipts', () => {
   test('leaves distinct tools alone', () => {
@@ -64,5 +64,45 @@ describe('coalesceReceipts', () => {
     const snapshot = JSON.stringify(rows)
     coalesceReceipts(rows)
     expect(JSON.stringify(rows)).toBe(snapshot)
+  })
+})
+
+describe('capReceipts', () => {
+  const done = (tool: string) => ({ tool, count: 1 })
+  const live = (tool: string) => ({ tool, count: 1, state: 'running' as const })
+
+  test('an uncapped list is shown whole', () => {
+    const lines = [done('a'), done('b')]
+    expect(capReceipts(lines, undefined)).toEqual({ shown: lines, hidden: 0 })
+    expect(capReceipts(lines, 5)).toEqual({ shown: lines, hidden: 0 })
+  })
+
+  test('caps the finished backlog and counts what it hid', () => {
+    const lines = [done('a'), done('b'), done('c'), done('d')]
+    const { shown, hidden } = capReceipts(lines, 2)
+    expect(shown.map((l) => l.tool)).toEqual(['a', 'b'])
+    expect(hidden).toBe(2)
+  })
+
+  test('NEVER hides the running line — it is pulled past the cap', () => {
+    // A 60-call turn caps at `max`, and the live call is always the last one, so
+    // a naive slice hides the spinner exactly when it matters most.
+    const lines = [done('a'), done('b'), done('c'), live('cargo test')]
+    const { shown, hidden } = capReceipts(lines, 2)
+    expect(shown.map((l) => l.tool)).toEqual(['a', 'b', 'cargo test'])
+    expect(shown.at(-1)?.state).toBe('running')
+    expect(hidden).toBe(1)
+  })
+
+  test('the affordance disappears when pulling the live line left nothing hidden', () => {
+    const lines = [done('a'), done('b'), live('cargo test')]
+    expect(capReceipts(lines, 2).hidden).toBe(0)
+  })
+
+  test('does not mutate the list it was handed', () => {
+    const lines = [done('a'), done('b'), live('c')]
+    const snapshot = JSON.stringify(lines)
+    capReceipts(lines, 1)
+    expect(JSON.stringify(lines)).toBe(snapshot)
   })
 })

@@ -113,7 +113,7 @@ export function BubbleCode({ children, className }: { children: ReactNode; class
   return (
     <pre
       className={cn(
-        'mt-[11px] overflow-hidden whitespace-pre rounded-xl border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
+        'mt-[11px] overflow-hidden whitespace-pre rounded-[12px] border-[0.5px] border-hairline-soft bg-code-bg px-[13px] py-2.5 font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]',
         className,
       )}
     >

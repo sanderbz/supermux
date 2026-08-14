@@ -76,17 +76,35 @@ export interface ReceiptGroupProps {
   className?: string
 }
 
+/**
+ * Apply the cap — WITHOUT ever hiding a line that is still running.
+ *
+ * The same rule as the coalescer's: the running line is the one the user is
+ * actually watching. A 60-call turn caps at `max`, and the live call is always
+ * the last one, so a naive `slice(0, max)` hides the spinner exactly when it
+ * matters. The cap governs the finished backlog; the live line is pulled
+ * forward past it.
+ */
+export function capReceipts(
+  lines: readonly CoalescedReceipt[],
+  max: number | undefined,
+): { shown: CoalescedReceipt[]; hidden: number } {
+  if (max === undefined || lines.length <= max) return { shown: [...lines], hidden: 0 }
+  const head = lines.slice(0, max)
+  const live = lines.slice(max).filter((l) => l.state === 'running')
+  return { shown: [...head, ...live], hidden: lines.length - head.length - live.length }
+}
+
 export function ReceiptGroup({ rows, max, onShowAll, className }: ReceiptGroupProps) {
   const lines = coalesceReceipts(rows)
-  const capped = max !== undefined && lines.length > max
-  const shown = capped ? lines.slice(0, max) : lines
+  const { shown, hidden } = capReceipts(lines, max)
 
   return (
     <Bubble padding="list" className={cn('flex flex-col gap-[7px]', className)}>
       {shown.map((line, i) => (
         <ReceiptLine key={`${line.tool}-${i}`} line={line} />
       ))}
-      {capped && (
+      {hidden > 0 && (
         <button
           type="button"
           onClick={onShowAll}

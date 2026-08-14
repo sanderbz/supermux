@@ -63,7 +63,7 @@ export function ChoiceCard({
     <div
       role="group"
       className={cn(
-        'ml-11 mt-3 max-w-[592px] rounded-2xl px-[17px] py-3.5',
+        'ml-11 mt-3 max-w-[592px] rounded-[16px] px-[17px] py-3.5',
         'border-[0.5px] border-hairline bg-surface backdrop-blur-[30px] backdrop-saturate-[170%]',
         'shadow-[var(--sm-card-shadow)]',
         className,
@@ -128,7 +128,7 @@ function ChoiceButton({
 /** The command inside a question — JetBrainsMono on the soft wash. */
 export function InlineCode({ children }: { children: ReactNode }) {
   return (
-    <code className="mx-px rounded-lg bg-fill-soft px-[7px] py-0.5 font-mono text-[13.2px] font-normal tracking-[-0.2px]">
+    <code className="mx-px rounded-[8px] bg-fill-soft px-[7px] py-0.5 font-mono text-[13.2px] font-normal tracking-[-0.2px]">
       {children}
     </code>
   )

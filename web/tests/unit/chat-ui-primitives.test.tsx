@@ -20,9 +20,9 @@ import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { characterFromSeed, VIEWBOX } from '../../src/brand/marks'
-import { Bubble, MessageRow } from '../../src/components/chat/ui/bubble'
+import { Bubble, BubbleCode, MessageRow } from '../../src/components/chat/ui/bubble'
 import { CapturedFrameCard } from '../../src/components/chat/ui/captured-frame-card'
-import { ChoiceCard } from '../../src/components/chat/ui/choice-card'
+import { ChoiceCard, InlineCode } from '../../src/components/chat/ui/choice-card'
 import { Composer } from '../../src/components/chat/ui/composer'
 import { DelegationPill } from '../../src/components/chat/ui/delegation-pill'
 import { Facepile } from '../../src/components/chat/ui/facepile'
@@ -83,7 +83,7 @@ describe('MessageRow', () => {
 
 describe('attentionDotSeat', () => {
   test('sits on the silhouette, not in the corner of the box', () => {
-    // 45° out along the body's own半 axes, minus half the dot. Hand-computed for
+    // 45° out along the body's own half-axes, minus half the dot. Hand-computed for
     // the sphere (rx = ry = 121) at 40px: 20 + 20·(121/131)·0.707 − 3.5.
     const sphere = characterFromSeed('anything', { silhouette: 'sphere' })
     const seat = attentionDotSeat(sphere, 40, VIEWBOX)
@@ -160,6 +160,41 @@ describe('ReceiptGroup', () => {
     const out = html(<ReceiptGroup rows={[{ tool: 'cargo test', state: 'running' }]} />)
     expect(out).toContain('sm-spin')
     expect(out).toContain('data-state="running"')
+  })
+
+  test('the cap never hides the running line', () => {
+    // The live call is always the LAST one in a turn, so a cap that just slices
+    // would hide the spinner precisely when the user is watching for it.
+    const out = html(
+      <ReceiptGroup
+        rows={[
+          { tool: 'Read', outcome: 'a.rs' },
+          { tool: 'Edit', outcome: 'b.rs' },
+          { tool: 'Grep', outcome: 'no matches' },
+          { tool: 'cargo test', state: 'running' },
+        ]}
+        max={2}
+      />,
+    )
+    expect(out).toContain('sm-spin')
+    expect(out).toContain('cargo test')
+    expect(out).not.toContain('no matches')
+    expect(out).toContain('Show all 4')
+  })
+})
+
+describe('radii are the approved render s literals', () => {
+  // This repo remaps Tailwind's named radius scale off `--radius` (sm 8 · md 10
+  // · lg 12 · xl 16), so a named rung does NOT mean what stock Tailwind's does.
+  // These four are the numbers the mockup states, pinned as literals.
+  test('roster row 12, code block 12, inline code 8, choice card 16', () => {
+    expect(html(<RosterRow seed="Patch" />)).toContain('rounded-[12px]')
+    expect(html(<BubbleCode>x</BubbleCode>)).toContain('rounded-[12px]')
+    expect(html(<InlineCode>x</InlineCode>)).toContain('rounded-[8px]')
+    expect(html(<ChoiceCard question="q" options={[{ label: 'a' }]} />)).toContain('rounded-[16px]')
+    // and the two the file already stated in full
+    expect(html(<Bubble>x</Bubble>)).toContain('rounded-[18px]')
+    expect(html(<CapturedFrameCard caption="c.png" />)).toContain('rounded-[14px]')
   })
 })
 

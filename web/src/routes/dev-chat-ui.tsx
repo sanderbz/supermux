@@ -99,10 +99,12 @@ function Plate({
   className?: string
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex max-w-full flex-col gap-1.5">
       {label && <span className="text-[11px] text-ink-3">{label}</span>}
+      {/* Wide demos (the 600px composer, a 744px transcript column) scroll
+          inside their own plate — the page body must never scroll sideways. */}
       <div
-        className={`rounded-2xl border-[0.5px] border-hairline-soft p-5 ${
+        className={`overflow-x-auto rounded-2xl border-[0.5px] border-hairline-soft p-5 ${
           raised ? 'bg-paper-raised' : 'bg-paper'
         } ${className ?? ''}`}
       >
@@ -120,7 +122,10 @@ function Board({ theme }: { theme: BenchTheme }) {
   const focusPin = pinFor(FOCUS)
 
   return (
-    <div className="flex h-[880px] w-full overflow-hidden rounded-[24px] shadow-[var(--sm-elev)]">
+    <div
+      data-board=""
+      className="flex h-[880px] w-full min-w-[1000px] overflow-hidden rounded-[24px] shadow-[var(--sm-elev)]"
+    >
       {/* sidebar */}
       <div className="relative z-[2] flex w-[280px] flex-none flex-col bg-paper pt-3">
         <div className="flex flex-col gap-0.5 overflow-hidden px-2">
@@ -244,7 +249,7 @@ function Board({ theme }: { theme: BenchTheme }) {
  */
 function MiniWindow() {
   return (
-    <div className="absolute left-[11%] top-[20%] flex w-[74%] overflow-hidden rounded-lg bg-[#fdfbf9] shadow-[0_22px_44px_-16px_rgba(26,12,22,0.62),0_0_0_0.5px_rgba(0,0,0,0.18)]">
+    <div className="absolute left-[11%] top-[20%] flex w-[74%] overflow-hidden rounded-[8px] bg-[#fdfbf9] shadow-[0_22px_44px_-16px_rgba(26,12,22,0.62),0_0_0_0.5px_rgba(0,0,0,0.18)]">
       <div className="w-[33%] flex-none bg-[#f7f3ef] px-[5px] py-1.5">
         <div className="flex h-1.5 items-center gap-[3px] pb-1.5 pl-px">
           {['#ec6a5e', '#f4bf4f', '#61c554'].map((c) => (
@@ -381,7 +386,10 @@ function Parts({ theme }: { theme: BenchTheme }) {
             <ReceiptGroup rows={BOARD_RECEIPTS} />
           </Plate>
           <Plate label="a real turn — coalesced, capped, one line still running">
-            <ReceiptGroup rows={VOLUME_RECEIPTS} max={3} />
+            {/* max=2 so the cap actually bites AND the live line is still on
+                screen: the running row is pulled past the cap, because it is the
+                one row the user is watching. */}
+            <ReceiptGroup rows={VOLUME_RECEIPTS} max={2} />
           </Plate>
         </div>
       </Section>
@@ -588,7 +596,13 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
           title="The board"
           note="Every primitive, in the composition they were designed for, with the focused session's pigment written once as --sm-accent: the selected roster row, the composer's focus ring and a selected choice all recolour from that one property."
         >
-          <Board theme={theme} />
+          {/* The board is a 1440-class desktop screen. On a narrow window it gets
+              its own scroller — the -mx-6/px-6 pair cancels the page gutter, so
+              the board still starts on the page's left edge and its elevation
+              shadow keeps its room. */}
+          <div className="-mx-6 overflow-x-auto px-6 py-2">
+            <Board theme={theme} />
+          </div>
         </Section>
 
         <Parts theme={theme} />

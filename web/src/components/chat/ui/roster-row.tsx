@@ -72,8 +72,12 @@ export function RosterRow({
       type="button"
       onClick={onClick}
       data-selected={selected || undefined}
+      aria-current={selected ? 'true' : undefined}
       className={cn(
-        'flex h-16 w-full items-center gap-3 rounded-xl px-2 text-left',
+        // radius 12 — the mockup's literal. NOT `rounded-xl`: this repo remaps
+        // the named scale off `--radius` (sm 8 · md 10 · lg 12 · xl 16), so the
+        // named rungs do not mean what stock Tailwind's do.
+        'flex h-16 w-full items-center gap-3 rounded-[12px] px-2 text-left',
         'transition-colors duration-[120ms]',
         selected ? 'sm-accent-row' : 'hover:bg-fill-soft',
         className,
