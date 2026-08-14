@@ -34,6 +34,15 @@ use super::resumable;
 /// Cap on the per-entry prompt text. Mirrors `db::sessions::LAST_SEND_TEXT_MAX_CHARS`
 /// — same shape as the bar/popover already render today.
 const PROMPT_MAX_CHARS: usize = 8_000;
+/// Cap on an ASSISTANT entry's prose in the chat view. The prompt cap above is
+/// a PREVIEW budget for the recall popover; the chat view renders the message
+/// itself, so reusing 8 000 silently cut real answers mid-word (assistant text
+/// blocks over that length exist in this host's own transcripts). Wide enough
+/// that no realistic answer is touched, still bounded so one pathological
+/// block cannot define the response size. Whenever it does bite, the entry
+/// carries `truncated: true` so the client can say so instead of pretending
+/// the message ended there.
+const ASSISTANT_MAX_CHARS: usize = 64_000;
 /// Cap on the reply preview. Big enough for `line-clamp-3` on the widest popover.
 const REPLY_MAX_CHARS: usize = 600;
 /// Hard cap on the user-requested `limit`. Keeps a single response bounded
@@ -108,6 +117,12 @@ pub struct RecallEntry {
     /// = `is_error`). `None` until the result lands / for non-tool entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    /// `Some(true)` when `text` was clipped by the wire cap. Absent (the
+    /// common case) means the text is complete. The client renders a marker;
+    /// without it a clipped message is indistinguishable from one that simply
+    /// ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 /// What flavour of "user" turn the transcript line represents. The JSONL
@@ -352,11 +367,20 @@ fn gather_in_proj(
     };
 
     // Final wire-shape clamp: search ran over the full sanitised text (so a
-    // needle past PROMPT_MAX_CHARS still matches), but the response carries
-    // only the preview.
+    // needle past the cap still matches), but the response carries only the
+    // preview. The cap is PER KIND — an assistant message is content, not a
+    // preview of one, so it gets `ASSISTANT_MAX_CHARS`; every other kind keeps
+    // the popover's `PROMPT_MAX_CHARS` budget. Anything actually clipped is
+    // flagged.
     for e in &mut out {
-        if e.text.chars().count() > PROMPT_MAX_CHARS {
-            e.text = clamp(&e.text, PROMPT_MAX_CHARS);
+        let cap = if e.kind == Kind::Assistant {
+            ASSISTANT_MAX_CHARS
+        } else {
+            PROMPT_MAX_CHARS
+        };
+        if e.text.chars().count() > cap {
+            e.text = clamp(&e.text, cap);
+            e.truncated = Some(true);
         }
     }
 
@@ -497,6 +521,7 @@ fn read_user_turns(path: &Path, include_sidechains: bool) -> Vec<RecallEntry> {
                     kind: classified.kind,
                     label: classified.label,
                     ok: None,
+                    truncated: None,
                 });
                 // Non-prompt turns aren't a "user asking a question" — don't
                 // arm a reply pairing on them. (A `<task-notification>` is
@@ -655,6 +680,7 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                     kind: c.kind,
                     label: c.label,
                     ok: None,
+                    truncated: None,
                 });
             }
             "assistant" => {
@@ -699,6 +725,7 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                                 kind: Kind::Assistant,
                                 label: None,
                                 ok: None,
+                                truncated: None,
                             });
                         }
                         Some("tool_use") => {
@@ -717,6 +744,7 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                                 kind: Kind::ToolUse,
                                 label: Some(name.to_string()),
                                 ok: None,
+                                truncated: None,
                             });
                         }
                         // thinking / image / unknown block types: skipped in A1.
@@ -1806,6 +1834,74 @@ please prepare the next stacked branch
         assert_eq!(r.entries[1].ok, Some(true));
         assert_eq!(r.entries[2].kind, Kind::Prompt);
         assert_eq!(r.entries[2].text, "do the thing");
+    }
+
+    /// An assistant message longer than the PROMPT preview cap must arrive
+    /// whole. The chat view renders the message itself, so reusing the
+    /// popover's 8 000-char preview budget cut real answers mid-word with no
+    /// marker and no continuation — the reader could not tell. Assistant text
+    /// blocks past 8 000 chars exist in this host's own transcripts.
+    #[test]
+    fn chat_view_assistant_text_survives_the_prompt_preview_cap() {
+        let proj = temp_dir();
+        let cc = "chat-longprose";
+        let long = "y".repeat(PROMPT_MAX_CHARS + 732);
+        write_jsonl(
+            &proj,
+            cc,
+            &[
+                &user_line("u1", "2026-01-01T10:00:00Z", "explain", false),
+                &assistant_line("a1", "2026-01-01T10:00:05Z", &long, false),
+            ],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        let e = r.entries.iter().find(|e| e.kind == Kind::Assistant).unwrap();
+        assert_eq!(
+            e.text.chars().count(),
+            PROMPT_MAX_CHARS + 732,
+            "assistant prose must not be clipped at the prompt preview cap"
+        );
+        assert_eq!(e.truncated, None, "nothing was clipped, so no marker");
+    }
+
+    /// A USER prompt keeps the preview budget — the chat view must not become
+    /// a licence to ship an unbounded prompt down the popover's wire shape.
+    #[test]
+    fn chat_view_user_prompt_keeps_the_preview_cap_and_is_flagged() {
+        let proj = temp_dir();
+        let cc = "chat-longprompt";
+        let long = "z".repeat(PROMPT_MAX_CHARS + 500);
+        write_jsonl(
+            &proj,
+            cc,
+            &[&user_line("u1", "2026-01-01T10:00:00Z", &long, false)],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        let e = r.entries.iter().find(|e| e.kind == Kind::Prompt).unwrap();
+        assert_eq!(e.text.chars().count(), PROMPT_MAX_CHARS);
+        assert_eq!(
+            e.truncated,
+            Some(true),
+            "a clipped entry must say so on the wire"
+        );
+    }
+
+    /// Even the generous assistant cap is a cap — when it bites, the entry is
+    /// flagged rather than silently ending mid-sentence.
+    #[test]
+    fn chat_view_assistant_beyond_its_own_cap_is_flagged() {
+        let proj = temp_dir();
+        let cc = "chat-hugeprose";
+        let huge = "w".repeat(ASSISTANT_MAX_CHARS + 10);
+        write_jsonl(
+            &proj,
+            cc,
+            &[&assistant_line("a1", "2026-01-01T10:00:05Z", &huge, false)],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        let e = r.entries.iter().find(|e| e.kind == Kind::Assistant).unwrap();
+        assert_eq!(e.text.chars().count(), ASSISTANT_MAX_CHARS);
+        assert_eq!(e.truncated, Some(true));
     }
 
     #[test]

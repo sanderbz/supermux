@@ -13,6 +13,9 @@ export interface ChatEntry {
   kind: string
   label?: string
   ok?: boolean
+  /** Server clipped `text` at the wire cap. Rendered as a marker: without it
+   *  a clipped message is indistinguishable from one that simply ended. */
+  truncated?: boolean
 }
 
 export interface ReceiptLine {
@@ -23,8 +26,15 @@ export interface ReceiptLine {
 }
 
 export type ChatItem =
-  | { type: 'user'; uuid: string; ts: number; text: string; badge?: string }
-  | { type: 'assistant'; uuid: string; ts: number; text: string }
+  | {
+      type: 'user'
+      uuid: string
+      ts: number
+      text: string
+      badge?: string
+      truncated?: boolean
+    }
+  | { type: 'assistant'; uuid: string; ts: number; text: string; truncated?: boolean }
   | {
       type: 'receipts'
       uuid: string
@@ -59,7 +69,13 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         out.push({ type: 'receipts', uuid: e.uuid, ts: e.ts, lines: [line], overflow: 0 })
       }
     } else if (e.kind === 'assistant') {
-      out.push({ type: 'assistant', uuid: e.uuid, ts: e.ts, text: e.text })
+      out.push({
+        type: 'assistant',
+        uuid: e.uuid,
+        ts: e.ts,
+        text: e.text,
+        truncated: e.truncated,
+      })
     } else {
       out.push({
         type: 'user',
@@ -67,6 +83,7 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         ts: e.ts,
         text: e.text,
         badge: e.kind === 'prompt' ? undefined : e.kind,
+        truncated: e.truncated,
       })
     }
   }

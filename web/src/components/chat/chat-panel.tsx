@@ -177,6 +177,7 @@ export default function ChatPanel({
                       </span>
                     )}
                     <span className="whitespace-pre-wrap break-words">{item.text}</span>
+                    {item.truncated && <TruncatedMarker />}
                   </div>
                 </div>
               )
@@ -188,6 +189,7 @@ export default function ChatPanel({
                   className="whitespace-pre-wrap break-words text-[14px] leading-5"
                 >
                   {item.text}
+                  {item.truncated && <TruncatedMarker />}
                 </div>
               )
             }
@@ -290,5 +292,19 @@ export default function ChatPanel({
         )}
       </div>
     </div>
+  )
+}
+
+/** The server clipped this message at the wire cap. Say so — a clipped
+ *  message that just stops reads as an answer that ended mid-sentence, and
+ *  the reader has no way to tell the difference. */
+function TruncatedMarker() {
+  return (
+    <span
+      className="ml-1 select-none rounded bg-muted px-1 py-0.5 align-baseline text-[11px] text-muted-foreground"
+      title="This message was clipped for transport — open the Terminal view for the full text."
+    >
+      … clipped
+    </span>
   )
 }
