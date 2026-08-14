@@ -1,0 +1,1152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>supermux — primary interface</title>
+<style>
+@font-face{font-family:Inter;src:url({{INTER400}}) format("woff2");font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:Inter;src:url({{INTER500}}) format("woff2");font-weight:500;font-style:normal;font-display:block}
+@font-face{font-family:Inter;src:url({{INTER600}}) format("woff2");font-weight:600;font-style:normal;font-display:block}
+@font-face{font-family:Inter;src:url({{INTER700}}) format("woff2");font-weight:700;font-style:normal;font-display:block}
+@font-face{font-family:JBMono;src:url({{JBMONO}}) format("woff2");font-weight:400;font-style:normal;font-display:block}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{font-family:Inter,"DejaVu Sans",sans-serif;background:var(--studio);color:var(--studio-ink);
+  transition:background .5s cubic-bezier(.22,1,.36,1),color .5s cubic-bezier(.22,1,.36,1)}
+
+/* ── studio (the page the boards sit on) ───────────────────────────── */
+body{--studio:#efe9e3;--studio-ink:#231d18;--studio-ink-2:#8a8078;--studio-line:rgba(35,25,15,.10)}
+body[data-skin="charcoal"]{--studio:#131211;--studio-ink:#efe9e2;--studio-ink-2:#8c847c;--studio-line:rgba(255,246,235,.10)}
+
+/* the sheet is a two-column grid: 1440 board + 390 companion, three equal rows,
+   so no row is short and nothing is clipped at the right edge */
+.studio{max-width:1966px;margin:0 auto;padding:56px 48px 72px}
+.studio-bar{display:flex;align-items:flex-end;justify-content:space-between;gap:32px;margin-bottom:44px}
+.studio-title{font-size:15px;font-weight:600;letter-spacing:-.2px}
+.studio-sub{font-size:13px;color:var(--studio-ink-2);margin-top:5px;max-width:52ch;line-height:1.5}
+.seg{display:inline-flex;align-items:center;gap:2px;padding:3px;border-radius:999px;
+  border:.5px solid var(--studio-line);background:color-mix(in oklab,var(--studio-ink) 4%,transparent)}
+.seg button{appearance:none;border:0;background:transparent;font:500 12.5px Inter;letter-spacing:.1px;
+  color:var(--studio-ink-2);height:30px;padding:0 16px;border-radius:999px;cursor:pointer;
+  transition:background .26s cubic-bezier(.22,1,.36,1),color .26s cubic-bezier(.22,1,.36,1)}
+.seg button[aria-pressed="true"]{background:color-mix(in oklab,var(--studio-ink) 88%,transparent);
+  color:var(--studio);font-weight:600}
+
+.plate{display:flex;align-items:flex-start;gap:40px;margin-bottom:64px}
+.plate:last-child{margin-bottom:0}
+/* the strip ships as its own asset; it sits below the sheet, not inside it */
+.offsheet{display:flex;max-width:1966px;margin:0 auto;padding:48px}
+/* the appendix sheet ships bare: no title, no plate labels, no dimensions */
+body[data-bare] .studio-bar{display:none}
+body[data-bare] .studio{padding:48px 48px 104px}
+
+/* ── the app ───────────────────────────────────────────────────────── */
+.app{
+  /* --accent is the FOCUSED agent's identity hue. it is written on this
+     element by JS from the cast table — every accent surface below is
+     derived from it with color-mix, so one swap re-skins the board. */
+  --accent:#f15f58;
+  width:1440px;height:1000px;border-radius:24px;overflow:hidden;position:relative;
+  display:flex;font-size:15px;color:var(--ink);background:var(--bg);
+  box-shadow:var(--elev);
+}
+.app[data-theme="light"]{
+  --bg:#faf7f4;
+  --pane:#fdfbf9;                    /* fixed warm neutral — no accent */
+  --surface:rgba(255,253,251,.86);   /* raised: cards, pills, composer */
+  --bubble-agent:#f1ece8;            /* fixed warm neutral — no accent */
+  --bubble-user:#1c1917;
+  --on-user:#f7f3ef;
+  --ink:#1c1917;
+  --ink-2:#79716b;
+  --ink-3:#a8a09a;
+  --hairline:rgba(28,20,10,.09);
+  --hairline-soft:rgba(28,20,10,.05);
+  --fill-soft:rgba(28,20,10,.045);
+  --fill-soft-2:rgba(28,20,10,.07);
+  --code-bg:rgba(28,20,10,.05);
+  --row-selected:color-mix(in oklab,var(--accent) 9%,var(--bg));
+  --bubble-shadow:0 1px 2px rgba(60,40,20,.05);
+  --card-shadow:0 10px 30px -14px rgba(60,40,20,.22),0 1px 2px rgba(60,40,20,.05);
+  --elev:0 46px 90px -34px rgba(52,34,20,.30),0 6px 18px -6px rgba(52,34,20,.07),0 0 0 .5px rgba(35,25,15,.09),
+    inset 0 1px 0 rgba(255,255,255,.55);
+  --mic-bg:var(--fill-soft-2);--mic-ink:var(--ink);
+}
+.app[data-theme="dark"]{
+  --bg:#1a1a18;
+  --pane:#201f1d;                    /* pane sits above the sidebar … */
+  --surface:rgba(58,54,50,.72);
+  --bubble-agent:#2c2926;            /* … and the bubble sits above the pane */
+  --bubble-user:#f2ede7;
+  --on-user:#1c1917;
+  --ink:#f5f1ec;
+  --ink-2:#a8a29b;
+  --ink-3:#7d766f;
+  --hairline:rgba(255,246,235,.085);
+  --hairline-soft:rgba(255,246,235,.055);
+  --fill-soft:rgba(255,246,235,.06);
+  --fill-soft-2:rgba(255,246,235,.10);
+  --code-bg:rgba(0,0,0,.30);
+  --row-selected:color-mix(in oklab,var(--accent) 12%,var(--bg));
+  --bubble-shadow:none;
+  --card-shadow:0 14px 34px -16px rgba(0,0,0,.6);
+  --elev:0 46px 100px -30px rgba(0,0,0,.62),0 8px 24px -10px rgba(0,0,0,.4),0 0 0 .5px rgba(255,246,235,.07),
+    inset 0 1px 0 rgba(255,246,235,.06);
+  --mic-bg:rgba(244,238,231,.94);--mic-ink:#1c1917;
+}
+
+/* ── sidebar ───────────────────────────────────────────────────────── */
+.side{width:280px;flex:none;display:flex;flex-direction:column;background:var(--bg);position:relative;z-index:2}
+.side::after{content:"";position:absolute;top:0;right:0;bottom:0;width:.5px;background:var(--hairline)}
+.titlebar{height:52px;display:flex;align-items:center;padding:0 16px 0 20px;gap:8px;flex:none}
+.lights{display:flex;gap:8px}
+.lights i{width:12px;height:12px;border-radius:999px;display:block}
+.icon-btn{width:30px;height:30px;border-radius:999px;display:grid;place-items:center;border:0;background:transparent;
+  color:var(--ink-2);cursor:pointer;transition:background .2s,color .2s}
+.icon-btn:hover{background:var(--fill-soft);color:var(--ink)}
+.search{margin:2px 16px 12px;height:38px;border-radius:12px;background:var(--fill-soft);
+  border:.5px solid var(--hairline-soft);display:flex;align-items:center;gap:9px;padding:0 12px;color:var(--ink-3)}
+.search span{font-size:14px;color:var(--ink-2)}
+.roster{padding:0 8px;display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;height:64px;padding:0 8px;border-radius:12px;position:relative;
+  cursor:pointer;background:transparent;border:0;text-align:left;color:inherit;font:inherit;
+  animation:arrive .45s cubic-bezier(.2,.9,.3,1.15) backwards}
+@keyframes arrive{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+.row:hover{background:var(--fill-soft)}
+.row[data-selected]{background:var(--row-selected)}
+.row[data-selected]:hover{background:var(--row-selected)}
+.row .body{flex:1;min-width:0}
+.row .line1{display:flex;align-items:baseline;gap:8px}
+.row .nm{font-size:14px;font-weight:500;letter-spacing:-.15px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .ts{margin-left:auto;font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums;flex:none}
+.row .pv{font-size:13px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;
+  transition:opacity .26s cubic-bezier(.22,1,.36,1)}
+.row .pv em{font-style:normal}
+.foot{margin-top:auto;height:64px;display:flex;align-items:center;gap:10px;padding:0 20px 4px;flex:none}
+.initials{width:28px;height:28px;border-radius:999px;display:grid;place-items:center;font-size:10.5px;font-weight:600;
+  letter-spacing:.4px;color:var(--ink-2);background:var(--fill-soft);border:.5px solid var(--hairline-soft);flex:none}
+.foot .who{font-size:13px;font-weight:500}
+
+/* ── marks ─────────────────────────────────────────────────────────── */
+.mark{position:relative;flex:none;display:block;line-height:0}
+.mark svg{display:block;overflow:visible}
+.mark[data-live="1"] svg{animation:breathe 5.4s ease-in-out infinite}
+@keyframes breathe{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-.7px) rotate(.35deg)}}
+.mark .attn{position:absolute;width:7px;height:7px;border-radius:999px;background:#e5484d;
+  box-shadow:0 0 0 2px var(--ring,var(--bg))}
+.crew{position:relative;width:40px;height:40px;flex:none}
+.crew .mark{position:absolute}
+
+/* ── conversation ──────────────────────────────────────────────────── */
+.pane{flex:1;position:relative;background:var(--pane);overflow:hidden}
+.pane-head{position:absolute;top:0;left:0;right:0;height:64px;z-index:3;display:flex;align-items:center;
+  gap:12px;padding:0 24px 0 28px;background:var(--surface);backdrop-filter:blur(80px) saturate(180%);
+  -webkit-backdrop-filter:blur(80px) saturate(180%);border-bottom:.5px solid var(--hairline)}
+.pane-head .nm{font-size:16px;font-weight:600;letter-spacing:-.2px}
+.pane-head .right{margin-left:auto;display:flex;gap:2px}
+.scroll{position:absolute;inset:0;overflow:hidden}
+.track{position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:744px;padding-bottom:90px}
+
+.sys{text-align:center;font-size:13px;color:var(--ink-2);margin:22px 0;letter-spacing:-.05px}
+.sys b{font-weight:500;color:var(--ink-2)}
+.msg{display:flex;gap:12px;align-items:flex-start;margin-top:14px}
+.msg.grouped{margin-top:8px}
+.msg .gut{width:32px;flex:none;display:flex;justify-content:center;padding-top:3px}
+.msg.me{justify-content:flex-end}
+.bubble{background:var(--bubble-agent);border-radius:18px;padding:11px 17px;font-size:15px;line-height:1.45;
+  max-width:648px;letter-spacing:-.1px;box-shadow:var(--bubble-shadow);border:.5px solid var(--hairline-soft)}
+.msg.me .bubble{background:var(--bubble-user);color:var(--on-user);border-color:transparent;box-shadow:none;max-width:420px}
+.bubble.receipts{padding:14px 18px}
+.rcp{display:flex;align-items:center;gap:9px;line-height:1.5}
+.rcp+.rcp{margin-top:7px}
+.rcp .tool{font-weight:600}
+.rcp .val{font-size:15px;font-variant-numeric:tabular-nums;letter-spacing:-.1px;color:var(--ink)}
+.code{margin-top:11px;background:var(--code-bg);border:.5px solid var(--hairline-soft);border-radius:12px;
+  padding:10px 13px;font-family:JBMono,ui-monospace,monospace;font-size:12.7px;line-height:1.62;letter-spacing:-.1px;
+  white-space:pre;overflow:hidden}
+.code .del{color:var(--ink-3)}
+.code .add{color:var(--ink)}
+.path{font-weight:500;letter-spacing:-.12px}
+
+/* the one warm object: a captured frame of the machine it is working on */
+.shotwrap{width:340px;max-width:100%}
+.shot{margin-top:9px;border-radius:14px;overflow:hidden;position:relative;
+  box-shadow:0 12px 30px -18px rgba(40,20,10,.55),0 0 0 .5px rgba(28,20,10,.10)}
+.shot .canvas{position:relative;padding-top:62.5%;
+  background:
+    radial-gradient(46% 34% at 68% 30%,rgba(255,243,214,.92) 0%,rgba(255,243,214,0) 70%),
+    radial-gradient(120% 62% at 20% 0%,#ffd3a2 0%,rgba(255,211,162,0) 62%),
+    linear-gradient(172deg,#f7b47d 0%,#eb9370 26%,#c47279 48%,#8a5f7d 66%,#4c4463 100%)}
+.shot .haze{position:absolute;left:0;right:0;bottom:20%;height:24%;
+  background:linear-gradient(180deg,rgba(255,222,180,0) 0%,rgba(255,214,168,.55) 70%,rgba(255,214,168,0) 100%)}
+.shot .hill{position:absolute;left:-30%;right:-30%;bottom:0;height:27%;
+  border-radius:50% 50% 0 0/100% 100% 0 0;background:linear-gradient(180deg,#6b5068 0%,#3d3552 72%)}
+.shot .hill.b{left:-58%;right:22%;bottom:0;height:21%;
+  background:linear-gradient(180deg,#8e5f66 0%,#4d3d54 78%);opacity:.9}
+.shot .grain{position:absolute;inset:0;opacity:.18;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/></filter><rect width='120' height='120' filter='url(%23n)' opacity='.55'/></svg>")}
+.shot .mini{position:absolute;left:11%;top:20%;width:74%;border-radius:8px;overflow:hidden;background:#fdfbf9;
+  box-shadow:0 22px 44px -16px rgba(26,12,22,.62),0 0 0 .5px rgba(0,0,0,.18);display:flex;font-size:0}
+.shot .mini .m-side{width:33%;background:#f7f3ef;padding:6px 5px;flex:none}
+.shot .mini .m-bar{height:6px;display:flex;align-items:center;gap:3px;padding:0 0 6px 1px}
+.shot .mini .m-bar i{width:4px;height:4px;border-radius:999px;display:block}
+.shot .mini .m-row{display:flex;align-items:center;gap:4px;margin-top:5px;padding:2px 2px;border-radius:4px}
+.shot .mini .m-row.sel{background:rgba(241,95,88,.13)}
+.shot .mini .m-txt{flex:1;display:flex;flex-direction:column;gap:2.5px}
+.shot .mini .m-txt u{display:block;height:3px;border-radius:2px;background:rgba(30,22,14,.30);text-decoration:none}
+.shot .mini .m-txt u+u{background:rgba(30,22,14,.14);width:78%}
+.shot .mini .m-main{flex:1;padding:9px 8px;display:flex;flex-direction:column;gap:5px}
+.shot .mini .m-b{height:13px;border-radius:7px;background:rgba(30,22,14,.09)}
+.shot .mini .m-b.a{width:84%}.shot .mini .m-b.b{width:62%}.shot .mini .m-b.c{width:72%}
+.shot .mini .m-b.me{margin-left:auto;width:46%;background:#241f1c}
+.shot-cap{font-size:12.6px;color:var(--ink-2);margin-top:7px;display:flex;align-items:center;gap:6px;letter-spacing:-.05px}
+
+.pillrow{display:flex;justify-content:center;margin:15px 0}
+.pill{display:inline-flex;align-items:center;gap:11px;height:46px;padding:0 9px;border-radius:999px;
+  background:var(--surface);border:.5px solid var(--hairline);backdrop-filter:blur(24px) saturate(160%);
+  -webkit-backdrop-filter:blur(24px) saturate(160%);
+  animation:morph .45s cubic-bezier(.2,.9,.3,1.15) backwards}
+@keyframes morph{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:none}}
+.pill .say{font-size:14.5px;font-weight:500;letter-spacing:-.1px;padding-right:4px}
+.dots{display:flex;gap:4px;padding-left:2px}
+.dots i{width:5px;height:5px;border-radius:999px;background:currentColor;display:block;
+  animation:blip 1.25s ease-in-out infinite}
+.dots i:nth-child(2){animation-delay:.16s}.dots i:nth-child(3){animation-delay:.32s}
+@keyframes blip{0%,60%,100%{opacity:.28}30%{opacity:1}}
+
+.divider{display:flex;align-items:center;justify-content:center;gap:7px;margin:16px 0 0;font-size:13px;color:var(--ink-2)}
+.divider .who{display:inline-flex;align-items:center;gap:6px;color:var(--ink);font-weight:500}
+/* provenance is a name in the sender's own hue — never a filled tag */
+.chip{display:inline;background:none;border:0;padding:0;cursor:pointer;color:var(--chip-ink);
+  font:500 15px Inter;letter-spacing:-.1px;white-space:nowrap}
+.chip .mark{display:inline-block;vertical-align:-3px;margin-right:5px}
+.chip:hover{text-decoration:underline;text-underline-offset:2px}
+
+.presence{display:flex;align-items:center;gap:7px;margin:9px 0 0 44px;font-size:13px;color:var(--ink-2)}
+.presence em{font-style:normal}
+
+.card{margin:12px 0 0 44px;max-width:592px;border-radius:16px;background:var(--surface);
+  border:.5px solid var(--hairline);backdrop-filter:blur(30px) saturate(170%);
+  -webkit-backdrop-filter:blur(30px) saturate(170%);padding:14px 17px;box-shadow:var(--card-shadow)}
+.card .q{font-size:15px;font-weight:500;letter-spacing:-.15px;line-height:1.4}
+.card .q code{font-family:JBMono,ui-monospace,monospace;font-size:13.2px;font-weight:400;letter-spacing:-.2px;
+  background:var(--fill-soft);border-radius:8px;padding:2px 7px;margin:0 1px}
+.card .why{font-size:13.2px;color:var(--ink-2);margin-top:5px;line-height:1.45}
+.acts{display:flex;gap:8px;margin-top:13px}
+/* one button grammar: hairline pills. weight + a soft fill carry emphasis,
+   never the identity hue — the accent must not encode an action. */
+.btn{height:34px;padding:0 15px;border-radius:999px;font:500 13.4px Inter;letter-spacing:-.05px;cursor:pointer;
+  border:.5px solid var(--hairline);background:transparent;color:var(--ink);transition:background .2s}
+.btn:hover{background:var(--fill-soft)}
+.btn.primary{background:var(--fill-soft-2);font-weight:600}
+.btn.primary:hover{background:var(--fill-soft-2);filter:brightness(.98)}
+
+.composer{position:absolute;left:50%;transform:translateX(-50%);bottom:18px;width:calc(100% - 64px);max-width:744px;
+  height:58px;border-radius:999px;background:var(--surface);backdrop-filter:blur(60px) saturate(180%);
+  -webkit-backdrop-filter:blur(60px) saturate(180%);display:flex;align-items:center;gap:12px;padding:0 9px 0 14px;
+  border:.5px solid var(--hairline);
+  box-shadow:0 12px 34px -18px rgba(30,18,10,.35);z-index:4;
+  transition:box-shadow .22s cubic-bezier(.22,1,.36,1)}
+.composer:focus-within{box-shadow:0 0 0 1px color-mix(in oklab,var(--accent) 22%,transparent),
+  0 12px 34px -18px rgba(30,18,10,.35)}
+.composer .plus{width:26px;height:26px;display:grid;place-items:center;color:var(--ink-2);flex:none}
+.composer .ph{flex:1;font-size:15px;color:var(--ink-2);letter-spacing:-.1px}
+.composer .mic{width:40px;height:40px;border-radius:999px;display:grid;place-items:center;flex:none;
+  background:var(--mic-bg);color:var(--mic-ink)}
+
+/* ── phone ─────────────────────────────────────────────────────────── */
+.phone{width:390px;height:844px;border-radius:44px;position:relative;overflow:hidden;flex:none;
+  background:var(--pane);color:var(--ink);box-shadow:var(--elev)}
+.phone .topbar{position:absolute;top:0;left:0;right:0;height:54px;background:var(--pane);z-index:2}
+.phone .ph-head{position:absolute;top:54px;left:12px;right:12px;height:60px;border-radius:22px;z-index:3;
+  display:flex;align-items:center;gap:12px;padding:0 12px 0 16px;background:var(--surface);
+  backdrop-filter:blur(60px) saturate(180%);-webkit-backdrop-filter:blur(60px) saturate(180%);
+  border:.5px solid var(--hairline)}
+.phone .ph-head .nm{font-size:16px;font-weight:600;letter-spacing:-.2px;flex:1;min-width:0}
+.phone .ph-head .initials{margin-left:auto}
+.phone .back{width:34px;height:34px;border-radius:999px;background:var(--fill-soft);display:grid;place-items:center;
+  color:var(--ink-2);flex:none}
+.phone .scroll{inset:0}
+.phone .track{width:100%;left:0;transform:none;padding:0 14px 92px}
+.phone .bubble{max-width:266px;font-size:15px}
+.phone .msg.me .bubble{max-width:250px}
+.phone .shotwrap{width:266px}
+.phone .composer{bottom:14px;width:calc(100% - 28px);height:52px;padding:0 7px 0 12px}
+.phone .composer .mic{width:36px;height:36px}
+.phone .composer .ph{font-size:14.5px}
+.phone .notch{position:absolute;top:12px;left:50%;transform:translateX(-50%);width:110px;height:30px;border-radius:999px;
+  background:#0d0c0b;z-index:6;box-shadow:0 0 0 .5px var(--hairline)}
+.phone .statusbar{position:absolute;top:20px;left:26px;right:26px;height:16px;z-index:5;display:flex;
+  align-items:center;justify-content:space-between;font-size:13px;font-weight:600;color:var(--ink);letter-spacing:-.1px}
+.phone .statusbar .bars{display:flex;align-items:flex-end;gap:2.5px;height:9px}
+.phone .statusbar .bars i{width:3px;border-radius:1px;background:var(--ink);display:block}
+.phone .sys{margin:22px 0}
+
+/* ── avatar strip ──────────────────────────────────────────────────── */
+.strip{display:flex;align-items:flex-start;gap:34px;padding:26px 30px;border-radius:20px;
+  background:var(--strip-bg,#faf7f4);box-shadow:0 0 0 .5px rgba(35,25,15,.09)}
+.strip .cell{display:flex;flex-direction:column;align-items:center;gap:9px;width:88px}
+.strip .cell span{font-size:12px;font-weight:500;letter-spacing:-.1px;color:#57504a;text-align:center;line-height:1.25}
+/* same card, stacked — it fills the sheet's second column beside the third board */
+.strip.key{flex-direction:column;align-items:stretch;gap:18px;width:390px}
+.strip.key .cell{flex-direction:row;align-items:center;gap:14px;width:auto}
+.strip.key .cell span{text-align:left}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body data-skin="paper">
+<div class="studio">
+  <div class="studio-bar">
+    <div>
+      <div class="studio-title">supermux — the primary interface</div>
+      <div class="studio-sub">Named colleagues with faces, their own words in the list, one human on screen.
+        Paper &amp; Candy: warm neutral chrome, and the cast is the only colour.</div>
+    </div>
+    <div class="seg" role="group" aria-label="Theme">
+      <button type="button" data-skin-btn="paper" aria-pressed="true">Paper</button>
+      <button type="button" data-skin-btn="charcoal" aria-pressed="false">Charcoal</button>
+    </div>
+  </div>
+
+  <div class="plate">
+    <div id="board-light"></div>
+    <div id="phone-light"></div>
+  </div>
+
+  <div class="plate">
+    <div id="board-dark"></div>
+    <div id="phone-dark"></div>
+  </div>
+
+  <div class="plate">
+    <div id="board-patch"></div>
+    <div id="strip-key"></div>
+  </div>
+</div>
+
+<div class="offsheet"><div id="strip-holder"></div></div>
+
+<script>
+const PARAMS = new URLSearchParams(location.search);
+/* A/B switches used while grading the marks at 40px. defaults = shipped look */
+const EYES = PARAMS.get('eyes') || 'white';   /* white | dark */
+const LIFT = PARAMS.get('lift') || 'flat';    /* flat | soft | old */
+if (PARAMS.has('bare')) document.body.dataset.bare = '';
+if (PARAMS.get('skin') === 'charcoal') document.body.dataset.skin = 'charcoal';
+
+/* =====================================================================
+   avatar engine — clean-room marks, seeded per name.
+   two silhouette families:
+     · perspective-projected superellipsoid solids (the round cast)
+     · authored 2-D silhouettes: cloud, wedge, rhombus (the odd ones out)
+   eyes are always wrapped onto a face solid, so blink/gaze/state read the
+   same on both families. the silhouette itself never moves.
+   ===================================================================== */
+const SM = (() => {
+  const hash32 = str => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 } return h >>> 0 };
+  const rngFrom = seed => { let s = hash32(seed) || 1; const next = () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296 }; for (let i = 0; i < 8; i++) next(); return next };
+  const range = (r, a, b) => a + r() * (b - a);
+
+  /* OKLCH -> sRGB */
+  const oklch = (L, C, hDeg) => {
+    const h = hDeg * Math.PI / 180, a = C * Math.cos(h), b = C * Math.sin(h);
+    const l_ = L + .3963377774 * a + .2158037573 * b, m_ = L - .1055613458 * a - .0638541728 * b, s_ = L - .0894841775 * a - 1.291485548 * b;
+    const l = l_ ** 3, m = m_ ** 3, s = s_ ** 3;
+    const lin = [4.0767416621 * l - 3.3077115913 * m + .2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - .3413193965 * s, -.0041960863 * l - .7034186147 * m + 1.707614701 * s];
+    const g = v => { const c = v <= .0031308 ? 12.92 * v : 1.055 * Math.pow(Math.max(v, 0), 1 / 2.4) - .055; return Math.round(Math.min(1, Math.max(0, c)) * 255) };
+    return lin.map(g);
+  };
+  const hex = rgb => '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+  /* perceptual trims per hue slot — candy, not mathematical uniformity.
+     tuned so a white eye holds contrast on every body. */
+  const TRIM = { 28: [.685, .16], 75: [.755, .155], 158: [.695, .135], 190: [.655, .115], 265: [.585, .195], 292: [.565, .205], 350: [.66, .17] };
+  const lcFor = hue => TRIM[hue] || [.69, .155];
+  const bodyColor = hue => { const [L, C] = lcFor(hue); return hex(oklch(L, C, hue)) };
+  const shade = (hue, dL, dC = 0) => { const [L, C] = lcFor(hue); return hex(oklch(Math.min(.98, Math.max(.06, L + dL)), Math.max(0, C + dC), hue)) };
+  const chipInk = (hue, dark) => { const [, C] = lcFor(hue); return dark ? hex(oklch(.82, Math.min(C, .135), hue)) : hex(oklch(.475, Math.min(C + .02, .19), hue)) };
+
+  /* 3d */
+  const FOCAL = 620, R = 120, rad = d => d * Math.PI / 180;
+  const qFromEuler = (x, y, z) => {
+    const q = (ax, an) => { const s = Math.sin(an / 2); return [Math.cos(an / 2), ax[0] * s, ax[1] * s, ax[2] * s] };
+    const mul = ([aw, ax, ay, az], [bw, bx, by, bz]) => { const r = [aw * bw - ax * bx - ay * by - az * bz, aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx, aw * bz + ax * by - ay * bx + az * bw]; const n = Math.hypot(...r) || 1; return r.map(v => v / n) };
+    return mul(mul(q([0, 0, 1], z), q([1, 0, 0], x)), q([0, 1, 0], y));
+  };
+  const qRot = ([w, x, y, z], [px, py, pz]) => { const tx = 2 * (y * pz - z * py), ty = 2 * (z * px - x * pz), tz = 2 * (x * py - y * px); return [px + w * tx + (y * tz - z * ty), py + w * ty + (z * tx - x * tz), pz + w * tz + (x * ty - y * tx)] };
+  const project = ([x, y, z], p) => { const k = FOCAL / (FOCAL - z * p); return [x * k, y * k, z] };
+
+  const frontSample = (b, x, y) => {
+    const { rx, ry, rz, n } = b;
+    const ny = Math.max(-1, Math.min(1, y / ry));
+    const avail = Math.max(0, 1 - Math.abs(ny) ** n) ** (1 / n);
+    const sx = Math.max(-rx * avail, Math.min(rx * avail, x));
+    const nx = sx / rx;
+    const nz = Math.max(0, 1 - Math.abs(nx) ** n - Math.abs(ny) ** n) ** (1 / n);
+    return { point: [sx, ny * ry, rz * nz] };
+  };
+  const surfacePoint = (b, lon, lat) => {
+    const { rx, ry, rz, n } = b;
+    const sx = Math.cos(lat) * Math.sin(lon), sy = Math.sin(lat), sz = Math.cos(lat) * Math.cos(lon);
+    const L = (Math.abs(sx) ** n + Math.abs(sy) ** n + Math.abs(sz) ** n) ** (1 / n) || 1;
+    return [rx * sx / L, ry * sy / L, rz * sz / L];
+  };
+  const hull = pts => {
+    const s = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cr = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+    const half = src => { const r = []; for (const p of src) { while (r.length >= 2 && cr(r.at(-2), r.at(-1), p) <= 0) r.pop(); r.push(p) } return r };
+    return [...half(s).slice(0, -1), ...half([...s].reverse()).slice(0, -1)];
+  };
+  const densify = (pts, max = 5) => pts.flatMap((p, i) => { const q = pts[(i + 1) % pts.length]; const st = Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / max)); return Array.from({ length: st }, (_, k) => [p[0] + (q[0] - p[0]) * k / st, p[1] + (q[1] - p[1]) * k / st]) });
+  const smoothClosed = pts => {
+    if (pts.length < 3) return '';
+    const at = i => pts[(i + pts.length) % pts.length], f = v => v.toFixed(2);
+    return `M${f(pts[0][0])} ${f(pts[0][1])}` + pts.map((p, i) => { const pr = at(i - 1), nx = at(i + 1), an = at(i + 2); return `C${f(p[0] + (nx[0] - pr[0]) / 6)} ${f(p[1] + (nx[1] - pr[1]) / 6)} ${f(nx[0] - (an[0] - p[0]) / 6)} ${f(nx[1] - (an[1] - p[1]) / 6)} ${f(nx[0])} ${f(nx[1])}` }).join('') + 'Z';
+  };
+  const ellipsoidSilhouette = (b, q, persp) => {
+    const f = persp > 1e-4 ? FOCAL / persp : 1e9;
+    const qInv = [q[0], -q[1], -q[2], -q[3]];
+    const C = qRot(qInv, [0, 0, f]);
+    const c = [C[0] / b.rx, C[1] / b.ry, C[2] / b.rz], cl = Math.hypot(...c);
+    if (cl <= 1.0001) return null;
+    const ch = c.map(v => v / cl), d = 1 / cl, r = Math.sqrt(1 - d * d);
+    const helper = Math.abs(ch[0]) < .9 ? [1, 0, 0] : [0, 1, 0];
+    const cross = (a, b2) => [a[1] * b2[2] - a[2] * b2[1], a[2] * b2[0] - a[0] * b2[2], a[0] * b2[1] - a[1] * b2[0]];
+    const norm = v => { const l = Math.hypot(...v) || 1; return v.map(x => x / l) };
+    const u = norm(cross(ch, helper)), v = cross(ch, u), pts = [];
+    for (let i = 0; i < 128; i++) {
+      const t = i / 128 * Math.PI * 2;
+      const y = [ch[0] * d + (u[0] * Math.cos(t) + v[0] * Math.sin(t)) * r, ch[1] * d + (u[1] * Math.cos(t) + v[1] * Math.sin(t)) * r, ch[2] * d + (u[2] * Math.cos(t) + v[2] * Math.sin(t)) * r];
+      pts.push(project(qRot(q, [y[0] * b.rx, y[1] * b.ry, y[2] * b.rz]), persp));
+    }
+    return smoothClosed(pts);
+  };
+  const bodyPath = (b, q, persp) => {
+    if (Math.abs(b.n - 2) < .02) { const e = ellipsoidSilhouette(b, q, persp); if (e) return e }
+    const pts = [];
+    for (let i = 0; i < 49; i++) { const lat = -Math.PI / 2 + i / 48 * Math.PI; for (let j = 0; j < 121; j++) { const lon = -Math.PI + j / 120 * Math.PI * 2; pts.push(project(qRot(q, surfacePoint(b, lon, lat)), persp)) } }
+    return smoothClosed(densify(hull(pts), 4));
+  };
+
+  /* ── authored 2-D silhouettes ────────────────────────────────────── */
+  /* cloud: exact boundary of a union of discs, sampled radially. every disc
+     contains the origin, so the union is star-shaped and the sweep is exact. */
+  const cloudPts = (lobes, spin) => {
+    const out = [];
+    for (let i = 0; i < 168; i++) {
+      const t = i / 168 * Math.PI * 2 + spin, u = [Math.cos(t), Math.sin(t)];
+      let best = 0;
+      for (const [cx, cy, rr] of lobes) {
+        const b = cx * u[0] + cy * u[1], c = cx * cx + cy * cy - rr * rr, disc = b * b - c;
+        if (disc <= 0) continue;
+        best = Math.max(best, b + Math.sqrt(disc));
+      }
+      out.push([u[0] * best, u[1] * best]);
+    }
+    return out;
+  };
+  /* rounded polygon: corner arcs of radius r, then the smoothing pass */
+  const roundedPoly = (verts, r) => {
+    const out = [];
+    const n = verts.length;
+    for (let i = 0; i < n; i++) {
+      const p = verts[i], a = verts[(i - 1 + n) % n], b = verts[(i + 1) % n];
+      const v1 = [a[0] - p[0], a[1] - p[1]], v2 = [b[0] - p[0], b[1] - p[1]];
+      const l1 = Math.hypot(...v1) || 1, l2 = Math.hypot(...v2) || 1;
+      const u1 = [v1[0] / l1, v1[1] / l1], u2 = [v2[0] / l2, v2[1] / l2];
+      const ang = Math.acos(Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1])));
+      const tan = r / Math.tan(ang / 2);
+      const t = Math.min(tan, l1 * .48, l2 * .48);
+      const p1 = [p[0] + u1[0] * t, p[1] + u1[1] * t], p2 = [p[0] + u2[0] * t, p[1] + u2[1] * t];
+      const bis = [(u1[0] + u2[0]), (u1[1] + u2[1])], bl = Math.hypot(...bis) || 1;
+      const dist = t / Math.cos(ang / 2 > 1.5 ? 1.5 : ang / 2) || t;
+      const c = [p[0] + bis[0] / bl * Math.abs(dist), p[1] + bis[1] / bl * Math.abs(dist)];
+      const a0 = Math.atan2(p1[1] - c[1], p1[0] - c[0]), a1 = Math.atan2(p2[1] - c[1], p2[0] - c[0]);
+      let d = a1 - a0; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+      const rr = Math.hypot(p1[0] - c[0], p1[1] - c[1]);
+      const steps = 9;
+      for (let k = 0; k <= steps; k++) { const an = a0 + d * k / steps; out.push([c[0] + Math.cos(an) * rr, c[1] + Math.sin(an) * rr]) }
+    }
+    return out;
+  };
+  const SIL = {
+    cloud: () => cloudPts([[-60, 4, 70], [2, -36, 76], [62, 8, 68], [-26, 48, 58], [30, 50, 58]], .12),
+    wedge: () => roundedPoly([[2, -118], [118, 90], [-114, 94]], 32),
+    rhombus: () => roundedPoly([[0, -128], [124, 2], [0, 124], [-122, -2]], 30),
+  };
+  /* the face solid the eyes wrap onto, per authored silhouette */
+  const SIL_FACE = {
+    cloud: { body: { rx: 96, ry: 74, rz: 92, n: 2 }, dy: 14 },
+    wedge: { body: { rx: 84, ry: 84, rz: 84, n: 2 }, dy: 34 },
+    rhombus: { body: { rx: 88, ry: 88, rz: 88, n: 2 }, dy: 4 },
+  };
+
+  const SHAPES = {
+    sphere: { rx: 121, ry: 121, rz: 121, n: 2 },
+    egg: { rx: 105, ry: 133, rz: 105, n: 2.1 },
+    capsule: { rx: 99, ry: 139, rz: 99, n: 2.45 },
+    blob: { rx: 132, ry: 108, rz: 118, n: 2.15 },
+    cube: { rx: 110, ry: 110, rz: 98, n: 3.6 },
+    pebble: { rx: 128, ry: 104, rz: 112, n: 2.7 },
+  };
+  const SHAPE_KEYS = Object.keys(SHAPES);
+
+  /* seed -> character. hue/shape/gaze/tilt may be pinned for the named cast;
+     everything else (jitter, eye geometry, asymmetry, blink clock) is seeded. */
+  const characterFromSeed = (seed, pin = {}) => {
+    const rand = rngFrom(seed);
+    const authored = pin.shape && SIL[pin.shape];
+    const shapeName = pin.shape || SHAPE_KEYS[hash32(seed + '#shape') % 6];
+    const base = authored ? SIL_FACE[shapeName].body : SHAPES[shapeName];
+    const hue = pin.hue !== undefined ? pin.hue : (hash32(seed + '#hue') % 12) * 30 + 8;
+    const j = v => v * range(rand, .94, 1.06), asym = () => range(rand, -1, 1);
+    const tilt = pin.tilt !== undefined ? pin.tilt : (asym() > 0 ? 1 : -1) * range(rand, 24, 34);
+    return {
+      seed, shapeName, hue, authored: !!authored,
+      body: authored ? { ...base } : { rx: j(base.rx), ry: j(base.ry), rz: j(base.rz), n: base.n },
+      sil: authored ? SIL[shapeName]() : null,
+      faceDY: authored ? SIL_FACE[shapeName].dy : 0,
+      color: bodyColor(hue),
+      hi: shade(hue, +.018, -.004), lo: shade(hue, -.022, +.005),
+      ink: EYES === 'white' ? '#ffffff' : (lcFor(hue)[0] > .55 ? '#111316' : '#f5f7fa'),
+      gaze: pin.gaze !== undefined ? pin.gaze : Math.round(asym() * 16),
+      eyes: {
+        wL: range(rand, 31, 38), hL: range(rand, 64, 80),
+        spacing: range(rand, 58, 70), pxL: 0, pxR: 0,
+        pyL: range(rand, -8, 6), angleL: tilt, angleR: tilt * range(rand, .82, 1.05),
+      },
+      asym: { w: 1 + asym() * .07, h: 1 + asym() * .07, py: asym() * 2.4, slant: asym() * 3 },
+      pose: { x: asym() * (authored ? 2 : 7), y: asym() * (authored ? 4 : 15), z: asym() * (authored ? 1.5 : 4.5), persp: 1 },
+      clock: rngFrom(seed + '#clock')() * 9,
+    };
+  };
+
+  /* eyes: rounded-capsule outline drawn in face arc-length coords, wrapped
+     onto the face solid. status lives in the eyes; the silhouette never moves. */
+  const roundedRect = (w, h) => {
+    const hw = w / 2, hh = h / 2, r = Math.min(hw, hh), pts = [];
+    const line = (a, b) => { const n = Math.max(2, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 2.2)); for (let i = 0; i < n; i++) { const t = i / n; pts.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]) } };
+    const arc = (cx, cy, a0) => { for (let i = 0; i < 12; i++) { const a = a0 + i / 12 * Math.PI / 2; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]) } };
+    line([-hw + r, -hh], [hw - r, -hh]); arc(hw - r, -hh + r, -Math.PI / 2);
+    line([hw, -hh + r], [hw, hh - r]); arc(hw - r, hh - r, 0);
+    line([hw - r, hh], [-hw + r, hh]); arc(-hw + r, hh - r, Math.PI / 2);
+    line([-hw, hh - r], [-hw, -hh + r]); arc(-hw + r, -hh + r, Math.PI);
+    return pts;
+  };
+  const faceCoords = (x, y) => [R * Math.cos(y / R) * Math.sin(x / R), R * Math.sin(y / R)];
+  const eyePath = (b, q, e, side, blink, persp, dy = 0) => {
+    const sfx = side < 0 ? 'L' : 'R';
+    const w = e['w' + sfx], h = 5 + (e['h' + sfx] - 5) * blink;
+    const cx0 = side * e.spacing / 2 + e['px' + sfx], cy0 = e['py' + sfx] + dy;
+    const a = rad(side < 0 ? e.angleL : e.angleR);
+    const pts = roundedRect(w, h).map(([lx, ly]) => {
+      const rx2 = lx * Math.cos(a) - ly * Math.sin(a), ry2 = lx * Math.sin(a) + ly * Math.cos(a);
+      const [fx, fy] = faceCoords(cx0 + rx2, cy0 + ry2);
+      return project(qRot(q, frontSample(b, fx, fy).point), persp);
+    });
+    const f = v => v.toFixed(2);
+    return `M${f(pts[0][0])} ${f(pts[0][1])}` + pts.slice(1).map(p => `L${f(p[0])} ${f(p[1])}`).join('') + 'Z';
+  };
+
+  /* eye geometry per state */
+  const eyesFor = (ch, state) => {
+    const b = ch.eyes, a = ch.asym, g = ch.gaze;
+    const e = { spacing: b.spacing, pxL: g, pxR: g, pyL: b.pyL, pyR: b.pyL + a.py, angleL: b.angleL, angleR: b.angleR, wL: b.wL, wR: b.wL * a.w, hL: b.hL, hR: b.hL * a.h };
+    if (state === 'working') { const s = -26 + a.slant; e.angleL = s; e.angleR = s + 3.2; e.hL *= .78; e.hR *= .78; e.wL *= .54; e.wR *= .54 }
+    else if (state === 'waiting') { const w = (b.wL + b.hL) / 2 * .8; e.wL = w; e.wR = w * a.w; e.hL = w * 1.04; e.hR = w * 1.04 * a.h; e.angleL *= .35; e.angleR *= .35 }
+    else if (state === 'done') { e.hL *= .30; e.hR *= .30; e.wL *= 1.05; e.wR *= 1.05 }
+    return e;
+  };
+
+  let uid = 0;
+  const live = [];
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* build one mark element */
+  const mark = (name, opts = {}) => {
+    const { size = 40, state = 'idle', ring = null, pin = {}, animate = true } = opts;
+    const ch = characterFromSeed(name, pin);
+    const q = qFromEuler(rad(ch.pose.x), rad(ch.pose.y), rad(ch.pose.z));
+    const bp = ch.sil ? smoothClosed(densify(ch.sil, 4)) : bodyPath(ch.body, q, ch.pose.persp);
+    const e = eyesFor(ch, state);
+    const id = 'g' + (++uid);
+    const vb = 131;
+    const rw = ring ? (2 * (vb * 2) / size) : 0;
+    const el = document.createElement('span');
+    el.className = 'mark';
+    el.style.width = size + 'px'; el.style.height = size + 'px';
+    /* flat body is the shipped read; `lift` keeps a ≤3% top-left lift for A/B */
+    const fill = LIFT === 'flat' ? ch.color : `url(#${id})`;
+    const defs = LIFT === 'flat' ? '' :
+      `<defs><linearGradient id="${id}" x1="0.16" y1="0" x2="0.82" y2="1">
+<stop offset="0" stop-color="${ch.hi}"/><stop offset=".46" stop-color="${ch.color}"/><stop offset="1" stop-color="${ch.lo}"/>
+</linearGradient></defs>`;
+    el.innerHTML =
+      `<svg viewBox="${-vb} ${-vb} ${vb * 2} ${vb * 2}" width="${size}" height="${size}" role="img" aria-label="${name}">
+${defs}
+<path d="${bp}" fill="${fill}"${ring ? ` stroke="${ring}" stroke-width="${rw.toFixed(1)}" paint-order="stroke" stroke-linejoin="round"` : ''}/>
+<path class="eL" d="${eyePath(ch.body, q, e, -1, 1, ch.pose.persp, ch.faceDY)}" fill="${ch.ink}"/>
+<path class="eR" d="${eyePath(ch.body, q, e, 1, 1, ch.pose.persp, ch.faceDY)}" fill="${ch.ink}"/>
+</svg>`;
+    const isLive = state === 'working' || state === 'waiting' || state === 'idle';
+    if (isLive && animate && !reduced) {
+      el.dataset.live = '1';
+      el.querySelector('svg').style.animationDelay = (-ch.clock).toFixed(2) + 's';
+      live.push({ ch, q, e, state, l: el.querySelector('.eL'), r: el.querySelector('.eR'), last: -1 });
+    }
+    el.dataset.hue = ch.hue;
+    // where the silhouette's upper-right shoulder is, in box px — the attention
+    // dot rests there instead of floating in the corner of the box
+    const rxp = size / 2 * (ch.body.rx / vb), ryp = size / 2 * (ch.body.ry / vb);
+    el.dataset.attnLeft = (size / 2 + rxp * .707 - 3.5).toFixed(1);
+    el.dataset.attnTop = (size / 2 - ryp * .707 - 3.5).toFixed(1);
+    return el;
+  };
+
+  /* blink + micro-saccade clock — per-seed phase so the roster never syncs */
+  const period = st => st === 'working' ? 2.6 : st === 'waiting' ? 3.1 : 4.6;
+  const tick = t => {
+    for (const a of live) {
+      const p = period(a.state) + (a.ch.clock % 1.7);
+      const ph = (t / 1000 + a.ch.clock) % p;
+      const closing = .16;
+      let b = 1;
+      if (ph > p - closing) { const u = (ph - (p - closing)) / closing; b = Math.abs(u - .5) * 2; b = Math.max(0, b * b * (3 - 2 * b)) }
+      let sx = 0;
+      if (a.state === 'waiting') { const s = Math.sin((t / 1000 + a.ch.clock) * .55); sx = Math.round(s * 1.6) * 1.6 }
+      const key = Math.round(b * 40) * 10 + sx;
+      if (key !== a.last) {
+        a.last = key;
+        const e = { ...a.e, pxL: a.ch.gaze + sx, pxR: a.ch.gaze + sx };
+        a.l.setAttribute('d', eyePath(a.ch.body, a.q, e, -1, b, a.ch.pose.persp, a.ch.faceDY));
+        a.r.setAttribute('d', eyePath(a.ch.body, a.q, e, 1, b, a.ch.pose.persp, a.ch.faceDY));
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+  if (!reduced) requestAnimationFrame(tick);
+
+  return { mark, chipInk, bodyColor, characterFromSeed, reduced };
+})();
+
+/* =====================================================================
+   icons
+   ===================================================================== */
+const I = {
+  search: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.3"/><path d="M10.4 10.4L14 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
+  plus: `<svg width="17" height="17" viewBox="0 0 16 16" fill="none"><path d="M8 2.9v10.2M2.9 8h10.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  plusBig: `<svg width="17" height="17" viewBox="0 0 16 16" fill="none"><path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  screen: `<svg width="19" height="19" viewBox="0 0 20 20" fill="none"><rect x="2.4" y="3.6" width="15.2" height="10.4" rx="2.2" stroke="currentColor" stroke-width="1.3"/><path d="M7.4 16.8h5.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
+  mic: `<svg width="17" height="17" viewBox="0 0 18 18" fill="none"><rect x="6.6" y="2.2" width="4.8" height="8.4" rx="2.4" fill="currentColor"/><path d="M3.9 8.4a5.1 5.1 0 0 0 10.2 0M9 13.5v2.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  back: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 2.8L4.8 8L10 13.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  check: `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" style="flex:none"><path d="M2 7.4L5.4 10.8L12 3.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  arrow: `<svg width="15" height="12" viewBox="0 0 16 12" fill="none" style="flex:none"><path d="M1.6 6h12.2M9.6 1.8L13.8 6l-4.2 4.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  file: `<svg width="12" height="13" viewBox="0 0 12 13" fill="none" style="flex:none"><path d="M2.2 1.6h4.3L9.8 5v6.4H2.2z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M6.4 1.7V5h3.3" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>`,
+};
+
+/* =====================================================================
+   the cast — hue, silhouette, pinned gaze + idle eye tilt.
+   the accent of a board is derived from the focused member's hue.
+   ===================================================================== */
+const CAST = {
+  'Release Train': { hue: 28, shape: 'pebble', gaze: -6, tilt: 30 },
+  'Patch': { hue: 190, shape: 'egg', gaze: 8, tilt: -27 },
+  'Quill': { hue: 265, shape: 'sphere', gaze: 17, tilt: 22 },
+  'Ledger': { hue: 292, shape: 'capsule', gaze: -15, tilt: 28 },
+  'Compass': { hue: 158, shape: 'rhombus', gaze: 13, tilt: -31 },
+  'Lookout': { hue: 75, shape: 'cloud', gaze: -18, tilt: 26 },
+  'Kestrel': { hue: 350, shape: 'wedge', gaze: 14, tilt: -33 },
+};
+const ROSTER = [
+  { name: 'Release Train', ts: '1:47 PM', prev: 'one check left. then crates.io.', state: 'working' },
+  { name: 'Patch', ts: '11:02 AM', presence: 'Typing…', state: 'working' },
+  { name: 'Quill', ts: '10:12 AM', prev: 'readme rewritten. shorter now.', state: 'waiting', attn: true },
+  { name: 'Ledger', ts: '9:38 AM', prev: 'euro formats parse clean now.', state: 'idle' },
+  { name: 'Compass', ts: '8:15 AM', prev: 'three dead links, all in docs.', state: 'idle' },
+  { name: 'Lookout', ts: 'Yesterday', prev: 'ci green across the board.', state: 'done' },
+  { name: 'Render crew', ts: 'Yesterday', prev: "that flicker's gone on ios.", crew: ['Lookout', 'Ledger', 'Patch'] },
+  { name: 'Kestrel', ts: 'Yesterday', prev: 'strato box is quiet since the fix.', state: 'done' },
+];
+
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n };
+/* provenance: the mark plus the name, in that member's hue. no fill, no tag. */
+const chip = (name, dark) => {
+  const c = CAST[name], b = el('button', 'chip');
+  b.style.setProperty('--chip-ink', SM.chipInk(c.hue, dark));
+  b.appendChild(SM.mark(name, { size: 15, state: 'idle', pin: c, animate: false }));
+  b.appendChild(el('span', null, name));
+  return b;
+};
+const faceName = (name, dark, ringColor) => {
+  const c = CAST[name], w = el('span', 'who');
+  w.appendChild(SM.mark(name, { size: 16, state: 'idle', pin: c, animate: false, ring: ringColor }));
+  w.appendChild(el('span', null, name));
+  return w;
+};
+
+/* ── sidebar ──────────────────────────────────────────────────────── */
+function buildSidebar(theme, focus) {
+  const side = el('div', 'side');
+  const tb = el('div', 'titlebar');
+  const lights = el('div', 'lights');
+  ['#ec6a5e', '#f4bf4f', '#61c554'].forEach(c => { const i = el('i'); i.style.background = c; lights.appendChild(i) });
+  tb.appendChild(lights);
+  const add = el('button', 'icon-btn'); add.innerHTML = I.plusBig; add.style.marginLeft = 'auto'; add.title = 'New session';
+  tb.appendChild(add);
+  side.appendChild(tb);
+
+  const s = el('div', 'search'); s.innerHTML = I.search; s.appendChild(el('span', null, 'Search'));
+  side.appendChild(s);
+
+  const list = el('div', 'roster');
+  ROSTER.forEach((r, i) => {
+    const row = el('button', 'row');
+    row.style.animationDelay = (i * 42) + 'ms';
+    if (r.name === focus) row.dataset.selected = '';
+    if (r.crew) {
+      const cw = el('div', 'crew');
+      const pos = [[11, 0], [0, 15], [22, 15]];
+      r.crew.forEach((m, k) => {
+        const mk = SM.mark(m, { size: 18, state: 'idle', pin: CAST[m], animate: k === 0, ring: theme === 'dark' ? '#1a1a18' : '#faf7f4' });
+        mk.style.left = pos[k][0] + 'px'; mk.style.top = pos[k][1] + 'px';
+        cw.appendChild(mk);
+      });
+      row.appendChild(cw);
+    } else {
+      const m = SM.mark(r.name, { size: 40, state: r.state, pin: CAST[r.name] });
+      if (r.attn) { const d = el('i', 'attn'); d.style.left = m.dataset.attnLeft + 'px'; d.style.top = m.dataset.attnTop + 'px'; m.appendChild(d) }
+      row.appendChild(m);
+    }
+    const body = el('div', 'body');
+    const l1 = el('div', 'line1');
+    l1.appendChild(el('span', 'nm', r.name));
+    l1.appendChild(el('span', 'ts', r.ts));
+    body.appendChild(l1);
+    const pv = el('div', 'pv');
+    if (r.presence) { const em = el('em', null, r.presence); pv.appendChild(em) } else pv.textContent = r.prev;
+    body.appendChild(pv);
+    row.appendChild(body);
+    list.appendChild(row);
+  });
+  side.appendChild(list);
+
+  const foot = el('div', 'foot');
+  foot.appendChild(el('span', 'initials', 'SB'));
+  foot.appendChild(el('span', 'who', 'Sander'));
+  side.appendChild(foot);
+  return side;
+}
+
+/* ── transcript pieces ────────────────────────────────────────────── */
+const sysLine = (a, b) => { const s = el('div', 'sys'); s.appendChild(document.createTextNode(a)); if (b) { s.appendChild(document.createTextNode(' · ')); s.appendChild(el('b', null, b)) } return s };
+const bubbleRow = (opts) => {
+  const { who, grouped, mark, me, state } = opts;
+  const row = el('div', 'msg' + (grouped ? ' grouped' : '') + (me ? ' me' : ''));
+  if (!me) {
+    const g = el('div', 'gut');
+    if (mark) g.appendChild(SM.mark(who, { size: 28, state: state || 'idle', pin: CAST[who] }));
+    row.appendChild(g);
+  }
+  const b = el('div', 'bubble');
+  row.appendChild(b);
+  row.bubble = b;
+  return row;
+};
+const receipts = (rows) => {
+  const r = bubbleRow({ grouped: true });
+  r.bubble.className = 'bubble receipts';
+  rows.forEach(([tool, val]) => {
+    const line = el('div', 'rcp');
+    const c = el('span'); c.innerHTML = I.check; c.style.display = 'flex'; line.appendChild(c);
+    line.appendChild(el('span', 'tool', tool));
+    const a = el('span'); a.innerHTML = I.arrow; a.style.display = 'flex'; line.appendChild(a);
+    line.appendChild(el('span', 'val', val));
+    r.bubble.appendChild(line);
+  });
+  return r;
+};
+/* the captured frame — the one warm, non-flat object in the column */
+const shot = (caption) => {
+  const wrap = el('div', 'shotwrap');
+  const s = el('div', 'shot');
+  s.innerHTML =
+    `<div class="canvas">
+       <div class="hill b"></div><div class="hill"></div>
+       <div class="haze"></div>
+       <div class="grain"></div>
+       <div class="mini">
+         <div class="m-side">
+           <div class="m-bar"><i style="background:#ec6a5e"></i><i style="background:#f4bf4f"></i><i style="background:#61c554"></i></div>
+         </div>
+         <div class="m-main">
+           <div class="m-b a"></div><div class="m-b b"></div>
+           <div class="m-b me"></div><div class="m-b c"></div>
+         </div>
+       </div>
+     </div>`;
+  const side = s.querySelector('.m-side');
+  ['Release Train', 'Patch', 'Quill'].forEach((n, i) => {
+    const row = el('div', 'm-row' + (i === 0 ? ' sel' : ''));
+    row.appendChild(SM.mark(n, { size: 11, state: 'idle', pin: CAST[n], animate: false }));
+    const t = el('div', 'm-txt'); t.innerHTML = '<u></u><u></u>';
+    row.appendChild(t);
+    side.appendChild(row);
+  });
+  wrap.appendChild(s);
+  const cap = el('div', 'shot-cap');
+  const ic = el('span'); ic.innerHTML = I.file; ic.style.display = 'flex';
+  cap.appendChild(ic); cap.appendChild(el('span', null, caption));
+  wrap.appendChild(cap);
+  return wrap;
+};
+
+/* two focus scripts. same primitives, different colleague — the second board
+   exists to prove the accent is derived, not decided. */
+function buildTranscript(theme, focus) {
+  const dark = theme === 'dark';
+  const t = el('div', 'track');
+  const ringCol = dark ? '#232120' : '#fdfbf9';
+  const inFlight = (from, to) => {
+    const pr = el('div', 'pillrow');
+    const pill = el('div', 'pill');
+    pill.appendChild(SM.mark(from, { size: 26, state: 'working', pin: CAST[from], ring: ringCol }));
+    const say = el('span', 'say');
+    say.style.color = SM.chipInk(CAST[to].hue, dark);
+    say.style.display = 'inline-flex'; say.style.alignItems = 'center'; say.style.gap = '9px';
+    const dots = el('span', 'dots'); dots.innerHTML = '<i></i><i></i><i></i>';
+    say.appendChild(dots); say.appendChild(el('span', null, 'asking ' + to + '…'));
+    pill.appendChild(say);
+    pill.appendChild(SM.mark(to, { size: 26, state: 'working', pin: CAST[to], ring: ringCol }));
+    pr.appendChild(pill);
+    return pr;
+  };
+  const from = (names) => {
+    const dv = el('div', 'divider');
+    dv.appendChild(el('span', null, 'Messages from'));
+    dv.appendChild(faceName(names[0], dark, ringCol));
+    dv.appendChild(el('span', null, 'and'));
+    dv.appendChild(faceName(names[1], dark, ringCol));
+    return dv;
+  };
+  /* the ask is always the next step this session has not taken yet */
+  const permission = (cmd, tail, why) => {
+    const card = el('div', 'card');
+    const q = el('div', 'q');
+    q.append('Run ');
+    q.appendChild(el('code', null, cmd));
+    q.append(tail);
+    card.appendChild(q);
+    card.appendChild(el('div', 'why', why));
+    const acts = el('div', 'acts');
+    acts.append(el('button', 'btn primary', 'Allow once'),
+      el('button', 'btn', 'Allow while this session runs'),
+      el('button', 'btn', 'Not now'));
+    card.appendChild(acts);
+    return card;
+  };
+  let r;
+
+  if (focus === 'Patch') {
+    t.appendChild(sysLine('Renamed to Patch'));
+
+    r = bubbleRow({ me: true });
+    r.bubble.textContent = 'the euro amounts come out wrong in the ledger export';
+    t.appendChild(r);
+
+    r = bubbleRow({ who: 'Patch', mark: true });
+    const p0 = el('div');
+    p0.append('found it in ');
+    p0.appendChild(el('span', 'path', 'server/src/export/money.rs'));
+    p0.append(' — we parsed with the dot as the decimal mark, so 1.234,56 came back as one and a bit:');
+    r.bubble.appendChild(p0);
+    const c2 = el('pre', 'code');
+    c2.innerHTML =
+      `<span class="del">-  let cents = raw.replace(',', "").parse::&lt;f64&gt;()?;</span>\n` +
+      `<span class="add">+  let cents = Money::parse_locale(raw, locale)?;</span>`;
+    r.bubble.appendChild(c2);
+    t.appendChild(r);
+
+    t.appendChild(receipts([['cargo check', 'clean · 0 errors'], ['tests', '38 passed · 2 new'], ['export', '1.234,56 € reads right']]));
+
+    t.appendChild(inFlight('Patch', 'Ledger'));
+    t.appendChild(from(['Ledger', 'Quill']));
+
+    r = bubbleRow({ who: 'Patch', mark: true });
+    r.style.marginTop = '16px';
+    r.bubble.appendChild(chip('Ledger', dark));
+    r.bubble.append(' had the same bug in the invoice path and ');
+    r.bubble.appendChild(chip('Quill', dark));
+    r.bubble.append(' wrote the note for the changelog. both in this branch now.');
+    t.appendChild(r);
+
+    r = bubbleRow({ me: true });
+    r.bubble.textContent = 'good. open the PR';
+    t.appendChild(r);
+
+    t.appendChild(sysLine('Linked board issue', 'euro amounts in the export'));
+
+    r = bubbleRow({ who: 'Patch', mark: true, state: 'working' });
+    r.bubble.textContent = 'branch is ready. three commits, one from each of us.';
+    t.appendChild(r);
+
+    /* Patch's roster row carries presence, so its pane carries it too */
+    const pres = el('div', 'presence');
+    pres.appendChild(el('em', null, 'Typing…'));
+    t.appendChild(pres);
+
+    t.appendChild(permission('git push -u origin fix/money', ' and open the PR?',
+      'in supermux/server · pushes three commits, opens against main'));
+    return t;
+  }
+
+  /* Release Train */
+  t.appendChild(sysLine('Renamed to Release Train'));
+
+  r = bubbleRow({ who: 'Release Train', mark: true });
+  r.bubble.textContent = 'tagged v0.6.0 and the build is rolling. two checks left.';
+  t.appendChild(r);
+
+  r = bubbleRow({ grouped: true });
+  r.bubble.appendChild(shot('release-run.png'));
+  t.appendChild(r);
+
+  t.appendChild(receipts([['cargo check', 'clean · 0 errors'], ['tests', '212 passed'], ['release', 'v0.6.0 tagged']]));
+
+
+  t.appendChild(inFlight('Release Train', 'Patch'));
+  t.appendChild(from(['Patch', 'Quill']));
+
+  r = bubbleRow({ who: 'Release Train', mark: true });
+  r.style.marginTop = '16px';
+  r.bubble.appendChild(chip('Patch', dark));
+  r.bubble.append(' sent over the failing job and ');
+  r.bubble.appendChild(chip('Quill', dark));
+  r.bubble.append(" tightened the notes. both folded into tonight's run.");
+  t.appendChild(r);
+
+  r = bubbleRow({ me: true });
+  r.bubble.textContent = 'ship it once CI is green';
+  t.appendChild(r);
+
+  t.appendChild(sysLine('Created schedule', 'Nightly release watch'));
+
+  /* this line is the roster's second line for Release Train, verbatim (C3) —
+     so the session is not typing here, and carries no presence line */
+  r = bubbleRow({ who: 'Release Train', mark: true, state: 'working' });
+  r.bubble.textContent = 'one check left. then crates.io.';
+  t.appendChild(r);
+
+  t.appendChild(permission('cargo publish --dry-run', ' before I push to crates.io?',
+    'in supermux/server · reaches crates.io, writes nothing'));
+  return t;
+}
+
+function buildBoard(theme, focus) {
+  const app = el('div', 'app');
+  app.dataset.theme = theme;
+  /* the one swap: every accent surface on this board derives from here */
+  app.style.setProperty('--accent', SM.bodyColor(CAST[focus].hue));
+  app.appendChild(buildSidebar(theme, focus));
+
+  const pane = el('div', 'pane');
+  const head = el('div', 'pane-head');
+  head.appendChild(SM.mark(focus, { size: 28, state: 'working', pin: CAST[focus] }));
+  head.appendChild(el('div', 'nm', focus));
+  const right = el('div', 'right');
+  const sc = el('button', 'icon-btn'); sc.innerHTML = I.screen; sc.title = 'Open terminal';
+  right.appendChild(sc);
+  head.appendChild(right);
+  pane.appendChild(head);
+
+  const scroll = el('div', 'scroll');
+  scroll.appendChild(buildTranscript(theme, focus));
+  pane.appendChild(scroll);
+
+  const comp = el('div', 'composer');
+  const plus = el('span', 'plus'); plus.innerHTML = I.plus;
+  comp.appendChild(plus);
+  comp.appendChild(el('span', 'ph', 'Message ' + focus));
+  const mic = el('span', 'mic'); mic.innerHTML = I.mic;
+  comp.appendChild(mic);
+  pane.appendChild(comp);
+
+  app.appendChild(pane);
+  return app;
+}
+
+/* ── phone ────────────────────────────────────────────────────────── */
+function buildPhone(theme) {
+  const dark = theme === 'dark';
+  const focus = 'Release Train';
+  const ph = el('div', 'phone app');
+  ph.dataset.theme = theme;
+  ph.style.setProperty('--accent', SM.bodyColor(CAST[focus].hue));
+
+  ph.appendChild(el('div', 'topbar'));
+  ph.appendChild(el('div', 'notch'));
+  const sb = el('div', 'statusbar');
+  /* the phone is the same session, later: the desktop board is still holding
+     the crates.io ask at 1:47, this is after it was allowed */
+  sb.appendChild(el('span', null, '2:06'));
+  const bars = el('span', 'bars');
+  [4, 6, 8, 9].forEach(h => { const i = el('i'); i.style.height = h + 'px'; bars.appendChild(i) });
+  sb.appendChild(bars);
+  ph.appendChild(sb);
+  const head = el('div', 'ph-head');
+  const back = el('span', 'back'); back.innerHTML = I.back;
+  head.appendChild(back);
+  head.appendChild(SM.mark(focus, { size: 28, state: 'working', pin: CAST[focus] }));
+  head.appendChild(el('div', 'nm', focus));
+  head.appendChild(el('span', 'initials', 'SB'));   /* the human, on the phone too */
+  ph.appendChild(head);
+
+  const scroll = el('div', 'scroll');
+  const t = el('div', 'track');
+  const ringCol = dark ? '#232120' : '#fdfbf9';
+  let r;
+
+  /* starts mid-conversation: the top of the thread runs up under the header */
+  r = bubbleRow({ who: focus, mark: true });
+  r.bubble.textContent = 'morning. picking the release back up.';
+  t.appendChild(r);
+
+  r = bubbleRow({ me: true });
+  r.bubble.textContent = 'morning';
+  t.appendChild(r);
+
+  r = bubbleRow({ who: focus, mark: true });
+  r.bubble.textContent = 'the nightly run finished clean. no flakes.';
+  t.appendChild(r);
+
+  r = bubbleRow({ me: true });
+  r.bubble.textContent = 'nice';
+  t.appendChild(r);
+
+  r = bubbleRow({ who: focus, mark: true });
+  r.bubble.textContent = 'starting the 0.6.0 tag now.';
+  t.appendChild(r);
+
+  r = bubbleRow({ me: true });
+  r.bubble.textContent = "how's the tag looking?";
+  t.appendChild(r);
+
+  r = bubbleRow({ who: focus, mark: true });
+  r.bubble.textContent = "build's rolling. two checks left.";
+  t.appendChild(r);
+
+  r = bubbleRow({ grouped: true });
+  r.bubble.className = 'bubble receipts';
+  [['tests', '212 passed'], ['release', 'v0.6.0 tagged']].forEach(([tool, val]) => {
+    const line = el('div', 'rcp');
+    const c = el('span'); c.innerHTML = I.check; c.style.display = 'flex'; line.appendChild(c);
+    line.appendChild(el('span', 'tool', tool));
+    const a = el('span'); a.innerHTML = I.arrow; a.style.display = 'flex'; line.appendChild(a);
+    line.appendChild(el('span', 'val', val));
+    r.bubble.appendChild(line);
+  });
+  t.appendChild(r);
+
+  r = bubbleRow({ grouped: true });
+  r.bubble.appendChild(shot('release-run.png'));
+  t.appendChild(r);
+
+  const pr = el('div', 'pillrow');
+  const pill = el('div', 'pill');
+  pill.appendChild(SM.mark(focus, { size: 24, state: 'working', pin: CAST[focus], ring: ringCol }));
+  const say = el('span', 'say');
+  say.style.color = SM.chipInk(CAST['Patch'].hue, dark);
+  say.style.display = 'inline-flex'; say.style.alignItems = 'center'; say.style.gap = '9px';
+  const dots = el('span', 'dots'); dots.innerHTML = '<i></i><i></i><i></i>';
+  say.appendChild(dots); say.appendChild(el('span', null, 'asking Patch…'));
+  pill.appendChild(say);
+  pill.appendChild(SM.mark('Patch', { size: 24, state: 'working', pin: CAST['Patch'], ring: ringCol }));
+  pr.appendChild(pill);
+  t.appendChild(pr);
+
+  const dv = el('div', 'divider');
+  dv.appendChild(el('span', null, 'Messages from'));
+  dv.appendChild(faceName('Patch', dark, ringCol));
+  dv.appendChild(el('span', null, 'and'));
+  dv.appendChild(faceName('Quill', dark, ringCol));
+  t.appendChild(dv);
+
+  r = bubbleRow({ who: focus, mark: true });
+  r.style.marginTop = '14px';
+  r.bubble.appendChild(chip('Patch', dark));
+  r.bubble.append(' sent the failing job over and ');
+  r.bubble.appendChild(chip('Quill', dark));
+  r.bubble.append(' trimmed the notes. both folded in.');
+  t.appendChild(r);
+
+  r = bubbleRow({ me: true });
+  r.bubble.textContent = 'any risk in the ledger path?';
+  t.appendChild(r);
+
+  r = bubbleRow({ who: focus, mark: true });
+  r.bubble.textContent = 'no. two new tests cover it.';
+  t.appendChild(r);
+
+  /* same order as the desktop board — this is the same transcript, later */
+  r = bubbleRow({ me: true });
+  r.bubble.textContent = 'ship it once CI is green';
+  t.appendChild(r);
+
+  t.appendChild(sysLine('Created schedule', 'Nightly release watch'));
+
+  r = bubbleRow({ who: focus, mark: true });
+  r.bubble.textContent = 'one check left. then crates.io.';
+  t.appendChild(r);
+
+  r = bubbleRow({ who: focus, mark: true, state: 'done' });
+  r.bubble.textContent = "done. it's live.";
+  t.appendChild(r);
+
+  scroll.appendChild(t);
+  ph.appendChild(scroll);
+
+  const comp = el('div', 'composer');
+  const plus = el('span', 'plus'); plus.innerHTML = I.plus;
+  comp.appendChild(plus);
+  comp.appendChild(el('span', 'ph', 'Message ' + focus));
+  const mic = el('span', 'mic'); mic.innerHTML = I.mic;
+  comp.appendChild(mic);
+  ph.appendChild(comp);
+  return ph;
+}
+
+/* ── the cast, at product size ────────────────────────────────────── */
+function buildStrip() {
+  const s = el('div', 'strip');
+  const STATE = { 'Release Train': 'working', 'Patch': 'working', 'Quill': 'waiting', 'Ledger': 'idle', 'Compass': 'idle', 'Lookout': 'done', 'Kestrel': 'done' };
+  Object.keys(CAST).forEach(n => {
+    const cell = el('div', 'cell');
+    cell.appendChild(SM.mark(n, { size: 40, state: STATE[n], pin: CAST[n] }));
+    cell.appendChild(el('span', null, n));
+    s.appendChild(cell);
+  });
+  return s;
+}
+
+/* ── mount ────────────────────────────────────────────────────────── */
+document.getElementById('board-light').appendChild(buildBoard('light', 'Release Train'));
+document.getElementById('board-dark').appendChild(buildBoard('dark', 'Release Train'));
+document.getElementById('board-patch').appendChild(buildBoard('light', 'Patch'));
+document.getElementById('phone-light').appendChild(buildPhone('light'));
+document.getElementById('phone-dark').appendChild(buildPhone('dark'));
+document.getElementById('strip-holder').appendChild(buildStrip());
+const stripKey = buildStrip(); stripKey.classList.add('key');
+document.getElementById('strip-key').appendChild(stripKey);
+
+/* theme toggle for the studio the boards sit on */
+document.querySelectorAll('[data-skin-btn]').forEach(b => {
+  b.addEventListener('click', () => {
+    document.body.dataset.skin = b.dataset.skinBtn;
+    document.querySelectorAll('[data-skin-btn]').forEach(o => o.setAttribute('aria-pressed', String(o === b)));
+  });
+});
+</script>
+</body>
+</html>
