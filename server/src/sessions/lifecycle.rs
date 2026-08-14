@@ -1245,10 +1245,36 @@ async fn peek_capture(
     }
     let lines = lines.clamp(1, 10_000);
     Ok(if ansi {
-        rt.capture_ansi(lines).await?
+        // The line cap alone does not bound this channel: the ANSI capture
+        // re-emits SGR per run, so `?ansi=1&lines=10000` builds a multi-MB
+        // JSON string in memory. Keep the NEWEST bytes — the peek is a tail.
+        cap_bytes_from_tail(rt.capture_ansi(lines).await?, MAX_PEEK_BYTES)
     } else {
-        rt.capture_plain(lines).await?
+        cap_bytes_from_tail(rt.capture_plain(lines).await?, MAX_PEEK_BYTES)
     })
+}
+
+/// Byte cap for one `/peek` response. Generous next to any real terminal
+/// (10 000 rows x 200 cols of plain text is ~2 MB) but finite, so no single
+/// request can pin an arbitrary amount of memory.
+const MAX_PEEK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Trim `s` to at most `max` bytes, keeping the TAIL and cutting on a line
+/// boundary. Line-aligned on purpose: a cut inside an escape sequence would
+/// emit a partial SGR. Any style opened before the cut is simply lost, which
+/// renders unstyled — never as garbage.
+fn cap_bytes_from_tail(s: String, max: usize) -> String {
+    if s.len() <= max {
+        return s;
+    }
+    let mut cut = s.len() - max;
+    while cut < s.len() && !s.is_char_boundary(cut) {
+        cut += 1;
+    }
+    match s[cut..].find('\n') {
+        Some(nl) => s[cut + nl + 1..].to_string(),
+        None => s[cut..].to_string(),
+    }
 }
 
 /// Archive (async-job-shaped): returns a `job_id` immediately; the
@@ -2333,5 +2359,52 @@ mod submit_and_launch_tests {
             !agent_already_running(false, None),
             "tmux cannot tell, and its behaviour must not change",
         );
+    }
+}
+
+#[cfg(test)]
+mod peek_cap_tests {
+    //! `/peek` byte cap. The line cap (`lines.clamp(1, 10_000)`) does not bound
+    //! the response: the ANSI channel re-emits SGR per run, so a max-lines
+    //! request built a multi-MB JSON string in memory. The cap keeps the tail.
+
+    use super::*;
+
+    #[test]
+    fn under_the_cap_is_returned_verbatim() {
+        let s = "line one\nline two\n".to_string();
+        assert_eq!(cap_bytes_from_tail(s.clone(), MAX_PEEK_BYTES), s);
+    }
+
+    #[test]
+    fn over_the_cap_keeps_the_tail_on_a_line_boundary() {
+        let s = "aaaa\nbbbb\ncccc\ndddd\n".to_string();
+        let out = cap_bytes_from_tail(s, 12);
+        assert!(out.len() <= 12, "must respect the cap, got {}", out.len());
+        assert!(
+            out.starts_with("cccc\n") || out.starts_with("dddd\n"),
+            "must keep the NEWEST lines, got {out:?}"
+        );
+        assert!(!out.contains("aaaa"), "the oldest lines are the ones dropped");
+    }
+
+    /// A multibyte char straddling the cut must never produce invalid UTF-8
+    /// (the return type would not allow it — this pins that we advance to a
+    /// boundary rather than panicking on a slice).
+    #[test]
+    fn a_multibyte_char_at_the_cut_is_handled() {
+        let s = format!("{}\nzzz\n", "é".repeat(100));
+        let out = cap_bytes_from_tail(s, 10);
+        assert!(out.len() <= 10);
+        assert!(out.ends_with("zzz\n"));
+    }
+
+    /// A single line longer than the cap has no boundary to cut on — it must
+    /// still come back bounded rather than whole.
+    #[test]
+    fn one_giant_line_is_still_bounded() {
+        let s = "x".repeat(1_000);
+        let out = cap_bytes_from_tail(s, 100);
+        assert_eq!(out.len(), 100);
     }
 }
