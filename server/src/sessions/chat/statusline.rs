@@ -102,16 +102,22 @@ impl Mode {
 
 // ── the generated commands ───────────────────────────────────────────────────
 
-/// The tap half, shared by both modes: slurp a size-capped stdin (the same
-/// 16 KB `head -c` the hook pipe uses, so both live layers clip identically),
-/// then POST it in the BACKGROUND with a hard 1 s bound. Every fd of the curl is
+/// The tap half, shared by both modes: slurp stdin, then POST it in the
+/// BACKGROUND with a hard 1 s bound.
+///
+/// The 16 KB `head -c` (the same clip the hook pipe uses, so both live layers
+/// truncate identically) applies to what we POST — **not** to what the wrapped
+/// original receives. Capping the buffer itself would hand the user's own
+/// status line a byte-truncated, therefore invalid, JSON document the moment
+/// Claude's payload outgrew 16 KB, and the wrapper's whole contract is that the
+/// original sees the same stdin it would have seen without us. Every fd of the curl is
 /// redirected away from the wrapper's own stdout: Claude reads that stdout to
 /// the pipe's EOF, so a lingering background writer would hold the status line
 /// open. Nothing here can print, and nothing here can fail the command.
 fn tap_prelude() -> String {
     format!(
-        ": {MARKER}; D=$(head -c 16384); \
-         [ -n \"$SUPERMUX_SESSION\" ] && printf '%s' \"$D\" | \
+        ": {MARKER}; D=$(head -c 1048576); \
+         [ -n \"$SUPERMUX_SESSION\" ] && printf '%s' \"$D\" | head -c 16384 | \
          curl -fsS -o /dev/null --max-time 1 -X POST \
          -H \"Content-Type: application/json\" \
          -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \
@@ -769,6 +775,22 @@ mod tests {
             String::from_utf8_lossy(&out.stdout),
             payload,
             "the original must see the SAME stdin the tap consumed"
+        );
+        assert_eq!(out.status.code(), Some(0));
+    }
+
+    #[test]
+    fn a_payload_over_the_post_cap_still_reaches_the_original_whole() {
+        // The 16 KB clip is what we POST, not what we forward. Capping the
+        // buffer itself handed the user's own status line a byte-truncated —
+        // therefore invalid — JSON document as soon as Claude's payload grew
+        // past 16 KB (`rate_limits`/`workspace` are version-drifting fields).
+        let payload = format!(r#"{{"pad":"{}"}}"#, "x".repeat(40_000));
+        let out = run_sh(&wrap_command("cat"), &payload);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).len(),
+            payload.len(),
+            "the original must receive the payload WHOLE, not the tap's 16 KB clip"
         );
         assert_eq!(out.status.code(), Some(0));
     }

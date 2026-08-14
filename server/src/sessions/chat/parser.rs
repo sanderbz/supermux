@@ -81,8 +81,28 @@ pub fn parse_line(line: &str, offset: u64) -> ParsedLine {
 /// A trailing line without its `\n` is **not** consumed: Claude Code appends
 /// with ordinary buffered writes, so a poll can land mid-line and the next one
 /// must re-read it whole.
-pub fn parse_stream<R: BufRead>(mut reader: R, from_offset: u64) -> (Vec<ChatEntry>, u64) {
+pub fn parse_stream<R: BufRead>(reader: R, from_offset: u64) -> (Vec<ChatEntry>, u64) {
     let mut out = Vec::new();
+    let next = parse_scan(reader, from_offset, |e| {
+        out.push(e);
+        true
+    });
+    (out, next)
+}
+
+/// [`parse_stream`], streamed: each entry goes to `sink`, and a `false` return
+/// stops the scan there. Returns the offset just past the last consumed line.
+///
+/// The early stop is what makes fetch-full affordable. It wants ONE uuid out of
+/// a file that reaches 49 MB on this host, and materialising every entry —
+/// with its full, UNCAPPED body, since fetch-full is the escape hatch from the
+/// cap — cost ~45 ms and ~32 MB per request, once per truncated entry a
+/// renderer resolves.
+pub fn parse_scan<R: BufRead>(
+    mut reader: R,
+    from_offset: u64,
+    mut sink: impl FnMut(ChatEntry) -> bool,
+) -> u64 {
     let mut offset = from_offset;
     let cap = (MAX_LINE_BYTES + 1) as u64;
     let mut buf: Vec<u8> = Vec::new();
@@ -131,8 +151,11 @@ pub fn parse_stream<R: BufRead>(mut reader: R, from_offset: u64) -> (Vec<ChatEnt
                 break;
             }
             let prefix = String::from_utf8_lossy(&buf);
-            out.push(oversize_entry(&prefix, offset));
+            let stop = !sink(oversize_entry(&prefix, offset));
             offset += consumed;
+            if stop {
+                break;
+            }
             continue;
         }
 
@@ -141,17 +164,28 @@ pub fn parse_stream<R: BufRead>(mut reader: R, from_offset: u64) -> (Vec<ChatEnt
             end -= 1;
         }
         let text = String::from_utf8_lossy(&buf[..end]);
+        let mut stop = false;
         match parse_line(&text, offset) {
-            ParsedLine::Entry(mut e) => out.append(&mut e),
+            ParsedLine::Entry(list) => {
+                for e in list {
+                    if !sink(e) {
+                        stop = true;
+                        break;
+                    }
+                }
+            }
             ParsedLine::Skip => {}
             ParsedLine::Malformed(m) => {
                 tracing::debug!(offset, error = %m, "skipping malformed transcript line")
             }
         }
         offset += n as u64;
+        if stop {
+            break;
+        }
     }
 
-    (out, offset)
+    offset
 }
 
 // ── line → entries ───────────────────────────────────────────────────────────

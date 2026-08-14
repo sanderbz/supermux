@@ -244,25 +244,35 @@ impl ChatStore {
 
 /// `body.text` collapsed to a single whitespace-separated line and capped at
 /// [`TAIL_MAX_CHARS`] **chars** (never bytes — the tail is user text).
+/// The char count is tracked incrementally and an over-budget word is copied
+/// only as far as it fits: re-counting after every push was quadratic in the
+/// output, and a body with no whitespace at all (a base64 blob, a minified
+/// payload) is ONE word — up to `MAX_ENTRY_BYTES` of it copied, then counted,
+/// then thrown away. This runs under the store mutex on every detector tick.
 fn one_line(w: &WireEntry) -> Option<String> {
     let text = w.body().get("text").and_then(|v| v.as_str())?;
     let mut out = String::new();
-    for (i, word) in text.split_whitespace().enumerate() {
-        if i > 0 {
-            out.push(' ');
-        }
-        out.push_str(word);
-        if out.chars().count() >= TAIL_MAX_CHARS {
+    let mut chars = 0usize;
+    for word in text.split_whitespace() {
+        let sep = usize::from(chars > 0);
+        let room = TAIL_MAX_CHARS.saturating_sub(chars + sep);
+        if room == 0 {
             break;
         }
+        // Bounded even for a single 16 KB "word": we never need to know how far
+        // past the budget it goes, only that it is past it.
+        let len = word.chars().take(room + 1).count();
+        if sep > 0 {
+            out.push(' ');
+        }
+        if len > room {
+            out.extend(word.chars().take(room));
+            break;
+        }
+        out.push_str(word);
+        chars += sep + len;
     }
-    if out.is_empty() {
-        return None;
-    }
-    match out.char_indices().nth(TAIL_MAX_CHARS) {
-        Some((i, _)) => Some(out[..i].to_string()),
-        None => Some(out),
-    }
+    (!out.is_empty()).then_some(out)
 }
 
 #[cfg(test)]
