@@ -415,12 +415,16 @@ fn scan_top_level_type(line: &str) -> Option<&str> {
 
 /// Read `"<key>":"<value>"` out of raw bytes. Values are capped — this only
 /// feeds ids and timestamps.
+///
+/// The cap counts **chars**, not bytes: the needle can hit a nested key (this
+/// is a raw scan of a 950 KB line, not a parse), and a multi-byte value clipped
+/// at a byte index would panic — which the totality contract forbids.
 fn scan_field(line: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\":\"");
     let i = line.find(&needle)? + needle.len();
     let rest = &line[i..];
     let end = rest.find('"')?;
-    Some(rest[..end.min(256)].to_string())
+    Some(rest[..end].chars().take(256).collect())
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
@@ -588,6 +592,23 @@ mod tests {
             }
             other => panic!("oversize line must still produce a placeholder entry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn oversize_line_scan_never_panics_on_a_multibyte_field_value() {
+        // The oversize path scans RAW bytes, so its `"uuid":"` needle can land on
+        // a nested key — e.g. a tool_use `input` object — whose value is not
+        // ASCII. Clipping that at a byte index panics; the parser must be total.
+        let unicode = "日".repeat(120); // 360 bytes: byte 256 is mid-codepoint
+        let huge = format!(
+            r#"{{"type":"user","input":{{"uuid":"{unicode}"}},"pad":"{}"}}"#,
+            "x".repeat(MAX_LINE_BYTES)
+        );
+        let ParsedLine::Entry(e) = parse_line(&huge, 0) else {
+            panic!("oversize line must still produce a placeholder entry")
+        };
+        assert!(e[0].oversize);
+        assert_eq!(e[0].uuid.chars().count(), 120);
     }
 
     #[test]
