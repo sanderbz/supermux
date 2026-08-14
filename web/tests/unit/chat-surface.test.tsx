@@ -308,3 +308,187 @@ describe('delegation, outbound', () => {
     expect(delegationTarget(undefined, KNOWN, FOCUS)).toBeUndefined()
   })
 })
+
+/* ── T5: assistant prose ─────────────────────────────────────────────────── */
+
+/**
+ * Markdown is the one part of this surface that is NOT in the app bundle, and
+ * the two things worth pinning follow from that:
+ *
+ *   1. the lazy boundary holds — nothing in the panel's static import graph
+ *      reaches `react-markdown`, or the hero chunk grows by the whole
+ *      unified/remark/rehype/lowlight stack and the A3 budget trips,
+ *   2. the FALLBACK is a real render — the message is readable, correctly
+ *      sized and already chipped before the chunk lands, because a Suspense
+ *      fallback that is a spinner would make every transcript flash.
+ *
+ * Then the map itself: the handful of nodes where "chat markdown" differs from
+ * document markdown, plus the two places a naive map is silently wrong (an
+ * unlabelled fence wearing the inline chip; a soft break folded into a space,
+ * which would re-flow the bubble the moment the chunk arrives).
+ */
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
+import { ChatMarkdown } from '../../src/components/chat/markdown/chat-markdown'
+import { toDisplayList, type ChatEntry } from '../../src/components/chat/entries'
+import { buildTranscript, entryLabels } from '../../src/components/chat/grouping'
+import { TranscriptItem } from '../../src/components/chat/transcript-item'
+
+/** One assistant message, through the frozen A1 model and the T3 shaping. */
+function assistantBubble(body: string): string {
+  const entries: ChatEntry[] = [
+    { uuid: 'a1', ts: 1_760_000_000, text: body, kind: 'assistant' },
+  ]
+  const labels = entryLabels(entries)
+  const nodes = buildTranscript(toDisplayList(entries), { nowMs: 1_760_000_000_000, labels })
+  return nodes
+    .filter((node) => node.kind === 'item')
+    .map((node) =>
+      renderToStaticMarkup(
+        <TranscriptItem key={node.key} node={node} name={FOCUS} labels={labels} mentions={KNOWN} />,
+      ),
+    )
+    .join('')
+}
+
+const md = (text: string, props: Partial<Parameters<typeof ChatMarkdown>[0]> = {}) =>
+  renderToStaticMarkup(<ChatMarkdown text={text} self={FOCUS} mentions={KNOWN} {...props} />)
+
+describe('the lazy boundary', () => {
+  /** Static (non-`import()`, non-`import type`) specifiers of one module. */
+  const SPECIFIER = /(?:^|\n)\s*(?:import|export)\s+(?!type[\s{])[^;'"]*?from\s*['"]([^'"]+)['"]/g
+
+  const SRC = new URL('../../src/', import.meta.url).pathname
+
+  function resolveFile(fromFile: string, spec: string): string | null {
+    const base = path.resolve(path.dirname(fromFile), spec)
+    for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate
+    }
+    return null
+  }
+
+  /** Everything reachable from `entry` without a dynamic import. */
+  function staticGraph(entry: string): { files: Set<string>; packages: Set<string> } {
+    const files = new Set<string>()
+    const packages = new Set<string>()
+    const queue = [entry]
+    while (queue.length > 0) {
+      const file = queue.pop()!
+      if (files.has(file)) continue
+      files.add(file)
+      const source = fs.readFileSync(file, 'utf8')
+      for (const match of source.matchAll(SPECIFIER)) {
+        const spec = match[1]
+        if (!spec.startsWith('.')) {
+          packages.add(spec)
+          continue
+        }
+        const resolved = resolveFile(file, spec)
+        if (resolved) queue.push(resolved)
+      }
+    }
+    return { files, packages }
+  }
+
+  test('the panel never statically reaches the markdown stack', () => {
+    const { files, packages } = staticGraph(`${SRC}components/chat/chat-panel.tsx`)
+    // The crawl actually walked the surface — otherwise the assertion below is
+    // vacuously true.
+    expect(files.has(`${SRC}components/chat/transcript-item.tsx`)).toBe(true)
+    const markdown = [...packages].filter((p) =>
+      /^(react-markdown|remark|rehype|unified|lowlight|highlight\.js)/.test(p),
+    )
+    expect(markdown).toEqual([])
+    expect(files.has(`${SRC}components/chat/markdown/chat-markdown.tsx`)).toBe(false)
+    expect(files.has(`${SRC}components/chat/markdown/chat-components.tsx`)).toBe(false)
+  })
+
+  test('…because the one edge to it is an `import()`', () => {
+    const item = fs.readFileSync(`${SRC}components/chat/transcript-item.tsx`, 'utf8')
+    expect(item).toContain("React.lazy(() => import('./markdown/chat-markdown'))")
+    // And the guard is meaningful: that module really is where the stack lives.
+    const chunk = fs.readFileSync(`${SRC}components/chat/markdown/chat-markdown.tsx`, 'utf8')
+    expect(chunk).toContain("from 'react-markdown'")
+  })
+})
+
+describe('the Suspense fallback', () => {
+  test('is the message itself, at the bubble’s own metrics', () => {
+    const html = assistantBubble('Ran `cargo check` on the workspace.\nClean.')
+    // No markdown chunk in a static render → the raw source, whitespace kept,
+    // so the block occupies the same height the typeset version will.
+    expect(html).toContain('whitespace-pre-wrap')
+    expect(text(html)).toContain('Ran `cargo check` on the workspace. Clean.')
+    // Nothing typeset yet — and no spinner, no skeleton, no empty box.
+    expect(html).not.toContain('<p class=')
+  })
+
+  test('chips a colleague before the chunk lands', () => {
+    // A mention is a fact about the message, not a styling of it.
+    const html = assistantBubble('Handing the failing job to patch.')
+    expect(html).toContain('sm-ink-accent')
+    expect(text(html)).toContain('patch')
+  })
+})
+
+describe('the chat markdown map', () => {
+  test('a single newline stays a line break (the fallback-parity rule)', () => {
+    // CommonMark folds a soft break into a space; the fallback does not. If
+    // these two disagree the bubble re-flows the moment the chunk arrives.
+    expect(md('first line\nsecond line')).toContain('<br/>')
+    expect(md('first line\nsecond line')).toContain('second line')
+  })
+
+  test('inline code is the B0 chip, a fence is the B0 code block', () => {
+    const inline = md('run `cargo check` first')
+    expect(inline).toContain('font-mono')
+    expect(inline).not.toContain('<pre')
+
+    const fenced = md('```rust\nfn main() {}\n```')
+    expect(fenced).toContain('<pre')
+    expect(fenced).toContain('bg-code-bg')
+  })
+
+  test('an unlabelled fence is a fence, not an inline chip', () => {
+    const html = md('```\nno language here\n```')
+    const pre = html.slice(html.indexOf('<pre'))
+    // The chip's pill (`bg-fill-soft`, radius 8) must not appear inside a block.
+    expect(pre).not.toContain('bg-fill-soft')
+    expect(pre).toContain('sm-fence')
+  })
+
+  test('highlighting is opt-in per fence — an undeclared block stays plain', () => {
+    expect(md('```rust\nfn main() {}\n```')).toContain('hljs')
+    expect(md('```\nfn main() {}\n```')).not.toContain('hljs')
+  })
+
+  test('a colleague inside prose becomes a chip; the speaker does not', () => {
+    const html = md('asked patch, ignored release-train')
+    expect(html).toContain('sm-ink-accent')
+    // `mentionSegments` drops the speaker's own name — its face is already in
+    // the gutter of this very row.
+    expect(html.match(/class="sm-mark"/g)?.length).toBe(1)
+  })
+
+  test('a name inside code is code, never a colleague', () => {
+    expect(md('`patch --dry-run`')).not.toContain('sm-mark')
+  })
+
+  test('a wide table scrolls inside its own box', () => {
+    const html = md('| a | b |\n| --- | --- |\n| 1 | 2 |')
+    expect(html).toContain('overflow-x-auto')
+    expect(html).toContain('<table')
+  })
+
+  test('an image is the captured frame, and only fetches when it can', () => {
+    // No injected `rawUrl` → B0's honest placeholder, never a broken <img>.
+    expect(md('![shot](/tmp/shot.png)')).not.toContain('<img')
+    const wired = md('![shot](/tmp/shot.png)', { rawUrl: (p: string) => `/api/file/raw?path=${p}` })
+    expect(wired).toContain('/api/file/raw?path=/tmp/shot.png')
+    // The frame is a block: it replaces the paragraph rather than sitting in it
+    // (a `<div>` inside a `<p>` is a browser-closed paragraph and a broken row).
+    expect(wired).not.toContain('<p class')
+  })
+})

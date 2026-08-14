@@ -26,10 +26,11 @@
  *     design system already has (`dev-marks.cast.ts`) usable from the bench
  *     without this module knowing that the roster exists.
  *
- * Markdown is NOT here. T5 replaces `<Prose>`'s body with the lazy
- * `chat-markdown` chunk at the SAME type metrics, so the swap changes glyph
- * styling and never block height — which is the whole reason the fallback below
- * uses the bubble's own 15/1.45 and `whitespace-pre-wrap`.
+ * Markdown is not IN here (fase A3 T5): `<Prose>` suspends on the lazy
+ * `chat-markdown` chunk and renders the raw text at the SAME type metrics while
+ * it is in flight, so the swap changes glyph styling and never block height.
+ * That fallback is the bubble's own 15/1.45 with `whitespace-pre-wrap`, and the
+ * markdown side keeps single newlines as breaks to match it line for line.
  */
 import * as React from 'react'
 
@@ -172,6 +173,8 @@ function AgentRow({
           self={rest.name}
           mentions={rest.mentions}
           pinFor={rest.pinFor}
+          surface={rest.surface}
+          rawUrl={rest.rawUrl}
         />
       </Bubble>
     </MessageRow>
@@ -207,7 +210,14 @@ function TeammateRow({
         gutter={!grouped && sender ? <Mark seed={seed} pinFor={rest.pinFor} /> : undefined}
       >
         <Bubble surface={rest.surface}>
-          <Prose text={item.text} self={sender} mentions={rest.mentions} pinFor={rest.pinFor} />
+          <Prose
+            text={item.text}
+            self={sender}
+            mentions={rest.mentions}
+            pinFor={rest.pinFor}
+            surface={rest.surface}
+            rawUrl={rest.rawUrl}
+          />
         </Bubble>
       </MessageRow>
     </>
@@ -255,24 +265,57 @@ function Mark({
 }
 
 /**
- * Assistant prose, with mention chips.
+ * The markdown renderer, behind the one lazy boundary in this surface.
  *
- * The T5 lazy-markdown swap happens INSIDE this component, at these metrics —
- * the bubble's own 15/1.45 — so the chunk landing restyles glyphs without moving
- * a single block edge. `mentionSegments` is shared with T5's component map,
- * which applies the same pass at the text-node level.
+ * `chat-markdown.tsx` is the only module that imports `react-markdown`, and this
+ * is the only edge that reaches it — a plain import would pull the whole
+ * unified/remark/rehype/lowlight stack into the hero chunk (~40 KB gz), which is
+ * exactly the tripwire the A3 budget watches. Guarded by an import-graph test in
+ * `tests/unit/chat-surface.test.tsx`.
  */
-function Prose({
-  text,
-  mentions,
-  self,
-  pinFor,
-}: {
+const ChatMarkdown = React.lazy(() => import('./markdown/chat-markdown'))
+
+interface ProseProps {
   text: string
   self?: string
   mentions?: ReadonlyMap<string, string>
   pinFor?: (seed: string) => MarkPin | undefined
-}) {
+  surface?: 'desktop' | 'phone'
+  rawUrl?: (path: string) => string
+}
+
+/**
+ * Assistant prose: the raw text now, the typeset text a chunk later.
+ *
+ * The `Suspense` boundary is PER BUBBLE, and its fallback is not a spinner but
+ * the message itself — same bubble, same 15/1.45, same line breaks, only
+ * unstyled. So a transcript that mounts before the markdown chunk lands is
+ * readable and correctly sized, and when the chunk arrives the swap restyles
+ * glyphs inside a box that has not moved (plan §T5.3; the risk it mitigates is
+ * §4.2, "markdown re-layout jump").
+ */
+function Prose(props: ProseProps) {
+  return (
+    <React.Suspense fallback={<ProseText {...props} />}>
+      <ChatMarkdown
+        text={props.text}
+        self={props.self}
+        mentions={props.mentions}
+        pinFor={props.pinFor}
+        surface={props.surface}
+        rawUrl={props.rawUrl}
+      />
+    </React.Suspense>
+  )
+}
+
+/**
+ * The same prose without markdown — the fallback, and the whole of what a
+ * static render (`renderToStaticMarkup`, the unit tests) produces. Mention chips
+ * run here too: a colleague's name is a fact about the message, not a styling of
+ * it, so it must not appear only once a chunk has loaded.
+ */
+export function ProseText({ text, mentions, self, pinFor }: ProseProps) {
   const segments = React.useMemo(
     () => mentionSegments(text, mentions ?? EMPTY_INDEX, self),
     [text, mentions, self],
