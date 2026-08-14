@@ -114,21 +114,50 @@ export function entryFor(
   return { entry, degraded: false, attention: null }
 }
 
+/** The TUI folds a sub-hint sitting UNDER an option into that option's own row:
+ *  the lens cannot tell a 52-col wrap from a hint by indentation
+ *  (`peek-lens.ts`), and a0 reads it the same way. Two are captured —
+ *  `(shift+tab)` under permission option 2, and `shift+tab to approve with this
+ *  feedback` under plan option 3.
+ *
+ *  Both name a KEY, and this app is not the keyboard the hint is addressed to.
+ *  Worse, on Edit/Write that key does something DIFFERENT from the row it sits
+ *  under: a0 §3 verified `BTab` acts as option **2** (approve all edits), so a
+ *  chat button reading “Tell Claude what to change shift+tab to approve with
+ *  this feedback” would print an instruction that answers the opposite way.
+ *
+ *  Stripped for DISPLAY only. The shape check still runs against the raw row and
+ *  every `rowPattern` is prefix-anchored, so nothing about what the registry
+ *  BELIEVES changes here — only what it puts in front of a human. */
+const FOLDED_KEY_HINT = /\s*\(?\b(?:shift\+tab|ctrl\+[a-z])\b.*$/i
+
 /**
- * The words to put on an option's button.
+ * The dialog's own sentence for an option, as the surface should show it.
  *
  * The LIVE row wins when the sighting has it: option 2 of a Bash permission
  * names the directory it would grant (`…allow access to tmp/ from this
  * project`), and a user asked to grant something is owed the actual sentence.
- * The registry label is the fallback — for a row that scrolled off, and for the
- * bench fixtures that render a card with no capture behind it.
+ * The registry label is the fallback — for a row that scrolled off, for a row
+ * that no longer matches its pattern (a card in that state is degraded and
+ * unpressable; putting an unrecognised string on its button would dress up the
+ * misreading as the option), and for the bench fixtures that render a card with
+ * no capture behind it.
+ *
+ * NOT automatically the button's words. The approved board answers a permission
+ * dialog with product voice — `Allow once` / `Allow while this session runs` /
+ * `Not now` (`live-layer.tsx` `PERMISSION_OPTIONS`, board `board-light.png`) —
+ * and A4 does not restyle A3. T7 keeps that copy on the pills and uses this
+ * sentence where the *scope* of the grant has to be legible (the card's `why`
+ * line, the disabled-option reason), because "Allow while this session runs" is
+ * not what Bash option 2 actually does.
  */
 export function optionLabel(
   option: RegistryOption,
   sighting?: DialogSighting | null,
 ): string {
-  const sighted = sighting?.options[option.tuiIndex]?.trim()
-  return sighted && option.rowPattern.test(sighted) ? sighted : option.label
+  const row = sighting?.options[option.tuiIndex]?.trim()
+  if (!row || !option.rowPattern.test(row)) return option.label
+  return row.replace(FOLDED_KEY_HINT, '').trim() || option.label
 }
 
 /** Does the screen still agree with the entry? Row count AND row text — a list

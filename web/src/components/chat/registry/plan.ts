@@ -46,7 +46,13 @@ export function keyPlan(from: number, to: number): KeyName[] {
 
 /** How many navigation keys a plan carries — i.e. how many re-peeks T7 owes it
  *  before the commit. `keyPlan(…).length - 1`, named so the sequence and its
- *  verification loop cannot drift apart. */
+ *  verification loop cannot drift apart.
+ *
+ *  CHECK THE PLAN IS NON-EMPTY FIRST. This number cannot tell a refusal from a
+ *  caret already on the row — `navigationSteps([]) === navigationSteps(['Enter'])
+ *  === 0` — so a caller that loops this many times and then presses its own
+ *  `Enter` would turn a refusal into an accept, which on a permission dialog
+ *  means running the command. Send the keys the plan actually contains. */
 export function navigationSteps(plan: readonly KeyName[]): number {
   return Math.max(0, plan.length - 1)
 }

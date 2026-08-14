@@ -248,6 +248,17 @@ describe('keyPlan — navigation, never digits', () => {
     }
   })
 
+  test('a refusal carries no Enter, and cannot be counted into one', () => {
+    // `[]` is T7's "refuse". `navigationSteps` cannot tell it from a caret that
+    // is already on the row (both 0), so a loop that counts and then presses its
+    // OWN Enter would commit the option under the caret — on a permission dialog
+    // that runs the command. The keys to send are the ones in the array.
+    const refused = keyPlan(0, 9_999)
+    expect(refused).toEqual([])
+    expect(refused.includes('Enter')).toBe(false)
+    expect(navigationSteps(refused)).toBe(navigationSteps(keyPlan(1, 1)))
+  })
+
   test('nonsense in, nothing out — a refusal, not a throw', () => {
     // T7 reads `[]` as "refuse"; a throw here would take the Attention card down
     // with the card it is supposed to explain.
@@ -281,6 +292,33 @@ describe('optionLabel — the live row wins', () => {
     expect(optionLabel(entry.options[1], null)).toBe(
       'Yes, and always allow this kind of command',
     )
+  })
+
+  test('the folded shift+tab sub-hint never reaches the card', () => {
+    // The lens folds a sub-hint into its option on purpose (it cannot tell one
+    // from a 52-col wrap). It must not survive into the words a human reads:
+    // `BTab` is not a key chat sends, and on Edit/Write a0 verified it acts as
+    // option 2 — so the hint under option 3 advertises the opposite answer.
+    const edit = lensOf('perm-edit.txt')
+    expect(edit.dialog!.options[1]).toContain('shift+tab')
+    expect(optionLabel(entryById('permission.edit')!.options[1], edit.dialog)).toBe(
+      'Yes, allow all edits during this session',
+    )
+
+    const plan = lensOf('plan-approval.txt')
+    expect(plan.dialog!.options[2]).toContain('shift+tab')
+    expect(optionLabel(entryById('plan.approval')!.options[2], plan.dialog)).toBe(
+      'Tell Claude what to change',
+    )
+  })
+
+  test('no option label names a key this app cannot send', () => {
+    for (const entry of ENTRIES) {
+      const lens = lensOf(FIXTURES[entry.id])
+      for (const o of entry.options) {
+        expect(optionLabel(o, lens.dialog)).not.toMatch(/shift\+tab|ctrl\+[a-z]/i)
+      }
+    }
   })
 
   test('a row that does not match the pattern is not shown as that option', () => {
