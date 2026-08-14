@@ -570,6 +570,69 @@ async fn unknown_client_frame_is_ignored_not_fatal() {
     h.cleanup();
 }
 
+#[tokio::test]
+async fn a_reseed_after_the_conversation_moved_issues_a_cursor_the_history_route_accepts() {
+    // `conv` used to be captured once, before the loop, and reused for every
+    // later seed — including the "conversation changed" re-seed that exists
+    // precisely because the tailer retargeted to a DIFFERENT conversation. The
+    // fresh seed's `next_before` was therefore stamped `<old-conv>:<offset>`,
+    // which `history_handler` compares against the current row and 409s. The
+    // client obeys the 409 by re-seeding over the same socket… and gets the
+    // same stale cursor: scroll-back broken for the life of that socket.
+    let _g = ENV_LOCK.lock().await;
+    let h = spawn_harness().await;
+    let old = "11111111-1111-1111-1111-111111111111";
+    let new = "22222222-2222-2222-2222-222222222222";
+    write_transcript(&h.project_dir(), old, &[user_line("old1", "before")]);
+    make_session(&h, "chat-moved", "claude", None).await;
+    db::sessions::track_cc_conversation_id(&h.state.pool, "chat-moved", old)
+        .await
+        .unwrap();
+
+    let mut ws = connect_authed(h.addr, "chat-moved").await;
+    let _ = next_json(&mut ws).await.expect("seed");
+    let _ = next_json(&mut ws).await.expect("seed_done");
+
+    // `/clear`: a new conversation file, and the hook moves the pointer. More
+    // lines than the ring holds, so the fresh seed really does carry a cursor.
+    let lines: Vec<String> = (0..600).map(|i| user_line(&format!("n{i}"), "after")).collect();
+    write_transcript(&h.project_dir(), new, &lines);
+    db::sessions::track_cc_conversation_id(&h.state.pool, "chat-moved", new)
+        .await
+        .unwrap();
+    h.state.wake_chat_pointer("chat-moved");
+
+    let mut cursor = None;
+    for _ in 0..12 {
+        let Some(frame) = next_json(&mut ws).await else { break };
+        if frame["type"] == json!("seed") {
+            if let Some(c) = frame["next_before"].as_str() {
+                cursor = Some(c.to_string());
+                break;
+            }
+        }
+    }
+    let cursor = cursor.expect("the re-seed must carry a paging cursor");
+    assert!(
+        cursor.starts_with(new),
+        "the cursor must carry the CURRENT conversation id, got {cursor}"
+    );
+
+    let (status, body) = get(
+        &h.app,
+        &format!("/api/sessions/chat-moved/chat/history?before={cursor}&limit=5"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the server's own freshly-issued cursor must not 409: {body}"
+    );
+    assert!(!body["data"]["entries"].as_array().unwrap().is_empty());
+
+    h.cleanup();
+}
+
 // ── the backlog REST routes ─────────────────────────────────────────────────
 
 #[tokio::test]

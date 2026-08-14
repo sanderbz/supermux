@@ -499,6 +499,22 @@ async fn warm_up(lease: &mut TailerLease) {
     let _ = tokio::time::timeout(SEED_WARMUP, lease.changed()).await;
 }
 
+/// Re-read the session's CURRENT conversation id before a re-seed.
+///
+/// The seed's `next_before` is stamped with it and [`history_handler`]
+/// validates that stamp against the row, so a re-seed carrying the id captured
+/// at socket open hands the client a cursor the history route answers 409 to —
+/// and it stays 409 for the life of the socket, because obeying the 409 by
+/// re-seeding over the same socket reissues the same stale id. A resync is
+/// exactly the moment the conversation is most likely to have moved (a
+/// `/clear`, a terminal-side `--resume`, a hook-driven retarget), so the id is
+/// refreshed there. A read failure keeps the previous id: never a guess.
+async fn refresh_conv(state: &AppState, name: &str, conv: &mut String) {
+    if let Ok(Some(row)) = db::sessions::get(&state.pool, name).await {
+        *conv = row.cc_conversation_id;
+    }
+}
+
 /// The WS close for a tailer that is gone. NOTHING restarts a tailer for an
 /// existing lease, so a socket that stays open after its task exits shows a
 /// conversation that silently stopped updating — the failure mode the 4404
@@ -574,7 +590,9 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
     let mut lease = spawn_tailer(&state, &name);
     warm_up(&mut lease).await;
     let store = state.chat_store_for(&name);
-    let conv = row.cc_conversation_id.clone();
+    // Mutable: the conversation can move under an open socket, and every seed's
+    // paging cursor is stamped with it (see `refresh_conv`).
+    let mut conv = row.cc_conversation_id.clone();
 
     let mut status = lease.status();
     // The tailer can already be gone before we seed (it exited between the
@@ -617,6 +635,7 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
                     }
                     Forward::Skip => {}
                     Forward::Resync => {
+                        refresh_conv(&state, &name, &mut conv).await;
                         match push_seed(&mut socket, &store, &conv, lease.status(), Some("lagged")).await {
                             Some((hw, fresh)) => { high_water = hw; rx = fresh; }
                             None => break,
@@ -639,8 +658,11 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
                         }
                         if status.resync_epoch != epoch {
                             // The tailer re-seeded (pointer moved / file rotated):
-                            // the ring now holds a DIFFERENT conversation.
+                            // the ring now holds a DIFFERENT conversation, so
+                            // the cursor we are about to issue must carry the
+                            // NEW id or the history route will 409 it.
                             epoch = status.resync_epoch;
+                            refresh_conv(&state, &name, &mut conv).await;
                             match push_seed(&mut socket, &store, &conv, status, Some("conversation changed")).await {
                                 Some((hw, fresh)) => { high_water = hw; rx = fresh; }
                                 None => break,
