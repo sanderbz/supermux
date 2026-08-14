@@ -191,6 +191,30 @@ describe('B0 warm paper/ink/hairline ladder', () => {
     // Not a copy/paste slip: the inverted bubble reuses the opposite theme's ink.
     expect(PAPER.dark.bubbleUserInk).toBe(PAPER.light.ink)
   })
+
+  // A rung can be added to the ladder AND to PAPER and still have no
+  // `bg-…`/`text-…`/`border-…` utility, because that mapping lives in a
+  // separate `@theme inline` block. Colour rungs must be mapped, and mapped
+  // through the var (never inlined literally), so a `[data-theme]` subtree and
+  // the character engine's runtime writes both still apply at the use site.
+  test('every colour rung is exposed in the Tailwind namespace', () => {
+    const theme = declarations('@theme inline')
+    // The elevation triple and the mix ratio are not colours — no utility.
+    const NOT_COLOURS = new Set<keyof PaperLadder>([
+      'bubbleShadow',
+      'cardShadow',
+      'elev',
+      'accentRowMix',
+    ])
+    for (const key of Object.keys(VARS) as Array<keyof PaperLadder>) {
+      if (NOT_COLOURS.has(key)) continue
+      const smVar = VARS[key]
+      expect(theme[smVar.replace('--sm-', '--color-')], key).toBe(`var(${smVar})`)
+    }
+    // The per-session accent, likewise — as `agent`, since `accent` is taken by
+    // the shadcn hover fill.
+    expect(theme['--color-agent']).toBe('var(--sm-accent)')
+  })
 })
 
 describe('per-session accent (C7)', () => {
