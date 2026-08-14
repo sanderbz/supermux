@@ -141,6 +141,11 @@ export function usePeekLens(
     if (!enabled) return
     let dead = false
     let timer: number | null = null
+    // ONE poller means one in-flight peek. Without this, a `visibilitychange`
+    // that lands while a request is in the air starts a SECOND self-scheduling
+    // loop beside the first (clearing an already-fired timeout is a no-op), and
+    // every further hide/show adds another — the poll rate multiplies silently.
+    let inFlight = false
 
     const hidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden'
@@ -148,19 +153,23 @@ export function usePeekLens(
     const schedule = () => {
       if (dead) return
       const wait = peekCadenceMs({ live: liveRef.current, dialog: dialogRef.current })
+      if (timer != null) window.clearTimeout(timer)
       timer = window.setTimeout(() => void tick(), wait)
     }
 
     const tick = async () => {
-      if (dead) return
+      if (dead || inFlight) return
       // Paused, not slowed: a backgrounded tab has no one to be honest to, and
       // the first thing `visibilitychange` does is peek again.
       if (hidden()) return schedule()
+      inFlight = true
       try {
         const text = await peek()
         if (!dead) apply(text)
       } catch {
         /* transient — keep the previous frame, try again next tick */
+      } finally {
+        inFlight = false
       }
       schedule()
     }

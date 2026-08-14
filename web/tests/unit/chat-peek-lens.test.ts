@@ -116,6 +116,23 @@ describe('readLens — the ❯ collisions', () => {
     expect(readLens(capture).composerDraft).toBe('half a thought')
   })
 
+  test('the box outranks an echoed prompt in scrollback', () => {
+    // In a boxed-composer TUI every scrollback echo is a bare column-0 `❯`. If
+    // the bare fallback outranked the box, an EMPTY box behind an echo would
+    // report a phantom draft (T3 would then refuse every send) and a full box
+    // would report the echo's words instead of the draft.
+    const withEcho = (inside: string) =>
+      [
+        '❯ fix the bug',
+        '  I fixed it.',
+        '╭──────────────────────────────╮',
+        `│ ❯ ${inside.padEnd(26)}│`,
+        '╰──────────────────────────────╯',
+      ].join('\n')
+    expect(readLens(withEcho('')).composerDraft).toBeNull()
+    expect(readLens(withEcho('half a thought')).composerDraft).toBe('half a thought')
+  })
+
   test('a dialog caret is never read as a composer draft', () => {
     expect(readLens(read('perm-bash.txt')).composerDraft).toBeNull()
     expect(readLens(read('plan-approval.txt')).composerDraft).toBeNull()

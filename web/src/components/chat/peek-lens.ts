@@ -215,6 +215,18 @@ const BOXED_COMPOSER_RE = /^\s*│\s*❯(.*?)\s*│?\s*$/
  *  (scrollback echoes are above it); the NBSP separator is preferred because it
  *  tells the composer apart from an echoed prompt even mid-scrollback.
  *
+ *  Precedence, strongest fingerprint first:
+ *    1. the NBSP-separated column-0 `❯` — the live 2.1.2xx composer;
+ *    2. a BOXED `│ ❯ … │` — a whole-line shape, and therefore still far more
+ *       specific than "a line that starts with ❯";
+ *    3. the last bare column-0 `❯` — the degrade path for a CC that drops the
+ *       NBSP.
+ *  The bare fallback must NOT outrank the box: in a boxed-composer TUI every
+ *  echoed prompt in scrollback is a bare column-0 `❯`, so reading the box last
+ *  turned the insurance into its own bug — an empty box behind an echo reported
+ *  a phantom draft (T3 then refuses every send), and a full box reported the
+ *  ECHO's text instead of the draft.
+ *
  *  A multi-line draft reads as its FIRST line. The guard's job is to say "the
  *  terminal has something unsent" and show enough of it to be recognised — T3
  *  truncates to 60 chars anyway — not to reproduce it. */
@@ -232,8 +244,11 @@ function readComposerDraft(lines: readonly string[]): string | null {
     const m = BOXED_COMPOSER_RE.exec(line)
     if (m) boxed = m[1]
   }
-  const at = preferred >= 0 ? preferred : fallback
-  const draft = norm(at >= 0 ? lines[at].slice(CARET.length) : (boxed ?? ''))
+  const raw =
+    preferred >= 0
+      ? lines[preferred].slice(CARET.length)
+      : (boxed ?? (fallback >= 0 ? lines[fallback].slice(CARET.length) : ''))
+  const draft = norm(raw)
   return draft.length > 0 ? draft : null
 }
 
