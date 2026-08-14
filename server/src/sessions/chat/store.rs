@@ -497,12 +497,15 @@ mod tests {
     }
 
     #[test]
-    fn tail_summary_is_none_when_the_ring_is_empty() {
+    fn tail_summary_is_none_when_the_ring_is_empty_so_the_delta_field_is_omitted() {
+        // `None`, never `Some(ChatTail::default())`: the sessions delta omits the
+        // key entirely rather than publishing an empty chat for a session whose
+        // ring nobody has filled yet.
         assert!(ChatStore::new().tail_summary().is_none());
     }
 
     #[test]
-    fn tail_summary_is_the_last_prompt_and_the_last_assistant_line() {
+    fn tail_summary_is_last_user_oneliner_plus_last_agent_line() {
         let store = ChatStore::new();
         let mut p = ChatEntry::test_text("p1", "first prompt");
         p.kind = Kind::Prompt;
@@ -520,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_summary_fields_are_capped_at_200_chars() {
+    fn tail_summary_is_last_user_oneliner_plus_last_agent_line_capped_at_200_chars() {
         let store = ChatStore::new();
         let mut p = ChatEntry::test_text("p1", &"é".repeat(500));
         p.kind = Kind::Prompt;

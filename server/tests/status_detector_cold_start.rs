@@ -95,7 +95,17 @@ async fn tick_on_unstarted_session_leaves_status_unknown() {
     // time that bounds the capture-skip optimization.
     let mut tail = None;
     let mut last_capture_at = Instant::now();
-    auto_actions::tick(&state, "ghost", &mut detector, &mut tail, &mut last_capture_at)
+    // A2: the tick also carries the per-session chat-tail gate (change + 1s
+    // debounce) for the `chat_tail` key on the same SSE delta.
+    let mut chat_tail = auto_actions::ChatTailGate::new();
+    auto_actions::tick(
+        &state,
+        "ghost",
+        &mut detector,
+        &mut tail,
+        &mut last_capture_at,
+        &mut chat_tail,
+    )
         .await
         .unwrap();
 
@@ -136,11 +146,19 @@ async fn detector_tick_writes_last_capture() {
     // the same way).
     let mut last_capture_at = Instant::now()
         - supermux_server::sessions::status::MAX_PREVIEW_STALENESS;
+    let mut chat_tail = auto_actions::ChatTailGate::new();
     let mut captured = String::new();
     for _ in 0..24 {
-        auto_actions::tick(&state, &name, &mut detector, &mut tail, &mut last_capture_at)
-            .await
-            .unwrap();
+        auto_actions::tick(
+            &state,
+            &name,
+            &mut detector,
+            &mut tail,
+            &mut last_capture_at,
+            &mut chat_tail,
+        )
+        .await
+        .unwrap();
         let rt = db::sessions::runtime(&state.pool, &name).await.unwrap().unwrap();
         captured = rt.last_capture;
         if captured.contains(marker) {
