@@ -16,7 +16,7 @@ import * as React from 'react'
 
 import type { TileSession } from '@/components/session-tile/types'
 
-import { RECEIPT_CAP, stripEmojiPrefix } from './entries'
+import { pruneSuperseded, RECEIPT_CAP, stripEmojiPrefix } from './entries'
 import { noteServerStamp, recordHookLatency } from './latency'
 
 export interface OverlayLine {
@@ -59,13 +59,21 @@ export function useReceiptOverlay(
 
   // Discard-and-replace: anything at or before the newest confirmed entry is
   // now represented by real receipts — drop it (both sides server clocks).
+  //
+  // `lastConfirmedTs` has SECOND resolution (RecallEntry.ts is `parse_ts` →
+  // `.timestamp()`, i.e. floored), while overlay lines carry millisecond
+  // `activity_at`. Comparing against `ts * 1000` therefore left every line
+  // stamped inside the confirmed entry's own second on screen — a receipt
+  // confirmed at 10.400 s yielded a 10 000 cutoff and its overlay twin
+  // survived, rendering directly below the confirmed row for the rest of the
+  // turn. That is precisely the duplicate the supersede gate exists to
+  // prevent, so round the truncated stamp UP to the end of its second.
   React.useEffect(() => {
     if (lastConfirmedTs <= 0) return
-    const cutoff = lastConfirmedTs * 1000
     // Prune against freshly CONFIRMED transcript data (external system);
-    // filter returns a new array only when something was actually superseded.
+    // `pruneSuperseded` returns the same ref when nothing was superseded.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLines((prev) => prev.filter((l) => l.at > cutoff))
+    setLines((prev) => pruneSuperseded(prev, lastConfirmedTs))
   }, [lastConfirmedTs])
 
   // Turn ended (panel-gated on confirmation) → clear the remainder.

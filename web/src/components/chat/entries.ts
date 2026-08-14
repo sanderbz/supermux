@@ -116,3 +116,29 @@ export function formatElapsed(ms: number): string {
 export function stripEmojiPrefix(label: string): string {
   return label.replace(/^[^\p{L}\p{N}]{1,3}\s+/u, '')
 }
+
+/** End of the confirmed entry's second, in ms.
+ *
+ *  Wire timestamps on transcript entries have SECOND resolution (`RecallEntry.ts`
+ *  is `parse_ts` → `.timestamp()`, floored) while the live overlay stamps lines
+ *  with millisecond `activity_at`. `ts * 1000` therefore under-shoots by up to
+ *  999 ms and leaves an overlay line whose confirmed twin has already landed on
+ *  screen. Rounding up to the end of the second is the conservative reading of
+ *  "at or before the newest confirmed entry": at worst a not-yet-confirmed line
+ *  disappears up to a second early, which is invisible, whereas the other
+ *  direction renders the same receipt twice for the rest of the turn. */
+export function supersededCutoffMs(lastConfirmedTs: number): number {
+  return (lastConfirmedTs + 1) * 1000
+}
+
+/** Drop overlay lines the confirmed transcript now represents. Returns the
+ *  SAME array when nothing was superseded, so an unchanged live layer does not
+ *  force a re-render. */
+export function pruneSuperseded<T extends { at: number }>(
+  lines: T[],
+  lastConfirmedTs: number,
+): T[] {
+  const cutoff = supersededCutoffMs(lastConfirmedTs)
+  const kept = lines.filter((l) => l.at > cutoff)
+  return kept.length === lines.length ? lines : kept
+}

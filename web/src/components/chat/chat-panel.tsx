@@ -24,7 +24,7 @@ import { useChatTail } from './use-chat-tail'
 import { useReceiptOverlay } from './use-receipt-overlay'
 import { WorkingRow } from './working-row'
 import { ProvisionalTail } from './provisional-tail'
-import { exposeLatency, latencySamples, p50, serverNowMs } from './latency'
+import { exposeLatency, latencySummary, serverNowMs } from './latency'
 
 const FOLLOW_THRESHOLD_PX = 48
 /** Only show the provisional tail when the transcript is clearly BEHIND the
@@ -121,6 +121,8 @@ export default function ChatPanel({
 
   const overlay = useReceiptOverlay(session, turnStart, lastConfirmedTs)
   React.useEffect(() => exposeLatency(), [])
+  // One pass over the ring per render (the ticker re-renders us every second).
+  const latency = latencySummary()
 
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
@@ -283,11 +285,11 @@ export default function ChatPanel({
 
       <div className="shrink-0 border-t border-border/60 px-5 py-2 text-center text-[12px] text-muted-foreground">
         Read-only preview — switch to Terminal to type.
-        {latencySamples().length > 0 && (
+        {latency.n > 0 && (
           /* The dogfood number, readable without devtools (re-renders on the
              live-layer ticker / tail refetches). */
           <span className="ml-2 tabular-nums">
-            · hook→UI p50 {p50(latencySamples())} ms (n={latencySamples().length})
+            · hook→UI p50 {latency.p50} ms (n={latency.n})
           </span>
         )}
       </div>
