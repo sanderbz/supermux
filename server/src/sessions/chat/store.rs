@@ -74,12 +74,18 @@ pub struct ChatTail {
 
 /// What a new subscriber receives: everything already published (`ring`), the
 /// exact boundary (`high_water`), a receiver that starts at that boundary, and
-/// the oldest line-start offset still in memory (where disk paging resumes).
+/// where disk paging resumes.
 pub struct Attachment {
     pub ring: Vec<WireEntry>,
     pub high_water: u64,
     pub rx: broadcast::Receiver<WireEntry>,
-    pub oldest_offset: Option<u64>,
+    /// Oldest line-start offset in the ring **from the MAIN transcript**.
+    ///
+    /// Deliberately not "the oldest entry's offset": subagent entries carry
+    /// offsets in their own file, and this number is compared against — and
+    /// turned into — a history cursor, which addresses the main transcript
+    /// only. Mixing the two domains made the client page to an unrelated byte.
+    pub oldest_main_offset: Option<u64>,
 }
 
 struct Inner {
@@ -154,7 +160,7 @@ impl ChatStore {
         Attachment {
             ring: g.ring.iter().cloned().collect(),
             high_water: g.next_seq,
-            oldest_offset: g.ring.front().map(|w| w.offset()),
+            oldest_main_offset: g.ring.iter().find(|w| !w.is_subagent()).map(|w| w.offset()),
             rx,
         }
     }
@@ -444,7 +450,7 @@ mod tests {
         );
         assert_eq!(att.high_water, total);
         assert_eq!(
-            att.oldest_offset,
+            att.oldest_main_offset,
             Some((total - RING_CAP as u64) * 100),
             "the seed/disk boundary is the oldest RING entry's line-start offset"
         );
@@ -456,7 +462,7 @@ mod tests {
         let att = store.attach();
         assert!(att.ring.is_empty());
         assert_eq!(att.high_water, 0);
-        assert_eq!(att.oldest_offset, None);
+        assert_eq!(att.oldest_main_offset, None);
         let mut rx = att.rx;
         store.publish(vec![entry(0)]);
         let w = rx.try_recv().expect("the first entry must reach a pre-attached rx");
@@ -488,7 +494,7 @@ mod tests {
         assert!(!store.reset(), "clearing an empty ring is a no-op, not a resync");
         let after = store.attach();
         assert!(after.ring.is_empty(), "a resync must not leave the old conversation seedable");
-        assert_eq!(after.oldest_offset, None);
+        assert_eq!(after.oldest_main_offset, None);
         assert_eq!(
             after.high_water, before.high_water,
             "`seq` must NOT rewind — a reused seq would read as a duplicate"

@@ -232,6 +232,19 @@ impl WireEntry {
     pub fn truncated(&self) -> bool {
         self.0.truncated
     }
+    pub fn agent_id(&self) -> Option<&str> {
+        self.0.agent_id.as_deref()
+    }
+    /// Does this entry come from a SUBAGENT transcript?
+    ///
+    /// Load-bearing for paging: a subagent entry's [`offset`](Self::offset) is
+    /// a byte position in `subagents/agent-<id>.jsonl`, not in the main
+    /// transcript — and the main transcript is the only file the history cursor
+    /// addresses. The tailer tags every subagent entry from the FILENAME, so
+    /// this is exact, not a heuristic over the line's own fields.
+    pub fn is_subagent(&self) -> bool {
+        self.0.agent_id.is_some()
+    }
     pub fn body(&self) -> &Value {
         &self.0.body
     }

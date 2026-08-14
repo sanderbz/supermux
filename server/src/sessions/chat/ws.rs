@@ -225,7 +225,7 @@ pub(crate) fn line_aligned_start(entries: &[WireEntry], mut start: usize) -> usi
         return 0;
     }
     if start > 0 {
-        while start < entries.len() && entries[start].offset() == entries[start - 1].offset() {
+        while start < entries.len() && same_line(&entries[start], &entries[start - 1]) {
             start += 1;
         }
     } else {
@@ -239,30 +239,48 @@ pub(crate) fn line_aligned_start(entries: &[WireEntry], mut start: usize) -> usi
         // Rewind to that line's own start: still never mid-line, just wider
         // than the budget asked for.
         start = entries.len() - 1;
-        let line = entries[start].offset();
-        while start > 0 && entries[start - 1].offset() == line {
+        while start > 0 && same_line(&entries[start - 1], &entries[start]) {
             start -= 1;
         }
     }
     start
 }
 
+/// Do these two entries belong to the same PHYSICAL line?
+///
+/// The offset alone does not say so: a subagent entry's offset is a position in
+/// `subagents/agent-<id>.jsonl`, so a main line and a subagent line that happen
+/// to share a byte offset are unrelated. Treating them as one line silently
+/// dropped one of them from the page.
+fn same_line(a: &WireEntry, b: &WireEntry) -> bool {
+    a.offset() == b.offset() && a.agent_id() == b.agent_id()
+}
+
 /// Build the seed page from an [`attach`](ChatStore::attach) snapshot. The
 /// entries are ALREADY sealed (the store seals on publish), so this applies
 /// only the page-level budget — the per-entry cap cannot be skipped here even
 /// by mistake.
-pub(crate) fn seed_page(ring: Vec<WireEntry>, oldest_offset: Option<u64>, conv: &str) -> Page {
+pub(crate) fn seed_page(ring: Vec<WireEntry>, oldest_main_offset: Option<u64>, conv: &str) -> Page {
     let start = seed_start(&ring, SEED_MAX_BYTES);
     let entries: Vec<WireEntry> = ring.into_iter().skip(start).collect();
-    let Some(oldest_sent) = entries.first().map(|w| w.offset()) else {
+    if entries.is_empty() {
         return Page::empty();
+    }
+    // The cursor is a MAIN-transcript byte offset — `history_page` resolves it
+    // against that file and nothing else. A subagent entry's offset is a
+    // position in its own file, so it can never be a cursor: handing one out
+    // sent the client paging from an unrelated byte of the main transcript
+    // (and everything between there and the ring's real start was unreachable).
+    let Some(oldest_main) = entries.iter().find(|w| !w.is_subagent()).map(|w| w.offset()) else {
+        // A window of nothing but subagent turns: correct to show, but there is
+        // no main-file position to page back from.
+        return Page { entries, has_more: false, next_before: None };
     };
-    // Older content exists when the budget dropped ring entries, when the ring
-    // itself had already evicted some (its front is below what we send), or
-    // simply when the oldest entry we hold does not start the file.
-    let has_more = start > 0 || oldest_sent > 0 || oldest_offset.is_some_and(|o| o < oldest_sent);
+    // Older content exists when the oldest main entry we send does not start
+    // the file, or when the ring itself holds something older still.
+    let has_more = oldest_main > 0 || oldest_main_offset.is_some_and(|o| o < oldest_main);
     Page {
-        next_before: has_more.then(|| HistoryCursor::format(conv, oldest_sent)),
+        next_before: has_more.then(|| HistoryCursor::format(conv, oldest_main)),
         has_more,
         entries,
     }
@@ -280,26 +298,52 @@ pub(crate) fn history_page(path: &FsPath, conv: &str, before: u64, limit: usize)
         return Page::empty();
     };
     let (entries, _) = parse_stream(BufReader::new(file), 0);
-    // Both caps, on the same code path the seed uses: `seal` per entry…
-    let sealed: Vec<WireEntry> = entries
+    // Sidechain lines are dropped here for the same reason the tailer drops
+    // them: the live path re-reads those turns, with their agent id, out of
+    // `subagents/`. A backlog page that kept them would disagree with the seed
+    // about what the conversation IS, at the exact seam between the two.
+    let below: Vec<&ChatEntry> = entries
         .iter()
-        .filter(|e| e.offset < before)
-        .map(|e| WireEntry::seal(HISTORY_SEQ, e))
+        .filter(|e| e.offset < before && !e.is_sidechain)
         .collect();
-    if sealed.is_empty() {
+    if below.is_empty() {
         return Page::empty();
     }
-    // …then the count limit, then the page byte budget, then line alignment.
-    let by_limit = sealed.len().saturating_sub(limit);
-    let start = by_limit + seed_start(&sealed[by_limit..], SEED_MAX_BYTES);
-    let start = line_aligned_start(&sealed, start);
-    let has_more = start > 0;
+    let window = history_window_start(&below, limit);
+    // Both caps, on the same code path the seed uses: `seal` per entry, then
+    // the page byte budget, then line alignment.
+    let sealed: Vec<WireEntry> = below[window..]
+        .iter()
+        .map(|e| WireEntry::seal(HISTORY_SEQ, e))
+        .collect();
+    let start = line_aligned_start(&sealed, seed_start(&sealed, SEED_MAX_BYTES));
+    let has_more = window + start > 0;
     let entries: Vec<WireEntry> = sealed.into_iter().skip(start).collect();
     let next_before = entries
         .first()
         .filter(|_| has_more)
         .map(|w| HistoryCursor::format(conv, w.offset()));
     Page { entries, has_more, next_before }
+}
+
+/// First index of `below` that a `limit`-sized backlog page may need — i.e. the
+/// only entries [`history_page`] is allowed to SEAL.
+///
+/// The count limit belongs here, before sealing, not after it: sealing is two
+/// or more `serde_json` passes per entry plus a full body copy, and applying
+/// the limit afterwards threw almost all of that away — on a real 12 MB
+/// transcript on this host, 4,247 entries sealed to serve a page of 200, and
+/// the waste grew with scroll depth.
+///
+/// The window is pulled back to its line start, so the byte budget and the line
+/// alignment that run afterwards can only ever move it FORWARD — which is what
+/// keeps them expressible inside this window at all.
+pub(crate) fn history_window_start(below: &[&ChatEntry], limit: usize) -> usize {
+    let mut window = below.len().saturating_sub(limit);
+    while window > 0 && below[window - 1].offset == below[window].offset {
+        window -= 1;
+    }
+    window
 }
 
 /// Backlog entries carry `seq = 0`: they are strictly below every live `seq`
@@ -477,7 +521,7 @@ async fn push_seed(
     let att = store.attach();
     let high_water = att.high_water;
     let rx = att.rx;
-    let page = seed_page(att.ring, att.oldest_offset, conv);
+    let page = seed_page(att.ring, att.oldest_main_offset, conv);
     let mut frame = page.json();
     if let Some(obj) = frame.as_object_mut() {
         obj.insert("type".to_string(), json!("seed"));
@@ -903,7 +947,7 @@ mod tests {
         let store = ChatStore::new();
         store.publish(vec![entry_at("big", 0, &"y".repeat(64 * 1024))]);
         let att = store.attach();
-        let page = seed_page(att.ring, att.oldest_offset, "conv-a");
+        let page = seed_page(att.ring, att.oldest_main_offset, "conv-a");
         let e = &page.entries[0];
         assert!(e.truncated(), "a seeded entry over the cap must be clipped");
         assert_eq!(e.uuid(), "big", "the uuid must survive so fetch-full can resolve it");
@@ -924,6 +968,97 @@ mod tests {
         let page = seed_page(whole, Some(0), "conv-a");
         assert!(!page.has_more);
         assert!(page.next_before.is_none());
+    }
+
+    // ── the two offset domains ──────────────────────────────────────────────
+
+    fn sub_wire(seq: u64, uuid: &str, offset: u64, agent: &str) -> WireEntry {
+        let mut e = entry_at(uuid, offset, "sub");
+        e.is_sidechain = true;
+        e.agent_id = Some(agent.to_string());
+        WireEntry::seal(seq, &e)
+    }
+
+    #[test]
+    fn the_paging_cursor_is_a_main_transcript_offset_never_a_subagent_one() {
+        // A subagent entry's `offset` is a position in
+        // `subagents/agent-<id>.jsonl`; `history_page` resolves the cursor
+        // against the MAIN transcript. Handing out a subagent offset sent the
+        // client paging from an unrelated byte — and everything between there
+        // and the ring's real start was unreachable.
+        let ring = vec![
+            sub_wire(0, "s1", 312, "x1"),
+            sub_wire(1, "s2", 480, "x1"),
+            wire(2, "m1", 9_000, "main"),
+            wire(3, "m2", 9_400, "main"),
+        ];
+        let page = seed_page(ring, Some(9_000), "conv-a");
+        assert_eq!(page.entries.len(), 4, "subagent turns still SHOW");
+        assert_eq!(
+            page.next_before.as_deref(),
+            Some("conv-a:9000"),
+            "…but the cursor is the oldest MAIN entry, not the ring's front"
+        );
+
+        // A window that is nothing but subagent turns has no main-file position
+        // to page back from — better no cursor than a wrong one.
+        let subs_only = vec![sub_wire(0, "s1", 312, "x1"), sub_wire(1, "s2", 480, "x1")];
+        let page = seed_page(subs_only, None, "conv-a");
+        assert!(!page.has_more);
+        assert!(page.next_before.is_none());
+    }
+
+    #[test]
+    fn a_main_and_a_subagent_line_that_share_an_offset_are_not_one_line() {
+        // Line alignment used to compare offsets alone, so a coincidental
+        // collision between two FILES read as one physical line and silently
+        // dropped one of them from the page.
+        let ring = vec![
+            wire(0, "m0", 500, "main"),
+            sub_wire(1, "s0", 500, "x1"),
+            wire(2, "m1", 900, "main"),
+        ];
+        assert_eq!(
+            line_aligned_start(&ring, 1),
+            1,
+            "a subagent line at the same byte offset is a DIFFERENT line"
+        );
+        // …while real blocks of one line still group.
+        let blocks = vec![
+            sub_wire(0, "s", 500, "x1"),
+            sub_wire(1, "s#1", 500, "x1"),
+            wire(2, "m1", 900, "main"),
+        ];
+        assert_eq!(line_aligned_start(&blocks, 1), 2);
+    }
+
+    #[test]
+    fn history_pages_agree_with_the_live_path_about_sidechain_lines() {
+        // The tailer drops the main file's sidechain lines (the same turns are
+        // re-read, with their agent id, from `subagents/`). A backlog page that
+        // kept them disagreed with the seed about what the conversation IS,
+        // right at the seam between the two.
+        let dir = tmp_dir("histsidechain");
+        let path = dir.join("conv-a.jsonl");
+        let side = serde_json::json!({
+            "type": "user",
+            "uuid": "side1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "conv-a",
+            "isSidechain": true,
+            "agentId": "x1",
+            "message": { "role": "user", "content": "sub work" },
+        })
+        .to_string();
+        write_lines(&path, &[user_line("u0", "hi"), side, user_line("u1", "bye")]);
+
+        let page = history_page(&path, "conv-a", u64::MAX, 100);
+        assert_eq!(
+            page.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            ["u0", "u1"],
+            "sidechain lines are the subagent files' content, not the main thread's"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     // ── the live path ───────────────────────────────────────────────────────
@@ -965,7 +1100,7 @@ mod tests {
         // The resync is answered by a FRESH attach — a re-seed, not a splice.
         let fresh = store.attach();
         assert_eq!(fresh.high_water, 64);
-        let page = seed_page(fresh.ring, fresh.oldest_offset, "conv-a");
+        let page = seed_page(fresh.ring, fresh.oldest_main_offset, "conv-a");
         assert_eq!(
             page.entries.last().unwrap().seq(),
             63,
@@ -1026,6 +1161,31 @@ mod tests {
         assert_eq!(next.conversation_id, "conv-a");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_history_page_seals_only_the_window_it_can_return() {
+        // `history_page` seals `below[history_window_start(..)..]` and nothing
+        // else, so this index IS the seal count. It used to seal every entry
+        // below the cursor and then drop all but `limit` — 4,247 seals to serve
+        // 200 on a real 12 MB transcript, worse the further back you scroll.
+        let mut owned: Vec<ChatEntry> = (0..400u64)
+            .map(|i| entry_at(&format!("u{i}"), i * 100, "hi"))
+            .collect();
+        let below: Vec<&ChatEntry> = owned.iter().collect();
+        assert_eq!(history_window_start(&below, 5), 395, "5 sealed, not 400");
+        assert_eq!(history_window_start(&below, 1_000), 0, "a page bigger than the file is the file");
+
+        // …and a window that would start mid-line is pulled back to the LINE
+        // start first, so everything downstream only moves forward.
+        owned[396].offset = owned[395].offset;
+        owned[397].offset = owned[395].offset;
+        let below: Vec<&ChatEntry> = owned.iter().collect();
+        assert_eq!(
+            history_window_start(&below, 3),
+            395,
+            "a limit cutting inside a fanned-out line takes the whole line"
+        );
     }
 
     #[test]
