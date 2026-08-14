@@ -720,7 +720,10 @@ pub fn status_of(name: &str) -> Option<TailStatus> {
 /// Facts one blocking pass collected about the tail, so the async loop never
 /// touches the filesystem itself.
 struct Pass {
-    poll: TailPoll,
+    /// Sealed HERE, on the blocking pool — see
+    /// [`ChatStore::publish_sealed`](super::store::ChatStore::publish_sealed).
+    entries: Vec<super::model::WireEntry>,
+    resync: bool,
     pointer_exists: bool,
     pointer_mtime_ms: Option<i64>,
     newest_sibling_mtime_ms: Option<i64>,
@@ -737,7 +740,12 @@ fn blocking_pass(mut core: Tailer, want_siblings: bool) -> (Tailer, Pass) {
     let poll = core.poll();
     let meta = std::fs::metadata(core.transcript_path()).ok();
     let pass = Pass {
-        poll,
+        entries: poll
+            .entries
+            .iter()
+            .map(super::model::WireEntry::seal_pending)
+            .collect(),
+        resync: poll.resync,
         pointer_exists: meta.is_some(),
         pointer_mtime_ms: meta.as_ref().and_then(mtime_ms),
         newest_sibling_mtime_ms: want_siblings
@@ -834,7 +842,7 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         };
         core = Some(returned);
 
-        if rebuilt || pass.poll.resync {
+        if rebuilt || pass.resync {
             // The ring holds what the PREVIOUS cursor set published: another
             // conversation after a retarget, or a second copy of this one when a
             // fresh task re-reads the file from byte 0. Clearing it (seq stays
@@ -846,9 +854,7 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
                 resync_epoch += 1;
             }
         }
-        if !pass.poll.entries.is_empty() {
-            store.publish(pass.poll.entries);
-        }
+        store.publish_sealed(pass.entries);
 
         let state_now = classify_pointer(PointerInputs {
             pointer_path_exists: !conv.is_empty() && pass.pointer_exists,

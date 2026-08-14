@@ -156,6 +156,11 @@ mod sealed {
     }
 }
 
+/// Placeholder sequence for an entry sealed before the store assigned it one.
+/// The widest value a `u64` serializes to, so stamping the real `seq` can only
+/// shrink the entry (see [`WireEntry::seal_pending`]).
+pub const PENDING_SEQ: u64 = u64::MAX;
+
 /// A capped, serializable entry. **The only** type the WS/SSE layers may put
 /// on the wire.
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +217,25 @@ impl WireEntry {
         inner.body = Value::Null;
         inner.truncated = true;
         Self(inner)
+    }
+
+    /// Seal an entry that has no sequence yet.
+    ///
+    /// The tailer seals on the BLOCKING pool and the store stamps `seq` under
+    /// its lock, so the expensive half of a publish (two-plus `serde_json`
+    /// passes and a body copy per entry) never runs on a Tokio worker, and
+    /// never inside the critical section `attach` and the tile summary contend
+    /// for. [`PENDING_SEQ`] is `u64::MAX` on purpose: it is the WIDEST `seq`
+    /// the header can serialize to, so the real one can only make the entry
+    /// smaller than the budget it was measured against.
+    pub fn seal_pending(e: &ChatEntry) -> Self {
+        Self::seal(PENDING_SEQ, e)
+    }
+
+    /// Stamp the real sequence. Only [`super::store::ChatStore`] may call it —
+    /// `seq` is the ring's order and the seed→live boundary.
+    pub(super) fn set_seq(&mut self, seq: u64) {
+        self.0.seq = seq;
     }
 
     pub fn seq(&self) -> u64 {

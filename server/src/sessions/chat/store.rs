@@ -129,19 +129,32 @@ impl ChatStore {
         }
     }
 
-    /// Publish a batch. **Called only by the tailer** — it is the file's single
-    /// reader, so `seq` order is the file's byte order by construction.
-    ///
-    /// Seal + push + send happen under one lock: that is the whole no-gap proof
-    /// (see the module docs). Do not "optimise" the send out of the critical
-    /// section.
+    /// Publish a batch, sealing it here. Convenience for callers that are
+    /// already off the async runtime (tests, the A1 provisional path).
     pub fn publish(&self, entries: Vec<ChatEntry>) {
-        if entries.is_empty() {
+        self.publish_sealed(entries.iter().map(WireEntry::seal_pending).collect());
+    }
+
+    /// Publish ALREADY-SEALED entries. **Called only by the tailer** — it is
+    /// the file's single reader, so `seq` order is the file's byte order by
+    /// construction.
+    ///
+    /// Stamping `seq` + push + send happen under one lock: that is the whole
+    /// no-gap proof (see the module docs). Do not "optimise" the send out of
+    /// the critical section.
+    ///
+    /// Sealing is deliberately NOT in here. It is the expensive half — two or
+    /// more `serde_json` passes plus a full body copy per entry — and doing it
+    /// under the lock blocked `attach` (every socket, every resync) and
+    /// `tail_summary` (every detector tick, every session) behind it, on a
+    /// Tokio worker.
+    pub fn publish_sealed(&self, sealed: Vec<WireEntry>) {
+        if sealed.is_empty() {
             return;
         }
         let mut g = self.lock();
-        for e in &entries {
-            let w = WireEntry::seal(g.next_seq, e);
+        for mut w in sealed {
+            w.set_seq(g.next_seq);
             g.next_seq += 1;
             g.ring.push_back(w.clone());
             while g.ring.len() > g.cap {
@@ -413,6 +426,37 @@ mod tests {
              {} attaches, so this test would not have caught a gap",
             READERS * ATTACHES
         );
+    }
+
+    #[test]
+    fn a_pre_sealed_batch_still_gets_dense_monotonic_seqs_under_the_lock() {
+        // Sealing moved OUT of the critical section (the tailer does it on the
+        // blocking pool), so the store stamps `seq` afterwards. The placeholder
+        // must never survive, and the boundary arithmetic must be unchanged.
+        use crate::sessions::chat::model::{WireEntry, PENDING_SEQ, MAX_ENTRY_BYTES};
+        let store = ChatStore::new();
+        store.publish(vec![entry(0)]);
+
+        let pre: Vec<WireEntry> = (1..5).map(|i| WireEntry::seal_pending(&entry(i))).collect();
+        assert!(pre.iter().all(|w| w.seq() == PENDING_SEQ));
+        store.publish_sealed(pre);
+
+        let att = store.attach();
+        assert_eq!(
+            att.ring.iter().map(|w| w.seq()).collect::<Vec<_>>(),
+            (0..5).collect::<Vec<_>>(),
+            "a pre-sealed batch is stamped in ring order, no placeholder left"
+        );
+        assert_eq!(att.high_water, 5);
+
+        // The placeholder is the WIDEST seq, so stamping the real one can only
+        // shrink an entry that was measured against the cap.
+        let big = ChatEntry::test_text("big", &"y".repeat(64 * 1024));
+        let mut w = WireEntry::seal_pending(&big);
+        let pending_len = serde_json::to_vec(&w).unwrap().len();
+        assert!(pending_len <= MAX_ENTRY_BYTES);
+        w.set_seq(1);
+        assert!(serde_json::to_vec(&w).unwrap().len() <= pending_len);
     }
 
     #[test]
