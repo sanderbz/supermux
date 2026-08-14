@@ -25,6 +25,13 @@ pub const SEED_MAX_BYTES: usize = 512 * 1024;
 /// Cap on a label (tool name, subtype, attachment kind) — labels are UI chrome,
 /// never payload.
 pub const LABEL_MAX_CHARS: usize = 200;
+/// Cap on every ID field that rides the wire (`uuid`, `session_id`,
+/// `tool_use_id`, `agent_id`). Real ids are UUIDs (36 chars), but nothing in a
+/// transcript line *guarantees* that: a line is bounded only by
+/// [`MAX_LINE_BYTES`], so an unclipped id is a 1 MB hole straight through the
+/// per-entry cap — [`WireEntry::seal`]'s budget saturates to 0, all six halving
+/// passes fail, and the oversized HEADER ships anyway with a `null` body.
+pub const ID_MAX_CHARS: usize = 256;
 
 /// What a parsed line *is*, from the renderer's point of view.
 ///
@@ -164,18 +171,25 @@ impl WireEntry {
     /// pass is not enough. If even a halved budget cannot fit, the body is
     /// dropped entirely — the entry still reaches the client with its uuid, and
     /// fetch-full can resolve the rest.
+    ///
+    /// **The header is capped too** ([`ID_MAX_CHARS`], [`LABEL_MAX_CHARS`]).
+    /// Clipping only the body would leave [`MAX_ENTRY_BYTES`] a cap on the
+    /// *payload* rather than on the entry: a line whose `uuid`/`tool_use_id` is
+    /// near [`MAX_LINE_BYTES`] would ship whole on the live frame, in the seed,
+    /// and in every history page, and `RING_CAP` of them would blow the ring's
+    /// documented 8 MB bound by two orders of magnitude.
     pub fn seal(seq: u64, e: &ChatEntry) -> Self {
         let mut inner = sealed::Inner {
             seq,
-            uuid: e.uuid.clone(),
+            uuid: clip_uuid(&e.uuid),
             kind: e.kind,
             ts_ms: e.ts_ms,
             offset: e.offset,
-            session_id: e.session_id.clone(),
-            tool_use_id: e.tool_use_id.clone(),
+            session_id: e.session_id.as_deref().map(|s| clip_chars(s, ID_MAX_CHARS)),
+            tool_use_id: e.tool_use_id.as_deref().map(|s| clip_chars(s, ID_MAX_CHARS)),
             label: e.label.as_deref().map(|l| clip_chars(l, LABEL_MAX_CHARS)),
             ok: e.ok,
-            agent_id: e.agent_id.clone(),
+            agent_id: e.agent_id.as_deref().map(|s| clip_chars(s, ID_MAX_CHARS)),
             oversize: e.oversize,
             truncated: false,
             body: Value::Null,
@@ -220,6 +234,25 @@ impl WireEntry {
     }
     pub fn body(&self) -> &Value {
         &self.0.body
+    }
+}
+
+/// Clip a uuid to [`ID_MAX_CHARS`] while KEEPING its `#<i>` block suffix.
+///
+/// The suffix is not decoration: the parser writes `<line uuid>#<i>` for every
+/// block past the first, and [`super::ws::line_aligned_start`] reads it to spot
+/// a ring whose oldest entry is a non-first block. Clipping it away would make
+/// every block of one pathological line collapse to the same string.
+fn clip_uuid(s: &str) -> String {
+    if s.chars().count() <= ID_MAX_CHARS {
+        return s.to_string();
+    }
+    match s.rsplit_once('#') {
+        Some((head, block)) if !block.is_empty() && block.bytes().all(|b| b.is_ascii_digit()) => {
+            let room = ID_MAX_CHARS.saturating_sub(block.len() + 1);
+            format!("{}#{block}", clip_chars(head, room))
+        }
+        _ => clip_chars(s, ID_MAX_CHARS),
     }
 }
 
@@ -306,5 +339,77 @@ fn clip_value(v: &Value, budget: &mut usize, truncated: &mut bool) -> Value {
             }
             Value::Object(out)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A field that is nothing but one enormous id, as a transcript line is
+    /// free to carry (a line is bounded only by `MAX_LINE_BYTES`).
+    fn huge(n: usize) -> String {
+        "u".repeat(n)
+    }
+
+    #[test]
+    fn seal_caps_the_header_ids_not_only_the_body() {
+        // Pre-fix this produced a ~2 MB `WireEntry`: `seal` clipped `label` and
+        // `body` but cloned `uuid`/`session_id`/`tool_use_id`/`agent_id`
+        // verbatim, so `MAX_ENTRY_BYTES` was a cap on the payload, not on the
+        // entry — and the ring's documented 8 MB bound was off by 100×.
+        let e = ChatEntry {
+            uuid: format!("{}#7", huge(500_000)),
+            kind: Kind::Assistant,
+            ts_ms: 0,
+            offset: 0,
+            session_id: Some(huge(500_000)),
+            tool_use_id: Some(huge(500_000)),
+            label: Some(huge(500_000)),
+            ok: None,
+            is_sidechain: false,
+            agent_id: Some(huge(500_000)),
+            oversize: false,
+            body: serde_json::json!({ "text": "hi" }),
+        };
+        let w = WireEntry::seal(1, &e);
+        let len = serde_json::to_vec(&w).unwrap().len();
+        assert!(
+            len <= MAX_ENTRY_BYTES,
+            "a sealed entry is {len} bytes — over the {MAX_ENTRY_BYTES} cap"
+        );
+        assert!(
+            w.uuid().ends_with("#7"),
+            "the `#<i>` block suffix must survive the clip (line alignment reads it)"
+        );
+        assert!(
+            w.body().get("text").is_some(),
+            "a clipped header must still leave room for a small body"
+        );
+    }
+
+    #[test]
+    fn a_normal_entrys_header_is_untouched_by_the_id_cap() {
+        let e = ChatEntry {
+            uuid: "550e8400-e29b-41d4-a716-446655440000#2".to_string(),
+            kind: Kind::ToolResult,
+            ts_ms: 7,
+            offset: 42,
+            session_id: Some("72a819d8-0e4d-40f4-bce8-aec8033a75fd".to_string()),
+            tool_use_id: Some("toolu_01ABCdefGHIjklMNO".to_string()),
+            label: Some("Bash".to_string()),
+            ok: Some(false),
+            is_sidechain: true,
+            agent_id: Some("x1".to_string()),
+            oversize: false,
+            body: serde_json::json!({ "text": "ok" }),
+        };
+        let w = WireEntry::seal(3, &e);
+        assert_eq!(w.uuid(), e.uuid, "a real uuid is far under the cap");
+        assert!(!w.truncated());
+        let v = serde_json::to_value(&w).unwrap();
+        assert_eq!(v["session_id"], serde_json::json!(e.session_id));
+        assert_eq!(v["tool_use_id"], serde_json::json!(e.tool_use_id));
+        assert_eq!(v["agent_id"], serde_json::json!(e.agent_id));
     }
 }
