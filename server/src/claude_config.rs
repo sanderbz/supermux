@@ -449,10 +449,12 @@ fn supermux_entry(event_token: &str) -> Value {
 /// `error_type`; the only big field, Edit/Write `content`, is unneeded and may be
 /// truncated) and splice it in as the `payload` of the POST body. If STDIN was
 /// empty we substitute `{}` so the body stays valid JSON
-/// (`{"session":…,"event":…,"payload":{}}`). A truncation can leave `$D`
-/// syntactically invalid JSON — the server parses `payload` LENIENTLY (every
-/// field optional; a parse failure is a no-op), so a clipped tail never trips a
-/// tool call.
+/// (`{"session":…,"event":…,"payload":{}}`). A truncation cuts `$D` mid-token
+/// and therefore invalidates the WHOLE body, not just the payload — the server
+/// salvages `session`+`event` from the intact prefix and drops the payload
+/// (`hooks::salvage_truncated_body`), and parses `payload` LENIENTLY besides
+/// (every field optional; a parse failure is a no-op), so a clipped tail
+/// neither loses the event nor trips a tool call.
 ///
 /// **Robustness.** `--max-time 1` + `|| true` (and `blocking:false` upstream)
 /// guarantee a down/slow supermux-server never stalls a Claude tool call.

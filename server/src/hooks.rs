@@ -56,8 +56,11 @@ struct HookBody {
     /// The forwarded Claude hook JSON: the event's STDIN payload,
     /// size-capped by the hook command. Parsed LENIENTLY into [`HookPayload`]
     /// (every field optional; a partial/truncated/odd payload is a no-op, never a
-    /// 400). Held in memory only — NEVER persisted (spec §SECURITY). Absent on a
-    /// legacy hook command (pre-upgrade sessions) → treated as `{}`.
+    /// 400). A cap that lands mid-token invalidates the enclosing body too;
+    /// [`salvage_truncated_body`] recovers `session`+`event` and leaves this
+    /// `None` rather than losing the whole event. Held in memory only — NEVER
+    /// persisted (spec §SECURITY). Absent on a legacy hook command
+    /// (pre-upgrade sessions) → treated as `{}`.
     #[serde(default)]
     payload: Option<Value>,
 }
@@ -81,8 +84,27 @@ async fn hook_handler(
 ) -> Result<Json<Value>, AppError> {
     // Parse the JSON body ourselves (Content-Type agnostic). A malformed body is
     // a 400 — a genuine client bug, distinct from the silent 415 we are avoiding.
-    let body: HookBody =
-        serde_json::from_slice(&raw).map_err(|e| AppError::BadRequest(format!("hook body: {e}")))?;
+    //
+    // …except for the ONE malformed body we produce ourselves: the hook command
+    // splices Claude's STDIN in raw after capping it (`head -c 16384`), so an
+    // oversized payload is cut mid-token and takes the whole envelope down with
+    // it. That is not a client bug and must not cost us the event — see
+    // [`salvage_truncated_body`].
+    let body: HookBody = match serde_json::from_slice::<HookBody>(&raw) {
+        Ok(b) => b,
+        Err(e) => match salvage_truncated_body(&raw) {
+            Some(b) => {
+                tracing::debug!(
+                    session = %b.session,
+                    event = %b.event,
+                    bytes = raw.len(),
+                    "hook payload was truncated mid-token; salvaged the envelope, dropping the payload"
+                );
+                b
+            }
+            None => return Err(AppError::BadRequest(format!("hook body: {e}"))),
+        },
+    };
     // The expected token is the session's own (DB is the source of truth;
     // survives restart). A missing session row → 401 (no existence oracle).
     let expected = db::sessions::runtime(&state.pool, &body.session)
@@ -155,6 +177,45 @@ async fn hook_handler(
     state.wake_detector(&body.session);
 
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Recover `session` + `event` from a body whose `payload` was truncated
+/// mid-token, dropping the unusable payload.
+///
+/// The hook command builds `{"session":…,"event":…,"payload":$D}` where `$D`
+/// is Claude's STDIN capped at 16 KB (`head -c 16384`). A Write/Edit of a
+/// large file blows straight past that, so `$D` ends mid-string and the WHOLE
+/// body becomes invalid JSON — not just the payload. Before this salvage that
+/// meant a 400 before any dispatch: `mark_hooks_live`, `record_hook` and
+/// `apply_payload` never ran, so the turn state machine missed the tool
+/// boundary (sticky activity label, a permission row left on screen after the
+/// tool had long finished) on exactly the biggest tool calls.
+///
+/// The cap only ever cuts the TAIL, and `payload` is the last field, so the
+/// prefix `{"session":…,"event":…` is always intact: re-close it and parse.
+/// `payload` then defaults to `None`, which the handler already treats as `{}`
+/// — the "a clipped payload is a no-op, never a 400" contract this module
+/// documents. Returns `None` for a body that is malformed for any other
+/// reason, which stays a 400.
+fn salvage_truncated_body(raw: &[u8]) -> Option<HookBody> {
+    const PAYLOAD_KEY: &[u8] = b",\"payload\":";
+    let mut from = 0usize;
+    // A session name could itself contain the literal `,"payload":`, so try
+    // every occurrence and keep the first that yields a parseable envelope.
+    while from < raw.len() {
+        let rel = raw[from..]
+            .windows(PAYLOAD_KEY.len())
+            .position(|w| w == PAYLOAD_KEY)?;
+        let cut = from + rel;
+        let mut candidate = Vec::with_capacity(cut + 1);
+        candidate.extend_from_slice(&raw[..cut]);
+        candidate.push(b'}');
+        if let Ok(body) = serde_json::from_slice::<HookBody>(&candidate) {
+            return Some(body);
+        }
+        from = cut + 1;
+    }
+    None
 }
 
 /// Derive + store the in-memory activity/error/lifecycle effects of one hook
