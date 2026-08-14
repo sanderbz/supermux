@@ -80,13 +80,19 @@ export function entryLabels(entries: readonly ChatEntry[]): Map<string, string> 
 /* ── receipts-first ──────────────────────────────────────────────────────── */
 
 /**
- * Within one confirming batch, receipts sort before the closing prose.
+ * Within one confirming batch, the CLOSING prose sorts after the receipts.
  *
  * The batch window is a contiguous run of AGENT items (a user turn closes it),
  * and inside that window the reorder only applies to items sharing a `ts`
  * second — which is exactly the flush case, since one assistant message's text
  * block and its `tool_use` blocks are written at the same instant. Anything
  * further apart is real chronology and is left alone.
+ *
+ * The direction matters and is asymmetric: prose that OPENS a bucket introduces
+ * the calls under it and never moves, prose that FOLLOWS a receipt is the
+ * turn's answer and waits for the whole checklist. "The closing text is never
+ * the first thing to appear" (master plan §4.2) is a statement about the
+ * closing text, not a licence to sort the batch.
  *
  * Stable, non-mutating: the returned array holds the same item objects.
  */
@@ -96,8 +102,8 @@ export function receiptsFirst(items: readonly ChatItem[]): ChatItem[] {
 
   const flush = () => {
     if (batch.length === 0) return
-    // One pass per second-bucket, receipts before prose, order preserved inside
-    // each class. `Map` keeps insertion order, so the buckets stay chronological.
+    // One pass per second-bucket. `Map` keeps insertion order, so the buckets
+    // stay chronological.
     const buckets = new Map<number, ChatItem[]>()
     for (const item of batch) {
       const bucket = buckets.get(item.ts)
@@ -105,8 +111,23 @@ export function receiptsFirst(items: readonly ChatItem[]): ChatItem[] {
       else buckets.set(item.ts, [item])
     }
     for (const bucket of buckets.values()) {
-      for (const item of bucket) if (item.type === 'receipts') out.push(item)
-      for (const item of bucket) if (item.type !== 'receipts') out.push(item)
+      // Only the CLOSING prose moves. A message's text block and its `tool_use`
+      // blocks carry one timestamp (`recall.rs` stamps every block of a message
+      // with the message's `ts`), so a bucket routinely opens with the prose
+      // that INTRODUCES the calls — "I'll check the build first." Hoisting the
+      // whole receipt class over it would print the answer above the question,
+      // which is the exact failure this rule exists to avoid at the other end.
+      // So: prose before the first receipt keeps its place; prose after it waits
+      // until the batch's receipts are all on the page.
+      const head: ChatItem[] = []
+      const receipts: ChatItem[] = []
+      const closing: ChatItem[] = []
+      for (const item of bucket) {
+        if (item.type === 'receipts') receipts.push(item)
+        else if (receipts.length > 0) closing.push(item)
+        else head.push(item)
+      }
+      out.push(...head, ...receipts, ...closing)
     }
     batch = []
   }

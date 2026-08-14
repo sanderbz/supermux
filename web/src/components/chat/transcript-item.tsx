@@ -34,6 +34,7 @@
 import * as React from 'react'
 
 import { SessionMark, type MarkPin } from '../../brand/marks'
+import { cn } from '../../lib/utils'
 
 import type { ChatItem } from './entries'
 import { framesIn } from './frames'
@@ -111,21 +112,39 @@ function UserRow({
   labels,
 }: TranscriptItemProps & { item: ChatItem; grouped: boolean }) {
   if (item.type !== 'user') return null
-  const label = labels?.get(item.uuid)
   // The kind, as a word. A slash command shows the command it ran; everything
   // else shows its kind. Weight, not colour, and never an emoji: the emoji
   // taxonomy is terminal/tile-only (master plan §4.2 P3).
-  const chip = item.badge === 'command' ? `/${label ?? 'command'}` : item.badge
+  //
+  // The wire label for a command is the slash name WITH its slash (`/clear` —
+  // `recall.rs::classify_by_wrapper` takes `<command-name>` verbatim) and the
+  // entry's text opens with that same name plus its args (`/clear`,
+  // `/code-review high`). So the chip is the label as it stands, and the body is
+  // what the command was given — otherwise the bubble reads `//clear /clear`.
+  const command = commandChip(item.badge, labels?.get(item.uuid))
+  const chip = command ?? item.badge
+  const text =
+    command && item.text.startsWith(command) ? item.text.slice(command.length).trimStart() : item.text
   return (
     <MessageRow me grouped={grouped}>
       <Bubble variant="user" surface={surface}>
         {chip && (
-          <span className="mr-1.5 font-medium tracking-[-0.1px] opacity-70">{chip}</span>
+          <span className={cn('font-medium tracking-[-0.1px] opacity-70', text && 'mr-1.5')}>
+            {chip}
+          </span>
         )}
-        <span className="whitespace-pre-wrap break-words">{item.text}</span>
+        {text && <span className="whitespace-pre-wrap break-words">{text}</span>}
       </Bubble>
     </MessageRow>
   )
+}
+
+/** `/clear` from whatever the wire called the slash name, or nothing. */
+function commandChip(badge: string | undefined, label: string | undefined): string | undefined {
+  if (badge !== 'command') return undefined
+  const name = label?.trim()
+  if (!name) return undefined
+  return name.startsWith('/') ? name : `/${name}`
 }
 
 /* ── this session ────────────────────────────────────────────────────────── */

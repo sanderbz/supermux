@@ -60,12 +60,26 @@ const ids = (items: readonly ChatItem[]) => items.map((i) => i.uuid)
 /* ── receipts-first ──────────────────────────────────────────────────────── */
 
 describe('receiptsFirst', () => {
-  test('a flush batch puts its receipts above its closing prose', () => {
-    // One assistant message carrying a text block AND tool_use blocks writes
-    // both at the same second — that is the batch the rule is about.
-    expect(ids(receiptsFirst([assistant('prose', 100), receipts('tools', 100)]))).toEqual([
+  test('a flush batch puts its closing prose below the whole checklist', () => {
+    // Two tool groups and the answer, all stamped in one second. The answer
+    // waits for both groups — "the closing text is never the first thing to
+    // appear" is about the text that CLOSES the turn.
+    const out = receiptsFirst([
+      receipts('r1', 100),
+      assistant('closing', 100),
+      receipts('r2', 100),
+    ])
+    expect(ids(out)).toEqual(['r1', 'r2', 'closing'])
+  })
+
+  test('the prose that INTRODUCES a call never sinks below it', () => {
+    // `recall.rs` stamps a message's text block and its `tool_use` blocks with
+    // one `ts`, so the same-second bucket routinely opens with "I'll check the
+    // build first." Hoisting the receipts over it prints the answer above the
+    // question — the turn reads backwards.
+    expect(ids(receiptsFirst([assistant('intro', 100), receipts('tools', 100)]))).toEqual([
+      'intro',
       'tools',
-      'prose',
     ])
   })
 
@@ -90,20 +104,26 @@ describe('receiptsFirst', () => {
 
   test('two batches shape independently', () => {
     const out = receiptsFirst([
-      assistant('a1', 100),
       receipts('r1', 100),
-      assistant('a2', 200),
+      assistant('a1', 100),
       receipts('r2', 200),
+      assistant('a2', 200),
     ])
     expect(ids(out)).toEqual(['r1', 'a1', 'r2', 'a2'])
   })
 
+  test('a later second is real chronology, never a bucket', () => {
+    // The answer at t=101 is already after the receipts at t=100; nothing to do.
+    expect(ids(receiptsFirst([receipts('r1', 100), assistant('a1', 101)]))).toEqual(['r1', 'a1'])
+  })
+
   test('it never adds, drops or mutates an item', () => {
-    const input = [assistant('a1', 100), receipts('r1', 100)]
+    const input = [receipts('r1', 100), assistant('a1', 100), receipts('r2', 100)]
     const out = receiptsFirst(input)
-    expect(out).toHaveLength(2)
-    expect(out[0]).toBe(input[1])
-    expect(ids(input)).toEqual(['a1', 'r1'])
+    expect(out).toHaveLength(3)
+    expect(out[1]).toBe(input[2])
+    expect(out[2]).toBe(input[1])
+    expect(ids(input)).toEqual(['r1', 'a1', 'r2'])
   })
 })
 
@@ -370,11 +390,15 @@ describe('buildTranscript', () => {
   test('composes shaping, grammar and dividers in that order', () => {
     const now = 1_760_000_000_000
     const t = Math.floor(now / 1000) - 60
-    const nodes = buildTranscript([assistant('prose', t), receipts('tools', t)], { nowMs: now })
+    const nodes = buildTranscript(
+      [assistant('intro', t), receipts('tools', t), assistant('closing', t)],
+      { nowMs: now },
+    )
     expect(nodes.map((n) => (n.kind === 'item' ? n.item.uuid : 'divider'))).toEqual([
       'divider',
+      'intro',
       'tools',
-      'prose',
+      'closing',
     ])
   })
 
