@@ -14,31 +14,13 @@ import * as React from 'react'
 
 import type { TileSession } from '@/components/session-tile/types'
 
-import {
-  newestAgentTs,
-  stripEmojiPrefix,
-  toDisplayList,
-  type ChatEntry,
-} from './entries'
-import { useChatTail } from './use-chat-tail'
-import { useReceiptOverlay } from './use-receipt-overlay'
+import { stripEmojiPrefix } from './entries'
+import { useChatTurn } from './use-chat-turn'
 import { WorkingRow } from './working-row'
 import { ProvisionalTail } from './provisional-tail'
-import { exposeLatency, latencySamples, p50, serverNowMs } from './latency'
+import { exposeLatency, latencySamples, p50 } from './latency'
 
 const FOLLOW_THRESHOLD_PX = 48
-/** Only show the provisional tail when the transcript is clearly BEHIND the
- *  live turn — right after a batch lands the pty text is confirmed content
- *  and showing it again would duplicate (the A1 anti-glitch heuristic). */
-const PROVISIONAL_LAG_MS = 5_000
-/** How recent `last_send_at` must be at the flip to count as THIS turn's
- *  anchor (terminal-typed sends never stamp it, so it can be stale). */
-const SEND_ANCHOR_WINDOW_MS = 30_000
-/** Bounded fallback teardown: a turn whose confirming batch never lands (an
- *  interrupt, a compact, an unreadable transcript) must not strand the live
- *  layer polling `/peek` once a second forever. Well past the a0 confirm
- *  latency (text-only p50 31s) so it never fires on a healthy turn. */
-const TURN_CONFIRM_TIMEOUT_MS = 120_000
 
 export default function ChatPanel({
   name,
@@ -48,78 +30,10 @@ export default function ChatPanel({
   session: TileSession | null
 }) {
   const active = session?.status === 'active'
-  const tail = useChatTail(name, true)
-  // Memoised so the `?? []` fallback doesn't hand `toDisplayList` a fresh
-  // array identity on every render (it would recompute the whole list each
-  // 1s live-layer tick).
-  const entries = React.useMemo(
-    () => (tail.data?.entries ?? []) as unknown as ChatEntry[],
-    [tail.data],
-  )
-  const items = React.useMemo(() => toDisplayList(entries), [entries])
-  const lastConfirmedTs = entries.length > 0 ? entries[0].ts : 0
-  const lastConfirmedMs = lastConfirmedTs * 1000
+  // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
+  // lives in `use-chat-turn.ts` — this component is presentation only.
+  const { items, turnStart, showProvisional, overlay, tail } = useChatTurn(name, session)
 
-  // Turn tracking, SERVER clock domain. Anchor priority: the server's
-  // last_send_at stamp (the dock/API send that started the turn — makes the
-  // elapsed clause count from the SEND even when this panel mounts mid-turn),
-  // else skew-corrected server-now at the flip. Never raw Date.now().
-  const [turnStart, setTurnStart] = React.useState<number | null>(null)
-  const lastSendAt = session?.last_send_at
-  React.useEffect(() => {
-    if (!active) return
-    // The turn anchor is stamped from the SERVER-clock edge of an external
-    // event (the SSE status flip), not derived from render state; the updater
-    // returns `prev` unchanged once an anchor exists, so it cannot cascade.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setTurnStart((prev) => {
-      if (prev != null) return prev
-      const now = serverNowMs()
-      const sendMs = (lastSendAt ?? 0) * 1000
-      return sendMs > 0 && now - sendMs < SEND_ANCHOR_WINDOW_MS ? sendMs : now
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active])
-
-  // Supersede gate (checkpoint (c)): the live layer tears down only once the
-  // AGENT's confirming batch for THIS turn is in hand — never on the bare
-  // status flip, which would leave a blank gap while the batch is still in
-  // flight. The gate deliberately ignores USER-authored entries: Claude writes
-  // the user turn to the JSONL within ~1s of the send, and with the
-  // `last_send_at` anchor (every dock/REST/WS send stamps it — i.e. the whole
-  // dogfood path) that echo's second-truncated `ts` is always ≥ turnStart, so
-  // an any-entry gate is satisfied by the user's own message and degrades to
-  // exactly the bare-flip teardown it exists to prevent.
-  const lastAgentMs = React.useMemo(() => newestAgentTs(entries) * 1000, [entries])
-  const confirmedCaughtUp = turnStart != null && lastAgentMs >= turnStart
-  const turnStranded =
-    turnStart != null && serverNowMs() - turnStart > TURN_CONFIRM_TIMEOUT_MS
-  React.useEffect(() => {
-    // Turn teardown on the (status flip + confirmed batch) edge — both are
-    // external events; the guard makes it fire at most once per turn.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!active && (confirmedCaughtUp || turnStranded)) setTurnStart(null)
-  }, [active, confirmedCaughtUp, turnStranded])
-
-  // Turn end → confirm NOW (zero debounce; the mid-turn debounce only exists
-  // to coalesce delta bursts).
-  const refetch = tail.refetch
-  React.useEffect(() => {
-    if (!active && turnStart != null) void refetch()
-  }, [active, turnStart, refetch])
-
-  // 1s live-layer ticker: a prose-only turn produces NO deltas and NO
-  // refetches, so every time-gated piece below (showProvisional, elapsed,
-  // footer stats) must re-render on its own clock or it never appears.
-  const liveLayerUp = active || turnStart != null
-  const [, tick] = React.useReducer((n: number) => n + 1, 0)
-  React.useEffect(() => {
-    if (!liveLayerUp) return
-    const id = window.setInterval(tick, 1000)
-    return () => window.clearInterval(id)
-  }, [liveLayerUp])
-
-  const overlay = useReceiptOverlay(session, turnStart, lastConfirmedTs)
   React.useEffect(() => exposeLatency(), [])
 
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
@@ -135,14 +49,6 @@ export default function ChatPanel({
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
   })
-
-  // Shown while the transcript is behind the live turn; liveLayerUp keeps it
-  // (and the overlay) mounted through the post-Stop confirmation window, so
-  // the answer never blanks out before its confirmed form arrives.
-  const showProvisional =
-    liveLayerUp &&
-    turnStart != null &&
-    serverNowMs() - lastConfirmedMs > PROVISIONAL_LAG_MS
 
   return (
     <div
