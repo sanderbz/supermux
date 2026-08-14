@@ -7,15 +7,18 @@
  * all 9 silhouettes, all 7 pigments, all 6 states, the 18/28/40 ladder, and the
  * seven approved reference characters at their approved pins.
  *
- * The cast's pins come straight from `assignRoster`, so this doubles as a dedupe
- * regression: if the deduper stops handing nine sessions nine distinct
- * silhouettes, the bench silently loses a shape — and this test fails first.
+ * The other half of the contract is parity: the bench exists to be held up next
+ * to `avatar-strip@2x.png`, so every section has to show the SAME nine
+ * characters, and the seven approved ones have to be the approved ones. A page
+ * where "Release Train" is a coral cube in one section and a pink wedge in the
+ * next is not a reference surface — so that is asserted here too.
  */
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
   assignRoster,
+  characterFromSeed,
   HUE_SLOTS,
   SILHOUETTES,
   type MarkState,
@@ -77,11 +80,27 @@ describe('the cast spans every identity channel', () => {
     for (const hue of HUE_SLOTS) expect(hues.has(hue)).toBe(true)
   })
 
-  test('the pins are the deduper output, not hand-authored', () => {
-    const assigned = assignRoster(CAST_NAMES)
-    for (const member of CAST) {
-      expect(member.pin).toEqual(assigned.get(member.name)!)
+  test('no two bench faces share a silhouette×hue token', () => {
+    const tokens = CAST.map((c) => `${c.pin.silhouette}|${c.pin.hue}`)
+    expect(new Set(tokens).size).toBe(CAST.length)
+  })
+
+  test('every name on the page is ONE character — the cast agrees with the strip', () => {
+    // The bench is the parity anchor for avatar-strip@2x.png. If "Release Train"
+    // is a coral cube in the reference strip and a pink wedge in the ladder, the
+    // ladder, the state matrix, the facepile and the live strip are all showing
+    // characters that do not exist in the approved design.
+    const byName = new Map(CAST.map((c) => [c.name, c.pin]))
+    for (const member of REFERENCE_STRIP) {
+      expect(byName.get(member.name)).toEqual(member.pin)
     }
+  })
+
+  test('the cast is the approved seven plus exactly the two shapes they cannot show', () => {
+    expect(CAST.slice(0, REFERENCE_STRIP.length)).toEqual([...REFERENCE_STRIP])
+    const extras = CAST.slice(REFERENCE_STRIP.length).map((c) => c.pin.silhouette)
+    const approved = new Set(REFERENCE_STRIP.map((m) => m.pin.silhouette))
+    expect([...extras].sort()).toEqual(SILHOUETTES.filter((s) => !approved.has(s)).sort())
   })
 
   test('no two bench faces are the same face', () => {
@@ -124,5 +143,32 @@ describe('the dedupe panel', () => {
     expect(new Set(ROSTER_NAMES).size).toBe(ROSTER_NAMES.length)
     const tokens = ROSTER.map((m) => `${m.pin.silhouette}|${m.pin.hue}`)
     expect(new Set(tokens).size).toBe(ROSTER.length)
+  })
+
+  test('its pins are assignRoster output — this panel is the deduper demo', () => {
+    // The one section of the bench that shows the real roster path. The cast is
+    // deliberately pinned to the approved render instead (see the parity test),
+    // so if this stops being the deduper, nothing on the page exercises it.
+    const assigned = assignRoster(ROSTER_NAMES)
+    for (const member of ROSTER) {
+      expect(member.pin).toEqual(assigned.get(member.name)!)
+    }
+  })
+
+  test('the deduper visibly does work on these fourteen names', () => {
+    // Guards the panel's reason to exist. Pure hashing crowds these 14 sessions
+    // onto 6 of the 9 silhouettes; the deduper spreads them over all 9 and moves
+    // most of the roster to do it. If a future engine change made hashing alone
+    // sufficient here, the panel would be showing nothing and should be reseeded.
+    const pure = ROSTER_NAMES.map((n) => characterFromSeed(n))
+    const pureShapes = new Set(pure.map((c) => c.silhouette))
+    const assignedShapes = new Set(ROSTER.map((m) => m.pin.silhouette))
+    expect(pureShapes.size).toBeLessThan(assignedShapes.size)
+    expect(assignedShapes.size).toBe(SILHOUETTES.length)
+
+    const moved = ROSTER.filter(
+      (m, i) => pure[i].silhouette !== m.pin.silhouette || pure[i].hue !== m.pin.hue,
+    )
+    expect(moved.length).toBeGreaterThan(0)
   })
 })

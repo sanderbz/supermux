@@ -14,6 +14,11 @@
  */
 import { assignRoster, type MarkPin, type MarkState } from '../brand/marks/character'
 
+export interface CastMember {
+  name: string
+  pin: MarkPin
+}
+
 /**
  * The size ladder. These are the three sizes a mark is actually shipped at, and
  * the reason the bench renders all three: the geometry is unitless, but
@@ -52,46 +57,6 @@ export const LIVE_STATES: readonly MarkState[] = ['idle', 'working', 'waiting']
 export const BENCH_THEMES = ['light', 'dark'] as const
 export type BenchTheme = (typeof BENCH_THEMES)[number]
 
-export interface CastMember {
-  name: string
-  pin: MarkPin
-}
-
-/**
- * The bench roster, in creation order (`assignRoster` is order-dependent).
- *
- * The first seven are the characters of the approved `avatar-strip@2x.png`;
- * `deploy-fix` (the spec's published hash vector) and `night-watch` extend the
- * roster to nine — the point at which the deduper is forced to hand out all nine
- * silhouettes, so the bench shows the entire shape wheel without a single
- * hand-picked pin.
- */
-export const CAST_NAMES = [
-  'Release Train',
-  'Patch',
-  'Quill',
-  'Ledger',
-  'Compass',
-  'Lookout',
-  'Kestrel',
-  'deploy-fix',
-  'night-watch',
-] as const
-
-const ASSIGNED = assignRoster(CAST_NAMES)
-
-/**
- * The cast as the *engine* assigns it — pins straight out of `assignRoster`, not
- * authored by hand. The bench therefore exercises the real roster path (the one
- * the app will use), and the coverage test doubles as a dedupe regression.
- */
-export const CAST: readonly CastMember[] = CAST_NAMES.map((name) => ({
-  name,
-  // Non-null: assignRoster returns an entry per unique seed, and CAST_NAMES has
-  // no duplicates (asserted in the cast test).
-  pin: ASSIGNED.get(name)!,
-}))
-
 /**
  * The seven faces of the approved render, pinned to the exact silhouette and
  * pigment they wear there (strip order, left to right). This is the parity
@@ -99,6 +64,10 @@ export const CAST: readonly CastMember[] = CAST_NAMES.map((name) => ({
  * characters, which is what makes the bench a *reference* surface rather than a
  * gallery. Everything not pinned — eyes, pose, jitter, blink phase — still comes
  * from the seed, so these are the real characters, not drawings of them.
+ *
+ * Note these are NOT the identities the seven names hash to: the approved render
+ * was art-directed, so parity with it requires pins. That is exactly why the
+ * whole bench is built on this list (see `CAST`).
  */
 export const REFERENCE_STRIP: readonly CastMember[] = [
   { name: 'Release Train', pin: { silhouette: 'cube', hue: 28 } },
@@ -109,6 +78,38 @@ export const REFERENCE_STRIP: readonly CastMember[] = [
   { name: 'Lookout', pin: { silhouette: 'cloud', hue: 75 } },
   { name: 'Kestrel', pin: { silhouette: 'wedge', hue: 350 } },
 ]
+
+/**
+ * The two silhouettes the approved strip cannot show: it has seven characters
+ * and the wheel has nine. They keep their own hash-pure pigment (`deploy-fix` →
+ * 350, `night-watch` → 75), which repeats two of the seven — honestly so: nine
+ * sessions over seven pigments MUST repeat a pigment, and the dedupe contract is
+ * distinct silhouette×hue *pairs*, not distinct hues.
+ *
+ * `deploy-fix` is the engine's published hash vector (`0x62b1d3ac`).
+ */
+const EXTRAS: readonly CastMember[] = [
+  { name: 'deploy-fix', pin: { silhouette: 'blob', hue: 350 } },
+  { name: 'night-watch', pin: { silhouette: 'pebble', hue: 75 } },
+]
+
+/**
+ * The bench cast — ONE set of nine characters, used by every section of the page.
+ *
+ * The seven approved faces wear their approved pins everywhere, not just in the
+ * reference strip: a bench whose job is parity with `avatar-strip@2x.png` cannot
+ * show "Release Train" as a coral cube in one section and a pink wedge in the
+ * next. So the cast IS the reference strip plus the two silhouettes the strip has
+ * no room for — which still spans all 9 silhouettes and all 7 pigments (asserted
+ * in `dev-marks-cast.test.tsx`).
+ *
+ * The deduper is not exercised here on purpose: `assignRoster` has its own unit
+ * tests (`marks-character.test.ts`) and its visible demo is the 14-name `ROSTER`
+ * panel below, where a live collision actually has something to resolve.
+ */
+export const CAST: readonly CastMember[] = [...REFERENCE_STRIP, ...EXTRAS]
+
+export const CAST_NAMES: readonly string[] = CAST.map((m) => m.name)
 
 /**
  * A roster big enough to be interesting for the dedupe panel: 14 plausible

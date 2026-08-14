@@ -76,16 +76,21 @@ function Portrait({
   size,
   state = 'idle',
   animate = false,
-  caption,
+  sub,
 }: {
   member: CastMember
   size: number
   state?: MarkState
   animate?: boolean
-  caption?: string
+  /** Second caption line (the live strip's state). Kept off the name's line so
+   *  the cell stays 80px and a nine-up row never wraps. */
+  sub?: string
 }) {
+  // The cell is exactly as wide as its caption is allowed to be, so a centred
+  // caption can never spill onto its neighbour — or, in the first column, off the
+  // panel — and every column of a strip lines up.
   return (
-    <div className="flex min-w-16 flex-col items-center gap-1.5">
+    <div className="flex w-20 flex-col items-center gap-1.5">
       <SessionMark
         seed={member.name}
         pin={member.pin}
@@ -94,9 +99,14 @@ function Portrait({
         animate={animate}
         label={null}
       />
-      <span className="max-w-32 truncate text-[10px] leading-none text-ink-3">
-        {caption ?? member.name}
+      <span className="w-full truncate text-center text-[10px] leading-none text-ink-3">
+        {member.name}
       </span>
+      {sub && (
+        <span className="w-full truncate text-center text-[10px] leading-none text-ink-3/70">
+          {sub}
+        </span>
+      )}
     </div>
   )
 }
@@ -295,7 +305,7 @@ function LiveStrip({ size }: { size: MarkSize }) {
               size={size}
               state={state}
               animate
-              caption={size === 18 ? m.name : `${m.name} · ${state}`}
+              sub={state}
             />
           )
         })}
@@ -336,7 +346,7 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
         <Section
           id="ladder"
           title="The cast, on the size ladder"
-          note="Nine sessions, deduped by assignRoster — which at n = 9 is forced to hand out all nine silhouettes. The geometry is unitless, so the same face is drawn at every rung; what changes is what survives. 18px is the size the design has to win at."
+          note="The same nine characters every section of this page uses: the approved seven at their approved pins, plus blob and pebble — the two silhouettes the strip has no room for. The geometry is unitless, so the same face is drawn at every rung; what changes is what survives. 18px is the size the design has to win at."
         >
           <div className="flex flex-col gap-7">
             {MARK_SIZES.map((size) => (
