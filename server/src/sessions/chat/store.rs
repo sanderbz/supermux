@@ -226,6 +226,7 @@ fn one_line(w: &WireEntry) -> Option<String> {
 mod tests {
     use super::*;
     use crate::sessions::chat::model::{ChatEntry, Kind};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tokio::sync::broadcast;
 
@@ -281,6 +282,107 @@ mod tests {
             tokio::task::yield_now().await;
         }
         writer.await.unwrap();
+    }
+
+    /// Hardening pin for the invariant the plan's firehose test *names* but
+    /// cannot enforce.
+    ///
+    /// That test's drain loop `break`s on the first non-matching `try_recv`, so
+    /// an `Empty` (the common case while its `spawn_blocking` writer is still
+    /// warming up), a `Lagged`, **and an actual overlap** (`seq < high_water`)
+    /// all end the drain silently. Instrumented on this store it saw 139 of its
+    /// 200 attaches land on an *empty* ring and only 12 live frames in the whole
+    /// run, and moving `subscribe()` out of the critical section left it green
+    /// 3 runs out of 3.
+    ///
+    /// This one keeps a real OS-thread writer running for the whole test so
+    /// every attach lands mid-stream, hammers the boundary from several reader
+    /// threads at once (each attach is an independent chance to observe the
+    /// unlock→subscribe window), and asserts BOTH halves of the proof:
+    /// * **no overlap** — a live frame below `high_water` is a double render;
+    /// * **no gap** — the first live frame is *exactly* `high_water`.
+    ///
+    /// Mutation-checked: with `subscribe()` moved out of the critical section it
+    /// fails on the `GAP` assertion.
+    #[test]
+    fn attach_boundary_is_exact_under_a_real_race_no_gap_no_overlap() {
+        const READERS: usize = 4;
+        const ATTACHES: usize = 5_000;
+        // A shallow ring keeps each snapshot cheap — the window this test hunts
+        // is between the unlock and the `subscribe`, and has nothing to do with
+        // ring depth. The live channel stays deep enough that a hot writer never
+        // drowns a reader in `Lagged` before it sees its first frame.
+        let store = Arc::new(ChatStore::build(16, BROADCAST_CAP));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let (s, st) = (store.clone(), stop.clone());
+        let writer = std::thread::spawn(move || {
+            let mut i = 0u64;
+            while !st.load(Ordering::Relaxed) {
+                s.publish(vec![entry(i)]);
+                i += 1;
+            }
+        });
+
+        let readers: Vec<_> = (0..READERS)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let mut boundaries = 0usize;
+                    for _ in 0..ATTACHES {
+                        let att = store.attach();
+                        let hw = att.high_water;
+                        if let Some(last) = att.ring.last() {
+                            assert_eq!(
+                                last.seq() + 1,
+                                hw,
+                                "the snapshot must end exactly at high_water"
+                            );
+                        }
+                        let mut rx = att.rx;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(w) => {
+                                    assert!(
+                                        w.seq() >= hw,
+                                        "OVERLAP: live seq {} was already in the seed \
+                                         (high_water {hw})",
+                                        w.seq()
+                                    );
+                                    assert_eq!(
+                                        w.seq(),
+                                        hw,
+                                        "GAP: the first live frame after high_water {hw} \
+                                         skipped ahead"
+                                    );
+                                    boundaries += 1;
+                                    break;
+                                }
+                                // Nothing published since we subscribed.
+                                Err(broadcast::error::TryRecvError::Empty) => {
+                                    std::hint::spin_loop()
+                                }
+                                // BROADCAST_CAP overrun: resync territory (pinned by
+                                // `lagged_receiver_is_reported_not_silently_skipped`),
+                                // not a boundary observation.
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    boundaries
+                })
+            })
+            .collect();
+
+        let observed: usize = readers.into_iter().map(|h| h.join().unwrap()).sum();
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert!(
+            observed * 2 >= READERS * ATTACHES,
+            "the race never happened — only {observed} live boundaries across \
+             {} attaches, so this test would not have caught a gap",
+            READERS * ATTACHES
+        );
     }
 
     #[test]
