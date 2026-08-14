@@ -16,6 +16,7 @@
  * are load-bearing — `tests/e2e/smoke/chat-renderer-switch.spec.ts` clicks them.
  */
 import { motion, useReducedMotion } from 'framer-motion'
+import { useId } from 'react'
 
 // Relative, not `@/`: this module is rendered by `bun test`
 // (`tests/unit/chat-header.test.tsx`), whose resolver reads the root
@@ -36,6 +37,16 @@ export function RendererSwitch({
   onChange: (v: 'chat' | 'terminal') => void
 }) {
   const reduce = useReducedMotion() ?? false
+  // PER INSTANCE, not a constant: framer resolves `layoutId` GLOBALLY, so two
+  // mounted switches sharing one literal id are treated as one element — framer
+  // picks a lead, projects the other onto its box and drives it to opacity 0.
+  // The observable failure is that BOTH controls lose their selection capsule
+  // (measured: `opacity: 0` on the cell, positioned over the other tab), which
+  // is silent — the markup, the classes and the e2e hooks all still pass. A5
+  // adds the mobile call site, so "there is only ever one" is not a property to
+  // rely on. Scoping it costs nothing: within one switch the id is still shared
+  // by both tabs, which is what makes the capsule SLIDE.
+  const cellId = `chat-renderer-cell-${useId()}`
 
   return (
     <div
@@ -68,7 +79,7 @@ export function RendererSwitch({
                 aria-hidden
                 // One id, one cell: framer moves the capsule from the old button
                 // to the new one instead of cross-fading two of them.
-                layoutId="chat-renderer-cell"
+                layoutId={cellId}
                 transition={reduce ? { duration: 0 } : springs.snappy}
                 className="absolute inset-0 rounded-full bg-fill-soft-2"
               />
