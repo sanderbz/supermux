@@ -33,6 +33,7 @@ async fn setup() -> (AppState, axum::Router, std::path::PathBuf) {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
     };
     let pool = db::init(&config).await.expect("db init");
     let state = AppState::new(pool, config);

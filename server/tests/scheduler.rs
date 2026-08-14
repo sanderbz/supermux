@@ -34,6 +34,7 @@ fn temp_config() -> (Config, PathBuf) {
         remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
     };
     (config, dir)
 }

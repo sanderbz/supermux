@@ -77,6 +77,21 @@ pub struct Config {
     /// Exact hostname match only (no wildcards). The scheme is ignored; only
     /// the host part of the `Origin` header is compared.
     pub extra_origins: Vec<String>,
+    /// May supermux manage Claude Code's status line on this host? **Default
+    /// `false`.**
+    ///
+    /// The statusline tap ([`crate::sessions::chat::statusline`]) is the one
+    /// thing the chat data plane writes into the user's own
+    /// `~/.claude/settings.json` beyond the status hooks, and it is opt-in by
+    /// construction: with this `false`, `POST /api/claude/statusline/install`
+    /// refuses, and nothing in the session create/start path can reach the
+    /// installer at all (pinned by `tests/statusline_optin.rs`). Turning it on
+    /// only makes the explicit install endpoint available — it never installs
+    /// anything by itself.
+    ///
+    /// `DELETE /api/claude/statusline` is deliberately NOT gated on this: taking
+    /// our wrapper back out must stay possible after the flag is turned off.
+    pub statusline_tap: bool,
 }
 
 /// `[ws]` config block. Both knobs are sized so a single multi-device PWA user
@@ -156,6 +171,9 @@ struct RawConfig {
     /// See [`Config::extra_origins`].
     #[serde(default)]
     extra_origins: Vec<String>,
+    /// See [`Config::statusline_tap`]. Absent key = OFF.
+    #[serde(default)]
+    statusline_tap: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -248,6 +266,7 @@ pub fn load() -> Result<Config> {
         push_sub,
         github_token,
         extra_origins: raw.extra_origins,
+        statusline_tap: raw.statusline_tap,
     })
 }
 

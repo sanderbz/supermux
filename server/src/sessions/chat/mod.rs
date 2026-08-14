@@ -22,10 +22,15 @@
 //!   consumer of the store: it never reads a transcript for the live path, so
 //!   the tailer stays the file's only reader.
 //!
-//! A later task adds `statusline`.
+//! - [`statusline`] — the OPT-IN Claude statusline tap: a wrap-don't-clobber
+//!   installer for the single global `statusLine` slot, its exact uninstall, and
+//!   the hook-token-authed ingest for what the tap POSTs. Off by default and
+//!   unreachable from the session create/start path by construction; the only
+//!   thing in the chat data plane that writes to the user's own Claude config.
 
 pub mod model;
 pub mod parser;
+pub mod statusline;
 pub mod store;
 pub mod tailer;
 pub mod ws;

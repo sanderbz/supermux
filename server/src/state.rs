@@ -368,6 +368,18 @@ pub struct AppState {
     /// [`chat_store`](Self::chat_store). Dropped on delete and re-keyed on
     /// rename like every other per-session map here.
     pub chat_stores: Arc<DashMap<String, Arc<crate::sessions::chat::store::ChatStore>>>,
+    /// Per-session latest Claude STATUSLINE payload (fase A2 Task 6), fed by the
+    /// OPT-IN tap at `/api/_internal/statusline`. IN-MEMORY ONLY, exactly like
+    /// [`session_activity`](Self::session_activity) — the payload carries the
+    /// model, version, context-window percentage and running cost, and none of
+    /// it is ever persisted.
+    ///
+    /// Empty on every host that has not installed the tap, which is the default:
+    /// nothing in the session create/start path can write a `statusLine` key
+    /// (pinned by `tests/statusline_optin.rs`). Never a liveness signal — the
+    /// tap fires per turn, event-driven, and says nothing about whether the
+    /// agent is working.
+    pub statuslines: Arc<DashMap<String, crate::sessions::chat::statusline::Statusline>>,
     /// In-UI update mechanism (v0.3.0): cached latest GitHub release + the
     /// per-job broadcast registry the SSE progress endpoint subscribes to.
     /// Cheap `Arc` clone; created once in `new()` so every handler shares the
@@ -419,6 +431,7 @@ impl AppState {
             pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
             session_runtimes: Arc::new(DashMap::new()),
             chat_stores: Arc::new(DashMap::new()),
+            statuslines: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
         }
@@ -652,6 +665,33 @@ impl AppState {
     /// for a session nobody is watching.
     pub fn chat_store(&self, name: &str) -> Option<Arc<crate::sessions::chat::store::ChatStore>> {
         self.chat_stores.get(name).map(|s| s.clone())
+    }
+
+    /// Record `name`'s latest statusline snapshot. Returns whether anything a
+    /// client renders actually CHANGED — the tap fires once per turn on every
+    /// tapped session, so the caller broadcasts only on a real change (same
+    /// change-only discipline as the activity delta).
+    pub fn set_statusline(
+        &self,
+        name: &str,
+        next: crate::sessions::chat::statusline::Statusline,
+    ) -> bool {
+        let changed = self
+            .statuslines
+            .get(name)
+            .map(|prev| next.differs_from(&prev))
+            .unwrap_or(true);
+        self.statuslines.insert(name.to_string(), next);
+        changed
+    }
+
+    /// The current in-memory statusline snapshot for `name`, if the opt-in tap
+    /// is installed and has fired at least once.
+    pub fn statusline(
+        &self,
+        name: &str,
+    ) -> Option<crate::sessions::chat::statusline::Statusline> {
+        self.statuslines.get(name).map(|s| s.clone())
     }
 
     /// Get (creating on first use) the per-session [`PtyStream`] and ensure its
@@ -1077,6 +1117,9 @@ impl AppState {
         // session must not leave one behind for a later session that reuses the
         // name (it would seed someone else's conversation).
         self.chat_stores.remove(name);
+        // Same reasoning for the statusline snapshot: it is this name's model /
+        // cost / context state and must not survive the row.
+        self.statuslines.remove(name);
         // The native module memoizes its own session handles (one holder
         // connection + one grid per name), so dropping only OUR cache entry
         // would leak that. A no-op for a tmux session.
@@ -1167,6 +1210,11 @@ impl AppState {
         // would have to re-seed for a cosmetic change.
         if let Some((_, v)) = self.chat_stores.remove(old) {
             self.chat_stores.insert(new.to_string(), v);
+        }
+        // Likewise the statusline snapshot: same Claude process, same model and
+        // cost — a rename must not blank the tile's line until the next turn.
+        if let Some((_, v)) = self.statuslines.remove(old) {
+            self.statuslines.insert(new.to_string(), v);
         }
         // The runtime handle is NAME-BOUND (a `TmuxRuntime` owns the bare name
         // it builds `supermux-<name>` from), so it can NOT be carried across a
@@ -1355,6 +1403,7 @@ mod pending_edit_tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");

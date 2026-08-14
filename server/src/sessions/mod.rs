@@ -95,6 +95,20 @@ pub fn router_for(state: AppState) -> Router {
             "/api/sessions/{name}/chat/entry/{uuid}",
             get(chat::ws::entry_handler),
         )
+        // ── the OPT-IN Claude statusline tap (fase A2) ──
+        // Host-wide, not per-session: Claude Code has ONE global `statusLine`
+        // slot. Install is gated on `config.statusline_tap` AND is the only
+        // path that can write that key — no create/start path reaches it
+        // (pinned by `tests/statusline_optin.rs`). Uninstall is never gated:
+        // taking our wrapper back out must always be possible.
+        .route(
+            "/api/claude/statusline/install",
+            post(chat::statusline::install_handler),
+        )
+        .route(
+            "/api/claude/statusline",
+            axum::routing::delete(chat::statusline::uninstall_handler),
+        )
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
@@ -1548,6 +1562,7 @@ mod tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");

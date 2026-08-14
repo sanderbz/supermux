@@ -39,7 +39,44 @@ const HOOK_TOKEN_HEADER: &str = "X-Supermux-Hook-Token";
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/api/_internal/hook", post(hook_handler))
+        // The OPT-IN statusline tap's inbound side (fase A2 Task 6). Same
+        // per-session hook-token auth, same reason: the statusline command runs
+        // inside the pane and must never hold the dashboard bearer.
+        .route(
+            "/api/_internal/statusline",
+            post(crate::sessions::chat::statusline::ingest_handler),
+        )
         .with_state(state)
+}
+
+/// Validate a per-session `X-Supermux-Hook-Token` against the DB (the source of
+/// truth, so it survives a restart) in CONSTANT TIME.
+///
+/// Shared by every pane-side endpoint on this router. The scope rule is the
+/// point: session A's token authenticates ONLY session A, because B's row holds
+/// a different secret (regression: `hook_auth_scope`). A missing session row is
+/// a 401, not a 404 — no existence oracle.
+pub(crate) async fn verify_hook_token(
+    state: &AppState,
+    session: &str,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
+    let expected = db::sessions::runtime(&state.pool, session)
+        .await?
+        .map(|rt| rt.hook_token)
+        .ok_or(AppError::Unauthorized)?;
+    let presented = headers
+        .get(HOOK_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    // An empty stored token (session never started → no secret minted) can never
+    // be authenticated.
+    if expected.is_empty()
+        || !constant_time_eq::constant_time_eq(expected.as_bytes(), presented.as_bytes())
+    {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,25 +120,9 @@ async fn hook_handler(
     // a 400 — a genuine client bug, distinct from the silent 415 we are avoiding.
     let body: HookBody =
         serde_json::from_slice(&raw).map_err(|e| AppError::BadRequest(format!("hook body: {e}")))?;
-    // The expected token is the session's own (DB is the source of truth;
-    // survives restart). A missing session row → 401 (no existence oracle).
-    let expected = db::sessions::runtime(&state.pool, &body.session)
-        .await?
-        .map(|rt| rt.hook_token)
-        .ok_or(AppError::Unauthorized)?;
-
-    let presented = headers
-        .get(HOOK_TOKEN_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    // Empty stored token (session never started → no secret minted) can never be
-    // authenticated; and the compare is constant-time (no timing oracle).
-    if expected.is_empty()
-        || !constant_time_eq::constant_time_eq(expected.as_bytes(), presented.as_bytes())
-    {
-        return Err(AppError::Unauthorized);
-    }
+    // Per-session token, constant-time compared against the DB row (no timing
+    // oracle, no cross-session authority).
+    verify_hook_token(&state, &body.session, &headers).await?;
 
     // Authenticated. The session's Claude hooks are demonstrably LIVE (this POST
     // reached us), so flag it: the detector now treats the turn state machine +
@@ -404,6 +425,7 @@ mod tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
