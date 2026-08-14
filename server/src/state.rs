@@ -242,6 +242,14 @@ pub struct AppState {
     /// not-yet-parked loop. One `Notify` per session keeps a `PreToolUse` storm on
     /// one agent from waking every other session's loop.
     pub detector_wake: Arc<DashMap<String, Arc<Notify>>>,
+    /// Per-session CHAT POINTER wake, mirroring [`detector_wake`](Self::detector_wake).
+    /// `/api/_internal/hook` `notify_one`s this the moment a hook actually
+    /// CHANGES `sessions.cc_conversation_id` (a restart, a `/clear`, or a
+    /// terminal-side `--resume`), so the chat tailer re-resolves its transcript
+    /// path and re-seeds immediately instead of waiting for its cold-pointer
+    /// backstop to notice. `notify_one` parks a permit, so a wake is never lost
+    /// to a not-yet-parked loop.
+    pub chat_pointer_wake: Arc<DashMap<String, Arc<Notify>>>,
     /// Per-session PTY heartbeat: the [`Instant`] the live reader last saw bytes
     /// from this session's pane. The status detector reads it for its
     /// heartbeat branch (bytes <1.5s → `Active`, silent ≥30s → `Idle`). **The
@@ -397,6 +405,7 @@ impl AppState {
             last_hook: Arc::new(DashMap::new()),
             hooks_live: Arc::new(DashMap::new()),
             detector_wake: Arc::new(DashMap::new()),
+            chat_pointer_wake: Arc::new(DashMap::new()),
             pty_heartbeat: Arc::new(DashMap::new()),
             cadence_recency: Arc::new(std::sync::Mutex::new(HashMap::new())),
             status_notify: Arc::new(Notify::new()),
@@ -993,6 +1002,24 @@ impl AppState {
         self.detector_wake_for(name).notify_one();
     }
 
+    /// The per-session chat-pointer wake handle (get-or-create). The chat tailer
+    /// parks on it; the hook endpoint `notify_one`s it when a hook CHANGED the
+    /// session's `cc_conversation_id`.
+    pub fn chat_pointer_wake_for(&self, name: &str) -> Arc<Notify> {
+        self.chat_pointer_wake
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
+    }
+
+    /// Tell `name`'s chat tailer that the tracked conversation MOVED, so it
+    /// re-resolves the transcript path and re-seeds now. Only ever called on an
+    /// actual change — a wake per hook would re-scan the project dir on every
+    /// tool call.
+    pub fn wake_chat_pointer(&self, name: &str) {
+        self.chat_pointer_wake_for(name).notify_one();
+    }
+
     /// The per-session status watch sender (get-or-create), seeded `("unknown", 0)`.
     /// The detector `send_replace`s `(status, ver+1)` on a status
     /// change; `agents::wait` subscribes for the long-poll. A single shared sender
@@ -1039,6 +1066,7 @@ impl AppState {
         self.last_hook.remove(name);
         self.hooks_live.remove(name);
         self.detector_wake.remove(name);
+        self.chat_pointer_wake.remove(name);
         self.pty_heartbeat.remove(name);
         self.session_tasks.remove(name);
         self.session_activity.remove(name);
@@ -1115,6 +1143,9 @@ impl AppState {
         }
         if let Some((_, v)) = self.detector_wake.remove(old) {
             self.detector_wake.insert(new.to_string(), v);
+        }
+        if let Some((_, v)) = self.chat_pointer_wake.remove(old) {
+            self.chat_pointer_wake.insert(new.to_string(), v);
         }
         if let Some((_, v)) = self.pty_heartbeat.remove(old) {
             self.pty_heartbeat.insert(new.to_string(), v);

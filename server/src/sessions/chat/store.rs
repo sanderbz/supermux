@@ -25,9 +25,12 @@
 //! The tailer is the only producer (`publish`); the WS, the history route and
 //! the sessions-SSE `chat_tail` are pure consumers.
 //!
-//! Fase A3/A2-Task-3 note: the tail *state* (`Live`/`Reconnecting`/`NoHooks`)
-//! is owned by `tailer.rs` and will be threaded onto [`Attachment`] when that
-//! module lands; the store deliberately knows nothing about staleness.
+//! The tail *state* (`Live`/`Reconnecting`/`NoHooks`) is owned by
+//! [`super::tailer`] and published on its own `watch` channel
+//! ([`super::tailer::TailerLease::status`]), NOT on [`Attachment`]: staleness
+//! changes without any entry being published (a stale pointer's file is silent
+//! by definition), so hanging it off the entry path would make it unobservable
+//! exactly when it matters. The store deliberately knows nothing about it.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -151,6 +154,18 @@ impl ChatStore {
             oldest_offset: g.ring.front().map(|w| w.offset()),
             rx,
         }
+    }
+
+    /// Drop every ring entry — the RESYNC primitive, called only by the tailer
+    /// when the conversation pointer moved or the file rotated.
+    ///
+    /// `next_seq` is deliberately **not** reset: `seq` stays globally monotonic,
+    /// so an in-flight subscriber's `seq >= high_water` filter keeps working
+    /// across the boundary and can never mistake a new conversation's entry for
+    /// one it already rendered. Clearing the ring is what makes a `resync` mean
+    /// "re-seed" instead of "splice two conversations together".
+    pub fn reset(&self) {
+        self.lock().ring.clear();
     }
 
     /// The tile summary: the newest prompt and the newest assistant line in the
@@ -448,6 +463,30 @@ mod tests {
         let att = store.attach();
         let seqs: Vec<u64> = att.ring.iter().map(|w| w.seq()).collect();
         assert_eq!(seqs, (0..64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn reset_clears_the_ring_but_keeps_seq_monotonic() {
+        // The tailer calls this on a pointer change: the OLD conversation must
+        // leave the seed, while `seq` keeps rising so a live subscriber's
+        // `seq >= high_water` filter still holds across the boundary.
+        let store = ChatStore::new();
+        for i in 0..10 {
+            store.publish(vec![entry(i)]);
+        }
+        let before = store.attach();
+        store.reset();
+        let after = store.attach();
+        assert!(after.ring.is_empty(), "a resync must not leave the old conversation seedable");
+        assert_eq!(after.oldest_offset, None);
+        assert_eq!(
+            after.high_water, before.high_water,
+            "`seq` must NOT rewind — a reused seq would read as a duplicate"
+        );
+        store.publish(vec![entry(99)]);
+        let fresh = store.attach();
+        assert_eq!(fresh.ring.len(), 1);
+        assert_eq!(fresh.ring[0].seq(), before.high_water);
     }
 
     #[test]

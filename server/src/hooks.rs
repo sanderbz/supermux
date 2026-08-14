@@ -130,24 +130,8 @@ async fn hook_handler(
         .unwrap_or_default();
     apply_payload(&state, &body.session, &body.event, &payload);
 
-    // Track the LIVE Claude conversation id so "this session" prompt-recall reads
-    // the CURRENT transcript, not a stale one. Claude rotates conversation files
-    // (a restart / `/clear` / compaction forks a fresh `<session_id>.jsonl`) and
-    // the resume-only `set_cc_conversation_id` never followed — so a long-lived
-    // session's `cc_conversation_id` drifted days behind the real conversation
-    // (the stale-recall bug). Only on the two events that reliably carry a
-    // main-session id (SessionStart = a fresh process; UserPromptSubmit = the user
-    // acting) — NOT per-tool events, whose subagent hooks would otherwise thrash
-    // it. The DB write is conditional (no-op unless the id changed).
-    if matches!(
-        body.event.as_str(),
-        "session_start" | "SessionStart" | "user_prompt" | "user_prompt_submit" | "UserPromptSubmit"
-    ) {
-        if let Some(id) = payload.session_id.as_deref() {
-            if !id.is_empty() {
-                let _ = db::sessions::track_cc_conversation_id(&state.pool, &body.session, id).await;
-            }
-        }
+    if is_pointer_event(&body.event) {
+        track_conversation_pointer(&state, &body.session, payload.session_id.as_deref()).await;
     }
 
     // Re-tick the detector now so the status (e.g. Notification → waiting,
@@ -155,6 +139,48 @@ async fn hook_handler(
     state.wake_detector(&body.session);
 
     Ok(Json(json!({ "ok": true })))
+}
+
+/// The two events that reliably carry a MAIN-session conversation id:
+/// `SessionStart` (a fresh Claude process) and `UserPromptSubmit` (the user
+/// acting). Per-tool events are excluded on purpose — a subagent's hooks carry
+/// the parent's token but their own ids, and would thrash the pointer.
+fn is_pointer_event(event: &str) -> bool {
+    matches!(
+        event,
+        "session_start" | "SessionStart" | "user_prompt" | "user_prompt_submit" | "UserPromptSubmit"
+    )
+}
+
+/// Track the LIVE Claude conversation id so "this session" prompt-recall — and,
+/// since the A2 chat data plane, the transcript tailer — read the CURRENT
+/// transcript rather than a stale one.
+///
+/// Claude switches conversation files on a **restart**, on `/clear`, and on a
+/// terminal-side `--resume`. (Compaction does NOT: a `compact_boundary` stays
+/// inline in the same file with the same `sessionId` — re-verified on 2.1.231 —
+/// which is exactly why the chat tailer's byte cursor survives it.) The
+/// resume-only `set_cc_conversation_id` never followed those switches, so a
+/// long-lived session's `cc_conversation_id` drifted days behind the real
+/// conversation — the stale-recall bug.
+///
+/// The DB write is conditional, and only a REAL change wakes the chat tailer:
+/// waking on every hook would re-scan the project dir on every prompt.
+async fn track_conversation_pointer(state: &AppState, session: &str, id: Option<&str>) {
+    let Some(id) = id.filter(|i| !i.is_empty()) else {
+        return;
+    };
+    if db::sessions::track_cc_conversation_id(&state.pool, session, id)
+        .await
+        .unwrap_or(false)
+    {
+        // The pointer MOVED. Re-resolve now: without this the chat tailer would
+        // keep reading the previous conversation until its cold-pointer backstop
+        // noticed, and could then only report `Reconnecting` — it never adopts a
+        // file it merely noticed, and this hook-carried id is the one
+        // authoritative adoption signal.
+        state.wake_chat_pointer(session);
+    }
 }
 
 /// Derive + store the in-memory activity/error/lifecycle effects of one hook
@@ -815,5 +841,76 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── the chat tailer's pointer-change notification ────────────────────────
+
+    /// Did the chat-pointer wake fire? `notify_one` parks a permit, so a wake
+    /// that happened before we waited still resolves immediately.
+    async fn woke(state: &AppState, session: &str) -> bool {
+        let n = state.chat_pointer_wake_for(session);
+        tokio::time::timeout(std::time::Duration::from_millis(50), n.notified())
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_changed_conversation_pointer_wakes_the_chat_tailer() {
+        let (state, dir) = test_state().await;
+        let s = "ptr-1";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+
+        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        assert!(woke(&state, s).await, "the first id is a change — the tailer must re-resolve");
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "conv-a");
+
+        // A terminal-side `--resume` / `/clear`: the id MOVED.
+        track_conversation_pointer(&state, s, Some("conv-b")).await;
+        assert!(woke(&state, s).await, "a moved pointer must wake the tailer");
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "conv-b");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_pointer_never_wakes_the_tailer() {
+        // Every prompt in a long session re-reports the SAME id; waking on those
+        // would re-scan the project dir on every turn.
+        let (state, dir) = test_state().await;
+        let s = "ptr-2";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+
+        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        assert!(woke(&state, s).await);
+        for _ in 0..3 {
+            track_conversation_pointer(&state, s, Some("conv-a")).await;
+        }
+        assert!(!woke(&state, s).await, "an unchanged id must not wake the tailer");
+
+        // A missing / empty id is a no-op, not a pointer reset.
+        track_conversation_pointer(&state, s, None).await;
+        track_conversation_pointer(&state, s, Some("")).await;
+        assert!(!woke(&state, s).await);
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "conv-a", "the pointer must survive");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_session_start_and_user_prompt_move_the_pointer() {
+        for e in ["session_start", "SessionStart", "user_prompt", "user_prompt_submit",
+                  "UserPromptSubmit"] {
+            assert!(is_pointer_event(e), "{e} carries a main-session id");
+        }
+        for e in ["pre_tool", "PreToolUse", "post_tool", "PostToolUse", "subagent_start",
+                  "SubagentStop", "Stop", "Notification", "session_end"] {
+            assert!(!is_pointer_event(e),
+                    "{e} must NOT move the pointer (subagent hooks would thrash it)");
+        }
     }
 }
