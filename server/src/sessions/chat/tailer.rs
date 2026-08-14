@@ -459,20 +459,7 @@ impl Drop for TailerLease {
 ///
 /// Must be called from inside a Tokio runtime (the chat WS handler is).
 pub fn spawn_tailer(state: &AppState, name: &str) -> TailerLease {
-    let mut fresh = false;
-    let handle = {
-        let entry = registry().entry(name.to_string()).or_insert_with(|| {
-            fresh = true;
-            Arc::new(TailerHandle {
-                subscribers: AtomicUsize::new(0),
-                status: watch::channel(TailStatus::default()).0,
-            })
-        });
-        entry.value().clone()
-    };
-    // Claim BEFORE the task can observe an idle count, so the grace-period exit
-    // cannot race a first subscriber.
-    handle.subscribers.fetch_add(1, Ordering::AcqRel);
+    let (handle, fresh) = claim(name);
     let status = handle.status.subscribe();
     if fresh {
         tokio::spawn(run(state.clone(), name.to_string(), handle.clone()));
@@ -482,6 +469,47 @@ pub fn spawn_tailer(state: &AppState, name: &str) -> TailerLease {
         handle,
         status,
     }
+}
+
+/// Take a subscriber claim on `name`'s handle, creating the slot when the
+/// session has no tailer yet (the `bool` says whether the caller must start the
+/// task). The count is incremented **inside the map entry's shard lock** — the
+/// same lock [`sweep_if_idle`] takes — so the grace-period sweep can never
+/// remove a slot a claim has already joined but not yet counted. Incrementing
+/// after the lock is released would hand the caller a handle whose task is
+/// exiting, and its chat would stay empty forever.
+fn claim(name: &str) -> (Arc<TailerHandle>, bool) {
+    let mut fresh = false;
+    let entry = registry().entry(name.to_string()).or_insert_with(|| {
+        fresh = true;
+        Arc::new(TailerHandle {
+            subscribers: AtomicUsize::new(0),
+            status: watch::channel(TailStatus::default()).0,
+        })
+    });
+    entry.value().subscribers.fetch_add(1, Ordering::AcqRel);
+    (entry.value().clone(), fresh)
+}
+
+/// Drop `name`'s slot iff nothing holds a claim — the grace-period exit. Runs
+/// under the same shard lock as [`claim`], so a subscriber arriving right now
+/// either wins the lock (we see its claim and keep running) or finds the slot
+/// gone and starts a fresh tailer.
+fn sweep_if_idle(name: &str) -> bool {
+    registry()
+        .remove_if(name, |_, h| h.subscribers.load(Ordering::Acquire) == 0)
+        .is_some()
+}
+
+/// Give up `name`'s slot on ANY other loop exit (a deleted row, an ineligible
+/// session, a gone blocking pool). A dead handle left registered would make the
+/// next attach — session names are reusable — join a task that no longer runs
+/// and never receive a single entry. Only OUR handle is removed: if a sweep
+/// already let a newer task install its own, that one is left alone.
+fn abandon(name: &str, handle: &Arc<TailerHandle>) -> bool {
+    registry()
+        .remove_if(name, |_, h| Arc::ptr_eq(h, handle))
+        .is_some()
 }
 
 /// The current tail status without taking a lease (does not start a tailer).
@@ -537,19 +565,7 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
 
         let project = resumable::project_dir_for(&row.dir);
         let conv = row.cc_conversation_id.clone();
-        let mut forced_resync = false;
-        match core.as_mut() {
-            Some(t) if t.project_dir() == project => {
-                forced_resync |= t.retarget(&conv);
-            }
-            // First pass, or the session's cwd moved under us: a brand-new
-            // cursor set. Only a *replacement* is a resync — the first build has
-            // published nothing yet.
-            slot => {
-                forced_resync |= slot.is_some();
-                core = Some(Tailer::new(&project, &conv));
-            }
-        }
+        let rebuilt = rebuild(&mut core, &project, &conv);
 
         // Arm/re-arm the directory watcher (best effort; the poll runs anyway).
         if watch_guard.as_ref().map(|(p, _)| p.as_path()) != Some(project.as_path()) {
@@ -564,11 +580,17 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         let Ok((returned, pass)) = pass else { break };
         core = Some(returned);
 
-        if forced_resync || pass.poll.resync {
-            // The ring holds the OLD conversation. Clearing it (seq stays
-            // monotonic) is what makes "resync" mean "re-seed", not "splice".
-            store.reset();
-            resync_epoch += 1;
+        if rebuilt || pass.poll.resync {
+            // The ring holds what the PREVIOUS cursor set published: another
+            // conversation after a retarget, or a second copy of this one when a
+            // fresh task re-reads the file from byte 0. Clearing it (seq stays
+            // monotonic) is what makes "resync" mean "re-seed" rather than
+            // "splice" or "double".
+            if store.reset() {
+                // An already-empty ring means the client has nothing to drop, so
+                // a cold first attach never spends an epoch on a no-op.
+                resync_epoch += 1;
+            }
         }
         if !pass.poll.entries.is_empty() {
             store.publish(pass.poll.entries);
@@ -596,17 +618,8 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         // Idle shutdown: keep the cursor warm through a reload, then let go.
         if handle.subscribers.load(Ordering::Acquire) == 0 {
             let since = *idle_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= IDLE_GRACE {
-                // `remove_if` runs under the same shard lock `spawn_tailer`'s
-                // `entry` takes, so a subscriber arriving now either wins the
-                // lock (and we keep running) or finds the slot gone and spawns a
-                // fresh task.
-                if registry()
-                    .remove_if(&name, |_, h| h.subscribers.load(Ordering::Acquire) == 0)
-                    .is_some()
-                {
-                    break;
-                }
+            if since.elapsed() >= IDLE_GRACE && sweep_if_idle(&name) {
+                break;
             }
         } else {
             idle_since = None;
@@ -618,6 +631,42 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
             // A hook just changed `cc_conversation_id`: re-resolve NOW rather
             // than waiting for the backstop to notice a cold pointer.
             _ = pointer_wake.notified() => {}
+        }
+    }
+
+    // Every exit path gives the slot back, so a re-attach (or a session created
+    // later under the same, reusable, name) starts a real tailer instead of
+    // joining this dead one. After a sweep this is a no-op; after an early exit
+    // — deleted row, ineligible session, gone blocking pool — it is the thing
+    // that stops a lease from waiting forever on a task that is gone.
+    abandon(&name, &handle);
+    handle.status.send_if_modified(|cur| {
+        let stopped =
+            TailStatus { state: TailState::Reconnecting { reason: "tailer stopped" }, ..*cur };
+        let changed = *cur != stopped;
+        *cur = stopped;
+        changed
+    });
+}
+
+/// (Re)build the cursor set for this pass; `true` when the client must resync.
+///
+/// A **first** build counts, and that is load-bearing: the
+/// [`ChatStore`](super::store::ChatStore) lives
+/// in `AppState::chat_stores` and OUTLIVES this task (the loop exits
+/// [`IDLE_GRACE`] after the last lease drops; the store is only dropped on
+/// session delete). A fresh cursor set starts at byte 0, so without the resync a
+/// restarted tailer would publish every entry the previous one already
+/// published, and the seed would show the whole conversation twice.
+fn rebuild(core: &mut Option<Tailer>, project: &Path, conversation_id: &str) -> bool {
+    match core.as_mut() {
+        // Same project dir: only a moved pointer changes anything, and it is the
+        // one adoption path (hook-carried id, never a guessed sibling).
+        Some(t) if t.project_dir() == project => t.retarget(conversation_id),
+        // First pass of this task, or the session's cwd moved under us.
+        _ => {
+            *core = Some(Tailer::new(project, conversation_id));
+            true
         }
     }
 }
@@ -1052,6 +1101,96 @@ mod tests {
         assert_eq!(t.conversation_id(), "conv-a");
         assert_eq!(t.transcript_path(), a.as_path());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── the cursor set vs. the store, which outlives the task ────────────────
+
+    #[test]
+    fn a_restarted_tailer_reseeds_the_ring_instead_of_doubling_it() {
+        // The store lives in `AppState::chat_stores` and survives the task's
+        // IDLE_GRACE exit. A new task starts with a COLD cursor and re-reads the
+        // file from byte 0, so unless a fresh cursor set counts as a resync every
+        // entry is published — and seeded — a second time.
+        use crate::sessions::chat::store::ChatStore;
+        let dir = tmp_project("restart");
+        let f = dir.join("conv-a.jsonl");
+        append(&f, &[user_line("u1"), user_line("u2")]);
+        let store = ChatStore::new();
+
+        let mut task1: Option<Tailer> = None;
+        assert!(rebuild(&mut task1, &dir, "conv-a"));
+        store.reset();
+        store.publish(task1.as_mut().unwrap().poll().entries);
+        assert_eq!(store.attach().ring.len(), 2);
+
+        // …the last lease drops, the task exits, the store stays. A new attach:
+        let mut task2: Option<Tailer> = None;
+        assert!(
+            rebuild(&mut task2, &dir, "conv-a"),
+            "a cold cursor over a warm ring MUST resync, or the seed doubles"
+        );
+        store.reset();
+        store.publish(task2.as_mut().unwrap().poll().entries);
+        let ring = store.attach().ring;
+        assert_eq!(ring.len(), 2, "the conversation must not be seeded twice");
+        assert_eq!(ring.iter().map(|w| w.uuid()).collect::<Vec<_>>(), ["u1", "u2"]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rebuild_is_quiet_while_nothing_moved_and_loud_when_it_does() {
+        let dir = tmp_project("rebuild");
+        let other = tmp_project("rebuild-moved");
+        let mut core: Option<Tailer> = None;
+        assert!(rebuild(&mut core, &dir, "conv-a"), "the first build is a resync");
+        assert!(!rebuild(&mut core, &dir, "conv-a"), "an unchanged pointer must not churn");
+        assert!(rebuild(&mut core, &dir, "conv-b"), "a moved pointer re-seeds");
+        assert_eq!(core.as_ref().unwrap().conversation_id(), "conv-b");
+        assert!(rebuild(&mut core, &other, "conv-b"), "a moved cwd is a fresh cursor set");
+        assert_eq!(core.as_ref().unwrap().project_dir(), other.as_path());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(other);
+    }
+
+    // ── the registry: claims, the idle sweep, and early exits ────────────────
+
+    #[test]
+    fn the_idle_sweep_never_removes_a_claimed_tailer() {
+        let name = format!("sweep-{}", uuid::Uuid::new_v4());
+        let (h, fresh) = claim(&name);
+        assert!(fresh, "the first claim must start a task");
+        assert!(!sweep_if_idle(&name), "a claimed tailer must not be swept");
+
+        let (h2, fresh2) = claim(&name);
+        assert!(!fresh2, "a second subscriber joins the running task");
+        assert!(Arc::ptr_eq(&h, &h2));
+        h2.subscribers.fetch_sub(1, Ordering::AcqRel);
+        assert!(!sweep_if_idle(&name), "one lease is still holding it open");
+
+        h.subscribers.fetch_sub(1, Ordering::AcqRel);
+        assert!(sweep_if_idle(&name), "the last lease gone → the slot is released");
+        assert!(status_of(&name).is_none());
+    }
+
+    #[test]
+    fn an_early_exit_leaves_no_dead_handle_for_the_next_attach_to_join() {
+        // A deleted row / ineligible session breaks out of the loop with a lease
+        // still alive. If the slot stayed, the NEXT attach — session names are
+        // reusable — would join a handle whose task is gone and tail nothing.
+        let name = format!("abandon-{}", uuid::Uuid::new_v4());
+        let (dead, _) = claim(&name);
+        assert!(abandon(&name, &dead), "the exiting task gives its slot back");
+
+        let (fresh_handle, fresh) = claim(&name);
+        assert!(fresh, "a re-attach after an early exit must start a NEW tailer");
+        assert!(!Arc::ptr_eq(&dead, &fresh_handle));
+
+        // …and a stale task that exits later must not evict the live one.
+        assert!(!abandon(&name, &dead), "only OUR handle is ever removed");
+        assert!(status_of(&name).is_some());
+        fresh_handle.subscribers.fetch_sub(1, Ordering::AcqRel);
+        assert!(sweep_if_idle(&name));
     }
 
     #[tokio::test]

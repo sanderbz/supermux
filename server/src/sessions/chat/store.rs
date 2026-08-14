@@ -157,15 +157,21 @@ impl ChatStore {
     }
 
     /// Drop every ring entry — the RESYNC primitive, called only by the tailer
-    /// when the conversation pointer moved or the file rotated.
+    /// when the conversation pointer moved, the file rotated, or a fresh tailer
+    /// task is about to re-read a file this store already holds. Returns whether
+    /// anything was actually dropped, so a caller can tell a client-visible
+    /// resync from a no-op on a ring nobody has ever seen.
     ///
     /// `next_seq` is deliberately **not** reset: `seq` stays globally monotonic,
     /// so an in-flight subscriber's `seq >= high_water` filter keeps working
     /// across the boundary and can never mistake a new conversation's entry for
     /// one it already rendered. Clearing the ring is what makes a `resync` mean
     /// "re-seed" instead of "splice two conversations together".
-    pub fn reset(&self) {
-        self.lock().ring.clear();
+    pub fn reset(&self) -> bool {
+        let mut g = self.lock();
+        let had = !g.ring.is_empty();
+        g.ring.clear();
+        had
     }
 
     /// The tile summary: the newest prompt and the newest assistant line in the
@@ -475,7 +481,8 @@ mod tests {
             store.publish(vec![entry(i)]);
         }
         let before = store.attach();
-        store.reset();
+        assert!(store.reset(), "a ring that held entries is a client-visible resync");
+        assert!(!store.reset(), "clearing an empty ring is a no-op, not a resync");
         let after = store.attach();
         assert!(after.ring.is_empty(), "a resync must not leave the old conversation seedable");
         assert_eq!(after.oldest_offset, None);
