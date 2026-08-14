@@ -41,7 +41,7 @@
 //!
 //! | failure mode | detection |
 //! |---|---|
-//! | server restart (pointer days stale — the c31518e bug class) | running && !hooks_live && within the boot window → `Reconnecting` |
+//! | server restart (pointer days stale — the c31518e bug class) | running && !hooks_live && within the boot window, measured from `max(session start, SERVER start)` → `Reconnecting` |
 //! | terminal-side `--resume` | primary: the `SessionStart` hook refreshes the id and wakes us ([`AppState::chat_pointer_wake_for`]); backstop: our file is cold *while our own hooks are provably active* and a sibling is newer |
 //! | hook install failure | running && !hooks_live for > [`NO_HOOKS_AFTER_MS`] → `NoHooks` (the pointer can never self-heal without a hook) |
 //!
@@ -143,6 +143,8 @@ pub struct PointerInputs {
     /// The session's last detected status is not `stopped`.
     pub session_running: bool,
     pub session_last_started_ms: i64,
+    /// When THIS server process started ([`AppState::server_start_ms`]).
+    pub server_start_ms: i64,
     pub now_ms: i64,
 }
 
@@ -196,7 +198,17 @@ pub fn classify_pointer(i: PointerInputs) -> TailState {
         // The pointer's only self-heal path is a hook. Past the boot window,
         // silence means the hooks are not wired — a state that must be visible,
         // never guessed around.
-        if i.now_ms.saturating_sub(i.session_last_started_ms) > NO_HOOKS_AFTER_MS {
+        //
+        // The window runs from the later of the SESSION's start and the
+        // SERVER's. `hooks_live` is in-memory only (repopulated solely by an
+        // authenticated hook POST), so after a restart — which the in-app
+        // updater performs on every release — it is empty for every running
+        // session, while `sessions.last_started` is persisted and is hours or
+        // days old for exactly the long-lived sessions this guard is for.
+        // Measuring from the session alone flipped every idle session straight
+        // into the TERMINAL `NoHooks` state until the user submitted a prompt.
+        let window_from = i.session_last_started_ms.max(i.server_start_ms);
+        if i.now_ms.saturating_sub(window_from) > NO_HOOKS_AFTER_MS {
             return TailState::NoHooks;
         }
         // Inside the window the pointer is merely unproven: after a server
@@ -775,6 +787,7 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
             session_running: session_running(&state, &name).await,
             // `sessions.last_started` is stored in SECONDS.
             session_last_started_ms: row.last_started.saturating_mul(1_000),
+            server_start_ms: state.server_start_ms,
             now_ms,
         });
         let status = TailStatus { state: state_now, resync_epoch };
@@ -906,6 +919,7 @@ mod tests {
             last_hook_ms: Some(99_500),
             session_running: true,
             session_last_started_ms: 10_000,
+            server_start_ms: 0,
             now_ms: 100_000,
         }
     }
@@ -970,6 +984,37 @@ mod tests {
             ..base()
         };
         assert_eq!(classify_pointer(i), TailState::NoHooks);
+    }
+
+    #[test]
+    fn a_server_restart_does_not_flip_every_running_session_to_no_hooks() {
+        // `hooks_live` is IN-MEMORY: a restart (the in-app updater does one on
+        // every release) empties it for every running session, while
+        // `sessions.last_started` is persisted and days old for exactly the
+        // long-lived sessions this guard exists for. Measuring the window from
+        // the session's start alone put every idle session into the TERMINAL
+        // `NoHooks` state — "hooks are not installed" — until the user
+        // happened to submit a prompt.
+        let just_restarted = PointerInputs {
+            hooks_live: false,
+            session_running: true,
+            session_last_started_ms: 0, // started days ago
+            server_start_ms: 99_000,    // …but WE started 1s ago
+            now_ms: 100_000,
+            ..base()
+        };
+        assert!(
+            matches!(classify_pointer(just_restarted.clone()), TailState::Reconnecting { .. }),
+            "inside the SERVER's boot window a silent hook is unproven, not broken"
+        );
+
+        // …and once the server itself has been up past the window with still no
+        // hook, it really is the terminal state.
+        let settled = PointerInputs {
+            now_ms: 99_000 + NO_HOOKS_AFTER_MS + 1,
+            ..just_restarted
+        };
+        assert_eq!(classify_pointer(settled), TailState::NoHooks);
     }
 
     #[test]

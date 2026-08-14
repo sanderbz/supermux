@@ -206,6 +206,15 @@ pub struct AppState {
     pub pool: SqlitePool,
     /// Immutable runtime configuration.
     pub config: Arc<Config>,
+    /// When THIS server process started, in server-clock ms.
+    ///
+    /// Load-bearing for every guard whose evidence is in-memory only: after a
+    /// restart (the in-app updater does one on every release) those maps are
+    /// empty for sessions that have been running for days, so "we have not seen
+    /// X yet" must be measured from the SERVER's start, not from the session's
+    /// persisted `last_started`. The chat tail's no-hooks window is the first
+    /// consumer ([`crate::sessions::chat::tailer::classify_pointer`]).
+    pub server_start_ms: i64,
     /// Per-session serialization locks. Added on first use; removed in
     /// `sessions::delete`/`archive`.
     pub session_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
@@ -408,6 +417,7 @@ impl AppState {
         Self {
             pool,
             config: Arc::new(config),
+            server_start_ms: chrono::Utc::now().timestamp_millis(),
             vapid,
             push_attempts: Arc::new(crate::push::AttemptLog::default()),
             pending_pushes: Arc::new(DashMap::new()),
