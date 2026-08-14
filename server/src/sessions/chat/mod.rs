@@ -17,9 +17,15 @@
 //!   `--resume`). It is the ONLY reader of a transcript file, which is what
 //!   makes byte offsets and `seq` consistent by construction.
 //!
-//! Later tasks add `ws` and `statusline`.
+//! - [`ws`]     — the chat WebSocket (seed → `seed_done` → live `entry`s, with
+//!   `state`/`resync` overlays) plus the two backlog REST routes. A pure
+//!   consumer of the store: it never reads a transcript for the live path, so
+//!   the tailer stays the file's only reader.
+//!
+//! A later task adds `statusline`.
 
 pub mod model;
 pub mod parser;
 pub mod store;
 pub mod tailer;
+pub mod ws;

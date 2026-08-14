@@ -82,6 +82,19 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/paste", post(paste_handler))
         .route("/api/sessions/{name}/peek", get(peek_handler))
         .route("/api/sessions/{name}/recall", get(recall::handler))
+        // ── chat data plane backlog (fase A2) ──
+        // The live path is the WS (`/ws/sessions/{name}/chat`, registered in
+        // `ws::router_for`); these two are the bearer-protected reads it cannot
+        // serve from the in-memory ring: older pages, and the untruncated body
+        // behind an entry the wire had to clip.
+        .route(
+            "/api/sessions/{name}/chat/history",
+            get(chat::ws::history_handler),
+        )
+        .route(
+            "/api/sessions/{name}/chat/entry/{uuid}",
+            get(chat::ws::entry_handler),
+        )
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))

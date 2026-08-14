@@ -42,10 +42,12 @@ use crate::state::AppState;
 use protocol::ClientMsg;
 
 /// Server PING cadence and the inbound-silence deadline after which we close.
-const PING_EVERY: Duration = Duration::from_secs(20);
-const PONG_DEADLINE: Duration = Duration::from_secs(30);
+/// `pub(crate)` so the chat socket (`sessions::chat::ws`) keeps the SAME
+/// liveness contract rather than inventing a second one.
+pub(crate) const PING_EVERY: Duration = Duration::from_secs(20);
+pub(crate) const PONG_DEADLINE: Duration = Duration::from_secs(30);
 /// First-frame auth window.
-const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 /// Pre-seed peek for the client's initial `Resize`. The web client (since the
 /// cursor-row-mismatch fix) batches `[auth, resize]` together on `ws.onopen`, so
 /// the resize lands within a couple of millis on the happy path. The 150ms
@@ -74,7 +76,7 @@ const RESYNC_SETTLE: Duration = Duration::from_millis(300);
 /// distinct from `close_code::ERROR` (1011 — a transient server error worth a
 /// backoff retry): the client must STOP reconnecting and surface a stopped state
 /// rather than hammering the endpoint. 4000-4999 is the WebSocket private range.
-const CLOSE_NOT_RUNNING: u16 = 4404;
+pub(crate) const CLOSE_NOT_RUNNING: u16 = 4404;
 
 /// The WS sub-router. Merged at the top level of `http::router` (no bearer layer).
 ///
@@ -85,6 +87,16 @@ const CLOSE_NOT_RUNNING: u16 = 4404;
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/ws/sessions/{name}", get(handle_ws))
+        // The READ-ONLY chat data plane (fase A2). It belongs here, not in
+        // `sessions::router_for`, for the same reason the terminal socket does:
+        // a browser `WebSocket` cannot send an `Authorization` header, so the
+        // bearer layer applied to the REST surface is unsatisfiable and auth
+        // must be in-band first-frame. It reuses `verify_auth_frame` /
+        // `origin_allowed` / `close` below so both sockets fail identically.
+        .route(
+            "/ws/sessions/{name}/chat",
+            get(crate::sessions::chat::ws::handle_chat_ws),
+        )
         // Resolve `%id` from `~/.claude/teams/{team}/config.json` members[] and
         // validate it against the lead's window before streaming. The
         // frontend opens this; an optional `?pane_id=%id` query lets a caller that
@@ -1357,7 +1369,7 @@ async fn apply_one(state: &AppState, name: &str, lead_pane_id: Option<&str>, op:
 }
 
 /// Constant-time validation of the first-frame auth message.
-fn verify_auth_frame(state: &AppState, text: &str) -> bool {
+pub(crate) fn verify_auth_frame(state: &AppState, text: &str) -> bool {
     match serde_json::from_str::<ClientMsg>(text) {
         Ok(ClientMsg::Auth { token }) => constant_time_eq::constant_time_eq(
             token.as_bytes(),
@@ -1371,7 +1383,7 @@ fn verify_auth_frame(state: &AppState, text: &str) -> bool {
 /// IPs, private-LAN IPv4, and Tailscale MagicDNS (`*.ts.net`). A *missing* Origin
 /// header means a non-browser client (native app / curl) — allowed; browsers
 /// always send Origin, so cross-site requests are caught.
-fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
+pub(crate) fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     let origin = match headers.get(header::ORIGIN) {
         None => return true,
         Some(v) => match v.to_str() {
@@ -1414,7 +1426,7 @@ fn matches_bind_host(state: &AppState, host: &str) -> bool {
 }
 
 /// Send a close frame, swallowing transport errors (we're tearing down anyway).
-async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
+pub(crate) async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
     let _ = socket
         .send(Message::Close(Some(CloseFrame {
             code,
