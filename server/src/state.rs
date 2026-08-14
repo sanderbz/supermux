@@ -374,8 +374,11 @@ pub struct AppState {
     /// — **never** eagerly, so a server with no chat client attached carries no
     /// transcript in memory. Consumers that must not resurrect a store (the
     /// sessions-SSE `chat_tail`) use the non-creating
-    /// [`chat_store`](Self::chat_store). Dropped on delete and re-keyed on
-    /// rename like every other per-session map here.
+    /// [`chat_store`](Self::chat_store). Released by the tailer's idle sweep
+    /// ([`drop_chat_store`](Self::drop_chat_store)) so the ring's lifetime
+    /// really is "while a chat client is attached, plus the grace period";
+    /// also dropped on delete and re-keyed on rename like every other
+    /// per-session map here.
     pub chat_stores: Arc<DashMap<String, Arc<crate::sessions::chat::store::ChatStore>>>,
     /// Per-session latest Claude STATUSLINE payload (fase A2 Task 6), fed by the
     /// OPT-IN tap at `/api/_internal/statusline`. IN-MEMORY ONLY, exactly like
@@ -675,6 +678,19 @@ impl AppState {
     /// for a session nobody is watching.
     pub fn chat_store(&self, name: &str) -> Option<Arc<crate::sessions::chat::store::ChatStore>> {
         self.chat_stores.get(name).map(|s| s.clone())
+    }
+
+    /// Release `name`'s chat ring. Called by the chat tailer's idle sweep —
+    /// from INSIDE the tailer-registry shard lock, so a client attaching right
+    /// now either still sees the running tailer or starts a fresh pair.
+    ///
+    /// Without this the ring outlived its tailer for the whole process
+    /// lifetime: up to `RING_CAP` sealed entries of prompts, assistant text and
+    /// tool results per session anyone ever opened chat on, still being sampled
+    /// by `ChatTailGate` on every detector tick from a conversation nobody
+    /// tails any more.
+    pub fn drop_chat_store(&self, name: &str) {
+        self.chat_stores.remove(name);
     }
 
     /// Record `name`'s latest statusline snapshot. Returns whether anything a

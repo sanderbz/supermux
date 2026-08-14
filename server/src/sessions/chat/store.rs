@@ -45,8 +45,11 @@ use super::model::{ChatEntry, Kind, WireEntry};
 /// Sized against [`super::model::SEED_MAX_BYTES`]: at the corpus' typical entry
 /// size (~1 KB) 500 entries fill roughly one seed page, so a reattach almost
 /// never has to touch the disk. The pathological bound is
-/// `RING_CAP * MAX_ENTRY_BYTES` (8 MB), and a store only exists while a chat
-/// client is attached (plus the tailer's grace period).
+/// `RING_CAP * MAX_ENTRY_BYTES` (8 MB) — a real bound only because
+/// [`WireEntry::seal`](super::model::WireEntry::seal) caps the header as well
+/// as the body — and a store only exists while a chat client is attached (plus
+/// the tailer's grace period): the tailer's idle sweep releases it from
+/// `AppState::chat_stores` under the same lock that hands out its slot.
 pub const RING_CAP: usize = 500;
 
 /// Live broadcast depth. Deeper than [`RING_CAP`] is pointless (a receiver that

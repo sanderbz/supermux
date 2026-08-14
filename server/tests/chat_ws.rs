@@ -490,6 +490,44 @@ async fn staleness_state_is_sent_on_seed_done_and_on_every_transition() {
 }
 
 #[tokio::test]
+async fn a_tailer_that_exits_closes_its_sockets_instead_of_stranding_them() {
+    // Nothing restarts a tailer for an existing lease, and the WS `Err(_)` arm
+    // that was supposed to catch this is unreachable: the lease itself owns the
+    // handle that owns the `watch::Sender`, so `changed()` never errors while
+    // the socket is up. A session whose row disappears therefore used to leave
+    // the client ping-ponging forever against a conversation that had silently
+    // stopped updating.
+    let _g = ENV_LOCK.lock().await;
+    let h = spawn_harness().await;
+    let conv = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+    write_transcript(&h.project_dir(), conv, &[user_line("u1", "hi")]);
+    make_session(&h, "chat-gone", "claude", None).await;
+    db::sessions::track_cc_conversation_id(&h.state.pool, "chat-gone", conv)
+        .await
+        .unwrap();
+
+    let mut ws = connect_authed(h.addr, "chat-gone").await;
+    let _ = next_json(&mut ws).await.expect("seed");
+    let _ = next_json(&mut ws).await.expect("seed_done");
+
+    // The row goes away under the running tailer.
+    sqlx::query("DELETE FROM sessions WHERE name = ?")
+        .bind("chat-gone")
+        .execute(&h.state.pool)
+        .await
+        .unwrap();
+
+    let code = read_close_code(&mut ws, Duration::from_secs(10)).await;
+    assert_eq!(
+        code,
+        Some(4404),
+        "a tailer that gave up for good must CLOSE the socket terminally"
+    );
+
+    h.cleanup();
+}
+
+#[tokio::test]
 async fn unknown_client_frame_is_ignored_not_fatal() {
     let _g = ENV_LOCK.lock().await;
     let h = spawn_harness().await;

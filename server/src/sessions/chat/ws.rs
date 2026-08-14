@@ -64,7 +64,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use super::model::{ChatEntry, Kind, WireEntry, SEED_MAX_BYTES};
 use super::parser::parse_stream;
 use super::store::{ChatStore, RING_CAP};
-use super::tailer::{spawn_tailer, TailStatus, TailerLease};
+use super::tailer::{spawn_tailer, TailState, TailStatus, TailerLease};
 use crate::db;
 use crate::error::AppError;
 use crate::sessions::resumable;
@@ -499,6 +499,25 @@ async fn warm_up(lease: &mut TailerLease) {
     let _ = tokio::time::timeout(SEED_WARMUP, lease.changed()).await;
 }
 
+/// The WS close for a tailer that is gone. NOTHING restarts a tailer for an
+/// existing lease, so a socket that stays open after its task exits shows a
+/// conversation that silently stopped updating — the failure mode the 4404
+/// close was written for and never reached, because the `watch::Sender` lives
+/// inside the handle the lease itself holds (so `changed()` can never `Err`
+/// while the socket is up).
+///
+/// A transient stop (the blocking pool, the idle sweep) closes 1013 `AGAIN`,
+/// which the client's terminal-socket machinery already redials with backoff —
+/// and a redial starts a fresh tailer. A terminal one (row deleted, session no
+/// longer chat-eligible) closes 4404, which stops the redial loop.
+fn stop_close_code(retry: bool) -> u16 {
+    if retry {
+        close_code::AGAIN
+    } else {
+        crate::ws::CLOSE_NOT_RUNNING
+    }
+}
+
 async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origin_ok: bool) {
     use crate::ws::{close, verify_auth_frame, AUTH_TIMEOUT, CLOSE_NOT_RUNNING, PING_EVERY, PONG_DEADLINE};
 
@@ -558,6 +577,13 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
     let conv = row.cc_conversation_id.clone();
 
     let mut status = lease.status();
+    // The tailer can already be gone before we seed (it exited between the
+    // claim and here). Seeding an orphaned store would show a conversation
+    // that never updates again.
+    if let TailState::Stopped { reason, retry } = status.state {
+        close(&mut socket, stop_close_code(retry), reason).await;
+        return;
+    }
     let Some((mut high_water, mut rx)) =
         push_seed(&mut socket, &store, &conv, status, None).await
     else {
@@ -603,6 +629,14 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
                 match changed {
                     Ok(next) => {
                         status = next;
+                        // The tailer task is gone and nothing will start
+                        // another one for THIS lease: close so the client can
+                        // redial (which does) instead of ping-ponging forever
+                        // against a tail that no longer moves.
+                        if let TailState::Stopped { reason, retry } = status.state {
+                            close(&mut socket, stop_close_code(retry), reason).await;
+                            break;
+                        }
                         if status.resync_epoch != epoch {
                             // The tailer re-seeded (pointer moved / file rotated):
                             // the ring now holds a DIFFERENT conversation.
@@ -615,7 +649,9 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
                             break;
                         }
                     }
-                    // The tailer task gave up (row deleted / no longer eligible).
+                    // Backstop: every `watch::Sender` gone. Unreachable while
+                    // this lease is alive (it holds the handle that owns the
+                    // sender) — the live path is the `Stopped` state above.
                     Err(_) => {
                         close(&mut socket, CLOSE_NOT_RUNNING, "tail stopped").await;
                         break;

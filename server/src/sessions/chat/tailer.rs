@@ -160,6 +160,14 @@ pub enum TailState {
     Reconnecting { reason: &'static str },
     /// The pointer can NEVER self-heal: its only refresh path is a hook.
     NoHooks,
+    /// The tailer task is GONE, and nothing restarts one for an existing lease.
+    ///
+    /// A socket that sees this must CLOSE: staying open would leave the client
+    /// ping-ponging against a tail nobody maintains, showing a conversation
+    /// that stopped updating. `retry` says whether redialing can help (a
+    /// transient stop — a blocking pool that went away, an idle sweep) or not
+    /// (the row is gone, the session is not chat-eligible).
+    Stopped { reason: &'static str, retry: bool },
 }
 
 /// The full status the WS publishes: the state plus a monotonic epoch that is
@@ -676,9 +684,20 @@ fn claim(name: &str) -> (Arc<TailerHandle>, bool) {
 /// under the same shard lock as [`claim`], so a subscriber arriving right now
 /// either wins the lock (we see its claim and keep running) or finds the slot
 /// gone and starts a fresh tailer.
-fn sweep_if_idle(name: &str) -> bool {
+///
+/// `on_sweep` runs INSIDE that shard lock and is where the session's chat ring
+/// is released. It has to be inside: releasing the store after the lock would
+/// race a client that has already claimed a fresh slot and taken the store —
+/// the tailer would then publish into a store nobody is subscribed to.
+fn sweep_if_idle(name: &str, on_sweep: impl Fn()) -> bool {
     registry()
-        .remove_if(name, |_, h| h.subscribers.load(Ordering::Acquire) == 0)
+        .remove_if(name, |_, h| {
+            let idle = h.subscribers.load(Ordering::Acquire) == 0;
+            if idle {
+                on_sweep();
+            }
+            idle
+        })
         .is_some()
 }
 
@@ -707,14 +726,23 @@ struct Pass {
     newest_sibling_mtime_ms: Option<i64>,
 }
 
-fn blocking_pass(mut core: Tailer) -> (Tailer, Pass) {
+/// One filesystem pass. `want_siblings` gates the project-dir scan: it is a
+/// `read_dir` + `statx` of every top-level `*.jsonl` (153 files in the worst
+/// real dir on this host) and is consumed by exactly ONE branch of
+/// [`classify_pointer`] — the `--resume` backstop, which needs a running,
+/// hooked, *recently* hooked session. The loop body runs on every poll AND on
+/// every debounced FS burst, so computing it unconditionally cost thousands of
+/// `statx` per second across a busy server for a value most passes discarded.
+fn blocking_pass(mut core: Tailer, want_siblings: bool) -> (Tailer, Pass) {
     let poll = core.poll();
     let meta = std::fs::metadata(core.transcript_path()).ok();
     let pass = Pass {
         poll,
         pointer_exists: meta.is_some(),
         pointer_mtime_ms: meta.as_ref().and_then(mtime_ms),
-        newest_sibling_mtime_ms: newest_sibling_mtime_ms(core.project_dir(), core.conversation_id()),
+        newest_sibling_mtime_ms: want_siblings
+            .then(|| newest_sibling_mtime_ms(core.project_dir(), core.conversation_id()))
+            .flatten(),
     };
     (core, pass)
 }
@@ -724,8 +752,10 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
     let pointer_wake = state.chat_pointer_wake_for(&name);
     let fs_wake = Arc::new(Notify::new());
     // The watcher is a live guard: dropping it stops the watch, so it is kept
-    // paired with the directory it is armed on.
-    let mut watch_guard: Option<(PathBuf, notify::RecommendedWatcher)> = None;
+    // paired with the directory it is armed on. The INNER `Option` memoises a
+    // failed arm — without it every pass rebuilt (and dropped) an inotify
+    // instance, forever, because the "already armed?" test could never be true.
+    let mut watcher: Option<(PathBuf, Option<notify::RecommendedWatcher>)> = None;
     let mut core: Option<Tailer> = None;
     let mut idle_since: Option<Instant> = None;
     let mut resync_epoch = 0u64;
@@ -733,15 +763,43 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    loop {
+    // Every exit reports WHY, and the socket closes on it: nothing restarts a
+    // tailer for an existing lease, so a task that quits silently leaves its
+    // clients ping-ponging against a tail that no longer moves.
+    let stopped = loop {
+        // Idle shutdown, checked FIRST so every path through the body is
+        // subject to it — including the DB-error retry below. Keep the cursor
+        // warm through a reload, then let go of both the slot and the ring.
+        if handle.subscribers.load(Ordering::Acquire) == 0 {
+            let since = *idle_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= IDLE_GRACE
+                && sweep_if_idle(&name, || state.drop_chat_store(&name))
+            {
+                break TailState::Stopped { reason: "chat tail idle", retry: true };
+            }
+        } else {
+            idle_since = None;
+        }
+
         // The session row is the pointer's source of truth; a vanished row (or a
         // session that is not an eligible local Claude one) ends the task.
         let row = match crate::db::sessions::get(&state.pool, &name).await {
             Ok(Some(row)) => row,
-            _ => break,
+            Ok(None) => break TailState::Stopped { reason: "session is gone", retry: false },
+            // A pool timeout / SQLITE_BUSY is NOT "the row was deleted".
+            // Treating it as one killed the session's chat for good — the task
+            // exited and nothing ever started another one for the open socket.
+            Err(e) => {
+                tracing::debug!(session = %name, error = %e, "chat tailer: session row read failed");
+                tokio::time::sleep(POLL_INTERVAL).await;
+                continue;
+            }
         };
         if row.provider != "claude" || row.host_id.is_some() {
-            break;
+            break TailState::Stopped {
+                reason: "chat is unavailable for this session",
+                retry: false,
+            };
         }
 
         let project = resumable::project_dir_for(&row.dir);
@@ -749,16 +807,31 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
         let rebuilt = rebuild(&mut core, &project, &conv);
 
         // Arm/re-arm the directory watcher (best effort; the poll runs anyway).
-        if watch_guard.as_ref().map(|(p, _)| p.as_path()) != Some(project.as_path()) {
-            watch_guard = arm_fs_watcher(&project, fs_wake.clone()).map(|w| (project.clone(), w));
+        if watcher.as_ref().map(|(p, _)| p.as_path()) != Some(project.as_path()) {
+            watcher = Some((project.clone(), arm_fs_watcher(&project, fs_wake.clone())));
         }
 
+        // The guard's non-filesystem inputs, read BEFORE the pass so the pass
+        // knows whether the sibling scan is worth doing at all.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let hooks_live = state.has_hooks(&name);
+        let last_hook = last_hook_ms(&state, &name, now_ms);
+        let running = session_running(&state, &name).await;
+        let hook_fresh = last_hook
+            .is_some_and(|h| now_ms.saturating_sub(h) <= HOOK_ACTIVITY_WINDOW_MS);
+
         // Filesystem work happens off the async worker: a re-seed can read a
-        // whole 8 MB transcript.
+        // whole seed window from disk.
         let taken = core.take().expect("core was just set");
-        let pass = tokio::task::spawn_blocking(move || blocking_pass(taken)).await;
-        // The blocking pool is gone (shutdown) — nothing left to tail.
-        let Ok((returned, pass)) = pass else { break };
+        let want_siblings = running && hooks_live && hook_fresh;
+        let pass = tokio::task::spawn_blocking(move || blocking_pass(taken, want_siblings)).await;
+        // The blocking pool is gone (shutdown), or the pass panicked. Either
+        // way this task is done — say so, loudly, instead of leaving every
+        // attached socket waiting on a tail that will never move again.
+        let Ok((returned, pass)) = pass else {
+            tracing::warn!(session = %name, "chat tailer: blocking pass did not complete");
+            break TailState::Stopped { reason: "tail worker stopped", retry: true };
+        };
         core = Some(returned);
 
         if rebuilt || pass.poll.resync {
@@ -777,14 +850,13 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
             store.publish(pass.poll.entries);
         }
 
-        let now_ms = chrono::Utc::now().timestamp_millis();
         let state_now = classify_pointer(PointerInputs {
             pointer_path_exists: !conv.is_empty() && pass.pointer_exists,
             pointer_mtime_ms: pass.pointer_mtime_ms,
             newest_sibling_mtime_ms: pass.newest_sibling_mtime_ms,
-            hooks_live: state.has_hooks(&name),
-            last_hook_ms: last_hook_ms(&state, &name, now_ms),
-            session_running: session_running(&state, &name).await,
+            hooks_live,
+            last_hook_ms: last_hook,
+            session_running: running,
             // `sessions.last_started` is stored in SECONDS.
             session_last_started_ms: row.last_started.saturating_mul(1_000),
             server_start_ms: state.server_start_ms,
@@ -797,16 +869,6 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
             changed
         });
 
-        // Idle shutdown: keep the cursor warm through a reload, then let go.
-        if handle.subscribers.load(Ordering::Acquire) == 0 {
-            let since = *idle_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= IDLE_GRACE && sweep_if_idle(&name) {
-                break;
-            }
-        } else {
-            idle_since = None;
-        }
-
         tokio::select! {
             _ = tick.tick() => {}
             _ = fs_wake.notified() => { tokio::time::sleep(FS_DEBOUNCE).await; }
@@ -814,19 +876,25 @@ async fn run(state: AppState, name: String, handle: Arc<TailerHandle>) {
             // than waiting for the backstop to notice a cold pointer.
             _ = pointer_wake.notified() => {}
         }
-    }
+    };
 
     // Every exit path gives the slot back, so a re-attach (or a session created
     // later under the same, reusable, name) starts a real tailer instead of
     // joining this dead one. After a sweep this is a no-op; after an early exit
     // — deleted row, ineligible session, gone blocking pool — it is the thing
     // that stops a lease from waiting forever on a task that is gone.
+    //
+    // Deliberately NOT conditional on `subscribers == 0`: a claim that lands
+    // between the loop's exit and here holds a handle whose task is already
+    // gone, and leaving the slot registered would make it — and every later
+    // attach — join a tailer that will never publish. Removing the slot and
+    // publishing `Stopped` is what lets that client close and redial into a
+    // fresh task.
     abandon(&name, &handle);
     handle.status.send_if_modified(|cur| {
-        let stopped =
-            TailStatus { state: TailState::Reconnecting { reason: "tailer stopped" }, ..*cur };
-        let changed = *cur != stopped;
-        *cur = stopped;
+        let next = TailStatus { state: stopped, ..*cur };
+        let changed = *cur != next;
+        *cur = next;
         changed
     });
 }
@@ -1498,21 +1566,33 @@ mod tests {
     // ── the registry: claims, the idle sweep, and early exits ────────────────
 
     #[test]
-    fn the_idle_sweep_never_removes_a_claimed_tailer() {
+    fn the_idle_sweep_never_removes_a_claimed_tailer_and_releases_the_ring_with_it() {
         let name = format!("sweep-{}", uuid::Uuid::new_v4());
+        // The store release rides INSIDE the sweep's shard-lock predicate, so
+        // it must fire exactly when — and only when — the slot is removed.
+        let released = std::cell::Cell::new(0usize);
+        let sweep = || sweep_if_idle(&name, || released.set(released.get() + 1));
+
         let (h, fresh) = claim(&name);
         assert!(fresh, "the first claim must start a task");
-        assert!(!sweep_if_idle(&name), "a claimed tailer must not be swept");
+        assert!(!sweep(), "a claimed tailer must not be swept");
 
         let (h2, fresh2) = claim(&name);
         assert!(!fresh2, "a second subscriber joins the running task");
         assert!(Arc::ptr_eq(&h, &h2));
         h2.subscribers.fetch_sub(1, Ordering::AcqRel);
-        assert!(!sweep_if_idle(&name), "one lease is still holding it open");
+        assert!(!sweep(), "one lease is still holding it open");
+        assert_eq!(released.get(), 0, "a live tailer's ring must never be released");
 
         h.subscribers.fetch_sub(1, Ordering::AcqRel);
-        assert!(sweep_if_idle(&name), "the last lease gone → the slot is released");
+        assert!(sweep(), "the last lease gone → the slot is released");
         assert!(status_of(&name).is_none());
+        assert_eq!(
+            released.get(),
+            1,
+            "…and the ring goes with it, or the transcript stays resident for the \
+             process lifetime for every session anyone ever opened chat on"
+        );
     }
 
     #[test]
@@ -1532,7 +1612,29 @@ mod tests {
         assert!(!abandon(&name, &dead), "only OUR handle is ever removed");
         assert!(status_of(&name).is_some());
         fresh_handle.subscribers.fetch_sub(1, Ordering::AcqRel);
-        assert!(sweep_if_idle(&name));
+        assert!(sweep_if_idle(&name, || {}));
+    }
+
+    #[test]
+    fn a_stopped_tail_is_a_state_the_socket_can_act_on() {
+        // The WS `Err(_)` arm on `lease.changed()` is unreachable while a lease
+        // is alive (the lease OWNS the handle that owns the `watch::Sender`),
+        // so a task that just exited used to leave every attached socket
+        // ping-ponging against a tail nobody maintains. The exit reason rides
+        // the status channel instead — and says whether redialing helps.
+        for (state, retry) in [
+            (TailState::Stopped { reason: "session is gone", retry: false }, false),
+            (TailState::Stopped { reason: "tail worker stopped", retry: true }, true),
+        ] {
+            let TailState::Stopped { reason, retry: got } = state else {
+                unreachable!()
+            };
+            assert!(!reason.is_empty(), "a stop reason rides the close frame");
+            assert_eq!(got, retry);
+            let v = serde_json::to_value(TailStatus { state, resync_epoch: 3 }).unwrap();
+            assert_eq!(v["state"], serde_json::json!("stopped"));
+            assert_eq!(v["retry"], serde_json::json!(retry));
+        }
     }
 
     #[tokio::test]
