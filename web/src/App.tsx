@@ -38,6 +38,11 @@ const DevFocusMobile = import.meta.env.DEV
 const DevTeams = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-teams'))
   : null
+// Session-mark bench (fase B0): the whole cast at 18/28/40 in both themes, all
+// six states, the 63-token matrix and a live blink/breathe strip.
+const DevMarks = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-marks'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts).
@@ -136,6 +141,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevTeams />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevMarks && (
+                <Route
+                  path="/dev/marks"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevMarks />
                     </Suspense>
                   }
                 />

@@ -224,6 +224,15 @@ face from the session's name — nothing is hand-drawn, nothing is stored.
   pin={assigned.get(name)} />`; pass `label={null}` wherever the row already
   renders the name. `accentInk(hue, dark)` is the text-capable tier of a
   session's pigment for `--sm-accent` consumers (mention chips, provenance).
+- **The bench.** `/dev/marks` (DEV-only, `routes/dev-marks.tsx`) renders the
+  whole system on one page: the approved reference strip, the cast at 18/28/40,
+  all six states × the cast × the ladder, the full 63-token matrix, the pigment
+  ladder with its text tier, a deduped 14-session roster, the facepile keyline
+  and a live blink/breathe strip — each in **both** themes via the
+  `[data-theme]` subtree switch. Every matrix is a still frame so the page is
+  deterministic to screenshot; only the live strip animates. Its coverage (all
+  9 silhouettes, all 7 pigments, all 6 states, the whole ladder) is asserted in
+  `tests/unit/dev-marks-cast.test.tsx`, so the bench cannot quietly shrink.
 
 ## 7. How the rest of the app consumes this
 
