@@ -14,7 +14,12 @@ import * as React from 'react'
 
 import type { TileSession } from '@/components/session-tile/types'
 
-import { stripEmojiPrefix, toDisplayList, type ChatEntry } from './entries'
+import {
+  newestAgentTs,
+  stripEmojiPrefix,
+  toDisplayList,
+  type ChatEntry,
+} from './entries'
 import { useChatTail } from './use-chat-tail'
 import { useReceiptOverlay } from './use-receipt-overlay'
 import { WorkingRow } from './working-row'
@@ -29,6 +34,11 @@ const PROVISIONAL_LAG_MS = 5_000
 /** How recent `last_send_at` must be at the flip to count as THIS turn's
  *  anchor (terminal-typed sends never stamp it, so it can be stale). */
 const SEND_ANCHOR_WINDOW_MS = 30_000
+/** Bounded fallback teardown: a turn whose confirming batch never lands (an
+ *  interrupt, a compact, an unreadable transcript) must not strand the live
+ *  layer polling `/peek` once a second forever. Well past the a0 confirm
+ *  latency (text-only p50 31s) so it never fires on a healthy turn. */
+const TURN_CONFIRM_TIMEOUT_MS = 120_000
 
 export default function ChatPanel({
   name,
@@ -71,16 +81,25 @@ export default function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active])
 
-  // Supersede gate (checkpoint (c)): the live layer tears down only once a
-  // confirmed entry from THIS turn is in hand — never on the bare status
-  // flip, which would leave a blank gap while the batch is still in flight.
-  const confirmedCaughtUp = turnStart != null && lastConfirmedMs >= turnStart
+  // Supersede gate (checkpoint (c)): the live layer tears down only once the
+  // AGENT's confirming batch for THIS turn is in hand — never on the bare
+  // status flip, which would leave a blank gap while the batch is still in
+  // flight. The gate deliberately ignores USER-authored entries: Claude writes
+  // the user turn to the JSONL within ~1s of the send, and with the
+  // `last_send_at` anchor (every dock/REST/WS send stamps it — i.e. the whole
+  // dogfood path) that echo's second-truncated `ts` is always ≥ turnStart, so
+  // an any-entry gate is satisfied by the user's own message and degrades to
+  // exactly the bare-flip teardown it exists to prevent.
+  const lastAgentMs = React.useMemo(() => newestAgentTs(entries) * 1000, [entries])
+  const confirmedCaughtUp = turnStart != null && lastAgentMs >= turnStart
+  const turnStranded =
+    turnStart != null && serverNowMs() - turnStart > TURN_CONFIRM_TIMEOUT_MS
   React.useEffect(() => {
     // Turn teardown on the (status flip + confirmed batch) edge — both are
     // external events; the guard makes it fire at most once per turn.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!active && confirmedCaughtUp) setTurnStart(null)
-  }, [active, confirmedCaughtUp])
+    if (!active && (confirmedCaughtUp || turnStranded)) setTurnStart(null)
+  }, [active, confirmedCaughtUp, turnStranded])
 
   // Turn end → confirm NOW (zero debounce; the mid-turn debounce only exists
   // to coalesce delta bursts).

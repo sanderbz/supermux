@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   formatElapsed,
+  newestAgentTs,
   RECEIPT_CAP,
   stripEmojiPrefix,
   toDisplayList,
@@ -81,5 +82,39 @@ describe('stripEmojiPrefix (overlay labels must match confirmed tool_line vocabu
     expect(stripEmojiPrefix('🔌 mcp thing')).toBe('mcp thing')
     expect(stripEmojiPrefix('Read src/a.rs')).toBe('Read src/a.rs')
     expect(stripEmojiPrefix('')).toBe('')
+  })
+})
+
+describe('newestAgentTs (the supersede gate probe)', () => {
+  test('ignores the user’s own prompt echo — the send-anchored turn would else tear down instantly', () => {
+    // Right after a dock/API send the tail holds ONLY the user turn Claude
+    // just wrote (`ts` ≥ last_send_at, i.e. ≥ the turn anchor).
+    const sendAtSec = 1_770_000_000
+    const entries = [
+      e({ kind: 'prompt', text: 'do the thing', ts: sendAtSec }),
+      e({ kind: 'assistant', text: 'previous answer', ts: sendAtSec - 300 }),
+    ]
+    expect(newestAgentTs(entries) * 1000).toBeLessThan(sendAtSec * 1000)
+  })
+
+  test('the agent’s confirming batch satisfies it (assistant or tool_use, newest-first)', () => {
+    const sendAtSec = 1_770_000_000
+    expect(
+      newestAgentTs([
+        e({ kind: 'assistant', text: 'done', ts: sendAtSec + 31 }),
+        e({ kind: 'prompt', text: 'go', ts: sendAtSec }),
+      ]) * 1000,
+    ).toBeGreaterThanOrEqual(sendAtSec * 1000)
+    expect(
+      newestAgentTs([
+        e({ kind: 'tool_use', text: 'Read a.rs', ts: sendAtSec + 3 }),
+        e({ kind: 'prompt', text: 'go', ts: sendAtSec }),
+      ]),
+    ).toBe(sendAtSec + 3)
+  })
+
+  test('0 on an empty / user-only tail', () => {
+    expect(newestAgentTs([])).toBe(0)
+    expect(newestAgentTs([e({ kind: 'command', text: '/clear', ts: 9 })])).toBe(0)
   })
 })

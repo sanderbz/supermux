@@ -73,6 +73,17 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
   return out
 }
 
+/** Newest AGENT-authored entry timestamp (epoch SECONDS; 0 when the tail has
+ *  none) out of the newest-first wire list — the supersede gate's "this turn's
+ *  confirming batch is in hand" probe. USER-authored turns are excluded on
+ *  purpose: Claude writes the user's own prompt to the transcript within ~1s
+ *  of the send, so a gate that counted it would fire before the agent has
+ *  confirmed anything (and, with the `last_send_at` turn anchor, always). */
+export function newestAgentTs(entries: ChatEntry[]): number {
+  const e = entries.find((x) => x.kind === 'assistant' || x.kind === 'tool_use')
+  return e ? e.ts : 0
+}
+
 /** "12s" / "2m 05s" — the P12 elapsed clause. */
 export function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
