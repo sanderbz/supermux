@@ -20,8 +20,19 @@
 //! same `sessionId`), so the cursor survives it — it is never reset on
 //! compaction. It resets only when the resolved path changes (a pointer change)
 //! or the file's length went *backwards* (truncation/rotation); both re-seed
-//! from the top and raise `resync`, which clears the ring so a client can never
-//! be shown two conversations spliced together.
+//! and raise `resync`, which clears the ring so a client can never be shown two
+//! conversations spliced together.
+//!
+//! A re-seed is **bounded and total**:
+//!
+//! * bounded — a cold cursor starts [`COLD_SEED_BYTES`] back from EOF (snapped
+//!   forward to a line start), and the whole cursor set shares
+//!   [`COLD_SEED_TOTAL_BYTES`], newest file first. Reading from byte 0 turned a
+//!   real 110-file conversation into 80k entries / 739 MB of RSS for a ring
+//!   that keeps 500;
+//! * total — a shrink in ANY watched file re-seeds EVERY cursor, because the
+//!   consumer clears the whole ring. Re-reading only the file that moved would
+//!   silently drop every other file from the client's fresh seed.
 //!
 //! ## The staleness guard
 //!
@@ -40,7 +51,7 @@
 //! [`Tailer::retarget`], driven by the hook-carried `session_id`.
 
 use std::collections::BTreeMap;
-use std::io::{BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -82,6 +93,36 @@ pub const SIBLING_LEAD_MS: i64 = 5_000;
 /// How long the tailer keeps running after the last subscriber leaves, so a
 /// page reload / redial does not re-seed from disk.
 pub const IDLE_GRACE: Duration = Duration::from_secs(30);
+
+/// How much of an ALREADY-EXISTING file a fresh cursor reads before it starts
+/// tailing appends.
+///
+/// A cold cursor used to start at byte 0 — and so did every subagent cursor the
+/// first [`Tailer::rescan_subagents`] created. Measured on a real conversation
+/// on this host (`-opt-projects-Reisposter`: 110 files, 1.25 GB, one of many
+/// such dirs — a sibling project's `subagents/` is 1.7 GB), a single cold
+/// `poll()` produced **80,034 entries in one `Vec`, 2.41 s, 739 MB peak RSS**
+/// — for a ring that keeps 500 and a broadcast channel that holds 1024. On the
+/// hosts supermux targets that is an OOM, not a slow first paint, and it
+/// repeated on every attach more than [`IDLE_GRACE`] after the last detach.
+///
+/// Roughly one seed page per file is all a cold attach can use; everything
+/// older is served from disk by the history route.
+pub const COLD_SEED_BYTES: u64 = 512 * 1024;
+
+/// Ceiling on the TOTAL pre-existing bytes ONE cursor set reads. A per-file
+/// bound is not a bound when a conversation has >100 subagent files, so the set
+/// shares this budget, newest file first. Files past it fall back to
+/// [`MIN_COLD_SEED_BYTES`]: their history stays on disk, their appends stream
+/// normally.
+pub const COLD_SEED_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Floor under the shared budget: every file may always read at least this much
+/// of its tail. A subagent that STARTED writing between two polls is already
+/// non-empty when we first see it, and parking it at EOF would drop the opening
+/// lines of a live turn — the shared budget exists to bound *history*, not to
+/// blind the tail.
+pub const MIN_COLD_SEED_BYTES: u64 = 64 * 1024;
 
 // ── the staleness guard ──────────────────────────────────────────────────────
 
@@ -217,11 +258,20 @@ fn mtime_ms(meta: &std::fs::Metadata) -> Option<i64> {
 struct FileCursor {
     path: PathBuf,
     offset: u64,
+    /// How far back from EOF this cursor was allowed to seed. Kept so a
+    /// rotation re-seeds under the SAME bound instead of falling back to 0.
+    seed_budget: u64,
 }
 
 impl FileCursor {
-    fn new(path: PathBuf) -> Self {
-        Self { path, offset: 0 }
+    /// A cursor over `path` seeded at most `budget` bytes back from EOF.
+    /// Returns the cursor and how much of `budget` it actually consumed, so a
+    /// cursor SET can share one total budget.
+    fn seeded(path: PathBuf, budget: u64) -> (Self, u64) {
+        let offset = seed_offset(&path, budget);
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let spent = len.saturating_sub(offset);
+        (Self { path, offset, seed_budget: budget }, spent)
     }
 
     /// Read everything appended since `offset`. Returns the entries and whether
@@ -237,7 +287,11 @@ impl FileCursor {
         let len = meta.len();
         let mut restarted = false;
         if len < self.offset {
-            self.offset = 0;
+            // Backstop for a file that shrank between `Tailer::any_shrank` and
+            // here. Re-seed under the same bound a cold cursor gets — never
+            // byte 0, which on a large rotated file is the flood this cap
+            // exists to stop.
+            self.offset = seed_offset(&self.path, self.seed_budget);
             restarted = true;
         }
         if len == self.offset {
@@ -252,6 +306,41 @@ impl FileCursor {
         let (entries, next) = parse_stream(BufReader::new(f), self.offset);
         self.offset = next;
         (entries, restarted)
+    }
+}
+
+/// Where a cold cursor over `path` starts: `budget` bytes back from EOF, snapped
+/// FORWARD past the partial line that lands in the middle of.
+///
+/// Offsets stay file-absolute (`parse_stream` is told the base), so a seeded
+/// cursor's entries carry exactly the same `offset` they would have carried
+/// after a full read — the history cursor keeps working across the boundary.
+fn seed_offset(path: &Path, budget: u64) -> u64 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    let len = meta.len();
+    if len <= budget {
+        return 0;
+    }
+    let back = len - budget;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return 0;
+    };
+    if f.seek(SeekFrom::Start(back)).is_err() {
+        return 0;
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    let read = std::io::BufReader::new(f)
+        .take(crate::sessions::chat::model::MAX_LINE_BYTES as u64 + 1)
+        .read_until(b'\n', &mut buf);
+    match read {
+        Ok(n) if buf.last() == Some(&b'\n') => back + n as u64,
+        // No line terminator within the parser's own line ceiling: the tail is
+        // one pathological line. Start at EOF rather than mid-line — and never
+        // fall back to byte 0, which is the unbounded read this bound exists
+        // to prevent.
+        _ => len,
     }
 }
 
@@ -277,19 +366,34 @@ pub struct Tailer {
     /// agent id → its own cursor. `BTreeMap` so a poll's output order is stable.
     subagents: BTreeMap<String, FileCursor>,
     pending_resync: bool,
+    /// Pre-existing bytes this cursor SET may still read ([`COLD_SEED_TOTAL_BYTES`]).
+    cold_budget: u64,
 }
 
 impl Tailer {
     pub fn new(project_dir: impl Into<PathBuf>, conversation_id: &str) -> Self {
         let project_dir = project_dir.into();
-        let main = FileCursor::new(transcript_path(&project_dir, conversation_id));
-        Self {
+        let path = transcript_path(&project_dir, conversation_id);
+        let mut t = Self {
             project_dir,
             conversation_id: conversation_id.to_string(),
-            main,
+            main: FileCursor { path: path.clone(), offset: 0, seed_budget: 0 },
             subagents: BTreeMap::new(),
             pending_resync: false,
-        }
+            cold_budget: COLD_SEED_TOTAL_BYTES,
+        };
+        t.main = t.open_cold(path);
+        t
+    }
+
+    /// Open a cursor that seeds from the tail, charged against the set's shared
+    /// [`COLD_SEED_TOTAL_BYTES`] budget (never below [`MIN_COLD_SEED_BYTES`]).
+    /// Bounded by construction, whatever the project dir holds.
+    fn open_cold(&mut self, path: PathBuf) -> FileCursor {
+        let budget = COLD_SEED_BYTES.min(self.cold_budget).max(MIN_COLD_SEED_BYTES);
+        let (cursor, spent) = FileCursor::seeded(path, budget);
+        self.cold_budget = self.cold_budget.saturating_sub(spent);
+        cursor
     }
 
     pub fn project_dir(&self) -> &Path {
@@ -315,8 +419,10 @@ impl Tailer {
             return false;
         }
         self.conversation_id = conversation_id.to_string();
-        self.main = FileCursor::new(transcript_path(&self.project_dir, conversation_id));
+        let path = transcript_path(&self.project_dir, conversation_id);
         self.subagents.clear();
+        self.cold_budget = COLD_SEED_TOTAL_BYTES;
+        self.main = self.open_cold(path);
         self.pending_resync = true;
         true
     }
@@ -328,6 +434,18 @@ impl Tailer {
             ..Default::default()
         };
 
+        self.rescan_subagents();
+        // A rotation/truncation in ANY watched file clears the WHOLE ring
+        // downstream (`resync` → `ChatStore::reset`), so EVERY cursor has to
+        // re-seed. Re-reading only the file that moved would leave the client's
+        // fresh seed holding just that file: a truncated main transcript would
+        // silently drop every subagent turn, and a rotated subagent file would
+        // re-seed the chat with the subagent's transcript and nothing else.
+        if self.any_shrank() {
+            self.rewind_all();
+            out.resync = true;
+        }
+
         let (main, restarted) = self.main.drain();
         out.resync |= restarted;
         // Sidechain lines in the MAIN file are dropped: the same turns are read,
@@ -336,7 +454,6 @@ impl Tailer {
         out.entries
             .extend(main.into_iter().filter(|e| !e.is_sidechain));
 
-        self.rescan_subagents();
         for (agent_id, cursor) in self.subagents.iter_mut() {
             let (entries, restarted) = cursor.drain();
             out.resync |= restarted;
@@ -356,11 +473,16 @@ impl Tailer {
 
     /// Pick up subagent files that appeared since the last poll. Existing
     /// cursors are left untouched — a rescan must never rewind one.
+    ///
+    /// New cursors are seeded NEWEST FILE FIRST, so when the set's shared cold
+    /// budget runs out it is the stale agents (a conversation here has 109 of
+    /// them) that start at EOF, never the ones still writing.
     fn rescan_subagents(&mut self) {
         let dir = self.subagents_dir();
         let Ok(read) = std::fs::read_dir(&dir) else {
             return;
         };
+        let mut fresh: Vec<(i64, String, PathBuf)> = Vec::new();
         for entry in read.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -373,11 +495,58 @@ impl Tailer {
             else {
                 continue;
             };
-            if !self.subagents.contains_key(id) {
-                self.subagents
-                    .insert(id.to_string(), FileCursor::new(path.clone()));
+            if self.subagents.contains_key(id) {
+                continue;
             }
+            let mtime = entry.metadata().ok().and_then(|m| mtime_ms(&m)).unwrap_or(0);
+            fresh.push((mtime, id.to_string(), path));
         }
+        fresh.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        for (_, id, path) in fresh {
+            let cursor = self.open_cold(path);
+            self.subagents.insert(id, cursor);
+        }
+    }
+
+    /// Did any watched file get SHORTER than its cursor (rotation/truncation)?
+    fn any_shrank(&self) -> bool {
+        std::iter::once(&self.main)
+            .chain(self.subagents.values())
+            .any(|c| {
+                std::fs::metadata(&c.path).is_ok_and(|m| m.len() < c.offset)
+            })
+    }
+
+    /// Re-seed EVERY cursor from a fresh shared budget — the counterpart of the
+    /// consumer clearing the whole ring on `resync`.
+    fn rewind_all(&mut self) {
+        self.cold_budget = COLD_SEED_TOTAL_BYTES;
+        let main = self.main.path.clone();
+        self.main = self.open_cold(main);
+        let paths: Vec<(String, PathBuf)> = self
+            .subagents
+            .iter()
+            .map(|(id, c)| (id.clone(), c.path.clone()))
+            .collect();
+        for (id, path) in paths {
+            let cursor = self.open_cold(path);
+            self.subagents.insert(id, cursor);
+        }
+    }
+
+    /// Test seam: how many bytes the current cursor set would still read (file
+    /// length minus cursor offset, summed). The cold-seed bound is a claim
+    /// about exactly this number.
+    #[cfg(test)]
+    fn pending_span(&self) -> u64 {
+        std::iter::once(&self.main)
+            .chain(self.subagents.values())
+            .map(|c| {
+                std::fs::metadata(&c.path)
+                    .map(|m| m.len().saturating_sub(c.offset))
+                    .unwrap_or(0)
+            })
+            .sum()
     }
 
     /// `<project>/<conv-id>/subagents/` (A0: subagent transcripts live beside
@@ -995,6 +1164,134 @@ mod tests {
         let after = t.poll();
         assert!(after.resync, "a backwards length must be reported, not read past");
         assert_eq!(uuids(&after.entries), ["z1"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── the cold-seed bound ─────────────────────────────────────────────────
+
+    /// Enough lines to blow past `COLD_SEED_BYTES` several times over.
+    fn big_file(path: &Path, lines: usize, tag: &str) {
+        let body: Vec<String> = (0..lines).map(|i| user_line(&format!("{tag}{i}"))).collect();
+        append(path, &body);
+    }
+
+    #[tokio::test]
+    async fn a_cold_cursor_seeds_from_the_tail_not_from_byte_zero() {
+        // Pre-fix a fresh cursor started at byte 0 and `drain()` read to EOF, so
+        // one cold poll over a real conversation returned 80k entries / 739 MB
+        // RSS for a ring that keeps 500.
+        let dir = tmp_project("coldseed");
+        let f = dir.join("conv-a.jsonl");
+        big_file(&f, 8_000, "u");
+        let len = std::fs::metadata(&f).unwrap().len();
+        assert!(len > COLD_SEED_BYTES, "the fixture must exceed the cold bound");
+
+        let mut t = Tailer::new(&dir, "conv-a");
+        assert!(
+            t.pending_span() <= COLD_SEED_BYTES,
+            "a cold cursor must not queue up the whole {len}-byte file"
+        );
+        let p = t.poll();
+        assert!(!p.entries.is_empty());
+        assert!(p.entries.len() < 8_000, "the cold seed is the TAIL, not the file");
+        assert_eq!(
+            p.entries.last().unwrap().uuid,
+            "u7999",
+            "…and it must end at the newest line"
+        );
+
+        // The seed starts exactly ON a line boundary: the byte before the first
+        // entry's offset is the previous line's terminator.
+        let first = p.entries[0].offset;
+        assert!(first > 0);
+        let raw = std::fs::read(&f).unwrap();
+        assert_eq!(raw[first as usize - 1], b'\n', "a seed must never start mid-line");
+        assert_eq!(&raw[first as usize..first as usize + 1], b"{");
+
+        // …and tailing continues normally from there.
+        append(&f, &[user_line("u8000")]);
+        assert_eq!(uuids(&t.poll().entries), ["u8000"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_cold_pass_over_many_subagents_shares_one_total_budget() {
+        // The real shape this bound is for: `-opt-projects-Reisposter` has a
+        // single conversation with 109 subagent files / 986 MB. A per-file cap
+        // is not a cap; the SET shares one, newest file first.
+        let dir = tmp_project("coldsubs");
+        let f = dir.join("conv-a.jsonl");
+        append(&f, &[user_line("u1")]);
+        let subs = dir.join("conv-a").join("subagents");
+        let mut paths = Vec::new();
+        for i in 0..8 {
+            let p = subs.join(format!("agent-x{i}.jsonl"));
+            big_file(&p, 4_000, &format!("s{i}_"));
+            paths.push(p);
+        }
+        let total: u64 = paths
+            .iter()
+            .map(|p| std::fs::metadata(p).unwrap().len())
+            .sum();
+        assert!(total > COLD_SEED_TOTAL_BYTES * 2, "the fixture must dwarf the budget");
+
+        let mut t = Tailer::new(&dir, "conv-a");
+        t.rescan_subagents();
+        let span = t.pending_span();
+        let ceiling = COLD_SEED_TOTAL_BYTES + 9 * MIN_COLD_SEED_BYTES;
+        assert!(
+            span <= ceiling,
+            "a cold cursor SET queued {span} bytes of a {total}-byte subagents dir; \
+             the bound is {ceiling}"
+        );
+        // Newest first: the last file written gets a full COLD_SEED_BYTES
+        // window, the first one written is down to the floor.
+        let newest = t.subagents.get("x7").unwrap();
+        let oldest = t.subagents.get("x0").unwrap();
+        let span_of = |c: &FileCursor| std::fs::metadata(&c.path).unwrap().len() - c.offset;
+        assert!(span_of(newest) > MIN_COLD_SEED_BYTES);
+        assert!(
+            span_of(oldest) <= MIN_COLD_SEED_BYTES,
+            "a stale agent past the shared budget must fall back to the floor"
+        );
+        // A file that appears LATER is empty when we meet it, so it costs
+        // nothing and is tailed in full.
+        let late = subs.join("agent-z9.jsonl");
+        append(&late, &[sidechain_line("late1", None)]);
+        let ids = uuids(&t.poll().entries);
+        assert!(ids.contains(&"late1".to_string()), "a new agent must still be tailed whole");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_rotation_in_one_file_reseeds_every_cursor_not_just_that_one() {
+        // `resync` clears the WHOLE ring downstream, so a re-seed that re-reads
+        // only the file that moved leaves the client holding just that file.
+        let dir = tmp_project("rotate-all");
+        let f = dir.join("conv-a.jsonl");
+        append(&f, &[user_line("u1"), user_line("u2")]);
+        let sub = dir.join("conv-a").join("subagents").join("agent-x1.jsonl");
+        append(&sub, &[sidechain_line("s1", None), sidechain_line("s2", None)]);
+
+        let mut t = Tailer::new(&dir, "conv-a");
+        assert_eq!(uuids(&t.poll().entries), ["u1", "u2", "s1", "s2"]);
+
+        // The SUBAGENT file rotates (rewritten shorter). The main file did not
+        // move — and must still be re-published, or it vanishes from the seed.
+        std::fs::write(&sub, format!("{}\n", sidechain_line("z1", None))).unwrap();
+        let after = t.poll();
+        assert!(after.resync, "a backwards length is a client-visible resync");
+        assert_eq!(
+            uuids(&after.entries),
+            ["u1", "u2", "z1"],
+            "every cursor re-seeds, not only the one that rotated"
+        );
+
+        // Mirror case: the MAIN file rotates, the subagent did not.
+        std::fs::write(&f, format!("{}\n", user_line("m1"))).unwrap();
+        let after = t.poll();
+        assert!(after.resync);
+        assert_eq!(uuids(&after.entries), ["m1", "z1"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
