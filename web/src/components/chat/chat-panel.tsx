@@ -17,11 +17,10 @@ import { useSessions } from '@/hooks/use-sessions'
 import { filesApi } from '@/lib/api'
 
 import { ChatSurface } from './chat-surface'
-import { stripEmojiPrefix } from './entries'
 import { buildTranscript, entryLabels, mentionIndex } from './grouping'
+import { LiveLayer } from './live-layer'
 import { TranscriptItem } from './transcript-item'
 import { useChatTurn } from './use-chat-turn'
-import { WorkingRow } from './working-row'
 import { ProvisionalTail } from './provisional-tail'
 import { exposeLatency, latencySamples, p50, serverNowMs } from './latency'
 
@@ -34,7 +33,6 @@ export default function ChatPanel({
   name: string
   session: TileSession | null
 }) {
-  const active = session?.status === 'active'
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is presentation only.
   const { entries, items, turnStart, showProvisional, overlay, tail } = useChatTurn(
@@ -124,59 +122,21 @@ export default function ChatPanel({
             />
           ))}
 
-          <div className="flex flex-col gap-3 pt-3">
-            {/* Live layer — permission first (nothing silently invisible), then
-                overlay receipts, then the working row, then provisional text. */}
-            {session?.permission_request && (
-              /* permission_request is the wire OBJECT {tool, summary, kind,
-                 mode?} — never render the object itself. */
-              <div
-                data-testid="chat-permission-row"
-                className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-[13px]"
-              >
-                <span aria-hidden>⏸</span>
-                <span className="min-w-0 truncate">
-                  Waiting for permission:{' '}
-                  <span className="font-medium">{session.permission_request.tool}</span>
-                  {session.permission_request.summary && (
-                    <span className="text-muted-foreground">
-                      {' — '}
-                      {stripEmojiPrefix(session.permission_request.summary)}
-                    </span>
-                  )}
-                </span>
-                <span className="shrink-0 text-muted-foreground">
-                  · answer in the terminal
-                </span>
-              </div>
-            )}
-
-            {overlay.length > 0 && (
-              <div className="flex flex-col gap-0.5 px-1">
-                {overlay.map((l, i) => (
-                  <div
-                    key={`${l.at}-${i}`}
-                    className="flex items-baseline gap-2 text-[13px] text-muted-foreground"
-                  >
-                    <span aria-hidden>·</span>
-                    <span className="min-w-0 truncate font-mono text-[12.5px]">
-                      {l.label}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {active && turnStart != null && (
-              <WorkingRow
-                activity={session?.activity}
-                subagents={session?.subagents}
-                turnStartMs={turnStart}
-              />
-            )}
-
-            <ProvisionalTail name={name} show={showProvisional} />
-          </div>
+          {/* Live layer (fase A3 T4) — permission first (nothing silently
+              invisible), then overlay receipts, then the working row (or the
+              delegation pill), then provisional text. The P13 block is injected
+              as a slot: it is the one child that talks to the network, and
+              keeping it out of `LiveLayer` is what makes that order testable. */}
+          <LiveLayer
+            name={name}
+            session={session}
+            turnStart={turnStart}
+            overlay={overlay}
+            mentions={mentions}
+            provisional={
+              showProvisional ? <ProvisionalTail name={name} show={showProvisional} /> : null
+            }
+          />
         </div>
       </div>
     </ChatSurface>

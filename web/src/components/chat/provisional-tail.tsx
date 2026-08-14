@@ -3,15 +3,36 @@
 // this block shows the pty capture, VISUALLY marked unconfirmed, and is
 // discarded-and-replaced when the confirming batch lands (the parent gates
 // `show`). 1s poll on the FOCUSED session only, only while shown.
+//
+// Fase A3 T4 reskins it and changes nothing about the poll or the heuristic:
+// the block now sits in the transcript's own row grammar (`MessageRow` + the
+// 28px session mark) inside an assistant `Bubble` at reduced emphasis, so the
+// confirmed bubble that supersedes it lands on the same left edge, at the same
+// width, with the same corner — the swap is an opacity change, not a relayout.
+// The dashed edge and the caption are what keep it honest: this is what the
+// terminal is SAYING, not what the session has committed to.
 
 import * as React from 'react'
 
 import { sessionsApi } from '@/lib/api'
 import { parseAnsiLine } from '@/lib/ansi'
 
-import { extractProvisionalTail } from './provisional'
+import { SessionMark, type MarkPin } from '../../brand/marks'
 
-export function ProvisionalTail({ name, show }: { name: string; show: boolean }) {
+import { extractProvisionalTail } from './provisional'
+import { Bubble, MARK_SIZE, MessageRow } from './ui'
+
+export function ProvisionalTail({
+  name,
+  show,
+  pin,
+  surface,
+}: {
+  name: string
+  show: boolean
+  pin?: MarkPin
+  surface?: 'desktop' | 'phone'
+}) {
   const [lines, setLines] = React.useState<string[]>([])
 
   React.useEffect(() => {
@@ -41,24 +62,33 @@ export function ProvisionalTail({ name, show }: { name: string; show: boolean })
 
   if (!show || lines.length === 0) return null
   return (
-    <div
-      data-testid="chat-provisional-tail"
-      className="rounded-lg border border-dashed border-border bg-card px-3 py-2 opacity-80 transition-opacity duration-300"
+    <MessageRow
+      gutter={<SessionMark seed={name} pin={pin} size={MARK_SIZE.gutter} state="working" label={null} />}
     >
-      <div className="pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        Live terminal · unconfirmed
-      </div>
-      <pre className="overflow-x-auto font-mono text-[12.5px] leading-[18px]">
-        {lines.map((l, i) => (
-          <div key={i}>
-            {parseAnsiLine(l).map((s, j) => (
-              <span key={j} style={s.style}>
-                {s.text}
-              </span>
-            ))}
-          </div>
-        ))}
-      </pre>
-    </div>
+      <Bubble
+        surface={surface}
+        className="border-dashed border-hairline text-ink-2 shadow-none"
+      >
+        <div
+          data-testid="chat-provisional-tail"
+          className="pb-1.5 text-[12.6px] tracking-[-0.05px] text-ink-3"
+        >
+          Live terminal · unconfirmed
+        </div>
+        {/* The capture's own columns, at B0's code metrics — the ANSI spans are
+            the terminal's colours and carry their own inline style. */}
+        <pre className="overflow-x-auto whitespace-pre font-mono text-[12.7px] leading-[1.62] tracking-[-0.1px]">
+          {lines.map((l, i) => (
+            <div key={i}>
+              {parseAnsiLine(l).map((s, j) => (
+                <span key={j} style={s.style}>
+                  {s.text}
+                </span>
+              ))}
+            </div>
+          ))}
+        </pre>
+      </Bubble>
+    </MessageRow>
   )
 }
