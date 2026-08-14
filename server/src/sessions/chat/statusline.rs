@@ -181,7 +181,18 @@ pub fn install(settings: &Value, mode: Mode) -> Result<Value> {
                      statusline shape supermux does not understand"
                 ),
             }
-            let cmd = o.get("command").and_then(Value::as_str).unwrap_or("");
+            // `type` alone is not enough to prove we understand the slot. A
+            // `command` that is not a string (an argv array, an object, or
+            // simply absent) used to read as `""` — "the user had nothing" —
+            // and got overwritten by the wrapper, with the uninstall then
+            // restoring that `""`. Refuse, exactly like an unknown `type`.
+            let cmd = match o.get("command") {
+                Some(Value::String(s)) => s.as_str(),
+                other => bail!(
+                    "`statusLine.command` is {other:?}, not a string — refusing to overwrite a \
+                     statusline shape supermux does not understand"
+                ),
+            };
             if is_ours(cmd) {
                 embedded_original(cmd).map(str::to_string)
             } else if cmd.contains(MARKER) {
@@ -630,6 +641,33 @@ mod tests {
             settings_with(json!({"statusLine": {"type":"future_kind","spec":{}}})),
             "a refused install must not mutate the input"
         );
+    }
+
+    #[test]
+    fn refuses_a_non_string_command_instead_of_silently_destroying_it() {
+        // `type == "command"` alone does not prove we understand the slot. A
+        // `command` that is an argv array (or absent) used to read through
+        // `as_str().unwrap_or("")` as "the user had nothing": wrap mode
+        // overwrote it, and the uninstall then "restored" the empty string,
+        // reporting success while the user's command was gone.
+        for weird in [
+            json!({"type":"command","command":["/usr/bin/mystatus","--fancy"],"padding":0}),
+            json!({"type":"command","command":{"exec":"mystatus"}}),
+            // No `command` key at all: installing used to INJECT one.
+            json!({"type":"command","cmd":"/usr/bin/mystatus"}),
+        ] {
+            let before = settings_with(json!({ "statusLine": weird }));
+            assert!(
+                install(&before, Mode::Wrap).is_err(),
+                "wrap must refuse a non-string command: {before}"
+            );
+            assert!(install(&before, Mode::TapOnly).is_err());
+            assert_eq!(
+                uninstall(&before).unwrap(),
+                before,
+                "and uninstall must leave a shape we never wrote exactly alone"
+            );
+        }
     }
 
     #[test]
