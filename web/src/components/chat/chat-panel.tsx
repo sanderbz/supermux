@@ -18,6 +18,7 @@ import { filesApi } from '@/lib/api'
 
 import { ChatSurface } from './chat-surface'
 import { buildTranscript, entryLabels, mentionIndex } from './grouping'
+import { SessionHeaderPill } from './header-pill'
 import { LiveLayer } from './live-layer'
 import { TranscriptItem } from './transcript-item'
 import { useChatTurn } from './use-chat-turn'
@@ -84,6 +85,10 @@ export default function ChatPanel({
       session={session}
       scrollRef={scrollRef}
       onScroll={onScroll}
+      // The session header (fase A3 T6). It mounts INSIDE the surface rather
+      // than replacing `DesktopFocusHeader`: unifying the two headers is Track
+      // B / B1, and doing it here would put a Track B diff in a Track A PR.
+      header={<SessionHeaderPill name={name} session={session} />}
       footer={
         <div className="border-t border-hairline px-5 py-2 text-center text-[12px] text-ink-2">
           Read-only preview — switch to Terminal to type.

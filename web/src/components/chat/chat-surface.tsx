@@ -14,8 +14,9 @@
  * lower would mean writing it in five places that could disagree.
  *
  * Slots, top to bottom:
- *   · `header` — the session pill (A3 T6). Until it lands the default occupant
- *     is `<SurfaceStatus>`, the honest minimum: which session, how is it going.
+ *   · `header` — the session pill (`header-pill.tsx`, A3 T6), passed by the
+ *     panel. The DEFAULT occupant is `<SurfaceStatus>`, the honest minimum
+ *     (which session, how is it going) for a surface rendered without one.
  *   · `children` — transcript + live layer, inside the scroll region.
  *   · `footer` — the composer shell (its real input plane is A4).
  *
@@ -65,10 +66,10 @@ export interface ChatSurfaceProps {
  * Same five colours, same five words, same semantics — `starting` is neutral so
  * a boot window never masquerades as "running", `idle` is the calm green
  * "ready". ONE deliberate omission: `StatusDot` swaps the disc for a CSS
- * spinner on the two loading states (`starting`/`active`); this placeholder
- * does not, because it is a placeholder — A3 T6 replaces this slot with the
- * header pill, which uses the real `StatusDot` (plan §T6.1) and gets the
- * spinner back with it. Values are Tailwind tokens that
+ * spinner on the two loading states (`starting`/`active`); this fallback does
+ * not, because it is a fallback — the panel fills this slot with
+ * `header-pill.tsx`, which mounts the real `StatusDot` (plan §T6.1) and has the
+ * spinner. Values are Tailwind tokens that
  * resolve to `hsl(var(--status-*))`, which is the point of the guard below: the
  * status channel is `--status-*` and NEVER `--sm-accent`, so "which session" and
  * "how is it going" stay two readable channels instead of one.
@@ -140,8 +141,16 @@ export function ChatSurface({
       style={sessionAccentVarsFor({ name })}
       className="flex h-full w-full flex-col bg-paper text-ink"
     >
-      <div className="flex shrink-0 items-center gap-2 px-5 py-2">
-        {header ?? <SurfaceStatus session={session} />}
+      {/* The top slot owns its own box: the A3 T6 header pill has a safe-area
+          inset and a height floor of its own, and a padded wrapper here would
+          inset it twice. The DEFAULT occupant keeps the padding it always had,
+          so a surface rendered without a header looks exactly as it did. */}
+      <div className="shrink-0">
+        {header ?? (
+          <div className="flex items-center gap-2 px-5 py-2">
+            <SurfaceStatus session={session} />
+          </div>
+        )}
       </div>
 
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">

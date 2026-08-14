@@ -1,4 +1,10 @@
-import { cn } from '@/lib/utils'
+// Relative, not `@/`, for the RUNTIME import only: the chat header pill
+// (`components/chat/header-pill.tsx`) renders this dot — the app's one status
+// affordance — and that module is rendered by `bun test`, whose resolver reads
+// the root tsconfig.json and its empty `paths`. A type-only import is erased
+// before resolution, so `@/lib/api` below can stay as it is. Behaviour and
+// output are unchanged; this is a resolution edit.
+import { cn } from '../../lib/utils'
 import type { SessionStatus } from '@/lib/api'
 
 /** Status → semantic status color (brand tokens in globals.css).
