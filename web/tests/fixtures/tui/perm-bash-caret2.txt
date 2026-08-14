@@ -1,0 +1,11 @@
+ Bash command
+
+   touch /tmp/spike-test-file
+   Create empty file /tmp/spike-test-file
+
+ Do you want to proceed?
+   1. Yes
+   2. Yes, and always allow access to tmp/ from this project
+ ❯ 3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
