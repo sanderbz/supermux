@@ -623,3 +623,46 @@
 .hljs-emphasis {
   font-style: italic;
 }
+
+/* ── Session marks — the character engine's ambient life (APPENDED) ───────
+   <SessionMark> (src/brand/marks/session-mark.tsx) renders a face per session.
+   Its two motions are here rather than in JS because they are ambient and
+   uninterruptible: a 5.4s breathe with a per-seed phase (set inline as a
+   negative animation-delay, so a roster never rises and falls in unison), and
+   the paused state an offscreen mark drops into. The blink and the micro-
+   saccade are geometry, not CSS — they redraw the eye paths from one shared rAF
+   loop (src/brand/marks/ticker.ts).
+
+   The silhouette itself never moves: `breathe` translates the whole SVG by
+   0.7px and rotates it 0.35°, which reads as breathing, not as a wobbling icon.
+   Appended at the file tail (never the shared token blocks) so parallel agents
+   editing globals.css never conflict. */
+.sm-mark {
+  position: relative;
+  flex: none;
+  display: block;
+  line-height: 0;
+}
+.sm-mark svg {
+  display: block;
+  overflow: visible;
+}
+.sm-mark[data-live='1'] svg {
+  animation: sm-breathe 5.4s ease-in-out infinite;
+}
+@keyframes sm-breathe {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-0.7px) rotate(0.35deg);
+  }
+}
+/* Reduce Motion: the face is identical, simply still — the eye geometry alone
+   carries state, so nothing is lost when the breathe and the blink stop. */
+@media (prefers-reduced-motion: reduce) {
+  .sm-mark[data-live='1'] svg {
+    animation: none;
+  }
+}

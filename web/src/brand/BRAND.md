@@ -181,6 +181,37 @@ drives every screen that has not migrated yet.
 - Self-contained: drop `<ToastProvider>` near the root, call `useToast()`.
 - Feed it copy from `copy.ts` (`TOAST.*`). Tone tints the leading status dot.
 
+## 6b. Session marks — the procedural character engine
+
+A session is a colleague, so it has a face. `web/src/brand/marks/` derives that
+face from the session's name — nothing is hand-drawn, nothing is stored.
+
+- **Channels.** 9 silhouettes (6 perspective-projected superellipsoid solids —
+  `sphere egg capsule blob cube pebble` — plus 3 authored outlines — `cloud
+  wedge rhombus`) × 7 OKLCh-trimmed pigments = **63 identity tokens**. Body
+  jitter, head pose, eye size/spacing/tilt, asymmetry, gaze and blink phase are
+  seeded on top and are *not* deduped: they are what keeps two same-pigment
+  sessions two different people.
+- **Dedupe.** `assignRoster(namesInCreationOrder)` probes from each name's own
+  hash and takes the cheapest free token (`pair·10000 + silhouette·100 + hue`),
+  so a roster of ≤ 63 never repeats a silhouette+pigment pair, and a solo
+  session is hash-pure. Deterministic — the server can mirror it and freeze it.
+- **State lives in the eyes, and only there.** The silhouette never moves and is
+  never overpainted, ringed or notched (concept contract C5):
+  `idle` open · `working` narrowed 54 % × 78 %, slanted −26° · `waiting` rounded
+  and levelled, plus a micro-saccade · `done` squinted to 30 % height ·
+  `stopped` = idle geometry, held still.
+- **Ambient life.** A per-seed blink (period 4.6 / 2.6 / 3.1 s for idle /
+  working / waiting, detuned per seed so a roster never blinks in unison) and a
+  5.4 s breathe with a per-seed phase. One shared rAF loop drives every face;
+  offscreen marks unregister and pause.
+- **Reduced motion** renders the identical face, permanently open and still —
+  the eye *geometry* alone carries state, so nothing is lost.
+- **Usage.** `<SessionMark seed={session.display_name} size={40} state={…}
+  pin={assigned.get(name)} />`; pass `label={null}` wherever the row already
+  renders the name. `accentInk(hue, dark)` is the text-capable tier of a
+  session's pigment for `--sm-accent` consumers (mention chips, provenance).
+
 ## 7. How the rest of the app consumes this
 
 - **Theme**: extend the `:root` brand block in `globals.css`; keep `--brand` /
