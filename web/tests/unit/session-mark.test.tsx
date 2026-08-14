@@ -53,7 +53,7 @@ function paths(markup: string): string[] {
 
 describe('the silhouette never moves', () => {
   test('the body path is byte-identical across every state', () => {
-    const bodies = (['idle', 'working', 'waiting', 'done', 'stopped'] as const).map(
+    const bodies = (['idle', 'working', 'waiting', 'done', 'stopped', 'failed'] as const).map(
       (state) => paths(renderToStaticMarkup(<SessionMark seed="Quill" state={state} />))[0],
     )
     expect(new Set(bodies).size).toBe(1)
@@ -90,11 +90,18 @@ describe('the silhouette never moves', () => {
 })
 
 describe('state lives in the eyes', () => {
-  test('each state paints different eyes', () => {
-    const eyes = (['idle', 'working', 'waiting', 'done'] as const).map((state) =>
-      paths(renderToStaticMarkup(<SessionMark seed="Quill" state={state} />)).slice(1).join('|'),
+  test('each state paints different eyes — in the STILL frame', () => {
+    // The still frame is what reduced motion, a screenshot and a server render
+    // all keep forever, so every state must be separable with zero animation.
+    // (`stopped` used to render byte-identical to `idle` and was told apart only
+    // by not blinking — invisible to a reduced-motion user.)
+    const states = ['idle', 'working', 'waiting', 'done', 'stopped', 'failed'] as const
+    const eyes = states.map((state) =>
+      withMotionPreference(true, () =>
+        paths(renderToStaticMarkup(<SessionMark seed="Quill" state={state} />)).slice(1).join('|'),
+      ),
     )
-    expect(new Set(eyes).size).toBe(4)
+    expect(new Set(eyes).size).toBe(states.length)
   })
 
   test('the painted eyes are exactly the engine geometry at blink = 1', () => {
@@ -147,8 +154,8 @@ describe('motion', () => {
     expect(Number(delay![1])).toBeCloseTo(-characterFromSeed('Quill').clock, 2)
   })
 
-  test('done and stopped never animate, even with motion allowed', () => {
-    for (const state of ['done', 'stopped'] as const) {
+  test('done, stopped and failed never animate, even with motion allowed', () => {
+    for (const state of ['done', 'stopped', 'failed'] as const) {
       const markup = withMotionPreference(false, () =>
         renderToStaticMarkup(<SessionMark seed="Quill" state={state} />),
       )

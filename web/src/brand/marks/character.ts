@@ -173,8 +173,21 @@ export const isAuthored = (name: SilhouetteName): name is AuthoredName => name i
 
 /* ── the character ───────────────────────────────────────────────────────── */
 
-/** Session presence, as the face reads it. `done`/`stopped` are stills. */
-export type MarkState = 'idle' | 'working' | 'waiting' | 'done' | 'stopped'
+/**
+ * Session presence, as the face reads it. `done`/`stopped`/`failed` are stills.
+ *
+ * The approved boards only exercise four states (idle · working · waiting ·
+ * done — see the mockup's `eyesFor`). `stopped` and `failed` are the two the
+ * product actually needs and the boards never posed: `SessionStatus` (see
+ * lib/api/sessions.ts) is `starting | active | idle | waiting | stopped |
+ * error`, and a face that IS the status indicator (concept contract C5) must be
+ * able to say "this one is asleep" and "this one fell over". Both are built from
+ * the existing capsule primitive — no new visual language — and both are
+ * legible in a *still* frame, which is the load-bearing part: `stopped` used to
+ * be byte-identical to `idle` and differed only by not animating, so a
+ * reduced-motion user (or any screenshot) could not tell them apart.
+ */
+export type MarkState = 'idle' | 'working' | 'waiting' | 'done' | 'stopped' | 'failed'
 
 /** What a roster assignment (or a fixture) may fix; everything else stays seeded. */
 export interface MarkPin {
@@ -285,6 +298,13 @@ export function characterFromSeed(seed: string, pin: MarkPin = {}): Character {
 
 /* ── state → eyes ────────────────────────────────────────────────────────── */
 
+/**
+ * Eye height of a shut lid, in face arc-length units. `eyePath` collapses a
+ * blinking eye to 5; `stopped` sits deliberately above that floor so the shut
+ * lid survives the 18px roster size.
+ */
+export const CLOSED_LID = 11
+
 /** Resolved per-eye geometry, in face arc-length units. */
 export interface EyeGeometry {
   spacing: number
@@ -304,12 +324,20 @@ export interface EyeGeometry {
  * The state channel (concept contract C5: the face IS the status indicator).
  * The silhouette never moves; only the eyes carry state.
  *
- *   idle / stopped — open, tilted, seeded asymmetry (stopped is simply not live)
+ *   idle           — open, tilted, seeded asymmetry
  *   working        — narrowed to 54% wide × 78% tall and slanted to −26°: the
  *                    universal "concentrating" read at 18px and at 40px
  *   waiting        — rounded (aspect 1.04) and levelled to 35% tilt: wide-eyed,
  *                    the only state that also micro-saccades
  *   done           — squinted to 30% height, 105% width: a content curve
+ *   stopped        — held shut: the 11-unit lid line the blink already draws,
+ *                    levelled to 45% tilt. Asleep, and visibly so with no motion
+ *   failed         — the ONLY state with mirrored tilt (left +30°, right −30°,
+ *                    tops converging): a knitted brow. Every other state keeps
+ *                    the two eyes parallel, so this cannot be confused at 18px
+ *
+ * The first four are transcribed from the mockup; the last two are additions —
+ * see the `MarkState` note.
  */
 export function eyesFor(ch: Character, state: MarkState): EyeGeometry {
   const b = ch.eyes
@@ -349,6 +377,28 @@ export function eyesFor(ch: Character, state: MarkState): EyeGeometry {
     e.hR *= 0.3
     e.wL *= 1.05
     e.wR *= 1.05
+  } else if (state === 'stopped') {
+    // The lid line, held. `eyePath` floors a fully-blinked eye at 5 units; 11
+    // keeps it visible at the 18px roster size while still reading as shut, and
+    // it stays a *line* against `done`'s 30%-height lozenge.
+    e.hL = CLOSED_LID
+    e.hR = CLOSED_LID * a.h
+    e.wL *= 1.06
+    e.wR *= 1.06
+    e.angleL *= 0.45
+    e.angleR *= 0.45
+  } else if (state === 'failed') {
+    // Mirrored, not parallel: the tops converge toward the centre line, so the
+    // pair reads as a knitted brow. No other state mirrors, which is what makes
+    // it unmistakable — but a tilt is only visible on a *slot*, so the eyes are
+    // narrowed to 62% and kept long (86%) rather than shortened into lozenges.
+    const t = 42 + a.slant
+    e.angleL = t
+    e.angleR = -t
+    e.hL *= 0.86
+    e.hR *= 0.86
+    e.wL *= 0.62
+    e.wR *= 0.62
   }
   return e
 }
@@ -363,7 +413,10 @@ export function blinkPeriod(state: MarkState): number {
   return state === 'working' ? 2.6 : state === 'waiting' ? 3.1 : 4.6
 }
 
-/** Which states have a heartbeat. `done` and `stopped` are stills, by design. */
+/**
+ * Which states have a heartbeat. `done`, `stopped` and `failed` are stills by
+ * design — nothing is running, so nothing should breathe.
+ */
 export function isLive(state: MarkState): boolean {
   return state === 'idle' || state === 'working' || state === 'waiting'
 }

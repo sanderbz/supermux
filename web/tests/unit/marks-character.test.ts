@@ -24,6 +24,7 @@ import {
   BLINK_CLOSING,
   blinkPeriod,
   characterFromSeed,
+  CLOSED_LID,
   eyeClock,
   eyesFor,
   hash32,
@@ -246,12 +247,45 @@ describe('state → eye geometry', () => {
     expect(done.hL).toBeLessThan(done.wL)
   })
 
-  test('stopped keeps the idle geometry — a sleeping face, not a new one', () => {
-    expect(eyesFor(ch, 'stopped')).toEqual(eyesFor(ch, 'idle'))
+  test('stopped shuts the eyes to a lid line — asleep, and visibly so', () => {
+    const idle = eyesFor(ch, 'idle')
+    const stopped = eyesFor(ch, 'stopped')
+    expect(stopped.hL).toBe(CLOSED_LID)
+    // A line, not a lozenge: shorter than `done`'s squint and far shorter than idle.
+    expect(stopped.hL).toBeLessThan(eyesFor(ch, 'done').hL)
+    expect(stopped.hL).toBeLessThan(idle.hL * 0.2)
+    expect(stopped.wL).toBeCloseTo(idle.wL * 1.06, 6)
+    expect(stopped.angleL).toBeCloseTo(idle.angleL * 0.45, 6)
+  })
+
+  test('failed mirrors the tilt — the only state whose eyes are not parallel', () => {
+    const failed = eyesFor(ch, 'failed')
+    expect(failed.angleL).toBeCloseTo(42 + ch.asym.slant, 6)
+    expect(failed.angleR).toBeCloseTo(-(42 + ch.asym.slant), 6)
+    // Mirrored: the two tilts have opposite sign and equal magnitude.
+    expect(Math.sign(failed.angleL)).toBe(-Math.sign(failed.angleR))
+    expect(Math.abs(failed.angleL)).toBeCloseTo(Math.abs(failed.angleR), 6)
+    expect(failed.hL).toBeCloseTo(eyesFor(ch, 'idle').hL * 0.86, 6)
+    // A slot, not a lozenge — a tilt is invisible on a near-circular eye.
+    expect(failed.hL).toBeGreaterThan(failed.wL * 1.5)
+  })
+
+  test('every other state keeps the two eyes parallel — failed is the falsifier', () => {
+    for (const state of ['idle', 'working', 'waiting', 'done', 'stopped'] as MarkState[]) {
+      const e = eyesFor(ch, state)
+      // Same sign (or both zero): parallel-ish, never mirrored.
+      expect(Math.sign(e.angleL)).toBe(Math.sign(e.angleR))
+    }
+  })
+
+  test('no two states paint the same eye geometry', () => {
+    const all: MarkState[] = ['idle', 'working', 'waiting', 'done', 'stopped', 'failed']
+    const shapes = all.map((s) => JSON.stringify(eyesFor(ch, s)))
+    expect(new Set(shapes).size).toBe(all.length)
   })
 
   test('the two eyes are always asymmetric — never a symmetric doll face', () => {
-    for (const state of ['idle', 'working', 'waiting', 'done'] as MarkState[]) {
+    for (const state of ['idle', 'working', 'waiting', 'done', 'stopped', 'failed'] as MarkState[]) {
       const e = eyesFor(ch, state)
       expect(e.wR).not.toBe(e.wL)
       expect(e.hR).not.toBe(e.hL)
@@ -264,12 +298,13 @@ describe('state → eye geometry', () => {
     expect(e.pxR).toBe(ch.gaze)
   })
 
-  test('only the live states animate; done and stopped are stills', () => {
+  test('only the live states animate; done, stopped and failed are stills', () => {
     expect(isLive('idle')).toBe(true)
     expect(isLive('working')).toBe(true)
     expect(isLive('waiting')).toBe(true)
     expect(isLive('done')).toBe(false)
     expect(isLive('stopped')).toBe(false)
+    expect(isLive('failed')).toBe(false)
   })
 })
 

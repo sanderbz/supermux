@@ -200,11 +200,24 @@ face from the session's name — nothing is hand-drawn, nothing is stored.
   never overpainted, ringed or notched (concept contract C5):
   `idle` open · `working` narrowed 54 % × 78 %, slanted −26° · `waiting` rounded
   and levelled, plus a micro-saccade · `done` squinted to 30 % height ·
-  `stopped` = idle geometry, held still.
+  `stopped` shut to an 11-unit lid line, levelled to 45 % tilt · `failed` the
+  only state with a **mirrored** tilt (left +42°, right −42°, tops converging)
+  on 62 %-wide slots — a knitted brow.
+  The first four are transcribed from the approved boards; `stopped` and
+  `failed` are additions, because `SessionStatus` is
+  `starting | active | idle | waiting | stopped | error` and a face that IS the
+  status indicator must be able to say "asleep" and "fell over". Both reuse the
+  existing capsule primitive — no new visual language.
+- **Every state is separable in a *still* frame.** This is a hard contract, not
+  a nicety: `stopped` originally reused the idle geometry and differed only by
+  not animating, which made it invisible to a reduced-motion user and to every
+  screenshot. `session-mark.test.tsx` renders all six under
+  `prefers-reduced-motion` and asserts six distinct eye paths.
 - **Ambient life.** A per-seed blink (period 4.6 / 2.6 / 3.1 s for idle /
   working / waiting, detuned per seed so a roster never blinks in unison) and a
   5.4 s breathe with a per-seed phase. One shared rAF loop drives every face;
-  offscreen marks unregister and pause.
+  offscreen marks unregister and pause. `done`, `stopped` and `failed` are
+  stills — nothing is running, so nothing breathes.
 - **Reduced motion** renders the identical face, permanently open and still —
   the eye *geometry* alone carries state, so nothing is lost.
 - **Usage.** `<SessionMark seed={session.display_name} size={40} state={…}
