@@ -27,7 +27,9 @@ import { bodyColor, characterFromSeed, SessionMark } from '@/brand/marks'
 import { PAPER } from '@/brand/tokens'
 import {
   ArrivalDivider,
+  BackIcon,
   Bubble,
+  BUBBLE_MAX,
   BubbleCode,
   CapturedFrameCard,
   ChoiceCard,
@@ -45,6 +47,7 @@ import {
   RosterRow,
   SystemEntity,
   SystemLine,
+  PHONE,
   SystemSep,
   WorkingRow,
 } from '@/components/chat/ui'
@@ -57,9 +60,15 @@ import {
   BOARD_ROSTER,
   FOCUS,
   pinFor,
+  PHONE_CLOCK,
+  PHONE_CLOSE,
+  PHONE_RECEIPTS,
+  PHONE_TAIL,
+  PHONE_THREAD,
   PLAN_CHOICE,
   VOLUME_RECEIPTS,
   type BenchTheme,
+  type PhoneTurn,
 } from './dev-chat-ui.fixture'
 
 /* ── page furniture ──────────────────────────────────────────────────────── */
@@ -124,7 +133,13 @@ function Board({ theme }: { theme: BenchTheme }) {
   return (
     <div
       data-board=""
-      className="flex h-[880px] w-full min-w-[1000px] overflow-hidden rounded-[24px] shadow-[var(--sm-elev)]"
+      // 1000px tall is the approved artboard's pane height, and it is
+      // load-bearing rather than cosmetic: the transcript is bottom-anchored, so
+      // a shorter pane scrolls the captured frame up UNDER the 80px-blur header
+      // and smears it across the bar — which is what the 880px board did. Width
+      // is not load-bearing (the track is a centred 744px column), so the board
+      // still flexes with the window.
+      className="flex h-[1000px] w-full min-w-[1000px] overflow-hidden rounded-[24px] shadow-[var(--sm-elev)]"
     >
       {/* sidebar */}
       <div className="relative z-[2] flex w-[280px] flex-none flex-col bg-paper pt-3">
@@ -238,6 +253,149 @@ function Board({ theme }: { theme: BenchTheme }) {
         <div className="absolute inset-x-8 bottom-[18px] z-[4]">
           <Composer placeholder={`Message ${FOCUS}`} className="mx-auto max-w-[744px]" />
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── the phone board ─────────────────────────────────────────────────────── */
+
+/**
+ * `mobile-light.png` / `mobile-dark.png`, rebuilt out of the same primitives.
+ *
+ * The phone is a DIFFERENT composition, not the board at a narrow width: the
+ * roster is gone, the header floats as a 60px glass card inset 12px below the
+ * status bar instead of pinning to the top edge, both bubble ceilings drop, and
+ * the composer takes its 52px rung. Reviewing mobile by squashing the desktop
+ * board would review none of that — which is exactly what the bench did before.
+ */
+function PhoneBoard({ theme }: { theme: BenchTheme }) {
+  const ring = PAPER[theme].paperRaised
+  const focusPin = pinFor(FOCUS)
+
+  const turn = (t: PhoneTurn, key: string) =>
+    t.from === 'me' ? (
+      <MessageRow key={key} me>
+        <Bubble variant="user" surface="phone">
+          {t.text}
+        </Bubble>
+      </MessageRow>
+    ) : (
+      <MessageRow
+        key={key}
+        gutter={
+          <SessionMark seed={FOCUS} pin={focusPin} size={28} state={t.state} label={null} />
+        }
+      >
+        <Bubble surface="phone">{t.text}</Bubble>
+      </MessageRow>
+    )
+
+  return (
+    <div
+      data-phone=""
+      style={{ width: PHONE.width, height: PHONE.height, borderRadius: PHONE.radius }}
+      className="relative flex-none overflow-hidden bg-paper-raised shadow-[var(--sm-elev)]"
+    >
+      {/* status bar + notch — the phone's own chrome, above the floating head */}
+      <div
+        style={{ height: PHONE.topbar }}
+        className="absolute inset-x-0 top-0 z-[2] bg-paper-raised"
+      />
+      <div className="absolute left-1/2 top-3 z-[6] h-[30px] w-[110px] -translate-x-1/2 rounded-full bg-[#0d0c0b] shadow-[0_0_0_0.5px_var(--sm-hairline)]" />
+      <div className="absolute inset-x-[26px] top-5 z-[5] flex h-4 items-center justify-between text-[13px] font-semibold tracking-[-0.1px] text-ink">
+        <span>{PHONE_CLOCK}</span>
+        <span aria-hidden className="flex h-[9px] items-end gap-[2.5px]">
+          {[4, 6, 8, 9].map((h) => (
+            <i key={h} style={{ height: h }} className="block w-[3px] rounded-sm bg-ink" />
+          ))}
+        </span>
+      </div>
+
+      <div
+        style={{
+          top: PHONE.head.top,
+          left: PHONE.head.inset,
+          right: PHONE.head.inset,
+          height: PHONE.head.height,
+          borderRadius: PHONE.head.radius,
+        }}
+        className="absolute z-[3] flex items-center gap-3 border-[0.5px] border-hairline bg-surface pl-4 pr-3 backdrop-blur-[60px] backdrop-saturate-[180%]"
+      >
+        <span
+          aria-hidden
+          className="grid size-[34px] flex-none place-items-center rounded-full bg-fill-soft text-ink-2"
+        >
+          <BackIcon />
+        </span>
+        <SessionMark seed={FOCUS} pin={focusPin} size={28} state="working" label={null} />
+        <span className="min-w-0 flex-1 truncate text-[16px] font-semibold tracking-[-0.2px] text-ink">
+          {FOCUS}
+        </span>
+        <span className="grid size-7 flex-none place-items-center rounded-full border-[0.5px] border-hairline-soft bg-fill-soft text-[10.5px] font-semibold tracking-[0.4px] text-ink-2">
+          SB
+        </span>
+      </div>
+
+      <div className="absolute inset-0 overflow-hidden">
+        <div
+          style={{ paddingLeft: PHONE.track.inset, paddingRight: PHONE.track.inset, paddingBottom: PHONE.track.bottom }}
+          className="absolute bottom-0 left-0 w-full"
+        >
+          {PHONE_THREAD.map((t, i) => turn(t, `head-${i}`))}
+
+          <MessageRow grouped>
+            <ReceiptGroup rows={PHONE_RECEIPTS} />
+          </MessageRow>
+
+          <MessageRow grouped>
+            <Bubble surface="phone">
+              <CapturedFrameCard caption={BOARD_FRAME.caption} width={BUBBLE_MAX.phoneAssistant}>
+                <MiniWindow />
+              </CapturedFrameCard>
+            </Bubble>
+          </MessageRow>
+
+          <DelegationPill
+            from={FOCUS}
+            fromPin={focusPin}
+            to="Patch"
+            toPin={pinFor('Patch')}
+            ring={ring}
+            size={24}
+          />
+
+          <ArrivalDivider>
+            <span>Messages from</span>
+            <FaceName seed="Patch" pin={pinFor('Patch')} ring={ring} />
+            <span>and</span>
+            <FaceName seed="Quill" pin={pinFor('Quill')} ring={ring} />
+          </ArrivalDivider>
+
+          <MessageRow
+            className="mt-[14px]"
+            gutter={<SessionMark seed={FOCUS} pin={focusPin} size={28} label={null} />}
+          >
+            <Bubble surface="phone">
+              <MentionChip seed="Patch" pin={pinFor('Patch')} /> sent the failing job over and{' '}
+              <MentionChip seed="Quill" pin={pinFor('Quill')} /> trimmed the notes. both folded in.
+            </Bubble>
+          </MessageRow>
+
+          {PHONE_TAIL.map((t, i) => turn(t, `tail-${i}`))}
+
+          <SystemLine>
+            Created schedule
+            <SystemSep />
+            <SystemEntity onClick={() => undefined}>Nightly release watch</SystemEntity>
+          </SystemLine>
+
+          {PHONE_CLOSE.map((t, i) => turn(t, `close-${i}`))}
+        </div>
+      </div>
+
+      <div className="absolute inset-x-[14px] bottom-[14px] z-[4]">
+        <Composer size="mobile" placeholder={`Message ${FOCUS}`} />
       </div>
     </div>
   )
@@ -602,6 +760,16 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
               shadow keeps its room. */}
           <div className="-mx-6 overflow-x-auto px-6 py-2">
             <Board theme={theme} />
+          </div>
+        </Section>
+
+        <Section
+          id="phone"
+          title="The board, on the phone"
+          note="mobile-light.png / mobile-dark.png — the same session, later. Not the desktop board at a narrow width: the roster is gone, the header floats as a 60px glass card inset 12px under the status bar rather than pinning to the top edge, both bubble ceilings drop to 266/250, the delegation pill's faces drop to 24 and the composer takes its 52px rung. Every one of those is a decision the approved render made, so reviewing mobile by squashing the desktop board reviews none of them."
+        >
+          <div className="-mx-6 overflow-x-auto px-6 py-2">
+            <PhoneBoard theme={theme} />
           </div>
         </Section>
 

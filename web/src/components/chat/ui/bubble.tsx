@@ -69,15 +69,36 @@ export interface BubbleProps {
   variant?: 'assistant' | 'user'
   /** Wider inner padding, for a bubble whose content is a list (receipts). */
   padding?: 'text' | 'list'
+  /**
+   * Which ceiling applies. The phone is not a narrower desktop: `mobile-*.png`
+   * pins its own two maxima (266 / 250) so a bubble still leaves the gutter and
+   * the reply-side asymmetry visible on a 390pt screen.
+   */
+  surface?: 'desktop' | 'phone'
   className?: string
 }
 
-export function Bubble({ children, variant = 'assistant', padding = 'text', className }: BubbleProps) {
+export function Bubble({
+  children,
+  variant = 'assistant',
+  padding = 'text',
+  surface = 'desktop',
+  className,
+}: BubbleProps) {
   const user = variant === 'user'
+  const phone = surface === 'phone'
   return (
     <div
       data-variant={variant}
-      style={{ maxWidth: user ? BUBBLE_MAX.user : BUBBLE_MAX.assistant }}
+      style={{
+        maxWidth: phone
+          ? user
+            ? BUBBLE_MAX.phoneUser
+            : BUBBLE_MAX.phoneAssistant
+          : user
+            ? BUBBLE_MAX.user
+            : BUBBLE_MAX.assistant,
+      }}
       className={cn(
         'rounded-[18px] text-[15px] leading-[1.45] tracking-[-0.1px]',
         padding === 'list' ? 'px-[18px] py-3.5' : 'px-[17px] py-[11px]',

@@ -33,6 +33,7 @@ import {
   SILHOUETTES,
   type MarkState,
 } from '../../src/brand/marks/character'
+import { REFERENCE_STRIP } from '../../src/routes/dev-marks.cast'
 
 /** A realistic roster: supermux session names in the approved (human) register. */
 const ROSTER_20 = [
@@ -120,17 +121,60 @@ describe('determinism', () => {
     }
   })
 
-  test('a pin overrides only what it pins; the rest stays seeded', () => {
+  test('a pin overrides what it names, and hue/silhouette are stream-inert', () => {
     const free = characterFromSeed('Quill')
-    const pinned = characterFromSeed('Quill', { hue: 350, gaze: 12 })
+    const pinned = characterFromSeed('Quill', { hue: 350 })
     expect(pinned.hue).toBe(350)
-    expect(pinned.gaze).toBe(12)
-    // Silhouette, eye geometry, asymmetry and the blink clock stay seeded.
+    // `hue` is a pure relabel: it consumes no draw, so nothing downstream moves.
     expect(pinned.silhouette).toBe(free.silhouette)
-    expect(pinned.eyes.spacing).toBe(free.eyes.spacing)
-    expect(pinned.clock).toBe(free.clock)
-    // Pinning gaze consumes no draw of its own: the stream keeps its place.
+    expect(pinned.eyes).toEqual(free.eyes)
     expect(pinned.asym).toEqual(free.asym)
+    expect(pinned.clock).toBe(free.clock)
+  })
+
+  test('pinning gaze or tilt SKIPS its draw — the documented reference behaviour', () => {
+    // This is not a wart to iron out, it is the contract that makes the shipped
+    // faces the approved faces: the mockup that rendered avatar-strip@2x.png
+    // skipped the draw a pin covered, so an engine that draws unconditionally
+    // reproduces a DIFFERENT cast (verified: every eye downstream moves). Pinning
+    // is a create-time decision, never a runtime toggle, so this is stable.
+    const free = characterFromSeed('Quill')
+    const gazed = characterFromSeed('Quill', { gaze: 12 })
+    expect(gazed.gaze).toBe(12)
+    expect(gazed.eyes.spacing).not.toBe(free.eyes.spacing)
+
+    const tilted = characterFromSeed('Quill', { tilt: 22 })
+    expect(tilted.eyes.angleL).toBe(22)
+    expect(tilted.eyes.spacing).not.toBe(free.eyes.spacing)
+  })
+
+  test('the approved cast is reproduced exactly (avatar-strip@2x.png parity)', () => {
+    // Golden vectors, computed from the hero mockup's own `characterFromSeed`
+    // with the pins its CAST table carries. If any of these move, /dev/marks'
+    // reference strip has stopped being the seven faces in the approved render —
+    // which is the single most visible regression this design system can have.
+    const GOLDEN: readonly (readonly [string, number, number, number, number, number])[] = [
+      ['Release Train', 34.772132, 77.313201, 61.940613, 5.456485, 25.77838],
+      ['Patch', 31.614769, 67.889746, 69.228192, 0.497686, -22.984404],
+      ['Quill', 31.628387, 66.405682, 69.072566, -3.442429, 20.492053],
+      ['Ledger', 34.925202, 73.269615, 63.489594, -4.201357, 26.986074],
+      ['Compass', 32.765657, 69.518364, 68.114858, -3.724948, -29.346511],
+      ['Lookout', 34.693552, 75.523241, 65.317618, 1.503131, 25.319349],
+      ['Kestrel', 37.912653, 68.988207, 64.346648, -2.153968, -30.993423],
+    ]
+    const byName = new Map(REFERENCE_STRIP.map((m) => [m.name, m.pin]))
+    for (const [name, wL, hL, spacing, pyL, angleR] of GOLDEN) {
+      const pin = byName.get(name)
+      expect(pin).toBeDefined()
+      const ch = characterFromSeed(name, pin)
+      expect(ch.eyes.wL).toBeCloseTo(wL, 5)
+      expect(ch.eyes.hL).toBeCloseTo(hL, 5)
+      expect(ch.eyes.spacing).toBeCloseTo(spacing, 5)
+      expect(ch.eyes.pyL).toBeCloseTo(pyL, 5)
+      expect(ch.eyes.angleR).toBeCloseTo(angleR, 5)
+      expect(ch.eyes.angleL).toBe(pin!.tilt)
+      expect(ch.gaze).toBe(pin!.gaze)
+    }
   })
 
   test('an authored silhouette pin re-seats the body, by design', () => {

@@ -109,6 +109,21 @@ export function PlusIcon({ className }: IconProps) {
   )
 }
 
+/** Phone header: back to the roster. The one nav glyph the phone board needs. */
+export function BackIcon({ className }: IconProps) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden className={className}>
+      <path
+        d="M10 2.8L4.8 8L10 13.2"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 /** Composer: dictation. */
 export function MicIcon({ className }: IconProps) {
   return (

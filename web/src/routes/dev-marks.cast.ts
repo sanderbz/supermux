@@ -70,14 +70,34 @@ export type BenchTheme = (typeof BENCH_THEMES)[number]
  * whole bench is built on this list (see `CAST`).
  */
 export const REFERENCE_STRIP: readonly CastMember[] = [
-  { name: 'Release Train', pin: { silhouette: 'cube', hue: 28 } },
-  { name: 'Patch', pin: { silhouette: 'egg', hue: 190 } },
-  { name: 'Quill', pin: { silhouette: 'sphere', hue: 265 } },
-  { name: 'Ledger', pin: { silhouette: 'capsule', hue: 292 } },
-  { name: 'Compass', pin: { silhouette: 'rhombus', hue: 158 } },
-  { name: 'Lookout', pin: { silhouette: 'cloud', hue: 75 } },
-  { name: 'Kestrel', pin: { silhouette: 'wedge', hue: 350 } },
+  { name: 'Release Train', pin: { silhouette: 'pebble', hue: 28, gaze: -6, tilt: 30 } },
+  { name: 'Patch', pin: { silhouette: 'egg', hue: 190, gaze: 8, tilt: -27 } },
+  { name: 'Quill', pin: { silhouette: 'sphere', hue: 265, gaze: 17, tilt: 22 } },
+  { name: 'Ledger', pin: { silhouette: 'capsule', hue: 292, gaze: -15, tilt: 28 } },
+  { name: 'Compass', pin: { silhouette: 'rhombus', hue: 158, gaze: 13, tilt: -31 } },
+  { name: 'Lookout', pin: { silhouette: 'cloud', hue: 75, gaze: -18, tilt: 26 } },
+  { name: 'Kestrel', pin: { silhouette: 'wedge', hue: 350, gaze: 14, tilt: -33 } },
 ]
+
+/**
+ * The state each of the seven is posed in on `avatar-strip@2x.png`.
+ *
+ * This is not decoration. The approved strip is not seven idle faces: it is the
+ * roster, in the states the roster is in, which is *why* the seven read as
+ * different personalities rather than one shape in seven colours. Posing the
+ * whole strip `idle` collapses that — `done`'s squint and `waiting`'s round eyes
+ * disappear and every face wears the same open slot. Parity with the approved
+ * render therefore includes the pose, not just the pins.
+ */
+export const REFERENCE_STATE: Readonly<Record<string, MarkState>> = {
+  'Release Train': 'working',
+  Patch: 'working',
+  Quill: 'waiting',
+  Ledger: 'idle',
+  Compass: 'idle',
+  Lookout: 'done',
+  Kestrel: 'done',
+}
 
 /**
  * The two silhouettes the approved strip cannot show: it has seven characters
@@ -90,7 +110,7 @@ export const REFERENCE_STRIP: readonly CastMember[] = [
  */
 const EXTRAS: readonly CastMember[] = [
   { name: 'deploy-fix', pin: { silhouette: 'blob', hue: 350 } },
-  { name: 'night-watch', pin: { silhouette: 'pebble', hue: 75 } },
+  { name: 'night-watch', pin: { silhouette: 'cube', hue: 75 } },
 ]
 
 /**

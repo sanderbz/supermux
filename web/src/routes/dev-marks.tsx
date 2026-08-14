@@ -39,6 +39,7 @@ import {
   MARK_SIZE_ROLES,
   MARK_SIZES,
   MARK_STATES,
+  REFERENCE_STATE,
   REFERENCE_STRIP,
   ROSTER,
   type BenchTheme,
@@ -118,7 +119,7 @@ function ReferenceStrip() {
   return (
     <div className="flex flex-wrap items-end gap-x-8 gap-y-5 rounded-2xl bg-paper-raised px-6 py-5 shadow-[var(--sm-bubble-shadow)]">
       {REFERENCE_STRIP.map((m) => (
-        <Portrait key={m.name} member={m} size={40} />
+        <Portrait key={m.name} member={m} size={40} state={REFERENCE_STATE[m.name]} />
       ))}
     </div>
   )
@@ -338,7 +339,7 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
         <Section
           id="reference"
           title="Reference strip"
-          note="The seven characters of the approved avatar-strip@2x.png, pinned to the silhouette and pigment they wear there. Everything not pinned — eyes, pose, jitter, blink phase — still comes from the seed, so these are the real characters, not drawings of them. Parity anchor: this row and the approved render must be the same seven faces."
+          note="The seven characters of the approved avatar-strip@2x.png, pinned to the silhouette, pigment, gaze and idle tilt they wear there, and POSED in the state they wear there (working · working · waiting · idle · idle · done · done) — the strip is the roster, not seven idle faces. Everything not pinned — eye size, spacing, seat, asymmetry, jitter, blink phase — still comes from the seed, so these are the real characters, not drawings of them. Parity anchor: this row and the approved render must be the same seven faces."
         >
           <ReferenceStrip />
         </Section>

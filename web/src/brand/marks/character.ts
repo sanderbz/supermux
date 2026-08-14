@@ -248,17 +248,26 @@ export function characterFromSeed(seed: string, pin: MarkPin = {}): Character {
   const hue = pin.hue ?? HUE_SLOTS[hash32(seed + '#hue') % HUE_SLOTS.length]
   const base: Solid = authored ? AUTHORED[silhouette].face : SOLIDS[silhouette]
 
-  // Every seeded draw happens unconditionally, in a fixed order, and a pin only
-  // *replaces* the value it names. (The mockup skipped the draw a pin covered,
-  // which made `pin.gaze` silently reshape the eyes; pins are now inert.)
+  // THE DRAW ORDER IS PART OF THE CONTRACT. A pin does not just replace a value,
+  // it *consumes no draw* — and an authored silhouette skips the three body
+  // jitter draws, because its outline is drawn rather than projected. Both are
+  // transcribed from the mockup that rendered board-light/dark.png and
+  // avatar-strip@2x.png, and both are load-bearing: shift this sequence by one
+  // draw and every eye downstream (size, spacing, seat, asymmetry, pose, blink
+  // phase) lands somewhere else, so the shipped faces stop being the approved
+  // faces. `/dev/marks`' reference strip is the regression test you can look at.
+  //
+  // The consequence, stated plainly so nobody "fixes" it again: which pins are
+  // present changes the seeded remainder. That is safe because pinning is a
+  // create-time decision (a roster assignment or a fixture), never a runtime
+  // toggle — a character's pins do not change under it while it is on screen.
   const j = (v: number) => v * range(rand, 0.94, 1.06)
   const asym = () => range(rand, -1, 1)
-  const tiltSign = asym() > 0 ? 1 : -1
-  const tiltMag = range(rand, 24, 34)
-  const tilt = pin.tilt ?? tiltSign * tiltMag
-  const jittered: Solid = { rx: j(base.rx), ry: j(base.ry), rz: j(base.rz), n: base.n }
-  const gazeSeeded = Math.round(asym() * 16)
-  const gaze = pin.gaze ?? gazeSeeded
+  const tilt = pin.tilt ?? (asym() > 0 ? 1 : -1) * range(rand, 24, 34)
+  const jittered: Solid = authored
+    ? { ...base }
+    : { rx: j(base.rx), ry: j(base.ry), rz: j(base.rz), n: base.n }
+  const gaze = pin.gaze ?? Math.round(asym() * 16)
 
   return {
     seed,
@@ -269,7 +278,7 @@ export function characterFromSeed(seed: string, pin: MarkPin = {}): Character {
     ink: EYE_INK,
     // Authored faces keep their exact face solid (the outline is drawn, not
     // projected, so jitter would desync eyes from silhouette).
-    body: authored ? { ...base } : jittered,
+    body: jittered,
     faceDY: authored ? AUTHORED[silhouette].dy : 0,
     gaze,
     eyes: {

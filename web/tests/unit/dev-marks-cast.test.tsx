@@ -32,6 +32,7 @@ import {
   MARK_SIZE_ROLES,
   MARK_SIZES,
   MARK_STATES,
+  REFERENCE_STATE,
   REFERENCE_STRIP,
   ROSTER,
   ROSTER_NAMES,
@@ -170,5 +171,35 @@ describe('the dedupe panel', () => {
       (m, i) => pure[i].silhouette !== m.pin.silhouette || pure[i].hue !== m.pin.hue,
     )
     expect(moved.length).toBeGreaterThan(0)
+  })
+})
+
+describe('the reference strip is the approved render, pose included', () => {
+  test('every one of the seven is pinned to a gaze and an idle tilt', () => {
+    // The approved cast is art-directed: silhouette and pigment alone do not
+    // reproduce it, because where a character LOOKS and how its eyes lean are
+    // pinned too. Drop these and the strip drifts back to seven seeded faces
+    // that merely wear the right colours.
+    for (const m of REFERENCE_STRIP) {
+      expect(typeof m.pin.gaze, m.name).toBe('number')
+      expect(typeof m.pin.tilt, m.name).toBe('number')
+    }
+  })
+
+  test('each is posed in the state it wears on avatar-strip@2x.png', () => {
+    expect(REFERENCE_STRIP.map((m) => REFERENCE_STATE[m.name])).toEqual([
+      'working',
+      'working',
+      'waiting',
+      'idle',
+      'idle',
+      'done',
+      'done',
+    ])
+  })
+
+  test('the strip poses more than one state — an all-idle strip is the bug', () => {
+    const posed = new Set(REFERENCE_STRIP.map((m) => REFERENCE_STATE[m.name]))
+    expect(posed.size).toBeGreaterThan(1)
   })
 })

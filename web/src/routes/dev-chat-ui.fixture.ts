@@ -123,6 +123,56 @@ export const PLAN_CHOICE = {
 export const BOARD_FRAME = { caption: 'release-run.png' } as const
 
 /**
+ * The phone board — `mobile-light.png` / `mobile-dark.png`, as data.
+ *
+ * Same session, later: the desktop board is still holding the crates.io ask at
+ * 1:47, this thread is after it was allowed, which is why it ends on "done. it's
+ * live." and carries no choice card. The clock in the status bar (2:06) is part
+ * of that story, not decoration.
+ *
+ * Kept verbatim from the mockup for the same reason as `BOARD_ROSTER`: a phone
+ * bench that paraphrases the approved render is not a parity anchor.
+ */
+export const PHONE_CLOCK = '2:06'
+
+export interface PhoneTurn {
+  /** `agent` renders a gutter mark; `me` is the right-aligned user bubble. */
+  from: 'agent' | 'me'
+  text: string
+  /** The mark's pose on this turn — the last line is `done`. */
+  state?: MarkState
+}
+
+export const PHONE_THREAD: readonly PhoneTurn[] = [
+  { from: 'agent', text: 'morning. picking the release back up.' },
+  { from: 'me', text: 'morning' },
+  { from: 'agent', text: 'the nightly run finished clean. no flakes.' },
+  { from: 'me', text: 'nice' },
+  { from: 'agent', text: 'starting the 0.6.0 tag now.' },
+  { from: 'me', text: "how's the tag looking?" },
+  { from: 'agent', text: "build's rolling. two checks left." },
+]
+
+/** The phone's shorter receipt group — two lines, not three. */
+export const PHONE_RECEIPTS: readonly Receipt[] = [
+  { tool: 'tests', outcome: '212 passed' },
+  { tool: 'release', outcome: 'v0.6.0 tagged' },
+]
+
+/** The turns after the two colleagues report back. */
+export const PHONE_TAIL: readonly PhoneTurn[] = [
+  { from: 'me', text: 'any risk in the ledger path?' },
+  { from: 'agent', text: 'no. two new tests cover it.' },
+  { from: 'me', text: 'ship it once CI is green' },
+]
+
+/** After the schedule line — the two closing turns. */
+export const PHONE_CLOSE: readonly PhoneTurn[] = [
+  { from: 'agent', text: 'one check left. then crates.io.' },
+  { from: 'agent', text: "done. it's live.", state: 'done' },
+]
+
+/**
  * Every primitive the bench claims to render. Asserted against the barrel's
  * exports in the unit test — a page that quietly stops showing one of these is a
  * page that stops being the review surface.

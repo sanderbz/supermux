@@ -35,7 +35,7 @@ export {
   type FacepileProps,
   type FaceNameProps,
 } from './facepile'
-export { ArrowIcon, CheckIcon, FileIcon, MicIcon, PlusIcon, SpinnerIcon } from './icons'
+export { ArrowIcon, BackIcon, CheckIcon, FileIcon, MicIcon, PlusIcon, SpinnerIcon } from './icons'
 export {
   ATTENTION_DOT,
   attentionDotSeat,
@@ -43,6 +43,7 @@ export {
   CAPTURED_FRAME,
   FACEPILE,
   MARK_SIZE,
+  PHONE,
   RECEIPT_DEFAULT_MAX,
 } from './metrics'
 export {

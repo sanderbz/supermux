@@ -107,7 +107,33 @@ export const FACEPILE = {
  * carries receipts, code and frames; the user bubble is deliberately narrower so
  * a human sentence never spans the column (mockup `.bubble` / `.msg.me .bubble`).
  */
-export const BUBBLE_MAX = { assistant: 648, user: 420 } as const
+export const BUBBLE_MAX = {
+  assistant: 648,
+  user: 420,
+  /** The phone column is 390 − 28 of gutter; `mobile-light.png`'s `.phone .bubble`. */
+  phoneAssistant: 266,
+  phoneUser: 250,
+} as const
+
+/**
+ * The phone artboard — `mobile-light.png` / `mobile-dark.png`, to the pixel.
+ *
+ * The phone is not the desktop board at a narrow width: it drops the roster
+ * entirely, floats its header as a 60px glass card inset 12px under the status
+ * bar, and narrows both bubble ceilings. Those are compositional decisions the
+ * approved render made, so the bench has to make them too — a `/dev/chat-ui`
+ * that only ever shows the 1440 board cannot review the phone.
+ */
+export const PHONE = {
+  width: 390,
+  height: 844,
+  radius: 44,
+  /** Status bar + notch live above the floating header. */
+  topbar: 54,
+  head: { top: 54, inset: 12, height: 60, radius: 22 },
+  /** Track gutter, and the room the composer needs at the bottom. */
+  track: { inset: 14, bottom: 92 },
+} as const
 
 /** The captured-frame card: 340px wide on desktop, 16:10 (padding-top 62.5%). */
 export const CAPTURED_FRAME = { width: 340, aspectPercent: 62.5 } as const

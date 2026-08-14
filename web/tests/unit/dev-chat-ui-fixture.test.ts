@@ -27,6 +27,10 @@ import {
   PLAN_CHOICE,
   PRIMITIVES,
   VOLUME_RECEIPTS,
+  PHONE_CLOSE,
+  PHONE_RECEIPTS,
+  PHONE_TAIL,
+  PHONE_THREAD,
 } from '../../src/routes/dev-chat-ui.fixture'
 
 describe('the bench shows every primitive', () => {
@@ -133,5 +137,45 @@ describe('the choice card fixture', () => {
       'Tell Claude what to change',
     ])
     expect(PLAN_CHOICE.options.map((o) => o.kbd)).toEqual(['1', '2', '3'])
+  })
+})
+
+describe('the phone board is the approved phone board', () => {
+  test('it is a real thread, not a stub — and it is the SAME session, later', () => {
+    // mobile-*.png is the desktop board's session after the crates.io ask was
+    // allowed, which is why it closes on "done. it's live." and carries no
+    // choice card. A phone bench that ends on the ask is benching the wrong
+    // moment.
+    const all = [...PHONE_THREAD, ...PHONE_TAIL, ...PHONE_CLOSE]
+    expect(all.length).toBeGreaterThan(10)
+    expect(all.at(-1)!.text).toBe("done. it's live.")
+    expect(all.at(-1)!.state).toBe('done')
+  })
+
+  test('both sides speak — the phone shows the user bubble ceiling too', () => {
+    const all = [...PHONE_THREAD, ...PHONE_TAIL, ...PHONE_CLOSE]
+    expect(all.some((t) => t.from === 'me')).toBe(true)
+    expect(all.some((t) => t.from === 'agent')).toBe(true)
+  })
+
+  test('the phone receipt group is the shorter two-line one', () => {
+    expect(PHONE_RECEIPTS.map((r) => r.tool)).toEqual(['tests', 'release'])
+  })
+})
+
+describe('the phone has its own ceilings', () => {
+  test('both are narrower than desktop, and the user side stays the narrower one', () => {
+    expect(ui.BUBBLE_MAX.phoneAssistant).toBeLessThan(ui.BUBBLE_MAX.assistant)
+    expect(ui.BUBBLE_MAX.phoneUser).toBeLessThan(ui.BUBBLE_MAX.user)
+    expect(ui.BUBBLE_MAX.phoneUser).toBeLessThan(ui.BUBBLE_MAX.phoneAssistant)
+  })
+
+  test('the artboard is 390x844 — mobile-light.png, to the pixel', () => {
+    expect(ui.PHONE.width).toBe(390)
+    expect(ui.PHONE.height).toBe(844)
+    // The header FLOATS: it is inset from both edges and seated below the
+    // status bar, which is the phone's one structural departure from the board.
+    expect(ui.PHONE.head.top).toBe(ui.PHONE.topbar)
+    expect(ui.PHONE.head.inset).toBeGreaterThan(0)
   })
 })
