@@ -602,13 +602,16 @@ async fn a_reseed_after_the_conversation_moved_issues_a_cursor_the_history_route
         .unwrap();
     h.state.wake_chat_pointer("chat-moved");
 
+    // Wall-clock bounded rather than frame-count bounded: the re-seed waits on
+    // a tailer pass that runs on the shared blocking pool, which is slow under
+    // a loaded `cargo test`.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let mut cursor = None;
-    for _ in 0..12 {
-        let Some(frame) = next_json(&mut ws).await else { break };
+    while cursor.is_none() && tokio::time::Instant::now() < deadline {
+        let Some(frame) = next_json(&mut ws).await else { continue };
         if frame["type"] == json!("seed") {
             if let Some(c) = frame["next_before"].as_str() {
                 cursor = Some(c.to_string());
-                break;
             }
         }
     }
