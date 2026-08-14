@@ -239,7 +239,17 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       />
     ),
     li: ({ node: _node, className, children, ...rest }) => (
-      <li {...rest} className={cn('mt-[3px] break-words first:mt-0', className)}>
+      <li
+        {...rest}
+        // A GFM task item carries its own state marker (the checkbox below), so
+        // it does not also get a bullet — two markers on one line read as a
+        // rendering accident. `remark-gfm` labels the item for us.
+        className={cn(
+          'mt-[3px] break-words first:mt-0',
+          className?.includes('task-list-item') && 'list-none',
+          className,
+        )}
+      >
         {withMentions(children, ctx)}
       </li>
     ),
@@ -288,7 +298,15 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       <div className="mt-2 max-w-full overflow-x-auto rounded-[10px] border-[0.5px] border-hairline">
         <table
           {...rest}
-          className={cn('w-full border-collapse text-left text-[13.4px] leading-[1.5]', className)}
+          // The rule between rows belongs to the ROW, not to a cell: `last:` on
+          // a `td` is the last cell of its row (the right-hand column), which
+          // would erase that column's horizontal rules and keep a doubled edge
+          // under the last row. Scoped here, where the last row is knowable.
+          className={cn(
+            'w-full border-collapse text-left text-[13.4px] leading-[1.5]',
+            '[&_tr:last-child_td]:border-b-0',
+            className,
+          )}
         />
       </div>
     ),
@@ -303,10 +321,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
     td: ({ node: _node, className, children, ...rest }) => (
       <td
         {...rest}
-        className={cn(
-          'border-b-[0.5px] border-hairline px-2.5 py-1.5 align-top last:border-b-0',
-          className,
-        )}
+        className={cn('border-b-[0.5px] border-hairline px-2.5 py-1.5 align-top', className)}
       >
         {withMentions(children, ctx)}
       </td>

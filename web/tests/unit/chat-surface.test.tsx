@@ -482,6 +482,26 @@ describe('the chat markdown map', () => {
     expect(html).toContain('<table')
   })
 
+  test('the table rule runs across every row, and stops at the last one', () => {
+    // `last:` on a `td` is the last CELL of a row — the right-hand column —
+    // which erases that column's rules and doubles the edge under the last row.
+    // The rule is scoped to the last ROW on the table instead.
+    const html = md('| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |')
+    expect(html).toContain('[&amp;_tr:last-child_td]:border-b-0')
+    const cells = html.match(/<td[^>]*>/g) ?? []
+    expect(cells.length).toBe(4)
+    for (const cell of cells) expect(cell).not.toContain('last:border-b-0')
+  })
+
+  test('a task item wears its checkbox instead of a bullet, not both', () => {
+    const html = md('- [x] shipped\n- [ ] written down')
+    expect(html).toContain('task-list-item')
+    expect(html).toContain('list-none')
+    expect(html).toContain('type="checkbox"')
+    // A transcript records a state; it never offers to change it.
+    expect(html).toContain('disabled')
+  })
+
   test('an image is the captured frame, and only fetches when it can', () => {
     // No injected `rawUrl` → B0's honest placeholder, never a broken <img>.
     expect(md('![shot](/tmp/shot.png)')).not.toContain('<img')
