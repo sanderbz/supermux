@@ -442,9 +442,15 @@ pub(crate) fn valid_name(name: &str) -> bool {
 // is a 400 BadRequest before the DB write.
 static CC_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,128}$").unwrap());
 
-/// Claude conversation/session id charset — `[A-Za-z0-9._-]`, 1..=128 chars.
+/// Claude conversation/session id charset — `[A-Za-z0-9._-]`, 1..=128 chars,
+/// and never an all-dots string.
+///
+/// The all-dots exclusion is the same rule [`valid_name`] carries, for the same
+/// reason: since the A2 chat data plane the id is also a PATH SEGMENT
+/// (`<project>/<id>.jsonl`, `<project>/<id>/subagents/`), and `..` is the one
+/// string the charset admits that walks out of the project directory.
 pub(crate) fn valid_cc_id(id: &str) -> bool {
-    CC_ID_RE.is_match(id)
+    CC_ID_RE.is_match(id) && !id.bytes().all(|b| b == b'.')
 }
 
 fn valid_provider(provider: &str) -> bool {
@@ -1537,9 +1543,17 @@ mod tests {
             "id|cat",           // pipe
             "id&bg",            // background
             "id\nnewline",      // newline
+            // Path-traversal escapes. Harmless as a `--resume` argument, but the
+            // A2 chat data plane resolves this id into `<project>/<id>.jsonl`
+            // and `<project>/<id>/subagents/`, and `..` walks out of the project
+            // dir. Same exclusion `valid_name` already carries.
+            ".",
+            "..",
+            "...",
         ] {
             assert!(!valid_cc_id(bad), "{bad:?} should reject");
         }
+        assert!(valid_cc_id("..a"), "dots are still legal INSIDE an id");
         // Length cap (>128 rejected).
         let too_long: String = std::iter::repeat('a').take(129).collect();
         assert!(!valid_cc_id(&too_long));

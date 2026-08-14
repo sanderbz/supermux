@@ -187,10 +187,27 @@ fn is_pointer_event(event: &str) -> bool {
 ///
 /// The DB write is conditional, and only a REAL change wakes the chat tailer:
 /// waking on every hook would re-scan the project dir on every prompt.
+///
+/// The id is charset-checked against the SAME rule the HTTP resume boundary
+/// enforces ([`crate::sessions::valid_cc_id`]). It is not decoration: this
+/// column is interpolated into `claude --resume '<id>'` (`lifecycle.rs`) and,
+/// since A2, resolved into filesystem paths — `<project>/<id>.jsonl` and
+/// `<project>/<id>/subagents/` — by the chat tailer, the chat WS seed and
+/// fetch-full. The hook body is free-form JSON from inside the pane, so
+/// without this check anything holding `$SUPERMUX_HOOK_TOKEN` could point a
+/// session at `../../../somewhere/private` and have the dashboard stream it
+/// back. A refused id leaves the previous pointer in place.
 async fn track_conversation_pointer(state: &AppState, session: &str, id: Option<&str>) {
     let Some(id) = id.filter(|i| !i.is_empty()) else {
         return;
     };
+    if !crate::sessions::valid_cc_id(id) {
+        tracing::debug!(
+            session = %session,
+            "hook carried a conversation id outside the Claude id charset; pointer left alone"
+        );
+        return;
+    }
     if db::sessions::track_cc_conversation_id(&state.pool, session, id)
         .await
         .unwrap_or(false)
@@ -918,6 +935,47 @@ mod tests {
         assert!(!woke(&state, s).await);
         let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
         assert_eq!(row.cc_conversation_id, "conv-a", "the pointer must survive");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_hook_carried_pointer_outside_the_id_charset_is_refused() {
+        // The hook body is free-form JSON produced INSIDE the pane, and this
+        // column becomes both a `claude --resume '<id>'` argument and — since
+        // A2 — a filesystem path (`<project>/<id>.jsonl`,
+        // `<project>/<id>/subagents/`) read by the tailer, the chat WS seed and
+        // fetch-full. Anything holding $SUPERMUX_HOOK_TOKEN could otherwise
+        // point a session at an arbitrary file and have it streamed back.
+        let (state, dir) = test_state().await;
+        let s = "ptr-3";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        assert!(woke(&state, s).await);
+
+        for bad in [
+            "../../../../home/u/notes/private",
+            "..",
+            "a/b",
+            "conv'; rm -rf /",
+            "conv a",
+            "conv$(id)",
+            &"x".repeat(129),
+        ] {
+            track_conversation_pointer(&state, s, Some(bad)).await;
+            let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+            assert_eq!(
+                row.cc_conversation_id, "conv-a",
+                "{bad:?} must never become the tracked pointer"
+            );
+            assert!(!woke(&state, s).await, "{bad:?} must not wake the tailer either");
+        }
+
+        // …and the real shapes still land.
+        track_conversation_pointer(&state, s, Some("550e8400-e29b-41d4-a716-446655440000")).await;
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "550e8400-e29b-41d4-a716-446655440000");
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
