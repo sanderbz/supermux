@@ -62,9 +62,13 @@ export interface ChatSurfaceProps {
  *
  * A local mirror of `session-tile/status-dot.tsx` rather than an import, for the
  * resolution reason in this file's header (that module reaches `@/lib/utils`).
- * It is a mirror and not a variant: same five colours, same five words, same
- * semantics — `starting` is neutral so a boot window never masquerades as
- * "running", `idle` is the calm green "ready". Values are Tailwind tokens that
+ * Same five colours, same five words, same semantics — `starting` is neutral so
+ * a boot window never masquerades as "running", `idle` is the calm green
+ * "ready". ONE deliberate omission: `StatusDot` swaps the disc for a CSS
+ * spinner on the two loading states (`starting`/`active`); this placeholder
+ * does not, because it is a placeholder — A3 T6 replaces this slot with the
+ * header pill, which uses the real `StatusDot` (plan §T6.1) and gets the
+ * spinner back with it. Values are Tailwind tokens that
  * resolve to `hsl(var(--status-*))`, which is the point of the guard below: the
  * status channel is `--status-*` and NEVER `--sm-accent`, so "which session" and
  * "how is it going" stay two readable channels instead of one.
