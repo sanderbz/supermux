@@ -78,7 +78,7 @@ mark and the in-app accent are two separate signals, deliberately.
 | `--brand` | `38 92% 58%` | `#f6ae31` | FAB, focus accent stroke, focus rings, "active" pulse |
 | `--status-active` | `38 92% 58%` | `#f6ae31` | running (amber pulse) |
 | `--status-waiting` | `214 95% 60%` | `#388cfa` | waiting / "needs input" (calm blue) |
-| `--status-ready` | `152 60% 45%` | `#2eaa6e` | idle-but-alive — calm green "your turn" |
+| `--status-ready` | `152 60% 45%` | `#2eb877` | idle-but-alive — calm green "your turn" |
 | `--status-error` | `24 90% 56%` | `#f47b2a` | error — **calm orange, never alarmist red** |
 | `--status-idle` | `0 0% 45%` | `#737373` | stopped / dim (agent is off) |
 | `--background` | `0 0% 4%` | `#0a0a0a` | app background + PWA splash, also the mark tile |
@@ -93,6 +93,49 @@ mark and the in-app accent are two separate signals, deliberately.
   (A destructive "missing tile" affordance may still use system red for a hard
   delete; that's a different signal from "the agent errored".)
 - TS mirror: [`tokens.ts`](./tokens.ts) (`BRAND`, `*_HSL`, `statusColor()`).
+- Every hex above is *exactly* what its HSL triple resolves to, and
+  [`tests/unit/brand-tokens.test.ts`](../../tests/unit/brand-tokens.test.ts)
+  parses `globals.css` to keep it that way. (`--status-ready` was `#2eaa6e`
+  here until that test was written; the CSS always said `#2eb877`.)
+
+### 3.3 The warm paper ladder (B0 design system)
+
+The surface language of the new primary interface. Warm off-white paper, warm
+near-black ink, translucent hairlines — a room, not a dashboard. Additive: the
+iOS/shadcn semantic palette in §3.2 and `globals.css` is untouched and still
+drives every screen that has not migrated yet.
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--sm-paper` | `#faf7f4` | `#1a1a18` | the page the app sits on (sidebar, shell) |
+| `--sm-paper-raised` | `#fdfbf9` | `#201f1d` | conversation pane — one step up |
+| `--sm-surface` | `rgba(255,253,251,.86)` | `rgba(58,54,50,.72)` | raised glass: bars, composer (pair with a backdrop blur) |
+| `--sm-bubble-agent` | `#f1ece8` | `#2c2926` | agent bubble — a fixed warm neutral, **never** accent-tinted |
+| `--sm-bubble-user` / `-ink` | `#1c1917` / `#f7f3ef` | `#f2ede7` / `#1c1917` | the inverted user bubble |
+| `--sm-ink` / `-2` / `-3` | `#1c1917` / `#79716b` / `#a8a09a` | `#f5f1ec` / `#a8a29b` / `#7d766f` | primary / secondary / tertiary type |
+| `--sm-hairline` / `-soft` | `rgba(28,20,10,.09)` / `.05` | `rgba(255,246,235,.085)` / `.055` | separators, drawn at `--sm-hairline-w` = **0.5px, never 1px** |
+| `--sm-fill-soft` / `-2` | `rgba(28,20,10,.045)` / `.07` | `rgba(255,246,235,.06)` / `.10` | hover / pressed washes |
+| `--sm-code-bg` | `rgba(28,20,10,.05)` | `rgba(0,0,0,.30)` | inline + fenced code |
+| `--sm-bubble/card-shadow`, `--sm-elev` | — | — | the elevation triple (bubble, card, window) |
+
+- **Theme selection.** `.dark` on `<html>` is the app-wide switch (unchanged);
+  `[data-theme='light'|'dark']` is the *subtree* switch, so a dark board can be
+  rendered inside a light app. A direct declaration beats an inherited one, so
+  the subtree always wins over the ancestor `.dark`.
+- **Tailwind namespace.** `bg-paper`, `bg-paper-raised`, `bg-surface`,
+  `text-ink`, `text-ink-2`, `border-hairline`, `bg-fill-soft`, … The `--sm-*`
+  vars stay the source of truth and stay usable raw (e.g. inside `box-shadow`).
+- **Per-session accent (concept contract C7).** `--sm-accent` is the *focused
+  session's* identity hue, rewritten on the app shell at runtime by the
+  character engine; it defaults to the brand amber when nothing is focused. It
+  never encodes status, and the `--status-*` family never uses it. Accent
+  surfaces are the utilities `sm-accent-row` (9% light / 12% dark),
+  `sm-accent-wash` (6%) and `sm-accent-chip` (14%) — utilities rather than
+  derived vars because a custom property containing `var()` is substituted
+  where it is *declared*, so a derived var on `:root` could never see a
+  per-session accent written further down the tree.
+- TS mirror: `PAPER`, `HAIRLINE_W`, `AGENT_ACCENT` in
+  [`tokens.ts`](./tokens.ts), guarded by the same parse test.
 
 ## 4. Icon & splash
 
