@@ -190,6 +190,29 @@ describe('the permission card', () => {
     expect(out).toContain('Run WebFetch ?')
   })
 
+  test('the mode is named in words, never in wire', () => {
+    const whyFor = (mode?: string) =>
+      text(
+        render({
+          session: session({
+            status: 'waiting',
+            mode: mode as TileSession['mode'],
+            permission_request: { tool: 'Bash', summary: 'git push', kind: 'bash' },
+          }),
+        }),
+      )
+    // `accept_edits` is the backend's snake_case `Mode`; printing it verbatim is
+    // the same failure as stringifying the request — a wire token on the board.
+    expect(whyFor('accept_edits')).toContain('in supermux/server · accept edits mode')
+    expect(whyFor('accept_edits')).not.toContain('accept_edits')
+    expect(whyFor('bypass')).toContain('bypass mode')
+    // A mode this UI does not know is dropped, not guessed into "normal".
+    const unknown = whyFor('yolo')
+    expect(unknown).not.toContain('yolo')
+    expect(unknown).not.toContain('mode')
+    expect(unknown).toContain('Bash · in supermux/server')
+  })
+
   test('the three registry answers, with their digits — and no way to answer', () => {
     const out = text(html)
     expect(out).toContain('Allow once')

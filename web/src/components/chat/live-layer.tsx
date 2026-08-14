@@ -29,7 +29,8 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { SessionMark, type MarkPin } from '../../brand/marks'
 import { eases } from '../../lib/springs'
 
-import type { PermissionRequestInfo } from '../../lib/api/sessions'
+import type { PermissionRequestInfo, SessionMode } from '../../lib/api/sessions'
+import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
 import { stripEmojiPrefix } from './entries'
@@ -180,7 +181,11 @@ export function PermissionCard({
 }) {
   const summary = stripEmojiPrefix(request.summary ?? '').trim()
   const command = summary || request.tool
-  const why = [summary && request.tool ? request.tool : '', dir ? `in ${shortDir(dir)}` : '', mode ? `${mode} mode` : '']
+  const why = [
+    summary && request.tool ? request.tool : '',
+    dir ? `in ${shortDir(dir)}` : '',
+    modeClause(mode),
+  ]
     .filter(Boolean)
     .join(' · ')
   return (
@@ -201,6 +206,27 @@ export function PermissionCard({
       </p>
     </div>
   )
+}
+
+/**
+ * The permission mode, in words rather than in wire.
+ *
+ * `mode` arrives as the backend's snake_case `Mode` (`accept_edits`), and the
+ * card is the same failure mode as stringifying the request object: printing it
+ * verbatim puts `accept_edits mode` on the approved surface. `modeChipLabel` is
+ * already the one place that names a mode for a reader (the tools sheet's toast
+ * and, per its own header, "any future read-only chip") — this is that chip.
+ * Lower-cased because the why line is a sentence fragment, not a label.
+ *
+ * A mode the UI does not know is dropped rather than guessed: `modeChipLabel`
+ * defaults to "Normal", and a card claiming the wrong mode is worse than a card
+ * that only says where the command runs.
+ */
+const MODES: readonly string[] = ['normal', 'accept_edits', 'plan', 'bypass']
+
+function modeClause(mode?: string): string {
+  if (!mode || !MODES.includes(mode)) return ''
+  return `${modeChipLabel(mode as SessionMode).toLowerCase()} mode`
 }
 
 /** `/opt/projects/supermux/server` → `supermux/server`. */
@@ -249,10 +275,12 @@ export function OverlayReceipts({
 /**
  * Who this turn is asking, if anyone.
  *
- * Two triggers, one guard (fase A3 T4.4): a `task`-kind activity, or an
- * activity that NAMES a session — and in both cases the name must be in the
- * known-sessions index, or there is no pill and the working row stands. The
- * matcher is `mentionSegments`, the same one the transcript's chips use, so
+ * ONE signal, one guard (fase A3 T4.4): the activity must NAME a session that
+ * is in the known-sessions index, or there is no pill and the working row
+ * stands. `activity_kind === 'task'` is deliberately not a second trigger —
+ * the pill draws a recipient, and a task that names nobody known has none, so
+ * reading the kind would only ever agree with the name or invent a colleague.
+ * The matcher is `mentionSegments`, the same one the transcript's chips use, so
  * "no regex over arbitrary words" holds here too and `patchwork` is a word
  * rather than a colleague.
  */
