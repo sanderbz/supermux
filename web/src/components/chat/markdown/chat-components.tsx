@@ -50,6 +50,8 @@ import {
   BUBBLE_MAX,
   CapturedFrameCard,
   CAPTURED_FRAME,
+  CodeAdd,
+  CodeDel,
   InlineCode,
   MentionChip,
 } from '../ui'
@@ -131,6 +133,57 @@ function basename(path: string): string {
  */
 function isFenced(className: string | undefined): boolean {
   return !!className && /\b(?:sm-fence|language-)/.test(className)
+}
+
+/* ── the diff read ───────────────────────────────────────────────────────── */
+
+/** Every string under a react node, in order — the fence's source text. */
+function plainText(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(plainText).join('')
+  if (React.isValidElement(node)) {
+    return plainText((node.props as { children?: React.ReactNode }).children)
+  }
+  return ''
+}
+
+/**
+ * Is this fence a DIFF?
+ *
+ * `board-patch-focused.png` gives the one fenced block the approved design
+ * contains, and it is a diff drawn in exactly two inks: the removed line in
+ * tertiary, the added line at full strength — B0's `CodeDel` / `CodeAdd`. That
+ * read is worth more than syntax colour here (it is the shape of the change, and
+ * the surface's rule is quiet chrome, loud content), so a fence that IS a diff
+ * gets it.
+ *
+ * The test is deliberately strict: at least two non-empty lines, every one of
+ * them opening with `+`, `-` or a space, and at least one of each sign. Rust
+ * that happens to start a line with a minus does not qualify, because the rest
+ * of the block will not.
+ */
+function diffLines(text: string): string[] | null {
+  const lines = text.replace(/\n$/, '').split('\n')
+  const meaningful = lines.filter((l) => l.trim() !== '')
+  if (meaningful.length < 2) return null
+  if (!meaningful.every((l) => /^[-+ ]/.test(l))) return null
+  if (!meaningful.some((l) => l.startsWith('+')) || !meaningful.some((l) => l.startsWith('-'))) {
+    return null
+  }
+  return lines
+}
+
+/** The diff, in the boards' two inks. A function, not a component: this module
+ *  is a component MAP, and a second component export costs it fast refresh. */
+function diffNodes(lines: readonly string[]): React.ReactNode {
+  return lines.map((line, i) =>
+    line.startsWith('-') ? (
+      <CodeDel key={i}>{`${line}\n`}</CodeDel>
+    ) : (
+      <CodeAdd key={i}>{`${line}\n`}</CodeAdd>
+    ),
+  )
 }
 
 /* ── the map ─────────────────────────────────────────────────────────────── */
@@ -288,12 +341,21 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       ) : (
         <InlineCode>{children}</InlineCode>
       ),
-    pre: ({ node: _node, className, children }) => (
-      // `overflow-x-auto` over B0's `overflow-hidden`: a fenced block is the one
-      // place a chat message legitimately holds a line wider than the bubble,
-      // and clipping a command in half is worse than a scrollbar.
-      <BubbleCode className={cn('overflow-x-auto', className)}>{children}</BubbleCode>
-    ),
+    pre: ({ node: _node, className, children }) => {
+      // A diff is drawn as a diff (the approved Patch board), whatever language
+      // the author labelled the fence with — `rehype-highlight`'s spans are
+      // discarded for it, because two inks say more about a change than six
+      // token colours do.
+      const diff = diffLines(plainText(children))
+      return (
+        // `overflow-x-auto` over B0's `overflow-hidden`: a fenced block is the one
+        // place a chat message legitimately holds a line wider than the bubble,
+        // and clipping a command in half is worse than a scrollbar.
+        <BubbleCode className={cn('overflow-x-auto', className)}>
+          {diff ? diffNodes(diff) : children}
+        </BubbleCode>
+      )
+    },
     table: ({ node: _node, className, ...rest }) => (
       <div className="mt-2 max-w-full overflow-x-auto rounded-[10px] border-[0.5px] border-hairline">
         <table

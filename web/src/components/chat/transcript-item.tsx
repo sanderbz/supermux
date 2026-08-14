@@ -67,6 +67,16 @@ export interface TranscriptItemProps {
   labels?: ReadonlyMap<string, string>
   /** Lowercased name → session slug, for mention chips. */
   mentions?: ReadonlyMap<string, string>
+  /**
+   * Slug → the name that session is CALLED.
+   *
+   * The wire's teammate envelope carries a slug (`teammate_id="patch"`), and the
+   * arrival divider is a sentence a person reads — "Message from ●patch" names
+   * a database row, "Message from ●Patch" names a colleague. The mention chips
+   * already get this for free (they show the text the agent wrote); the divider
+   * has no prose to take it from, so the panel hands the index down.
+   */
+  names?: ReadonlyMap<string, string>
   /** Absolute path → fetchable URL. Omit and captured frames render B0's
    *  honest warm placeholder. */
   rawUrl?: (path: string) => string
@@ -202,7 +212,15 @@ function TeammateRow({
       {!grouped && (
         <ArrivalDivider>
           <span>Message from</span>
-          {sender ? <FaceName seed={sender} pin={rest.pinFor?.(sender)} /> : <span>a teammate</span>}
+          {sender ? (
+            <FaceName
+              seed={sender}
+              pin={rest.pinFor?.(sender)}
+              name={rest.names?.get(sender)}
+            />
+          ) : (
+            <span>a teammate</span>
+          )}
         </ArrivalDivider>
       )}
       <MessageRow
@@ -365,6 +383,7 @@ function Receipts({
     <div className="flex min-w-0 flex-col items-start gap-2">
       <ReceiptGroup
         rows={rows}
+        surface={surface}
         max={expanded ? undefined : RECEIPT_DEFAULT_MAX}
         onShowAll={() => setExpanded(true)}
       />

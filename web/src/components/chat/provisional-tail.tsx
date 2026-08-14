@@ -61,13 +61,41 @@ export function ProvisionalTail({
   }, [name, show])
 
   if (!show || lines.length === 0) return null
+  return <ProvisionalTailView lines={lines} seed={name} pin={pin} surface={surface} />
+}
+
+/**
+ * The block itself, without the poll — what the pty capture LOOKS like.
+ *
+ * Split out for the same reason `live-layer.tsx` takes this component as a slot:
+ * the network is the one thing that cannot be rendered from a fixture, so the
+ * `/dev/chat-live` bench (and any future test) hands the view its lines and gets
+ * the real object, dashed edge and all, with no `/peek` in sight.
+ */
+export function ProvisionalTailView({
+  lines,
+  seed,
+  pin,
+  surface,
+}: {
+  lines: readonly string[]
+  seed: string
+  pin?: MarkPin
+  surface?: 'desktop' | 'phone'
+}) {
+  const name = seed
   return (
     <MessageRow
       gutter={<SessionMark seed={name} pin={pin} size={MARK_SIZE.gutter} state="working" label={null} />}
     >
       <Bubble
         surface={surface}
-        className="border-dashed border-hairline text-ink-2 shadow-none"
+        // 1px, not the bubble's 0.5px hairline: a half-pixel dashed edge at DPR
+        // 1 renders as a continuous line, i.e. as a NORMAL bubble — and "this is
+        // not confirmed yet" is the whole point of the block. The fill stays the
+        // agent bubble's, so the confirmed message that supersedes it lands on
+        // the same box (§11.6's opacity-only swap).
+        className="border border-dashed border-ink-3/45 text-ink-2 shadow-none"
       >
         <div
           data-testid="chat-provisional-tail"

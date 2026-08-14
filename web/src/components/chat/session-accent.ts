@@ -71,10 +71,14 @@ export function sessionAccentVars(seed: string, pin?: MarkPin): CSSProperties {
  */
 export function sessionAccentVarsFor(
   session: { name: string } | null | undefined,
+  pin?: MarkPin,
 ): CSSProperties {
   if (!session?.name) return {}
-  // TODO(§10): the wire has no `mark_*` columns yet, so nothing is pinned and
-  // the character is hash-pure. When roster pins land, pass the session's pin
-  // here and to every `<SessionMark>` on this surface from the same source.
-  return sessionAccentVars(session.name)
+  // TODO(§10): the wire has no `mark_*` columns yet, so nothing is pinned in the
+  // app and the character is hash-pure. The parameter exists because a caller
+  // that DOES have a pin (the `/dev/chat-live` bench today, the roster when §10
+  // lands) must hand it to this derivation as well as to every `<SessionMark>`
+  // on the surface — a pinned face over an unpinned room is two different
+  // "session colours" for one session.
+  return sessionAccentVars(session.name, pin)
 }

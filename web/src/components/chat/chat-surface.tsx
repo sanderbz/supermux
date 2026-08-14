@@ -31,6 +31,7 @@
  */
 import * as React from 'react'
 
+import type { MarkPin } from '../../brand/marks'
 import type { SessionStatus } from '../../lib/api'
 import type { TileSession } from '../session-tile/types'
 
@@ -41,9 +42,29 @@ export interface ChatSurfaceProps {
   name: string
   /** The session row, or `null` while the sessions query is still resolving. */
   session: TileSession | null
+  /**
+   * The seed's identity pin, when the caller has one. It is passed to the SAME
+   * derivation the marks use, so a pinned session cannot end up with a teal face
+   * in an amber room (the wire carries no pins yet — see `session-accent.ts`'s
+   * §10 TODO — so today only the bench passes this).
+   */
+  pin?: MarkPin
   /** Top slot. Omit for the default status line (A3 T6 passes the header pill). */
   header?: React.ReactNode
-  /** Bottom slot — the composer shell / the read-only affordance under it. */
+  /**
+   * The header floats over the transcript instead of sitting above it — the
+   * phone's composition (`mobile-light.png`), where the track scrolls UNDER the
+   * glass card. The scroll region then owes itself the top padding, which is why
+   * this is a prop and not a guess: only the caller that sets the padding may
+   * ask for the overlay (`conversation.tsx` sets both).
+   */
+  headerOverlay?: boolean
+  /**
+   * Bottom slot — the composer. It FLOATS: the approved boards inset the pill
+   * from the pane's bottom edge and let the transcript pass behind its blur, so
+   * this layer is absolutely positioned and the scroll region reserves the room
+   * with its own bottom padding (again, `conversation.tsx` owns both halves).
+   */
   footer?: React.ReactNode
   /** Transcript + live layer. */
   children?: React.ReactNode
@@ -124,13 +145,20 @@ export function SurfaceStatus({ session }: { session: TileSession | null }) {
 export function ChatSurface({
   name,
   session,
+  pin,
   header,
+  headerOverlay,
   footer,
   children,
   scrollRef,
   onScroll,
   testId = 'chat-surface',
 }: ChatSurfaceProps) {
+  const top = header ?? (
+    <div className="flex items-center gap-2 px-5 py-2">
+      <SurfaceStatus session={session} />
+    </div>
+  )
   return (
     <div
       data-testid={testId}
@@ -138,26 +166,29 @@ export function ChatSurface({
       data-session={name}
       // The ONE accent write on this subtree. Seeded by the slug, never the
       // display name — a rename must not change a session's colour.
-      style={sessionAccentVarsFor({ name })}
-      className="flex h-full w-full flex-col bg-paper text-ink"
+      style={sessionAccentVarsFor({ name }, pin)}
+      // `paper-raised`, not `paper`: the boards' conversation pane sits ONE step
+      // above the roster's paper (globals.css names the token "conversation pane
+      // — above the paper"), and that step is the whole elevation ladder the
+      // bubbles and the glass bars are read against. `relative` is what lets the
+      // header and the composer float (see the props above).
+      className="relative flex h-full w-full flex-col bg-paper-raised text-ink"
     >
       {/* The top slot owns its own box: the A3 T6 header pill has a safe-area
           inset and a height floor of its own, and a padded wrapper here would
           inset it twice. The DEFAULT occupant keeps the padding it always had,
           so a surface rendered without a header looks exactly as it did. */}
-      <div className="shrink-0">
-        {header ?? (
-          <div className="flex items-center gap-2 px-5 py-2">
-            <SurfaceStatus session={session} />
-          </div>
-        )}
-      </div>
+      {headerOverlay ? (
+        <div className="absolute inset-x-0 top-0 z-[3]">{top}</div>
+      ) : (
+        <div className="shrink-0">{top}</div>
+      )}
 
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         {children}
       </div>
 
-      {footer != null && <div className="shrink-0">{footer}</div>}
+      {footer != null && <div className="absolute inset-x-0 bottom-0 z-[4]">{footer}</div>}
     </div>
   )
 }

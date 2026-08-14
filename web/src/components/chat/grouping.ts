@@ -346,6 +346,27 @@ export function mentionIndex(
   return out
 }
 
+/**
+ * The other direction: slug → the name that session is CALLED.
+ *
+ * `mentionIndex` answers "is this word a colleague?"; this answers "what do we
+ * call the colleague this envelope names?". The arrival divider needs the
+ * second — the wire's `teammate_id` is a slug, and a divider reading "Message
+ * from ●release-train" names a row in a database rather than a colleague. A
+ * session with no display name maps to nothing, and the caller falls back to the
+ * slug, which is what that session is called.
+ */
+export function displayNames(
+  sessions: readonly { name: string; display_name?: string | null }[],
+): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const s of sessions) {
+    const display = s.display_name?.trim()
+    if (s.name && display) out.set(s.name, display)
+  }
+  return out
+}
+
 const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/g
 
 /**

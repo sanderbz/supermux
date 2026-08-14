@@ -31,12 +31,28 @@ export interface ComposerProps {
   /** `Message Release Train` — the session's display name is part of the copy. */
   placeholder: string
   size?: 'desktop' | 'mobile'
+  /**
+   * The field accepts focus (so the ring is real) but no text.
+   *
+   * A3's surface cannot send a key yet, and a composer that swallows keystrokes
+   * silently would be the one thing this design must never be — confidently
+   * wrong. `readOnly` (not `disabled`) is the honest rung: the pill keeps the
+   * boards' full contrast and its focus ring, and the caller reveals its own
+   * "why" line on focus (`components/chat/composer-shell.tsx`).
+   */
+  readOnly?: boolean
   /** Rendered in place of the mic (a later slice swaps in Stop while Active). */
   trailing?: ReactNode
   className?: string
 }
 
-export function Composer({ placeholder, size = 'desktop', trailing, className }: ComposerProps) {
+export function Composer({
+  placeholder,
+  size = 'desktop',
+  readOnly,
+  trailing,
+  className,
+}: ComposerProps) {
   const mobile = size === 'mobile'
   return (
     <div
@@ -57,6 +73,7 @@ export function Composer({ placeholder, size = 'desktop', trailing, className }:
         rows={1}
         placeholder={placeholder}
         aria-label={placeholder}
+        readOnly={readOnly}
         className={cn(
           'min-w-0 flex-1 resize-none bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none',
           'max-h-[120px] placeholder:text-ink-2',

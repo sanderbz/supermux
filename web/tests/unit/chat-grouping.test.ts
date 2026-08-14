@@ -22,6 +22,7 @@ import type { ChatEntry, ChatItem } from '../../src/components/chat/entries'
 import {
   buildTranscript,
   dayDividers,
+  displayNames,
   dividerLabel,
   entryLabels,
   groupItems,
@@ -418,5 +419,20 @@ describe('entryLabels', () => {
     const labels = entryLabels(entries)
     expect(labels.get('a')).toBe('patch')
     expect(labels.has('b')).toBe(false)
+  })
+})
+
+describe('displayNames', () => {
+  test('maps a slug to what that session is called', () => {
+    const names = displayNames([
+      { name: 'release-train', display_name: 'Release Train' },
+      { name: 'patch', display_name: '  ' },
+      { name: 'quill' },
+    ])
+    expect(names.get('release-train')).toBe('Release Train')
+    // A blank or absent display name maps to NOTHING, so the caller falls back
+    // to the slug — which is what that session is called.
+    expect(names.has('patch')).toBe(false)
+    expect(names.has('quill')).toBe(false)
   })
 })

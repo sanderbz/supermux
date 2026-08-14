@@ -36,6 +36,7 @@
  * token does not exist in B0, and minting one would put a `globals.css` diff in
  * a Track A PR — the same reason T6.4 leaves `desktop-split.tsx` alone.
  */
+import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { SessionMark, type MarkPin, type MarkState } from '../../brand/marks'
@@ -47,7 +48,7 @@ import { StatusDot } from '../session-tile/status-dot'
 import type { TileSession } from '../session-tile/types'
 
 import { sessionAccentVarsFor } from './session-accent'
-import { MARK_SIZE } from './ui'
+import { MARK_SIZE, PHONE } from './ui'
 
 /**
  * The bar's floor, in px — `board-light.png`'s header, measured. A floor and
@@ -81,10 +82,36 @@ export interface SessionHeaderPillProps {
   session: TileSession | null
   /** Roster-assigned identity channels, when the caller has them (TODO §10). */
   pin?: MarkPin
+  /**
+   * Desktop bar or phone card.
+   *
+   * `mobile-light.png` does not draw this bar narrower — it draws a DIFFERENT
+   * object: a 60px glass card inset 12px from both edges, radius 22, floating
+   * over the track rather than pinned to the top edge. Same cluster inside, same
+   * swap, same accent write; only the box changes.
+   */
+  surface?: 'desktop' | 'phone'
+  /**
+   * The shell's own affordances, either side of the cluster — the phone board's
+   * back chevron and account avatar. They are NAVIGATION, which the surface does
+   * not own: A5's mobile shell fills these, and the bench fills them to prove the
+   * geometry is the board's.
+   */
+  leading?: React.ReactNode
+  trailing?: React.ReactNode
   className?: string
 }
 
-export function SessionHeaderPill({ name, session, pin, className }: SessionHeaderPillProps) {
+export function SessionHeaderPill({
+  name,
+  session,
+  pin,
+  surface = 'desktop',
+  leading,
+  trailing,
+  className,
+}: SessionHeaderPillProps) {
+  const phone = surface === 'phone'
   const reduce = useReducedMotion() ?? false
 
   // The label rule the whole app shares (`displayLabel`): a set display name
@@ -103,19 +130,22 @@ export function SessionHeaderPill({ name, session, pin, className }: SessionHead
       data-testid="chat-header-pill"
       // The accent, carried (not painted): the mark, and any B1 consumer that
       // mounts this pill OUTSIDE the chat surface, read it from here. Same
-      // derivation as the surface root, from the same seed, so the two writes
-      // cannot drift into two different "session colours".
-      style={sessionAccentVarsFor({ name })}
+      // derivation as the surface root, from the same seed AND the same pin, so
+      // the two writes cannot drift into two different "session colours".
+      style={sessionAccentVarsFor({ name }, pin)}
       className={cn(
-        'shrink-0 border-b-[0.5px] border-hairline bg-surface pt-safe',
-        // The boards' glass: the transcript scrolls UNDER this bar once A5 makes
-        // the header an overlay, and the blur is what keeps a captured frame
-        // from smearing across it. Harmless while the bar is in flow.
+        'shrink-0 bg-surface pt-safe',
+        // The boards' glass: the transcript scrolls UNDER this bar (already on
+        // the phone; on the desktop once A5 makes the header an overlay), and
+        // the blur is what keeps a captured frame from smearing across it.
         'backdrop-blur-[80px] backdrop-saturate-[180%]',
+        phone
+          ? 'mx-3 rounded-[22px] border-[0.5px] border-hairline'
+          : 'border-b-[0.5px] border-hairline',
         className,
       )}
     >
-      <div className="relative" style={{ minHeight: BAR_MIN_H }}>
+      <div className="relative" style={{ minHeight: phone ? PHONE.head.height : BAR_MIN_H }}>
         <div className="absolute inset-0 grid">
           <AnimatePresence initial={false}>
             <motion.div
@@ -131,8 +161,12 @@ export function SessionHeaderPill({ name, session, pin, className }: SessionHead
               // Opacity only, in both branches — reduced motion shortens the
               // swap to nothing rather than swapping it for a different move.
               transition={{ duration: reduce ? 0 : SWAP_S, ease: eases.inOut }}
-              className="flex min-w-0 items-center gap-3 px-6"
+              className={cn(
+                'flex min-w-0 items-center gap-3',
+                phone ? 'pl-3 pr-3' : 'px-6',
+              )}
             >
+              {leading}
               <SessionMark
                 seed={name}
                 pin={pin}
@@ -141,7 +175,15 @@ export function SessionHeaderPill({ name, session, pin, className }: SessionHead
                 // The name is right there; a second announcement is noise.
                 label={null}
               />
-              <span className="min-w-0 truncate text-[16px] font-semibold tracking-[-0.2px] text-ink">
+              <span
+                className={cn(
+                  'min-w-0 truncate text-[16px] font-semibold tracking-[-0.2px] text-ink',
+                  // On the phone the name is the elastic member: the trailing
+                  // slot has to sit on the card's right edge, not next to the
+                  // name (`mobile-light.png`).
+                  phone && 'flex-1',
+                )}
+              >
                 {label}
               </span>
               {/* The app's status affordance, not a lookalike — which is how the
@@ -149,10 +191,16 @@ export function SessionHeaderPill({ name, session, pin, className }: SessionHead
                   the `--status-*` family and never the accent (contract C7). */}
               {status && <StatusDot status={status} />}
               {mode && (
-                <span className="ml-auto flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2">
+                <span
+                  className={cn(
+                    'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2',
+                    !phone && 'ml-auto',
+                  )}
+                >
                   {mode}
                 </span>
               )}
+              {trailing}
             </motion.div>
           </AnimatePresence>
         </div>

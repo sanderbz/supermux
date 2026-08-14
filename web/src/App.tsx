@@ -48,6 +48,12 @@ const DevMarks = import.meta.env.DEV
 const DevChatUi = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-chat-ui'))
   : null
+// Chat RENDERER bench (fase A3): the real conversation component, fed the wire
+// shapes the server sends, in every state the surface can be in — the page the
+// A3 screenshots are taken from.
+const DevChatLive = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-chat-live'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts).
@@ -166,6 +172,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevChatUi />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevChatLive && (
+                <Route
+                  path="/dev/chat-live"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevChatLive />
                     </Suspense>
                   }
                 />

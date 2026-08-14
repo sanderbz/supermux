@@ -1,4 +1,5 @@
-// Fase A1 chat panel — read-only walking skeleton (master plan §7 Fase A1).
+// The chat panel — the DATA plane, and nothing else (fase A1 machine, A3 T7
+// composition).
 //
 // Layer model (a0-findings §1): the TRANSCRIPT is the confirming layer
 // (batch-flushed, prose p50 31s); the LIVE layer is the status flip + hook
@@ -7,20 +8,27 @@
 // and the working row render BELOW confirmed content, above the provisional
 // text block.
 //
-// Deliberately neutral-minimal (existing tokens, no markdown, no motion):
-// the A3 design direction replaces this surface wholesale.
+// Everything this file does is fetch, derive and inject:
+//   · the turn machine (`use-chat-turn`) — anchor, supersede gate, teardown,
+//   · the two derived indexes (mentions from the shared sessions query, wire
+//     labels from the entries),
+//   · the follow-bottom pin,
+//   · the two capabilities the presentation layer must not import for itself
+//     (`filesApi.rawUrl`, the latency read-out).
+//
+// What it looks like is `conversation.tsx`, which takes all of the above as
+// props — that is what `/dev/chat-live` renders, so the bench and the app cannot
+// drift apart.
 
 import * as React from 'react'
 
 import type { TileSession } from '@/components/session-tile/types'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSessions } from '@/hooks/use-sessions'
 import { filesApi } from '@/lib/api'
 
-import { ChatSurface } from './chat-surface'
-import { buildTranscript, entryLabels, mentionIndex } from './grouping'
-import { SessionHeaderPill } from './header-pill'
-import { LiveLayer } from './live-layer'
-import { TranscriptItem } from './transcript-item'
+import { ChatConversation, PHONE_QUERY } from './conversation'
+import { displayNames, entryLabels, mentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
 import { ProvisionalTail } from './provisional-tail'
 import { exposeLatency, latencySamples, p50, serverNowMs } from './latency'
@@ -35,7 +43,7 @@ export default function ChatPanel({
   session: TileSession | null
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
-  // lives in `use-chat-turn.ts` — this component is presentation only.
+  // lives in `use-chat-turn.ts` — this component is wiring only.
   const { entries, items, turnStart, showProvisional, overlay, tail } = useChatTurn(
     name,
     session,
@@ -49,6 +57,9 @@ export default function ChatPanel({
   // so this adds a subscriber rather than a fetch.
   const { sessions } = useSessions()
   const mentions = React.useMemo(() => mentionIndex(sessions), [sessions])
+  // slug → what that session is CALLED. The arrival divider names a colleague,
+  // and the wire's teammate envelope carries only the slug.
+  const names = React.useMemo(() => displayNames(sessions), [sessions])
   // The wire labels `ChatItem` deliberately does not carry: the slash name of a
   // command, the teammate id of an arrival, the subject of a system event.
   const labels = React.useMemo(() => entryLabels(entries), [entries])
@@ -59,10 +70,10 @@ export default function ChatPanel({
   // like every other time comparison on this surface, because the timestamps it
   // is subtracted from are server-stamped (`latency.ts`).
   const nowBucketMs = Math.floor(serverNowMs() / 30_000) * 30_000
-  const nodes = React.useMemo(
-    () => buildTranscript(items, { nowMs: nowBucketMs, labels }),
-    [items, labels, nowBucketMs],
-  )
+
+  // Desktop board or phone board — the boards are two compositions, not one at
+  // two widths (see `conversation.tsx`).
+  const phone = useMediaQuery(PHONE_QUERY)
 
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
@@ -78,72 +89,40 @@ export default function ChatPanel({
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
   })
 
+  const samples = latencySamples()
+
   return (
-    <ChatSurface
+    <ChatConversation
+      // The surface IS the panel's root element, so it keeps the panel's
+      // long-standing test id — the renderer-switch e2e asserts on it.
       testId="chat-panel"
       name={name}
       session={session}
+      items={items}
+      labels={labels}
+      mentions={mentions}
+      names={names}
+      nowMs={nowBucketMs}
+      turnStart={turnStart}
+      overlay={overlay}
+      surface={phone ? 'phone' : 'desktop'}
+      isError={tail.isError}
+      isLoading={tail.isLoading}
+      rawUrl={filesApi.rawUrl}
       scrollRef={scrollRef}
       onScroll={onScroll}
-      // The session header (fase A3 T6). It mounts INSIDE the surface rather
-      // than replacing `DesktopFocusHeader`: unifying the two headers is Track
-      // B / B1, and doing it here would put a Track B diff in a Track A PR.
-      header={<SessionHeaderPill name={name} session={session} />}
-      footer={
-        <div className="border-t border-hairline px-5 py-2 text-center text-[12px] text-ink-2">
-          Read-only preview — switch to Terminal to type.
-          {latencySamples().length > 0 && (
-            /* The dogfood number, readable without devtools (re-renders on the
-               live-layer ticker / tail refetches). */
-            <span className="ml-2 tabular-nums">
-              · hook→UI p50 {p50(latencySamples())} ms (n={latencySamples().length})
-            </span>
-          )}
-        </div>
+      provisional={
+        showProvisional ? <ProvisionalTail name={name} show={showProvisional} surface={phone ? 'phone' : 'desktop'} /> : null
       }
-    >
-      <div className="px-5 pb-6 pt-4">
-        <div className="mx-auto w-full max-w-[52rem]">
-          {tail.isError && (
-            <p className="py-8 text-center text-[13px] text-ink-2">
-              Couldn’t load this conversation.
-            </p>
-          )}
-          {!tail.isError && items.length === 0 && !tail.isLoading && (
-            <p className="py-8 text-center text-[13px] text-ink-2">No conversation yet.</p>
-          )}
-
-          {/* Confirmed content (fase A3 T3). Vertical rhythm belongs to the rows
-              themselves — `MessageRow` spends 14px between speakers and 8px
-              inside a run — so this column adds no gap of its own. */}
-          {nodes.map((node) => (
-            <TranscriptItem
-              key={node.key}
-              node={node}
-              name={name}
-              labels={labels}
-              mentions={mentions}
-              rawUrl={filesApi.rawUrl}
-            />
-          ))}
-
-          {/* Live layer (fase A3 T4) — permission first (nothing silently
-              invisible), then overlay receipts, then the working row (or the
-              delegation pill), then provisional text. The P13 block is injected
-              as a slot: it is the one child that talks to the network, and
-              keeping it out of `LiveLayer` is what makes that order testable. */}
-          <LiveLayer
-            name={name}
-            session={session}
-            turnStart={turnStart}
-            overlay={overlay}
-            mentions={mentions}
-            provisional={
-              showProvisional ? <ProvisionalTail name={name} show={showProvisional} /> : null
-            }
-          />
-        </div>
-      </div>
-    </ChatSurface>
+      stat={
+        samples.length > 0 ? (
+          /* The dogfood number, readable without devtools (re-renders on the
+             live-layer ticker / tail refetches). */
+          <>
+            hook→UI p50 {p50(samples)} ms (n={samples.length})
+          </>
+        ) : null
+      }
+    />
   )
 }

@@ -89,6 +89,8 @@ export interface LiveLayerProps {
   /** Lowercased name → slug, for spotting a delegation target in the activity. */
   mentions?: ReadonlyMap<string, string>
   pinFor?: (seed: string) => MarkPin | undefined
+  /** Desktop or phone metrics — the overlay group is a bubble like any other. */
+  surface?: 'desktop' | 'phone'
   /**
    * The P13 block. A slot rather than a child component because it polls
    * `/peek`: keeping the network out of this module is what lets the order
@@ -104,6 +106,7 @@ export function LiveLayer({
   overlay = [],
   mentions = EMPTY_INDEX,
   pinFor,
+  surface,
   provisional,
 }: LiveLayerProps) {
   // The turn is running AND anchored. The anchor is what the elapsed clause
@@ -126,7 +129,12 @@ export function LiveLayer({
       )}
 
       {overlay.length > 0 && (
-        <OverlayReceipts lines={overlay} seed={name} pin={pinFor?.(name)} />
+        <OverlayReceipts
+          lines={overlay}
+          seed={name}
+          pin={pinFor?.(name)}
+          surface={surface}
+        />
       )}
 
       {working &&
@@ -141,7 +149,12 @@ export function LiveLayer({
           />
         ) : (
           <WorkingRow
-            name={name}
+            // The run grammar, applied to the live band: the overlay receipts
+            // directly above are the SAME speaker, so their mark is already
+            // hanging in the gutter — repeating it one row later would draw the
+            // session's face twice in 40px. The row keeps its 44px indent
+            // either way, so nothing moves when the receipts arrive.
+            name={overlay.length > 0 ? undefined : name}
             pin={pinFor?.(name)}
             activity={session?.activity}
             subagents={session?.subagents}
@@ -252,10 +265,12 @@ export function OverlayReceipts({
   lines,
   seed,
   pin,
+  surface,
 }: {
   lines: readonly OverlayLine[]
   seed: string
   pin?: MarkPin
+  surface?: 'desktop' | 'phone'
 }) {
   const rows = React.useMemo<Receipt[]>(() => {
     const base = toReceiptRows(lines.map((line, i) => ({ uuid: `${line.at}-${i}`, label: line.label })))
@@ -265,7 +280,7 @@ export function OverlayReceipts({
     <MessageRow
       gutter={<SessionMark seed={seed} pin={pin} size={MARK_SIZE.gutter} state="working" label={null} />}
     >
-      <ReceiptGroup rows={rows} max={RECEIPT_DEFAULT_MAX} />
+      <ReceiptGroup rows={rows} max={RECEIPT_DEFAULT_MAX} surface={surface} />
     </MessageRow>
   )
 }

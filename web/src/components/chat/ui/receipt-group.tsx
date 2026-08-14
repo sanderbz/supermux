@@ -73,6 +73,8 @@ export interface ReceiptGroupProps {
   max?: number
   /** Wired by the renderer slice. Visual-only here. */
   onShowAll?: () => void
+  /** Which bubble ceiling applies — the group IS a bubble (266px on a phone). */
+  surface?: 'desktop' | 'phone'
   className?: string
 }
 
@@ -95,12 +97,12 @@ export function capReceipts(
   return { shown: [...head, ...live], hidden: lines.length - head.length - live.length }
 }
 
-export function ReceiptGroup({ rows, max, onShowAll, className }: ReceiptGroupProps) {
+export function ReceiptGroup({ rows, max, onShowAll, surface, className }: ReceiptGroupProps) {
   const lines = coalesceReceipts(rows)
   const { shown, hidden } = capReceipts(lines, max)
 
   return (
-    <Bubble padding="list" className={cn('flex flex-col gap-[7px]', className)}>
+    <Bubble padding="list" surface={surface} className={cn('flex flex-col gap-[7px]', className)}>
       {shown.map((line, i) => (
         <ReceiptLine key={`${line.tool}-${i}`} line={line} />
       ))}
@@ -120,11 +122,31 @@ export function ReceiptGroup({ rows, max, onShowAll, className }: ReceiptGroupPr
 function ReceiptLine({ line }: { line: CoalescedReceipt }) {
   const running = line.state === 'running'
   return (
-    <div data-state={line.state ?? 'done'} className="flex items-center gap-[9px] leading-[1.5]">
+    <div
+      data-state={line.state ?? 'done'}
+      // A receipt is ONE line — that is the whole of P3's read, and it is what
+      // makes a 30-call turn scannable. `min-w-0` + the two truncating cells
+      // below are what enforce it: a `Read <120-char path>` label used to wrap
+      // to three lines and shove its outcome to the far edge of the bubble.
+      className="flex min-w-0 items-center gap-[9px] leading-[1.5]"
+    >
       <span className="flex flex-none text-ink-2">
         {running ? <SpinnerIcon className="sm-spin" /> : <CheckIcon />}
       </span>
-      <span className="font-semibold">{line.tool}</span>
+      {/* Who ran, then what happened — and when the line will not hold both, the
+          OUTCOME gives way ENTIRELY before the tool gives up a glyph (its shrink
+          factor, below, is three orders of magnitude larger). The tool is the
+          noun the reader scans for.
+          Two mistakes are already paid for here, both caught on the bench:
+            · a `max-w-%` cap resolves against a width this shrink-to-fit bubble
+              is still deciding, so it truncated lines that had room to spare;
+            · a FRACTIONAL shrink factor on the tool (0.25) is worse than useless
+              — per the flexbox spec, when the sum of the shrink factors is below
+              one only that FRACTION of the overflow is distributed, so a long
+              `Read <path>` label simply overflowed the bubble on the phone. */}
+      <span className="min-w-[6ch] shrink truncate whitespace-nowrap font-semibold">
+        {line.tool}
+      </span>
       {line.count > 1 && (
         <span className="tabular-nums text-ink-2">×{line.count}</span>
       )}
@@ -140,9 +162,14 @@ function ReceiptLine({ line }: { line: CoalescedReceipt }) {
   )
 }
 
+/**
+ * The outcome column. It yields first (see the tool cell above) but never all
+ * the way to nothing: a `min-w` of 4 glyphs is what stops a very long tool label
+ * from leaving a dangling arrow pointing at empty space.
+ */
 function Outcome({ children }: { children: ReactNode }) {
   return (
-    <span className="min-w-0 truncate text-[15px] tabular-nums tracking-[-0.1px] text-ink">
+    <span className="min-w-[4ch] shrink-[999] truncate whitespace-nowrap text-[15px] tabular-nums tracking-[-0.1px] text-ink">
       {children}
     </span>
   )
