@@ -19,6 +19,7 @@
 
 pub mod activity;
 pub mod auto_actions;
+pub mod chat;
 pub mod host_pool;
 pub mod lifecycle;
 pub mod pty;
