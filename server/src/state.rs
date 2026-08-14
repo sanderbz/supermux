@@ -348,6 +348,18 @@ pub struct AppState {
     /// rename (via [`rename_session`](Self::rename_session)) exactly like every
     /// other per-session map here.
     pub session_runtimes: Arc<DashMap<String, Arc<dyn SessionRuntime>>>,
+    /// Per-session CHAT rings (fase A2 data plane). Keyed by session name; the
+    /// ring + monotonic `seq` + snapshot-and-subscribe that give the chat WS its
+    /// no-gap/no-overlap seed→live boundary (see
+    /// [`crate::sessions::chat::store`]).
+    ///
+    /// Created on first chat attach via [`chat_store_for`](Self::chat_store_for)
+    /// — **never** eagerly, so a server with no chat client attached carries no
+    /// transcript in memory. Consumers that must not resurrect a store (the
+    /// sessions-SSE `chat_tail`) use the non-creating
+    /// [`chat_store`](Self::chat_store). Dropped on delete and re-keyed on
+    /// rename like every other per-session map here.
+    pub chat_stores: Arc<DashMap<String, Arc<crate::sessions::chat::store::ChatStore>>>,
     /// In-UI update mechanism (v0.3.0): cached latest GitHub release + the
     /// per-job broadcast registry the SSE progress endpoint subscribes to.
     /// Cheap `Arc` clone; created once in `new()` so every handler shares the
@@ -397,6 +409,7 @@ impl AppState {
             force_agent_teams: Arc::new(DashMap::new()),
             pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
             session_runtimes: Arc::new(DashMap::new()),
+            chat_stores: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
         }
@@ -613,6 +626,23 @@ impl AppState {
     /// away). The next [`runtime_for`](Self::runtime_for) re-reads the column.
     pub fn runtime_invalidate(&self, name: &str) {
         self.session_runtimes.remove(name);
+    }
+
+    /// The per-session chat ring (get-or-create). Called by the chat tailer on
+    /// spawn and by the chat WS on attach — the two ends that must rendezvous
+    /// on ONE store for the no-gap proof to mean anything.
+    pub fn chat_store_for(&self, name: &str) -> Arc<crate::sessions::chat::store::ChatStore> {
+        self.chat_stores
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(crate::sessions::chat::store::ChatStore::new()))
+            .clone()
+    }
+
+    /// The per-session chat ring **without** creating one. For read-only
+    /// consumers (the sessions-SSE `chat_tail`) that must not spin up a store
+    /// for a session nobody is watching.
+    pub fn chat_store(&self, name: &str) -> Option<Arc<crate::sessions::chat::store::ChatStore>> {
+        self.chat_stores.get(name).map(|s| s.clone())
     }
 
     /// Get (creating on first use) the per-session [`PtyStream`] and ensure its
@@ -1015,6 +1045,10 @@ impl AppState {
         self.forced_status.remove(name);
         self.force_agent_teams.remove(name);
         self.session_runtimes.remove(name);
+        // The chat ring is pure in-memory transcript for THIS name; a deleted
+        // session must not leave one behind for a later session that reuses the
+        // name (it would seed someone else's conversation).
+        self.chat_stores.remove(name);
         // The native module memoizes its own session handles (one holder
         // connection + one grid per name), so dropping only OUR cache entry
         // would leak that. A no-op for a tmux session.
@@ -1096,6 +1130,12 @@ impl AppState {
         }
         if let Some((_, v)) = self.force_agent_teams.remove(old) {
             self.force_agent_teams.insert(new.to_string(), v);
+        }
+        // The chat ring IS carryable: it holds the same conversation, and its
+        // `seq` must stay monotonic across the rename or every attached client
+        // would have to re-seed for a cosmetic change.
+        if let Some((_, v)) = self.chat_stores.remove(old) {
+            self.chat_stores.insert(new.to_string(), v);
         }
         // The runtime handle is NAME-BOUND (a `TmuxRuntime` owns the bare name
         // it builds `supermux-<name>` from), so it can NOT be carried across a

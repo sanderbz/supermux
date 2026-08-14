@@ -7,9 +7,14 @@
 //!   editing that file.
 //! - [`parser`] — streaming JSONL → [`model::ChatEntry`], pinned by the A0
 //!   fixture corpus at `server/tests/fixtures/chat/`.
+//! - [`store`]  — the per-session ring, the monotonic `seq`, and the
+//!   snapshot-and-subscribe that makes the seed→live boundary provably free of
+//!   gaps and overlaps. The tailer is its only producer; the WS, the history
+//!   route and the sessions-SSE `chat_tail` are pure consumers.
 //!
-//! Later tasks add `store` (ring + `seq` + snapshot-and-subscribe), `tailer`
-//! (byte cursor + staleness guard), `ws` and `statusline`.
+//! Later tasks add `tailer` (byte cursor + staleness guard), `ws` and
+//! `statusline`.
 
 pub mod model;
 pub mod parser;
+pub mod store;
