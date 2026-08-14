@@ -52,6 +52,13 @@ import { useAttachmentUpload } from './use-attachment-upload'
 import { useExternalEdit } from './use-external-edit'
 import { MobileComposeSheet } from './mobile-compose-sheet'
 import { SessionInfoPanel } from './session-info-panel'
+import { useUI } from '@/stores/ui-store'
+import { RendererSwitch } from '@/components/chat/renderer-switch'
+import { useChatRenderer } from '@/components/chat/use-chat-renderer'
+
+// Lazy: the chat renderer is its own chunk — nothing chat-related may land in
+// the entry bundle (perf budget; master plan Global Constraints).
+const ChatPanel = React.lazy(() => import('@/components/chat/chat-panel'))
 
 export interface DesktopSplitProps {
   /** Focused session name (route param). */
@@ -282,6 +289,52 @@ export function DesktopSplit({
     [lastSend, toggleLastSend],
   )
 
+  const status = current?.status ?? 'starting'
+
+  // Fase A1 chat renderer — desktop seam only (mobile follows in A5; the
+  // mobile seam is routes/focus/mobile.tsx:490-515). Guard: local Claude,
+  // not a team lead (Track A v1 scope), flag + kill-switch in
+  // components/chat/flag.ts.
+  //
+  // Declared HERE rather than next to `title` (where the rest of the render
+  // prep lives) because `onPaste` below closes over `chatActive` AND lists it
+  // as a useCallback dep — a later `const` would be in its TDZ.
+  const isTeamLead = React.useMemo(
+    () => teams.some((t) => t.lead_supermux_session === name),
+    [teams, name],
+  )
+  const chatSetting = useUI((s) => s.chatRenderer)
+  const chatOn = useChatRenderer(current ?? null, isTeamLead)
+  // renderer null = undecided. With the experiment ON we wait for the
+  // sessions query (`current` is null on first paint) before choosing, so the
+  // terminal never mounts→attaches→unmounts on every focus load (wasted pty
+  // WS + a visible flash — the focus-no-mobile-flash class of bug). With the
+  // experiment OFF the always-terminal path below is byte-identical to today.
+  //
+  // Fully DERIVED (no effect): the only state is the user's manual tap, keyed
+  // by session name so it resets on navigation and can never be stomped by a
+  // late flag/eligibility resolve. Storing the default in state instead would
+  // mean setState-in-effect (cascading renders; lint rule
+  // react-hooks/set-state-in-effect).
+  const [override, setOverride] = React.useState<{
+    name: string
+    value: 'chat' | 'terminal'
+  } | null>(null)
+  const renderer: 'chat' | 'terminal' | null =
+    override?.name === name
+      ? override.value
+      : current == null
+        ? null
+        : chatOn
+          ? 'chat'
+          : 'terminal'
+  const setRenderer = React.useCallback(
+    (value: 'chat' | 'terminal') => setOverride({ name, value }),
+    [name],
+  )
+  const chatActive =
+    chatSetting && chatOn && renderer === 'chat' && status !== 'stopped'
+
   // Clipboard image paste — handled BEFORE xterm. xterm only forwards TEXT paste
   // (the textarea paste → `term.onData`), so reading `clipboardData.files` /
   // `items[].getAsFile()` here for images doesn't conflict. We ONLY
@@ -289,6 +342,8 @@ export function DesktopSplit({
   // the terminal untouched.
   const onPaste = React.useCallback(
     (e: React.ClipboardEvent<HTMLDivElement>) => {
+      // Chat is read-only: image paste needs the terminal injection path.
+      if (chatActive) return
       const dt = e.clipboardData
       if (!dt) return
       const images: File[] = []
@@ -313,7 +368,7 @@ export function DesktopSplit({
         attach.handleFiles(images)
       }
     },
-    [attach],
+    [attach, chatActive],
   )
 
   // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes go
@@ -423,7 +478,6 @@ export function DesktopSplit({
     onShowLastSend,
   })
 
-  const status = current?.status ?? 'starting'
   const title = current ? sessionTitle(current) : name
 
   return (
@@ -603,6 +657,12 @@ export function DesktopSplit({
             the terminal). The Dropzone (whose overlay stays pointer-events-none,
             so xterm mouse selection is NOT regressed) reveals a drop affordance
             and hands dropped files to the same upload+inject engine. */}
+        {chatOn && (
+          <div className="flex h-8 shrink-0 items-center justify-end border-b border-border/60 px-3">
+            <RendererSwitch value={renderer ?? 'chat'} onChange={setRenderer} />
+          </div>
+        )}
+
         <div
           ref={termPaneRef}
           className="relative min-h-0 flex-1"
@@ -610,7 +670,7 @@ export function DesktopSplit({
         >
           <Dropzone
             onFiles={attach.handleFiles}
-            disabled={status === 'stopped'}
+            disabled={status === 'stopped' || chatActive}
             className="h-full w-full"
           >
             {/* A `stopped` session's tmux pty is gone — opening the live WS would
@@ -620,19 +680,35 @@ export function DesktopSplit({
                 LiveTerminal. */}
             {status === 'stopped' ? (
               <StoppedSession name={name} />
-            ) : (
+            ) : chatActive ? (
+              /* Fase A1: read-only chat renderer. The chat client NEVER sends
+                 resize or input; toggling to Terminal remounts LiveTerminal
+                 (full handshake — mounted-but-hidden retention is A5 §6.2).
+                 KNOWN A1 COST (accepted, documented in the dogfood handoff):
+                 while chat is primary the pty keeps whatever size it last had
+                 (native holders boot 80×24; only the terminal WS resizes), so
+                 P13's capture is wrapped at that width and the first Terminal
+                 tap reflows. Mitigation for the week: tap Terminal once early
+                 per session (also needed to answer permission dialogs) — the
+                 WS handshake resizes the pty to real geometry. A5's retention
+                 owns the real fix. */
+              <React.Suspense fallback={null}>
+                <ChatPanel name={name} session={current} />
+              </React.Suspense>
+            ) : !chatSetting || renderer != null ? (
               /* LiveTerminal — reused verbatim. The keydown capture
                  deliberately does NOT preventDefault on ordinary keys, so
                  Ctrl-C / arrows / Tab / Shift+Tab / Esc / text all reach xterm's
                  onData → the pty WS. */
               <LiveTerminal name={name} onReady={handleTermReady} />
-            )}
+            ) : null /* experiment on, sessions query still resolving — render
+                        nothing for a frame rather than flash a doomed terminal */}
           </Dropzone>
           {/* Subtle "Capturing input" pill — only visible while xterm holds DOM
               focus. Click outside (header / dock / strip) releases. Esc is NOT
               the release because Esc must reach the terminal (vim, REPLs). */}
           <TerminalCaptureIndicator
-            capturing={capturingInput && status !== 'stopped'}
+            capturing={capturingInput && status !== 'stopped' && !chatActive}
           />
         </div>
 
@@ -649,6 +725,11 @@ export function DesktopSplit({
           </div>
         )}
 
+        {/* Chat is read-only (A1): every dock control writes into the pty via
+            `termRef`, which is null without a mounted terminal — hide it
+            rather than let taps silently no-op. The chat panel's own footer
+            says "switch to Terminal to type". */}
+        {!chatActive && (
         <DesktopDock
           onSendKey={(label) => termRef.current?.sendKey(label)}
           onRunSlash={(cmd) => termRef.current?.send(cmd + '\r')}
@@ -672,6 +753,7 @@ export function DesktopSplit({
           onDetach={onDetach}
           onStop={onStop}
         />
+        )}
         </>
         )}
       </main>
