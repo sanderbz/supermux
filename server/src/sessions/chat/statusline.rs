@@ -335,10 +335,46 @@ pub async fn install_local(mode: Mode) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Does this settings value still carry a command bearing our [`MARKER`] —
+/// anywhere in it, outermost or not? This is "is the tap still live", NOT "is it
+/// ours to remove": a foreign command that wrapped ours still runs our POST
+/// every turn, so it still counts as installed.
+fn marker_present(settings: &Value) -> bool {
+    settings
+        .get("statusLine")
+        .and_then(|sl| sl.get("command"))
+        .and_then(Value::as_str)
+        .is_some_and(|c| c.contains(MARKER))
+}
+
+/// What a file-level uninstall actually did.
+///
+/// `changed` and `still_installed` are independent on purpose: [`uninstall_with`]
+/// is a deliberate NO-OP when another tool has become the outermost wrapper of
+/// ours, and that case is `changed: false, still_installed: true` — the caller
+/// must not report it as a successful removal.
+#[derive(Debug, Clone)]
+pub struct UninstallOutcome {
+    pub path: PathBuf,
+    /// Did we write a new settings file?
+    pub changed: bool,
+    /// Is a command carrying our marker STILL in the settings file afterwards?
+    pub still_installed: bool,
+}
+
 /// Remove the tap from the LOCAL settings file, consulting the sidecar when the
-/// wrapper's embedded original is missing. The sidecar is deleted only after a
-/// successful settings write.
-pub async fn uninstall_local() -> Result<PathBuf> {
+/// wrapper's embedded original is missing.
+///
+/// Two things are conditional on having actually removed something, because
+/// [`uninstall_with`] no-ops rather than clobbering a wrapper we are not the
+/// outermost of:
+///   * the settings file is written only when the value CHANGED — a no-op must
+///     not renormalize the key order and formatting of a file we did not touch;
+///   * the sidecar is deleted only once our marker is provably gone from the
+///     settings. It is the last surviving copy of the user's own command, and
+///     the case that needs it most is exactly the case where our wrapper is
+///     still buried inside somebody else's.
+pub async fn uninstall_local() -> Result<UninstallOutcome> {
     let t = LocalFileTransport;
     let path = crate::claude_config::local_settings_path();
     let before = crate::claude_config::read_settings_or_empty(&t, &path).await?;
@@ -348,9 +384,19 @@ pub async fn uninstall_local() -> Result<PathBuf> {
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok());
     let after = uninstall_with(&before, sidecar.as_ref())?;
-    crate::claude_config::atomic_write_json(&t, &path, &after).await?;
-    let _ = tokio::fs::remove_file(&sc_path).await;
-    Ok(path)
+    let changed = after != before;
+    if changed {
+        crate::claude_config::atomic_write_json(&t, &path, &after).await?;
+    }
+    let still_installed = marker_present(&after);
+    if !still_installed {
+        let _ = tokio::fs::remove_file(&sc_path).await;
+    }
+    Ok(UninstallOutcome {
+        path,
+        changed,
+        still_installed,
+    })
 }
 
 // ── the ingest snapshot ──────────────────────────────────────────────────────
@@ -464,16 +510,30 @@ pub async fn install_handler(
 /// `DELETE /api/claude/statusline` (bearer-protected). Deliberately NOT gated on
 /// `statusline_tap`: removing our wrapper must stay possible after the flag is
 /// turned back off.
+///
+/// `installed` is the state AFTER the call, not an assumption: when another tool
+/// has become the outermost wrapper of ours we leave their command exactly alone
+/// (see [`uninstall_with`]) and the tap is therefore still live. Saying
+/// `installed: false` there would be a lie an operator acts on, so that case
+/// answers `installed: true, changed: false` with the reason.
 pub async fn uninstall_handler(
     State(_state): State<AppState>,
 ) -> Result<axum::Json<Value>, AppError> {
-    let path = uninstall_local()
+    let out = uninstall_local()
         .await
         .map_err(|e| AppError::BadRequest(format!("statusline uninstall: {e:#}")))?;
-    Ok(axum::Json(json!({
-        "ok": true,
-        "data": { "installed": false, "settings_path": path.display().to_string() }
-    })))
+    let mut data = json!({
+        "installed": out.still_installed,
+        "changed": out.changed,
+        "settings_path": out.path.display().to_string(),
+    });
+    if out.still_installed {
+        data["detail"] = json!(
+            "another tool is now the outermost `statusLine` wrapper, so supermux's tap was left \
+             in place rather than clobbering their command — unwrap it there first"
+        );
+    }
+    Ok(axum::Json(json!({ "ok": true, "data": data })))
 }
 
 #[derive(Debug, Deserialize)]
