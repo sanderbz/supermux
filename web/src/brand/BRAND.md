@@ -234,6 +234,46 @@ face from the session's name — nothing is hand-drawn, nothing is stored.
   9 silhouettes, all 7 pigments, all 6 states, the whole ladder) is asserted in
   `tests/unit/dev-marks-cast.test.tsx`, so the bench cannot quietly shrink.
 
+## 6c. The chat surface — static primitives
+
+`web/src/components/chat/ui/` is the design system's vocabulary for the
+conversation. Presentational only: every component takes props and renders
+pixels — none of them fetches, subscribes, sends a key or owns state. The
+renderer slices in `components/chat/` keep the data plane.
+
+| Primitive | The numbers that matter |
+|---|---|
+| `RosterRow` | h64 · gap 12 · pad 0/8 · r12; mark 40; name 14/500 −0.15px; time 12 tabular; preview 13 at +3px. Selected = `sm-accent-row`, hover suppressed while selected. Attention dot 7px + 2px page keyline, **seated from the character's own solid** |
+| `Bubble` / `MessageRow` | r18 · 11/17 · 15/1.45 −0.1px · 0.5px hairline-soft · `--sm-bubble-shadow`; agent ≤648 on a **fixed** warm neutral, user ≤420 inverted, edgeless, shadowless; rows 14px apart, 8px when grouped; gutter 32px |
+| `ReceiptGroup` | bubble at 14/18; line gap 9, 7px apart; check 13 → tool 600 → arrow 15×12 → outcome 15 tabular. Repeats coalesce (`Read ×12`, outcome dropped unless identical); `max` → "Show all N"; running line keeps the slot with a 2.4s spinner |
+| `SystemLine` | centred 13 secondary, 22px of air, −0.05px; entity = weight 500 with a **zero-layout** hover pill (`−1/−5/−1/−3` margins cancelling `1/5/1/3` padding); `MentionChip` = the named session's mark + name in **its** pigment, never a filled tag |
+| `WorkingRow` | gutter mark 28 · three-dot wave · label 13 secondary · elapsed tabular right. `variant="presence"` = the same signal with no mark, no dots, indented 44px |
+| `DelegationPill` | h46 · pad 0/9 · r-full · `--sm-surface` + hairline + blur(24) sat(160); marks 26 keylined; label 14.5/500 in the **recipient's** pigment |
+| `ChoiceCard` | ml 44 · ≤592 · r16 · pad 14/17 · glass blur(30) sat(170) + `--sm-card-shadow`; ask 15/500 −0.15px with mono `InlineCode` 13.2; why 13.2 secondary; buttons h34 · r-full · 13.4/500. **Emphasis is weight + fill, never the hue**; selection = accent 55% edge / 8% fill; digits = the modal registry's mapping |
+| `Composer` | h58 (52 phone) · r-full · glass blur(60) sat(180) · hairline · shadow `0 12px 34px −18px`; focus ring = accent 22%, 220ms; mic 40 (36) — the one inverted control |
+| `CapturedFrameCard` | 340 wide (266 phone) · 16:10 · r14; caption 12.6 secondary at +7px with a 12px glyph. The one object with depth on a flat surface |
+| `Facepile` | cluster = three 18px members at `[11,0] [0,15] [22,15]` in a **40px box** (one mark's footprint), page-coloured keylines; row = −24% overlap, the active member morphs open by animating padding, 400ms |
+
+- **No emoji.** Receipts and captions use monochrome `currentColor` glyphs; the
+  `activity_label` emoji taxonomy stays terminal/tile-only.
+- **Motion.** Everything here is static or an ambient CSS loop (`.sm-dots` 1.25s
+  blip, `.sm-spin` 2.4s, the mark's breathe) — no framer-motion, so nothing to
+  source from `lib/springs.ts`; hovers are the 120ms speed. Arrival animations
+  are `data-fresh`-gated and belong to the renderer, not to a primitive that
+  would then animate the whole backlog.
+- **Theme picks.** A presentational component cannot know whether it sits under
+  `.dark` or a `[data-theme]` subtree, so the two cases that need a per-theme
+  literal — a session's text-tier pigment and the composer's mic — publish both
+  values and let `.sm-ink-accent` / `.sm-mic` in `globals.css` choose.
+- **Bench**: `/dev/chat-ui` (DEV-only, lazy) renders the approved hero board
+  rebuilt out of these components, plus every variant it has no room for, in
+  both themes. Hold it next to `board-light.png` / `board-dark.png`. Coverage
+  and the board's fixture are asserted in `tests/unit/dev-chat-ui-fixture.test.ts`;
+  the load-bearing numbers in `tests/unit/chat-ui-primitives.test.tsx`.
+- **Open deviation**: the attention dot is `#e5484d`, the approved render's
+  literal, deliberately outside the `--status-*` family (it must survive at 7px
+  on all seven pigments). Flagged in `metrics.ts` for owner review.
+
 ## 7. How the rest of the app consumes this
 
 - **Theme**: extend the `:root` brand block in `globals.css`; keep `--brand` /

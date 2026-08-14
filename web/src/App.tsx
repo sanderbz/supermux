@@ -43,6 +43,11 @@ const DevTeams = import.meta.env.DEV
 const DevMarks = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-marks'))
   : null
+// Chat-surface primitive bench (fase B0): the approved board rebuilt out of the
+// shipped primitives, plus every variant it has no room for, in both themes.
+const DevChatUi = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-chat-ui'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts).
@@ -151,6 +156,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevMarks />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevChatUi && (
+                <Route
+                  path="/dev/chat-ui"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevChatUi />
                     </Suspense>
                   }
                 />

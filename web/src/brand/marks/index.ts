@@ -31,5 +31,9 @@ export {
   type Solid,
   type SolidName,
 } from './character'
+// The mark's viewBox half-extent. Exported because anything that has to seat
+// something ON a silhouette (the roster row's attention dot) needs to convert
+// the character's solid into box pixels; the rest of `./geometry` stays internal.
+export { VIEWBOX } from './geometry'
 export { SessionMark, type SessionMarkProps } from './session-mark'
 export { useOnScreen } from './use-on-screen'

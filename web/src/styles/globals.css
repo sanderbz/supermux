@@ -666,3 +666,96 @@
     animation: none;
   }
 }
+
+/* ── Chat UI primitives — the three things Tailwind cannot say (APPENDED) ──
+   `components/chat/ui/` is otherwise pure utility classes. Three cases need a
+   stylesheet, and they are here rather than inline for the reasons given:
+
+   1. The dot wave and the receipt spinner are AMBIENT loops — no state to
+      spring between, nothing to interrupt, and a rAF-driven opacity loop on a
+      scrolling transcript is pure cost. Same call as the mark's breathe, so
+      they live beside it. (lib/springs.ts stays the source of truth for every
+      framer-motion transition; these are not transitions.)
+   2. `.sm-ink-accent` picks a session's text-tier pigment per theme. The
+      component publishes BOTH tiers as custom properties because it cannot know
+      whether it is inside `.dark` (the app-wide switch) or a `[data-theme]`
+      subtree — and Tailwind's `dark:` variant only knows the former.
+   3. `.sm-mic` is the composer's one inverted control: a soft wash on light
+      paper, a warm near-white disc on dark. Same theme-pick problem.
+
+   The light rules come LAST so that a `[data-theme='light']` subtree rendered
+   inside the app-wide `.dark` — exactly what /dev/chat-ui and /dev/marks do —
+   wins on source order at equal specificity.
+
+   Appended at the file tail (never the shared token blocks) so parallel agents
+   editing globals.css never conflict. */
+.sm-dots i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: sm-blip 1.25s ease-in-out infinite;
+}
+.sm-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.sm-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+@keyframes sm-blip {
+  0%,
+  60%,
+  100% {
+    opacity: 0.28;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+/* The slow spinner of the running receipt line — BRAND's 2.4s, not a fast
+   loader: a tool call that takes a while should look patient, not frantic. */
+.sm-spin {
+  animation: sm-spin 2.4s linear infinite;
+}
+@keyframes sm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sm-ink-accent {
+  color: var(--sm-ink-accent-light);
+}
+:is(.dark, [data-theme='dark']) .sm-ink-accent {
+  color: var(--sm-ink-accent-dark);
+}
+[data-theme='light'] .sm-ink-accent {
+  color: var(--sm-ink-accent-light);
+}
+
+.sm-mic {
+  background: var(--sm-fill-soft-2);
+  color: var(--sm-ink);
+}
+:is(.dark, [data-theme='dark']) .sm-mic {
+  background: rgba(244, 238, 231, 0.94);
+  color: #1c1917;
+}
+[data-theme='light'] .sm-mic {
+  background: var(--sm-fill-soft-2);
+  color: var(--sm-ink);
+}
+
+/* Reduce Motion: the dots stop at their bright frame and the spinner stops at
+   its start angle — both still read as "in progress", which is the point. */
+@media (prefers-reduced-motion: reduce) {
+  .sm-dots i,
+  .sm-spin {
+    animation: none;
+  }
+  .sm-dots i {
+    opacity: 0.6;
+  }
+}
