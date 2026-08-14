@@ -213,6 +213,13 @@ pub(crate) fn seed_start(entries: &[WireEntry], budget: usize) -> usize {
 /// silent hole no `seq` arithmetic can catch (they are in neither page).
 /// Dropping the tail of a split line is the safe side: the whole line is then
 /// served by the next page down.
+///
+/// …unless dropping it would consume the WHOLE window (a window that is one
+/// physical line: a huge fan-out against the byte budget, or a small `?limit=`
+/// cutting into the newest line). An empty page for a non-empty window is the
+/// worse hole — it renders as "no conversation" and carries no cursor to page
+/// back with — so the line is shipped whole instead, the same call the byte
+/// budget already makes for a single over-budget entry.
 pub(crate) fn line_aligned_start(entries: &[WireEntry], mut start: usize) -> usize {
     if entries.is_empty() {
         return 0;
@@ -226,6 +233,15 @@ pub(crate) fn line_aligned_start(entries: &[WireEntry], mut start: usize) -> usi
         // sibling was already evicted (`<uuid>#<i>` — see the parser).
         while start < entries.len() && entries[start].uuid().contains('#') {
             start += 1;
+        }
+    }
+    if start == entries.len() {
+        // Rewind to that line's own start: still never mid-line, just wider
+        // than the budget asked for.
+        start = entries.len() - 1;
+        let line = entries[start].offset();
+        while start > 0 && entries[start - 1].offset() == line {
+            start -= 1;
         }
     }
     start
@@ -1007,6 +1023,70 @@ mod tests {
             "fetch-full is the escape hatch — it must NOT be sealed"
         );
         assert!(find_full_entry(&path, "nope").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn a_window_that_is_one_whole_line_ships_it_rather_than_an_empty_page() {
+        // Line alignment moves the cut FORWARD, so a window whose every entry
+        // belongs to one physical line used to be advanced away entirely: an
+        // empty page with `has_more:false` — a non-empty ring rendering as "no
+        // conversation", with no cursor to page back with either.
+        let ring: Vec<WireEntry> = (0..100u64)
+            .map(|i| {
+                let uuid = if i == 0 { "L".to_string() } else { format!("L#{i}") };
+                wire(i, &uuid, 500, &"x".repeat(8_000))
+            })
+            .collect();
+        let total: usize = ring.iter().map(|w| serde_json::to_vec(w).unwrap().len()).sum();
+        assert!(
+            total > SEED_MAX_BYTES,
+            "the budget must really cut into this line for the test to mean anything"
+        );
+        let page = seed_page(ring, Some(500), "conv-a");
+        assert_eq!(page.entries.len(), 100, "one over-budget line ships whole");
+        assert_eq!(page.entries[0].uuid(), "L", "…and still starts at the LINE start");
+        assert!(page.has_more, "byte 500 is not the start of the file");
+        assert_eq!(page.next_before.as_deref(), Some("conv-a:500"));
+
+        // Same rule when the ring's oldest entry is an orphan block (its `#0`
+        // sibling was evicted): serve what we have, never nothing.
+        let orphans = vec![wire(0, "L#3", 500, "a"), wire(1, "L#4", 500, "b")];
+        let page = seed_page(orphans, Some(500), "conv-a");
+        assert_eq!(page.entries.len(), 2);
+    }
+
+    #[test]
+    fn a_limit_that_cuts_inside_the_newest_line_still_returns_that_line() {
+        // `?limit=1` on a file whose last line fans out to two blocks: the cut
+        // lands mid-line, so alignment must fall back to the line start instead
+        // of answering an empty page the client cannot page past.
+        let dir = tmp_dir("limitline");
+        let path = dir.join("conv-a.jsonl");
+        let multi = serde_json::json!({
+            "type": "assistant",
+            "uuid": "m",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "conv-a",
+            "message": { "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "hmm" },
+                { "type": "text", "text": "answer" },
+            ] },
+        })
+        .to_string();
+        write_lines(&path, &[user_line("u0", "hi"), multi]);
+
+        let page = history_page(&path, "conv-a", u64::MAX, 1);
+        assert_eq!(
+            page.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(),
+            ["m", "m#1"],
+            "a mid-line cut yields the whole line, never an empty page"
+        );
+        assert!(page.has_more);
+        let next = HistoryCursor::parse(page.next_before.as_deref().unwrap()).unwrap();
+        assert_eq!(next.offset, page.entries[0].offset());
+        // …and the page below it is complete: no entry is stranded in neither.
+        let older = history_page(&path, "conv-a", next.offset, 10);
+        assert_eq!(older.entries.iter().map(|w| w.uuid()).collect::<Vec<_>>(), ["u0"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
