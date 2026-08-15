@@ -160,6 +160,8 @@ fn resolve_settings_path(transport: &dyn FileTransport, override_path: Option<&P
 /// `install_agent_teams_setting` path share one code path. Reads `path`
 /// through the transport, merges, writes a sibling temp, renames.
 async fn install_hooks_at_path(transport: &dyn FileTransport, path: &Path) -> Result<()> {
+    let lock = settings_write_lock(path);
+    let _guard = lock.lock().await;
     let mut root = read_settings_or_empty(transport, path).await?;
     merge_supermux_hooks(&mut root);
     atomic_write_settings(transport, path, &root).await
@@ -170,10 +172,25 @@ async fn install_hooks_at_path(transport: &dyn FileTransport, path: &Path) -> Re
 /// for a present-but-unparseable file (we NEVER clobber a real user's
 /// settings we failed to understand) or for a top-level non-object root.
 async fn read_settings_or_empty(transport: &dyn FileTransport, path: &Path) -> Result<Value> {
-    // Use `stat` to detect existence — neither transport has an `exists()`
-    // method but `stat` returns an error on ENOENT which we map to "no
-    // pre-existing file → empty object".
-    let exists = transport.stat(path).await.is_ok();
+    // `FileTransport::exists` is DEFINITIVE: `Ok(false)` only when the
+    // transport proved the file is absent. An indeterminate answer is an
+    // `Err` and aborts the install — never an empty object.
+    //
+    // This used to be `transport.stat(path).await.is_ok()`, which conflated
+    // "absent" with "could not ask" and made every stat failure a silent
+    // reset of the user's settings.json: `root` became `{}`, the merge added
+    // only supermux's hooks, and the atomic write renamed that over the real
+    // file, destroying `statusLine`, `permissions`, `env` and the user's own
+    // hooks. It was reachable in practice — the remote `stat` shells out to
+    // GNU `stat -c` (see `files::transport`), which exits non-zero on a
+    // BSD/macOS host, so every session start against such a host wiped the
+    // remote settings; a momentarily unavailable ssh mux did the same.
+    let exists = transport.exists(path).await.with_context(|| {
+        format!(
+            "cannot determine whether {} exists; refusing to overwrite it",
+            path.display()
+        )
+    })?;
     let root: Value = if exists {
         let bytes = transport
             .read(path)
@@ -234,15 +251,54 @@ async fn atomic_write_settings(
 
 /// Compute the sibling temp path used by the atomic write — same directory
 /// as `path` so `rename(2)` is same-filesystem (and therefore atomic). The
-/// fixed `.supermux-tmp` suffix is deliberate: it matches the legacy file name
-/// so a crash-recovery cleanup script can still find leftover temps.
+/// `.supermux-tmp` infix keeps the legacy prefix (a crash-recovery cleanup
+/// script globbing `*.supermux-tmp*` still finds leftovers) but the name is
+/// made UNIQUE per writer.
+///
+/// Uniqueness is not cosmetic. `install_hooks` runs on every session start,
+/// from independent tasks (HTTP start, scheduler, board dispatch, teams), so
+/// two installs can overlap. With one fixed temp name they wrote the SAME
+/// temp file and then both renamed it: the loser's `rename` hit ENOENT (that
+/// session silently got no hooks) and, worse, one writer's `O_TRUNC` on the
+/// temp was visible to the other's rename, briefly publishing a partial
+/// settings.json to any Claude Code booting at that instant. A unique name
+/// per write makes each temp private; [`settings_write_lock`] then serialises
+/// the read→merge→write→rename so neither merge is lost.
 fn sibling_tmp(path: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "settings.json".to_string());
-    dir.join(format!("{name}.supermux-tmp"))
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.join(format!(
+        "{name}.supermux-tmp.{}.{n}",
+        std::process::id()
+    ))
+}
+
+/// Per-settings-path write lock. The merge is read→modify→write, so two
+/// concurrent installs against the same file both read the pre-state and the
+/// second rename discards the first one's merge (e.g. the teams task's
+/// `teammateMode` + `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` silently vanishing
+/// because a scheduled session's hook install landed after it). Holding this
+/// mutex across the whole sequence makes the merge atomic with respect to
+/// other supermux writers in this process.
+///
+/// Keyed by path string so unrelated files (local vs. a remote's
+/// `.claude/settings.json`) never block each other. Note the key is the path
+/// only — for remote transports two different hosts share the same relative
+/// path, so they serialise with each other; installs are sub-second and rare,
+/// so the extra contention is not worth a host-aware key.
+fn settings_write_lock(path: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = path.to_string_lossy().into_owned();
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard.entry(key).or_default().clone()
 }
 
 /// Write Claude Code's `teammateMode` setting + the
@@ -298,6 +354,8 @@ async fn set_env_var_at(
     key: &str,
     value: &str,
 ) -> Result<()> {
+    let lock = settings_write_lock(path);
+    let _guard = lock.lock().await;
     let mut root = read_settings_or_empty(transport, path).await?;
 
     let env_entry = root
@@ -329,6 +387,8 @@ async fn set_top_level_string_at(
     key: &str,
     value: &str,
 ) -> Result<()> {
+    let lock = settings_write_lock(path);
+    let _guard = lock.lock().await;
     let mut root = read_settings_or_empty(transport, path).await?;
 
     // Idempotent: only write when the value actually differs.
@@ -389,10 +449,12 @@ fn supermux_entry(event_token: &str) -> Value {
 /// `error_type`; the only big field, Edit/Write `content`, is unneeded and may be
 /// truncated) and splice it in as the `payload` of the POST body. If STDIN was
 /// empty we substitute `{}` so the body stays valid JSON
-/// (`{"session":…,"event":…,"payload":{}}`). A truncation can leave `$D`
-/// syntactically invalid JSON — the server parses `payload` LENIENTLY (every
-/// field optional; a parse failure is a no-op), so a clipped tail never trips a
-/// tool call.
+/// (`{"session":…,"event":…,"payload":{}}`). A truncation cuts `$D` mid-token
+/// and therefore invalidates the WHOLE body, not just the payload — the server
+/// salvages `session`+`event` from the intact prefix and drops the payload
+/// (`hooks::salvage_truncated_body`), and parses `payload` LENIENTLY besides
+/// (every field optional; a parse failure is a no-op), so a clipped tail
+/// neither loses the event nor trips a tool call.
 ///
 /// **Robustness.** `--max-time 1` + `|| true` (and `blocking:false` upstream)
 /// guarantee a down/slow supermux-server never stalls a Claude tool call.
@@ -463,6 +525,173 @@ mod tests {
         let path = dir.join("settings.json");
         let t = LocalFileTransport;
         install_hooks_at_path(&t, &path).await
+    }
+
+    /// A settings.json with the shapes a real user has and that a clobber
+    /// would destroy: their own Stop hook, a statusLine, permissions, env.
+    const USER_SETTINGS: &str = r#"{
+      "model": "opus",
+      "statusLine": { "type": "command", "command": "~/bin/my-statusline" },
+      "permissions": { "allow": ["Bash(git status)"] },
+      "env": { "MY_VAR": "1" },
+      "hooks": { "Stop": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "notify-send done" } ] } ] }
+    }"#;
+
+    fn write_user_settings(dir: &Path) -> PathBuf {
+        let path = dir.join("settings.json");
+        std::fs::write(&path, USER_SETTINGS).unwrap();
+        path
+    }
+
+    fn assert_user_keys_intact(v: &Value) {
+        assert_eq!(v["model"], json!("opus"), "model must survive");
+        assert_eq!(
+            v["statusLine"]["command"],
+            json!("~/bin/my-statusline"),
+            "the user's statusLine must survive (the A2 statusline tap wraps it — losing it loses the original)"
+        );
+        assert_eq!(v["permissions"]["allow"][0], json!("Bash(git status)"));
+        assert_eq!(v["env"]["MY_VAR"], json!("1"));
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert!(
+            stop.iter().any(|e| e["hooks"][0]["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("notify-send"))),
+            "the user's own Stop hook must survive"
+        );
+    }
+
+    /// Delegates everything to the real local transport, but lets a test
+    /// break `stat` and/or `exists` independently.
+    struct ProbeTransport {
+        inner: LocalFileTransport,
+        /// `stat` always fails — models a remote whose `stat -c` is not GNU
+        /// (macOS/BSD), or a blipped ssh ControlMaster.
+        break_stat: bool,
+        /// `exists` cannot answer — models the indeterminate case.
+        break_exists: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl FileTransport for ProbeTransport {
+        async fn read(&self, path: &Path) -> Result<Vec<u8>> {
+            self.inner.read(path).await
+        }
+        async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
+            self.inner.write(path, content).await
+        }
+        async fn list_dir(&self, path: &Path) -> Result<Vec<crate::files::transport::DirEntry>> {
+            self.inner.list_dir(path).await
+        }
+        async fn stat(&self, path: &Path) -> Result<crate::files::transport::Stat> {
+            if self.break_stat {
+                anyhow::bail!("stat: illegal option -- c");
+            }
+            self.inner.stat(path).await
+        }
+        async fn delete(&self, path: &Path) -> Result<()> {
+            self.inner.delete(path).await
+        }
+        async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+            self.inner.rename(from, to).await
+        }
+        async fn exists(&self, path: &Path) -> Result<bool> {
+            if self.break_exists {
+                anyhow::bail!("ssh: connection closed");
+            }
+            self.inner.exists(path).await
+        }
+    }
+
+    /// REGRESSION: existence must not be derived from `stat`. A remote whose
+    /// `stat -c` is unsupported (BSD/macOS) used to read as "no settings file
+    /// yet" — and since `write` + `rename` still worked, the merge published a
+    /// document containing ONLY supermux's hooks over the user's real file, on
+    /// every session start.
+    #[tokio::test]
+    async fn broken_stat_does_not_clobber_existing_settings() {
+        let dir = temp_dir();
+        let path = write_user_settings(&dir);
+        let t = ProbeTransport {
+            inner: LocalFileTransport,
+            break_stat: true,
+            break_exists: false,
+        };
+        install_hooks_at_path(&t, &path).await.unwrap();
+        let v = read_json(&path);
+        assert_user_keys_intact(&v);
+        assert!(
+            v["hooks"]["PreToolUse"].is_array(),
+            "the install itself must still have happened"
+        );
+    }
+
+    /// When the transport genuinely cannot tell whether the file exists, the
+    /// install FAILS and the file is left byte-identical. "Could not ask" must
+    /// never be merged as "empty".
+    #[tokio::test]
+    async fn indeterminate_existence_refuses_to_write() {
+        let dir = temp_dir();
+        let path = write_user_settings(&dir);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let t = ProbeTransport {
+            inner: LocalFileTransport,
+            break_stat: false,
+            break_exists: true,
+        };
+        let err = install_hooks_at_path(&t, &path).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("refusing to overwrite"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "settings.json must be untouched when existence is unknown"
+        );
+    }
+
+    /// Concurrent installs against the same settings file must not lose each
+    /// other's merges, must not fight over one temp path, and must leave no
+    /// temp files behind. `install_hooks` runs on every session start from
+    /// independent tasks (HTTP start, scheduler, board dispatch, teams), so
+    /// this overlap is routine.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_installs_do_not_lose_merges() {
+        let dir = temp_dir();
+        let path = write_user_settings(&dir);
+        let mut tasks = Vec::new();
+        for i in 0..6 {
+            let p = path.clone();
+            tasks.push(tokio::spawn(async move {
+                let t = LocalFileTransport;
+                if i % 2 == 0 {
+                    install_hooks_at_path(&t, &p).await
+                } else {
+                    set_top_level_string_at(&t, &p, &format!("key{i}"), "v").await
+                }
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap().expect("every concurrent install must succeed");
+        }
+        let v = read_json(&path);
+        assert_user_keys_intact(&v);
+        assert!(v["hooks"]["PreToolUse"].is_array(), "hooks lost");
+        for i in [1, 3, 5] {
+            assert_eq!(
+                v[format!("key{i}")],
+                json!("v"),
+                "concurrent writer {i}'s merge was lost"
+            );
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("supermux-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
     }
 
     #[tokio::test]
