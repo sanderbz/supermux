@@ -146,6 +146,11 @@ export interface AttentionCardProps {
   /** Stop showing this cause at all — the user has read it. */
   onDismiss?: () => void
   surface?: 'desktop' | 'phone'
+  /** Set by `AttentionOverlay` only. Its presence is what makes this card a
+   *  real modal: focus moves into it on open, Tab is cycled inside it, and the
+   *  focus that was there before is restored on close. The INLINE row renders
+   *  the same component without it and is not modal at all. */
+  cardRef?: React.RefObject<HTMLDivElement | null>
 }
 
 /**
@@ -161,17 +166,24 @@ export function AttentionCard({
   onOpenTerminal,
   onDismiss,
   surface = 'desktop',
+  cardRef,
 }: AttentionCardProps) {
   const copy = attentionCopy(cause, ctx)
   const titleId = `attention-title-${cause}`
   return (
     <div
+      ref={cardRef}
+      // Focus lands HERE when the overlay opens, so the title is what gets read
+      // first; `-1` because it is a target, not a tab stop (A4 review).
+      tabIndex={cardRef ? -1 : undefined}
       data-testid="chat-attention-card"
       data-cause={cause}
-      // Not `aria-modal`: nothing here traps focus (no portal, no focus scope),
-      // and claiming a modality the DOM does not enforce is the same class of
-      // lie as an option that says it will send a key and doesn't.
+      // `aria-modal` only when the overlay above is actually cycling Tab inside
+      // this card — the inline row renders the same component with no trap, and
+      // claiming a modality the DOM does not enforce is the same class of lie as
+      // an option that says it will send a key and doesn't.
       role="dialog"
+      aria-modal={cardRef ? true : undefined}
       aria-labelledby={titleId}
       className={cn(
         'flex max-h-full min-h-0 w-full flex-col gap-3 border-hairline bg-surface p-4',
@@ -338,6 +350,8 @@ export function AttentionOverlay({
   const reduce = useReducedMotion() ?? false
   const phone = surface === 'phone'
 
+  const surfaceRef = React.useRef<HTMLDivElement | null>(null)
+
   // Escape closes the card, and the keystroke goes NO FURTHER. Without this the
   // composer's own Escape wins (`use-composer.ts`: clear the draft, else
   // `sendKey('Escape')` — an interrupt into the pty), which is the wrong meaning
@@ -346,10 +360,29 @@ export function AttentionOverlay({
   // `document` runs before React's root delegation, so the key is SPENT here
   // rather than handled twice — the same "one Escape, one meaning" rule the
   // composer states for itself.
+  //
+  // BUT NOT FOR LAYERS ABOVE THIS ONE (A4 review). A document-wide capture that
+  // swallowed every Escape closed the card UNDERNEATH the command palette while
+  // leaving the palette open, and left every other portalled layer (the snippet
+  // sheet, a dialog in the other pane of a split) with no keyboard exit for as
+  // long as this card was up. So the key is taken only when it is not addressed
+  // to some other open layer: a target inside a dialog/menu/listbox that is not
+  // this overlay belongs to that thing.
   React.useEffect(() => {
     if (!open || !onClose) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      const target = e.target instanceof Element ? e.target : null
+      const root = surfaceRef.current
+      if (
+        target &&
+        !(root && root.contains(target)) &&
+        target.closest(
+          '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]',
+        )
+      ) {
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       onClose()
@@ -358,10 +391,58 @@ export function AttentionOverlay({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [open, onClose])
 
+  // FOCUS FOLLOWS THE CARD, and comes back when it leaves (A4 review). The card
+  // announces itself as a dialog and covers the pane with a scrim; without this
+  // a keyboard user's focus stayed on the row button now hidden behind that
+  // scrim, the next Tab walked into the composer and the transcript's links —
+  // all invisible, all still activatable — and a screen reader was never told
+  // anything had opened. Focus is moved to the card itself (not to a control:
+  // the title is what should be read first), and Tab is cycled inside it.
+  const cardRef = React.useRef<HTMLDivElement | null>(null)
+  React.useEffect(() => {
+    if (!open) return
+    const restore = document.activeElement
+    cardRef.current?.focus()
+    return () => {
+      if (restore instanceof HTMLElement && document.contains(restore)) restore.focus()
+    }
+  }, [open])
+
+  React.useEffect(() => {
+    if (!open) return
+    const onTab = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const root = cardRef.current
+      if (!root) return
+      const stops = root.querySelectorAll<HTMLElement>(
+        'button:not([disabled]):not([tabindex="-1"]), a[href], [tabindex]:not([tabindex="-1"])',
+      )
+      // Nothing focusable inside (message-only degrade): keep the key here
+      // rather than letting it walk into the pane the scrim is covering.
+      if (stops.length === 0) return e.preventDefault()
+      const first = stops[0]
+      const last = stops[stops.length - 1]
+      const active = document.activeElement
+      if (!root.contains(active)) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onTab, true)
+    return () => document.removeEventListener('keydown', onTab, true)
+  }, [open])
+
   return (
     <AnimatePresence initial={false}>
       {open && (
         <motion.div
+          ref={surfaceRef}
           data-testid="chat-attention-overlay"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -394,7 +475,7 @@ export function AttentionOverlay({
             transition={reduce ? { duration: 0 } : phone ? springs.sheetDetent : springs.cardExpand}
             className={cn('relative z-[1] flex max-h-full min-h-0', phone ? 'w-full' : 'w-full max-w-[560px]')}
           >
-            <AttentionCard {...card} surface={surface} onClose={onClose} />
+            <AttentionCard {...card} surface={surface} onClose={onClose} cardRef={cardRef} />
           </motion.div>
         </motion.div>
       )}

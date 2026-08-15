@@ -35,7 +35,7 @@ import { cn } from '../../lib/utils'
 
 import { ComposerFrame } from './composer-shell'
 import type { EntityPickerProps } from './entity-picker'
-import type { EntityPickerData } from './slash'
+import { pickerOptionId, PICKER_LISTBOX_ID, type EntityPickerData } from './slash'
 import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
 import { Composer, MicIcon, PlusIcon } from './ui'
@@ -97,6 +97,12 @@ export function ChatComposer({
   // rather than flipping back to the mic: a control that vanishes mid-tap reads
   // as a bug, and the disabled state is the honest "asked, not yet answered".
   const canSend = handle.draft.trim().length > 0
+  // WHICH ROW THE POPOVER IS ON (A4 review). The list lives in the picker, but
+  // the only element that ever has focus is the textarea — so the textarea is
+  // what has to carry `aria-activedescendant`, and the highlight travels up
+  // here to be written onto it. −1 = the list has nothing to point at.
+  const [activeOption, setActiveOption] = React.useState(-1)
+  const pickerOpen = handle.picker.open
   const pickerProps: EntityPickerProps = {
     name,
     kind: handle.picker.kind,
@@ -105,6 +111,7 @@ export function ChatComposer({
     ...pickerData,
     onPick: handle.picker.pick,
     bind: handle.picker.bind,
+    onActive: setActiveOption,
   }
 
   return (
@@ -155,6 +162,19 @@ export function ChatComposer({
           // what a phone keyboard expects from one.
           spellCheck: true,
           enterKeyHint: 'send',
+          // The `@`/`/` popover, as a relationship a screen reader can follow.
+          // Without it the popover was invisible to assistive tech: nothing
+          // announced that suggestions had appeared, ↑/↓ moved a highlight that
+          // was never spoken, and Enter replaced the token with a value the
+          // user had not been told (A4 review). The keyboard contract was
+          // always there — `use-composer.ts` routes the keys — it just could
+          // not be observed.
+          role: 'combobox',
+          'aria-autocomplete': 'list',
+          'aria-expanded': pickerOpen,
+          'aria-controls': pickerOpen ? PICKER_LISTBOX_ID : undefined,
+          'aria-activedescendant':
+            pickerOpen && activeOption >= 0 ? pickerOptionId(activeOption) : undefined,
           'data-testid': 'chat-composer-field',
           'data-session': name,
         }}

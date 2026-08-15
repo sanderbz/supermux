@@ -229,6 +229,24 @@ describe('the card', () => {
     expect(html).toContain('aria-hidden="true"')
   })
 
+  test('the expanded card is a real modal, the inline row is not (A4 review)', () => {
+    // It declared `role="dialog"` and then moved no focus and trapped nothing:
+    // a keyboard user activating "Show terminal" kept focus on the row now
+    // behind the scrim, and the next Tab walked into the composer and the
+    // transcript's links — invisible, and still activatable. The overlay now
+    // focuses the card, cycles Tab inside it and restores focus on close, which
+    // is what earns `aria-modal`.
+    const overlay = renderToStaticMarkup(
+      <AttentionOverlay open cause="send-unconfirmed" onClose={() => {}} />,
+    )
+    expect(overlay).toContain('aria-modal="true"')
+    expect(overlay).toContain('tabindex="-1"')
+    // The SAME component inline claims neither: nothing traps focus there, and
+    // claiming a modality the DOM does not enforce is the lie this fase refuses.
+    const inline = renderToStaticMarkup(<AttentionCard cause="send-unconfirmed" />)
+    expect(inline).not.toContain('aria-modal')
+  })
+
   test('the overlay is nothing at all until it is opened', () => {
     expect(renderToStaticMarkup(<AttentionOverlay open={false} cause="send-unconfirmed" />)).toBe('')
     const html = renderToStaticMarkup(<AttentionOverlay open cause="send-unconfirmed" />)

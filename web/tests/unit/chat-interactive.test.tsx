@@ -36,7 +36,13 @@ import {
 } from '../../src/components/chat/composer-draft'
 import { EntityPickerView } from '../../src/components/chat/entity-picker'
 import { TranscriptItem } from '../../src/components/chat/transcript-item'
-import { atRows, slashRows, type EntityRow } from '../../src/components/chat/slash'
+import {
+  atRows,
+  pickerOptionId,
+  PICKER_LISTBOX_ID,
+  slashRows,
+  type EntityRow,
+} from '../../src/components/chat/slash'
 import {
   composerKeyIntent,
   draftAfterSend,
@@ -789,5 +795,60 @@ describe('the transcript does not re-render on every keystroke', () => {
     // the fix; this is the reminder in the diff.
     expect(props.has('draft')).toBe(false)
     expect(props.has('composer')).toBe(false)
+  })
+})
+
+describe('the picker is reachable by assistive tech', () => {
+  test('the FIELD carries the combobox relationship — it is what has focus', () => {
+    // The popover never takes focus (that would dismiss the soft keyboard on
+    // every phone), so without this a screen-reader user got nothing at all:
+    // no "suggestions available", no row count, a highlight ↑/↓ moved silently,
+    // and an Enter that replaced their token with a value they were never told.
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        handle={handle({
+          draft: 'diff @mai',
+          picker: {
+            open: true,
+            kind: '@',
+            query: 'mai',
+            pick: () => {},
+            close: () => {},
+            bind: () => {},
+          },
+        })}
+        renderPicker={() => null}
+      />,
+    )
+    expect(html).toContain('role="combobox"')
+    expect(html).toContain('aria-expanded="true"')
+    expect(html).toContain(`aria-controls="${PICKER_LISTBOX_ID}"`)
+  })
+
+  test('the closed composer claims no popover', () => {
+    const html = composer({ draft: 'ship it' })
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('aria-controls=')
+    expect(html).not.toContain('aria-activedescendant=')
+  })
+
+  test('every option has the id the field points at, and the li owns nothing', () => {
+    const html = renderToStaticMarkup(
+      <EntityPickerView
+        rows={atRows(['server/src/main.rs', 'web/src/main.tsx'], [], NAME, 'main')}
+        activeIndex={1}
+        kind="@"
+        query="main"
+        onHover={() => {}}
+        onPick={() => {}}
+      />,
+    )
+    expect(html).toContain(`id="${PICKER_LISTBOX_ID}"`)
+    expect(html).toContain(`id="${pickerOptionId(0)}"`)
+    expect(html).toContain(`id="${pickerOptionId(1)}"`)
+    // A listbox owns OPTIONS; an `li` in between breaks that ownership.
+    expect(html).toContain('role="presentation"')
   })
 })

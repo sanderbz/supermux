@@ -407,3 +407,28 @@ function dirname(path: string): string {
   const at = path.lastIndexOf('/')
   return at < 0 ? '' : path.slice(0, at)
 }
+
+/* ── the picker's ARIA identity ──────────────────────────────────────────── */
+
+/**
+ * The ids that tie the composer's textarea to the popover it drives (A4
+ * review).
+ *
+ * They live HERE, in the picker's data module, rather than in the picker
+ * component: `composer.tsx` needs them to write `aria-controls` /
+ * `aria-activedescendant` on the field, and a static import of the component
+ * would pull the whole lazy picker chunk into the surface's first paint.
+ *
+ * Without the pair, `@sr` announced nothing at all: focus deliberately never
+ * leaves the textarea (a popover that stole it would dismiss the soft keyboard
+ * on every phone), so a screen reader had no way to know a listbox had opened,
+ * how many rows it held, or which one ↑/↓ had moved to — and Enter then
+ * replaced the token with a value the user was never told.
+ */
+export const PICKER_LISTBOX_ID = 'chat-entity-listbox'
+
+/** The active row's id, for `aria-activedescendant`. Index-based so the field
+ *  can name a row it does not own. */
+export function pickerOptionId(index: number): string {
+  return `chat-entity-option-${index}`
+}

@@ -33,7 +33,7 @@ import * as React from 'react'
 
 import { cn } from '../../lib/utils'
 
-import { atRows, slashRows } from './slash'
+import { atRows, pickerOptionId, PICKER_LISTBOX_ID, slashRows } from './slash'
 import type { EntityPickerData, EntityRow } from './slash'
 import type { ComposerPickerApi } from './use-composer'
 
@@ -47,6 +47,10 @@ export interface EntityPickerProps extends EntityPickerData {
   onPick: (value: string) => void
   /** Hand the composer the two verbs its key handler needs. */
   bind: (api: ComposerPickerApi | null) => void
+  /** Report the highlighted row upward, so the FIELD can carry
+   *  `aria-activedescendant` (A4 review). The list lives here; the only element
+   *  a screen reader is looking at is the textarea. */
+  onActive?: (index: number) => void
 }
 
 /* ── the connected picker ────────────────────────────────────────────────── */
@@ -62,6 +66,7 @@ export default function EntityPicker({
   loading,
   onPick,
   bind,
+  onActive,
 }: EntityPickerProps) {
   const rows = React.useMemo(
     () =>
@@ -84,6 +89,13 @@ export default function EntityPicker({
   React.useEffect(() => {
     live.current = { rows, activeIndex, key }
   })
+
+  // The field owns `aria-activedescendant`, so the highlight has to travel one
+  // level up. An effect, because it is a notification about this render's
+  // outcome rather than something the field needs in order to be drawn.
+  React.useEffect(() => {
+    onActive?.(rows.length > 0 ? activeIndex : -1)
+  }, [activeIndex, onActive, rows.length])
 
   React.useEffect(() => {
     bind({
@@ -164,14 +176,18 @@ export function EntityPickerView({
     >
       <ul
         role="listbox"
+        id={PICKER_LISTBOX_ID}
         aria-label="Suggestions"
         className="max-h-[264px] overflow-y-auto overscroll-contain py-1.5"
       >
         {rows.map((row, i) => (
-          <li key={row.id}>
+          // `presentation`: a listbox owns OPTIONS, and an `li` between the
+          // two breaks that ownership for a screen reader.
+          <li key={row.id} role="presentation">
             <button
               type="button"
               role="option"
+              id={pickerOptionId(i)}
               aria-selected={i === activeIndex}
               data-testid="chat-entity-row"
               data-active={i === activeIndex ? '' : undefined}
@@ -218,7 +234,7 @@ export function EntityPickerView({
           </li>
         ))}
         {rows.length === 0 && (
-          <li className="px-3.5 py-[9px] text-[12.6px] text-ink-2">
+          <li role="presentation" className="px-3.5 py-[9px] text-[12.6px] text-ink-2">
             {loading
               ? 'Looking…'
               : `No ${kind === '@' ? 'tracked file or session' : 'command'} matches “${query}”`}
