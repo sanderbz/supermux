@@ -363,7 +363,7 @@ describe('the card the surface draws', () => {
     expect(view.escape?.actOn).toBe(false)
     expect(view.note).toBe(DIALOG_TERMINAL_NOTE)
     expect(view.attention).toBe('registry-version-mismatch')
-    expect(view.verifiedVersions).toEqual(['2.1.227', '2.1.231'])
+    expect(view.verifiedVersions).toEqual(['2.1.227', '2.1.231', '2.1.232'])
   })
 
   test('no dialog, no card', () => {

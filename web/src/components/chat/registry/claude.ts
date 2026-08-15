@@ -87,16 +87,43 @@ export interface RegistryEntry {
   escape: RegistryEscape
 }
 
+/**
+ * 2.1.232 — the A4c LIVE self-test, 2026-08-15.
+ *
+ * Widening a pin without a capture is the one edit this file forbids, so here is
+ * the capture. Session `spike-a4c-dialogs` booted `Claude Code v2.1.232`
+ * (`tests/fixtures/tui/a4c/00-boot-banner.txt`) and every entry below was driven
+ * against it with the exact key plan `registry/plan.ts` emits, per-key, with the
+ * dialog-answer discipline around it. All four are covered, all four landed the
+ * effect they claim, with the side-effect proof recorded:
+ *
+ *   permission.bash   opt 1 executed (artifact present) · opt 3 denied
+ *                     (`⎿ Interrupted`, artifact ABSENT) · Esc denied
+ *   permission.write  opt 2 wrote the file AND flipped `⏵⏵ accept edits on`
+ *                     — the `accept-session` claim, captured rather than
+ *                     inferred for the first time
+ *   permission.edit   opt 3 denied (`⎿ User rejected update`, file unchanged)
+ *   plan.approval     opt 2 → `User approved Claude's plan` + `⏸ manual mode on`
+ *
+ * Index, per-case verdicts and the frame-by-frame sequences:
+ * `tests/fixtures/tui/a4c/README.md`. The one deviation that run found — CC
+ * dropping `Tab to amend` from the footer while the caret is on row 2 — is a
+ * DETECTOR fact, not a registry one, and it is answered by the two-phase
+ * fingerprint in `peek-lens.ts`; the rows, the plans and the effects below were
+ * confirmed unchanged.
+ */
+const A4C = '2.1.232'
+
 /** a0 §3, Family 1: "Pinned v2.1.227, Bash variant re-verified structurally
  *  identical v2.1.231." The Bash capture therefore holds on both; the Edit
  *  capture in `tests/fixtures/tui/` is recorded at 2.1.231 and the Write one at
  *  2.1.227, so each variant pins exactly what its own bytes prove. Widening a
  *  list without a new capture is the one edit this file forbids. */
-const PERMISSION_BASH_VERSIONS = ['2.1.227', '2.1.231'] as const
-const PERMISSION_EDIT_VERSIONS = ['2.1.231'] as const
-const PERMISSION_WRITE_VERSIONS = ['2.1.227'] as const
+const PERMISSION_BASH_VERSIONS = ['2.1.227', '2.1.231', A4C] as const
+const PERMISSION_EDIT_VERSIONS = ['2.1.231', A4C] as const
+const PERMISSION_WRITE_VERSIONS = ['2.1.227', A4C] as const
 /** a0 §3, Family 2 (ExitPlanMode): pinned v2.1.231. */
-const PLAN_VERSIONS = ['2.1.231'] as const
+const PLAN_VERSIONS = ['2.1.231', A4C] as const
 
 /** Option 1 is the same row on all three permission variants: exactly `1. Yes`
  *  — which is also the family's own fingerprint anchor (a0 §3), so a sighting

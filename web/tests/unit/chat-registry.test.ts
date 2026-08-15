@@ -24,6 +24,8 @@ import {
 const DIR = join(import.meta.dir, '../fixtures/tui')
 const read = (name: string) => readFileSync(join(DIR, name), 'utf8')
 const lensOf = (name: string) => readLens(read(name))
+/** The 2.1.232 live self-test corpus — provenance in `../fixtures/tui/a4c/README.md`. */
+const a4cOf = (name: string) => readLens(readFileSync(join(DIR, 'a4c', name), 'utf8'))
 
 /** Every act-on claim in the registry is backed by one of these files — the
  *  provenance of each is in `tests/fixtures/tui/README.md`. */
@@ -154,10 +156,35 @@ describe('registry — the version pin', () => {
   })
 
   test('each entry pins the versions its own capture proves', () => {
-    expect(entryById('permission.bash')!.verifiedVersions).toEqual(['2.1.227', '2.1.231'])
-    expect(entryById('permission.edit')!.verifiedVersions).toEqual(['2.1.231'])
-    expect(entryById('permission.write')!.verifiedVersions).toEqual(['2.1.227'])
-    expect(entryById('plan.approval')!.verifiedVersions).toEqual(['2.1.231'])
+    // 2.1.232 is on all four because the A4c self-test drove all four against
+    // it, end to end, with the side-effect proof recorded per case
+    // (`tests/fixtures/tui/a4c/README.md`). The older numbers are a0's, and each
+    // variant still carries exactly the ones its own bytes prove.
+    expect(entryById('permission.bash')!.verifiedVersions).toEqual([
+      '2.1.227',
+      '2.1.231',
+      '2.1.232',
+    ])
+    expect(entryById('permission.edit')!.verifiedVersions).toEqual(['2.1.231', '2.1.232'])
+    expect(entryById('permission.write')!.verifiedVersions).toEqual(['2.1.227', '2.1.232'])
+    expect(entryById('plan.approval')!.verifiedVersions).toEqual(['2.1.231', '2.1.232'])
+  })
+
+  test('the live 2.1.232 captures are ACT-ON, not merely rendered', () => {
+    // The point of widening the pin: before this, every a4c frame came back
+    // `registry-version-mismatch` with every option inert, so the answer path
+    // was inert on the CLI actually installed.
+    for (const [file, id] of [
+      ['case1-bash-deny-1-before.txt', 'permission.bash'],
+      ['case3-write-option2-1-before.txt', 'permission.write'],
+      ['case4b-edit-deny-1-before.txt', 'permission.edit'],
+      ['case4-plan-manual-1-before.txt', 'plan.approval'],
+    ] as const) {
+      const m = entryFor(a4cOf(file), '2.1.232')
+      expect(m.entry?.id).toBe(id)
+      expect(m.degraded).toBe(false)
+      expect(m.attention).toBeNull()
+    }
   })
 })
 
