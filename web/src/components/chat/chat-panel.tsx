@@ -316,17 +316,3 @@ export default function ChatPanel({
     />
   )
 }
-
-/** The server clipped this message at the wire cap. Say so — a clipped
- *  message that just stops reads as an answer that ended mid-sentence, and
- *  the reader has no way to tell the difference. */
-function TruncatedMarker() {
-  return (
-    <span
-      className="ml-1 select-none rounded bg-muted px-1 py-0.5 align-baseline text-[11px] text-muted-foreground"
-      title="This message was clipped for transport — open the Terminal view for the full text."
-    >
-      … clipped
-    </span>
-  )
-}
