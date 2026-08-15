@@ -36,3 +36,11 @@ this page, in its filename, or both — never silently.
 - Fixtures are **inputs, never expectations** — no test may edit one to make itself pass.
 - Anything not live-captured carries `-derived` in its filename **and** a row above.
 - No option in the T6 registry is enabled without a fixture backing it (plan §T11).
+
+## `a4c/` — the 2.1.232 live self-test
+
+A second corpus lives in `a4c/`, with its own README: the frame-by-frame captures of a
+real answer sequence driven against Claude Code **v2.1.232** (2026-08-15). It is the
+evidence for the registry's 2.1.232 pin and for the two-phase fingerprint, and it is where
+the caret-dependent permission footer is recorded. Same rules apply there, including the
+`-derived` one.
