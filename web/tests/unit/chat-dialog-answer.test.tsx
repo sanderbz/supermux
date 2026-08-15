@@ -28,6 +28,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { ChatConversation } from '../../src/components/chat/conversation'
 import {
   answerDialog,
+  applyLatch,
   chooseable,
   dialogCardView,
   hardDisable,
@@ -40,7 +41,6 @@ import {
   type DialogCardView,
 } from '../../src/components/chat/dialog-answer'
 import { DialogCard } from '../../src/components/chat/live-layer'
-import { deliveryLine, type PendingSend } from '../../src/components/chat/pending'
 import { readLens, type PeekLens } from '../../src/components/chat/peek-lens'
 import type { KeyName } from '../../src/lib/session-input/types'
 import type { TileSession } from '../../src/components/session-tile/types'
@@ -359,6 +359,34 @@ describe('the card the surface draws', () => {
     expect(chooseable(live, null, 7)).toBe(false)
   })
 
+  test('an aborted sequence leaves the card readable, inert, and explained', () => {
+    // The visible half of every refusal: the question stays on screen, nothing
+    // on it can be pressed again, the sentence quoting what happened is on each
+    // control, and the Attention cause is the ABORT's — not the registry's
+    // (which, for a perfectly good pinned dialog, is nothing at all).
+    const base = dialogCardView(PERM, '2.1.231')!
+    const latch = {
+      key: base.key,
+      detail: 'After Down, the terminal’s selection sits on option 3 instead of 2.',
+      attention: 'dialog-unmapped' as const,
+    }
+    const out = applyLatch(base, latch)
+    expect(out.card!.disabled).toBe(true)
+    expect(out.card!.options.every((o) => !o.actOn && o.reason === latch.detail)).toBe(true)
+    expect(out.card!.options.map((o) => o.label)).toEqual(base.options.map((o) => o.label))
+    expect(out.attention).toBe('dialog-unmapped')
+    expect(chooseable(out.card, null, 0)).toBe(false)
+  })
+
+  test('the latch belongs to its own sighting, and to no other question', () => {
+    const perm = dialogCardView(PERM, '2.1.231')!
+    const latch = { key: 'some-other-dialog', detail: 'x', attention: 'dialog-unmapped' as const }
+    const out = applyLatch(perm, latch)
+    expect(out.card!.disabled).toBe(false)
+    expect(out.attention).toBeNull()
+    expect(applyLatch(null, latch)).toEqual({ card: null, attention: null })
+  })
+
   test('the outcome line waits for the dialog to go, then expires', () => {
     const live = dialogCardView(PERM, '2.1.231')!
     const res = { key: live.key, line: 'Allowed · bash', atMs: 1_000 }
@@ -456,6 +484,29 @@ describe('the card, rendered', () => {
     )
     expect(html).toContain('data-testid="chat-permission-card"')
     expect(html).toContain('chat can’t answer this one yet')
+  })
+
+  test('the mode chip stays inert while a dialog is on screen', () => {
+    // `POST /mode` converges by pressing BTab, and BTab inside a permission
+    // dialog ACCEPTS it (a0 §3, live-verified). The chat header's mode chip is
+    // therefore a label and not a control — gated by construction, which is the
+    // only gate that cannot be forgotten. This test is the tripwire: the first
+    // person to make the chip actionable has to come back and gate it on
+    // `lens.dialog == null`.
+    const html = renderToStaticMarkup(
+      <ChatConversation
+        name="release-train"
+        session={{ ...session, mode: 'accept_edits' }}
+        items={[]}
+        nowMs={0}
+        turnStart={null}
+        dialog={dialogCardView(PERM, '2.1.231')}
+        onChooseDialog={() => {}}
+      />,
+    )
+    const header = html.slice(0, html.indexOf('data-testid="chat-live-layer"'))
+    expect(header).toContain('Accept edits')
+    expect(header).not.toContain('<button')
   })
 
   test('the outcome line lands once the dialog is gone', () => {

@@ -24,11 +24,12 @@ import type { SessionInput } from '../../lib/session-input'
 import type { AttentionCause } from './attention'
 import {
   answerDialog,
+  applyLatch,
   chooseable,
   dialogCardView,
-  hardDisable,
   resolutionLine,
   visibleResolution,
+  type AbortLatch,
   type AnswerRequest,
   type DialogCardView,
   type DialogResolution,
@@ -71,17 +72,28 @@ export function useDialogAnswer({
   // The latch: the sighting this app aborted on, and the sentence explaining
   // it. Keyed by SIGHTING, not by session — a new question is a new chance, the
   // same question is not.
-  const [blocked, setBlocked] = React.useState<{ key: string; detail: string } | null>(null)
+  const [blocked, setBlocked] = React.useState<AbortLatch | null>(null)
   const [resolved, setResolved] = React.useState<DialogResolution | null>(null)
 
   const lens = peek.lens
   const pin = pinFor(lens)
   const base = React.useMemo(() => dialogCardView(lens, pin), [lens, pin])
 
-  const card = React.useMemo(() => {
-    if (!base) return null
-    return blocked && blocked.key === base.key ? hardDisable(base, blocked.detail) : base
-  }, [base, blocked])
+  // THE LATCH LIVES AS LONG AS ITS DIALOG, AND NOT A MOMENT LONGER. While the
+  // sighting that confounded this app is still on screen, its card stays inert:
+  // whatever made the reading wrong has not gone anywhere. When the dialog
+  // changes or is answered elsewhere, the latch goes with it — otherwise the
+  // next identical question (the same command asked twice is routine) would
+  // arrive pre-disabled with no way back, which is a refusal that has stopped
+  // being about evidence. Reset during render, not in an effect: the disabled
+  // card must never be painted for the new question, not even for one frame.
+  const lastKey = React.useRef<string | null>(null)
+  const key = base?.key ?? null
+  if (lastKey.current !== key) {
+    lastKey.current = key
+    if (blocked && blocked.key !== key) setBlocked(null)
+  }
+  const { card, attention } = React.useMemo(() => applyLatch(base, blocked), [base, blocked])
 
   // The peek is the authority, so the refs the async sequence reads are kept
   // fresh here rather than closed over: a card pressed at the moment the poll
@@ -115,7 +127,14 @@ export function useDialogAnswer({
         // Reverted to unanswered AND latched: the user can still read the
         // question, the terminal is one tap away, and this app will not offer
         // to press anything into this sighting again.
-        setBlocked({ key: card.key, detail: out.detail ?? fallbackDetail(out.committed) })
+        setBlocked({
+          key: card.key,
+          detail: out.detail ?? fallbackDetail(out.committed),
+          // The card goes inert AND the surface says so out loud: a refusal the
+          // user has to infer from a greyed-out button is not a refusal, it is
+          // a bug they will report as one.
+          attention: out.attention ?? 'dialog-unmapped',
+        })
       })()
     },
     [busy, card, onFeedback, pin, refresh, sendKey],
@@ -130,7 +149,7 @@ export function useDialogAnswer({
     busy,
     choose,
     resolved: line,
-    attention: card?.attention ?? null,
+    attention,
   }
 }
 

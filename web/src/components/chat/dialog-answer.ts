@@ -426,6 +426,36 @@ export function dialogCardView(
   }
 }
 
+/** A sighting this app aborted on: what it was, why, and what the surface must
+ *  raise for as long as it is up. */
+export interface AbortLatch {
+  key: string
+  detail: string
+  attention: AttentionCause
+}
+
+/**
+ * The card as it should be drawn given the latch — the whole visible half of a
+ * failed sequence, in one pure function.
+ *
+ * Two things happen at once, and they are both required: the controls go inert
+ * (nothing more may be pressed into a screen this app has already misread), and
+ * the ABORT'S cause replaces the registry's, because a card that was answerable
+ * right up until the caret drifted has nothing to say for itself otherwise. A
+ * refusal the user has to infer from a greyed-out button is not a refusal.
+ */
+export function applyLatch(
+  base: DialogCardView | null,
+  latch: AbortLatch | null,
+): { card: DialogCardView | null; attention: AttentionCause | null } {
+  if (!base) return { card: null, attention: null }
+  const mine = latch && latch.key === base.key ? latch : null
+  return {
+    card: mine ? hardDisable(base, mine.detail) : base,
+    attention: mine ? mine.attention : base.attention,
+  }
+}
+
 /** The same view with every control inert, plus the reason. Used after a failed
  *  sequence: once this app has misread the screen ONCE, it stops offering to
  *  press keys into it until the dialog itself changes. */
