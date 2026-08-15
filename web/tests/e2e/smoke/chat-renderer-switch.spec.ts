@@ -71,7 +71,12 @@ test.describe('chat renderer switch (fase A1)', () => {
 
     await page.goto(`${backend.baseUrl}/focus/a1-chat`)
     await expect(page.getByTestId('chat-panel')).toBeVisible()
-    await expect(page.getByText('Read-only preview', { exact: false })).toBeVisible()
+    // The panel's own input surface is mounted. This used to look for the A1
+    // "Read-only preview" line; fase A4 made the composer live and deliberately
+    // drops that line whenever a send is possible (pinned in
+    // `tests/unit/chat-interactive.test.tsx`), so the composer field IS the
+    // "this really is the chat renderer, not an empty shell" evidence now.
+    await expect(page.getByTestId('chat-composer-field')).toBeVisible()
 
     // One tap to the terminal fallback…
     await page.getByTestId('renderer-terminal').click()
