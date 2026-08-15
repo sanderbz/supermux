@@ -323,7 +323,16 @@ export function usePendingSends({
           await input.submit(p.text)
           // The watchdog clock restarts from the RETRY, not from the original
           // send: it is a new delivery, and it gets its own window.
-          patch(name, id, { state: 'unconfirmed', atMs: serverNowMs() })
+          //
+          // A gate that let the retry THROUGH with a notice still leaves its
+          // sentence on the row: the terminal had something at its prompt that
+          // this capture could not classify, and the row is the only place this
+          // path can say so.
+          patch(name, id, {
+            state: 'unconfirmed',
+            atMs: serverNowMs(),
+            note: gate.notice ? refusalNote(gate.notice) : undefined,
+          })
         } catch (err) {
           patch(name, id, { state: 'undelivered', note: errorNote(err) })
         }
@@ -359,6 +368,9 @@ function refusalNote(notice: ComposerNotice): string {
   if (notice.kind === 'dialog') return 'Claude is waiting on the request above — answer it first.'
   if (notice.kind === 'dialog-terminal') {
     return 'The terminal is showing a prompt chat can’t answer — answer it there.'
+  }
+  if (notice.kind === 'tui-draft-unverified') {
+    return 'Sent — the terminal’s prompt wasn’t empty, and chat couldn’t tell that text from Claude’s own suggestion.'
   }
   return 'The terminal has an unsent draft.'
 }

@@ -131,6 +131,13 @@ export function composerKeyIntent(
 export interface ComposerNotice {
   kind:
     | 'tui-draft'
+    /** The terminal shows SOMETHING at its prompt, and this capture could not
+     *  tell a typed sentence from Claude Code's own predicted one (2.1.232
+     *  draws the prediction dim, and a plain capture has no dim). A receipt,
+     *  not a refusal: the message went. Refusing on it would refuse nearly
+     *  every send on a 2.1.232 session — the ghost is on screen most of the
+     *  time — which is an outage wearing a safety argument. */
+    | 'tui-draft-unverified'
     /** A dialog is up AND a choice card for it is on screen — "answer the thing
      *  above" is a true sentence. */
     | 'dialog'
@@ -160,8 +167,12 @@ export interface ComposerNotice {
   detail?: string
 }
 
-/** Send, or refuse and say why. */
-export type SendGate = { send: true } | { send: false; notice: ComposerNotice }
+/** Send, or refuse and say why. A `send: true` MAY carry a notice — that is a
+ *  receipt for something the user should know went out anyway, never a refusal
+ *  in disguise. */
+export type SendGate =
+  | { send: true; notice?: ComposerNotice }
+  | { send: false; notice: ComposerNotice }
 
 /**
  * THE PRE-SEND GATE (master plan §3), as data so it can be asserted without a
@@ -173,10 +184,24 @@ export type SendGate = { send: true } | { send: false; notice: ComposerNotice }
  *   lens.dialog                       → refuse. `/send` into an open permission
  *                                       dialog was never A0-tested (a0 §5); the
  *                                       card above can answer it (T7).
- *   lens.composerDraft                → refuse. `send_text` pastes at the TUI's
+ *   lens.composerDraft, VERIFIED      → refuse. `send_text` pastes at the TUI's
  *                                       prompt, so it would concatenate onto
  *                                       the user's half-sentence and submit the
  *                                       pair — silently.
+ *   lens.composerDraft, unverified    → send, and SAY SO. Claude Code 2.1.232
+ *                                       pre-fills the composer with a predicted
+ *                                       next prompt drawn dim; without the SGR
+ *                                       channel it is byte-identical to a typed
+ *                                       draft (a4c finding 3). Refusing on it
+ *                                       refuses nearly every send on that CLI,
+ *                                       so the honest move is to deliver and
+ *                                       hand the user the evidence — the text
+ *                                       that was on the prompt — rather than to
+ *                                       block on a reading this app has already
+ *                                       admitted it cannot make. With `?ansi=1`
+ *                                       answered in colour this branch is not
+ *                                       reached: the ghost is stripped and a
+ *                                       real draft still refuses.
  *   otherwise                         → send.
  *
  * Dialog outranks draft: with a dialog up, what the lens reads as a "draft" is
@@ -209,7 +234,9 @@ export function sendGate(lens: PeekLens | null, ctx: SendContext = {}): SendGate
   // anything — but when it cannot look, the hook is the only witness there is.
   if (!lens) return ctx.dialogCard ? { send: false, notice: { kind: dialogKind } } : { send: true }
   if (lens.composerDraft) {
-    return { send: false, notice: { kind: 'tui-draft', detail: lens.composerDraft } }
+    return lens.composerDraftVerified
+      ? { send: false, notice: { kind: 'tui-draft', detail: lens.composerDraft } }
+      : { send: true, notice: { kind: 'tui-draft-unverified', detail: lens.composerDraft } }
   }
   return { send: true }
 }
@@ -402,6 +429,10 @@ export function useComposer({
           setNotice(gate.notice)
           return
         }
+        // A warning the send is going out THROUGH, not around: shown before the
+        // POST so it is on screen for the whole round-trip, and overridable by
+        // the slash receipt below, which is about the same delivery.
+        if (gate.notice) setNotice(gate.notice)
         await input.submit(text)
         // Cleared only AFTER the POST resolves: a rejected send keeps the
         // user's words in the box, where they can retry them.

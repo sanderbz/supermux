@@ -333,11 +333,12 @@ function ComposerBanner({
               <code className="font-mono text-[11.5px] text-ink">{notice.detail}</code>
             )}
           <span className="text-ink">{NOTICE_TITLE[notice.kind]}</span>
-          {notice.kind === 'tui-draft' && notice.detail && (
-            <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">
-              “{notice.detail.slice(0, DRAFT_PREVIEW_CHARS)}”
-            </span>
-          )}
+          {(notice.kind === 'tui-draft' || notice.kind === 'tui-draft-unverified') &&
+            notice.detail && (
+              <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">
+                “{notice.detail.slice(0, DRAFT_PREVIEW_CHARS)}”
+              </span>
+            )}
           {(notice.kind === 'send-failed' || notice.kind === 'stop-failed') &&
             notice.detail && (
               <span className="min-w-0 truncate text-ink-2">{notice.detail}</span>
@@ -375,6 +376,11 @@ function ComposerBanner({
  *  no "something went wrong". */
 const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   'tui-draft': 'The terminal has an unsent draft.',
+  // Says what happened (it went) AND what could not be established (whose text
+  // that is). Naming Claude's suggestion is the part that makes the line
+  // actionable: on 2.1.232 that is what it usually is.
+  'tui-draft-unverified':
+    'Sent — the terminal’s prompt wasn’t empty, and this couldn’t be told from Claude’s own suggestion:',
   dialog: 'Claude is waiting on the request above — answer it first.',
   // The card the sentence above points at is NOT on screen for this one, so it
   // does not point at it. Naming the surface that can actually answer is the

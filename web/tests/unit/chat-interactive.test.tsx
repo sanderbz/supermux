@@ -116,17 +116,45 @@ describe('the composer’s key contract', () => {
 
 // ── 2. The pre-send gate ────────────────────────────────────────────────────
 
-const CLEAR: PeekLens = { bannerVersion: '2.1.231', composerDraft: null, dialog: null }
+const CLEAR: PeekLens = {
+  bannerVersion: '2.1.231',
+  composerDraft: null,
+  composerDraftVerified: true,
+  dialog: null,
+}
 
 describe('the pre-send peek gate', () => {
   test('a clear screen sends', () => {
     expect(sendGate(CLEAR)).toEqual({ send: true })
   })
 
-  test('a draft sitting in the TERMINAL blocks the send and is quoted back', () => {
-    const gate = sendGate({ ...CLEAR, composerDraft: 'half a thought' })
+  test('a VERIFIED draft sitting in the TERMINAL blocks the send and is quoted back', () => {
+    const gate = sendGate({
+      ...CLEAR,
+      composerDraft: 'half a thought',
+      composerDraftVerified: true,
+    })
     expect(gate.send).toBe(false)
     expect(gate).toMatchObject({ notice: { kind: 'tui-draft', detail: 'half a thought' } })
+  })
+
+  test('an UNVERIFIED draft warns and still sends — the ghost is not a refusal', () => {
+    // CC 2.1.232 pre-fills the composer with a predicted prompt drawn dim; on a
+    // plain capture that is byte-identical to a typed draft (a4c finding 3).
+    // Refusing on it refuses nearly every send on that CLI, so the send goes
+    // and the user gets the evidence instead of a locked composer.
+    const gate = sendGate({
+      ...CLEAR,
+      composerDraft: 'Run exactly this one Bash command: touch /tmp/x',
+      composerDraftVerified: false,
+    })
+    expect(gate.send).toBe(true)
+    expect(gate).toMatchObject({
+      notice: {
+        kind: 'tui-draft-unverified',
+        detail: 'Run exactly this one Bash command: touch /tmp/x',
+      },
+    })
   })
 
   test('an open dialog blocks the send, and says so instead of guessing', () => {
