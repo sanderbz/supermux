@@ -313,7 +313,12 @@ fn sibling_tmp(path: &Path) -> PathBuf {
 /// only — for remote transports two different hosts share the same relative
 /// path, so they serialise with each other; installs are sub-second and rare,
 /// so the extra contention is not worth a host-aware key.
-fn settings_write_lock(path: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+/// `pub(crate)` because the statusline tap ([`crate::sessions::chat::statusline`])
+/// is a SECOND read→modify→write writer against the very same settings file —
+/// it edits `statusLine` while an install edits `hooks`. It has to hold this
+/// lock across its own read+write or the two merges clobber each other, which
+/// is the whole reason the lock exists.
+pub(crate) fn settings_write_lock(path: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();

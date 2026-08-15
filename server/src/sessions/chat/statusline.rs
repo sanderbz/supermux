@@ -344,6 +344,14 @@ fn sidecar_path(settings_path: &Path) -> PathBuf {
 pub async fn install_local(mode: Mode) -> Result<PathBuf> {
     let t = LocalFileTransport;
     let path = crate::claude_config::local_settings_path();
+    // Held across read→modify→write: `install_hooks` merges `hooks` into this
+    // same file on EVERY session start, from tasks we do not coordinate with.
+    // Without the lock, whichever of the two read first loses its merge on the
+    // rename — either the user's sessions boot with no hooks at all (the turn
+    // state machine goes dark) or the tap's wrapper vanishes while its sidecar
+    // claims it is installed.
+    let lock = crate::claude_config::settings_write_lock(&path);
+    let _guard = lock.lock().await;
     let before = crate::claude_config::read_settings_or_empty(&t, &path).await?;
     let after = install(&before, mode)?;
     let sidecar = sidecar_for(&before, mode);
@@ -394,6 +402,11 @@ pub struct UninstallOutcome {
 pub async fn uninstall_local() -> Result<UninstallOutcome> {
     let t = LocalFileTransport;
     let path = crate::claude_config::local_settings_path();
+    // Same lock, same reason as `install_local` — and here the loser of the
+    // race also deletes the sidecar, i.e. the last copy of the user's own
+    // statusline command.
+    let lock = crate::claude_config::settings_write_lock(&path);
+    let _guard = lock.lock().await;
     let before = crate::claude_config::read_settings_or_empty(&t, &path).await?;
     let sc_path = sidecar_path(&path);
     let sidecar = tokio::fs::read_to_string(&sc_path)
