@@ -48,6 +48,29 @@ describe('extractProvisionalTail — a freshly started session', () => {
   /** The mobile-proof capture, trimmed: the pty scrollback still holds the
    *  login line and the launch command above Claude's welcome banner, and the
    *  box-top cut alone kept every one of them. */
+  /** At the phone's 47 columns the login line WRAPS, so nothing in the window
+   *  looks like a whole prompt — the first version of this filter matched none
+   *  of the five fragments and the block still drew them (mobile proof,
+   *  i01-first-send-light.png). A prompt HEAD is enough: the window is
+   *  scrollback, and scrollback holds no in-progress prose. */
+  test('a wrapped login line suppresses the block entirely', () => {
+    const capture = [
+      'supermux@supermux-strato:/tmp',
+      '1c3-b2c6-7b2814d510c0/scratch',
+      " ~/.bash_profile 2>/dev/null;",
+      "/mpx/bin/supermux-edit' VISUA",
+      'pad',
+      '╭──────────╮',
+      '│ ❯        │',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('an email address in prose is not a login line', () => {
+    const capture = ['write to a@b.com: it bounced', '╭──╮', '│ ❯│'].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['write to a@b.com: it bounced'])
+  })
+
   test('drops the shell prompt, the launch command and the welcome banner', () => {
     const capture = [
       "supermux@host:/tmp/work$ source ~/.bash_profile 2>/dev/null; claude --name proofpad",
