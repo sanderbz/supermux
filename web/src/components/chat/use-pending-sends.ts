@@ -30,11 +30,13 @@ import type { ChatEntry } from './entries'
 import { serverNowMs } from './latency'
 import type { PeekLens } from './peek-lens'
 import {
+  applyReceipt,
   latchUndelivered,
   reconcile,
   watchdogState,
   WATCHDOG_MS,
   type PendingSend,
+  type SendReceipt,
 } from './pending'
 import { sendGate, type ComposerNotice } from './use-composer'
 
@@ -106,6 +108,13 @@ export interface UsePendingSendsOptions {
   entries: readonly ChatEntry[]
   /** `session.status === 'active'` right now, for the aliveness ledger. */
   active: boolean
+  /** A choice card is on screen (the session's `permission_request`) — a RETRY
+   *  runs the same pre-send gate the composer does, and the gate needs the same
+   *  second source. */
+  dialogCard?: boolean
+  /** The server's delivery receipt (`last_send_text`/`last_send_at`), or null
+   *  when the session has never received a submission. */
+  receipt?: SendReceipt | null
 }
 
 export interface PendingSendsHandle {
@@ -125,6 +134,8 @@ export function usePendingSends({
   peek,
   entries,
   active,
+  dialogCard = false,
+  receipt = null,
 }: UsePendingSendsOptions): PendingSendsHandle {
   const raw = React.useSyncExternalStore(
     React.useCallback((fn) => subscribe(name, fn), [name]),
@@ -159,16 +170,36 @@ export function usePendingSends({
 
   const [, tick] = React.useReducer((n: number) => n + 1, 0)
 
+  // THE SERVER'S RECEIPT, folded in before anything else looks at the list: it
+  // can un-escalate a row the watchdog gave up on, and that has to be true of
+  // the STORE (it survives the renderer toggle) and not only of this render.
+  const receiptText = receipt?.text ?? ''
+  const receiptAtS = receipt?.atS ?? 0
+  const receiptRef = React.useRef<SendReceipt | null>(receipt)
+  receiptRef.current = receipt
+  const acked = applyReceipt(raw, receipt)
+  React.useEffect(() => {
+    if (!receiptText) return
+    update(name, (cur) => applyReceipt(cur, { text: receiptText, atS: receiptAtS }))
+  }, [name, receiptText, receiptAtS])
+
   // Reconcile in RENDER (so a confirmed send never survives a frame as an echo)
   // and prune the store in an effect. `reconcile` only ever removes, so the two
   // converge in one pass and the guard in `update` stops the loop.
-  const live = reconcile(raw, entries, nowMs)
+  const live = reconcile(acked, entries, nowMs)
   React.useEffect(() => {
     update(name, (cur) => {
       const next = reconcile(cur, entries, serverNowMs())
       return next.length === cur.length ? cur : next
     })
   }, [name, entries])
+
+  // What is ALREADY on screen, for the clock-free half of reconciliation. A ref
+  // rather than a dependency: it is read at the moment Enter is pressed, and a
+  // `submit` identity that changed on every transcript refetch would rebuild the
+  // tracked input handle (and therefore the composer's callbacks) once a second.
+  const entriesRef = React.useRef(entries)
+  entriesRef.current = entries
 
   const items = live.map((p) => ({
     ...p,
@@ -219,13 +250,33 @@ export function usePendingSends({
     async (text: string) => {
       const id = `send-${++seq}`
       const atMs = serverNowMs()
+      // The two BASELINES, captured before the POST leaves: what the transcript
+      // already held (so no entry that was on screen can be mistaken for this
+      // send's echo), and where the server's own last-send receipt stood (so a
+      // newer one is evidence about THIS send).
+      const seen: ReadonlySet<string> | null =
+        entriesRef.current.length > 0
+          ? new Set(entriesRef.current.map((e) => e.uuid))
+          : null
+      const receiptAt = receiptRef.current?.atS ?? 0
       // Drawn BEFORE the POST resolves: the echo is the acknowledgement that
       // the user's Enter was received by this app, and it claims nothing more
       // than that until the state below says otherwise.
-      update(name, (cur) => [...cur, { id, text, atMs, state: 'sending' }])
+      update(name, (cur) => [
+        ...cur,
+        { id, text, atMs, state: 'sending', seen, receiptAtS: receiptAt },
+      ])
       try {
         await input.submit(text)
-        patch(name, id, { state: 'unconfirmed' })
+        // RE-STAMPED on the response, not left at the moment the POST was
+        // issued. `POST /send` is not fast by construction: it can AUTO-WAKE a
+        // dead pty (`lifecycle.rs` `start()`, seconds) before it takes the
+        // session lock and types. With the old stamp an 8s wake meant the send
+        // was already past its 5s watchdog window the instant it succeeded —
+        // "this didn't reach the session", with a Retry button, over a message
+        // that had just landed (A4 review). The retry path always re-stamped;
+        // this is the same rule, applied where the clock actually starts.
+        patch(name, id, { state: 'unconfirmed', atMs: serverNowMs() })
       } catch (err) {
         patch(name, id, { state: 'undelivered', note: errorNote(err) })
         // Rethrown so the composer's own banner still speaks: the echo says
@@ -246,12 +297,21 @@ export function usePendingSends({
     (id: string) => {
       const p = snapshot(name).find((x) => x.id === id)
       // A POST in flight is not retryable — that is the double-send the
-      // watchdog's `sending` state exists to prevent.
-      if (!p || p.state === 'sending') return
-      patch(name, id, { state: 'sending', atMs: serverNowMs(), note: undefined })
+      // watchdog's `sending` state exists to prevent. Neither is one the SERVER
+      // has already acknowledged typing into the pty: the row is not offering a
+      // Retry in that state, and this is the belt to that braces.
+      if (!p || p.state === 'sending' || p.receipted) return
+      patch(name, id, {
+        state: 'sending',
+        atMs: serverNowMs(),
+        note: undefined,
+        // A retry is a new delivery: it needs its own receipt baseline, or the
+        // receipt for the FIRST attempt would confirm it instantly.
+        receiptAtS: receiptRef.current?.atS ?? 0,
+      })
       void (async () => {
         try {
-          const gate = sendGate(peek ? await peek.refresh() : null)
+          const gate = sendGate(peek ? await peek.refresh() : null, { dialogCard })
           if (!gate.send) {
             patch(name, id, { state: 'undelivered', note: refusalNote(gate.notice) })
             return
@@ -265,7 +325,7 @@ export function usePendingSends({
         }
       })()
     },
-    [input, name, peek],
+    [dialogCard, input, name, peek],
   )
 
   const dismiss = React.useCallback((id: string) => {
@@ -292,7 +352,9 @@ function errorNote(err: unknown): string | undefined {
  *  banner to borrow. The same two facts `composer.tsx`'s `NOTICE_TITLE` states
  *  for the send path; T5's `attention.ts` is where this copy consolidates. */
 function refusalNote(notice: ComposerNotice): string {
-  return notice.kind === 'dialog'
-    ? 'Claude is waiting on the request above — answer it first.'
-    : 'The terminal has an unsent draft.'
+  if (notice.kind === 'dialog') return 'Claude is waiting on the request above — answer it first.'
+  if (notice.kind === 'dialog-terminal') {
+    return 'The terminal is showing a prompt chat can’t answer — answer it there.'
+  }
+  return 'The terminal has an unsent draft.'
 }

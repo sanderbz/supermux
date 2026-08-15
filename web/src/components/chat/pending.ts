@@ -37,6 +37,32 @@ export interface PendingSend {
    *  below reads it — it exists so the row can say something more useful than
    *  "undelivered" when the reason is known (a rejected POST, a refused retry). */
   note?: string
+  /**
+   * The uuids of the confirmed entries that were ALREADY on screen when this
+   * send left — the clock-free half of reconciliation (A4 review).
+   *
+   * `reconcile` used to ask "is this entry stamped at or after the send?", which
+   * compares a BROWSER-clock stamp (`serverNowMs()` falls back to `Date.now()`
+   * until an `activity_at` has ever been seen) against SERVER-stamped entries.
+   * A browser 30s fast made every echo look too old — the surface then states a
+   * failure over a message visible in the transcript directly above it; a
+   * browser 30s slow let a PREVIOUS identical prompt claim the send, which is
+   * the same lie in the other direction and much quieter.
+   *
+   * An entry the user was already looking at when they pressed Enter cannot be
+   * the echo of that Enter. No clock is involved in saying so.
+   *
+   * `null`/absent = the transcript had not loaded yet, so nothing is known about
+   * what was on screen and the stamp comparison is the fallback.
+   */
+  seen?: ReadonlySet<string> | null
+  /** The session's `last_send_at` (server epoch SECONDS) as it read when this
+   *  send left — the baseline the delivery receipt is compared against. */
+  receiptAtS?: number
+  /** The SERVER confirmed it typed this text into the pty (`set_last_send`,
+   *  written by `/send` after the paste + Enter). Transport-independent, so it
+   *  survives exactly the failure the watchdog cannot see through. */
+  receipted?: boolean
 }
 
 /**
@@ -97,6 +123,24 @@ function claims(sent: string, confirmed: string): boolean {
 }
 
 /**
+ * Could this entry be the echo of THIS send — i.e. did it arrive after it?
+ *
+ * Novelty first and clocks second, deliberately: the uuid answer is exact and
+ * needs no clock at all, and the stamp answer is only reached for a send made
+ * before the transcript had ever loaded — where there is, by construction, no
+ * older entry on screen for it to be confused with.
+ */
+function isAfterSend(
+  p: PendingSend,
+  uuid: string,
+  ms: number,
+  nowMs: number,
+): boolean {
+  if (p.seen) return !p.seen.has(uuid)
+  return ms >= p.atMs - CONFIRM_SKEW_MS && ms <= nowMs + FUTURE_TOLERANCE_MS
+}
+
+/**
  * Which pending gets first refusal on a matching entry.
  *
  * Oldest first — the FIFO rule that keeps a session which sends "ping" twice
@@ -137,7 +181,6 @@ export function reconcile(
   const candidates = entries
     .filter((e) => USER_KINDS.includes(e.kind))
     .map((e) => ({ uuid: e.uuid, ms: e.ts * 1000, text: normalizeSend(e.text) }))
-    .filter((c) => c.ms <= nowMs + FUTURE_TOLERANCE_MS)
     // Chronological, so "oldest pending takes the oldest matching entry" is a
     // single pass rather than a search.
     .sort((a, b) => a.ms - b.ms)
@@ -149,7 +192,7 @@ export function reconcile(
   for (const p of ordered) {
     const sent = normalizeSend(p.text)
     const hit = candidates.find(
-      (c) => !taken.has(c.uuid) && c.ms >= p.atMs - CONFIRM_SKEW_MS && claims(sent, c.text),
+      (c) => !taken.has(c.uuid) && isAfterSend(p, c.uuid, c.ms, nowMs) && claims(sent, c.text),
     )
     if (!hit) continue
     taken.add(hit.uuid)
@@ -160,12 +203,92 @@ export function reconcile(
   return byAge.filter((p) => !claimed.has(p))
 }
 
+/* ── the server's own delivery receipt ────────────────────────────────────── */
+
+/**
+ * `set_last_send` (`db/sessions.rs`) is written by `POST /send` AFTER the paste
+ * and the Enter, and it is broadcast on the session delta. It is therefore a
+ * receipt for the one thing this client cannot otherwise know: whether a send
+ * whose HTTP response never came back nevertheless arrived.
+ *
+ * Why that matters more than it sounds: a dropped response leaves the row
+ * `undelivered` with a Retry button, and Retry on a message the server already
+ * typed sends "revert the migration and redeploy" to the agent twice (A4
+ * review). The receipt is also what covers a queued mid-turn send whose
+ * transcript echo is minutes away, and one that has fallen out of the 30-entry
+ * recall window entirely.
+ *
+ * It is compared against a BASELINE captured at submit time, never against a
+ * clock: "the session's last send is newer than the one it had when I pressed
+ * Enter, and it says what I sent". Both stamps are the server's own, so no skew
+ * estimate can move the answer.
+ */
+export interface SendReceipt {
+  /** `last_send_text` — the first `PROMPT_CLAMP_CHARS` of the last text the
+   *  server typed into this pty. */
+  text: string
+  /** `last_send_at`, epoch SECONDS on the server's clock. */
+  atS: number
+}
+
+/** Does the server's receipt answer for this send? */
+export function receiptClaims(p: PendingSend, receipt: SendReceipt | null): boolean {
+  if (!receipt || !receipt.text || !receipt.atS) return false
+  // Not newer than the receipt this send was made against → it is the PREVIOUS
+  // send's receipt. (`last_send_at` has 1s granularity, so two sends inside one
+  // second yield no receipt for the second — a false negative, which costs
+  // nothing but the pre-existing watchdog behaviour.)
+  if (receipt.atS <= (p.receiptAtS ?? 0)) return false
+  return claims(normalizeSend(p.text), normalizeSend(receipt.text))
+}
+
+/**
+ * Fold a receipt into the store: mark what the server confirms it delivered,
+ * and TAKE BACK an escalation the receipt disproves.
+ *
+ * Un-escalating is not a softening of the "once said, it stays said" rule —
+ * that rule exists so a failure cannot be healed by a guess. This is evidence:
+ * the server states it typed the text. Leaving the accusation up would leave a
+ * Retry button over a message that landed, which is how the duplicate happens.
+ *
+ * Same reference back when nothing moved.
+ */
+export function applyReceipt(
+  pending: readonly PendingSend[],
+  receipt: SendReceipt | null,
+): readonly PendingSend[] {
+  if (!receipt) return pending
+  let changed = false
+  const next = pending.map((p) => {
+    if (p.receipted || p.state === 'sending') return p
+    if (!receiptClaims(p, receipt)) return p
+    changed = true
+    return p.state === 'undelivered'
+      ? {
+          ...p,
+          receipted: true,
+          state: 'unconfirmed' as const,
+          note: 'It reached the session after all.',
+        }
+      : { ...p, receipted: true }
+  })
+  return changed ? next : pending
+}
+
 /** How long a send may go unconfirmed before the surface says so. */
 export const WATCHDOG_MS = 5_000
 
 /**
- * No matching entry AND no evidence of life since the send → undelivered,
- * REGARDLESS OF STATUS (master plan §4.4.1).
+ * No matching entry AND no evidence of life since the send → undelivered.
+ *
+ * The plan's phrasing for this is "regardless of status", and that is true of
+ * the SIGNATURE — status is not an argument — but not of the outcome: the
+ * caller's `sawActiveSince` is fed from the session's status, so a send made
+ * during a long turn is held at `unconfirmed` for as long as the turn runs. The
+ * honest statement of the limitation, since this module's own comment used to
+ * claim the opposite: a send the TUI drops mid-turn is not escalated until the
+ * turn ends. The receipt above is what closes that window when the server got
+ * the text; T8's queue receipt closes the rest.
  *
  * Status is not an argument here, and that is the design. A session that reads
  * `active` because a previous turn is still running says nothing about whether
@@ -201,6 +324,12 @@ export function watchdogState(
   ctx: { nowMs: number; sawActiveSince: (ms: number) => boolean },
 ): PendingState {
   if (p.state !== 'unconfirmed') return p.state
+  // The server said it typed this into the pty. There is nothing left for the
+  // watchdog to be honest about — the message is in the session, and the only
+  // open question is when the transcript will echo it (a queued prompt can sit
+  // there for minutes). Escalating past a receipt would offer a Retry that
+  // duplicates a delivered message.
+  if (p.receipted) return 'unconfirmed'
   if (ctx.nowMs - p.atMs < WATCHDOG_MS) return 'unconfirmed'
   const since = Math.max(p.atMs, ctx.nowMs - WATCHDOG_MS)
   return ctx.sawActiveSince(since) ? 'unconfirmed' : 'undelivered'

@@ -122,18 +122,32 @@ export default function ChatPanel({
   // step with the POST it is drawn for. `pending.attention` is T5's cause —
   // an undelivered send raises the Attention card there; until it lands the
   // undelivered ROW carries the reason and the way out.
+  // The hook-driven dialog signal (≪1s), the SAME one `live-layer.tsx` renders
+  // the choice card from. The pre-send gate reads it as a second source: it
+  // holds the refusal when the peek is down, and it is what decides whether the
+  // refusal may point at a card above the composer or has to name the terminal.
+  const dialogCard = session?.permission_request != null
   const pending = usePendingSends({
     name,
     input: input ?? fallbackInput,
     peek,
     entries,
     active: session?.status === 'active',
+    dialogCard,
+    // The server's own delivery receipt (`set_last_send`, written by `/send`
+    // AFTER the paste + Enter): transport-independent evidence that a send
+    // arrived, which is exactly what a dropped response leaves this client
+    // without.
+    receipt: session?.last_send_text
+      ? { text: session.last_send_text, atS: session.last_send_at ?? 0 }
+      : null,
   })
   const composer = useComposer({
     name,
     input: pending.input,
     peek,
     active: session?.status === 'active',
+    dialogCard,
   })
 
   // ── What the `@`/`/` popover offers (fase A4 T9) ───────────────────────────

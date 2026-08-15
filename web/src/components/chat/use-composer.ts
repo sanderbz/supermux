@@ -131,7 +131,19 @@ export function composerKeyIntent(
 export interface ComposerNotice {
   kind:
     | 'tui-draft'
+    /** A dialog is up AND a choice card for it is on screen — "answer the thing
+     *  above" is a true sentence. */
     | 'dialog'
+    /** A dialog is up and there is NO card for it above the composer: an
+     *  unmapped family, a plan dialog (no `PermissionRequest` hook is verified
+     *  for `ExitPlanMode`), or a hook that was cleared while the pty still shows
+     *  the prompt. Pointing at a card that is not there is the one thing a
+     *  refusal must not do (A4 review). */
+    | 'dialog-terminal'
+    /** Stop was pressed while a dialog is on screen. `Escape` there DENIES the
+     *  dialog (a0 §3, live-verified) — it does not interrupt the turn — so the
+     *  keystroke is not sent and the composer says what it would have done. */
+    | 'stop-dialog'
     | 'send-failed'
     | 'stop-failed'
     /** A `/model`-class command: it opens a picker in the TUI, so chat refuses
@@ -170,14 +182,68 @@ export type SendGate = { send: true } | { send: false; notice: ComposerNotice }
  * Dialog outranks draft: with a dialog up, what the lens reads as a "draft" is
  * more likely to be the dialog's own furniture, and the dialog is the more
  * specific thing to say.
+ *
+ * THE SECOND SOURCE (`ctx.dialogCard`) is the session's hook-driven
+ * `permission_request` — the same signal `live-layer.tsx` renders the choice
+ * card from. It does two things the lens cannot:
+ *   · it holds the refusal when the PEEK IS DOWN. "I could not look" is a send
+ *     when nothing else knows better, but a hook that fired ≪1s ago and has not
+ *     been cleared is knowing better, and a send into an open dialog is answered
+ *     BY the dialog (a0 §3: the paste is ignored, the appended Enter picks the
+ *     caret's row);
+ *   · it decides WHICH refusal is true — whether there is a card above the
+ *     composer to point at, or whether the only surface that can answer this is
+ *     the terminal.
  */
-export function sendGate(lens: PeekLens | null): SendGate {
-  if (!lens) return { send: true }
-  if (lens.dialog) return { send: false, notice: { kind: 'dialog' } }
+export interface SendContext {
+  /** A choice card for a live dialog is rendered above the composer (the
+   *  session's `permission_request`). */
+  dialogCard?: boolean
+}
+
+export function sendGate(lens: PeekLens | null, ctx: SendContext = {}): SendGate {
+  const dialogKind = ctx.dialogCard ? ('dialog' as const) : ('dialog-terminal' as const)
+  if (lens?.dialog) return { send: false, notice: { kind: dialogKind } }
+  // Peek down, hook says a dialog is up: refuse. The lens is the authority when
+  // it can look — a hook that reads stale against a CLEAR screen does not block
+  // anything — but when it cannot look, the hook is the only witness there is.
+  if (!lens) return ctx.dialogCard ? { send: false, notice: { kind: dialogKind } } : { send: true }
   if (lens.composerDraft) {
     return { send: false, notice: { kind: 'tui-draft', detail: lens.composerDraft } }
   }
   return { send: true }
+}
+
+/**
+ * May Stop press Escape right now?
+ *
+ * Escape is the interrupt every one of the three TUIs understands — but inside
+ * a permission dialog it DENIES the dialog (a0 §3, live-verified) and its effect
+ * on the plan dialog is explicitly unverified. Same fail-open rule as the send
+ * gate: a peek that could not look still interrupts, because an interrupt
+ * nobody can press is its own failure.
+ */
+export function stopGate(lens: PeekLens | null): SendGate {
+  if (lens?.dialog) return { send: false, notice: { kind: 'stop-dialog' } }
+  return { send: true }
+}
+
+/**
+ * What stays in the box after a send of `raw`.
+ *
+ * Subtraction, not assignment: a peek plus a POST is two round-trips and people
+ * keep typing through them (measured: text typed ~40ms after Enter). A blind
+ * `setDraft('')` deletes those keystrokes with no undo and no trace.
+ *
+ * By FIRST OCCURRENCE rather than by prefix, because the caret does not have to
+ * be at the end: typing "hey " at the front during the round-trip leaves
+ * "hey hello" in the box, and a prefix rule keeps ALL of it — the sent words
+ * included, one Enter away from being sent again (A4 review).
+ */
+export function draftAfterSend(after: string, raw: string): string {
+  const at = after.indexOf(raw)
+  if (at < 0) return after
+  return (after.slice(0, at) + after.slice(at + raw.length)).replace(/^\s+/, '')
 }
 
 export interface UseComposerOptions {
@@ -190,6 +256,10 @@ export interface UseComposerOptions {
   /** Session status is `active` — a turn is running, so the trailing control is
    *  Stop and a bare Escape interrupts. */
   active: boolean
+  /** The session's hook-driven `permission_request` is live, i.e. a choice card
+   *  is on screen above this composer. Second source for the pre-send gate —
+   *  see `sendGate`. */
+  dialogCard?: boolean
 }
 
 /**
@@ -247,6 +317,7 @@ export function useComposer({
   input,
   peek,
   active,
+  dialogCard = false,
 }: UseComposerOptions): ComposerHandle {
   const draft = React.useSyncExternalStore(
     React.useCallback((fn) => subscribeDraft(name, fn), [name]),
@@ -326,7 +397,7 @@ export function useComposer({
         // there, the server's paste CONCATENATES onto it and submits the pair.
         // One ~50ms peek is the only thing standing between a chat send and
         // that silent corruption.
-        const gate = sendGate(peek ? await peek.refresh() : null)
+        const gate = sendGate(peek ? await peek.refresh() : null, { dialogCard })
         if (!gate.send) {
           setNotice(gate.notice)
           return
@@ -341,11 +412,7 @@ export function useComposer({
         // with no undo and no trace — the same silent-corruption class the peek
         // gate exists to prevent, on the other side of the wire. So only the
         // sent prefix goes; anything typed after it stays in the box.
-        const after = getDraft(name)
-        setDraft(
-          name,
-          after.startsWith(raw) ? after.slice(raw.length).replace(/^\s+/, '') : after,
-        )
+        setDraft(name, draftAfterSend(getDraft(name), raw))
         // A command that is not one of Claude's built-ins WENT — as text, which
         // is what a project/skill command is. The receipt exists so a typo
         // (`/compct`) does not quietly become a message nobody meant to write.
@@ -369,17 +436,36 @@ export function useComposer({
     // allowlist carries it, so this is the same key the terminal renderer's
     // Esc sends (`KEY_ALLOWLIST`, lifecycle.rs:1696).
     //
-    // A REJECTED interrupt has to be said out loud. "I pressed Stop and the
-    // agent kept going" is the one failure this surface must never absorb into
-    // a console warning — and on the REST plane a 404/409 (session gone,
-    // restarted under the same name) is exactly how it arrives.
-    void input.sendKey('Escape').catch((err: unknown) => {
-      setNotice({
-        kind: 'stop-failed',
-        detail: err instanceof Error ? err.message : undefined,
-      })
-    })
-  }, [input])
+    // BUT ONLY WHEN NOTHING IS ASKING A QUESTION. Escape inside a permission
+    // dialog DENIES it (a0 §3, live-verified) and its effect on the plan dialog
+    // is explicitly unverified — which is why the registry ships plan-Esc as
+    // `actOn: false`. A Stop that quietly dismisses a tool call the user never
+    // read is the same wrong-action class this fase is built to refuse, and the
+    // window is real: `PermissionRequest` has no `HookEvent` variant, so the
+    // status stays `active` — Stop stays on screen — for the dialog's whole
+    // life (A4 review). So the same one-peek gate the send path takes, with the
+    // same fail-open rule: a peek that fails still interrupts, because an
+    // interrupt nobody can press is its own failure.
+    void (async () => {
+      const gate = stopGate(peek ? await peek.refresh() : null)
+      if (!gate.send) {
+        setNotice(gate.notice)
+        return
+      }
+      // A REJECTED interrupt has to be said out loud. "I pressed Stop and the
+      // agent kept going" is the one failure this surface must never absorb into
+      // a console warning — and on the REST plane a 404/409 (session gone,
+      // restarted under the same name) is exactly how it arrives.
+      try {
+        await input.sendKey('Escape')
+      } catch (err) {
+        setNotice({
+          kind: 'stop-failed',
+          detail: err instanceof Error ? err.message : undefined,
+        })
+      }
+    })()
+  }, [input, peek])
 
   const insert = React.useCallback(
     (text: string) => {

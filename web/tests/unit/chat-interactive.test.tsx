@@ -38,7 +38,9 @@ import { EntityPickerView } from '../../src/components/chat/entity-picker'
 import { atRows, slashRows, type EntityRow } from '../../src/components/chat/slash'
 import {
   composerKeyIntent,
+  draftAfterSend,
   sendGate,
+  stopGate,
   type ComposerHandle,
 } from '../../src/components/chat/use-composer'
 import type { TileSession } from '../../src/components/session-tile/types'
@@ -121,26 +123,62 @@ describe('the pre-send peek gate', () => {
   })
 
   test('an open dialog blocks the send, and says so instead of guessing', () => {
-    const gate = sendGate({
-      ...CLEAR,
-      dialog: { family: 'permission', variant: 'bash', options: ['Yes'], caretIndex: 0 },
-    })
+    const gate = sendGate(
+      {
+        ...CLEAR,
+        dialog: { family: 'permission', variant: 'bash', options: ['Yes'], caretIndex: 0 },
+      },
+      { dialogCard: true },
+    )
     expect(gate).toEqual({ send: false, notice: { kind: 'dialog' } })
   })
 
   test('the dialog outranks a draft read in the same frame', () => {
+    const gate = sendGate(
+      {
+        ...CLEAR,
+        composerDraft: '1. Yes',
+        dialog: { family: 'plan', options: ['Yes'], caretIndex: null },
+      },
+      { dialogCard: true },
+    )
+    expect(gate).toMatchObject({ notice: { kind: 'dialog' } })
+  })
+
+  test('with no card on screen the refusal names the terminal, not a card', () => {
+    // The `dialog` copy says "answer the request ABOVE". For a plan dialog, an
+    // unmapped family, or a hook cleared while the pty still shows the prompt,
+    // there is nothing above — so a different sentence, pointing at the surface
+    // that can actually answer.
     const gate = sendGate({
       ...CLEAR,
-      composerDraft: '1. Yes',
-      dialog: { family: 'plan', options: ['Yes'], caretIndex: null },
+      dialog: { family: 'unknown', options: ['Yes', 'No'], caretIndex: 0 },
     })
-    expect(gate).toMatchObject({ notice: { kind: 'dialog' } })
+    expect(gate).toEqual({ send: false, notice: { kind: 'dialog-terminal' } })
   })
 
   test('a FAILED peek sends anyway — "I could not look" is not "you cannot type"', () => {
     // The watchdog (T4) is the honest layer for a send that vanishes; a peek
     // outage must never make the composer unusable.
     expect(sendGate(null)).toEqual({ send: true })
+  })
+
+  test('a failed peek with a live permission hook REFUSES — the hook is the only witness left', () => {
+    // The one case where failing open is wrong: the peek is down AND the
+    // session's `permission_request` says a dialog is up. A `/send` there is
+    // read as the dialog's answer (the paste is ignored, the appended Enter
+    // picks the caret's row), so the message is lost and the tool call is
+    // granted by a keystroke nobody aimed at it.
+    expect(sendGate(null, { dialogCard: true })).toEqual({
+      send: false,
+      notice: { kind: 'dialog' },
+    })
+  })
+
+  test('a stale hook does NOT block a send the lens can see is safe', () => {
+    // The inverse: `permission_request` is cleared on PostToolUse/Stop, so it
+    // can lag. When the lens CAN look and the screen is clear, the lens wins.
+    expect(sendGate(CLEAR, { dialogCard: true })).toEqual({ send: true })
   })
 })
 
@@ -228,10 +266,20 @@ describe('the composer, live', () => {
     expect(html).toContain('ship it')
   })
 
-  test('Stop replaces Send while the turn runs — same cell, no reflow', () => {
-    const html = composer({ draft: 'ship it' }, true)
+  test('Stop replaces the mic while the turn runs — same cell, no reflow', () => {
+    const html = composer({ draft: '' }, true)
     expect(html).toContain('data-testid="chat-stop"')
     expect(html).not.toContain('data-testid="chat-send"')
+  })
+
+  test('a draft during a turn shows SEND, not Stop — the button does what the box says', () => {
+    // Typing a follow-up mid-turn is a first-class flow (Claude Code queues it).
+    // With Stop as the only trailing control, the one thing a pointer user could
+    // press while typing was an INTERRUPT — a destructive wrong action on the
+    // gesture that most obviously means "send this" (A4 review).
+    const html = composer({ draft: 'and also run the tests' }, true)
+    expect(html).toContain('data-testid="chat-send"')
+    expect(html).not.toContain('data-testid="chat-stop"')
   })
 
   test('a refusal names the reason, quotes the evidence and offers the terminal', () => {
@@ -650,5 +698,53 @@ describe('the slash refusal, said out loud', () => {
     expect(open).toContain('data-testid="chat-entity-picker"')
     // Above the pill, in the pill's own box — not a portal over the transcript.
     expect(open.indexOf('chat-entity-picker')).toBeLessThan(open.indexOf('sm-composer'))
+  })
+})
+
+// ── The review findings (A4 review) ─────────────────────────────────────────
+
+describe('the Stop gate', () => {
+  const CLEAR2: PeekLens = { bannerVersion: null, composerDraft: null, dialog: null }
+
+  test('Stop does not press Escape into a dialog — that would DENY it, not interrupt', () => {
+    // a0 §3, live-verified: Escape inside a permission dialog denies the tool
+    // call; inside the plan dialog its effect is unverified (which is why the
+    // registry ships plan-Esc as `actOn: false`). And the window is wide open:
+    // `PermissionRequest` has no `HookEvent` variant, so the session keeps
+    // reading `active` — Stop stays on screen — for the dialog's whole life.
+    const gate = stopGate({
+      ...CLEAR2,
+      dialog: { family: 'permission', variant: 'bash', options: ['Yes', 'No'], caretIndex: 0 },
+    })
+    expect(gate).toEqual({ send: false, notice: { kind: 'stop-dialog' } })
+  })
+
+  test('a clear screen — and a failed peek — still interrupt', () => {
+    // An interrupt nobody can press is its own failure, so this one fails open.
+    expect(stopGate(CLEAR2)).toEqual({ send: true })
+    expect(stopGate(null)).toEqual({ send: true })
+  })
+})
+
+describe('clearing the box after a send', () => {
+  test('only the sent words go — anything typed during the round-trip stays', () => {
+    expect(draftAfterSend('hello and also this', 'hello')).toBe('and also this')
+  })
+
+  test('a caret moved to the FRONT mid-flight does not leave the sent words behind', () => {
+    // The prefix rule kept the whole box here ("hey hello"), one Enter away
+    // from sending "hello" a second time — a duplicate produced by the code
+    // that exists to prevent data loss.
+    // The space the user typed after "hey" stays: it is theirs, the caret is
+    // sitting behind it, and only the SENT text is subtracted.
+    expect(draftAfterSend('hey hello', 'hello')).toBe('hey ')
+  })
+
+  test('a box that no longer contains the sent text is left alone', () => {
+    // The user cleared it themselves, or replaced it. Deleting what is there
+    // now would be the data loss this rule exists to avoid.
+    expect(draftAfterSend('something else entirely', 'hello')).toBe(
+      'something else entirely',
+    )
   })
 })

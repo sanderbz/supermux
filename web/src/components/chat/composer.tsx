@@ -162,7 +162,7 @@ export function ChatComposer({
           <div className="grid size-10 place-items-center">
             <AnimatePresence initial={false}>
               <motion.div
-                key={active ? 'stop' : canSend ? 'send' : 'idle'}
+                key={canSend ? 'send' : active ? 'stop' : 'idle'}
                 style={{ gridArea: '1 / 1' }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -171,16 +171,16 @@ export function ChatComposer({
                 // flips mid-sentence.
                 transition={{ duration: reduce ? 0 : SWAP_S, ease: eases.inOut }}
               >
-                {active ? (
-                  <TrailingButton
-                    testId="chat-stop"
-                    label="Stop"
-                    phone={phone}
-                    onClick={handle.stop}
-                  >
-                    <StopIcon />
-                  </TrailingButton>
-                ) : canSend ? (
+                {/* THE BUTTON DOES WHAT THE BOX SAYS (A4 review). The plan drew
+                    Stop as the trailing control "while Active" full stop; with
+                    a draft in the box that made the ONE control a pointer user
+                    can reach mid-turn an INTERRUPT — and typing a follow-up
+                    mid-turn is a first-class flow here (Claude Code queues it,
+                    receipt measured at 158ms). So: text in the box → Send;
+                    empty box during a turn → Stop; at rest → the boards' mic.
+                    Stop with a draft up is still one Escape away (the key
+                    contract) and the dock keeps its own Stop. */}
+                {canSend ? (
                   <TrailingButton
                     testId="chat-send"
                     label={`Send to ${label}`}
@@ -189,6 +189,15 @@ export function ChatComposer({
                     disabled={handle.sending}
                   >
                     <SendIcon />
+                  </TrailingButton>
+                ) : active ? (
+                  <TrailingButton
+                    testId="chat-stop"
+                    label="Stop"
+                    phone={phone}
+                    onClick={handle.stop}
+                  >
+                    <StopIcon />
                   </TrailingButton>
                 ) : (
                   /* At rest the boards' mic keeps its cell. It is decoration
@@ -347,6 +356,13 @@ function ComposerBanner({
 const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   'tui-draft': 'The terminal has an unsent draft.',
   dialog: 'Claude is waiting on the request above — answer it first.',
+  // The card the sentence above points at is NOT on screen for this one, so it
+  // does not point at it. Naming the surface that can actually answer is the
+  // whole of the honesty rule here.
+  'dialog-terminal':
+    'The terminal is showing a prompt chat can’t answer — answer it there.',
+  'stop-dialog':
+    'Escape would answer that prompt, not stop the turn — so it wasn’t sent.',
   'send-failed': 'That message didn’t reach the session.',
   // Not "something went wrong": the turn is still running, and that is the fact
   // the user needs in order to decide what to do next.

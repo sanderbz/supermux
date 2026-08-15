@@ -197,10 +197,87 @@ describe('readLens — totality', () => {
     expect(readLens(capture).dialog).toBeNull()
   })
 
-  test('a truncated dialog (options only, no question) is not act-on-able', () => {
-    // Degrading to "no sighting" is correct: T7 refuses to press a key into a
-    // dialog it cannot fully see, and the Attention card is what the user gets.
+  test('a truncated dialog (options only, no question) is SEEN but not act-on-able', () => {
+    // It used to degrade to "no sighting", which is the wrong direction: a
+    // fingerprint miss must degrade to the Attention card (visible), never to a
+    // send (invisible). A caret on a numbered row IS a modal — it will consume
+    // the next Enter — so it is reported as `unknown`: unanswerable by the
+    // registry, and enough to refuse a send (A4 review).
     const capture = [' ❯ 1. Yes', '   2. Yes, and always allow', '   3. No'].join('\n')
+    const dialog = readLens(capture).dialog
+    expect(dialog?.family).toBe('unknown')
+    expect(dialog?.caretIndex).toBe(0)
+  })
+})
+
+// ── The three review findings the lens shipped with (A4 review) ─────────────
+
+describe('readLens — the capture is scrollback + screen, not the screen', () => {
+  test('a dialog up in the SCROLLBACK is not a dialog on screen', () => {
+    // `/peek` returns history followed by the viewport (`native/vt.rs:307`) —
+    // which is what makes the deep banner read work. Matched over the whole
+    // capture, a permission answered an hour ago read as live forever: every
+    // send refused with a false statement about the session, the fast 1s
+    // cadence pinned on, and no override anywhere in the UI.
+    const capture = `${read('perm-bash.txt')}\n${read('composer-draft.txt')}`
     expect(readLens(capture).dialog).toBeNull()
+    // And the live composer below it is seen again, which is the whole point:
+    // the draft guard went blind for as long as the false sighting lasted.
+    expect(readLens(capture).composerDraft).toBe('half a thought')
+  })
+
+  test('prose that quotes a dialog footer does not lock the composer', () => {
+    // Assistant prose in this repo quotes TUI footers routinely. Whole-capture
+    // matching classified this as a live permission dialog.
+    const capture = [
+      'Do you want me to run the migration?',
+      '  1. Yes',
+      '  2. No',
+      'The TUI footer reads “Esc to cancel · Tab to amend”, by the way.',
+      '',
+      'â so I stopped there.',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '❯ ',
+    ].join('\n')
+    expect(readLens(capture).dialog).toBeNull()
+  })
+
+  test('the live dialog is still read when it IS the screen', () => {
+    // The guard must not cost the thing it protects: every a0 capture still
+    // reads, including with a screenful of scrollback above it.
+    const above = Array.from({ length: 40 }, (_, i) => `⏺ some earlier output ${i}`).join('\n')
+    const lens = readLens(`${above}\n${read('perm-bash.txt')}`)
+    expect(lens.dialog?.family).toBe('permission')
+    expect(lens.dialog?.variant).toBe('bash')
+  })
+})
+
+describe('readLens — the version pin is the BANNER, not any mention of a version', () => {
+  test('prose naming a version does not become the pin', () => {
+    // The pin is read from a 10 000-line deep capture, and a session that has
+    // DISCUSSED a Claude Code version is routine here. Unanchored, the registry
+    // certified fingerprints against a number somebody typed — and the honest
+    // "could not read the version" branch became unreachable.
+    const capture = [
+      '⏺ We pinned Claude Code v2.1.227 for the spike.',
+      '',
+      '❯ ',
+    ].join('\n')
+    expect(readLens(capture).bannerVersion).toBeNull()
+  })
+
+  test('both real banner shapes still read', () => {
+    expect(readLens(read('banner.txt')).bannerVersion).toBe('2.1.232')
+    expect(readLens('▐▛███▜▌ Claude Code v2.1.231').bannerVersion).toBe('2.1.231')
   })
 })

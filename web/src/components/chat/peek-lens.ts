@@ -20,7 +20,16 @@ import { parseAnsiLine } from '../../lib/ansi'
 /** A dialog the lens can SEE. Whether it may be answered is the registry's call
  *  (T6) — the lens reports, it never decides. */
 export interface DialogSighting {
-  family: 'permission' | 'plan'
+  /** `unknown` is the REFUSAL-FIRST reading (A4 review): something with numbered
+   *  rows and a caret is sitting on the live screen, and this app has no
+   *  fingerprint for it. The registry answers nothing for it (`entryForSighting`
+   *  finds no entry → `dialog-unmapped`), and the composer refuses to send —
+   *  which is the point. The three captured fingerprints decide whether a dialog
+   *  may be ANSWERED; they must not be what decides whether one is THERE, because
+   *  a fingerprint miss would then degrade to a send (invisible) instead of to
+   *  the Attention card (visible). Read/WebFetch/MCP permission prompts have no
+   *  `Tab to amend` footer — nothing to amend — so they land here. */
+  family: 'permission' | 'plan' | 'unknown'
   variant?: 'bash' | 'edit' | 'write'
   /** Whitespace-normalised option labels, in TUI order.
    *  Wrapped continuation lines are folded back into their option (options wrap
@@ -128,14 +137,21 @@ function readOptions(lines: readonly string[]): OptionRow[] {
 
 /** Which of the two act-on families this is, if either. Order matters: the two
  *  questions differ by two words (`Would you like` vs `Do you want`), so the
- *  discriminator is option-1 TEXT — a0 §3, stated as a caution. */
+ *  discriminator is option-1 TEXT — a0 §3, stated as a caution.
+ *
+ *  `block` is the dialog's OWN region, never the whole capture: the capture is
+ *  scrollback + viewport (`native/vt.rs`), and matching the fingerprint tokens
+ *  across all of it let assistant prose that quotes a footer — or a dialog that
+ *  was answered ten minutes ago — classify as a live dialog and lock the
+ *  composer (A4 review). */
 function readFamily(
-  whole: string,
+  block: string,
   options: readonly OptionRow[],
-): DialogSighting['family'] | null {
+): 'permission' | 'plan' | null {
   if (options.length < 2) return null
   const first = options[0].text
   const all = options.map((o) => o.text).join(' · ')
+  const whole = block
   // Plan approval (ExitPlanMode), pinned v2.1.231. Three real labels — NOT the
   // master plan's "auto-accept / manual / keep planning" phrasing (a0 §3).
   if (
@@ -172,16 +188,61 @@ function readVariant(block: string): DialogSighting['variant'] {
  *  a0 capture with room to spare; beyond it we are in scrollback. */
 const BLOCK_LOOKBACK = 24
 
+/**
+ * How far above the bottom of the capture a dialog's last option may sit.
+ *
+ * `/peek` returns HISTORY followed by the viewport (`native/vt.rs:307`) — that
+ * is what makes the deep banner read work — so an option block up in the
+ * scrollback is a dialog that was answered, not one that is waiting. Without
+ * this, a session that had answered a permission an hour ago read as blocked
+ * forever: every send refused, with no override and no way for the user to say
+ * the app was wrong (A4 review). A live dialog's own tail is short — the footer
+ * plus a blank line or two on every a0 capture — so 10 rows is slack, not hope.
+ */
+const DIALOG_TAIL_SLACK = 10
+
+/** The last row with a printable glyph on it, or −1. */
+function lastContentLine(lines: readonly string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].trim()) return i
+  }
+  return -1
+}
+
+/**
+ * Is this numbered block a MODAL — something that will eat the next Enter —
+ * even though no fingerprint claims it?
+ *
+ * The caret is the tell a0 verified: the dialog caret is space-prefixed AND on a
+ * numbered row, which ordinary prose lists never are. `Esc to …` is the second
+ * reading, for a caret drawn in colour rather than in glyphs.
+ */
+function looksModal(block: string, rows: readonly OptionRow[]): boolean {
+  return rows.some((r) => r.caret) || /\bEsc to (cancel|interrupt|exit|go back)\b/i.test(block)
+}
+
 function readDialog(lines: readonly string[]): DialogSighting | null {
   const rows = readOptions(lines)
   if (rows.length < 2) return null
-  const whole = norm(lines.map(norm).join(' '))
-  const family = readFamily(whole, rows)
-  if (!family) return null
+  // LIVE SCREEN ONLY — see `DIALOG_TAIL_SLACK`.
+  const tail = lastContentLine(lines)
+  if (tail < 0 || rows[rows.length - 1].line < tail - DIALOG_TAIL_SLACK) return null
 
   const from = Math.max(0, rows[0].line - BLOCK_LOOKBACK)
-  const to = Math.min(lines.length, rows[rows.length - 1].line + 4)
+  // Down to the bottom of the screen: the guard above has already established
+  // that the options are AT the bottom, and everything between them and the last
+  // printed row is the dialog's own footer — which is where the fingerprint
+  // tokens (`Esc to cancel`, `Tab to amend`) and the plan's path live.
+  const to = Math.min(lines.length, Math.max(rows[rows.length - 1].line + 4, tail + 1))
   const block = norm(lines.slice(from, to).map(norm).join(' '))
+
+  // A fingerprint decides whether this may be ANSWERED (the registry's job); it
+  // does not decide whether something is THERE. Anything modal-shaped that no
+  // fingerprint claims is reported as `unknown` — refused by the composer,
+  // unanswerable by the registry, visible in the Attention card.
+  const family: DialogSighting['family'] | null =
+    readFamily(block, rows) ?? (looksModal(block, rows) ? 'unknown' : null)
+  if (!family) return null
 
   const caret = rows.find((r) => r.caret)
   const sighting: DialogSighting = {
@@ -192,10 +253,10 @@ function readDialog(lines: readonly string[]): DialogSighting | null {
   if (family === 'permission') {
     const variant = readVariant(block)
     if (variant) sighting.variant = variant
-  } else {
+  } else if (family === 'plan') {
     // The footer's plan path, when it is on screen. `[^\s]` and not `.` so a
     // footer that shares its line with `ctrl+g to edit in …` cannot swallow it.
-    const m = /~\/\.claude\/plans\/[^\s]*\.md/.exec(whole)
+    const m = /~\/\.claude\/plans\/[^\s]*\.md/.exec(block)
     if (m) sighting.planPath = m[0]
   }
   return sighting
@@ -259,19 +320,33 @@ function readComposerDraft(lines: readonly string[]): string | null {
  *  exist (a fresh boot draws the `╭─── … ───╮` box, a cleared session the
  *  compact `▐▛███▜▌ Claude Code vX.Y.Z` form), so the anchor is the token, not
  *  the frame. */
-function readBannerVersion(whole: string): string | null {
-  const m = /Claude Code v(\d+\.\d+\.\d+[^\s│╮─]*)/.exec(whole)
-  return m ? m[1] : null
+const BANNER_VERSION_RE = /Claude Code v(\d+\.\d+\.\d+[^\s│╮─]*)/
+/** The banner's own furniture — the box rule or the block-glyph logo. Required
+ *  on the SAME line as the version (A4 review): the deep read is 10 000 lines of
+ *  scrollback, and in this repo a session that has *discussed* a Claude Code
+ *  version is routine. An unanchored match pinned the registry to a number
+ *  somebody typed, and `attention.ts`'s honest "could not read the version"
+ *  branch became unreachable. */
+const BANNER_FURNITURE = /[╭─│▐▛█▜▌]/
+
+function readBannerVersion(lines: readonly string[]): string | null {
+  // First match wins: the boot banner is the first thing a session prints, so in
+  // a deep capture it is above every later mention of a version.
+  for (const line of lines) {
+    if (!BANNER_FURNITURE.test(line)) continue
+    const m = BANNER_VERSION_RE.exec(line)
+    if (m) return m[1]
+  }
+  return null
 }
 
 /** Read one `/peek` capture. Pure, total, cheap: no capture ever throws, and an
  *  empty one reads as "nothing on screen" rather than as a failure. */
 export function readLens(capture: string): PeekLens {
   const lines = capture ? capture.split('\n').map(plain) : []
-  const whole = norm(lines.map(norm).join(' '))
   const dialog = readDialog(lines)
   return {
-    bannerVersion: readBannerVersion(whole),
+    bannerVersion: readBannerVersion(lines),
     composerDraft: dialog ? null : readComposerDraft(lines),
     dialog,
   }

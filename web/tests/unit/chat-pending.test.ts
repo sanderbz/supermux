@@ -17,6 +17,7 @@ import { describe, expect, test } from 'bun:test'
 
 import type { ChatEntry } from '../../src/components/chat/entries'
 import {
+  applyReceipt,
   CONFIRM_SKEW_MS,
   latchUndelivered,
   normalizeSend,
@@ -231,5 +232,86 @@ describe('the delivery watchdog', () => {
     // latch's either.
     const cur = [mk('x', 0, 'sending')]
     expect(latchUndelivered(cur, new Set([cur[0].id]))).toBe(cur)
+  })
+})
+
+// ── The review findings (A4 review) ─────────────────────────────────────────
+
+describe('reconcile — the clock is not evidence', () => {
+  /** A send that knows what was already on screen when it left. */
+  function sent(text: string, atMs: number, seen: string[]): PendingSend {
+    return { ...mk(text, atMs), seen: new Set(seen) }
+  }
+
+  test('a browser clock running FAST does not fake a failure', () => {
+    // `serverNowMs()` is `Date.now()` until an `activity_at` has ever been seen
+    // (`latency.ts`, one feeder), so `atMs` is a BROWSER stamp while the entries
+    // it was compared against are SERVER-stamped. 30s of skew and the echo
+    // landing one server-second later reads as "older than the send": the
+    // surface then states "that message didn't reach the session" over a bubble
+    // visible in the transcript directly above it.
+    const p = sent('hello', 1_030_000 /* clock 30s fast */, ['old-1'])
+    const echo = entry('hello', 1_000_500, 'prompt', 'new-1')
+    expect(reconcile([p], [echo], 1_031_000)).toEqual([])
+  })
+
+  test('a browser clock running SLOW does not fake a delivery', () => {
+    // The quiet one. A clock 30s behind let a PREVIOUS identical prompt claim
+    // the send, so a message that never arrived was reconciled away silently.
+    const older = entry('continue', 1_000_000, 'prompt', 'old-continue')
+    const p = sent('continue', 970_000 /* clock 30s slow */, ['old-continue'])
+    expect(reconcile([p], [older], 971_000).map((x) => x.text)).toEqual(['continue'])
+  })
+
+  test('the stamp rule still applies when the transcript had not loaded', () => {
+    // No snapshot = nothing is known about what was on screen. There is also,
+    // by construction, no older entry for the send to be confused with.
+    const p = mk('hello', 10_000)
+    expect(reconcile([p], [entry('hello', 10_002)], 11_000)).toEqual([])
+    // Older than the send by more than the truncation tolerance: not its echo.
+    expect(reconcile([p], [entry('hello', 500)], 11_000)).toEqual([p])
+  })
+})
+
+describe('the server’s delivery receipt', () => {
+  const receipt = (text: string, atS: number) => ({ text, atS })
+
+  test('a receipt newer than the send confirms it — whatever the transport did', () => {
+    // `set_last_send` is written by `POST /send` AFTER the paste and the Enter.
+    // A response that never came back is not evidence of non-delivery, and this
+    // is the only evidence that can tell the two apart.
+    const p: PendingSend = { ...mk('deploy', 1_000, 'undelivered'), receiptAtS: 40 }
+    const [out] = applyReceipt([p], receipt('deploy', 41))
+    expect(out.receipted).toBe(true)
+    // The escalation is TAKEN BACK: leaving it up leaves a Retry button over a
+    // message that landed, and pressing it sends the instruction twice.
+    expect(out.state).toBe('unconfirmed')
+  })
+
+  test('the PREVIOUS send’s receipt confirms nothing', () => {
+    const p: PendingSend = { ...mk('deploy', 1_000), receiptAtS: 41 }
+    expect(applyReceipt([p], receipt('deploy', 41))).toEqual([p])
+  })
+
+  test('a receipt for different text confirms nothing', () => {
+    const p: PendingSend = { ...mk('deploy', 1_000), receiptAtS: 40 }
+    expect(applyReceipt([p], receipt('revert', 41))).toEqual([p])
+  })
+
+  test('a receipted send never escalates', () => {
+    // It is IN the session. The only open question is when the transcript will
+    // echo it — a queued prompt can sit there for minutes — and "didn't reach
+    // the session" would be a false statement with a duplicating button on it.
+    const p: PendingSend = { ...mk('deploy', 0), receipted: true }
+    expect(watchdogState(p, { nowMs: WATCHDOG_MS * 10, sawActiveSince: () => false })).toBe(
+      'unconfirmed',
+    )
+  })
+
+  test('an unreceipted send in the same shape still escalates', () => {
+    const p = mk('deploy', 0)
+    expect(watchdogState(p, { nowMs: WATCHDOG_MS * 10, sawActiveSince: () => false })).toBe(
+      'undelivered',
+    )
   })
 })
