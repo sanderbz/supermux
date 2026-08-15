@@ -121,20 +121,38 @@ export function insertIntoComposer(
 }
 
 /**
- * A `SessionInput` whose INSERT lands in the React composer.
+ * The handle every surface OUTSIDE the chat panel writes through while the chat
+ * renderer is mounted: the snippet drawer, the attachment injector, the dock.
+ * Both text paths land in the React composer.
  *
- * `submit` and `sendKey` still go to the session (the REST plane, passed in as
- * `base`) — only "put this text where the user can see and edit it" is
- * re-routed. That asymmetry is the point: the snippet panel's "Insert" means
- * *stage it*, its "Run" means *send it*, and both keep their meaning when the
- * chat renderer is the one mounted.
+ * WHY `submit` STAGES INSTEAD OF SENDING (A4 review). It used to delegate
+ * straight to `base.submit` → `POST /send`, which is the raw plane: no pre-send
+ * peek gate, no slash gate, no pending echo, no watchdog — and no pty on screen
+ * to notice with. Snippet "Run" under chat could therefore paste onto a
+ * half-typed TUI draft and submit the pair, or land in an open permission
+ * dialog, where the paste is ignored and the Enter `send_text` appends picks the
+ * caret's row: option 1, `Yes`, which EXECUTES the command. Silently, with the
+ * chat surface showing nothing at all.
+ *
+ * So under chat, Run means *put it in the box, ready to go*: the text arrives
+ * where the user can read it, one deliberate Enter from the gated send path that
+ * echoes it, watches for its delivery and can admit it failed. The terminal
+ * renderer's Run is unchanged — there, the pty is on screen and the user is
+ * looking at it.
+ *
+ * `sendKey` still goes straight to the session: the dock's keys are keys, not
+ * text, and there is nothing to stage.
  */
 export function composerSessionInput(
   name: string,
   base: SessionInput,
 ): SessionInput {
   return {
-    submit: (text: string) => base.submit(text),
+    submit: (text: string) => {
+      insertIntoComposer(name, text)
+      focusComposer(name)
+      return Promise.resolve()
+    },
     insert: (text: string) => {
       insertIntoComposer(name, text)
       return Promise.resolve()

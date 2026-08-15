@@ -216,8 +216,16 @@ describe('every insert surface writes into the REACT composer', () => {
     expect(pasted).toEqual([])
     expect(getDraft(NAME)).toBe('/compact')
 
+    // AND NEITHER DOES `submit` (A4 review). Snippet "Run" holds this handle
+    // under the chat renderer, and a raw `POST /send` from it skips every gate
+    // the composer has: it pastes onto whatever is at the TUI's prompt — a
+    // half-typed draft, or an open permission dialog, where the appended Enter
+    // selects the caret's row (option 1: Yes, execute) — with no echo, no
+    // watchdog and no pty on screen to notice with. Run means "ready to go",
+    // one deliberate Enter from the gated path.
     await input.submit('ship it')
-    expect(sent).toEqual(['ship it'])
+    expect(sent).toEqual([])
+    expect(getDraft(NAME)).toBe('/compact ship it')
     setDraft(NAME, '')
   })
 })

@@ -726,10 +726,13 @@ export function DesktopSplit({
                 <ChatPanel
                   name={name}
                   session={current}
-                  // ONE handle for the whole pane: the composer, the snippet
-                  // panel and the attachment injector all write into the same
-                  // draft (fase A4 T3).
-                  input={chatInput}
+                  // The RAW plane. The panel is the one place that may write to
+                  // the pty under chat, and it does it through its own gates
+                  // (peek-verify, the slash gate, the pending echo + watchdog).
+                  // Everything else in this pane holds `chatInput`, whose text
+                  // paths stage into the composer instead — one draft, one
+                  // gated way out of it (fase A4 T3, A4 review).
+                  input={restInput}
                   onOpenTerminal={() => setRenderer('terminal')}
                 />
               </React.Suspense>
