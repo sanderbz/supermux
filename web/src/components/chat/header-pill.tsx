@@ -94,8 +94,9 @@ export interface SessionHeaderPillProps {
   /**
    * The shell's own affordances, either side of the cluster — the phone board's
    * back chevron and account avatar. They are NAVIGATION, which the surface does
-   * not own: A5's mobile shell fills these, and the bench fills them to prove the
-   * geometry is the board's.
+   * not own: A5's mobile shell fills them (the back button, and the renderer
+   * switch at its compact size — `routes/focus/mobile.tsx`), and the bench fills
+   * them with the same two so the geometry it approves is the shipped one.
    */
   leading?: React.ReactNode
   trailing?: React.ReactNode

@@ -421,6 +421,25 @@ export interface MobileDockProps {
    *  `insert(text)` once mounted, so the route-level snippet panel can drop
    *  a snippet body straight into the terminal (tap-to-insert sends it live). */
   registerInsert?: (insert: ((text: string) => void) | null) => void
+  /**
+   * The CHAT renderer owns the pane (fase A5) — reduce the dock to the controls
+   * that still do something.
+   *
+   * Everything hidden by this flag drives raw key BYTES into a pty through the
+   * terminal handle, which is null when no terminal is mounted: the accessory
+   * key strip, the ⌨ keyboard toggle (the composer is the keyboard owner under
+   * chat, and it is one tap away on screen), the KeyBar toggle (the bar itself
+   * is hidden) and the ↵ Enter pill (the composer's Send is the submit, and an
+   * Enter fired blind at the pty would submit whatever draft is sitting at the
+   * `❯` — the exact concatenation the composer's pre-send gate exists to
+   * prevent). Same reduction `desktop-split.tsx` makes with
+   * `rawKeys={!chatActive}`; the mobile dock just has more of them.
+   *
+   * What STAYS works through the input plane, which under chat stages into the
+   * React composer (`composerSessionInput`): the session pill (switch/picker),
+   * snippets, and dictation.
+   */
+  chat?: boolean
   className?: string
 }
 
@@ -441,6 +460,7 @@ export function MobileDock({
   onEdit,
   editOpen = false,
   registerInsert,
+  chat = false,
   className,
 }: MobileDockProps) {
   // ── dictation ──────────────────────────────────────────────────────────────
@@ -584,7 +604,7 @@ export function MobileDock({
           open (the route pins the whole dock above the keyboard via
           `keyboardInset`). Each chip drives `sendKey` — the keys a soft keyboard
           lacks. Soft SF pills, not a terminal keymap. */}
-      {keyboardOpen && (
+      {keyboardOpen && !chat && (
         <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
           {/* Esc / Tab / Ctrl-C — Ctrl-C (interrupt) is preserved here. The
               standalone 📎 attach chip was removed: attach now lives in the
@@ -648,21 +668,28 @@ export function MobileDock({
           editOpen={editOpen}
         />
 
-        <DockIcon
-          label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
-          onClick={keyboardOpen ? onBlurTerm : onFocusTerm}
-          active={keyboardOpen}
-        >
-          <Keyboard className="size-5" strokeWidth={1.75} />
-        </DockIcon>
+        {/* Terminal-only, both of them (see the `chat` prop): the keyboard
+            owner under chat is the composer's own textarea, and the KeyBar is
+            hidden there. */}
+        {!chat && (
+          <DockIcon
+            label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
+            onClick={keyboardOpen ? onBlurTerm : onFocusTerm}
+            active={keyboardOpen}
+          >
+            <Keyboard className="size-5" strokeWidth={1.75} />
+          </DockIcon>
+        )}
 
         {/* KeyBar toggle (mobile-focus-keybar spec) — was "open the
             QuickKeysSheet bottom drawer"; now flips the floating KeyBar's
             persisted open state. The `···` glyph is kept (still reads as
             "more controls"). */}
-        <DockIcon label="Key bar" active={keyBarOpen} onClick={onToggleKeyBar}>
-          <Ellipsis className="size-5" strokeWidth={1.75} />
-        </DockIcon>
+        {!chat && (
+          <DockIcon label="Key bar" active={keyBarOpen} onClick={onToggleKeyBar}>
+            <Ellipsis className="size-5" strokeWidth={1.75} />
+          </DockIcon>
+        )}
 
         {onOpenSnippets && (
           <DockIcon label="Snippets" onClick={onOpenSnippets}>
@@ -687,8 +714,11 @@ export function MobileDock({
             the keyboard. The send still fires on `onClick`, so the keyboard
             stays up. Mirrors the accessory-key focus-preservation pattern.
             Right-aligned (ml-auto) into the space the name-truncation frees;
-            primary-tinted as the dock's one affirmative action. */}
-        <EnterButton onSend={() => onSendKey('Enter')} />
+            primary-tinted as the dock's one affirmative action.
+
+            ABSENT UNDER CHAT: the composer's Send is the submit there, and this
+            pill would fire `\r` at whatever the pty's `❯` is holding. */}
+        {!chat && <EnterButton onSend={() => onSendKey('Enter')} />}
       </div>
     </div>
   )
@@ -987,18 +1017,36 @@ function ComposeField({
         aria-hidden={editOpen || undefined}
         tabIndex={editOpen ? -1 : undefined}
       >
-        {/* ✎ the visual cue: tap to EDIT what you've already typed in a real
-            native editor (the editor sheet has its own 📎 attach inside). */}
-        <PencilLine
-          className="size-[18px] shrink-0 text-muted-foreground"
-          strokeWidth={1.75}
-          aria-hidden
-        />
-        {/* Muted "Edit" label — reads as a tappable affordance to lift your typed
-            text into a native editor (sentence case, iOS-native). */}
-        <span className="min-w-0 flex-1 truncate text-left text-muted-foreground">
-          Edit
-        </span>
+        {onEdit ? (
+          <>
+            {/* ✎ the visual cue: tap to EDIT what you've already typed in a real
+                native editor (the editor sheet has its own 📎 attach inside). */}
+            <PencilLine
+              className="size-[18px] shrink-0 text-muted-foreground"
+              strokeWidth={1.75}
+              aria-hidden
+            />
+            {/* Muted "Edit" label — reads as a tappable affordance to lift your
+                typed text into a native editor (sentence case, iOS-native). */}
+            <span className="min-w-0 flex-1 truncate text-left text-muted-foreground">
+              Edit
+            </span>
+          </>
+        ) : (
+          /* NO editor to lift anything into — a shell pane, or the chat
+             renderer (whose composer IS the editor; fase A5). The tap already
+             fell back to the session picker (`onTap`, and `tapLabel` already
+             said so); the LABEL has to fall back with it, or the pill reads
+             "Edit" and opens a session list. So it becomes what that tap
+             actually does: this session, tap to switch — the same dot+name
+             cluster the peek-of-next underneath already draws. */
+          <>
+            <StatusDot status={current.status} />
+            <span className="min-w-0 flex-1 truncate text-left text-muted-foreground">
+              {truncatePillName(displayLabel(current))}
+            </span>
+          </>
+        )}
       </motion.button>
     </div>
   )

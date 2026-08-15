@@ -228,6 +228,12 @@ export interface KeyBarProps {
    *  SAME guard the session-picker sheet gets. */
   pickerOpen: boolean
   onPickerOpenChange: (open: boolean) => void
+  /** Extra px between the 44px focus header and this pill. The bar hangs off a
+   *  FIXED offset (it must not slide with the peek-of-next drag), so anything
+   *  the route inserts into the flow under that header is invisible to it and
+   *  gets covered. Fase A5 inserts exactly one such thing — the chat/terminal
+   *  switch rail — and passes its height here. */
+  topOffset?: number
 }
 
 export function KeyBar({
@@ -238,6 +244,7 @@ export function KeyBar({
   onSendText,
   pickerOpen,
   onPickerOpenChange,
+  topOffset = 0,
 }: KeyBarProps) {
   const reduceMotion = useReducedMotion()
 
@@ -290,7 +297,9 @@ export function KeyBar({
                 : { opacity: 0, y: -8, scale: 0.96 }
             }
             transition={reduceMotion ? { duration: 0.15 } : springs.snappy}
-            style={{ top: 'calc(env(safe-area-inset-top) + 44px + 20px)' }}
+            style={{
+              top: `calc(env(safe-area-inset-top) + 44px + 20px + ${topOffset}px)`,
+            }}
             className="pointer-events-auto fixed left-1/2 z-[60] -translate-x-1/2"
           >
             <div

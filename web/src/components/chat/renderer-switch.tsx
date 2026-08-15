@@ -29,12 +29,27 @@ const OPTIONS = [
   { value: 'terminal', label: 'Terminal' },
 ] as const
 
+/**
+ * The two sizes, in the numbers that matter. `sm` exists for fase A5's mobile
+ * seam: on the phone this control rides the header card's TRAILING slot next to
+ * a 34px back button, a 28px face and the session's name — at `md` it eats
+ * 145px of a 366px card and the name is left with a dozen characters. Same
+ * capsule, same rail, same motion; two labels and eight pixels of padding
+ * smaller.
+ */
+const SIZE = {
+  md: { rail: 'h-[30px]', cell: 'px-3 text-[13.4px]' },
+  sm: { rail: 'h-[26px]', cell: 'px-2.5 text-[12.5px]' },
+} as const
+
 export function RendererSwitch({
   value,
   onChange,
+  size = 'md',
 }: {
   value: 'chat' | 'terminal'
   onChange: (v: 'chat' | 'terminal') => void
+  size?: 'md' | 'sm'
 }) {
   const reduce = useReducedMotion() ?? false
   // PER INSTANCE, not a constant: framer resolves `layoutId` GLOBALLY, so two
@@ -56,7 +71,10 @@ export function RendererSwitch({
       // `bg-fill-soft` under a `bg-fill-soft-2` cell — 4.5% ink under 7% ink —
       // and the selection would have to be read off the label colour instead of
       // the capsule. Bare paper gives the cell its whole contrast budget.
-      className="inline-flex h-[30px] items-center rounded-full border-[0.5px] border-hairline p-[2px]"
+      className={cn(
+        'inline-flex flex-none items-center rounded-full border-[0.5px] border-hairline p-[2px]',
+        SIZE[size].rail,
+      )}
     >
       {OPTIONS.map((o) => {
         const selected = value === o.value
@@ -69,7 +87,8 @@ export function RendererSwitch({
             data-testid={`renderer-${o.value}`}
             onClick={() => onChange(o.value)}
             className={cn(
-              'relative h-full rounded-full px-3 text-[13.4px] font-medium tracking-[-0.05px]',
+              'relative h-full rounded-full font-medium tracking-[-0.05px]',
+              SIZE[size].cell,
               'transition-colors duration-[120ms]',
               selected ? 'text-ink' : 'text-ink-3 hover:text-ink-2',
             )}
