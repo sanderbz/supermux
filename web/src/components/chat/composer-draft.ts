@@ -87,16 +87,24 @@ export function focusComposer(name: string): void {
  * controlled re-render (one frame later — React has not written the new value
  * to the node yet at the moment this returns).
  */
-export function insertIntoComposer(name: string, text: string): void {
+export function insertIntoComposer(
+  name: string,
+  text: string,
+  /** Replace THIS range instead of the live selection (fase A4 T9: accepting a
+   *  `@`/`/` pick overwrites the token that opened the popover, and the caret
+   *  the DOM reports may already have moved on). */
+  selection?: Selection,
+): number {
   const el = fieldFor(name)
   const draft = getDraft(name)
   const sel: Selection =
-    el && el.selectionStart != null && el.selectionEnd != null
+    selection ??
+    (el && el.selectionStart != null && el.selectionEnd != null
       ? { start: el.selectionStart, end: el.selectionEnd }
-      : draft.length
+      : draft.length)
   const next = insertAtCaret(draft, sel, text)
   setDraft(name, next.draft)
-  if (!el) return
+  if (!el) return next.caret
   el.focus()
   const place = () => {
     const node = fieldFor(name)
@@ -109,6 +117,7 @@ export function insertIntoComposer(name: string, text: string): void {
   } else {
     place()
   }
+  return next.caret
 }
 
 /**

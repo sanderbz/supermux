@@ -20,12 +20,13 @@
 // props — that is what `/dev/chat-live` renders, so the bench and the app cannot
 // drift apart.
 
+import { useQuery } from '@tanstack/react-query'
 import * as React from 'react'
 
 import type { TileSession } from '@/components/session-tile/types'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSessions } from '@/hooks/use-sessions'
-import { filesApi } from '@/lib/api'
+import { commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
 import { topAttention } from './attention'
@@ -135,6 +136,41 @@ export default function ChatPanel({
     active: session?.status === 'active',
   })
 
+  // ── What the `@`/`/` popover offers (fase A4 T9) ───────────────────────────
+  // Fetched HERE, not in the picker: the panel is the data plane (the A3/A4
+  // contract), and a lazily-loaded chunk that imported the API client for
+  // itself made the bundler hoist that client into a third chunk for no new
+  // behaviour. Both are `enabled` only while the popover is actually open —
+  // `tracked-files` is a git walk on the server, not free — and both re-declare
+  // the keys their hooks use, so they share those caches instead of doubling
+  // them (`use-commands.ts`, and the same 30s staleTime as the sessions list).
+  const picker = composer.picker
+  const trackedFiles = useQuery<string[]>({
+    queryKey: ['tracked-files', name],
+    queryFn: () => sessionsApi.trackedFiles(name),
+    enabled: picker.open && picker.kind === '@',
+    staleTime: 30_000,
+    // A session with no repo answers with an error; the honest response is an
+    // empty picker, not three retries.
+    retry: false,
+  })
+  const slashCommands = useQuery({
+    queryKey: ['slash-commands'],
+    queryFn: commandsApi.listSlashCommands,
+    enabled: picker.open && picker.kind === '/',
+    staleTime: 60_000,
+    retry: false,
+  })
+  const pickerData = React.useMemo(
+    () => ({
+      files: trackedFiles.data,
+      commands: slashCommands.data,
+      sessions,
+      loading: picker.kind === '@' ? trackedFiles.isLoading : slashCommands.isLoading,
+    }),
+    [picker.kind, sessions, slashCommands.data, slashCommands.isLoading, trackedFiles.data, trackedFiles.isLoading],
+  )
+
   // ── The Attention card (fase A4 T5) ────────────────────────────────────────
   // ONE card, so the causes are ranked rather than stacked (`topAttention`).
   // Today exactly one raiser is wired — a send the watchdog gave up on; T6/T7
@@ -196,6 +232,10 @@ export default function ChatPanel({
           surface={phone ? 'phone' : 'desktop'}
           active={session?.status === 'active'}
           onOpenTerminal={onOpenTerminal}
+          // The popover's three lists (fase A4 T9) — the sessions among them
+          // ride the shared query this component already subscribes to, the
+          // same rule as `mentions`/`names`.
+          pickerData={pickerData}
           // The dogfood number, readable without devtools (re-renders on the
           // live-layer ticker / tail refetches). It rides the composer's frame
           // now — the read-only shell this replaced is only reached when NO

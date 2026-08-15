@@ -30,8 +30,12 @@ import * as React from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { PAPER } from '@/brand/tokens'
+import { ChatComposer } from '@/components/chat/composer'
 import { ChatConversation, PHONE_QUERY } from '@/components/chat/conversation'
 import { toDisplayList } from '@/components/chat/entries'
+import { EntityPickerView } from '@/components/chat/entity-picker'
+import { atRows, slashRows } from '@/components/chat/slash'
+import type { ComposerHandle } from '@/components/chat/use-composer'
 import { entryLabels } from '@/components/chat/grouping'
 import { ProvisionalTailView } from '@/components/chat/provisional-tail'
 import { sessionAccentVarsFor } from '@/components/chat/session-accent'
@@ -40,12 +44,15 @@ import { useTheme } from '@/components/theme-provider'
 import { useMediaQuery } from '@/hooks/use-media-query'
 
 import {
+  BENCH_COMMANDS,
   BENCH_ROSTER,
   liveStates,
+  MENTIONABLE,
   pinFor,
   MENTIONS,
   NAMES,
   STATE_IDS,
+  TRACKED_FILES,
   type LiveState,
 } from './dev-chat-live.fixture'
 
@@ -159,6 +166,7 @@ function Surface({
       scrollRef={scrollRef}
       headerLeading={headerLeading}
       headerTrailing={headerTrailing}
+      composer={state.composer ? <BenchComposer state={state} surface={surface} /> : undefined}
       provisional={
         state.provisional ? (
           <ProvisionalTailView
@@ -169,6 +177,90 @@ function Surface({
           />
         ) : null
       }
+    />
+  )
+}
+
+/* ── the live composer, frozen (fase A4 T9) ──────────────────────────────── */
+
+/**
+ * The real `<ChatComposer>` with a STATIC handle.
+ *
+ * The bench's rule is one moment, no network — so instead of `useComposer` (a
+ * draft store, a peek poller and two queries) the fixture hands over a
+ * `ComposerHandle` literal. Everything a screenshot can catch is still the
+ * shipped component: the pill, the Send/Stop swap, the refusal banner and the
+ * popover, all rendered by the code the app mounts.
+ *
+ * The popover arrives through `renderPicker` — the same slot contract the rest
+ * of this surface uses — fed by the picker's OWN row builders over the fixture
+ * lists, so what is screenshotted here is what `tracked-files` and
+ * `/api/slash-commands` will produce in the app.
+ */
+function BenchComposer({
+  state,
+  surface,
+}: {
+  state: LiveState
+  surface: 'desktop' | 'phone'
+}) {
+  const ref = React.useRef<HTMLTextAreaElement | null>(null)
+  const spec = state.composer
+  const noop = React.useCallback(() => {}, [])
+  if (!spec) return null
+
+  const name = state.session.name
+  const handle: ComposerHandle = {
+    draft: spec.draft,
+    setDraft: noop,
+    ref,
+    sending: false,
+    notice: spec.notice ?? null,
+    dismissNotice: noop,
+    submit: noop,
+    stop: noop,
+    insert: noop,
+    picker: {
+      open: spec.picker != null,
+      kind: spec.picker?.kind ?? '@',
+      query: spec.picker?.query ?? '',
+      pick: noop,
+      close: noop,
+      bind: noop,
+    },
+    onChange: noop,
+    onKeyDown: noop,
+    onSelect: noop,
+  }
+
+  return (
+    <ChatComposer
+      name={name}
+      label={state.session.display_name?.trim() ? state.session.display_name : name}
+      handle={handle}
+      surface={surface}
+      active={state.session.status === 'active'}
+      onOpenTerminal={noop}
+      pickerData={{
+        files: TRACKED_FILES,
+        commands: BENCH_COMMANDS,
+        sessions: MENTIONABLE,
+      }}
+      renderPicker={(p) => (
+        <EntityPickerView
+          rows={
+            p.kind === '@'
+              ? atRows(p.files, p.sessions ?? [], name, p.query)
+              : slashRows(p.commands, p.query)
+          }
+          activeIndex={0}
+          kind={p.kind}
+          query={p.query}
+          surface={surface}
+          onHover={noop}
+          onPick={noop}
+        />
+      )}
     />
   )
 }

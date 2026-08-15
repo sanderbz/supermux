@@ -17,13 +17,22 @@ import { describe, expect, test } from 'bun:test'
 import { toDisplayList } from '../../src/components/chat/entries'
 import { mentionSegments } from '../../src/components/chat/grouping'
 import {
+  atRows,
+  classifySlash,
+  readTrigger,
+  slashRows,
+} from '../../src/components/chat/slash'
+import {
+  BENCH_COMMANDS,
   BENCH_ROSTER,
   liveStates,
+  MENTIONABLE,
   MENTIONS,
   NAMES,
   PINS,
   pinFor,
   STATE_IDS,
+  TRACKED_FILES,
 } from '../../src/routes/dev-chat-live.fixture'
 
 const NOW = 1_760_000_000_000
@@ -94,6 +103,50 @@ describe('coverage: every state the surface can be in', () => {
     expect(s.session.name).not.toBe(byId.get('idle')!.session.name)
     // The approved Patch board's one fenced block is a diff.
     expect(s.entries.some((e) => e.text.includes('```'))).toBe(true)
+  })
+
+  // ── the interactive states (fase A4 T9) ───────────────────────────────────
+  //
+  // A bench state that MERELY LOOKS like an open popover is worth nothing: the
+  // point of screenshotting this surface is to catch it lying. So each of these
+  // asserts the fixture against the composer's own arithmetic — the trigger is
+  // the one `readTrigger` reads, the refusal is the one `classifySlash` makes,
+  // and the rows are the ones the shipped builders produce.
+
+  test('composing declares the picker its OWN draft would open', () => {
+    const c = byId.get('composing')!.composer!
+    expect(c.draft.length).toBeGreaterThan(0)
+    const trigger = readTrigger(c.draft, c.draft.length)
+    expect(trigger?.kind).toBe(c.picker!.kind)
+    expect(trigger?.query).toBe(c.picker!.query)
+  })
+
+  test('composing’s popover shows BOTH `@` sources — files and a session', () => {
+    // An empty list is not a board, and a list with only one of the two sources
+    // would let the mention half of `@` rot unseen.
+    const c = byId.get('composing')!.composer!
+    const rows = atRows(TRACKED_FILES, MENTIONABLE, 'release-train', c.picker!.query)
+    expect(rows.length).toBeGreaterThan(2)
+    expect(rows.some((r) => r.kind === 'file')).toBe(true)
+    expect(rows.some((r) => r.kind === 'session')).toBe(true)
+    expect(rows.every((r) => r.value.startsWith('@'))).toBe(true)
+  })
+
+  test('slash shows a refusal the classifier actually makes', () => {
+    const c = byId.get('slash')!.composer!
+    expect(classifySlash(c.draft)).toBe('picker')
+    expect(c.notice).toEqual({ kind: 'slash-picker', detail: '/model' })
+  })
+
+  test('slash’s popover carries a terminal-only row AND an ordinary one', () => {
+    const rows = slashRows(BENCH_COMMANDS, byId.get('slash')!.composer!.picker!.query)
+    expect(rows.some((r) => r.warn)).toBe(true)
+    expect(slashRows(BENCH_COMMANDS, '').some((r) => !r.warn)).toBe(true)
+  })
+
+  test('every other state leaves the composer to A3’s read-only shell', () => {
+    const live = states.filter((s) => s.composer)
+    expect(live.map((s) => s.id)).toEqual(['composing', 'slash'])
   })
 })
 

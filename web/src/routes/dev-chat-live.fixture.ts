@@ -28,6 +28,8 @@
  */
 import type { MarkPin } from '../brand/marks/character'
 import type { ChatEntry } from '../components/chat/entries'
+import type { MentionableSession } from '../components/chat/slash'
+import type { ComposerNotice } from '../components/chat/use-composer'
 import type { OverlayLine } from '../components/chat/use-receipt-overlay'
 import type { TileSession } from '../components/session-tile/types'
 
@@ -237,7 +239,49 @@ export interface LiveState {
   provisional?: readonly string[]
   /** The tail query failed. */
   isError?: boolean
+  /**
+   * The LIVE composer, in a fixed state (fase A4 T9).
+   *
+   * Present → the bench mounts the real `<ChatComposer>` with a static handle
+   * instead of A3's read-only shell. Static on purpose: every other state on
+   * this page is one moment with no network behind it, and a composer that
+   * fetched its own list would make the two screenshots that matter — the
+   * popover and the refusal — depend on a server this page does not have.
+   */
+  composer?: {
+    draft: string
+    /** The `@`/`/` popover, open over the trigger the draft ends in. The unit
+     *  test asserts this against `readTrigger(draft)`, so the bench cannot
+     *  drift from the composer's own arithmetic. */
+    picker?: { kind: '@' | '/'; query: string }
+    /** The refusal banner, pre-raised. */
+    notice?: ComposerNotice
+  }
 }
+
+/**
+ * `GET /api/sessions/{name}/tracked-files`, as the release-train session would
+ * answer it — the `@` picker's first source. Real paths from this repo, because
+ * the popover's whole job is to look like the project the user is in.
+ */
+export const TRACKED_FILES: readonly string[] = [
+  'server/src/sessions/lifecycle.rs',
+  'server/src/sessions/recall.rs',
+  'server/src/export/money.rs',
+  'web/src/components/chat/conversation.tsx',
+  'web/src/components/chat/composer.tsx',
+  'docs/superpowers/plans/2026-08-14-fase-a4-interactivity.md',
+  'CHANGELOG.md',
+]
+
+/** `GET /api/slash-commands` — a built-in, a picker-opening one and a skill, so
+ *  the `/` popover's three row shapes are all on the page. */
+export const BENCH_COMMANDS: readonly { cmd: string; desc: string }[] = [
+  { cmd: '/compact', desc: 'summarise the conversation so far' },
+  { cmd: '/model', desc: 'switch the model' },
+  { cmd: '/mcp', desc: 'manage MCP servers' },
+  { cmd: '/money-audit', desc: 'skill · re-check the euro parser' },
+]
 
 const OVERLAY: readonly string[] = [
   '⚡ Read server/src/export/money.rs',
@@ -396,8 +440,55 @@ export function liveStates(nowMs: number): LiveState[] {
       entries: build(PATCH_DRAFTS, nowSec),
       turnAgo: 12,
     },
+    {
+      id: 'composing',
+      title: 'Composing — a real draft, with the `@` picker open over tracked files',
+      board: 'board-light.png (composer) + A4 T9',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // The trigger is the LAST token, which is where the caret is — the unit
+        // test derives the picker below from exactly this string.
+        draft: 'compare notes with @com',
+        picker: { kind: '@', query: 'com' },
+      },
+    },
+    {
+      id: 'slash',
+      title: 'Slash — a command that opens a TUI picker, refused out loud',
+      board: 'A4 T9 (the refusal)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // Both halves of the surface at once, and this IS a reachable moment:
+        // the user typed `/model`, pressed Enter, the send was refused — and the
+        // draft (and therefore the popover) is still exactly where they left it.
+        draft: '/model',
+        picker: { kind: '/', query: 'model' },
+        notice: { kind: 'slash-picker', detail: '/model' },
+      },
+    },
   ]
 }
+
+/**
+ * The sessions an `@` may name on this page — the same cast the roster draws,
+ * so a mention picked here matches a face in the sidebar.
+ */
+export const MENTIONABLE: readonly MentionableSession[] = [
+  { name: 'patch', display_name: 'Patch' },
+  { name: 'quill', display_name: 'Quill' },
+  { name: 'ledger', display_name: 'Ledger' },
+  { name: 'compass', display_name: 'Compass' },
+]
 
 /** Every state id, for the picker and for the coverage test. */
 export const STATE_IDS = [
@@ -409,6 +500,8 @@ export const STATE_IDS = [
   'error',
   'offline',
   'patch',
+  'composing',
+  'slash',
 ] as const
 
 export type StateId = (typeof STATE_IDS)[number]

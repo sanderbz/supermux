@@ -34,9 +34,16 @@ import { eases, springs } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 
 import { ComposerFrame } from './composer-shell'
+import type { EntityPickerProps } from './entity-picker'
+import type { EntityPickerData } from './slash'
 import type { ComposerHandle, ComposerNotice } from './use-composer'
 import { DRAFT_PREVIEW_CHARS } from './use-composer'
-import { Composer, MicIcon } from './ui'
+import { Composer, MicIcon, PlusIcon } from './ui'
+
+/** The `@`/`/` popover (fase A4 T9), lazily — it is reached only when somebody
+ *  types a trigger, so its list, its filter and its two queries stay out of the
+ *  chunk the surface pays for on open (T12's budget rule). */
+const EntityPicker = React.lazy(() => import('./entity-picker'))
 
 /** The same 260ms opacity crossfade `live-layer.tsx`'s `SwapCell` uses for P13.
  *  Send→Stop is the same kind of event — one cell, two occupants — so it is the
@@ -57,6 +64,18 @@ export interface ChatComposerProps {
   /** Switch this pane to the terminal renderer. Every refusal offers it — the
    *  terminal is the surface that can always do what chat just declined to. */
   onOpenTerminal?: () => void
+  /**
+   * What draws the `@`/`/` popover. Defaults to the real, lazily-loaded picker
+   * over `tracked-files` / the sessions list / `/api/slash-commands`.
+   *
+   * A SLOT for the same reason `provisional` is one: `/dev/chat-live` has no
+   * server behind it, and a bench that could only screenshot an empty popover
+   * would be unable to hold the one surface here that a screenshot can catch
+   * lying (T10).
+   */
+  renderPicker?: (props: EntityPickerProps) => React.ReactNode
+  /** What the popover offers — the panel's three lists (fase A4 T9). */
+  pickerData?: EntityPickerData
   className?: string
 }
 
@@ -68,6 +87,8 @@ export function ChatComposer({
   active = false,
   stat,
   onOpenTerminal,
+  renderPicker,
+  pickerData,
   className,
 }: ChatComposerProps) {
   const phone = surface === 'phone'
@@ -76,6 +97,15 @@ export function ChatComposer({
   // rather than flipping back to the mic: a control that vanishes mid-tap reads
   // as a bug, and the disabled state is the honest "asked, not yet answered".
   const canSend = handle.draft.trim().length > 0
+  const pickerProps: EntityPickerProps = {
+    name,
+    kind: handle.picker.kind,
+    query: handle.picker.query,
+    surface,
+    ...pickerData,
+    onPick: handle.picker.pick,
+    bind: handle.picker.bind,
+  }
 
   return (
     <ComposerFrame surface={surface} stat={stat} className={className}>
@@ -85,14 +115,41 @@ export function ChatComposer({
         onDismiss={handle.dismissNotice}
         reduce={reduce}
       />
+      {handle.picker.open &&
+        (renderPicker ? (
+          renderPicker(pickerProps)
+        ) : (
+          // No fallback: a spinner for a popover that opens in one frame from a
+          // 30s-cached list would be the only thing anyone ever saw of it.
+          <React.Suspense fallback={null}>
+            <EntityPicker {...pickerProps} />
+          </React.Suspense>
+        ))}
       <Composer
         size={phone ? 'mobile' : 'desktop'}
         placeholder={`Message ${label}`}
+        leading={
+          <button
+            type="button"
+            data-testid="chat-composer-at"
+            aria-label="Mention a file or a session"
+            // The boards' `+` was decoration; this is the same 26px cell doing
+            // what the boards' caption always said it did (attach / @files /
+            // /commands). It types the trigger rather than opening a menu of its
+            // own, so there is exactly ONE picker on this surface and the caret
+            // ends up where the user would have put it themselves.
+            onClick={() => handle.insert('@')}
+            className="grid size-[26px] flex-none place-items-center rounded-full text-ink-2"
+          >
+            <PlusIcon />
+          </button>
+        }
         field={{
           ref: handle.ref,
           value: handle.draft,
           onChange: handle.onChange,
           onKeyDown: handle.onKeyDown,
+          onSelect: handle.onSelect,
           // The composer is a message box, not a code editor: the browser's own
           // spellcheck is the right default, and autocapitalise/autocorrect are
           // what a phone keyboard expects from one.
@@ -238,6 +295,12 @@ function ComposerBanner({
             'backdrop-blur-[60px] backdrop-saturate-[180%]',
           )}
         >
+          {/* The slash refusals name the COMMAND first — it is the subject of
+              the sentence, and the user typed it two seconds ago. */}
+          {(notice.kind === 'slash-picker' || notice.kind === 'slash-note') &&
+            notice.detail && (
+              <code className="font-mono text-[11.5px] text-ink">{notice.detail}</code>
+            )}
           <span className="text-ink">{NOTICE_TITLE[notice.kind]}</span>
           {notice.kind === 'tui-draft' && notice.detail && (
             <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">
@@ -249,7 +312,9 @@ function ComposerBanner({
               <span className="min-w-0 truncate text-ink-2">{notice.detail}</span>
             )}
           <span className="ml-auto flex items-center gap-2">
-            {onOpenTerminal && (
+            {/* A NOTE is not a refusal: the message went. Offering the terminal
+                beside it would imply something still has to be done there. */}
+            {onOpenTerminal && notice.kind !== 'slash-note' && (
               <button
                 type="button"
                 data-testid="chat-composer-open-terminal"
@@ -284,6 +349,10 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // Not "something went wrong": the turn is still running, and that is the fact
   // the user needs in order to decide what to do next.
   'stop-failed': 'The interrupt didn’t reach the session — the turn is still running.',
+  // Not "unsupported": the command works fine, it just needs a surface with a
+  // cursor on it. The Open-terminal control beside this line is the answer.
+  'slash-picker': 'opens a picker in the terminal — it wasn’t sent.',
+  'slash-note': 'isn’t a built-in command — the session got it as text.',
 }
 
 /** Send — an upward arrow, the one glyph every messenger agrees on. */

@@ -34,6 +34,8 @@ import {
   insertIntoComposer,
   setDraft,
 } from '../../src/components/chat/composer-draft'
+import { EntityPickerView } from '../../src/components/chat/entity-picker'
+import { atRows, slashRows, type EntityRow } from '../../src/components/chat/slash'
 import {
   composerKeyIntent,
   sendGate,
@@ -195,8 +197,10 @@ function handle(over: Partial<ComposerHandle> = {}): ComposerHandle {
     submit: () => {},
     stop: () => {},
     insert: () => {},
+    picker: { open: false, kind: '@', query: '', pick: () => {}, close: () => {}, bind: () => {} },
     onChange: () => {},
     onKeyDown: () => {},
+    onSelect: () => {},
     ...over,
   }
 }
@@ -443,5 +447,186 @@ describe('the pending echo band', () => {
     const html = surface([])
     expect(text(html)).toContain('the confirmed one')
     expect(html).not.toContain('data-state="unconfirmed"')
+  })
+})
+
+// ── 5. `@`-files and `/`-commands (fase A4 T9) ──────────────────────────────
+//
+// Two failures are pinned here. The first is a stolen keystroke: with a popover
+// open, Escape must close the POPOVER — not clear the draft, and certainly not
+// stop the turn. The second is the silent misfire: a `/model` sent from chat
+// leaves a picker on a pty nobody is looking at, so the surface has to refuse it
+// out loud and hand over the terminal.
+
+describe('the picker owns its keys while it is open', () => {
+  const open = { draft: '@mai', active: true, picker: true }
+  const closed = { draft: '@mai', active: true }
+
+  test('Escape closes the picker — it does not clear the draft or stop the turn', () => {
+    expect(composerKeyIntent({ key: 'Escape' }, open)).toBe('picker-close')
+    // …and with no picker up, the very same key means what it always meant.
+    expect(composerKeyIntent({ key: 'Escape' }, closed)).toBe('clear')
+    expect(composerKeyIntent({ key: 'Escape' }, { draft: '', active: true })).toBe('stop')
+  })
+
+  test('Enter and Tab accept; the arrows move', () => {
+    expect(composerKeyIntent({ key: 'Enter' }, open)).toBe('picker-accept')
+    expect(composerKeyIntent({ key: 'Tab' }, open)).toBe('picker-accept')
+    expect(composerKeyIntent({ key: 'ArrowDown' }, open)).toBe('picker-down')
+    expect(composerKeyIntent({ key: 'ArrowUp' }, open)).toBe('picker-up')
+  })
+
+  test('Shift+Enter still breaks the line, Shift+Tab is still the browser’s', () => {
+    expect(composerKeyIntent({ key: 'Enter', shiftKey: true }, open)).toBe('newline')
+    expect(composerKeyIntent({ key: 'Tab', shiftKey: true }, open)).toBe('pass')
+  })
+
+  test('an IME composition outranks the picker too', () => {
+    // Same reason as everywhere else: on Android nearly every key arrives as a
+    // composition, and a picker that ate those would make the box untypeable.
+    expect(composerKeyIntent({ key: 'Enter', keyCode: 229 }, open)).toBe('pass')
+    expect(composerKeyIntent({ key: 'ArrowDown', isComposing: true }, open)).toBe('pass')
+  })
+})
+
+describe('the popover, rendered', () => {
+  const rows: EntityRow[] = [
+    { id: 'f1', kind: 'file', value: '@server/src/main.rs', label: 'main.rs', meta: 'server/src' },
+    { id: 'f2', kind: 'file', value: '@web/src/app.tsx', label: 'app.tsx', meta: 'web/src' },
+    { id: 's1', kind: 'session', value: '@patch', label: 'Patch', meta: 'patch' },
+  ]
+
+  const view = (over: Partial<React.ComponentProps<typeof EntityPickerView>> = {}) =>
+    renderToStaticMarkup(
+      <EntityPickerView
+        rows={rows}
+        activeIndex={0}
+        kind="@"
+        query="mai"
+        onHover={() => {}}
+        onPick={() => {}}
+        {...over}
+      />,
+    )
+
+  test('it lists what it found, with one row highlighted', () => {
+    const html = view()
+    expect(html).toContain('data-testid="chat-entity-picker"')
+    expect((html.match(/data-testid="chat-entity-row"/g) ?? []).length).toBe(3)
+    expect((html.match(/data-active/g) ?? []).length).toBe(1)
+    expect(text(html)).toContain('main.rs')
+    expect(text(html)).toContain('server/src')
+  })
+
+  test('it is a listbox, and it never contains a submit control', () => {
+    const html = view()
+    expect(html).toContain('role="listbox"')
+    expect(html).toContain('aria-selected="true"')
+    // The picker INSERTS. Nothing in it can send anything to the session.
+    expect(html).not.toContain('data-testid="chat-send"')
+  })
+
+  test('an empty result says what it looked for instead of showing nothing', () => {
+    expect(text(view({ rows: [] }))).toContain('No tracked file or session matches')
+    expect(text(view({ rows: [], loading: true }))).toContain('Looking…')
+  })
+
+  test('a picker-opening command is listed but labelled terminal-only', () => {
+    const html = view({
+      kind: '/',
+      query: 'mo',
+      rows: slashRows([{ cmd: '/model', desc: 'switch model' }], 'mo'),
+    })
+    expect(text(html)).toContain('/model')
+    // Hiding it would be a lie about the session; the refusal belongs to SEND,
+    // so the row is pickable and says on its face what it will cost.
+    expect(text(html)).toContain('opens in terminal')
+  })
+
+  test('the rows come from the two real sources, ranked', () => {
+    const at = atRows(
+      ['web/src/lib/domain.ts', 'server/src/main.rs'],
+      [{ name: 'patch', display_name: 'Patch' }, { name: NAME }],
+      NAME,
+      'main',
+    )
+    expect(at[0]?.value).toBe('@server/src/main.rs')
+    // The session being typed IN is never offered as a mention of itself.
+    expect(at.some((r) => r.value === `@${NAME}`)).toBe(false)
+  })
+})
+
+describe('the slash refusal, said out loud', () => {
+  test('a picker-opening command names itself and offers the terminal', () => {
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        handle={handle({ draft: '/model', notice: { kind: 'slash-picker', detail: '/model' } })}
+        onOpenTerminal={() => {}}
+      />,
+    )
+    expect(html).toContain('data-notice="slash-picker"')
+    expect(text(html)).toContain('/model')
+    expect(text(html)).toContain('opens a picker in the terminal')
+    expect(text(html)).toContain('wasn’t sent')
+    expect(html).toContain('data-testid="chat-composer-open-terminal"')
+  })
+
+  test('an unknown command is a RECEIPT, not a refusal — it went, as text', () => {
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        handle={handle({ notice: { kind: 'slash-note', detail: '/deploy-self' } })}
+        onOpenTerminal={() => {}}
+      />,
+    )
+    expect(text(html)).toContain('the session got it as text')
+    // Nothing is left to do in the terminal, so nothing points there.
+    expect(html).not.toContain('data-testid="chat-composer-open-terminal"')
+  })
+
+  test('the composer’s `+` is a real control now — it opens the mention picker', () => {
+    expect(composer()).toContain('data-testid="chat-composer-at"')
+  })
+
+  test('the popover mounts only when the handle says it is open', () => {
+    // Rendered through the slot the bench uses (`renderPicker`) — the shipped
+    // path is `React.lazy`, which by design has nothing to show until the chunk
+    // arrives, and that is exactly what T12's budget buys.
+    const withPicker = (open: boolean) =>
+      renderToStaticMarkup(
+        <ChatComposer
+          name={NAME}
+          label="Release Train"
+          handle={handle({
+            draft: 'diff @mai',
+            picker: {
+              open,
+              kind: '@',
+              query: 'mai',
+              pick: () => {},
+              close: () => {},
+              bind: () => {},
+            },
+          })}
+          renderPicker={(p) => (
+            <EntityPickerView
+              rows={atRows(['server/src/main.rs'], [], NAME, p.query)}
+              activeIndex={0}
+              kind={p.kind}
+              query={p.query}
+              onHover={() => {}}
+              onPick={() => {}}
+            />
+          )}
+        />,
+      )
+    expect(withPicker(false)).not.toContain('data-testid="chat-entity-picker"')
+    const open = withPicker(true)
+    expect(open).toContain('data-testid="chat-entity-picker"')
+    // Above the pill, in the pill's own box — not a portal over the transcript.
+    expect(open.indexOf('chat-entity-picker')).toBeLessThan(open.indexOf('sm-composer'))
   })
 })
