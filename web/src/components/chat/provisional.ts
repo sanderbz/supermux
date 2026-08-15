@@ -14,12 +14,21 @@ import { parseAnsiLine } from '../../lib/ansi'
 const NOISE =
   /esc to interrupt|shift\+tab|\? for shortcuts|^[⏵⏸✻✽·╰│]|^\s*❯/i
 
-/** A shell prompt and the command that launched the agent. Present in the
- *  capture of a freshly-started session — the pty's scrollback still holds the
- *  login line above Claude's banner — and it is the one thing on this surface
- *  that is emphatically NOT the agent talking. Matches `user@host:dir$ …` and
- *  the `%`/`#` prompt shapes. */
-const SHELL_PROMPT = /^[\w.-]+@[\w.-]+:[^\s]*\s*[$#%]/
+/**
+ * A shell prompt head — `user@host:/path` — anchored to the start of a line.
+ *
+ * Its presence means the capture window is showing the pty's SCROLLBACK: the
+ * login line and the `claude …` command that launched the session, which sit
+ * above the agent's own first paint. The trailing `$` is deliberately NOT
+ * required: at 47 columns the prompt wraps, and the observed capture split one
+ * logical line into five ("supermux@host:/tmp" / "…/scratch" / "~/.bash_profile
+ * 2>/dev/null;" / "/mpx/bin/supermux-edit' VISUA" / "pad") — a pattern that
+ * needed the whole prompt matched none of them.
+ *
+ * The colon must be followed by a path character so an email address in prose
+ * ("write to a@b.com: …") is not mistaken for a login line.
+ */
+const SHELL_PROMPT_HEAD = /^[\w.-]+@[\w.-]+:[~/]/
 
 function plain(line: string): string {
   return parseAnsiLine(line)
@@ -75,12 +84,20 @@ export function extractProvisionalTail(capture: string, max = 12): string[] {
       break
     }
   }
+  // A shell prompt anywhere in what is left means the window never reached the
+  // agent's own output: the banner that would have ended the scrollback is
+  // above the capture, so every line here is the login line and the wrapped
+  // launch command. There is no in-progress prose to show, and showing the
+  // wreck of a `claude …` invocation captioned "Live terminal" is worse than
+  // showing nothing — the transcript below is complete either way.
+  for (let i = start; i < cut; i++) {
+    if (SHELL_PROMPT_HEAD.test(stripped[i].trimStart())) return []
+  }
   const out: string[] = []
   for (let i = start; i < cut; i++) {
     const t = stripped[i].trim()
     if (!t) continue
     if (NOISE.test(t)) continue
-    if (SHELL_PROMPT.test(t)) continue
     out.push(lines[i])
   }
   return out.slice(-max)
