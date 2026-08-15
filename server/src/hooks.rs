@@ -39,7 +39,44 @@ const HOOK_TOKEN_HEADER: &str = "X-Supermux-Hook-Token";
 pub fn router_for(state: AppState) -> Router {
     Router::new()
         .route("/api/_internal/hook", post(hook_handler))
+        // The OPT-IN statusline tap's inbound side (fase A2 Task 6). Same
+        // per-session hook-token auth, same reason: the statusline command runs
+        // inside the pane and must never hold the dashboard bearer.
+        .route(
+            "/api/_internal/statusline",
+            post(crate::sessions::chat::statusline::ingest_handler),
+        )
         .with_state(state)
+}
+
+/// Validate a per-session `X-Supermux-Hook-Token` against the DB (the source of
+/// truth, so it survives a restart) in CONSTANT TIME.
+///
+/// Shared by every pane-side endpoint on this router. The scope rule is the
+/// point: session A's token authenticates ONLY session A, because B's row holds
+/// a different secret (regression: `hook_auth_scope`). A missing session row is
+/// a 401, not a 404 — no existence oracle.
+pub(crate) async fn verify_hook_token(
+    state: &AppState,
+    session: &str,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
+    let expected = db::sessions::runtime(&state.pool, session)
+        .await?
+        .map(|rt| rt.hook_token)
+        .ok_or(AppError::Unauthorized)?;
+    let presented = headers
+        .get(HOOK_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    // An empty stored token (session never started → no secret minted) can never
+    // be authenticated.
+    if expected.is_empty()
+        || !constant_time_eq::constant_time_eq(expected.as_bytes(), presented.as_bytes())
+    {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,24 +143,9 @@ async fn hook_handler(
         },
     };
     // The expected token is the session's own (DB is the source of truth;
-    // survives restart). A missing session row → 401 (no existence oracle).
-    let expected = db::sessions::runtime(&state.pool, &body.session)
-        .await?
-        .map(|rt| rt.hook_token)
-        .ok_or(AppError::Unauthorized)?;
-
-    let presented = headers
-        .get(HOOK_TOKEN_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    // Empty stored token (session never started → no secret minted) can never be
-    // authenticated; and the compare is constant-time (no timing oracle).
-    if expected.is_empty()
-        || !constant_time_eq::constant_time_eq(expected.as_bytes(), presented.as_bytes())
-    {
-        return Err(AppError::Unauthorized);
-    }
+    // survives restart). A missing session row → 401 (no existence oracle); the
+    // compare is constant-time (no timing oracle).
+    verify_hook_token(&state, &body.session, &headers).await?;
 
     // Authenticated. The session's Claude hooks are demonstrably LIVE (this POST
     // reached us), so flag it: the detector now treats the turn state machine +
@@ -152,24 +174,8 @@ async fn hook_handler(
         .unwrap_or_default();
     apply_payload(&state, &body.session, &body.event, &payload);
 
-    // Track the LIVE Claude conversation id so "this session" prompt-recall reads
-    // the CURRENT transcript, not a stale one. Claude rotates conversation files
-    // (a restart / `/clear` / compaction forks a fresh `<session_id>.jsonl`) and
-    // the resume-only `set_cc_conversation_id` never followed — so a long-lived
-    // session's `cc_conversation_id` drifted days behind the real conversation
-    // (the stale-recall bug). Only on the two events that reliably carry a
-    // main-session id (SessionStart = a fresh process; UserPromptSubmit = the user
-    // acting) — NOT per-tool events, whose subagent hooks would otherwise thrash
-    // it. The DB write is conditional (no-op unless the id changed).
-    if matches!(
-        body.event.as_str(),
-        "session_start" | "SessionStart" | "user_prompt" | "user_prompt_submit" | "UserPromptSubmit"
-    ) {
-        if let Some(id) = payload.session_id.as_deref() {
-            if !id.is_empty() {
-                let _ = db::sessions::track_cc_conversation_id(&state.pool, &body.session, id).await;
-            }
-        }
+    if is_pointer_event(&body.event) {
+        track_conversation_pointer(&state, &body.session, payload.session_id.as_deref()).await;
     }
 
     // Re-tick the detector now so the status (e.g. Notification → waiting,
@@ -216,6 +222,65 @@ fn salvage_truncated_body(raw: &[u8]) -> Option<HookBody> {
         from = cut + 1;
     }
     None
+}
+
+/// The two events that reliably carry a MAIN-session conversation id:
+/// `SessionStart` (a fresh Claude process) and `UserPromptSubmit` (the user
+/// acting). Per-tool events are excluded on purpose — a subagent's hooks carry
+/// the parent's token but their own ids, and would thrash the pointer.
+fn is_pointer_event(event: &str) -> bool {
+    matches!(
+        event,
+        "session_start" | "SessionStart" | "user_prompt" | "user_prompt_submit" | "UserPromptSubmit"
+    )
+}
+
+/// Track the LIVE Claude conversation id so "this session" prompt-recall — and,
+/// since the A2 chat data plane, the transcript tailer — read the CURRENT
+/// transcript rather than a stale one.
+///
+/// Claude switches conversation files on a **restart**, on `/clear`, and on a
+/// terminal-side `--resume`. (Compaction does NOT: a `compact_boundary` stays
+/// inline in the same file with the same `sessionId` — re-verified on 2.1.231 —
+/// which is exactly why the chat tailer's byte cursor survives it.) The
+/// resume-only `set_cc_conversation_id` never followed those switches, so a
+/// long-lived session's `cc_conversation_id` drifted days behind the real
+/// conversation — the stale-recall bug.
+///
+/// The DB write is conditional, and only a REAL change wakes the chat tailer:
+/// waking on every hook would re-scan the project dir on every prompt.
+///
+/// The id is charset-checked against the SAME rule the HTTP resume boundary
+/// enforces ([`crate::sessions::valid_cc_id`]). It is not decoration: this
+/// column is interpolated into `claude --resume '<id>'` (`lifecycle.rs`) and,
+/// since A2, resolved into filesystem paths — `<project>/<id>.jsonl` and
+/// `<project>/<id>/subagents/` — by the chat tailer, the chat WS seed and
+/// fetch-full. The hook body is free-form JSON from inside the pane, so
+/// without this check anything holding `$SUPERMUX_HOOK_TOKEN` could point a
+/// session at `../../../somewhere/private` and have the dashboard stream it
+/// back. A refused id leaves the previous pointer in place.
+async fn track_conversation_pointer(state: &AppState, session: &str, id: Option<&str>) {
+    let Some(id) = id.filter(|i| !i.is_empty()) else {
+        return;
+    };
+    if !crate::sessions::valid_cc_id(id) {
+        tracing::debug!(
+            session = %session,
+            "hook carried a conversation id outside the Claude id charset; pointer left alone"
+        );
+        return;
+    }
+    if db::sessions::track_cc_conversation_id(&state.pool, session, id)
+        .await
+        .unwrap_or(false)
+    {
+        // The pointer MOVED. Re-resolve now: without this the chat tailer would
+        // keep reading the previous conversation until its cold-pointer backstop
+        // noticed, and could then only report `Reconnecting` — it never adopts a
+        // file it merely noticed, and this hook-carried id is the one
+        // authoritative adoption signal.
+        state.wake_chat_pointer(session);
+    }
 }
 
 /// Derive + store the in-memory activity/error/lifecycle effects of one hook
@@ -439,6 +504,7 @@ mod tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
@@ -876,5 +942,117 @@ mod tests {
 
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── the chat tailer's pointer-change notification ────────────────────────
+
+    /// Did the chat-pointer wake fire? `notify_one` parks a permit, so a wake
+    /// that happened before we waited still resolves immediately.
+    async fn woke(state: &AppState, session: &str) -> bool {
+        let n = state.chat_pointer_wake_for(session);
+        tokio::time::timeout(std::time::Duration::from_millis(50), n.notified())
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_changed_conversation_pointer_wakes_the_chat_tailer() {
+        let (state, dir) = test_state().await;
+        let s = "ptr-1";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+
+        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        assert!(woke(&state, s).await, "the first id is a change — the tailer must re-resolve");
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "conv-a");
+
+        // A terminal-side `--resume` / `/clear`: the id MOVED.
+        track_conversation_pointer(&state, s, Some("conv-b")).await;
+        assert!(woke(&state, s).await, "a moved pointer must wake the tailer");
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "conv-b");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_pointer_never_wakes_the_tailer() {
+        // Every prompt in a long session re-reports the SAME id; waking on those
+        // would re-scan the project dir on every turn.
+        let (state, dir) = test_state().await;
+        let s = "ptr-2";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+
+        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        assert!(woke(&state, s).await);
+        for _ in 0..3 {
+            track_conversation_pointer(&state, s, Some("conv-a")).await;
+        }
+        assert!(!woke(&state, s).await, "an unchanged id must not wake the tailer");
+
+        // A missing / empty id is a no-op, not a pointer reset.
+        track_conversation_pointer(&state, s, None).await;
+        track_conversation_pointer(&state, s, Some("")).await;
+        assert!(!woke(&state, s).await);
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "conv-a", "the pointer must survive");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_hook_carried_pointer_outside_the_id_charset_is_refused() {
+        // The hook body is free-form JSON produced INSIDE the pane, and this
+        // column becomes both a `claude --resume '<id>'` argument and — since
+        // A2 — a filesystem path (`<project>/<id>.jsonl`,
+        // `<project>/<id>/subagents/`) read by the tailer, the chat WS seed and
+        // fetch-full. Anything holding $SUPERMUX_HOOK_TOKEN could otherwise
+        // point a session at an arbitrary file and have it streamed back.
+        let (state, dir) = test_state().await;
+        let s = "ptr-3";
+        db::sessions::insert_minimal(&state.pool, s, "/tmp", "claude").await.unwrap();
+        track_conversation_pointer(&state, s, Some("conv-a")).await;
+        assert!(woke(&state, s).await);
+
+        for bad in [
+            "../../../../home/u/notes/private",
+            "..",
+            "a/b",
+            "conv'; rm -rf /",
+            "conv a",
+            "conv$(id)",
+            &"x".repeat(129),
+        ] {
+            track_conversation_pointer(&state, s, Some(bad)).await;
+            let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+            assert_eq!(
+                row.cc_conversation_id, "conv-a",
+                "{bad:?} must never become the tracked pointer"
+            );
+            assert!(!woke(&state, s).await, "{bad:?} must not wake the tailer either");
+        }
+
+        // …and the real shapes still land.
+        track_conversation_pointer(&state, s, Some("550e8400-e29b-41d4-a716-446655440000")).await;
+        let row = db::sessions::get(&state.pool, s).await.unwrap().unwrap();
+        assert_eq!(row.cc_conversation_id, "550e8400-e29b-41d4-a716-446655440000");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_session_start_and_user_prompt_move_the_pointer() {
+        for e in ["session_start", "SessionStart", "user_prompt", "user_prompt_submit",
+                  "UserPromptSubmit"] {
+            assert!(is_pointer_event(e), "{e} carries a main-session id");
+        }
+        for e in ["pre_tool", "PreToolUse", "post_tool", "PostToolUse", "subagent_start",
+                  "SubagentStop", "Stop", "Notification", "session_end"] {
+            assert!(!is_pointer_event(e),
+                    "{e} must NOT move the pointer (subagent hooks would thrash it)");
+        }
     }
 }

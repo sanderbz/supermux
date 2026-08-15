@@ -167,11 +167,33 @@ async fn install_hooks_at_path(transport: &dyn FileTransport, path: &Path) -> Re
     atomic_write_settings(transport, path, &root).await
 }
 
+/// The LOCAL settings file path (`$CLAUDE_CONFIG_DIR/settings.json`, else
+/// `~/.claude/settings.json`). Exposed for the opt-in statusline tap
+/// ([`crate::sessions::chat::statusline`]), which edits the SAME file through
+/// the SAME atomic-write core rather than growing a second, subtly-different
+/// settings writer.
+pub(crate) fn local_settings_path() -> PathBuf {
+    claude_config_dir().join("settings.json")
+}
+
+/// Atomic JSON write through `transport` — the shared temp-sibling + rename
+/// core, exposed for the statusline tap's settings file and its sidecar.
+pub(crate) async fn atomic_write_json(
+    transport: &dyn FileTransport,
+    path: &Path,
+    root: &Value,
+) -> Result<()> {
+    atomic_write_settings(transport, path, root).await
+}
+
 /// Read + parse the settings file at `path` via the transport. Returns an
 /// empty JSON object when the file does not exist or is empty. Returns Err
 /// for a present-but-unparseable file (we NEVER clobber a real user's
 /// settings we failed to understand) or for a top-level non-object root.
-async fn read_settings_or_empty(transport: &dyn FileTransport, path: &Path) -> Result<Value> {
+pub(crate) async fn read_settings_or_empty(
+    transport: &dyn FileTransport,
+    path: &Path,
+) -> Result<Value> {
     // `FileTransport::exists` is DEFINITIVE: `Ok(false)` only when the
     // transport proved the file is absent. An indeterminate answer is an
     // `Err` and aborts the install — never an empty object.

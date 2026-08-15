@@ -19,6 +19,7 @@
 
 pub mod activity;
 pub mod auto_actions;
+pub mod chat;
 pub mod host_pool;
 pub mod lifecycle;
 pub mod pty;
@@ -81,6 +82,33 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/paste", post(paste_handler))
         .route("/api/sessions/{name}/peek", get(peek_handler))
         .route("/api/sessions/{name}/recall", get(recall::handler))
+        // ── chat data plane backlog (fase A2) ──
+        // The live path is the WS (`/ws/sessions/{name}/chat`, registered in
+        // `ws::router_for`); these two are the bearer-protected reads it cannot
+        // serve from the in-memory ring: older pages, and the untruncated body
+        // behind an entry the wire had to clip.
+        .route(
+            "/api/sessions/{name}/chat/history",
+            get(chat::ws::history_handler),
+        )
+        .route(
+            "/api/sessions/{name}/chat/entry/{uuid}",
+            get(chat::ws::entry_handler),
+        )
+        // ── the OPT-IN Claude statusline tap (fase A2) ──
+        // Host-wide, not per-session: Claude Code has ONE global `statusLine`
+        // slot. Install is gated on `config.statusline_tap` AND is the only
+        // path that can write that key — no create/start path reaches it
+        // (pinned by `tests/statusline_optin.rs`). Uninstall is never gated:
+        // taking our wrapper back out must always be possible.
+        .route(
+            "/api/claude/statusline/install",
+            post(chat::statusline::install_handler),
+        )
+        .route(
+            "/api/claude/statusline",
+            axum::routing::delete(chat::statusline::uninstall_handler),
+        )
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
@@ -414,9 +442,15 @@ pub(crate) fn valid_name(name: &str) -> bool {
 // is a 400 BadRequest before the DB write.
 static CC_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]{1,128}$").unwrap());
 
-/// Claude conversation/session id charset — `[A-Za-z0-9._-]`, 1..=128 chars.
+/// Claude conversation/session id charset — `[A-Za-z0-9._-]`, 1..=128 chars,
+/// and never an all-dots string.
+///
+/// The all-dots exclusion is the same rule [`valid_name`] carries, for the same
+/// reason: since the A2 chat data plane the id is also a PATH SEGMENT
+/// (`<project>/<id>.jsonl`, `<project>/<id>/subagents/`), and `..` is the one
+/// string the charset admits that walks out of the project directory.
 pub(crate) fn valid_cc_id(id: &str) -> bool {
-    CC_ID_RE.is_match(id)
+    CC_ID_RE.is_match(id) && !id.bytes().all(|b| b == b'.')
 }
 
 fn valid_provider(provider: &str) -> bool {
@@ -1509,9 +1543,17 @@ mod tests {
             "id|cat",           // pipe
             "id&bg",            // background
             "id\nnewline",      // newline
+            // Path-traversal escapes. Harmless as a `--resume` argument, but the
+            // A2 chat data plane resolves this id into `<project>/<id>.jsonl`
+            // and `<project>/<id>/subagents/`, and `..` walks out of the project
+            // dir. Same exclusion `valid_name` already carries.
+            ".",
+            "..",
+            "...",
         ] {
             assert!(!valid_cc_id(bad), "{bad:?} should reject");
         }
+        assert!(valid_cc_id("..a"), "dots are still legal INSIDE an id");
         // Length cap (>128 rejected).
         let too_long: String = std::iter::repeat('a').take(129).collect();
         assert!(!valid_cc_id(&too_long));
@@ -1534,6 +1576,7 @@ mod tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");

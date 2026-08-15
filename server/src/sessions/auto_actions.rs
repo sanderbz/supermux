@@ -15,9 +15,14 @@
 //!   │      UPDATE last_status / last_status_at
 //!   │      status_watch[name].send_replace((status, ver+1))      ← wait primitive
 //!   │      SSE  { type:'status',   payload:{name,status,version} }
-//!   └─ if status changed OR tail6 changed:
-//!          SSE  { type:'sessions', payload:{delta:[{name,status?,preview_lines?}]} }
+//!   └─ if status changed OR tail6 changed OR the chat tail changed:
+//!          SSE  { type:'sessions', payload:{delta:[{name,status?,preview_lines?,chat_tail?}]} }
 //! ```
+//!
+//! `chat_tail` (fase A2) is the one-line-per-side summary of the session's chat
+//! ring — last prompt + last assistant line. It rides THIS delta rather than any
+//! new request, is read from memory only (never a transcript file read), and is
+//! change-gated + debounced by [`ChatTailGate`].
 //!
 //! `last_capture` is the single canonical source the `SessionView.preview_lines`
 //! builder reads — written every tick, classification or not.
@@ -42,6 +47,7 @@ use crate::db;
 use crate::db::hosts::{Host, HostStatus};
 use crate::state::{AppState, SseEvent};
 
+use super::chat::store::{ChatStore, ChatTail};
 use super::runtime::RUNTIME_NATIVE;
 use super::status::{self, Status, StatusDetector};
 use super::tmux::Tmux;
@@ -66,6 +72,15 @@ const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 /// the bottom 6 (CSS-clipped via container height + fade mask), and the
 /// Settings → Expanded-text hover mode reveals the full ~20-line tail.
 const PREVIEW_LINES: usize = 20;
+
+/// Floor between two `chat_tail` publications for ONE session.
+///
+/// A landing transcript batch is 30-100 entries (a0-findings: tool-heavy turns
+/// flush per completed message), and every one of them can move the tail. The
+/// tile shows a single line, so publishing per entry would be a fan-out storm to
+/// every connected SSE client for no visible difference. One per second is
+/// already faster than the detector's own idle cadence.
+const CHAT_TAIL_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Reconcile every persisted session's stored status against tmux reality on
 /// boot. The `session_runtime.last_status` column keeps its last-known value
@@ -438,6 +453,10 @@ pub fn spawn_status_loop(state: AppState, name: String) {
         // cadence tier — not a fixed 4s — so a 1s-tier hot session
         // re-captures within ~1s. Seed it "stale" so the very first tick captures.
         let mut last_capture_at = Instant::now() - status::MAX_PREVIEW_STALENESS;
+        // Per-session memo for the A2 chat tail: what we last put on the delta
+        // and when. Lives here (not in `AppState`) because the detector loop is
+        // already the one-per-session actor that owns delta publication.
+        let mut chat_tail = ChatTailGate::new();
 
         // Sub-second wake: the hook endpoint pings this so a real Claude
         // notification surfaces well within the "1s" bound, not at the next
@@ -487,6 +506,7 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 &mut detector,
                 &mut last_tail,
                 &mut last_capture_at,
+                &mut chat_tail,
             )
             .await
             {
@@ -516,6 +536,8 @@ pub fn spawn_status_loop(state: AppState, name: String) {
 /// tail6 changed" SSE rule. `last_capture_at` is the time of the last actual
 /// `capture-pane`, used to bound the capture-skip optimization so the live
 /// preview never freezes while an agent streams (see [`status::should_skip_capture_within`]).
+/// `chat_tail` is the per-session A2 chat-tail gate (change + 1s debounce), also
+/// carried across ticks.
 ///
 /// Returns the session's status AS OF THIS TICK (the detector's `last_status`
 /// after the tick, whether it ran a capture or held on a skip). The loop feeds
@@ -527,6 +549,7 @@ pub async fn tick(
     detector: &mut StatusDetector,
     last_tail: &mut Option<Vec<String>>,
     last_capture_at: &mut Instant,
+    chat_tail: &mut ChatTailGate,
 ) -> anyhow::Result<Status> {
     // While the detector's internal status is still `Unknown` (cold-start), pull
     // the persisted `last_status` from the DB and force it in. This satisfies
@@ -739,8 +762,21 @@ pub async fn tick(
         maybe_push_on_transition(state, name, s);
     }
 
-    // ── SSE `sessions` delta — when status committed OR the tail changed ───────
-    if committed.is_some() || tail_changed {
+    // ── A2 chat tail for the tile (zero new requests: it rides this delta) ────
+    // Sampled from the in-memory ring only — see `ChatTailGate::poll`. Sampled
+    // HERE, after the capture-skip early return, so it shares the delta the tick
+    // was already going to send; a tick that skipped its capture emits no delta
+    // at all, and the next real tick carries the newest tail anyway.
+    let chat_tail = chat_tail.poll(state.chat_store(name).as_deref());
+
+    // ── SSE `sessions` delta — when status committed OR a tail changed ─────────
+    // `chat_tail` joins the trigger for the same reason `preview_lines` is one:
+    // the transcript lands in batches up to ~30s after the pane went quiet
+    // (a0-findings: text-only first-visible p50 31.4s), so gating it behind a
+    // pane-tail change would strand the last turn's summary until the NEXT
+    // keystroke. The gate above already guarantees this fires at most once per
+    // second per session and only on a real change.
+    if committed.is_some() || tail_changed || chat_tail.is_some() {
         let mut item = serde_json::Map::new();
         item.insert("name".into(), Value::String(name.to_string()));
         if let Some(s) = committed {
@@ -771,6 +807,18 @@ pub async fn tick(
                 Value::String(status::parse_mode(&capture).as_str().to_string()),
             );
             *last_tail = Some(tail);
+        }
+        // The chat one-liner pair for the tile. Absent key = "unchanged" (never
+        // "empty"), exactly like `preview_lines`.
+        if let Some(t) = chat_tail {
+            match serde_json::to_value(&t) {
+                Ok(v) => {
+                    item.insert("chat_tail".into(), v);
+                }
+                // Unreachable for three owned strings + an i64; a serialisation
+                // failure must cost the chat tail, never the whole delta.
+                Err(e) => tracing::debug!(name = %name, error = %e, "chat_tail serialize failed"),
+            }
         }
         broadcast(state, "sessions", json!({ "delta": [Value::Object(item)] }));
     }
@@ -1064,6 +1112,75 @@ fn tail_lines(capture: &str) -> Vec<String> {
     lines[start..].iter().map(|s| s.to_string()).collect()
 }
 
+/// Publication policy for the tile chat tail on the `sessions` SSE delta.
+///
+/// One per session, owned by that session's detector loop — which is what makes
+/// the debounce per-session by construction (a busy session cannot throttle a
+/// quiet one).
+///
+/// Two gates, in order:
+/// 1. **change** — the same rule `preview_lines` uses: the delta carries what
+///    changed, and an idle session ticks forever;
+/// 2. **debounce** — at most one publication per [`CHAT_TAIL_MIN_INTERVAL`].
+///
+/// A suppressed tail is never "lost": it is simply not recorded as published, so
+/// the next tick past the window ships whatever the tail is *then* — the newest
+/// truth rather than a replay of a batch's intermediate states.
+///
+/// `None` in ⇒ `None` out. A session with no chat store (nobody attached) and a
+/// store whose ring is empty (or was just cleared by a resync) both omit the key
+/// rather than publishing an empty tail: on the wire, "empty chat" is a claim,
+/// and it is the exact claim A2's staleness work exists to stop making.
+pub struct ChatTailGate {
+    last: Option<ChatTail>,
+    last_sent_at: Option<Instant>,
+}
+
+impl Default for ChatTailGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChatTailGate {
+    /// A gate that has never published: the first non-empty tail it sees ships
+    /// immediately (a fresh detector loop must not sit on the tail for a second).
+    pub fn new() -> Self {
+        Self { last: None, last_sent_at: None }
+    }
+
+    /// Sample the session's ring and decide whether this tick publishes.
+    ///
+    /// Takes the NON-creating [`AppState::chat_store`](crate::state::AppState::chat_store)
+    /// result: a session nobody has a chat client on must not grow a store (and
+    /// therefore an in-memory transcript) just because its detector ticked. The
+    /// read is a `DashMap` hit plus a ring walk under the store's own mutex —
+    /// **never** a file read (a full recall scan per tile per tick would flood
+    /// the blocking pool; the live corpus is 8.9 MB).
+    fn poll(&mut self, store: Option<&ChatStore>) -> Option<ChatTail> {
+        self.poll_at(Instant::now(), store.and_then(|s| s.tail_summary()))
+    }
+
+    /// [`poll`](Self::poll) with the clock and the sample injected — the whole
+    /// policy, as a pure function, so the tests need no tmux and no sleeping.
+    fn poll_at(&mut self, now: Instant, current: Option<ChatTail>) -> Option<ChatTail> {
+        let current = current?;
+        if self.last.as_ref() == Some(&current) {
+            return None;
+        }
+        if let Some(sent) = self.last_sent_at {
+            if now.duration_since(sent) < CHAT_TAIL_MIN_INTERVAL {
+                // Deliberately does NOT update `last`: the change is still
+                // pending, so a later tick publishes the tail as it stands then.
+                return None;
+            }
+        }
+        self.last = Some(current.clone());
+        self.last_sent_at = Some(now);
+        Some(current)
+    }
+}
+
 /// Inverse of [`Status::as_str`] — parse the persisted token back into a
 /// [`Status`] so the detector loop can seed its internal `last_status` from the
 /// DB on spawn. Unknown tokens (including the literal `"unknown"`) return
@@ -1147,6 +1264,7 @@ mod board_reaction_tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
@@ -1396,5 +1514,103 @@ mod boot_reconcile_tests {
         crate::sessions::native::forget("never-ran");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod chat_tail_tests {
+    //! The `chat_tail` delta key (fase A2, Task 5).
+    //!
+    //! [`ChatTailGate`] is the whole publication policy — change gate + debounce
+    //! — as a pure function of `(now, current tail)`, so it is tested without a
+    //! tmux, a tailer, or a clock that actually ticks. The tick body only reads
+    //! the ring and inserts what the gate returns.
+
+    use super::*;
+    use crate::sessions::chat::store::ChatTail;
+
+    fn tail(user: &str, agent: &str, ts: i64) -> ChatTail {
+        ChatTail { user: user.into(), agent: agent.into(), ts }
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // the plan names this test; keep it greppable
+    fn delta_carries_chat_tail_only_when_it_CHANGED() {
+        let t0 = Instant::now();
+        let mut gate = ChatTailGate::new();
+
+        // No ring (nobody is watching this session's chat) → the key is omitted
+        // entirely. An empty `chat_tail` on the wire would read as "this chat is
+        // empty", which is exactly the lie A2 exists to prevent.
+        assert_eq!(gate.poll_at(t0, None), None);
+
+        let first = tail("run the tests", "running them now", 10);
+        assert_eq!(
+            gate.poll_at(t0, Some(first.clone())),
+            Some(first.clone()),
+            "the first tail must publish"
+        );
+
+        // Unchanged, well past the debounce window → still omitted. This is the
+        // `preview_lines` gate's shape: the delta carries what CHANGED, and the
+        // detector ticks every 1-5s forever on an idle session.
+        assert_eq!(gate.poll_at(t0 + Duration::from_secs(5), Some(first.clone())), None);
+        assert_eq!(gate.poll_at(t0 + Duration::from_secs(30), Some(first)), None);
+
+        // A changed agent line publishes again.
+        let next = tail("run the tests", "3 failed", 20);
+        assert_eq!(
+            gate.poll_at(t0 + Duration::from_secs(31), Some(next.clone())),
+            Some(next.clone())
+        );
+
+        // A ring that went empty (a resync cleared it) must NOT blank the tile:
+        // the field is omitted, and the client keeps the last value it has.
+        assert_eq!(gate.poll_at(t0 + Duration::from_secs(60), None), None);
+
+        // Wire shape pin — the tile reads these three keys.
+        assert_eq!(
+            serde_json::to_value(&next).unwrap(),
+            json!({ "user": "run the tests", "agent": "3 failed", "ts": 20 })
+        );
+    }
+
+    #[test]
+    fn chat_tail_publication_is_debounced_to_at_most_one_per_second_per_session() {
+        // A landing batch is 30-100 entries (a0: tool-heavy turns) and every one
+        // of them moves the tail. One SSE broadcast per entry would be a fan-out
+        // storm to EVERY connected client, for a tile that shows one line.
+        assert_eq!(CHAT_TAIL_MIN_INTERVAL, Duration::from_secs(1));
+
+        let t0 = Instant::now();
+        let mut gate = ChatTailGate::new();
+        let first = tail("go", "a0", 0);
+        assert_eq!(gate.poll_at(t0, Some(first.clone())), Some(first));
+
+        let mut published = 0;
+        for i in 1..=100u64 {
+            // 100 distinct tails inside 500ms.
+            let t = t0 + Duration::from_millis(i * 5);
+            if gate.poll_at(t, Some(tail("go", &format!("a{i}"), i as i64))).is_some() {
+                published += 1;
+            }
+        }
+        assert_eq!(published, 0, "a landing batch must cost AT MOST one broadcast per second");
+
+        // Suppressed is not lost: the next tick past the window ships the NEWEST
+        // tail (the intermediate ones were never the truth for longer than 5ms).
+        let latest = tail("go", "a100", 100);
+        assert_eq!(
+            gate.poll_at(t0 + Duration::from_millis(1_001), Some(latest.clone())),
+            Some(latest.clone())
+        );
+        // …and the fresh publication re-arms the window.
+        assert_eq!(gate.poll_at(t0 + Duration::from_millis(1_500), Some(tail("go", "a101", 101))), None);
+
+        // "per session": the gate lives in the per-session detector loop, so a
+        // busy session can never throttle a quiet one.
+        let mut other = ChatTailGate::new();
+        let o = tail("other", "b0", 1);
+        assert_eq!(other.poll_at(t0 + Duration::from_millis(1), Some(o.clone())), Some(o));
     }
 }

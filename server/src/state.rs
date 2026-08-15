@@ -206,6 +206,15 @@ pub struct AppState {
     pub pool: SqlitePool,
     /// Immutable runtime configuration.
     pub config: Arc<Config>,
+    /// When THIS server process started, in server-clock ms.
+    ///
+    /// Load-bearing for every guard whose evidence is in-memory only: after a
+    /// restart (the in-app updater does one on every release) those maps are
+    /// empty for sessions that have been running for days, so "we have not seen
+    /// X yet" must be measured from the SERVER's start, not from the session's
+    /// persisted `last_started`. The chat tail's no-hooks window is the first
+    /// consumer ([`crate::sessions::chat::tailer::classify_pointer`]).
+    pub server_start_ms: i64,
     /// Per-session serialization locks. Added on first use; removed in
     /// `sessions::delete`/`archive`.
     pub session_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
@@ -242,6 +251,14 @@ pub struct AppState {
     /// not-yet-parked loop. One `Notify` per session keeps a `PreToolUse` storm on
     /// one agent from waking every other session's loop.
     pub detector_wake: Arc<DashMap<String, Arc<Notify>>>,
+    /// Per-session CHAT POINTER wake, mirroring [`detector_wake`](Self::detector_wake).
+    /// `/api/_internal/hook` `notify_one`s this the moment a hook actually
+    /// CHANGES `sessions.cc_conversation_id` (a restart, a `/clear`, or a
+    /// terminal-side `--resume`), so the chat tailer re-resolves its transcript
+    /// path and re-seeds immediately instead of waiting for its cold-pointer
+    /// backstop to notice. `notify_one` parks a permit, so a wake is never lost
+    /// to a not-yet-parked loop.
+    pub chat_pointer_wake: Arc<DashMap<String, Arc<Notify>>>,
     /// Per-session PTY heartbeat: the [`Instant`] the live reader last saw bytes
     /// from this session's pane. The status detector reads it for its
     /// heartbeat branch (bytes <1.5s → `Active`, silent ≥30s → `Idle`). **The
@@ -348,6 +365,33 @@ pub struct AppState {
     /// rename (via [`rename_session`](Self::rename_session)) exactly like every
     /// other per-session map here.
     pub session_runtimes: Arc<DashMap<String, Arc<dyn SessionRuntime>>>,
+    /// Per-session CHAT rings (fase A2 data plane). Keyed by session name; the
+    /// ring + monotonic `seq` + snapshot-and-subscribe that give the chat WS its
+    /// no-gap/no-overlap seed→live boundary (see
+    /// [`crate::sessions::chat::store`]).
+    ///
+    /// Created on first chat attach via [`chat_store_for`](Self::chat_store_for)
+    /// — **never** eagerly, so a server with no chat client attached carries no
+    /// transcript in memory. Consumers that must not resurrect a store (the
+    /// sessions-SSE `chat_tail`) use the non-creating
+    /// [`chat_store`](Self::chat_store). Released by the tailer's idle sweep
+    /// ([`drop_chat_store`](Self::drop_chat_store)) so the ring's lifetime
+    /// really is "while a chat client is attached, plus the grace period";
+    /// also dropped on delete and re-keyed on rename like every other
+    /// per-session map here.
+    pub chat_stores: Arc<DashMap<String, Arc<crate::sessions::chat::store::ChatStore>>>,
+    /// Per-session latest Claude STATUSLINE payload (fase A2 Task 6), fed by the
+    /// OPT-IN tap at `/api/_internal/statusline`. IN-MEMORY ONLY, exactly like
+    /// [`session_activity`](Self::session_activity) — the payload carries the
+    /// model, version, context-window percentage and running cost, and none of
+    /// it is ever persisted.
+    ///
+    /// Empty on every host that has not installed the tap, which is the default:
+    /// nothing in the session create/start path can write a `statusLine` key
+    /// (pinned by `tests/statusline_optin.rs`). Never a liveness signal — the
+    /// tap fires per turn, event-driven, and says nothing about whether the
+    /// agent is working.
+    pub statuslines: Arc<DashMap<String, crate::sessions::chat::statusline::Statusline>>,
     /// In-UI update mechanism (v0.3.0): cached latest GitHub release + the
     /// per-job broadcast registry the SSE progress endpoint subscribes to.
     /// Cheap `Arc` clone; created once in `new()` so every handler shares the
@@ -376,6 +420,7 @@ impl AppState {
         Self {
             pool,
             config: Arc::new(config),
+            server_start_ms: chrono::Utc::now().timestamp_millis(),
             vapid,
             push_attempts: Arc::new(crate::push::AttemptLog::default()),
             pending_pushes: Arc::new(DashMap::new()),
@@ -385,6 +430,7 @@ impl AppState {
             last_hook: Arc::new(DashMap::new()),
             hooks_live: Arc::new(DashMap::new()),
             detector_wake: Arc::new(DashMap::new()),
+            chat_pointer_wake: Arc::new(DashMap::new()),
             pty_heartbeat: Arc::new(DashMap::new()),
             cadence_recency: Arc::new(std::sync::Mutex::new(HashMap::new())),
             status_notify: Arc::new(Notify::new()),
@@ -397,6 +443,8 @@ impl AppState {
             force_agent_teams: Arc::new(DashMap::new()),
             pending_edits: Arc::new(std::sync::Mutex::new(HashMap::new())),
             session_runtimes: Arc::new(DashMap::new()),
+            chat_stores: Arc::new(DashMap::new()),
+            statuslines: Arc::new(DashMap::new()),
             host_pool,
             updates: crate::updates::UpdatesState::new(),
         }
@@ -613,6 +661,63 @@ impl AppState {
     /// away). The next [`runtime_for`](Self::runtime_for) re-reads the column.
     pub fn runtime_invalidate(&self, name: &str) {
         self.session_runtimes.remove(name);
+    }
+
+    /// The per-session chat ring (get-or-create). Called by the chat tailer on
+    /// spawn and by the chat WS on attach — the two ends that must rendezvous
+    /// on ONE store for the no-gap proof to mean anything.
+    pub fn chat_store_for(&self, name: &str) -> Arc<crate::sessions::chat::store::ChatStore> {
+        self.chat_stores
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(crate::sessions::chat::store::ChatStore::new()))
+            .clone()
+    }
+
+    /// The per-session chat ring **without** creating one. For read-only
+    /// consumers (the sessions-SSE `chat_tail`) that must not spin up a store
+    /// for a session nobody is watching.
+    pub fn chat_store(&self, name: &str) -> Option<Arc<crate::sessions::chat::store::ChatStore>> {
+        self.chat_stores.get(name).map(|s| s.clone())
+    }
+
+    /// Release `name`'s chat ring. Called by the chat tailer's idle sweep —
+    /// from INSIDE the tailer-registry shard lock, so a client attaching right
+    /// now either still sees the running tailer or starts a fresh pair.
+    ///
+    /// Without this the ring outlived its tailer for the whole process
+    /// lifetime: up to `RING_CAP` sealed entries of prompts, assistant text and
+    /// tool results per session anyone ever opened chat on, still being sampled
+    /// by `ChatTailGate` on every detector tick from a conversation nobody
+    /// tails any more.
+    pub fn drop_chat_store(&self, name: &str) {
+        self.chat_stores.remove(name);
+    }
+
+    /// Record `name`'s latest statusline snapshot. Returns whether anything a
+    /// client renders actually CHANGED — the tap fires once per turn on every
+    /// tapped session, so the caller broadcasts only on a real change (same
+    /// change-only discipline as the activity delta).
+    pub fn set_statusline(
+        &self,
+        name: &str,
+        next: crate::sessions::chat::statusline::Statusline,
+    ) -> bool {
+        let changed = self
+            .statuslines
+            .get(name)
+            .map(|prev| next.differs_from(&prev))
+            .unwrap_or(true);
+        self.statuslines.insert(name.to_string(), next);
+        changed
+    }
+
+    /// The current in-memory statusline snapshot for `name`, if the opt-in tap
+    /// is installed and has fired at least once.
+    pub fn statusline(
+        &self,
+        name: &str,
+    ) -> Option<crate::sessions::chat::statusline::Statusline> {
+        self.statuslines.get(name).map(|s| s.clone())
     }
 
     /// Get (creating on first use) the per-session [`PtyStream`] and ensure its
@@ -963,6 +1068,24 @@ impl AppState {
         self.detector_wake_for(name).notify_one();
     }
 
+    /// The per-session chat-pointer wake handle (get-or-create). The chat tailer
+    /// parks on it; the hook endpoint `notify_one`s it when a hook CHANGED the
+    /// session's `cc_conversation_id`.
+    pub fn chat_pointer_wake_for(&self, name: &str) -> Arc<Notify> {
+        self.chat_pointer_wake
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
+    }
+
+    /// Tell `name`'s chat tailer that the tracked conversation MOVED, so it
+    /// re-resolves the transcript path and re-seeds now. Only ever called on an
+    /// actual change — a wake per hook would re-scan the project dir on every
+    /// tool call.
+    pub fn wake_chat_pointer(&self, name: &str) {
+        self.chat_pointer_wake_for(name).notify_one();
+    }
+
     /// The per-session status watch sender (get-or-create), seeded `("unknown", 0)`.
     /// The detector `send_replace`s `(status, ver+1)` on a status
     /// change; `agents::wait` subscribes for the long-poll. A single shared sender
@@ -1009,12 +1132,20 @@ impl AppState {
         self.last_hook.remove(name);
         self.hooks_live.remove(name);
         self.detector_wake.remove(name);
+        self.chat_pointer_wake.remove(name);
         self.pty_heartbeat.remove(name);
         self.session_tasks.remove(name);
         self.session_activity.remove(name);
         self.forced_status.remove(name);
         self.force_agent_teams.remove(name);
         self.session_runtimes.remove(name);
+        // The chat ring is pure in-memory transcript for THIS name; a deleted
+        // session must not leave one behind for a later session that reuses the
+        // name (it would seed someone else's conversation).
+        self.chat_stores.remove(name);
+        // Same reasoning for the statusline snapshot: it is this name's model /
+        // cost / context state and must not survive the row.
+        self.statuslines.remove(name);
         // The native module memoizes its own session handles (one holder
         // connection + one grid per name), so dropping only OUR cache entry
         // would leak that. A no-op for a tmux session.
@@ -1082,6 +1213,9 @@ impl AppState {
         if let Some((_, v)) = self.detector_wake.remove(old) {
             self.detector_wake.insert(new.to_string(), v);
         }
+        if let Some((_, v)) = self.chat_pointer_wake.remove(old) {
+            self.chat_pointer_wake.insert(new.to_string(), v);
+        }
         if let Some((_, v)) = self.pty_heartbeat.remove(old) {
             self.pty_heartbeat.insert(new.to_string(), v);
         }
@@ -1096,6 +1230,17 @@ impl AppState {
         }
         if let Some((_, v)) = self.force_agent_teams.remove(old) {
             self.force_agent_teams.insert(new.to_string(), v);
+        }
+        // The chat ring IS carryable: it holds the same conversation, and its
+        // `seq` must stay monotonic across the rename or every attached client
+        // would have to re-seed for a cosmetic change.
+        if let Some((_, v)) = self.chat_stores.remove(old) {
+            self.chat_stores.insert(new.to_string(), v);
+        }
+        // Likewise the statusline snapshot: same Claude process, same model and
+        // cost — a rename must not blank the tile's line until the next turn.
+        if let Some((_, v)) = self.statuslines.remove(old) {
+            self.statuslines.insert(new.to_string(), v);
         }
         // The runtime handle is NAME-BOUND (a `TmuxRuntime` owns the bare name
         // it builds `supermux-<name>` from), so it can NOT be carried across a
@@ -1284,6 +1429,7 @@ mod pending_edit_tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
