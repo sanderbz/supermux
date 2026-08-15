@@ -28,7 +28,7 @@
  */
 import type { MarkPin } from '../brand/marks/character'
 import type { AttentionCause } from '../components/chat/attention'
-import { dialogCardView, type DialogCardView } from '../components/chat/dialog-answer'
+import { applyLatch, dialogCardView, type DialogCardView } from '../components/chat/dialog-answer'
 import { readLens } from '../components/chat/peek-lens'
 import type { ChatEntry } from '../components/chat/entries'
 import type { PendingSend } from '../components/chat/pending'
@@ -275,11 +275,28 @@ const BENCH_PIN = '2.1.231'
  *  on the bench beside the working one. */
 const BENCH_UNPINNED = '2.9.0'
 
-/** The three cards, built through the shipped path: capture → lens → registry. */
-export const BENCH_DIALOGS: Readonly<Record<'permission' | 'plan' | 'unpinned', DialogCardView>> = {
+/**
+ * What a sequence that ABORTED says. Not invented copy — the sentence
+ * `dialog-answer.ts` composes when the caret it just moved is not where it put
+ * it, which is the concurrent-client race A0 watched happen twice.
+ */
+const BENCH_ABORT =
+  'After Down, the terminal’s selection sits on option 3 instead of 2 — something else is typing into this session, so nothing further was sent.'
+
+/** The four cards, built through the shipped path: capture → lens → registry. */
+export const BENCH_DIALOGS: Readonly<
+  Record<'permission' | 'plan' | 'unpinned' | 'aborted', DialogCardView>
+> = {
   permission: dialogCardView(readLens(BENCH_CAPTURE), BENCH_PIN)!,
   plan: dialogCardView(readLens(BENCH_PLAN_CAPTURE), BENCH_PIN)!,
   unpinned: dialogCardView(readLens(BENCH_CAPTURE), BENCH_UNPINNED)!,
+  // Through `applyLatch`, so the bench shows the real revert — a card that was
+  // answerable a second ago, is inert now, and PRINTS why.
+  aborted: applyLatch(dialogCardView(readLens(BENCH_CAPTURE), BENCH_PIN), {
+    key: dialogCardView(readLens(BENCH_CAPTURE), BENCH_PIN)!.key,
+    detail: BENCH_ABORT,
+    attention: 'dialog-unmapped',
+  }).card!,
 }
 
 /* ── the states ──────────────────────────────────────────────────────────── */
@@ -674,6 +691,29 @@ export function liveStates(nowMs: number): LiveState[] {
       },
     },
     {
+      id: 'dialog-live',
+      title: 'Answerable — the permission card with the keys chat will actually press',
+      board: 'board-light.png (choice card) + A4 T7',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ touch /tmp/spike-test-file',
+        permission_request: {
+          tool: 'Bash',
+          summary: '⚡ touch /tmp/spike-test-file',
+          kind: 'bash',
+        },
+      }),
+      entries: release,
+      turnAgo: 12,
+      // THE headline state, and the one every refusal below is a departure
+      // from: three live pills (1 / 3 / esc — a0's verified set) and option 2
+      // drawn, readable and inert because what "always allow" persists on a
+      // Bash dialog was never found on disk.
+      dialog: BENCH_DIALOGS.permission,
+    },
+    {
       id: 'answering',
       title: 'Answering — the permission card mid-sequence, every control inert',
       board: 'board-light.png (choice card) + A4 T7',
@@ -735,6 +775,31 @@ export function liveStates(nowMs: number): LiveState[] {
       attention: 'registry-version-mismatch',
       attentionCapture: BENCH_CAPTURE,
     },
+    {
+      id: 'dialog-aborted',
+      title: 'Aborted — the caret moved under a sequence, and the card says so',
+      board: 'A4 T7 (the revert path)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ touch /tmp/spike-test-file',
+        permission_request: {
+          tool: 'Bash',
+          summary: '⚡ touch /tmp/spike-test-file',
+          kind: 'bash',
+        },
+      }),
+      entries: release,
+      turnAgo: 12,
+      // The state the safety review exists for: a Down went on the wire, the
+      // re-peek found the selection somewhere else, and the sequence stopped.
+      // The question is still readable, nothing on it can be pressed again, and
+      // the sentence naming what happened is ON THE CARD — not in a tooltip.
+      dialog: BENCH_DIALOGS.aborted,
+      attention: 'dialog-unmapped',
+      attentionCapture: BENCH_CAPTURE,
+    },
   ]
 }
 
@@ -767,9 +832,11 @@ export const STATE_IDS = [
   'composing',
   'slash',
   'refused',
+  'dialog-live',
   'answering',
   'plan-approval',
   'dialog-refused',
+  'dialog-aborted',
 ] as const
 
 export type StateId = (typeof STATE_IDS)[number]

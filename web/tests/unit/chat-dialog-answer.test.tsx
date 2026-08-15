@@ -28,6 +28,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { ChatConversation } from '../../src/components/chat/conversation'
 import {
   answerDialog,
+  answerNotice,
   applyLatch,
   chooseable,
   dialogCardView,
@@ -193,6 +194,39 @@ describe('answering, when it must refuse', () => {
     expect(r.sent).toEqual([])
   })
 
+  test('a list that GAINED a row mid-answer sends nothing — the "No becomes always-allow" hazard', async () => {
+    // THE named failure of the whole registry (a0 §3, `registry/index.ts`): the
+    // card was drawn for a three-row dialog and the screen now has four, so the
+    // row the user read as "No" is not the row two Downs would land on. Both
+    // guards must catch it independently, so this asserts it from the drawn
+    // card's key AND after the first navigation key has already gone.
+    const grown: PeekLens = {
+      ...PERM,
+      dialog: {
+        ...PERM.dialog!,
+        options: [PERM.dialog!.options[0], 'Yes, and always allow this session', ...PERM.dialog!.options.slice(1)],
+        caretIndex: 0,
+      },
+    }
+    // Caught before any key: the shape check fails, so the entry comes back
+    // degraded and every option with it — and the refusal QUOTES the reason
+    // rather than shrugging.
+    const before = rig([grown])
+    const out = await answerDialog(before.deps, req(2))
+    expect(out.ok).toBe(false)
+    expect(out.failure).toBe('not-actionable')
+    expect(before.sent).toEqual([])
+    expect(answerNotice(out)).toMatch(/not the ones this mapping was captured against/)
+
+    // Caught mid-flight: one Down had already gone when the row appeared.
+    const during = rig([PERM, grown])
+    const mid = await answerDialog(during.deps, req(2))
+    expect(mid.ok).toBe(false)
+    expect(mid.committed).toBe(false)
+    expect(during.sent).toEqual(['Down'])
+    expect(during.sent).not.toContain('Enter')
+  })
+
   test('a moved caret aborts the sequence and sends no Enter', async () => {
     // One Down goes out; the re-peek says the selection is on row 2, i.e. two
     // rows from where it started. Something else is typing — stop.
@@ -277,6 +311,10 @@ describe('answering, when it must refuse', () => {
     expect(out.failure).toBe('not-actionable')
     expect(out.attention).toBe('registry-version-mismatch')
     expect(r.sent).toEqual([])
+    // Naming BOTH versions — the one this session booted and the ones the
+    // fingerprint was checked against. "Could not confirm" is not the reason.
+    expect(answerNotice(out)).toMatch(/2\.2\.0/)
+    expect(answerNotice(out)).toMatch(/2\.1\.227/)
   })
 
   test('a session whose banner could not be read sends nothing either', async () => {
@@ -337,6 +375,49 @@ describe('the card the surface draws', () => {
     expect(view.options.every((o) => !o.actOn && o.reason === 'the caret moved')).toBe(true)
     expect(view.escape?.actOn).toBe(false)
     expect(view.disabled).toBe(true)
+    // …and it is the note the card actually PRINTS. A `title` attribute is not
+    // a sentence a phone can read, and the generic terminal line would hide the
+    // one fact that matters — that a key had already gone (safety review).
+    expect(view.note).toBe('the caret moved')
+    expect(hardDisable(dialogCardView(PERM, '2.1.231')!, '').note).toBe(DIALOG_TERMINAL_NOTE)
+  })
+
+  test('a refusal always leaves a sentence, and never claims a sent key was a no-op', () => {
+    // The abort's own words when it has them…
+    expect(
+      answerNotice({ ok: false, sent: ['Down'], committed: false, detail: 'the caret drifted' }),
+    ).toBe('the caret drifted')
+    // …and an honest fallback when it does not. The committed half is the one
+    // that may never be dressed up: a key left this client.
+    expect(answerNotice({ ok: false, sent: [], committed: false })).toMatch(/nothing was sent/)
+    expect(answerNotice({ ok: false, sent: ['Enter'], committed: true })).toMatch(
+      /key was sent.*could not confirm/i,
+    )
+    expect(answerNotice({ ok: false, sent: ['Enter'], committed: true })).not.toMatch(
+      /nothing was sent/,
+    )
+  })
+
+  test('the refusal sentence outlives the dialog it was about', () => {
+    // THE SILENT-FAILURE HOLE (safety review). The most common abort is the one
+    // where the sighting vanishes — somebody answered it in the terminal while
+    // the tap was in flight — and the latch dies with its sighting by design.
+    // If the notice went with it, a tap that sent NOTHING would look exactly
+    // like one that worked. It rides the resolution channel instead, which is
+    // keyed to the sighting and outlives it.
+    const live = dialogCardView(PERM, '2.1.231')!
+    const notice = answerNotice({
+      ok: false,
+      sent: [],
+      committed: false,
+      failure: 'no-dialog',
+      detail: 'The prompt was gone by the time this was answered — something else answered it.',
+    })
+    const res = { key: live.key, line: notice, atMs: 1_000 }
+    // While the question is still up, the latched CARD carries it — one voice.
+    expect(visibleResolution(res, live, 1_100)).toBeNull()
+    // The moment it is gone, the sentence is what is left on screen.
+    expect(visibleResolution(res, null, 1_100)).toBe(notice)
   })
 
   test('the sighting key ignores the caret and notices the rows', () => {
@@ -445,6 +526,18 @@ describe('the card, rendered', () => {
     )
     expect(html).toContain('data-state="degraded"')
     expect(html).toContain(DIALOG_TERMINAL_NOTE)
+    expect(html.match(/disabled=""/g)?.length).toBe(4)
+  })
+
+  test('an aborted card prints the abort, not a tooltip', () => {
+    const base = dialogCardView(PERM, '2.1.231')!
+    const detail =
+      'After Down, the terminal’s selection sits on option 3 instead of 2 — something else is typing into this session, so nothing further was sent.'
+    const { card } = applyLatch(base, { key: base.key, detail, attention: 'dialog-unmapped' })
+    const html = renderToStaticMarkup(<DialogCard view={card!} onChoose={() => {}} />)
+    expect(html).toContain('data-state="degraded"')
+    // In the TEXT, not only in a `title` a finger cannot hover.
+    expect(html.replace(/<[^>]*>/g, ' ')).toContain('something else is typing into this session')
     expect(html.match(/disabled=""/g)?.length).toBe(4)
   })
 

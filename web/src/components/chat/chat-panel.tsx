@@ -29,7 +29,7 @@ import { useSessions } from '@/hooks/use-sessions'
 import { commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
-import { topAttention } from './attention'
+import { detailFor, topAttention } from './attention'
 import { ChatComposer } from './composer'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
@@ -219,14 +219,24 @@ export default function ChatPanel({
   // card's evidence is the SAME capture every other consumer reads (one poller,
   // T2), so what it shows is what the refusal was decided on.
   const attention = topAttention([pending.attention, dialog.attention])
+  // What the abort actually was. `dialog-unmapped`'s copy reads "no verified
+  // mapping", which is true for an unknown dialog and FALSE for a sequence that
+  // aborted on a caret somebody else moved — same cause, different fact, and
+  // the card has to say which one happened.
+  //
+  // Scoped to the cause that WON the ranking — `detailFor` is that rule, and it
+  // has its own test: the two raisers can fire in the same second and this
+  // sentence must not end up inside the other one's card.
+  const detail = detailFor(attention, dialog.attention, dialog.attentionDetail)
   const attentionCtx = React.useMemo(
     () => ({
       version: peek.lens.bannerVersion,
       // What the sighted fingerprint WAS captured against, so the version
       // sentence can name both halves rather than "some other versions".
       verifiedVersions: dialog.card?.verifiedVersions,
+      detail: detail ?? undefined,
     }),
-    [dialog.card?.verifiedVersions, peek.lens.bannerVersion],
+    [detail, dialog.card?.verifiedVersions, peek.lens.bannerVersion],
   )
   // Dismissing the card dismisses what raised it: the undelivered echoes are
   // the failure, and a card that could be closed while its rows stayed on

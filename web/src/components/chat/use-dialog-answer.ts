@@ -24,6 +24,7 @@ import type { SessionInput } from '../../lib/session-input'
 import type { AttentionCause } from './attention'
 import {
   answerDialog,
+  answerNotice,
   applyLatch,
   chooseable,
   dialogCardView,
@@ -61,6 +62,15 @@ export interface DialogAnswerHandle {
   resolved: string | null
   /** The T5 cause this surface should raise, if any. */
   attention: AttentionCause | null
+  /**
+   * What the raiser knows, for `AttentionContext.detail`.
+   *
+   * Without it the card says "this app has no verified mapping for that prompt"
+   * over an abort whose mapping was perfect and whose actual cause was a second
+   * client typing — a sentence that is not merely vague but false. The copy
+   * module has always had the slot; this is what fills it.
+   */
+  attentionDetail: string | null
 }
 
 export function useDialogAnswer({
@@ -102,22 +112,38 @@ export function useDialogAnswer({
   const refresh = peek.refresh
   const sendKey = input.sendKey
 
+  // The double-fire guard is a REF, not the `busy` state it mirrors. State is
+  // only as good as the render that follows it, and `choose` is a closure over
+  // the render that made it: two taps dispatched before React has re-rendered
+  // (a synthetic double-tap, a click racing an Enter on the focused pill) would
+  // both read `busy === null` and both start a sequence — two answers to one
+  // question, which on a permission dialog means the second Enter lands on
+  // whatever Claude asked next. The ref is written before any await, so the
+  // second tap loses regardless of when the render arrives.
+  const running = React.useRef(false)
+
   const choose = React.useCallback(
     (target: number | 'escape') => {
       // Rendered-but-inert controls are inert here too (`chooseable`), and a
       // sequence in flight owns the card until it finishes.
-      if (!chooseable(card, busy, target) || !card?.id) return
+      if (running.current || !chooseable(card, busy, target) || !card?.id) return
       const req: AnswerRequest = { entryId: card.id, target, key: card.key }
+      running.current = true
       setBusy(target)
       void (async () => {
         const out = await answerDialog({ refresh, sendKey, pin }, req)
+        running.current = false
         setBusy(null)
+        // ONE outcome line for both halves of the story. On success it names the
+        // decision; on a refusal it carries the evidence — and it is set for
+        // BOTH because the latch below dies with its sighting, and the sighting
+        // is routinely what went away.
+        setResolved({
+          key: card.key,
+          line: out.ok ? resolutionLine(out.effect ?? 'accept', card) : answerNotice(out),
+          atMs: serverNowMs(),
+        })
         if (out.ok) {
-          setResolved({
-            key: card.key,
-            line: resolutionLine(out.effect ?? 'accept', card),
-            atMs: serverNowMs(),
-          })
           // The feedback branch is a two-step by design: the dialog is
           // dismissed here, the sentence is typed in the React composer, and
           // the composer's own send carries it (verified round-trip, a0 §3).
@@ -129,7 +155,7 @@ export function useDialogAnswer({
         // to press anything into this sighting again.
         setBlocked({
           key: card.key,
-          detail: out.detail ?? fallbackDetail(out.committed),
+          detail: answerNotice(out),
           // The card goes inert AND the surface says so out loud: a refusal the
           // user has to infer from a greyed-out button is not a refusal, it is
           // a bug they will report as one.
@@ -150,13 +176,9 @@ export function useDialogAnswer({
     choose,
     resolved: line,
     attention,
+    // Only while the latch is the live one — `applyLatch` has already decided
+    // whether it belongs to what is on screen, and a stale sentence under a new
+    // question is the same lie in the other direction.
+    attentionDetail: card?.disabled && blocked?.key === card.key ? blocked.detail : null,
   }
-}
-
-/** The honest sentence when the failure carried none. The committed half is the
- *  one that must never be dressed up: a key left this client. */
-function fallbackDetail(committed: boolean): string {
-  return committed
-    ? 'The key was sent and this app could not confirm what it did. Check the terminal.'
-    : 'This app could not confirm what the terminal is showing, so nothing was sent.'
 }

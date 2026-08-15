@@ -94,6 +94,26 @@ export function topAttention(
 }
 
 /**
+ * The raiser's own evidence — but only when the raiser is the card being drawn.
+ *
+ * `AttentionContext.detail` is free text dropped into the MIDDLE of whichever
+ * sentence `attentionCopy` composes, and this surface has more than one raiser:
+ * a send the watchdog gave up on outranks a dialog refusal, and both can be
+ * true at the same second. Handing the dialog's sentence to `send-unconfirmed`
+ * would print "the terminal's selection sits on option 3" as the reason a
+ * MESSAGE never arrived. A card that quotes evidence from the wrong failure is
+ * worse than one that quotes none, so the pairing is a function rather than a
+ * habit at each call site.
+ */
+export function detailFor(
+  top: AttentionCause | null,
+  cause: AttentionCause | null,
+  detail: string | null | undefined,
+): string | undefined {
+  return top && cause && top === cause && detail ? detail : undefined
+}
+
+/**
  * Cause (+ what the raiser knows) → the two strings the card says.
  *
  * The `version` clauses are additive: the sentence is complete without them, so

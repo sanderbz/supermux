@@ -217,6 +217,24 @@ describe('coverage: every state the surface can be in', () => {
     expect(refused.dialog?.disabled).toBe(true)
     expect(refused.dialog?.options.every((o) => !o.actOn)).toBe(true)
     expect(refused.attention).toBe('registry-version-mismatch')
+
+    // The headline state: the card as it looks when it CAN be answered. A0's
+    // verified set exactly — 1 and 3 live, 2 drawn and inert, Esc live.
+    const live = byId.get('dialog-live')!
+    expect(live.dialog?.id).toBe('permission.bash')
+    expect(live.dialog?.disabled).toBe(false)
+    expect(live.dialog?.options.map((o) => o.actOn)).toEqual([true, false, true])
+    expect(live.dialog?.escape?.actOn).toBe(true)
+    expect(live.dialogBusy).toBeUndefined()
+
+    // The revert path, built through `applyLatch` so the bench shows the real
+    // thing: inert, and the abort's own sentence as the card's VISIBLE note.
+    const aborted = byId.get('dialog-aborted')!
+    expect(aborted.dialog?.disabled).toBe(true)
+    expect(aborted.dialog?.options.every((o) => !o.actOn)).toBe(true)
+    expect(aborted.dialog?.escape?.actOn).toBe(false)
+    expect(aborted.dialog?.note).toMatch(/something else is typing into this session/)
+    expect(aborted.attention).toBe('dialog-unmapped')
   })
 
   test('stopping is a running turn with an EMPTY box; queueing is the same turn with a draft', () => {

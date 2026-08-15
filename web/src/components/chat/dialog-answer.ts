@@ -275,6 +275,13 @@ async function look(
     return {
       failure: match.entry ? 'not-actionable' : 'changed',
       attention: match.attention ?? 'dialog-unmapped',
+      // The registry has ALREADY written the sentence for this refusal — the
+      // version it was pinned to, or the row that stopped matching — and
+      // `disabled()` stamped it on every option. Dropping it here and falling
+      // back to "could not confirm what the terminal is showing" would replace
+      // the one fact the user needs (an option list that gained a row is how
+      // "No" becomes "Yes, and always allow") with a shrug.
+      detail: match.entry?.options[0]?.disabledReason,
     }
   }
   if (match.entry.id !== req.entryId || sightingKey(lens.dialog) !== req.key) {
@@ -458,14 +465,20 @@ export function applyLatch(
 
 /** The same view with every control inert, plus the reason. Used after a failed
  *  sequence: once this app has misread the screen ONCE, it stops offering to
- *  press keys into it until the dialog itself changes. */
+ *  press keys into it until the dialog itself changes.
+ *
+ *  The reason becomes the card's VISIBLE note, not just the controls' tooltips.
+ *  A `title` attribute is not a sentence a phone can read, and "something else
+ *  is typing into this session" is the whole content of the refusal — replacing
+ *  it with the generic terminal line would leave the user with a greyed-out card
+ *  and no idea that a key had already gone. */
 export function hardDisable(view: DialogCardView, reason: string): DialogCardView {
   return {
     ...view,
     options: view.options.map((o) => ({ ...o, actOn: false, reason })),
     escape: view.escape ? { ...view.escape, actOn: false, reason } : undefined,
     disabled: true,
-    note: DIALOG_TERMINAL_NOTE,
+    note: reason || DIALOG_TERMINAL_NOTE,
   }
 }
 
@@ -538,4 +551,27 @@ export function resolutionLine(
     case 'feedback':
       return 'Answered in chat — say what should happen instead'
   }
+}
+
+/**
+ * The sentence a REFUSED answer leaves behind — and why it is a resolution
+ * rather than only a latch.
+ *
+ * The latch dies with its sighting, by design: the next identical question must
+ * not arrive pre-disabled. But the most common abort is exactly the one where
+ * the sighting vanishes — somebody answered it in the terminal while the tap was
+ * in flight, or a concurrent client moved the caret and then resolved the dialog
+ * — and a latch dropped on that frame takes the whole explanation with it. The
+ * card disappears, nothing is said, and a tap that sent NOTHING looks precisely
+ * like a tap that worked. On this surface that is the worst available failure:
+ * the user believes they allowed something they did not.
+ *
+ * So the outcome line carries both halves. It outlives the sighting (12 s,
+ * `visibleResolution`) and it never dresses up a committed key as a no-op.
+ */
+export function answerNotice(out: AnswerOutcome): string {
+  if (out.detail) return out.detail
+  return out.committed
+    ? 'The key was sent and this app could not confirm what it did. Check the terminal.'
+    : 'This app could not confirm what the terminal is showing, so nothing was sent.'
 }

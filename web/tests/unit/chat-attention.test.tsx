@@ -29,6 +29,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import {
   ATTENTION_ORDER,
   attentionCopy,
+  detailFor,
   topAttention,
   type AttentionCause,
 } from '../../src/components/chat/attention'
@@ -346,3 +347,32 @@ const _exhaustive: Record<AttentionCause, true> = {
   'transcript-stale': true,
 }
 void _exhaustive
+
+/* ── the evidence must belong to the card it is printed in ────────────────── */
+
+describe('detailFor', () => {
+  const abort = 'the terminal’s selection sits on option 3 instead of 2'
+
+  test('the winning cause gets its own evidence', () => {
+    expect(detailFor('dialog-unmapped', 'dialog-unmapped', abort)).toBe(abort)
+    expect(detailFor('registry-version-mismatch', 'registry-version-mismatch', abort)).toBe(abort)
+  })
+
+  test('a cause that did NOT win never lends its sentence to the one that did', () => {
+    // The real collision: a mid-turn send times out (`send-unconfirmed`, which
+    // outranks everything) while a dialog sequence has just aborted. Without
+    // this, the send card would explain itself with the CARET's story.
+    const top = topAttention(['send-unconfirmed', 'dialog-unmapped'])
+    expect(top).toBe('send-unconfirmed')
+    expect(detailFor(top, 'dialog-unmapped', abort)).toBeUndefined()
+    expect(attentionCopy('send-unconfirmed', { detail: detailFor(top, 'dialog-unmapped', abort) }).body)
+      .not.toContain('option 3')
+  })
+
+  test('nothing raised, nothing quoted', () => {
+    expect(detailFor(null, 'dialog-unmapped', abort)).toBeUndefined()
+    expect(detailFor('dialog-unmapped', null, abort)).toBeUndefined()
+    expect(detailFor('dialog-unmapped', 'dialog-unmapped', null)).toBeUndefined()
+    expect(detailFor('dialog-unmapped', 'dialog-unmapped', '')).toBeUndefined()
+  })
+})
