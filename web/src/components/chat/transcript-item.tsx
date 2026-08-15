@@ -94,7 +94,28 @@ const SYSTEM_WORD: Record<string, string> = {
   image: 'Image',
 }
 
-export function TranscriptItem(props: TranscriptItemProps) {
+/**
+ * MEMOISED, and it is load-bearing (A4 review).
+ *
+ * A4 made the composer live, and its draft is a `useSyncExternalStore`
+ * subscription held by `chat-panel.tsx` — so every keystroke re-renders the
+ * panel, the conversation, and with it every row of the transcript. Nothing on
+ * that path was memoised, and `react-markdown` re-runs its whole unified
+ * pipeline on each render: measured on this box at ~1.2ms per ordinary
+ * assistant bubble (SSR, i.e. a floor — a client render adds reconciliation and
+ * DOM work). An afternoon's session of ~50 messages therefore paid ~60ms of
+ * main-thread work per keystroke, and the caret visibly lagged the keyboard.
+ *
+ * The boundary works because every prop here is already stable across a
+ * keystroke: `node` comes out of `buildTranscript`'s `useMemo`, the three
+ * indexes are `useMemo`d in the panel, `rawUrl`/`pinFor` are module-level, and
+ * `nowMs` is bucketed to 30s (`chat-panel.tsx`) so the transcript reshapes twice
+ * a minute rather than once a second. A prop that starts changing per render is
+ * what would silently undo this — hence the test in `chat-interactive`.
+ */
+export const TranscriptItem = React.memo(function TranscriptItem(
+  props: TranscriptItemProps,
+) {
   const { node } = props
   if (node.kind === 'divider') return <SystemLine>{node.label}</SystemLine>
 
@@ -112,7 +133,7 @@ export function TranscriptItem(props: TranscriptItemProps) {
       gutter={showGutter ? props.name : undefined}
     />
   )
-}
+})
 
 /* ── the human ───────────────────────────────────────────────────────────── */
 

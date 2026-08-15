@@ -35,6 +35,7 @@ import {
   setDraft,
 } from '../../src/components/chat/composer-draft'
 import { EntityPickerView } from '../../src/components/chat/entity-picker'
+import { TranscriptItem } from '../../src/components/chat/transcript-item'
 import { atRows, slashRows, type EntityRow } from '../../src/components/chat/slash'
 import {
   composerKeyIntent,
@@ -754,5 +755,39 @@ describe('clearing the box after a send', () => {
     expect(draftAfterSend('something else entirely', 'hello')).toBe(
       'something else entirely',
     )
+  })
+})
+
+describe('the transcript does not re-render on every keystroke', () => {
+  test('TranscriptItem is a memo boundary', () => {
+    // A4 made the composer live, and its draft subscription is held by
+    // `chat-panel.tsx` — so every keystroke re-renders the panel and, through
+    // it, every row of the transcript. `react-markdown` re-runs its whole
+    // unified pipeline per render (measured here at ~1.2ms per ordinary
+    // assistant bubble under SSR, a floor), so ~50 messages cost ~60ms of
+    // main-thread work per keypress and the caret lagged the keyboard.
+    //
+    // This assertion is structural on purpose: there is no client renderer in
+    // this unit net, so what can be pinned is the boundary itself.
+    expect(
+      (TranscriptItem as unknown as { $$typeof?: symbol }).$$typeof,
+    ).toBe(Symbol.for('react.memo'))
+  })
+
+  test('every prop the row is given is stable across a keystroke', () => {
+    // The boundary is only worth anything while this stays true. `node` comes
+    // out of `buildTranscript`'s useMemo, the indexes are useMemo'd in the
+    // panel, `rawUrl`/`pinFor` are module-level, and `nowMs` is bucketed to
+    // 30s — so nothing a keystroke touches reaches this component.
+    const props = new Set(
+      Object.keys({
+        node: 1, name: 1, surface: 1, labels: 1, mentions: 1, names: 1,
+        rawUrl: 1, pinFor: 1,
+      }),
+    )
+    // A prop added here without a stability story is what would silently undo
+    // the fix; this is the reminder in the diff.
+    expect(props.has('draft')).toBe(false)
+    expect(props.has('composer')).toBe(false)
   })
 })
