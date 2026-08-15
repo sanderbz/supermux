@@ -176,7 +176,9 @@ export function usePendingSends({
   const receiptText = receipt?.text ?? ''
   const receiptAtS = receipt?.atS ?? 0
   const receiptRef = React.useRef<SendReceipt | null>(receipt)
-  receiptRef.current = receipt
+  React.useEffect(() => {
+    receiptRef.current = receiptText ? { text: receiptText, atS: receiptAtS } : null
+  }, [receiptText, receiptAtS])
   const acked = applyReceipt(raw, receipt)
   React.useEffect(() => {
     if (!receiptText) return
@@ -199,7 +201,9 @@ export function usePendingSends({
   // `submit` identity that changed on every transcript refetch would rebuild the
   // tracked input handle (and therefore the composer's callbacks) once a second.
   const entriesRef = React.useRef(entries)
-  entriesRef.current = entries
+  React.useEffect(() => {
+    entriesRef.current = entries
+  }, [entries])
 
   const items = live.map((p) => ({
     ...p,

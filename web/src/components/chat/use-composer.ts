@@ -429,7 +429,7 @@ export function useComposer({
         setSending(false)
       }
     })()
-  }, [input, name, peek])
+  }, [dialogCard, input, name, peek])
 
   const stop = React.useCallback(() => {
     // Escape is the interrupt every one of the three TUIs understands; the

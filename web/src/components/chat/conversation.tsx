@@ -112,6 +112,10 @@ export interface ChatConversationProps {
   /** Stop showing this cause — the user has read it. Omit and the card can only
    *  be collapsed, never dismissed. */
   onDismissAttention?: () => void
+  /** Re-read the capture as the card opens. The poll idles at 4s and PAUSES
+   *  while the tab is hidden, so "here is what the session is showing" could be
+   *  describing a frame from before the tab was backgrounded (A4 review). */
+  onExpandAttention?: () => void
   /** Send it again (the hook re-runs the pre-send gate). */
   onRetryPending?: (id: string) => void
   /** Stop showing this failure — the user has read it. */
@@ -155,6 +159,7 @@ export function ChatConversation({
   attentionCapture,
   attentionExpanded = false,
   onDismissAttention,
+  onExpandAttention,
   onRetryPending,
   onDismissPending,
   onOpenTerminal,
@@ -308,7 +313,10 @@ export function ChatConversation({
                   cause={attention}
                   ctx={attentionCtx}
                   expanded={expanded}
-                  onExpand={() => setExpanded(true)}
+                  onExpand={() => {
+                    onExpandAttention?.()
+                    setExpanded(true)
+                  }}
                 />
               )
             }

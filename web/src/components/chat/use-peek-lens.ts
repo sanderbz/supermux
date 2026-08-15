@@ -66,8 +66,23 @@ interface Frame {
 
 export function usePeekLens(
   name: string,
-  { enabled = true, live = false }: { enabled?: boolean; live?: boolean } = {},
+  {
+    enabled = true,
+    live = false,
+    running = true,
+  }: { enabled?: boolean; live?: boolean; running?: boolean } = {},
 ): PeekLensHandle {
+  // THE RESTART PATH the cache's doc-comment promised and nothing called (A4
+  // review). `bannerCache` is keyed by session NAME, and a session relaunched
+  // under the same name onto an auto-updated CLI would otherwise be certified
+  // by the old binary's banner — a pin that fails in the unsafe direction,
+  // because it ENABLES options rather than degrading them. A session that has
+  // stopped is the moment to forget: whatever boots next under this name reads
+  // its own banner.
+  React.useEffect(() => {
+    if (!running) forgetBannerVersion(name)
+  }, [name, running])
+
   const [frame, setFrame] = React.useState<Frame>(() => ({
     name,
     capture: '',

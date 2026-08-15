@@ -115,7 +115,12 @@ export default function ChatPanel({
   // ONE peek poller for the whole surface (T2): the composer's pre-send draft
   // guard reads it here, and T5/T6/T7's cards will read the same frame. It runs
   // fast while a turn is live, slow otherwise.
-  const peek = usePeekLens(name, { live: turnStart != null })
+  const peek = usePeekLens(name, {
+    live: turnStart != null,
+    // A stopped session drops its version pin: the next thing to boot under
+    // this name may be a different Claude Code (the CLI auto-updates).
+    running: session?.status !== 'stopped',
+  })
   const fallbackInput = React.useMemo(() => restSessionInput(name), [name])
   // P10 (T4) sits BETWEEN the composer and the input plane: `pending.input` is
   // the same handle with every submit tracked, so the echo cannot get out of
@@ -233,6 +238,10 @@ export default function ChatPanel({
       attention={attention}
       attentionCtx={attentionCtx}
       attentionCapture={peek.capture}
+      // The capture the card presents as "the session's own screen" must not be
+      // a frame from before the tab was backgrounded — the poll pauses while
+      // hidden and idles at 4s (A4 review). Expanding the card re-reads it.
+      onExpandAttention={peek.refresh}
       onDismissAttention={dismissAttention}
       onOpenTerminal={onOpenTerminal}
       provisional={
