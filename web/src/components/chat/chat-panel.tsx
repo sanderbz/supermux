@@ -49,6 +49,9 @@ export default function ChatPanel({
   session,
   input,
   onOpenTerminal,
+  surface,
+  headerLeading,
+  headerTrailing,
 }: {
   name: string
   session: TileSession | null
@@ -63,6 +66,25 @@ export default function ChatPanel({
   input?: SessionInput
   /** Switch this pane to the terminal renderer — every refusal offers it. */
   onOpenTerminal?: () => void
+  /**
+   * FORCE the composition (fase A5). Omit and it follows the viewport, which is
+   * what the desktop seam wants. The MOBILE seam passes `'phone'` outright: the
+   * route fork that mounts it is the app's 768px one, so a 600px-wide phone in
+   * landscape (or a small tablet) is on the mobile route while the 480px
+   * `PHONE_QUERY` still reads false — and it would get the desktop board inside
+   * the mobile sheet, with a 744px track in a 600px pane and a header bar where
+   * the shell expects a floating card.
+   */
+  surface?: 'desktop' | 'phone'
+  /**
+   * The shell's own header affordances (fase A5), passed through to the header
+   * card. NAVIGATION and RENDERER CHOICE — neither of which this surface owns:
+   * the mobile shell fills them with its back button and the renderer switch,
+   * because on the phone the chat surface's card IS the route's header (there
+   * is no room for the focus header above it).
+   */
+  headerLeading?: React.ReactNode
+  headerTrailing?: React.ReactNode
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is wiring only.
@@ -96,8 +118,11 @@ export default function ChatPanel({
   const nowBucketMs = Math.floor(serverNowMs() / 30_000) * 30_000
 
   // Desktop board or phone board — the boards are two compositions, not one at
-  // two widths (see `conversation.tsx`).
-  const phone = useMediaQuery(PHONE_QUERY)
+  // two widths (see `conversation.tsx`). The viewport decides unless the mount
+  // point already knows (the mobile seam does — see `surface` above); the query
+  // still runs either way, because a hook may not be conditional.
+  const viewportPhone = useMediaQuery(PHONE_QUERY)
+  const phone = surface ? surface === 'phone' : viewportPhone
 
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
@@ -264,6 +289,8 @@ export default function ChatPanel({
       turnStart={turnStart}
       overlay={overlay}
       surface={phone ? 'phone' : 'desktop'}
+      headerLeading={headerLeading}
+      headerTrailing={headerTrailing}
       isError={tail.isError}
       isLoading={tail.isLoading}
       rawUrl={filesApi.rawUrl}

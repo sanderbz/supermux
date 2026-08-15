@@ -145,7 +145,8 @@ export interface ChatConversationProps {
   /** The tail query's two unhappy states. */
   isError?: boolean
   isLoading?: boolean
-  /** The shell's own header affordances (A5's back chevron / avatar). */
+  /** The shell's own header affordances — A5's mobile shell fills them with the
+   *  back button and the renderer switch (`routes/focus/mobile.tsx`). */
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
   /** The `hook→UI p50` read-out, when the session has produced samples. */
