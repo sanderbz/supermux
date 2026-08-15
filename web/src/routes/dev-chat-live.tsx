@@ -164,6 +164,10 @@ function Surface({
       surface={surface}
       isError={state.isError}
       pending={state.pending}
+      dialog={state.dialog ?? null}
+      dialogBusy={state.dialogBusy ?? null}
+      onChooseDialog={() => {}}
+      dialogResolved={state.dialogResolved}
       attention={state.attention ?? null}
       attentionCapture={state.attentionCapture}
       attentionExpanded={state.attentionExpanded}

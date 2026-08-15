@@ -190,6 +190,35 @@ describe('coverage: every state the surface can be in', () => {
     expect(byId.get('attention-inline')!.attentionExpanded).toBeUndefined()
   })
 
+  test('the three dialog states are built through the real lens + registry', () => {
+    // The bench's cards come from a CAPTURE, not from hand-written options: a
+    // fingerprint that stops matching breaks this page the same way it breaks
+    // the app, instead of the page quietly still looking right (fase A4 T7).
+    const answering = byId.get('answering')!
+    expect(answering.dialog?.id).toBe('permission.bash')
+    expect(answering.dialog?.options.map((o) => o.actOn)).toEqual([true, false, true])
+    // Mid-sequence, on the option two rows down from where the caret starts.
+    expect(answering.dialogBusy).toBe(2)
+
+    const plan = byId.get('plan-approval')!
+    expect(plan.dialog?.id).toBe('plan.approval')
+    expect(plan.dialog?.options.map((o) => o.label)).toEqual([
+      'Yes, and use auto mode',
+      'Yes, manually approve edits',
+      'Tell Claude what to change',
+    ])
+    // The lens is this card's only source — no `PermissionRequest` hook is
+    // verified for `ExitPlanMode` (a0 §3).
+    expect(plan.session.permission_request).toBeUndefined()
+    expect(plan.dialog?.planPath).toMatch(/^~\/\.claude\/plans\/plan-.*\.md$/)
+    expect(plan.dialog?.escape?.actOn).toBe(false)
+
+    const refused = byId.get('dialog-refused')!
+    expect(refused.dialog?.disabled).toBe(true)
+    expect(refused.dialog?.options.every((o) => !o.actOn)).toBe(true)
+    expect(refused.attention).toBe('registry-version-mismatch')
+  })
+
   test('stopping is a running turn with an EMPTY box; queueing is the same turn with a draft', () => {
     // The two halves of the trailing control's rule, on one page: an empty box
     // during a turn is a Stop, a draft is a Send (A4 review).

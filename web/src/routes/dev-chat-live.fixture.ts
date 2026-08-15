@@ -28,6 +28,8 @@
  */
 import type { MarkPin } from '../brand/marks/character'
 import type { AttentionCause } from '../components/chat/attention'
+import { dialogCardView, type DialogCardView } from '../components/chat/dialog-answer'
+import { readLens } from '../components/chat/peek-lens'
 import type { ChatEntry } from '../components/chat/entries'
 import type { PendingSend } from '../components/chat/pending'
 import type { MentionableSession } from '../components/chat/slash'
@@ -243,6 +245,43 @@ export const BENCH_CAPTURE = [
   ' \u001b[38;5;244mEsc to cancel · Tab to amend · ctrl+e to explain\u001b[0m',
 ].join('\n')
 
+/**
+ * The plan-approval frame (a0, CC 2.1.231 — `tests/fixtures/tui/plan-approval.txt`).
+ * Verbatim rows, so the card the bench draws is built by the SAME lens + registry
+ * path the app uses; nothing about this state is hand-assembled.
+ */
+export const BENCH_PLAN_CAPTURE = [
+  ' Ready to code?',
+  '',
+  " Here is Claude's plan:",
+  '╌╌╌╌╌╌╌╌ (plan markdown between dashed rules) ╌╌╌╌╌╌╌╌',
+  '',
+  ' Claude has written up a plan and is ready to execute. Would you like to',
+  ' proceed?',
+  '',
+  '\u001b[38;2;72;150;140m ❯ 1. Yes, and use auto mode\u001b[0m',
+  '   2. Yes, manually approve edits',
+  '   3. Tell Claude what to change',
+  '      shift+tab to approve with this feedback',
+  '',
+  ' \u001b[38;5;244mctrl+g to edit in Supermux-edit ·',
+  ' ~/.claude/plans/plan-a-tiny-change-purrfect-locket.md\u001b[0m',
+].join('\n')
+
+/** The session's boot-banner version — the registry's ONLY pin. */
+const BENCH_PIN = '2.1.231'
+/** A version nothing was ever captured against: every option renders, none of
+ *  them presses a key. That is the state a CC bump puts every user in, so it is
+ *  on the bench beside the working one. */
+const BENCH_UNPINNED = '2.9.0'
+
+/** The three cards, built through the shipped path: capture → lens → registry. */
+export const BENCH_DIALOGS: Readonly<Record<'permission' | 'plan' | 'unpinned', DialogCardView>> = {
+  permission: dialogCardView(readLens(BENCH_CAPTURE), BENCH_PIN)!,
+  plan: dialogCardView(readLens(BENCH_PLAN_CAPTURE), BENCH_PIN)!,
+  unpinned: dialogCardView(readLens(BENCH_CAPTURE), BENCH_UNPINNED)!,
+}
+
 /* ── the states ──────────────────────────────────────────────────────────── */
 
 export interface LiveState {
@@ -281,6 +320,17 @@ export interface LiveState {
   }
   /** P10 echoes, in their three states (fase A4 T4). */
   pending?: readonly PendingSend[]
+  /**
+   * The dialog card (fase A4 T7) — which options exist and which of them this
+   * app will actually press. Built from a capture through the real lens +
+   * registry, so a fingerprint that stops matching takes the bench down with the
+   * app rather than quietly diverging from it.
+   */
+  dialog?: DialogCardView
+  /** A sequence in flight — the whole card is inert while one is. */
+  dialogBusy?: number | 'escape'
+  /** The line the card became once an answer landed. */
+  dialogResolved?: string
   /** The Attention card's cause, and whether the bench opens it (T5). */
   attention?: AttentionCause
   attentionExpanded?: boolean
@@ -623,6 +673,68 @@ export function liveStates(nowMs: number): LiveState[] {
         notice: { kind: 'slash-unverified', detail: '/permissions' },
       },
     },
+    {
+      id: 'answering',
+      title: 'Answering — the permission card mid-sequence, every control inert',
+      board: 'board-light.png (choice card) + A4 T7',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ touch /tmp/spike-test-file',
+        permission_request: {
+          tool: 'Bash',
+          summary: '⚡ touch /tmp/spike-test-file',
+          kind: 'bash',
+        },
+      }),
+      entries: release,
+      turnAgo: 12,
+      // "Not now" was tapped: two Down keys and an Enter, each one verified
+      // against a fresh capture — which is why the card says what it is doing
+      // rather than spinning.
+      dialog: BENCH_DIALOGS.permission,
+      dialogBusy: 2,
+    },
+    {
+      id: 'plan-approval',
+      title: 'Plan approval — the three real 2.1.231 labels, Esc still unverified',
+      board: 'A4 T7 (a0 §3, Family 2)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ waiting on plan approval',
+        mode: 'plan',
+      }),
+      entries: release,
+      turnAgo: 40,
+      // No `permission_request`: no `PermissionRequest` hook is verified for
+      // `ExitPlanMode`, so the lens is this card's only source — exactly as it
+      // is in the app.
+      dialog: BENCH_DIALOGS.plan,
+    },
+    {
+      id: 'dialog-refused',
+      title: 'Refused — a Claude Code version the fingerprints were never checked against',
+      board: 'A4 T7 (the hard-disable)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ touch /tmp/spike-test-file',
+        permission_request: {
+          tool: 'Bash',
+          summary: '⚡ touch /tmp/spike-test-file',
+          kind: 'bash',
+        },
+      }),
+      entries: release,
+      turnAgo: 12,
+      dialog: BENCH_DIALOGS.unpinned,
+      attention: 'registry-version-mismatch',
+      attentionCapture: BENCH_CAPTURE,
+    },
   ]
 }
 
@@ -655,6 +767,9 @@ export const STATE_IDS = [
   'composing',
   'slash',
   'refused',
+  'answering',
+  'plan-approval',
+  'dialog-refused',
 ] as const
 
 export type StateId = (typeof STATE_IDS)[number]
