@@ -43,3 +43,68 @@ describe('extractProvisionalTail', () => {
     expect(extractProvisionalTail('')).toEqual([])
   })
 })
+
+describe('extractProvisionalTail — a freshly started session', () => {
+  /** The mobile-proof capture, trimmed: the pty scrollback still holds the
+   *  login line and the launch command above Claude's welcome banner, and the
+   *  box-top cut alone kept every one of them. */
+  test('drops the shell prompt, the launch command and the welcome banner', () => {
+    const capture = [
+      "supermux@host:/tmp/work$ source ~/.bash_profile 2>/dev/null; claude --name proofpad",
+      '╭─── Claude Code v2.1.233 ─────────────╮',
+      '│            Welcome back Sander!      │',
+      '│      /…/scratchpad/mp-work           │',
+      '╰──────────────────────────────────────╯',
+      '',
+      'Reading the file now,',
+      '╭──────────────────────────────╮',
+      '│ ❯                            │',
+      '╰──────────────────────────────╯',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['Reading the file now,'])
+  })
+
+  test('a capture that is ONLY banner + composer has no prose to show', () => {
+    const capture = [
+      '╭─── Claude Code ───╮',
+      '│  Welcome back!    │',
+      '╰───────────────────╯',
+      '╭───────────────────╮',
+      '│ ❯                 │',
+      '╰───────────────────╯',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('prose with no box above it is still kept in full', () => {
+    const capture = ['first line', 'second line', '╭───╮', '│ ❯ │'].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['first line', 'second line'])
+  })
+})
+
+describe('extractProvisionalTail — the tail is THIS turn', () => {
+  /** The pty screen still holds the previous turn while a new one starts, and
+   *  the block showed it: a denied Bash call and an old `⎿ Interrupted` under
+   *  the caption "Live terminal" (mobile proof, f03-working-light.png). */
+  test('everything above the current prompt echo belongs to the confirmed past', () => {
+    const capture = [
+      '❯ Run the shell command: cowsay-nonexistent --version',
+      '● Bash(cowsay-nonexistent --version)',
+      '  ⎿  Interrupted · What should Claude do instead?',
+      '',
+      '❯ Write four short lines about the sea.',
+      'The sea keeps time in slow, grey breaths,',
+      '╭──────────╮',
+      '│ ❯        │',
+      '╰──────────╯',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([
+      'The sea keeps time in slow, grey breaths,',
+    ])
+  })
+
+  test('with no prompt echo in reach the tail is unchanged', () => {
+    const capture = ['still writing this', 'and this', '╭──╮', '│ ❯│'].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['still writing this', 'and this'])
+  })
+})

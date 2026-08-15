@@ -326,7 +326,7 @@ function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode
   if (command) {
     return (
       <>
-        Run <InlineCode>{command}</InlineCode>?
+        Run <InlineCode>{commandChip(command)}</InlineCode>?
       </>
     )
   }
@@ -334,6 +334,26 @@ function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode
   if (view.variant === 'write') return 'Claude wants to create a file.'
   if (view.variant === 'bash') return 'Claude wants to run a command.'
   return 'Claude is asking something in the terminal.'
+}
+
+/**
+ * The command as it goes INSIDE the question's `Run …?` frame.
+ *
+ * For a Bash tool the server's summary prefers Claude's own `description`
+ * (`activity.rs`: human, secret-free, preferred over the raw command) — and
+ * Claude writes those as imperative English, which for a shell command is
+ * almost always "Run <the command>". Framed by a question that already says
+ * "Run", the card asked **Run `Run cowsay-nonexistent --version`?** on the real
+ * app (mobile proof, 11-permission-card-light.png).
+ *
+ * So the frame wins and the duplicate goes: strictly a leading `Run `, nothing
+ * cleverer. Every other description keeps its own verb ("Check the git status")
+ * — reading a little loose inside `Run …?` is far better than a card that
+ * invents or drops words from a command a user is about to approve.
+ */
+export function commandChip(command: string): string {
+  const stripped = command.replace(/^\s*run\s+/i, '').trim()
+  return stripped || command
 }
 
 /* ── the ask ─────────────────────────────────────────────────────────────── */
@@ -375,7 +395,7 @@ export function PermissionCard({
       <ChoiceCard
         question={
           <>
-            Run <InlineCode>{command}</InlineCode>?
+            Run <InlineCode>{commandChip(command)}</InlineCode>?
           </>
         }
         why={why || undefined}

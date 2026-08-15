@@ -33,7 +33,7 @@
  * reverse.
  */
 import type { ChatEntry, ChatItem, ReceiptLine } from './entries'
-import { stripEmojiPrefix } from './entries'
+import { harnessNotice, stripEmojiPrefix } from './entries'
 import type { Receipt } from './ui/receipt-group'
 
 /* ── speakers ────────────────────────────────────────────────────────────── */
@@ -59,6 +59,8 @@ function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speake
   if (item.type !== 'user') return 'agent'
   if (item.badge === 'teammate') return `teammate:${labels?.get(item.uuid) ?? ''}`
   if (item.badge && SYSTEM_BADGES.has(item.badge)) return 'system'
+  // An interruption is user-role on the wire and nobody's words on the screen.
+  if (harnessNotice(item.text)) return 'system'
   return 'me'
 }
 
