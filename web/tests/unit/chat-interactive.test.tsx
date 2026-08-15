@@ -573,6 +573,28 @@ describe('the slash refusal, said out loud', () => {
     expect(html).toContain('data-testid="chat-composer-open-terminal"')
   })
 
+  test('an unverified BUILT-IN is refused by name and hands over the terminal', () => {
+    // `/permissions` opens a rules editor on the pty. Before the safety pass it
+    // classified as `unknown` and went out as text, leaving that editor to eat
+    // the next chat message.
+    const html = renderToStaticMarkup(
+      <ChatComposer
+        name={NAME}
+        label="Release Train"
+        handle={handle({
+          draft: '/permissions',
+          notice: { kind: 'slash-unverified', detail: '/permissions' },
+        })}
+        onOpenTerminal={() => {}}
+      />,
+    )
+    expect(html).toContain('data-notice="slash-unverified"')
+    expect(text(html)).toContain('/permissions')
+    expect(text(html)).toContain('can’t verify')
+    expect(text(html)).toContain('wasn’t sent')
+    expect(html).toContain('data-testid="chat-composer-open-terminal"')
+  })
+
   test('an unknown command is a RECEIPT, not a refusal — it went, as text', () => {
     const html = renderToStaticMarkup(
       <ChatComposer

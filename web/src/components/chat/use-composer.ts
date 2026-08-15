@@ -137,6 +137,10 @@ export interface ComposerNotice {
     /** A `/model`-class command: it opens a picker in the TUI, so chat refuses
      *  to send it and points at the terminal (fase A4 T9). */
     | 'slash-picker'
+    /** One of Claude Code's own commands that A0 never captured. Refused for
+     *  the same reason, one rung down: nobody has watched what it does to the
+     *  pty, and `/permissions`-class widgets eat the NEXT message. */
+    | 'slash-unverified'
     /** A command that is not one of Claude's built-ins went out AS TEXT. Not a
      *  refusal — a receipt, so a typo does not quietly become a message. */
     | 'slash-note'
@@ -293,14 +297,24 @@ export function useComposer({
     const text = raw.trim()
     if (text.length === 0 || sendingRef.current) return
     setNotice(null)
-    // THE SLASH GATE (fase A4 T9), before the peek because it needs no network.
+    // THE SLASH GATE (fase A4 T9), before the peek because it needs no network
+    // — and therefore it cannot fail open when the session or the command list
+    // is unreachable, which is the one property a gate has to have.
+    //
     // A `/model`-class command opens a PICKER in the TUI: send it from chat and
     // the widget sits on a pty nobody is looking at, silently eating whatever
     // the session is told next. So it is not sent — the composer names the
-    // command and offers the terminal, where it can actually be answered.
+    // command and offers the terminal, where it can actually be answered. Any
+    // OTHER Claude Code built-in that A0 never captured is refused the same way
+    // (`/permissions`, `/hooks`, `/memory`, …): they are widgets too, and a
+    // chat message typed into an open permission editor is the worst version of
+    // this failure. Only a user-authored skill/project command still goes.
     const slash = classifySlash(text)
-    if (slash === 'picker') {
-      setNotice({ kind: 'slash-picker', detail: slashName(text) ?? undefined })
+    if (slash === 'picker' || slash === 'unverified') {
+      setNotice({
+        kind: slash === 'picker' ? 'slash-picker' : 'slash-unverified',
+        detail: slashName(text) ?? undefined,
+      })
       return
     }
     void (async () => {

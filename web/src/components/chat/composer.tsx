@@ -297,7 +297,9 @@ function ComposerBanner({
         >
           {/* The slash refusals name the COMMAND first — it is the subject of
               the sentence, and the user typed it two seconds ago. */}
-          {(notice.kind === 'slash-picker' || notice.kind === 'slash-note') &&
+          {(notice.kind === 'slash-picker' ||
+            notice.kind === 'slash-unverified' ||
+            notice.kind === 'slash-note') &&
             notice.detail && (
               <code className="font-mono text-[11.5px] text-ink">{notice.detail}</code>
             )}
@@ -352,6 +354,9 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // Not "unsupported": the command works fine, it just needs a surface with a
   // cursor on it. The Open-terminal control beside this line is the answer.
   'slash-picker': 'opens a picker in the terminal — it wasn’t sent.',
+  // Not "unsupported" either: the command is real, chat just has no capture of
+  // what it does to the pty, and the ones it can't rule out leave a widget open.
+  'slash-unverified': 'is a terminal command chat can’t verify — it wasn’t sent.',
   'slash-note': 'isn’t a built-in command — the session got it as text.',
 }
 

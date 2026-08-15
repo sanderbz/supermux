@@ -144,9 +144,20 @@ describe('coverage: every state the surface can be in', () => {
     expect(slashRows(BENCH_COMMANDS, '').some((r) => !r.warn)).toBe(true)
   })
 
+  test('refused shows a built-in the classifier will NOT send, badged as such', () => {
+    const c = byId.get('refused')!.composer!
+    expect(classifySlash(c.draft)).toBe('unverified')
+    expect(c.notice).toEqual({ kind: 'slash-unverified', detail: '/permissions' })
+    // The badge is the warning that arrives in time — before the pick, not
+    // after the send — so the bench has to prove it is on the row.
+    const rows = slashRows(BENCH_COMMANDS, c.picker!.query)
+    expect(rows[0]?.value).toBe('/permissions')
+    expect(rows[0]?.warn).toBe('terminal only')
+  })
+
   test('every other state leaves the composer to A3’s read-only shell', () => {
     const live = states.filter((s) => s.composer)
-    expect(live.map((s) => s.id)).toEqual(['composing', 'slash'])
+    expect(live.map((s) => s.id)).toEqual(['composing', 'slash', 'refused'])
   })
 })
 

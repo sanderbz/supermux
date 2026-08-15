@@ -280,6 +280,8 @@ export const BENCH_COMMANDS: readonly { cmd: string; desc: string }[] = [
   { cmd: '/compact', desc: 'summarise the conversation so far' },
   { cmd: '/model', desc: 'switch the model' },
   { cmd: '/mcp', desc: 'manage MCP servers' },
+  // A built-in nobody has captured — the row that must say "terminal only".
+  { cmd: '/permissions', desc: 'edit the allow/deny rules' },
   { cmd: '/money-audit', desc: 'skill · re-check the euro parser' },
 ]
 
@@ -476,6 +478,26 @@ export function liveStates(nowMs: number): LiveState[] {
         notice: { kind: 'slash-picker', detail: '/model' },
       },
     },
+    {
+      id: 'refused',
+      title: 'Refused — a built-in chat cannot verify, listed but not sent',
+      board: 'A4 T9 (the safety pass)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // `/permissions` opens a RULES EDITOR on the pty. Sent as text it would
+        // sit there eating the next chat message, so it is refused — and the
+        // row said "terminal only" before it was ever picked. This state is on
+        // the bench because the badge is the only warning that arrives in time.
+        draft: '/permissions',
+        picker: { kind: '/', query: 'permissions' },
+        notice: { kind: 'slash-unverified', detail: '/permissions' },
+      },
+    },
   ]
 }
 
@@ -502,6 +524,7 @@ export const STATE_IDS = [
   'patch',
   'composing',
   'slash',
+  'refused',
 ] as const
 
 export type StateId = (typeof STATE_IDS)[number]

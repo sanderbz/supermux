@@ -16,16 +16,36 @@
  */
 import { describe, expect, test } from 'bun:test'
 
+import { readFileSync } from 'node:fs'
+
 import {
   classifySlash,
   fuzzyScore,
+  isBuiltin,
   PASS_THROUGH,
   PICKER_OPENING,
   rankEntities,
   readTrigger,
   slashName,
+  slashRows,
 } from '../../src/components/chat/slash'
 import { insertAtCaret } from '../../src/components/chat/composer-insert'
+
+/**
+ * Claude Code's command namespace, read from the ONE place that maintains it:
+ * `BUILTIN_SLASH_COMMANDS` in the server, which is what `GET /api/slash-commands`
+ * hands the picker. Parsed rather than copied so the client's mirror is pinned
+ * to it — a command added there without being classified here is a command the
+ * composer would send as text.
+ */
+const BUILTIN_FROM_SERVER: string[] = (() => {
+  const src = readFileSync(
+    new URL('../../../server/src/agents/skills.rs', import.meta.url),
+    'utf8',
+  )
+  const block = src.slice(src.indexOf('BUILTIN_SLASH_COMMANDS'))
+  return [...block.slice(0, block.indexOf('];')).matchAll(/"(\/[a-z0-9-]+)"/g)].map((m) => m[1]!)
+})()
 
 // ── 1. The trigger ──────────────────────────────────────────────────────────
 
@@ -121,6 +141,63 @@ describe('classifySlash — what may be sent', () => {
   test('a project or skill command is unknown — pass-through WITH a note', () => {
     expect(classifySlash('/deploy-self')).toBe('unknown')
     expect(classifySlash('/superpowers:brainstorm an idea')).toBe('unknown')
+    // supermux seeds this one itself (`skills.rs` MANAGED_COMMANDS); it is a
+    // prompt, so it must keep working from chat.
+    expect(classifySlash('/supermux-task done')).toBe('unknown')
+  })
+
+  // THE HOLE THIS CLOSES. `/permissions` is one of Claude Code's own commands
+  // and it opens a RULES EDITOR. Classified as `unknown` it was sent as text —
+  // `send_text` appends Enter — and the editor then sat on a pty nobody was
+  // looking at, eating the next chat message. A message that adds an allow-rule
+  // is the worst version of this fase's silent misfire.
+  test('an unverified BUILT-IN is refused, not sent as text', () => {
+    for (const cmd of [
+      '/permissions',
+      '/hooks',
+      '/memory',
+      '/theme',
+      '/ide',
+      '/plugin',
+      '/statusline',
+      '/terminal-setup',
+      '/logout',
+      '/export',
+    ]) {
+      expect(classifySlash(cmd)).toBe('unverified')
+    }
+    expect(classifySlash('/permissions add Bash(rm:*)')).toBe('unverified')
+    expect(classifySlash('/PERMISSIONS')).toBe('unverified')
+  })
+
+  test('only a verified command is ever sendable — nothing defaults to send', () => {
+    // The property, not the examples: every command in Claude Code's namespace
+    // either is on the verified list or is refused.
+    for (const cmd of BUILTIN_FROM_SERVER) {
+      const verdict = classifySlash(cmd)
+      if ((PASS_THROUGH as readonly string[]).includes(cmd)) expect(verdict).toBe('pass')
+      else expect(verdict === 'picker' || verdict === 'unverified').toBe(true)
+    }
+  })
+
+  test('the client namespace is the server’s, exactly — a drift is a hole', () => {
+    // The source of truth is `BUILTIN_SLASH_COMMANDS`, which is what
+    // `GET /api/slash-commands` actually offers the picker. Read here rather
+    // than duplicated as a second literal, so a command added to the server
+    // cannot quietly become sendable text.
+    for (const cmd of BUILTIN_FROM_SERVER) expect(isBuiltin(cmd)).toBe(true)
+    expect(BUILTIN_FROM_SERVER.length).toBeGreaterThan(40)
+    expect(isBuiltin('/supermux-task')).toBe(false)
+    expect(isBuiltin('/deploy-self')).toBe(false)
+  })
+
+  test('every listed family is inside that namespace (except the one that is not a built-in)', () => {
+    for (const cmd of PICKER_OPENING) expect(BUILTIN_FROM_SERVER).toContain(cmd)
+    for (const cmd of PASS_THROUGH) {
+      // `/pr-comments` ships with the CLI but is not in the server's list; it
+      // is on the verified allowlist on its own evidence.
+      if (cmd !== '/pr-comments') expect(BUILTIN_FROM_SERVER).toContain(cmd)
+    }
   })
 
   test('prose is not a command, and a bare slash is not either', () => {
@@ -135,6 +212,36 @@ describe('classifySlash — what may be sent', () => {
     for (const cmd of PICKER_OPENING) {
       expect((PASS_THROUGH as readonly string[]).includes(cmd)).toBe(false)
     }
+  })
+})
+
+describe('the rows warn BEFORE the pick, not only after the send', () => {
+  // The persona question this file answers: could a picker selection send
+  // something the user did not intend? The row is pickable — the refusal
+  // belongs to the send — but it has to say on its face what it will cost.
+  test('a picker-opening and an unverified built-in both carry a badge', () => {
+    const rows = slashRows([{ cmd: '/permissions', desc: '' }], 'permis')
+    expect(rows[0]?.value).toBe('/permissions')
+    expect(rows[0]?.warn).toBe('terminal only')
+    expect(slashRows([{ cmd: '/model', desc: '' }], 'model')[0]?.warn).toBe('opens in terminal')
+  })
+
+  test('a verified command and a skill carry none — those go', () => {
+    expect(slashRows([{ cmd: '/compact', desc: '' }], 'compact')[0]?.warn).toBeUndefined()
+    expect(slashRows([{ cmd: '/deploy-self', desc: 'ship' }], 'deploy')[0]?.warn).toBeUndefined()
+  })
+
+  test('the namespace is offered even before the server answers', () => {
+    // …so the badge is on screen on the first keystroke, not one round-trip
+    // later, and the list is not empty while `/api/slash-commands` is in flight.
+    const rows = slashRows(undefined, 'hooks')
+    expect(rows[0]?.value).toBe('/hooks')
+    expect(rows[0]?.warn).toBe('terminal only')
+  })
+
+  test('no row is ever offered twice, whichever source it came from', () => {
+    const rows = slashRows([{ cmd: 'model', desc: 'switch' }], 'model')
+    expect(rows.filter((r) => r.value === '/model').length).toBe(1)
   })
 })
 

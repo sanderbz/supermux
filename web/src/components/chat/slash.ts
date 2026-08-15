@@ -112,7 +112,43 @@ export const PICKER_OPENING = [
   '/login',
 ] as const
 
-export type SlashClass = 'pass' | 'picker' | 'unknown'
+/**
+ * Claude Code's OWN command namespace — mirrored from the server's
+ * `BUILTIN_SLASH_COMMANDS` (`server/src/agents/skills.rs:33`), which is the list
+ * `GET /api/slash-commands` offers the picker. `chat-slash.test.ts` reads that
+ * Rust file and asserts the two are identical, so this cannot drift.
+ *
+ * WHY IT EXISTS (fase A4 T9 review, safety pass). The picker lists every one of
+ * these rows, and until this constant landed anything outside the two small
+ * lists above classified as `unknown` and was SENT AS TEXT. `/permissions`,
+ * `/hooks`, `/memory`, `/theme`, `/ide`, `/plugin` and `/statusline` are full
+ * TUI widgets: sending one leaves an editor open on a pty nobody is looking at,
+ * and the NEXT chat message — `send_text` appends Enter itself — is typed into
+ * it. A message that adds a permission rule is exactly the silent misfire this
+ * fase exists to refuse.
+ *
+ * So the DEFAULT for a built-in is refusal: only `PASS_THROUGH` is verified
+ * text-safe, and everything else here needs a surface with a cursor on it. A
+ * command that is NOT in this namespace is a project/skill command — a
+ * user-authored prompt, not a widget — and still goes, with a note.
+ *
+ * Stored without the leading slash: it is a set of names, and the entry budget
+ * is measured in bytes (T12).
+ */
+const TUI_BUILTINS: ReadonlySet<string> = new Set(
+  ('add-dir agents batch clear color compact config context copy cost debug diff doctor effort' +
+    ' export extra-usage fast feedback focus help hooks ide init login logout loop mcp memory' +
+    ' model permissions plan plugin recap release-notes remote-control rename resume review' +
+    ' rewind sandbox schedule security-review simplify skills stats status statusline tasks' +
+    ' terminal-setup theme ultraplan ultrareview usage vim voice').split(' '),
+)
+
+/** Is this one of Claude Code's own commands (rather than a user skill)? */
+export function isBuiltin(cmd: string): boolean {
+  return TUI_BUILTINS.has(cmd.replace(/^\//, '').toLowerCase())
+}
+
+export type SlashClass = 'pass' | 'picker' | 'unverified' | 'unknown'
 
 /** The command a draft starts with (`/compact focus on money` → `/compact`),
  *  or null when the draft is not a command at all. Case-folded: the TUI's own
@@ -132,6 +168,11 @@ export function slashName(text: string): string | null {
  *               transcript, which is exactly what chat wants.
  *   'picker'  → do NOT send. The composer says which command it is and offers
  *               the terminal, where the widget is answerable.
+ *   'unverified' → do NOT send either. One of Claude Code's own commands that
+ *               A0 never captured (`/permissions`, `/hooks`, `/memory`, …).
+ *               Refusing an unverified built-in is the same rung the registry
+ *               uses for Bash option 2: a command whose effect on the pty
+ *               nobody has watched is not sent on hope.
  *   'unknown' → a project or skill command (`GET /api/slash-commands`) or a
  *               typo. Both are user-authored PROMPTS, not TUI widgets, so this
  *               is pass-through — with a note, because a typo that silently
@@ -144,6 +185,9 @@ export function classifySlash(text: string): SlashClass {
   if (cmd === null) return 'pass'
   if ((PICKER_OPENING as readonly string[]).includes(cmd)) return 'picker'
   if ((PASS_THROUGH as readonly string[]).includes(cmd)) return 'pass'
+  // The order matters: verified first, then the namespace. A built-in that is
+  // not on the verified list is refused, NOT sent as text.
+  if (isBuiltin(cmd)) return 'unverified'
   return 'unknown'
 }
 
@@ -307,9 +351,10 @@ export function atRows(
   return rankEntities(candidates, query, (c) => c.text, LIMIT).map((c) => c.row)
 }
 
-/** The server's list (built-ins merged with the user's skills), plus the two
- *  hard-coded families so the picker is complete even before that request
- *  lands — and so a picker-opening command is always LABELLED as one. */
+/** The server's list (built-ins merged with the user's skills), plus the local
+ *  built-in namespace so the picker is complete even before that request lands
+ *  — and so a row chat will not send is always LABELLED as one, on its face,
+ *  BEFORE it is picked. */
 export function slashRows(
   commands: readonly SlashCommandRow[] | undefined,
   query: string,
@@ -322,7 +367,9 @@ export function slashRows(
     seen.add(cmd.toLowerCase())
     all.push({ cmd, desc: c.desc })
   }
-  for (const cmd of [...PASS_THROUGH, ...PICKER_OPENING]) {
+  for (const cmd of [...PASS_THROUGH, ...TUI_BUILTINS].map((c) =>
+    c.startsWith('/') ? c : `/${c}`,
+  )) {
     if (seen.has(cmd)) continue
     seen.add(cmd)
     all.push({ cmd, desc: '' })
@@ -336,10 +383,19 @@ export function slashRows(
     meta: c.desc || undefined,
     // Said ON the row rather than in a footnote: a badge nobody can decode is
     // just decoration, and this is the one thing about the row that matters.
-    warn: (PICKER_OPENING as readonly string[]).includes(c.cmd.toLowerCase())
-      ? 'opens in terminal'
-      : undefined,
+    // The row stays pickable — the refusal belongs to the SEND — but nobody
+    // reaches the refusal without having read this first.
+    warn: WARN[classifySlash(c.cmd)],
   }))
+}
+
+/** What a row says about itself, per verdict. `pass`/`unknown` say nothing:
+ *  those go. */
+const WARN: Record<SlashClass, string | undefined> = {
+  pass: undefined,
+  unknown: undefined,
+  picker: 'opens in terminal',
+  unverified: 'terminal only',
 }
 
 function basename(path: string): string {
