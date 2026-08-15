@@ -166,6 +166,14 @@ pub async fn scan_and_enrich_raw(state: &AppState) -> Vec<Team> {
         scan::validate_pane_ids(team, live_ids);
         scan::map_lead_session(team, |_| host.clone());
 
+        // ROSTERLESS = the team's only record is the lead's OWN row, which
+        // `scan` strips (the phantom "team-lead" chip). Claude Code writes such
+        // a `~/.claude/teams/session-<id>/` for EVERY session once agent teams
+        // are enabled, so this is the shape of an ordinary solo session, not of
+        // a multiplexed lead window. Read BEFORE the dismissed filter below: a
+        // real team whose members the user merely hid is still a real team.
+        let rosterless = team.members.is_empty();
+
         // Drop any member the user has dismissed (supermux-side hide). Loaded
         // ONCE per team per tick (small table). Unconditional, regardless of
         // live/offline, so a live-case removal (kill pane THEN dismiss) sticks
@@ -190,9 +198,25 @@ pub async fn scan_and_enrich_raw(state: &AppState) -> Vec<Team> {
         // off any OTHER session that still points at this team — otherwise a
         // host move leaves a stale backlink whose later archive would park the
         // LIVE team's config (see `clear_stale_team_backlinks`).
+        //
+        // A ROSTERLESS team is never backlinked, and an existing backlink to
+        // one is REMOVED. It is hidden from the sidebar anyway (`drop_rosterless`),
+        // but the row it wrote is not cosmetic: `team_name` is what
+        // `sessions::chat::ws::chat_eligible` reads to refuse the chat data
+        // plane for a lead window — so an implicit solo "team" silently 404s
+        // chat history + the chat WS for a perfectly ordinary Claude session,
+        // and the surface mounts on a conversation that can never arrive.
+        // Measured on this host: 17 of 38 live sessions carried such a backlink.
+        // What is lost by not writing it: `lifecycle::archive` no longer parks
+        // that team dir under `.archived/` — a dir holding nothing but the
+        // lead's own record, invisible in the UI either way.
         if let Some(host_name) = host.as_deref() {
-            persist_team_name(state, host_name, &team.team_name).await;
-            clear_stale_team_backlinks(state, host_name, &team.team_name).await;
+            if rosterless {
+                clear_rosterless_backlink(state, host_name, &team.team_name).await;
+            } else {
+                persist_team_name(state, host_name, &team.team_name).await;
+                clear_stale_team_backlinks(state, host_name, &team.team_name).await;
+            }
         }
     }
 
@@ -314,6 +338,28 @@ async fn persist_team_name(state: &AppState, session_name: &str, team_name: &str
             session = %session_name,
             team = %team_name,
             "teams watcher: persist team_name failed",
+        );
+    }
+}
+
+/// Drop the `team_name` backlink `host_name` holds to a ROSTERLESS team.
+///
+/// The mirror of [`persist_team_name`], and equally cheap-deduped: only sessions
+/// that actually point at THIS team are touched, so a session backlinked to a
+/// real team it hosts is never cleared by a rosterless namesake, and a
+/// steady-state solo session costs one SELECT per tick and no UPDATE.
+async fn clear_rosterless_backlink(state: &AppState, session_name: &str, team_name: &str) {
+    match db::sessions::team_name(&state.pool, session_name).await {
+        Ok(Some(cur)) if cur == team_name => {}
+        // Already clear, pointing elsewhere, or unreadable — nothing to do.
+        _ => return,
+    }
+    if let Err(e) = db::sessions::set_team_name(&state.pool, session_name, None).await {
+        tracing::debug!(
+            error = %e,
+            session = %session_name,
+            team = %team_name,
+            "teams watcher: clear rosterless team_name failed",
         );
     }
 }
@@ -931,6 +977,76 @@ mod tests {
         assert_eq!(
             db::sessions::team_name(&state.pool, "team-alpha-lead").await.unwrap(),
             Some("viral-telecom-angle".to_string()),
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The chat data plane's blocker: Claude Code writes a
+    /// `~/.claude/teams/session-<id>/` for EVERY session once agent teams are
+    /// enabled, whose only record is the lead's own row. `scan` strips that row,
+    /// so the team arrives here ROSTERLESS — and the backlink it used to write
+    /// made `chat_eligible` refuse chat history + the chat WS for an ordinary
+    /// solo Claude session (measured: 17 of 38 live sessions on the dev host).
+    ///
+    /// Proves both halves: a rosterless team never writes a backlink, and an
+    /// EXISTING one is cleared — while a backlink to a DIFFERENT (real) team is
+    /// left alone, so a rosterless namesake can never disown a live team.
+    #[tokio::test]
+    async fn rosterless_team_never_backlinks_and_clears_an_existing_one() {
+        let (state, dir) = test_state().await;
+        crate::sessions::create(
+            &state,
+            crate::sessions::CreateInput {
+                name: "solo-claude".into(),
+                display_name: None,
+                dir: Some("/opt/projects/solo".into()),
+                desc: None,
+                provider: Some("claude".into()),
+                creator: None,
+                flags: None,
+                bypass_permissions: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+                host_id: None,
+                runtime: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // A stale backlink from before this fix (or from an earlier tick).
+        persist_team_name(&state, "solo-claude", "session-d69ab1ac").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "solo-claude").await.unwrap(),
+            Some("session-d69ab1ac".to_string()),
+        );
+
+        // The rosterless tick clears it → chat_eligible sees None again.
+        clear_rosterless_backlink(&state, "solo-claude", "session-d69ab1ac").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "solo-claude").await.unwrap(),
+            None,
+            "an implicit solo team must not keep a session off the chat data plane",
+        );
+
+        // Idempotent on an already-clear row.
+        clear_rosterless_backlink(&state, "solo-claude", "session-d69ab1ac").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "solo-claude").await.unwrap(),
+            None,
+        );
+
+        // A REAL team's backlink is never collateral: a rosterless team with a
+        // different name leaves it exactly where it was.
+        persist_team_name(&state, "solo-claude", "viral-news-hunt").await;
+        clear_rosterless_backlink(&state, "solo-claude", "session-d69ab1ac").await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "solo-claude").await.unwrap(),
+            Some("viral-news-hunt".to_string()),
         );
 
         state.pool.close().await;

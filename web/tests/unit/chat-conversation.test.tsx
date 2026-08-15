@@ -134,4 +134,49 @@ describe('what the surface says', () => {
   test('an empty (but loaded) tail is honest about being empty', () => {
     expect(text(render({ items: [] }))).toContain('No conversation yet.')
   })
+
+  /** The empty line is a statement about the whole TRACK. A session's first
+   *  send puts an optimistic echo (and, seconds later, a working row and the
+   *  provisional tail) on screen well before the transcript confirms anything,
+   *  and the line used to render directly above the user's own just-sent
+   *  bubble — the surface calling itself empty while showing a message.
+   *  Reproduced on the real app: mobile proof, 05-sent-pending-light.png. */
+  describe('“No conversation yet.” speaks for the whole track', () => {
+    const blank = (over: Partial<Parameters<typeof ChatConversation>[0]>) =>
+      text(render({ items: [], ...over })).includes('No conversation yet.')
+
+    test('a pending echo is conversation', () => {
+      expect(
+        blank({
+          pending: [{ id: 'p1', text: 'ship it', state: 'unconfirmed', at: NOW }],
+        }),
+      ).toBe(false)
+    })
+
+    test('a running turn is conversation', () => {
+      expect(blank({ session: session({ status: 'active' }), turnStart: NOW - 4000 })).toBe(false)
+    })
+
+    test('a pending permission dialog is conversation', () => {
+      expect(
+        blank({
+          session: session({
+            permission_request: { tool: 'Bash', summary: 'rm -rf /', kind: 'bash' },
+          }),
+        }),
+      ).toBe(false)
+    })
+
+    test('provisional pty text is conversation', () => {
+      expect(blank({ provisional: <div>live</div> })).toBe(false)
+    })
+
+    test('an overlay receipt is conversation', () => {
+      expect(blank({ overlay: [{ label: 'Read notes.txt', kind: 'tool', at: NOW }] })).toBe(false)
+    })
+
+    test('a genuinely empty track still says so', () => {
+      expect(blank({})).toBe(true)
+    })
+  })
 })

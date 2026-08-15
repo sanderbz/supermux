@@ -202,6 +202,25 @@ export function ChatConversation({
   const label = session?.display_name?.trim() ? session.display_name : name
   const pin = pinFor?.(name)
 
+  // "No conversation yet." is a statement about the WHOLE track, not about the
+  // confirmed layer alone. The layers below this line — the optimistic echo of
+  // a message this client just sent, a pending permission dialog, overlay
+  // receipts, the working row, provisional text, an attention row — are all
+  // conversation, and a session's very first send puts one of them on screen
+  // seconds before the transcript confirms anything. Keyed off `items.length`
+  // alone, the empty line rendered directly above the user's own just-sent
+  // bubble (mobile proof, 05-sent-pending-light.png).
+  const isBlank =
+    items.length === 0 &&
+    (pending?.length ?? 0) === 0 &&
+    (overlay?.length ?? 0) === 0 &&
+    !provisional &&
+    !dialog &&
+    !dialogResolved &&
+    !attention &&
+    !session?.permission_request &&
+    !(session?.status === 'active' && turnStart != null)
+
   // Inline-first (A4 T5): the row is in the band, the evidence is one tap away.
   // The expansion is presentation-local state — nothing above this component
   // needs to know whether the user has opened the card — and it RESETS when the
@@ -268,8 +287,22 @@ export function ChatConversation({
         // percentage height resolved against a parent that is `auto` is a no-op,
         // which is exactly what made a three-message session hang from the top
         // of the pane with 600px of paper under it.
+        //
+        // The `stat` read-out floats 42px ABOVE the composer pill
+        // (`ComposerFrame`), i.e. outside the room these numbers reserve — so
+        // with one on screen it printed straight through the last transcript
+        // row, two strings of grey text on the same pixels (mobile proof,
+        // 11-permission-card-light.png: "Run cowsay-nonexistent --version"
+        // under "hook→UI p50 8 ms"). It is transparent by design, so the track
+        // has to reserve its row.
         className={`flex min-h-full flex-col ${
-          phone ? 'px-[14px] pb-[92px] pt-[86px]' : 'px-6 pb-[90px] pt-[80px]'
+          phone
+            ? stat
+              ? 'px-[14px] pb-[122px] pt-[86px]'
+              : 'px-[14px] pb-[92px] pt-[86px]'
+            : stat
+              ? 'px-6 pb-[120px] pt-[80px]'
+              : 'px-6 pb-[90px] pt-[80px]'
         }`}
       >
         {/* Bottom-anchored, like every board: the column sits on the floor of
@@ -280,7 +313,7 @@ export function ChatConversation({
               Couldn’t load this conversation.
             </p>
           )}
-          {!isError && items.length === 0 && !isLoading && (
+          {!isError && !isLoading && isBlank && (
             <p className="py-8 text-center text-[13px] text-ink-2">No conversation yet.</p>
           )}
 

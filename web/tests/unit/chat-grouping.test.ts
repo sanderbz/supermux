@@ -178,6 +178,32 @@ describe('groupItems', () => {
     expect(out.map((r) => r.grouped)).toEqual([false, false])
   })
 
+  /** Claude writes its interruption to the transcript as a user-role prompt, so
+   *  the two-voice grammar drew it as the human's own dark bubble — "[Request
+   *  interrupted by user for tool use]" hanging on the right under a denied
+   *  tool call (mobile proof, 16-chat-after-deny-light.png). */
+  test('an interruption notice is the system voice, not the human’s', () => {
+    const notice: ChatItem = {
+      type: 'user',
+      uuid: 'i1',
+      ts: 100,
+      text: '[Request interrupted by user for tool use]',
+    }
+    const out = groupItems([notice])
+    expect(out[0].speaker).toBe('system')
+    expect(out[0].showGutter).toBe(false)
+  })
+
+  test('a message that merely mentions an interruption is still the human’s', () => {
+    const typed: ChatItem = {
+      type: 'user',
+      uuid: 'u9',
+      ts: 100,
+      text: 'why did I get [Request interrupted by user] there?',
+    }
+    expect(groupItems([typed])[0].speaker).toBe('me')
+  })
+
   test('harness events are a centred system line, never a bubble run', () => {
     const out = groupItems([user('s1', 100, 'system'), user('s2', 101, 'system')])
     expect(out.map((r) => r.speaker)).toEqual(['system', 'system'])

@@ -26,7 +26,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { ChatSurface } from '../../src/components/chat/chat-surface'
 import { serverNowMs } from '../../src/components/chat/latency'
-import { LiveLayer, delegationTarget } from '../../src/components/chat/live-layer'
+import { LiveLayer, commandChip, delegationTarget } from '../../src/components/chat/live-layer'
 import type { OverlayLine } from '../../src/components/chat/use-receipt-overlay'
 import type { TileSession } from '../../src/components/session-tile/types'
 
@@ -510,5 +510,30 @@ describe('the chat markdown map', () => {
     // The frame is a block: it replaces the paragraph rather than sitting in it
     // (a `<div>` inside a `<p>` is a browser-closed paragraph and a broken row).
     expect(wired).not.toContain('<p class')
+  })
+})
+
+/**
+ * The question's frame supplies the verb, so the command must not supply it
+ * twice. Claude's own Bash `description` — which `activity.rs` prefers over the
+ * raw command — is imperative English, so the summary that reaches this card is
+ * almost always "Run <command>". Observed on the real app: the phone card asked
+ * "Run `Run cowsay-nonexistent --version`?" (mobile proof,
+ * 11-permission-card-light.png).
+ */
+describe('the command chip does not repeat the question’s verb', () => {
+  test('a leading "Run " is the frame’s, not the command’s', () => {
+    expect(commandChip('Run cowsay-nonexistent --version')).toBe('cowsay-nonexistent --version')
+    expect(commandChip('run npm test')).toBe('npm test')
+  })
+
+  test('any other verb is the description’s own and stays', () => {
+    expect(commandChip('Check the git status')).toBe('Check the git status')
+    expect(commandChip('running the test suite')).toBe('running the test suite')
+  })
+
+  test('a command that is only the word Run keeps it (never render an empty chip)', () => {
+    expect(commandChip('Run')).toBe('Run')
+    expect(commandChip('  ')).toBe('  ')
   })
 })

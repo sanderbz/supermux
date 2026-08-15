@@ -38,6 +38,7 @@ import { SessionMark, type MarkPin } from '../../brand/marks'
 import { cn } from '../../lib/utils'
 
 import type { ChatItem } from './entries'
+import { harnessNotice } from './entries'
 import { framesIn } from './frames'
 import { mentionSegments, toReceiptRows, type TranscriptNode } from './grouping'
 import {
@@ -303,6 +304,12 @@ function SystemRow({
   labels?: ReadonlyMap<string, string>
 }) {
   if (item.type !== 'user') return null
+  // Claude's own bracketed notice ("[Request interrupted by user …]") is already
+  // a whole sentence about what happened, so it is printed as one — no
+  // `System event ·` lead-in, and without the brackets, which are wire syntax
+  // rather than anything a reader needs.
+  const notice = harnessNotice(item.text)
+  if (notice) return <SystemLine>{notice}</SystemLine>
   // The payload is the named thing; the wire `label` is only the wrapper tag the
   // classifier recognised, so it stands in when the event carries no text of its
   // own rather than leading the line with `local-command-stdout`.
