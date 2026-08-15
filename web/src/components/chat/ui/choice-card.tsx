@@ -37,6 +37,23 @@ export interface ChoiceOption {
   primary?: boolean
   /** The digit the modal registry maps this option to. */
   kbd?: string
+  /**
+   * Rendered, readable, INERT (fase A4 T7).
+   *
+   * The registry ships options this app will not press — Bash's "always allow"
+   * (what it persists was never found on disk), anything on a Claude Code build
+   * the fingerprints were not captured against — and hiding them would leave the
+   * user reading a question with a missing answer. So the option is drawn at
+   * reduced emphasis with the reason on it, and the button is genuinely
+   * `disabled`: the refusal has to survive a restyle, not depend on one.
+   *
+   * Nothing else about the card changes when this is unset, which is why every
+   * existing call site (and `/dev/chat-ui`) renders byte-identically.
+   */
+  disabled?: boolean
+  /** Why it is inert, or what the grant actually covers — the control's own
+   *  tooltip, so the sentence is where the finger is. */
+  hint?: string
 }
 
 export interface ChoiceCardProps {
@@ -99,8 +116,11 @@ function ChoiceButton({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={option.disabled ? undefined : onClick}
+      disabled={option.disabled}
+      title={option.hint}
       data-selected={selected || undefined}
+      data-disabled={option.disabled || undefined}
       style={
         selected
           ? {
@@ -113,6 +133,8 @@ function ChoiceButton({
         'inline-flex h-[34px] items-center gap-2 rounded-full border-[0.5px] border-hairline px-[15px]',
         'text-[13.4px] tracking-[-0.05px] text-ink transition-colors duration-200',
         option.primary ? 'bg-fill-soft-2 font-semibold' : 'bg-transparent font-medium hover:bg-fill-soft',
+        // Readable, obviously not pressable, and no hover promise.
+        option.disabled && 'cursor-default opacity-45 hover:bg-transparent',
       )}
     >
       {option.label}

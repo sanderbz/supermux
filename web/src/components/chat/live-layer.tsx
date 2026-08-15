@@ -35,6 +35,7 @@ import type { PermissionRequestInfo, SessionMode } from '../../lib/api/sessions'
 import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
+import type { DialogCardView } from './dialog-answer'
 import { stripEmojiPrefix } from './entries'
 import { mentionSegments, toReceiptRows } from './grouping'
 import type { OverlayLine } from './use-receipt-overlay'
@@ -47,6 +48,7 @@ import {
   MessageRow,
   ReceiptGroup,
   RECEIPT_DEFAULT_MAX,
+  SystemLine,
   type ChoiceOption,
   type Receipt,
 } from './ui'
@@ -108,6 +110,23 @@ export interface LiveLayerProps {
    * nothing.
    */
   attention?: React.ReactNode
+  /**
+   * The dialog the PEEK LENS is seeing, as data (fase A4 T7).
+   *
+   * The lens is the authority for *which* dialog and *where the caret is*; the
+   * session's hook-driven `permission_request` is the fast trigger (≪1 s) and
+   * the fallback below. Data rather than a slot for the same reason `pending`
+   * is: `use-dialog-answer` decides what may be pressed, this file draws it,
+   * and the bench proves both without a network.
+   */
+  dialog?: DialogCardView | null
+  /** Which control is mid-sequence — the whole card goes inert while one is. */
+  dialogBusy?: number | 'escape' | null
+  /** Index, or `'escape'` for the feedback affordance. */
+  onChooseDialog?: (target: number | 'escape') => void
+  /** What the card became once an answer landed. Dialog outcomes write nothing
+   *  to the transcript (a0 §3), so this line is the only record. */
+  dialogResolved?: string | null
 }
 
 export function LiveLayer({
@@ -120,6 +139,10 @@ export function LiveLayer({
   surface,
   provisional,
   attention,
+  dialog,
+  dialogBusy = null,
+  onChooseDialog,
+  dialogResolved,
 }: LiveLayerProps) {
   // The turn is running AND anchored. The anchor is what the elapsed clause
   // counts from, so a row without one would have nothing honest to say.
@@ -134,12 +157,28 @@ export function LiveLayer({
     <div data-testid="chat-live-layer">
       {attention}
 
-      {session?.permission_request && (
+      {/* The lens' sighting outranks the hook: it is the one that knows which
+          variant is on screen and where the caret is, which is what the answer
+          sequence is checked against. A hook WITHOUT a sighting still draws a
+          card — the trigger is ~1 s ahead of the poll — it just cannot be
+          answered yet, and it says so. */}
+      {dialog ? (
+        <DialogCard
+          view={dialog}
+          request={session?.permission_request ?? undefined}
+          dir={session?.dir}
+          mode={session?.permission_request?.mode ?? session?.mode}
+          busy={dialogBusy}
+          onChoose={onChooseDialog}
+        />
+      ) : session?.permission_request ? (
         <PermissionCard
           request={session.permission_request}
           dir={session.dir}
           mode={session.permission_request.mode ?? session.mode}
         />
+      ) : (
+        dialogResolved && <SystemLine>{dialogResolved}</SystemLine>
       )}
 
       {overlay.length > 0 && (
@@ -179,6 +218,122 @@ export function LiveLayer({
       <SwapCell>{provisional}</SwapCell>
     </div>
   )
+}
+
+/* ── the ask, answerable ─────────────────────────────────────────────────── */
+
+/**
+ * The choice card with live controls (fase A4 T7).
+ *
+ * Everything about WHICH controls are live was decided upstream by the registry
+ * and `dialog-answer.ts`; this file only draws it. Three rules it does enforce,
+ * because they are visual:
+ *
+ *   · an option the registry will not act on is DRAWN, disabled, carrying its
+ *     reason — the user must be able to read the question chat is declining;
+ *   · while a sequence runs the WHOLE card is inert (one slow pty must not be
+ *     able to take two answers), and the card says what it is doing;
+ *   · Escape is one more pill in the same grammar rather than a second control
+ *     shape — it answers the same question, in the same place, with the digit
+ *     hint the TUI itself prints.
+ *
+ * The digits are hints. No digit is ever sent to the pty (`KEY_ALLOWLIST` has
+ * none); the sequence is `Down`/`Up` + `Enter`, verified between every key.
+ */
+export function DialogCard({
+  view,
+  request,
+  dir,
+  mode,
+  busy = null,
+  onChoose,
+}: {
+  view: DialogCardView
+  request?: PermissionRequestInfo
+  dir?: string
+  mode?: string
+  busy?: number | 'escape' | null
+  onChoose?: (target: number | 'escape') => void
+}) {
+  const answering = busy !== null
+  const options: ChoiceOption[] = [
+    ...view.options.map((o) => ({
+      label: o.label,
+      primary: o.primary,
+      kbd: o.kbd,
+      disabled: !o.actOn || answering || view.disabled,
+      hint: o.reason,
+    })),
+    ...(view.escape
+      ? [
+          {
+            label: view.escape.label,
+            kbd: 'esc',
+            disabled: !view.escape.actOn || answering || view.disabled,
+            hint: view.escape.reason,
+          },
+        ]
+      : []),
+  ]
+  const summary = stripEmojiPrefix(request?.summary ?? '').trim()
+  const why =
+    view.family === 'plan'
+      ? view.planPath
+      : [summary && request?.tool ? request.tool : '', dir ? `in ${shortDir(dir)}` : '', modeClause(mode)]
+          .filter(Boolean)
+          .join(' · ')
+  return (
+    <div
+      data-testid="chat-dialog-card"
+      data-family={view.family}
+      data-state={answering ? 'answering' : view.disabled ? 'degraded' : 'idle'}
+    >
+      <ChoiceCard
+        question={dialogQuestion(view, summary || request?.tool)}
+        why={why || undefined}
+        options={options}
+        onChoose={
+          onChoose && !answering && !view.disabled
+            ? (i) => onChoose(i < view.options.length ? i : 'escape')
+            : undefined
+        }
+      />
+      {(answering || view.note) && (
+        <p className="ml-11 mt-[7px] text-[12.6px] tracking-[-0.05px] text-ink-2">
+          {answering
+            ? // Named as a SEQUENCE, not as a spinner: it re-reads the terminal
+              // between every key, and if the screen has moved it will stop and
+              // say so rather than finish.
+              'Checking the terminal between each key…'
+            : view.note}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * What the card asks.
+ *
+ * The COMMAND is what the decision turns on, so the hook's summary is used
+ * whenever it is there. Without it — a sighting that arrived before the hook, or
+ * a plan dialog, for which no `PermissionRequest` hook is verified at all — the
+ * question names the KIND of thing being asked and lets the options (which are
+ * the dialog's own words) carry the rest. It never invents a command.
+ */
+function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode {
+  if (view.family === 'plan') return 'Claude has a plan. Ready to go ahead?'
+  if (command) {
+    return (
+      <>
+        Run <InlineCode>{command}</InlineCode>?
+      </>
+    )
+  }
+  if (view.variant === 'edit') return 'Claude wants to edit a file.'
+  if (view.variant === 'write') return 'Claude wants to create a file.'
+  if (view.variant === 'bash') return 'Claude wants to run a command.'
+  return 'Claude is asking something in the terminal.'
 }
 
 /* ── the ask ─────────────────────────────────────────────────────────────── */

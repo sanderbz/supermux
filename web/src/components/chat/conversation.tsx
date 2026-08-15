@@ -41,6 +41,7 @@ import type { TileSession } from '../session-tile/types'
 
 import type { AttentionCause, AttentionContext } from './attention'
 import { AttentionOverlay, AttentionRow } from './attention-card'
+import type { DialogCardView } from './dialog-answer'
 import { ChatSurface } from './chat-surface'
 import { ComposerShell } from './composer-shell'
 import type { ChatItem } from './entries'
@@ -116,6 +117,19 @@ export interface ChatConversationProps {
    *  while the tab is hidden, so "here is what the session is showing" could be
    *  describing a frame from before the tab was backgrounded (A4 review). */
   onExpandAttention?: () => void
+  /**
+   * The dialog the peek lens is seeing, as data (fase A4 T7) — which options
+   * exist, which of them this app will actually press, and why not for the
+   * rest. Built by `use-dialog-answer` out of the registry; drawn by
+   * `live-layer.tsx`. Data rather than a slot, like `pending`: the bench state
+   * that proves an answerable card and a hard-disabled one is a fixture, not a
+   * mounted hook.
+   */
+  dialog?: DialogCardView | null
+  dialogBusy?: number | 'escape' | null
+  onChooseDialog?: (target: number | 'escape') => void
+  /** The line the card became once an answer landed. */
+  dialogResolved?: string | null
   /** Send it again (the hook re-runs the pre-send gate). */
   onRetryPending?: (id: string) => void
   /** Stop showing this failure — the user has read it. */
@@ -160,6 +174,10 @@ export function ChatConversation({
   attentionExpanded = false,
   onDismissAttention,
   onExpandAttention,
+  dialog,
+  dialogBusy,
+  onChooseDialog,
+  dialogResolved,
   onRetryPending,
   onDismissPending,
   onOpenTerminal,
@@ -307,6 +325,10 @@ export function ChatConversation({
             pinFor={pinFor}
             surface={phone ? 'phone' : 'desktop'}
             provisional={provisional}
+            dialog={dialog}
+            dialogBusy={dialogBusy}
+            onChooseDialog={onChooseDialog}
+            dialogResolved={dialogResolved}
             attention={
               attention && (
                 <AttentionRow

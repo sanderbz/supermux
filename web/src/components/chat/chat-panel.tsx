@@ -31,8 +31,10 @@ import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
 import { topAttention } from './attention'
 import { ChatComposer } from './composer'
+import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
 import { useComposer } from './use-composer'
+import { useDialogAnswer } from './use-dialog-answer'
 import { usePeekLens } from './use-peek-lens'
 import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
@@ -122,6 +124,22 @@ export default function ChatPanel({
     running: session?.status !== 'stopped',
   })
   const fallbackInput = React.useMemo(() => restSessionInput(name), [name])
+  const plane = input ?? fallbackInput
+
+  // ── Answering the dialog (fase A4 T7) ──────────────────────────────────────
+  // The ONLY place in the app that presses a key into a TUI dialog, and it does
+  // so through the same lens frame everything else on this surface reads: the
+  // registry decides which options are live, `use-dialog-answer` re-verifies
+  // the fingerprint and the caret before every key and checks the dialog is
+  // gone afterwards, and any doubt at any step disables the card and raises
+  // Attention instead of pressing on.
+  //
+  // The feedback branch (Escape on a permission, "Tell Claude what to change"
+  // on a plan) ends in the REACT composer — there is no in-dialog free-text row
+  // on 2.1.2xx (a0 §3), so the dialog is dismissed here and the sentence goes
+  // through the normal send.
+  const onFeedback = React.useCallback(() => focusComposer(name), [name])
+  const dialog = useDialogAnswer({ peek, input: plane, onFeedback })
   // P10 (T4) sits BETWEEN the composer and the input plane: `pending.input` is
   // the same handle with every submit tracked, so the echo cannot get out of
   // step with the POST it is drawn for. `pending.attention` is T5's cause —
@@ -131,10 +149,14 @@ export default function ChatPanel({
   // the choice card from. The pre-send gate reads it as a second source: it
   // holds the refusal when the peek is down, and it is what decides whether the
   // refusal may point at a card above the composer or has to name the terminal.
-  const dialogCard = session?.permission_request != null
+  // A card for a live dialog is on screen — the composer's refusal may point at
+  // it ("answer the thing above") instead of naming the terminal. EITHER source
+  // counts: the hook fires ≪1s ahead of the poll, and the lens sees dialogs the
+  // hook never fires for at all (the plan family).
+  const dialogCard = session?.permission_request != null || dialog.card != null
   const pending = usePendingSends({
     name,
-    input: input ?? fallbackInput,
+    input: plane,
     peek,
     entries,
     active: session?.status === 'active',
@@ -192,14 +214,19 @@ export default function ChatPanel({
 
   // ── The Attention card (fase A4 T5) ────────────────────────────────────────
   // ONE card, so the causes are ranked rather than stacked (`topAttention`).
-  // Today exactly one raiser is wired — a send the watchdog gave up on; T6/T7
-  // add the dialog causes and pass their own context. The card's evidence is
-  // the SAME capture every other consumer reads (one poller, T2), so what it
-  // shows is what the refusal was decided on.
-  const attention = topAttention([pending.attention])
+  // Two raisers: a send the watchdog gave up on (T4), and a dialog this surface
+  // will not answer — unmapped, unpinned, or a sequence that aborted (T7). The
+  // card's evidence is the SAME capture every other consumer reads (one poller,
+  // T2), so what it shows is what the refusal was decided on.
+  const attention = topAttention([pending.attention, dialog.attention])
   const attentionCtx = React.useMemo(
-    () => ({ version: peek.lens.bannerVersion }),
-    [peek.lens.bannerVersion],
+    () => ({
+      version: peek.lens.bannerVersion,
+      // What the sighted fingerprint WAS captured against, so the version
+      // sentence can name both halves rather than "some other versions".
+      verifiedVersions: dialog.card?.verifiedVersions,
+    }),
+    [dialog.card?.verifiedVersions, peek.lens.bannerVersion],
   )
   // Dismissing the card dismisses what raised it: the undelivered echoes are
   // the failure, and a card that could be closed while its rows stayed on
@@ -233,6 +260,10 @@ export default function ChatPanel({
       scrollRef={scrollRef}
       onScroll={onScroll}
       pending={pending.items}
+      dialog={dialog.card}
+      dialogBusy={dialog.busy}
+      onChooseDialog={dialog.choose}
+      dialogResolved={dialog.resolved}
       onRetryPending={pending.retry}
       onDismissPending={pending.dismiss}
       attention={attention}
