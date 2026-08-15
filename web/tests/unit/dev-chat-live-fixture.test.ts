@@ -157,7 +157,46 @@ describe('coverage: every state the surface can be in', () => {
 
   test('every other state leaves the composer to A3’s read-only shell', () => {
     const live = states.filter((s) => s.composer)
-    expect(live.map((s) => s.id)).toEqual(['composing', 'slash', 'refused'])
+    expect(live.map((s) => s.id)).toEqual([
+      'stopping',
+      'queueing',
+      'composing',
+      'slash',
+      'refused',
+    ])
+  })
+
+  test('the pending band shows all three echo states at once', () => {
+    // One screenshot has to be able to catch all three lying, so the bench
+    // state carries one of each (fase A4 T4).
+    const s = byId.get('pending')!
+    expect(s.pending?.map((p) => p.state)).toEqual([
+      'sending',
+      'unconfirmed',
+      'undelivered',
+    ])
+  })
+
+  test('the attention states carry a cause AND the evidence behind it', () => {
+    for (const id of ['attention', 'attention-inline'] as const) {
+      const s = byId.get(id)!
+      expect(s.attention).toBe('send-unconfirmed')
+      // The mini-view's claim is that it reproduces the session's own screen,
+      // so the bench feeds it a real truecolour capture, not lorem.
+      expect(s.attentionCapture).toContain('Do you want to proceed?')
+      expect(s.attentionCapture).toContain('\u001b[')
+    }
+    expect(byId.get('attention')!.attentionExpanded).toBe(true)
+    expect(byId.get('attention-inline')!.attentionExpanded).toBeUndefined()
+  })
+
+  test('stopping is a running turn with an EMPTY box; queueing is the same turn with a draft', () => {
+    // The two halves of the trailing control's rule, on one page: an empty box
+    // during a turn is a Stop, a draft is a Send (A4 review).
+    expect(byId.get('stopping')!.session.status).toBe('active')
+    expect(byId.get('stopping')!.composer?.draft).toBe('')
+    expect(byId.get('queueing')!.session.status).toBe('active')
+    expect((byId.get('queueing')!.composer?.draft ?? '').length).toBeGreaterThan(0)
   })
 })
 

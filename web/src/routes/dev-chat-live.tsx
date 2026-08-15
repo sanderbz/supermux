@@ -163,6 +163,14 @@ function Surface({
       pinFor={pinFor}
       surface={surface}
       isError={state.isError}
+      pending={state.pending}
+      attention={state.attention ?? null}
+      attentionCapture={state.attentionCapture}
+      attentionExpanded={state.attentionExpanded}
+      onOpenTerminal={() => {}}
+      onRetryPending={() => {}}
+      onDismissPending={() => {}}
+      onDismissAttention={() => {}}
       scrollRef={scrollRef}
       headerLeading={headerLeading}
       headerTrailing={headerTrailing}

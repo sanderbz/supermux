@@ -27,7 +27,9 @@
  * every state the surface can be in is actually on this page.
  */
 import type { MarkPin } from '../brand/marks/character'
+import type { AttentionCause } from '../components/chat/attention'
 import type { ChatEntry } from '../components/chat/entries'
+import type { PendingSend } from '../components/chat/pending'
 import type { MentionableSession } from '../components/chat/slash'
 import type { ComposerNotice } from '../components/chat/use-composer'
 import type { OverlayLine } from '../components/chat/use-receipt-overlay'
@@ -221,6 +223,26 @@ const ARRIVAL_DRAFTS: readonly Draft[] = [
   { ago: 120, kind: 'assistant', text: 'good. folding it into tonight’s run.' },
 ]
 
+/**
+ * The evidence the Attention card shows — the a0 Bash-permission frame, ANSI
+ * intact, so the bench's mini-view and the lens' fixtures are the same bytes
+ * (T10's rule). Truecolour on purpose: the mini-view's whole claim is that it
+ * reproduces the session's own screen faithfully.
+ */
+export const BENCH_CAPTURE = [
+  '\u001b[38;2;177;185;249m Bash command\u001b[0m',
+  '',
+  '   touch /tmp/spike-test-file',
+  '   \u001b[38;5;244mCreate empty file /tmp/spike-test-file\u001b[0m',
+  '',
+  ' Do you want to proceed?',
+  '\u001b[38;2;177;185;249m ❯ 1. Yes\u001b[0m',
+  '   2. Yes, and always allow access to tmp/ from this project',
+  '   3. No',
+  '',
+  ' \u001b[38;5;244mEsc to cancel · Tab to amend · ctrl+e to explain\u001b[0m',
+].join('\n')
+
 /* ── the states ──────────────────────────────────────────────────────────── */
 
 export interface LiveState {
@@ -257,6 +279,14 @@ export interface LiveState {
     /** The refusal banner, pre-raised. */
     notice?: ComposerNotice
   }
+  /** P10 echoes, in their three states (fase A4 T4). */
+  pending?: readonly PendingSend[]
+  /** The Attention card's cause, and whether the bench opens it (T5). */
+  attention?: AttentionCause
+  attentionExpanded?: boolean
+  /** The raw capture the card's mini-view renders — the a0 permission frame,
+   *  ANSI intact, so the bench and the lens read the same bytes. */
+  attentionCapture?: string
 }
 
 /**
@@ -443,6 +473,101 @@ export function liveStates(nowMs: number): LiveState[] {
       turnAgo: 12,
     },
     {
+      id: 'pending',
+      title: 'Pending — one send in flight, one unconfirmed, one the watchdog gave up on',
+      board: 'A4 T4 (P10)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      pending: [
+        { id: 'p1', text: 'run the full test suite', atMs: nowMs - 800, state: 'sending' },
+        { id: 'p2', text: 'and push the branch when it’s green', atMs: nowMs - 2_600, state: 'unconfirmed' },
+        {
+          id: 'p3',
+          text: 'revert the migration',
+          atMs: nowMs - 9_000,
+          state: 'undelivered',
+          note: 'The session isn’t running.',
+        },
+      ],
+    },
+    {
+      id: 'attention',
+      title: 'Attention — the honesty surface, expanded over the pane with its evidence',
+      board: 'A4 T5',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      pending: [
+        {
+          id: 'p3',
+          text: 'revert the migration',
+          atMs: nowMs - 9_000,
+          state: 'undelivered',
+          note: 'The session isn’t running.',
+        },
+      ],
+      attention: 'send-unconfirmed',
+      attentionExpanded: true,
+      attentionCapture: BENCH_CAPTURE,
+    },
+    {
+      id: 'attention-inline',
+      title: 'Attention — the inline row, before anybody taps it',
+      board: 'A4 T5 (inline-first)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      pending: [
+        {
+          id: 'p3',
+          text: 'revert the migration',
+          atMs: nowMs - 9_000,
+          state: 'undelivered',
+          note: 'The session isn’t running.',
+        },
+      ],
+      attention: 'send-unconfirmed',
+      attentionCapture: BENCH_CAPTURE,
+    },
+    {
+      id: 'stopping',
+      title: 'Stopping — a turn is running and the box is empty, so the control is Stop',
+      board: 'A4 T3',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ cargo test recall',
+      }),
+      entries: release,
+      turnAgo: 14,
+      composer: { draft: '' },
+    },
+    {
+      id: 'queueing',
+      title: 'Queueing — typing a follow-up mid-turn: the control is Send, not Stop',
+      board: 'A4 T3 (A4 review)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ cargo test recall',
+      }),
+      entries: release,
+      turnAgo: 14,
+      composer: { draft: 'and when that’s green, push the branch' },
+    },
+    {
       id: 'composing',
       title: 'Composing — a real draft, with the `@` picker open over tracked files',
       board: 'board-light.png (composer) + A4 T9',
@@ -522,6 +647,11 @@ export const STATE_IDS = [
   'error',
   'offline',
   'patch',
+  'pending',
+  'attention',
+  'attention-inline',
+  'stopping',
+  'queueing',
   'composing',
   'slash',
   'refused',
