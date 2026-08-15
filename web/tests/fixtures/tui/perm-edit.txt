@@ -1,0 +1,13 @@
+ Edit file
+ notes.txt
+╌╌╌╌╌╌╌╌
+ 1  hello
+ 2 +second
+╌╌╌╌╌╌╌╌
+ Do you want to make this edit to notes.txt?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session
+      (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

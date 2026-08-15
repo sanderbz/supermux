@@ -52,6 +52,7 @@ import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
 import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
+import { useTerminalInput } from '@/lib/session-input'
 import { useSessions } from '@/hooks/use-sessions'
 import { useTeams } from '@/hooks/use-teams'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
@@ -145,6 +146,14 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
 
   // Imperative terminal handle — the ONE surface every key path drives.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
+  // The input handle (fase A4 T1). Mobile is terminal-only until A5 mounts the
+  // chat renderer here, so this is the terminal plane — but the TEXT surfaces
+  // below (snippets, attachments, the keybar's text chips, the dock's send) now
+  // speak `SessionInput`, which makes that seam a prop change rather than a
+  // rewrite. `submit` appends the same single `\r` those call sites appended
+  // themselves, so behaviour is unchanged. Built off the REF, so it is stable
+  // across terminal remounts.
+  const input = useTerminalInput(termRef)
   // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes
   // (hardware keyboard, or the iOS soft keyboard once the user taps in) route
   // to xterm IMMEDIATELY — the focus pane is the terminal, not the dock
@@ -195,8 +204,8 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
   // so these are passed to both the terminal pane tap-handler and the dock's
   // ⌨ toggle / accessory strip. xterm is the single keyboard owner — no dock
   // textarea to compete (LIVE-TYPE).
-  const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
-  const blurTerm = React.useCallback(() => termRef.current?.blur(), [])
+  const focusTerm = React.useCallback(() => input.focus(), [input])
+  const blurTerm = React.useCallback(() => input.blur(), [input])
 
   // ── Tap-vs-swipe gate for the terminal body (mobile keyboard fix) ───────────
   // The terminal body now scrolls its scrollback on a one-finger swipe. But
@@ -270,11 +279,12 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
     [],
   )
 
-  // Stream literal text into the pty — the one send path the dock, snippets,
-  // dictation, and the compose sheet all funnel through.
+  // Stream literal text into the session — the one insert path the dock,
+  // snippets, dictation, and the compose sheet all funnel through. Insert, not
+  // submit: none of these callers wants an Enter.
   const sendToTerm = React.useCallback(
-    (text: string) => termRef.current?.send(text),
-    [],
+    (text: string) => void input.insert(text),
+    [input],
   )
 
   const [pickerOpen, setPickerOpen] = React.useState(false)
@@ -340,6 +350,9 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
     // would queue a 2nd bridge round-trip whose empty-buffer arrival could race
     // the first and clobber an in-progress textarea. One tap, one Ctrl+G.
     if (edit.requestOpen()) {
+      // Terminal-only: `C-g` is NOT in the server's `KEY_ALLOWLIST`, so this
+      // one cannot go through `SessionInput`. It stays on the ref by name —
+      // and with it the rest of the external-edit flow it opens.
       termRef.current?.sendKey('Ctrl-G')
     }
   }, [edit])
@@ -417,8 +430,12 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
         open={keyBar.open}
         keys={keyBar.keys}
         onKeysChange={keyBar.setKeys}
+        // Raw keys stay on the terminal ref: the keybar's names (`EscEsc`,
+        // `Newline`, `Ctrl-G`, …) are `keyToBytes` names with no REST
+        // equivalent — terminal-only by definition. Its TEXT chips are an
+        // insert, so they go through the handle.
         onSendKey={(key) => termRef.current?.sendKey(key)}
-        onSendText={(text) => termRef.current?.send(text)}
+        onSendText={(text) => void input.insert(text)}
         pickerOpen={keyBarPickerOpen}
         onPickerOpenChange={setKeyBarPickerOpen}
       />
@@ -598,7 +615,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
         open={snippetsOpen}
         onOpenChange={setSnippetsOpen}
         onInsert={(body) => composerInsert.current?.(body)}
-        onRun={(body) => termRef.current?.send(body + '\r')}
+        onRun={(body) => void input.submit(body)}
       />
 
       {/* The on-demand native EDITOR sheet (feat-edit-in-native-editor) — morphs

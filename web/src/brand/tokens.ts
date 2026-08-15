@@ -26,9 +26,135 @@ export const BRAND = {
   status: {
     active: '#f6ae31',
     waiting: '#388cfa',
-    ready: '#2eaa6e',
+    ready: '#2eb877',
     error: '#f47b2a',
     idle: '#737373',
+  },
+} as const
+
+/* ── B0 — warm paper / ink / hairline ladder ───────────────────────────────
+   Typed mirror of the `--sm-*` block in globals.css. Values are byte-identical
+   to the approved hero mockup (board-light.png / board-dark.png). The mirror is
+   guarded by tests/unit/brand-tokens.test.ts, which parses globals.css and
+   fails if either side drifts.
+
+   Prefer the CSS var (`var(--sm-paper)` / `bg-paper`) in components; these
+   literals exist for the non-CSS contexts — canvas, SVG attribute fills, and
+   Framer Motion keyframes, which cannot read a custom property. */
+
+/** One theme's rung of the ladder. */
+export interface PaperLadder {
+  /** The page the whole app sits on. */
+  paper: string
+  /** Conversation pane — one step above the paper. */
+  paperRaised: string
+  /** Raised glass (bars, composer) — translucent, pair with a backdrop blur. */
+  surface: string
+  /** Agent bubble — a fixed warm neutral, never accent-tinted. */
+  bubbleAgent: string
+  /** User bubble fill … */
+  bubbleUser: string
+  /** … and the ink on it. */
+  bubbleUserInk: string
+  /** Primary type. */
+  ink: string
+  /** Secondary type (preview lines, timestamps, system lines). */
+  ink2: string
+  /** Tertiary type (placeholders, disabled). */
+  ink3: string
+  /** Separator — drawn at --sm-hairline-w (0.5px), never 1px. */
+  hairline: string
+  /** Quieter separator (inside a card). */
+  hairlineSoft: string
+  /** Hover / pressed wash. */
+  fillSoft: string
+  /** The heavier of the two washes (selected chips, mic button). */
+  fillSoft2: string
+  /** Inline + fenced code background. */
+  codeBg: string
+  /** Bubble elevation ('none' in dark — the bubble is lifted by value alone). */
+  bubbleShadow: string
+  /** Card elevation. */
+  cardShadow: string
+  /** The window itself: shadow + hairline ring + inner top highlight. */
+  elev: string
+  /** Accent share of the selected-row mix, as a CSS percentage. */
+  accentRowMix: string
+}
+
+/** The ladder, per theme. Keys match `[data-theme='…']` in globals.css. */
+export const PAPER: { readonly light: PaperLadder; readonly dark: PaperLadder } = {
+  light: {
+    paper: '#faf7f4',
+    paperRaised: '#fdfbf9',
+    surface: 'rgba(255, 253, 251, 0.86)',
+    bubbleAgent: '#f1ece8',
+    bubbleUser: '#1c1917',
+    bubbleUserInk: '#f7f3ef',
+    ink: '#1c1917',
+    ink2: '#79716b',
+    ink3: '#a8a09a',
+    hairline: 'rgba(28, 20, 10, 0.09)',
+    hairlineSoft: 'rgba(28, 20, 10, 0.05)',
+    fillSoft: 'rgba(28, 20, 10, 0.045)',
+    fillSoft2: 'rgba(28, 20, 10, 0.07)',
+    codeBg: 'rgba(28, 20, 10, 0.05)',
+    bubbleShadow: '0 1px 2px rgba(60, 40, 20, 0.05)',
+    cardShadow:
+      '0 10px 30px -14px rgba(60, 40, 20, 0.22), 0 1px 2px rgba(60, 40, 20, 0.05)',
+    elev: '0 46px 90px -34px rgba(52, 34, 20, 0.3), 0 6px 18px -6px rgba(52, 34, 20, 0.07), 0 0 0 0.5px rgba(35, 25, 15, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.55)',
+    accentRowMix: '9%',
+  },
+  dark: {
+    paper: '#1a1a18',
+    paperRaised: '#201f1d',
+    surface: 'rgba(58, 54, 50, 0.72)',
+    bubbleAgent: '#2c2926',
+    bubbleUser: '#f2ede7',
+    bubbleUserInk: '#1c1917',
+    ink: '#f5f1ec',
+    ink2: '#a8a29b',
+    ink3: '#7d766f',
+    hairline: 'rgba(255, 246, 235, 0.085)',
+    hairlineSoft: 'rgba(255, 246, 235, 0.055)',
+    fillSoft: 'rgba(255, 246, 235, 0.06)',
+    fillSoft2: 'rgba(255, 246, 235, 0.1)',
+    codeBg: 'rgba(0, 0, 0, 0.3)',
+    bubbleShadow: 'none',
+    cardShadow: '0 14px 34px -16px rgba(0, 0, 0, 0.6)',
+    elev: '0 46px 100px -30px rgba(0, 0, 0, 0.62), 0 8px 24px -10px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 246, 235, 0.07), inset 0 1px 0 rgba(255, 246, 235, 0.06)',
+    accentRowMix: '12%',
+  },
+} as const
+
+/** Every separator in the design system. 0.5px — never 1px. */
+export const HAIRLINE_W = '0.5px'
+
+/**
+ * Per-session accent contract (concept contract C7).
+ *
+ * `--sm-accent` is the FOCUSED session's identity hue, written on the app shell
+ * at runtime by the character engine. `DEFAULT` is the no-session fallback (the
+ * brand amber) — it is never a session colour.
+ *
+ * The mixes are applied at the USE site by the `sm-accent-{row,wash,chip}`
+ * utilities, not stored as derived vars: a custom property containing var() is
+ * substituted where it is declared, so a derived var on :root could never see a
+ * per-session write further down the tree.
+ */
+export const AGENT_ACCENT = {
+  /** The CSS custom property the character engine writes. */
+  cssVar: '--sm-accent',
+  /** Fallback when nothing is focused — the brand amber. */
+  DEFAULT: '#f6ae31',
+  /** Accent share when mixed into the current theme's paper. */
+  mix: {
+    /** Selected roster row — theme-dependent (see PAPER[theme].accentRowMix). */
+    row: { light: '9%', dark: '12%' },
+    /** Side-pane / header wash. */
+    wash: '6%',
+    /** Mention + provenance chips (mixed over transparent). */
+    chip: '14%',
   },
 } as const
 

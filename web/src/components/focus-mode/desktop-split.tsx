@@ -21,6 +21,7 @@ import { Eye, EyeOff } from 'lucide-react'
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
+import { restSessionInput, useTerminalInput } from '@/lib/session-input'
 import type { TileSession } from '@/components/session-tile/types'
 import type { Team, TeamMember } from '@/lib/api/teams'
 import { sessionTitle } from '@/lib/api'
@@ -55,6 +56,7 @@ import { SessionInfoPanel } from './session-info-panel'
 import { useUI } from '@/stores/ui-store'
 import { RendererSwitch } from '@/components/chat/renderer-switch'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
+import { composerSessionInput } from '@/components/chat/composer-draft'
 
 // Lazy: the chat renderer is its own chunk — nothing chat-related may land in
 // the entry bundle (perf budget; master plan Global Constraints).
@@ -207,18 +209,6 @@ export function DesktopSplit({
   // text composer, so both tap-insert and long-press-run send straight to xterm.
   const [snippetsOpen, setSnippetsOpen] = React.useState(false)
 
-  // Attach a file/screenshot into the session: upload bytes → data-dir uploads/
-  // → inject the quoted absolute path (no trailing Enter). Shared engine with
-  // mobile. Fed by the dock's 📎 button, drag-drop onto the terminal pane, and
-  // image clipboard-paste. After inject we re-focus xterm so the user keeps the
-  // cursor in the prompt to add context.
-  const sendToTerm = React.useCallback(
-    (text: string) => termRef.current?.send(text),
-    [],
-  )
-  const focusTerm = React.useCallback(() => termRef.current?.focus(), [])
-  const attach = useAttachmentUpload(sendToTerm, focusTerm)
-
   // "Edit in native editor" (feat-edit-in-native-editor). The dock's ✎ Edit button
   // sends Ctrl+G; Claude lifts its current `❯` input into the supermux bridge, and
   // this sheet opens on the `external-edit` SSE event PRE-FILLED. Save writes the
@@ -235,6 +225,8 @@ export function DesktopSplit({
     // would queue a 2nd bridge round-trip whose empty-buffer arrival could race
     // the first and clobber an in-progress textarea. One tap, one Ctrl+G.
     if (edit.requestOpen()) {
+      // Terminal-only: `C-g` is NOT in the server's `KEY_ALLOWLIST`, so this
+      // one cannot go through `SessionInput`. It stays on the ref by name.
       termRef.current?.sendKey('Ctrl-G')
     }
   }, [edit])
@@ -262,7 +254,12 @@ export function DesktopSplit({
    *  returns. Goes through the existing `sendKey('Enter')` path → `\r` on the
    *  terminal WS. No new protocol; the byte sits in the pty input stream until
    *  Claude finishes consuming the bridge's write-back, then submits the
-   *  now-edited prompt. */
+   *  now-edited prompt.
+   *
+   *  Stays on the terminal ref (not `SessionInput`): the whole external-edit
+   *  flow is terminal-only, because the Ctrl+G that OPENS it is not in the
+   *  server's `KEY_ALLOWLIST` — so the sheet can never be up on the REST plane,
+   *  and routing only its Enter through `SessionInput` would buy nothing. */
   const onEditSendEnter = React.useCallback(() => {
     termRef.current?.sendKey('Enter')
   }, [])
@@ -335,6 +332,39 @@ export function DesktopSplit({
   const chatActive =
     chatSetting && chatOn && renderer === 'chat' && status !== 'stopped'
 
+  // ── The input handle (fase A4 T1) ───────────────────────────────────────────
+  // Every TEXT write surface below (snippets, attachments, the dock's slash
+  // row) goes through ONE `SessionInput` instead of reaching for
+  // `termRef.current?.send`. Which plane it is depends only on which
+  // renderer is mounted: the terminal's byte path when xterm is there, the REST
+  // input plane (`/send` · `/paste` · `/keys`) when it is not — the chat
+  // renderer has no xterm, which is why those surfaces used to be hidden there.
+  // Behaviour with chat OFF is byte-identical: `terminalSessionInput.submit`
+  // appends the same single `\r` the call sites used to append themselves.
+  const termInput = useTerminalInput(termRef)
+  const restInput = React.useMemo(() => restSessionInput(name), [name])
+  // Under chat, INSERT means "stage it in the composer where I can edit it",
+  // not "paste it at a `❯` nobody is looking at" (fase A4 T3, master plan §3:
+  // every insert surface writes into the React composer). Submit and keys still
+  // go straight to the session on the REST plane.
+  const chatInput = React.useMemo(
+    () => composerSessionInput(name, restInput),
+    [name, restInput],
+  )
+  const input = chatActive ? chatInput : termInput
+
+  // Attach a file/screenshot into the session: upload bytes → data-dir uploads/
+  // → inject the quoted absolute path (no trailing Enter). Shared engine with
+  // mobile. Fed by the dock's 📎 button, drag-drop onto the terminal pane, and
+  // image clipboard-paste. After inject we re-focus the input so the user keeps
+  // the cursor in the prompt to add context.
+  const sendToTerm = React.useCallback(
+    (text: string) => void input.insert(text),
+    [input],
+  )
+  const focusTerm = React.useCallback(() => input.focus(), [input])
+  const attach = useAttachmentUpload(sendToTerm, focusTerm)
+
   // Clipboard image paste — handled BEFORE xterm. xterm only forwards TEXT paste
   // (the textarea paste → `term.onData`), so reading `clipboardData.files` /
   // `items[].getAsFile()` here for images doesn't conflict. We ONLY
@@ -342,8 +372,6 @@ export function DesktopSplit({
   // the terminal untouched.
   const onPaste = React.useCallback(
     (e: React.ClipboardEvent<HTMLDivElement>) => {
-      // Chat is read-only: image paste needs the terminal injection path.
-      if (chatActive) return
       const dt = e.clipboardData
       if (!dt) return
       const images: File[] = []
@@ -368,7 +396,7 @@ export function DesktopSplit({
         attach.handleFiles(images)
       }
     },
-    [attach, chatActive],
+    [attach],
   )
 
   // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes go
@@ -670,7 +698,9 @@ export function DesktopSplit({
         >
           <Dropzone
             onFiles={attach.handleFiles}
-            disabled={status === 'stopped' || chatActive}
+            // Under chat the dropped file's quoted path lands in the REACT
+            // composer (fase A4 T3), so drag-drop is no longer a no-op there.
+            disabled={status === 'stopped'}
             className="h-full w-full"
           >
             {/* A `stopped` session's tmux pty is gone — opening the live WS would
@@ -693,7 +723,18 @@ export function DesktopSplit({
                  WS handshake resizes the pty to real geometry. A5's retention
                  owns the real fix. */
               <React.Suspense fallback={null}>
-                <ChatPanel name={name} session={current} />
+                <ChatPanel
+                  name={name}
+                  session={current}
+                  // The RAW plane. The panel is the one place that may write to
+                  // the pty under chat, and it does it through its own gates
+                  // (peek-verify, the slash gate, the pending echo + watchdog).
+                  // Everything else in this pane holds `chatInput`, whose text
+                  // paths stage into the composer instead — one draft, one
+                  // gated way out of it (fase A4 T3, A4 review).
+                  input={restInput}
+                  onOpenTerminal={() => setRenderer('terminal')}
+                />
               </React.Suspense>
             ) : !chatSetting || renderer != null ? (
               /* LiveTerminal — reused verbatim. The keydown capture
@@ -729,10 +770,16 @@ export function DesktopSplit({
             `termRef`, which is null without a mounted terminal — hide it
             rather than let taps silently no-op. The chat panel's own footer
             says "switch to Terminal to type". */}
-        {!chatActive && (
         <DesktopDock
+          // Raw keys stay on the terminal ref: the accessory strip's names
+          // (`EscEsc`, `Newline`, `Ctrl-G`, …) are `keyToBytes` names with no
+          // REST equivalent — `KEY_ALLOWLIST` would reject them. Terminal-only
+          // by definition, which is why the ROW is hidden under chat (fase A4
+          // T3) while the rest of the dock — snippets, attach, palette, detach,
+          // stop — keeps working through the input plane.
           onSendKey={(label) => termRef.current?.sendKey(label)}
-          onRunSlash={(cmd) => termRef.current?.send(cmd + '\r')}
+          rawKeys={!chatActive}
+          onRunSlash={(cmd) => void input.submit(cmd)}
           onSnippets={() => {
             onSnippets?.()
             setSnippetsOpen(true)
@@ -743,17 +790,21 @@ export function DesktopSplit({
           // bind Ctrl+G to open $EDITOR, so each opens the same supermux-edit
           // bridge → same `external-edit` SSE. It's a no-op on shell panes — hide
           // it there.
+          //
+          // The Ctrl+G bridge is a terminal-only path too (the key is not in
+          // `KEY_ALLOWLIST`), so it is absent under chat — where the composer
+          // IS the editor.
           onEdit={
-            current?.provider === 'claude' ||
-            current?.provider === 'codex' ||
-            current?.provider === 'kimi'
+            !chatActive &&
+            (current?.provider === 'claude' ||
+              current?.provider === 'codex' ||
+              current?.provider === 'kimi')
               ? onEdit
               : undefined
           }
           onDetach={onDetach}
           onStop={onStop}
         />
-        )}
         </>
         )}
       </main>
@@ -763,8 +814,8 @@ export function DesktopSplit({
       <SnippetPanel
         open={snippetsOpen}
         onOpenChange={setSnippetsOpen}
-        onInsert={(body) => termRef.current?.send(body)}
-        onRun={(body) => termRef.current?.send(body + '\r')}
+        onInsert={(body) => void input.insert(body)}
+        onRun={(body) => void input.submit(body)}
       />
 
       {/* feat-edit-in-native-editor — the native editor sheet. Portaled to

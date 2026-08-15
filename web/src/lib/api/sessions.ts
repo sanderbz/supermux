@@ -432,6 +432,12 @@ async function sessReq<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+/** The low-level session request, exposed so the input plane
+ *  (`lib/session-input/rest.ts`) writes through the SAME auth + envelope +
+ *  `SessionError` handling as every other client here instead of growing a
+ *  second, subtly different fetch. It is also the seam A4's tests inject. */
+export const sessionRequest = sessReq
+
 /** Normalise whatever the list endpoint returns into `ApiSession[]`. The backend
  *  returns `SessionSummary[]`; this defends against the envelope being `{ data:[…] }`. */
 function asSessions(body: unknown): ApiSession[] {
@@ -628,6 +634,32 @@ export const sessionsApi = {
     return sessReq<RecallResponse>(
       `/api/sessions/${encodeURIComponent(name)}/recall${qs ? `?${qs}` : ''}`,
     )
+  },
+
+  // NOTE: `send` / `paste` / `keys` are NOT here. The ONE REST write path into
+  // a pty is `lib/session-input/rest.ts` (`restSessionInput`), which posts the
+  // same three endpoints through `sessionRequest` + `inputRoutes`. A second set
+  // of wrappers on this object was shipped unused by A4 T1 — dead weight the
+  // bundler cannot shake (they are properties of an object literal, not module
+  // exports), and worse, a second door into the same endpoints for a future
+  // caller to reach for. If something needs to write, it takes a `SessionInput`.
+
+  /** `GET /api/sessions/{name}/tracked-files` — the paths this session is
+   *  "watching" (the DB-backed `tracked_files` table, sorted; NOT a git ls-files),
+   *  which is the source the chat composer's `@` picker filters over. Returns
+   *  `[]` on any failure so the picker degrades to empty rather than erroring. */
+  trackedFiles: async (name: string): Promise<string[]> => {
+    try {
+      const body = await sessReq<{ files?: unknown }>(
+        `/api/sessions/${encodeURIComponent(name)}/tracked-files`,
+      )
+      const arr = body?.files
+      return Array.isArray(arr)
+        ? arr.filter((f): f is string => typeof f === 'string')
+        : []
+    } catch {
+      return []
+    }
   },
 
   /** `GET /api/sessions/{name}/peek?ansi=1&lines=N` — colour-true pty tail

@@ -19,6 +19,18 @@ export interface AnsiSegment {
   text: string
   /** Inline style; empty object = inherit (default fg, no decoration). */
   style: React.CSSProperties
+  /**
+   * SGR 2 (dim) was in force for this run.
+   *
+   * Exposed as a FLAG and not left to be inferred from `style.opacity`, because
+   * one caller reads it as meaning rather than as looks: Claude Code 2.1.232
+   * draws its model-PREDICTED next prompt in the composer dim, and the peek lens
+   * has to tell that ghost apart from a sentence a human typed
+   * (`peek-lens.ts` `readComposerDraft`). Deriving that from a rendering
+   * constant would make a styling tweak silently change what the app believes
+   * is unsent text.
+   */
+  dim: boolean
 }
 
 // The standard xterm 16-colour palette (normal 0-7, bright 8-15). These are the
@@ -149,7 +161,7 @@ export function hasAnsi(line: string): boolean {
  */
 export function parseAnsiLine(line: string): AnsiSegment[] {
   if (!hasAnsi(line)) {
-    return [{ text: line, style: {} }]
+    return [{ text: line, style: {}, dim: false }]
   }
   const segments: AnsiSegment[] = []
   const state: SgrState = { ...FRESH }
@@ -161,6 +173,7 @@ export function parseAnsiLine(line: string): AnsiSegment[] {
       segments.push({
         text: line.slice(cursor, m.index),
         style: toStyle(state),
+        dim: state.dim,
       })
     }
     const params = m[1]
@@ -171,7 +184,7 @@ export function parseAnsiLine(line: string): AnsiSegment[] {
     cursor = m.index + m[0].length
   }
   if (cursor < line.length) {
-    segments.push({ text: line.slice(cursor), style: toStyle(state) })
+    segments.push({ text: line.slice(cursor), style: toStyle(state), dim: state.dim })
   }
   // Drop any non-SGR CSI noise that survived inside a segment's text.
   const cleaned = segments.map((s) => ({
@@ -179,5 +192,5 @@ export function parseAnsiLine(line: string): AnsiSegment[] {
     text: s.text.replace(CSI_RE, ''),
   }))
   const nonEmpty = cleaned.filter((s) => s.text.length > 0)
-  return nonEmpty.length > 0 ? nonEmpty : [{ text: '', style: {} }]
+  return nonEmpty.length > 0 ? nonEmpty : [{ text: '', style: {}, dim: false }]
 }

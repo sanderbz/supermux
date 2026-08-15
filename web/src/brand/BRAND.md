@@ -78,7 +78,7 @@ mark and the in-app accent are two separate signals, deliberately.
 | `--brand` | `38 92% 58%` | `#f6ae31` | FAB, focus accent stroke, focus rings, "active" pulse |
 | `--status-active` | `38 92% 58%` | `#f6ae31` | running (amber pulse) |
 | `--status-waiting` | `214 95% 60%` | `#388cfa` | waiting / "needs input" (calm blue) |
-| `--status-ready` | `152 60% 45%` | `#2eaa6e` | idle-but-alive — calm green "your turn" |
+| `--status-ready` | `152 60% 45%` | `#2eb877` | idle-but-alive — calm green "your turn" |
 | `--status-error` | `24 90% 56%` | `#f47b2a` | error — **calm orange, never alarmist red** |
 | `--status-idle` | `0 0% 45%` | `#737373` | stopped / dim (agent is off) |
 | `--background` | `0 0% 4%` | `#0a0a0a` | app background + PWA splash, also the mark tile |
@@ -93,6 +93,49 @@ mark and the in-app accent are two separate signals, deliberately.
   (A destructive "missing tile" affordance may still use system red for a hard
   delete; that's a different signal from "the agent errored".)
 - TS mirror: [`tokens.ts`](./tokens.ts) (`BRAND`, `*_HSL`, `statusColor()`).
+- Every hex above is *exactly* what its HSL triple resolves to, and
+  [`tests/unit/brand-tokens.test.ts`](../../tests/unit/brand-tokens.test.ts)
+  parses `globals.css` to keep it that way. (`--status-ready` was `#2eaa6e`
+  here until that test was written; the CSS always said `#2eb877`.)
+
+### 3.3 The warm paper ladder (B0 design system)
+
+The surface language of the new primary interface. Warm off-white paper, warm
+near-black ink, translucent hairlines — a room, not a dashboard. Additive: the
+iOS/shadcn semantic palette in §3.2 and `globals.css` is untouched and still
+drives every screen that has not migrated yet.
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--sm-paper` | `#faf7f4` | `#1a1a18` | the page the app sits on (sidebar, shell) |
+| `--sm-paper-raised` | `#fdfbf9` | `#201f1d` | conversation pane — one step up |
+| `--sm-surface` | `rgba(255,253,251,.86)` | `rgba(58,54,50,.72)` | raised glass: bars, composer (pair with a backdrop blur) |
+| `--sm-bubble-agent` | `#f1ece8` | `#2c2926` | agent bubble — a fixed warm neutral, **never** accent-tinted |
+| `--sm-bubble-user` / `-ink` | `#1c1917` / `#f7f3ef` | `#f2ede7` / `#1c1917` | the inverted user bubble |
+| `--sm-ink` / `-2` / `-3` | `#1c1917` / `#79716b` / `#a8a09a` | `#f5f1ec` / `#a8a29b` / `#7d766f` | primary / secondary / tertiary type |
+| `--sm-hairline` / `-soft` | `rgba(28,20,10,.09)` / `.05` | `rgba(255,246,235,.085)` / `.055` | separators, drawn at `--sm-hairline-w` = **0.5px, never 1px** |
+| `--sm-fill-soft` / `-2` | `rgba(28,20,10,.045)` / `.07` | `rgba(255,246,235,.06)` / `.10` | hover / pressed washes |
+| `--sm-code-bg` | `rgba(28,20,10,.05)` | `rgba(0,0,0,.30)` | inline + fenced code |
+| `--sm-bubble/card-shadow`, `--sm-elev` | — | — | the elevation triple (bubble, card, window) |
+
+- **Theme selection.** `.dark` on `<html>` is the app-wide switch (unchanged);
+  `[data-theme='light'|'dark']` is the *subtree* switch, so a dark board can be
+  rendered inside a light app. A direct declaration beats an inherited one, so
+  the subtree always wins over the ancestor `.dark`.
+- **Tailwind namespace.** `bg-paper`, `bg-paper-raised`, `bg-surface`,
+  `text-ink`, `text-ink-2`, `border-hairline`, `bg-fill-soft`, … The `--sm-*`
+  vars stay the source of truth and stay usable raw (e.g. inside `box-shadow`).
+- **Per-session accent (concept contract C7).** `--sm-accent` is the *focused
+  session's* identity hue, rewritten on the app shell at runtime by the
+  character engine; it defaults to the brand amber when nothing is focused. It
+  never encodes status, and the `--status-*` family never uses it. Accent
+  surfaces are the utilities `sm-accent-row` (9% light / 12% dark),
+  `sm-accent-wash` (6%) and `sm-accent-chip` (14%) — utilities rather than
+  derived vars because a custom property containing `var()` is substituted
+  where it is *declared*, so a derived var on `:root` could never see a
+  per-session accent written further down the tree.
+- TS mirror: `PAPER`, `HAIRLINE_W`, `AGENT_ACCENT` in
+  [`tokens.ts`](./tokens.ts), guarded by the same parse test.
 
 ## 4. Icon & splash
 
@@ -137,6 +180,99 @@ mark and the in-app accent are two separate signals, deliberately.
   (`TOAST_SPRING`), auto-dismiss 2.5s, stack max 3, reduced-motion aware.
 - Self-contained: drop `<ToastProvider>` near the root, call `useToast()`.
 - Feed it copy from `copy.ts` (`TOAST.*`). Tone tints the leading status dot.
+
+## 6b. Session marks — the procedural character engine
+
+A session is a colleague, so it has a face. `web/src/brand/marks/` derives that
+face from the session's name — nothing is hand-drawn, nothing is stored.
+
+- **Channels.** 9 silhouettes (6 perspective-projected superellipsoid solids —
+  `sphere egg capsule blob cube pebble` — plus 3 authored outlines — `cloud
+  wedge rhombus`) × 7 OKLCh-trimmed pigments = **63 identity tokens**. Body
+  jitter, head pose, eye size/spacing/tilt, asymmetry, gaze and blink phase are
+  seeded on top and are *not* deduped: they are what keeps two same-pigment
+  sessions two different people.
+- **Dedupe.** `assignRoster(namesInCreationOrder)` probes from each name's own
+  hash and takes the cheapest free token (`pair·10000 + silhouette·100 + hue`),
+  so a roster of ≤ 63 never repeats a silhouette+pigment pair, and a solo
+  session is hash-pure. Deterministic — the server can mirror it and freeze it.
+- **State lives in the eyes, and only there.** The silhouette never moves and is
+  never overpainted, ringed or notched (concept contract C5):
+  `idle` open · `working` narrowed 54 % × 78 %, slanted −26° · `waiting` rounded
+  and levelled, plus a micro-saccade · `done` squinted to 30 % height ·
+  `stopped` shut to an 11-unit lid line, levelled to 45 % tilt · `failed` the
+  only state with a **mirrored** tilt (left +42°, right −42°, tops converging)
+  on 62 %-wide slots — a knitted brow.
+  The first four are transcribed from the approved boards; `stopped` and
+  `failed` are additions, because `SessionStatus` is
+  `starting | active | idle | waiting | stopped | error` and a face that IS the
+  status indicator must be able to say "asleep" and "fell over". Both reuse the
+  existing capsule primitive — no new visual language.
+- **Every state is separable in a *still* frame.** This is a hard contract, not
+  a nicety: `stopped` originally reused the idle geometry and differed only by
+  not animating, which made it invisible to a reduced-motion user and to every
+  screenshot. `session-mark.test.tsx` renders all six under
+  `prefers-reduced-motion` and asserts six distinct eye paths.
+- **Ambient life.** A per-seed blink (period 4.6 / 2.6 / 3.1 s for idle /
+  working / waiting, detuned per seed so a roster never blinks in unison) and a
+  5.4 s breathe with a per-seed phase. One shared rAF loop drives every face;
+  offscreen marks unregister and pause. `done`, `stopped` and `failed` are
+  stills — nothing is running, so nothing breathes.
+- **Reduced motion** renders the identical face, permanently open and still —
+  the eye *geometry* alone carries state, so nothing is lost.
+- **Usage.** `<SessionMark seed={session.display_name} size={40} state={…}
+  pin={assigned.get(name)} />`; pass `label={null}` wherever the row already
+  renders the name. `accentInk(hue, dark)` is the text-capable tier of a
+  session's pigment for `--sm-accent` consumers (mention chips, provenance).
+- **The bench.** `/dev/marks` (DEV-only, `routes/dev-marks.tsx`) renders the
+  whole system on one page: the approved reference strip, the cast at 18/28/40,
+  all six states × the cast × the ladder, the full 63-token matrix, the pigment
+  ladder with its text tier, a deduped 14-session roster, the facepile keyline
+  and a live blink/breathe strip — each in **both** themes via the
+  `[data-theme]` subtree switch. Every matrix is a still frame so the page is
+  deterministic to screenshot; only the live strip animates. Its coverage (all
+  9 silhouettes, all 7 pigments, all 6 states, the whole ladder) is asserted in
+  `tests/unit/dev-marks-cast.test.tsx`, so the bench cannot quietly shrink.
+
+## 6c. The chat surface — static primitives
+
+`web/src/components/chat/ui/` is the design system's vocabulary for the
+conversation. Presentational only: every component takes props and renders
+pixels — none of them fetches, subscribes, sends a key or owns state. The
+renderer slices in `components/chat/` keep the data plane.
+
+| Primitive | The numbers that matter |
+|---|---|
+| `RosterRow` | h64 · gap 12 · pad 0/8 · r12; mark 40; name 14/500 −0.15px; time 12 tabular; preview 13 at +3px. Selected = `sm-accent-row`, hover suppressed while selected. Attention dot 7px + 2px page keyline, **seated from the character's own solid** |
+| `Bubble` / `MessageRow` | r18 · 11/17 · 15/1.45 −0.1px · 0.5px hairline-soft · `--sm-bubble-shadow`; agent ≤648 on a **fixed** warm neutral, user ≤420 inverted, edgeless, shadowless; rows 14px apart, 8px when grouped; gutter 32px |
+| `ReceiptGroup` | bubble at 14/18; line gap 9, 7px apart; check 13 → tool 600 → arrow 15×12 → outcome 15 tabular. Repeats coalesce (`Read ×12`, outcome dropped unless identical); `max` → "Show all N"; running line keeps the slot with a 2.4s spinner |
+| `SystemLine` | centred 13 secondary, 22px of air, −0.05px; entity = weight 500 with a **zero-layout** hover pill (`−1/−5/−1/−3` margins cancelling `1/5/1/3` padding); `MentionChip` = the named session's mark + name in **its** pigment, never a filled tag |
+| `WorkingRow` | gutter mark 28 · three-dot wave · label 13 secondary · elapsed tabular right. `variant="presence"` = the same signal with no mark, no dots, indented 44px |
+| `DelegationPill` | h46 · pad 0/9 · r-full · `--sm-surface` + hairline + blur(24) sat(160); marks 26 keylined; label 14.5/500 in the **recipient's** pigment |
+| `ChoiceCard` | ml 44 · ≤592 · r16 · pad 14/17 · glass blur(30) sat(170) + `--sm-card-shadow`; ask 15/500 −0.15px with mono `InlineCode` 13.2; why 13.2 secondary; buttons h34 · r-full · 13.4/500. **Emphasis is weight + fill, never the hue**; selection = accent 55% edge / 8% fill; digits = the modal registry's mapping |
+| `Composer` | h58 (52 phone) · r-full · glass blur(60) sat(180) · hairline · shadow `0 12px 34px −18px`; focus ring = accent 22%, 220ms; mic 40 (36) — the one inverted control |
+| `CapturedFrameCard` | 340 wide (266 phone) · 16:10 · r14; caption 12.6 secondary at +7px with a 12px glyph. The one object with depth on a flat surface |
+| `Facepile` | cluster = three 18px members at `[11,0] [0,15] [22,15]` in a **40px box** (one mark's footprint), page-coloured keylines; row = −24% overlap, the active member morphs open by animating padding, 400ms |
+
+- **No emoji.** Receipts and captions use monochrome `currentColor` glyphs; the
+  `activity_label` emoji taxonomy stays terminal/tile-only.
+- **Motion.** Everything here is static or an ambient CSS loop (`.sm-dots` 1.25s
+  blip, `.sm-spin` 2.4s, the mark's breathe) — no framer-motion, so nothing to
+  source from `lib/springs.ts`; hovers are the 120ms speed. Arrival animations
+  are `data-fresh`-gated and belong to the renderer, not to a primitive that
+  would then animate the whole backlog.
+- **Theme picks.** A presentational component cannot know whether it sits under
+  `.dark` or a `[data-theme]` subtree, so the two cases that need a per-theme
+  literal — a session's text-tier pigment and the composer's mic — publish both
+  values and let `.sm-ink-accent` / `.sm-mic` in `globals.css` choose.
+- **Bench**: `/dev/chat-ui` (DEV-only, lazy) renders the approved hero board
+  rebuilt out of these components, plus every variant it has no room for, in
+  both themes. Hold it next to `board-light.png` / `board-dark.png`. Coverage
+  and the board's fixture are asserted in `tests/unit/dev-chat-ui-fixture.test.ts`;
+  the load-bearing numbers in `tests/unit/chat-ui-primitives.test.tsx`.
+- **Open deviation**: the attention dot is `#e5484d`, the approved render's
+  literal, deliberately outside the `--status-*` family (it must survive at 7px
+  on all seven pigments). Flagged in `metrics.ts` for owner review.
 
 ## 7. How the rest of the app consumes this
 

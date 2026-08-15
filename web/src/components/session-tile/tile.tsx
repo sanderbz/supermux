@@ -18,6 +18,7 @@ import {
 } from '@/hooks/use-peek-type'
 import { usePeekPrewarm } from '@/hooks/use-peek-prewarm'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
+import { useTerminalInput } from '@/lib/session-input'
 import { useUI } from '@/stores/ui-store'
 import {
   MIN_OVERVIEW_SIZE,
@@ -274,6 +275,11 @@ export function SessionTile({
   // the focus terminal uses. Safety filters live in `usePeekType` — never
   // hijack inputs, browser shortcuts, or pre-engagement Tab/arrows.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
+  // The input handle (fase A4 T1). Built off the REF so it survives the live
+  // terminal mounting/unmounting with the hover, and so the tile speaks the
+  // same `SessionInput` vocabulary as the two focus surfaces. Type-on-hover is
+  // by definition a terminal affordance, so this is the terminal plane.
+  const input = useTerminalInput(termRef)
   const onLiveReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t
   }, [])
@@ -612,7 +618,9 @@ export function SessionTile({
   const peekTypable = showLiveTerm
   const { claimed } = usePeekType({
     enabled: peekTypable,
-    onText: (text) => termRef.current?.send(text),
+    onText: (text) => void input.insert(text),
+    // Raw keys stay on the ref: `usePeekType` speaks `keyToBytes` names
+    // (`Newline`, `EscEsc`, …) that `KEY_ALLOWLIST` does not accept.
     onKey: (k) => termRef.current?.sendKey(k),
     onDismiss: () => {
       // Esc closes the peek without sending Esc to the pty (policy a — the web

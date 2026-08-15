@@ -7,7 +7,11 @@
 // instead of all appending to one api.ts, ending the recurring api.ts
 // merge-conflict class. Pure structural refactor — ZERO behavior change.
 
-import { authToken, baseUrl } from '@/env'
+// Relative, not `@/env`: this module is on the import path of the session-input
+// plane, whose unit tests run in bun — which resolves tsconfig paths from the
+// root config, and that one is a solution file with no `paths`. Vite resolves
+// both forms identically, so this is spelling, not behaviour.
+import { authToken, baseUrl } from '../../env'
 
 // Re-export the env accessors so feature modules (and any consumer) can pull the
 // shared token/base from a single place. settings + focus use these directly.

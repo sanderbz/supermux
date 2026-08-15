@@ -1,0 +1,18 @@
+╭─── Claude Code v2.1.232 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                Welcome back Ada!                   │ started                 │
+│                                                    │ Ask Claude to create a… │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Subagent forking is no… │
+│   Opus 5 (1M context) with high… · Claude Max ·    │ Type `@` in the prompt… │
+│   operator@example.com's Organization              │ `SendMessage` now deli… │
+│              /…/scratchpad/t2cap/proj              │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 2 MCP servers need authentication · run /mcp
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents

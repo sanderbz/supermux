@@ -27,7 +27,7 @@ export function useChatTail(
   })
 
   // Trailing debounce so a burst of deltas (a landing batch) costs one refetch.
-  // (Turn-END confirmation is NOT debounced — ChatPanel calls query.refetch()
+  // (Turn-END confirmation is NOT debounced — useChatTurn calls query.refetch()
   // directly on the active→idle edge; a 1.2s blank gap there is the exact
   // supersede glitch checkpoint (c) forbids.)
   const timer = React.useRef<number | null>(null)
