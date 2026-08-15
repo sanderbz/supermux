@@ -62,6 +62,10 @@ pub fn spawn(state: AppState) {
         // a team is only torn down after DEREGISTER_AFTER_ABSENT_TICKS straight
         // misses (guards against a transient FS glitch / missed FSEvents).
         let mut absent_ticks: HashMap<String, u32> = HashMap::new();
+        // The same counter for session BACKLINKS. Kept apart from `absent_ticks`
+        // on purpose: that one is keyed by teams that own a BOARD, and a team
+        // can be backlinked without ever having had one.
+        let mut absent_backlinks: HashMap<String, u32> = HashMap::new();
         let mut tick = tokio::time::interval(POLL_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -103,6 +107,9 @@ pub fn spawn(state: AppState) {
             }
             board_changed |=
                 reconcile_deregistrations(&state, &all_teams, &mut absent_ticks).await;
+            // …and the same conservatism for the `team_name` BACKLINK, which
+            // outlives the team dir that justified it.
+            reap_orphan_backlinks(&state, &all_teams, &mut absent_backlinks).await;
             if board_changed {
                 crate::board::emit_board(&state).await;
             }
@@ -606,6 +613,71 @@ async fn reconcile_deregistrations(
     removed
 }
 
+/// Clear a `sessions.team_name` backlink whose team no longer exists on disk.
+///
+/// [`clear_rosterless_backlink`] heals a session whose team is still THERE and
+/// merely empty; this is the other half — the team dir is gone (deleted,
+/// renamed, archived by hand) and nothing will ever scan it again, so no other
+/// pass can reach the row. The backlink then sits there forever, and
+/// `sessions::chat::ws::chat_eligible` reads it as "this is a team lead window"
+/// and refuses the chat data plane for good.
+///
+/// Same conservatism as [`reconcile_deregistrations`], and for the same reason:
+/// a dropped FS event or a half-written `config.json` makes a live team blink
+/// out for a tick, and clearing on the first miss would drop the backlink an
+/// `archive` still needs. Only after `DEREGISTER_AFTER_ABSENT_TICKS` straight
+/// misses does the row change.
+async fn reap_orphan_backlinks(
+    state: &AppState,
+    teams: &[Team],
+    absent: &mut HashMap<String, u32>,
+) {
+    use std::collections::HashSet;
+
+    let detected: HashSet<&str> = teams.iter().map(|t| t.team_name.as_str()).collect();
+
+    // A DB error → skip this tick entirely (never clear on an unknown state).
+    let sessions = match db::sessions::list(&state.pool).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(error = %e, "teams watcher: session list failed; skipping backlink reap");
+            return;
+        }
+    };
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for s in &sessions {
+        let Some(team) = s.team_name.as_deref() else {
+            continue;
+        };
+        seen.insert(team.to_string());
+        if detected.contains(team) {
+            absent.remove(team);
+            continue;
+        }
+        let n = absent.entry(team.to_string()).or_insert(0);
+        *n += 1;
+        if *n >= DEREGISTER_AFTER_ABSENT_TICKS {
+            if let Err(e) = db::sessions::set_team_name(&state.pool, &s.name, None).await {
+                tracing::debug!(
+                    error = %e,
+                    session = %s.name,
+                    team = %team,
+                    "teams watcher: clear orphan team_name failed",
+                );
+            } else {
+                tracing::info!(
+                    session = %s.name,
+                    team = %team,
+                    "teams watcher: cleared a backlink to a team that no longer exists",
+                );
+            }
+        }
+    }
+    // The counter map follows the rows that still carry a backlink.
+    absent.retain(|k, _| seen.contains(k));
+}
+
 /// The supermux session whose live pane set best contains `team`'s member panes.
 /// `None` when no candidate window contains any of them (e.g. an orphaned team,
 /// or panes that churned this tick).
@@ -1047,6 +1119,80 @@ mod tests {
         assert_eq!(
             db::sessions::team_name(&state.pool, "solo-claude").await.unwrap(),
             Some("viral-news-hunt".to_string()),
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A backlink to a team that no longer exists on disk is the OTHER way a
+    /// session gets stuck off the chat data plane: `clear_rosterless_backlink`
+    /// only ever runs for a team the scan still finds, so a deleted / renamed /
+    /// hand-archived team dir leaves a row nothing can reach. Debounced like the
+    /// board deregistration — a live team that blinks out for one tick keeps its
+    /// backlink, and only three straight misses clear it.
+    #[tokio::test]
+    async fn an_orphan_backlink_is_cleared_after_the_absence_debounce() {
+        let (state, dir) = test_state().await;
+        crate::sessions::create(
+            &state,
+            crate::sessions::CreateInput {
+                name: "stranded".into(),
+                display_name: None,
+                dir: Some("/opt/projects/stranded".into()),
+                desc: None,
+                provider: Some("claude".into()),
+                creator: None,
+                flags: None,
+                bypass_permissions: None,
+                tags: None,
+                branch: None,
+                mcp: None,
+                worktree: None,
+                host_id: None,
+                runtime: None,
+            },
+        )
+        .await
+        .unwrap();
+        persist_team_name(&state, "stranded", "session-gone").await;
+
+        let mut absent: HashMap<String, u32> = HashMap::new();
+        let live = vec![host_team("session-gone", Some("stranded"), vec![], 0)];
+
+        // Present → nothing happens, however many ticks pass.
+        for _ in 0..5 {
+            reap_orphan_backlinks(&state, &live, &mut absent).await;
+        }
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "stranded").await.unwrap(),
+            Some("session-gone".to_string()),
+            "a team the scan still finds keeps its backlink",
+        );
+
+        // Absent, but not for long enough yet.
+        reap_orphan_backlinks(&state, &[], &mut absent).await;
+        reap_orphan_backlinks(&state, &[], &mut absent).await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "stranded").await.unwrap(),
+            Some("session-gone".to_string()),
+            "two misses is a dropped FS event, not an ended team",
+        );
+
+        // One blink back resets the streak.
+        reap_orphan_backlinks(&state, &live, &mut absent).await;
+        reap_orphan_backlinks(&state, &[], &mut absent).await;
+        reap_orphan_backlinks(&state, &[], &mut absent).await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "stranded").await.unwrap(),
+            Some("session-gone".to_string()),
+        );
+
+        // Three straight misses → the row is freed and chat_eligible passes.
+        reap_orphan_backlinks(&state, &[], &mut absent).await;
+        assert_eq!(
+            db::sessions::team_name(&state.pool, "stranded").await.unwrap(),
+            None,
         );
 
         state.pool.close().await;
