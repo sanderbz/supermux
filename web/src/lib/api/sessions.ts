@@ -13,9 +13,6 @@
 
 import { apiToken, apiUrl } from './client'
 
-import { inputRoutes } from '../session-input/routes'
-import type { KeyName } from '../session-input/types'
-
 // ── Domain types ──────────────────────────────────────────────────────────────
 
 export type SessionStatus =
@@ -610,33 +607,13 @@ export const sessionsApi = {
     )
   },
 
-  /** `POST /api/sessions/{name}/send {text}` — literal text AND submit. The
-   *  server appends the Enter itself (plus the provider submit gap), stamps
-   *  `last_send_at` and broadcasts the delta, so callers pass the RAW text: a
-   *  trailing CR here would submit twice. Auto-wakes a stopped session. */
-  send: (name: string, text: string): Promise<unknown> =>
-    sessReq(inputRoutes.send(name), {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-    }),
-
-  /** `POST /api/sessions/{name}/paste {text, submit}` — bracketed paste.
-   *  `submit:false` (the default) leaves the text sitting at the agent's `❯`
-   *  without sending it. 409 when the session isn't running. */
-  paste: (name: string, text: string, submit = false): Promise<unknown> =>
-    sessReq(inputRoutes.paste(name), {
-      method: 'POST',
-      body: JSON.stringify({ text, submit }),
-    }),
-
-  /** `POST /api/sessions/{name}/keys {keys}` — one named key, allowlist-checked
-   *  server-side (`KEY_ALLOWLIST`). `KeyName` is that allowlist as a type, so a
-   *  rejected key cannot compile; note it has NO digits. */
-  keys: (name: string, keys: KeyName): Promise<unknown> =>
-    sessReq(inputRoutes.keys(name), {
-      method: 'POST',
-      body: JSON.stringify({ keys }),
-    }),
+  // NOTE: `send` / `paste` / `keys` are NOT here. The ONE REST write path into
+  // a pty is `lib/session-input/rest.ts` (`restSessionInput`), which posts the
+  // same three endpoints through `sessionRequest` + `inputRoutes`. A second set
+  // of wrappers on this object was shipped unused by A4 T1 — dead weight the
+  // bundler cannot shake (they are properties of an object literal, not module
+  // exports), and worse, a second door into the same endpoints for a future
+  // caller to reach for. If something needs to write, it takes a `SessionInput`.
 
   /** `GET /api/sessions/{name}/tracked-files` — the paths this session is
    *  "watching" (the DB-backed `tracked_files` table, sorted; NOT a git ls-files),
