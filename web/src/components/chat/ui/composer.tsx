@@ -21,7 +21,7 @@
  * data plane. The `<textarea>` is real so `:focus-within` is real — the focus
  * ring is part of the spec and has to be verifiable on the bench.
  */
-import type { ReactNode } from 'react'
+import type { ComponentPropsWithRef, ReactNode } from 'react'
 
 import { cn } from '../../../lib/utils'
 
@@ -43,6 +43,23 @@ export interface ComposerProps {
   readOnly?: boolean
   /** Rendered in place of the mic (a later slice swaps in Stop while Active). */
   trailing?: ReactNode
+  /**
+   * Rendered in place of the decorative `+` (fase A4 T3 gives it a real menu).
+   * A SLOT, like `trailing`: the shell keeps owning the 26×26 cell and its ink,
+   * the renderer owns what happens when it is tapped.
+   */
+  leading?: ReactNode
+  /**
+   * The field's own props — `value`/`onChange`/`onKeyDown`/`ref` when a renderer
+   * has an input plane to wire them to (fase A4 T3). Absent, the shell renders
+   * exactly what it always did: an uncontrolled, read-only field whose only job
+   * is to make the focus ring real. `className` is not accepted; the pill's
+   * typography is B0's, not the caller's.
+   */
+  field?: Omit<ComponentPropsWithRef<'textarea'>, 'className' | 'placeholder'> & {
+    /** `data-*` hooks the renderer's own tests reach for. */
+    [key: `data-${string}`]: string | undefined
+  }
   className?: string
 }
 
@@ -51,6 +68,8 @@ export function Composer({
   size = 'desktop',
   readOnly,
   trailing,
+  leading,
+  field,
   className,
 }: ComposerProps) {
   const mobile = size === 'mobile'
@@ -66,14 +85,17 @@ export function Composer({
         className,
       )}
     >
-      <span aria-hidden className="grid size-[26px] flex-none place-items-center text-ink-2">
-        <PlusIcon />
-      </span>
+      {leading ?? (
+        <span aria-hidden className="grid size-[26px] flex-none place-items-center text-ink-2">
+          <PlusIcon />
+        </span>
+      )}
       <textarea
         rows={1}
         placeholder={placeholder}
         aria-label={placeholder}
         readOnly={readOnly}
+        {...field}
         className={cn(
           'min-w-0 flex-1 resize-none bg-transparent py-[7px] tracking-[-0.1px] text-ink outline-none',
           'max-h-[120px] placeholder:text-ink-2',

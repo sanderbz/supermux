@@ -37,13 +37,26 @@ export interface ComposerShellProps {
   className?: string
 }
 
-export function ComposerShell({
-  label,
+/**
+ * The composer's FRAME — the boards' inset, the 744px alignment with the track,
+ * and the stat's parking spot above the pill.
+ *
+ * Extracted (fase A4 T3) so the live composer (`components/chat/composer.tsx`)
+ * sits in exactly the same box as the read-only one instead of re-typing four
+ * measurements that were taken off the boards. Behaviour of `ComposerShell`
+ * itself is unchanged — it is the frame's first caller.
+ */
+export function ComposerFrame({
   surface = 'desktop',
-  readOnly = true,
   stat,
   className,
-}: ComposerShellProps) {
+  children,
+}: {
+  surface?: 'desktop' | 'phone'
+  stat?: React.ReactNode
+  className?: string
+  children: React.ReactNode
+}) {
   const phone = surface === 'phone'
   return (
     <div
@@ -56,6 +69,23 @@ export function ComposerShell({
             {stat}
           </p>
         )}
+        {children}
+      </div>
+    </div>
+  )
+}
+
+export function ComposerShell({
+  label,
+  surface = 'desktop',
+  readOnly = true,
+  stat,
+  className,
+}: ComposerShellProps) {
+  const phone = surface === 'phone'
+  return (
+    <ComposerFrame surface={surface} stat={stat} className={className}>
+      <>
         {readOnly && (
           <p
             aria-hidden
@@ -73,8 +103,8 @@ export function ComposerShell({
           readOnly={readOnly}
           placeholder={`Message ${label}`}
         />
-      </div>
-    </div>
+      </>
+    </ComposerFrame>
   )
 }
 

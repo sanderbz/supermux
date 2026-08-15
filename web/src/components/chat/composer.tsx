@@ -1,0 +1,313 @@
+/**
+ * The composer, LIVE (fase A4 T3).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A3 shipped the pill and told the truth about it: read-only, "switch to
+ * Terminal to type". This is the slice where the chat surface starts driving
+ * the session, so the honesty line goes and a real input plane takes its place.
+ *
+ * The split, kept exactly as A3 left it:
+ *   · `ui/composer.tsx` (B0) is still the SHELL — the 58/52px pill, the
+ *     hairline, the blur, the accent focus ring. Nothing here restyles it; the
+ *     field and the trailing control arrive as slots B0 already had (`field`,
+ *     `trailing`), which is why `/dev/chat-ui` is pixel-identical after A4.
+ *   · `use-composer.ts` is the BEHAVIOUR — draft store, key contract, submit.
+ *   · this file is the COMPOSITION: what the boards draw plus the two things a
+ *     control surface owes the user — a control that admits what it is about to
+ *     do (Stop, while a turn runs), and a refusal that says why.
+ *
+ * THE TWO REFUSALS (master plan §3, a0-findings §5). Before every send the
+ * composer takes one `/peek`:
+ *   · a DIALOG is up → send nothing. `POST /send` while a permission dialog is
+ *     open was never A0-tested, and the plausible failure is that the text is
+ *     read as an answer to the dialog. The card above can answer it (T7).
+ *   · the TERMINAL HAS A DRAFT → send nothing. `send_text` pastes at the TUI's
+ *     prompt, so it would CONCATENATE onto the half-sentence sitting there and
+ *     submit the pair. The banner quotes it back and offers the terminal.
+ * A peek that FAILS is not a refusal: the send proceeds and T4's watchdog is
+ * the honest layer. An unusable composer is a worse failure than an unverified
+ * send.
+ */
+import * as React from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+
+import { eases, springs } from '../../lib/springs'
+import { cn } from '../../lib/utils'
+
+import { ComposerFrame } from './composer-shell'
+import type { ComposerHandle, ComposerNotice } from './use-composer'
+import { DRAFT_PREVIEW_CHARS } from './use-composer'
+import { Composer, MicIcon } from './ui'
+
+/** The same 260ms opacity crossfade `live-layer.tsx`'s `SwapCell` uses for P13.
+ *  Send→Stop is the same kind of event — one cell, two occupants — so it is the
+ *  same move, not a new one. */
+const SWAP_S = 0.26
+
+export interface ChatComposerProps {
+  /** The session's slug — the draft's key, and the insert seam's address. */
+  name: string
+  /** What the placeholder says out loud: display name, then slug. */
+  label: string
+  handle: ComposerHandle
+  surface?: 'desktop' | 'phone'
+  /** A turn is running: the trailing control is Stop, and a bare Escape stops. */
+  active?: boolean
+  /** The `hook→UI p50` read-out, when the session has produced samples. */
+  stat?: React.ReactNode
+  /** Switch this pane to the terminal renderer. Every refusal offers it — the
+   *  terminal is the surface that can always do what chat just declined to. */
+  onOpenTerminal?: () => void
+  className?: string
+}
+
+export function ChatComposer({
+  name,
+  label,
+  handle,
+  surface = 'desktop',
+  active = false,
+  stat,
+  onOpenTerminal,
+  className,
+}: ChatComposerProps) {
+  const phone = surface === 'phone'
+  const reduce = useReducedMotion() ?? false
+  // A draft arms Send. While the POST is in flight the button STAYS (disabled)
+  // rather than flipping back to the mic: a control that vanishes mid-tap reads
+  // as a bug, and the disabled state is the honest "asked, not yet answered".
+  const canSend = handle.draft.trim().length > 0
+
+  return (
+    <ComposerFrame surface={surface} stat={stat} className={className}>
+      <ComposerBanner
+        notice={handle.notice}
+        onOpenTerminal={onOpenTerminal}
+        onDismiss={handle.dismissNotice}
+        reduce={reduce}
+      />
+      <Composer
+        size={phone ? 'mobile' : 'desktop'}
+        placeholder={`Message ${label}`}
+        field={{
+          ref: handle.ref,
+          value: handle.draft,
+          onChange: handle.onChange,
+          onKeyDown: handle.onKeyDown,
+          // The composer is a message box, not a code editor: the browser's own
+          // spellcheck is the right default, and autocapitalise/autocorrect are
+          // what a phone keyboard expects from one.
+          spellCheck: true,
+          enterKeyHint: 'send',
+          'data-testid': 'chat-composer-field',
+          'data-session': name,
+        }}
+        trailing={
+          <div className="grid size-10 place-items-center">
+            <AnimatePresence initial={false}>
+              <motion.div
+                key={active ? 'stop' : canSend ? 'send' : 'idle'}
+                style={{ gridArea: '1 / 1' }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                // Opacity only, in one cell: nothing reflows when the status
+                // flips mid-sentence.
+                transition={{ duration: reduce ? 0 : SWAP_S, ease: eases.inOut }}
+              >
+                {active ? (
+                  <TrailingButton
+                    testId="chat-stop"
+                    label="Stop"
+                    phone={phone}
+                    onClick={handle.stop}
+                  >
+                    <StopIcon />
+                  </TrailingButton>
+                ) : canSend ? (
+                  <TrailingButton
+                    testId="chat-send"
+                    label={`Send to ${label}`}
+                    phone={phone}
+                    onClick={handle.submit}
+                    disabled={handle.sending}
+                  >
+                    <SendIcon />
+                  </TrailingButton>
+                ) : (
+                  /* At rest the boards' mic keeps its cell. It is decoration
+                     until dictation lands — so it is `aria-hidden` and not a
+                     button, exactly as B0 draws it. */
+                  <span
+                    aria-hidden
+                    className={cn(
+                      'sm-mic grid place-items-center rounded-full',
+                      phone ? 'size-9' : 'size-10',
+                    )}
+                  >
+                    <MicIcon />
+                  </span>
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </div>
+        }
+      />
+    </ComposerFrame>
+  )
+}
+
+/** The one inverted control, as a real button. Same disc as `.sm-mic` (the
+ *  boards' trailing cell) — the DISC is B0's 36/40px and is not resized here,
+ *  so the phone's hit area comes from a 4px `::after` inset instead: 36 + 8 =
+ *  44pt of tappable target inside an unchanged pill. */
+function TrailingButton({
+  testId,
+  label,
+  phone,
+  onClick,
+  disabled,
+  children,
+}: {
+  testId: string
+  label: string
+  phone: boolean
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <motion.button
+      type="button"
+      data-testid={testId}
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      disabled={disabled}
+      aria-busy={disabled || undefined}
+      whileTap={disabled ? undefined : { scale: 0.94 }}
+      transition={springs.buttonPress}
+      className={cn(
+        'sm-mic relative grid place-items-center rounded-full',
+        phone ? 'size-9' : 'size-10',
+        // The invisible 44pt target (see the doc comment). Pointer-events ride
+        // the pseudo-element, so a thumb landing 4px wide of the disc still
+        // presses this button and nothing else — it is inside the pill.
+        phone && 'after:absolute after:-inset-1 after:content-[""]',
+        disabled && 'opacity-60',
+      )}
+    >
+      {children}
+    </motion.button>
+  )
+}
+
+/**
+ * The refusal banner — above the pill, in flow, so it never covers the field it
+ * is talking about. It carries the evidence (the terminal's own draft) and the
+ * way out (the terminal itself); it does not apologise.
+ */
+function ComposerBanner({
+  notice,
+  onOpenTerminal,
+  onDismiss,
+  reduce,
+}: {
+  notice: ComposerNotice | null
+  onOpenTerminal?: () => void
+  onDismiss: () => void
+  reduce: boolean
+}) {
+  return (
+    // The live region is the PERSISTENT wrapper, not the banner: a role that is
+    // mounted at the same moment as its text is announced inconsistently. The
+    // refusal is the one thing on this surface a user learns about by NOT
+    // getting what they asked for, so it has to reach a screen reader.
+    <div role="status" aria-live="polite" aria-atomic="true">
+    <AnimatePresence initial={false}>
+      {notice && (
+        <motion.div
+          data-testid="chat-composer-notice"
+          data-notice={notice.kind}
+          initial={{ opacity: 0, y: reduce ? 0 : 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: reduce ? 0 : 6 }}
+          transition={reduce ? { duration: 0 } : springs.cardExpand}
+          className={cn(
+            'mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border-[0.5px] border-hairline',
+            'bg-surface px-3.5 py-2 text-[12.6px] tracking-[-0.05px] text-ink-2',
+            'backdrop-blur-[60px] backdrop-saturate-[180%]',
+          )}
+        >
+          <span className="text-ink">{NOTICE_TITLE[notice.kind]}</span>
+          {notice.kind === 'tui-draft' && notice.detail && (
+            <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">
+              “{notice.detail.slice(0, DRAFT_PREVIEW_CHARS)}”
+            </span>
+          )}
+          {(notice.kind === 'send-failed' || notice.kind === 'stop-failed') &&
+            notice.detail && (
+              <span className="min-w-0 truncate text-ink-2">{notice.detail}</span>
+            )}
+          <span className="ml-auto flex items-center gap-2">
+            {onOpenTerminal && (
+              <button
+                type="button"
+                data-testid="chat-composer-open-terminal"
+                onClick={onOpenTerminal}
+                className="rounded-full px-2 py-1 text-[12.6px] text-ink underline underline-offset-2"
+              >
+                Open terminal
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={onDismiss}
+              className="rounded-full px-2 py-1 text-[12.6px] text-ink-2"
+            >
+              Dismiss
+            </button>
+          </span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+    </div>
+  )
+}
+
+/** The copy, in one place. Each line names what is actually true — no "oops",
+ *  no "something went wrong". */
+const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
+  'tui-draft': 'The terminal has an unsent draft.',
+  dialog: 'Claude is waiting on the request above — answer it first.',
+  'send-failed': 'That message didn’t reach the session.',
+  // Not "something went wrong": the turn is still running, and that is the fact
+  // the user needs in order to decide what to do next.
+  'stop-failed': 'The interrupt didn’t reach the session — the turn is still running.',
+}
+
+/** Send — an upward arrow, the one glyph every messenger agrees on. */
+function SendIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M9 14.6V3.6M4.4 8.2L9 3.6l4.6 4.6"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** Stop — a square, because it interrupts rather than cancels. */
+function StopIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <rect x="5.4" y="5.4" width="7.2" height="7.2" rx="1.8" fill="currentColor" />
+    </svg>
+  )
+}
+
+export default ChatComposer

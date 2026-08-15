@@ -70,6 +70,17 @@ const DEFAULT_SEND_CHIPS = ['Esc', 'Tab', 'Ctrl-C', 'Ctrl-U'] as const
 export interface DesktopDockProps {
   /** Tap a send-row chip → emit that key into the pty. */
   onSendKey: (label: string) => void
+  /**
+   * Show the raw-key send row (fase A4 T3 — default true, i.e. today's dock).
+   *
+   * The chips send `keyToBytes` names (`EscEsc`, `Newline`, `Ctrl-G`, …) into a
+   * mounted xterm; the chat renderer has no xterm and `KEY_ALLOWLIST` has no
+   * equivalent for most of them, so under chat they are terminal-only by
+   * definition and the row is hidden. Everything ELSE on the dock — snippets,
+   * attach, the palette, detach, stop — writes text or navigates, which the
+   * input plane can do on either renderer, so the dock itself stays.
+   */
+  rawKeys?: boolean
   /** "+" snippet-drawer toggle — opens the snippet side-sheet. */
   onSnippets?: () => void
   /** ✎ Edit — lift the agent's current `❯` input into the native editor sheet
@@ -159,6 +170,7 @@ function SendChip({
 
 export function DesktopDock({
   onSendKey,
+  rawKeys = true,
   onSnippets,
   onAttach,
   onEdit,
@@ -232,9 +244,12 @@ export function DesktopDock({
         />
       </div>
 
-      <span className="h-6 w-px shrink-0 bg-border" aria-hidden />
+      {rawKeys && <span className="h-6 w-px shrink-0 bg-border" aria-hidden />}
 
-      {/* Center: editable 4-chip send-row + gear. */}
+      {/* Center: editable 4-chip send-row + gear. Hidden under the chat
+          renderer — raw keys need a mounted xterm (see `rawKeys`). */}
+      {!rawKeys && <div className="flex-1" aria-hidden />}
+      {rawKeys && (
       <div className="flex flex-1 items-center justify-center gap-1.5">
         {editing
           ? chips.map((label, i) => (
@@ -273,8 +288,9 @@ export function DesktopDock({
           <TooltipContent>{editing ? 'Done' : 'Edit send row'}</TooltipContent>
         </Tooltip>
       </div>
+      )}
 
-      <span className="h-6 w-px shrink-0 bg-border" aria-hidden />
+      {rawKeys && <span className="h-6 w-px shrink-0 bg-border" aria-hidden />}
 
       {/* Right cluster (24px from edge): Detach ⌘D, Stop ⌘W. */}
       <div className="flex shrink-0 items-center gap-1">
