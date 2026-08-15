@@ -13,6 +13,9 @@
 
 import { apiToken, apiUrl } from './client'
 
+import { inputRoutes } from '../session-input/routes'
+import type { KeyName } from '../session-input/types'
+
 // ── Domain types ──────────────────────────────────────────────────────────────
 
 export type SessionStatus =
@@ -403,6 +406,12 @@ async function sessReq<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+/** The low-level session request, exposed so the input plane
+ *  (`lib/session-input/rest.ts`) writes through the SAME auth + envelope +
+ *  `SessionError` handling as every other client here instead of growing a
+ *  second, subtly different fetch. It is also the seam A4's tests inject. */
+export const sessionRequest = sessReq
+
 /** Normalise whatever the list endpoint returns into `ApiSession[]`. The backend
  *  returns `SessionSummary[]`; this defends against the envelope being `{ data:[…] }`. */
 function asSessions(body: unknown): ApiSession[] {
@@ -599,6 +608,52 @@ export const sessionsApi = {
     return sessReq<RecallResponse>(
       `/api/sessions/${encodeURIComponent(name)}/recall${qs ? `?${qs}` : ''}`,
     )
+  },
+
+  /** `POST /api/sessions/{name}/send {text}` — literal text AND submit. The
+   *  server appends the Enter itself (plus the provider submit gap), stamps
+   *  `last_send_at` and broadcasts the delta, so callers pass the RAW text: a
+   *  trailing CR here would submit twice. Auto-wakes a stopped session. */
+  send: (name: string, text: string): Promise<unknown> =>
+    sessReq(inputRoutes.send(name), {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+
+  /** `POST /api/sessions/{name}/paste {text, submit}` — bracketed paste.
+   *  `submit:false` (the default) leaves the text sitting at the agent's `❯`
+   *  without sending it. 409 when the session isn't running. */
+  paste: (name: string, text: string, submit = false): Promise<unknown> =>
+    sessReq(inputRoutes.paste(name), {
+      method: 'POST',
+      body: JSON.stringify({ text, submit }),
+    }),
+
+  /** `POST /api/sessions/{name}/keys {keys}` — one named key, allowlist-checked
+   *  server-side (`KEY_ALLOWLIST`). `KeyName` is that allowlist as a type, so a
+   *  rejected key cannot compile; note it has NO digits. */
+  keys: (name: string, keys: KeyName): Promise<unknown> =>
+    sessReq(inputRoutes.keys(name), {
+      method: 'POST',
+      body: JSON.stringify({ keys }),
+    }),
+
+  /** `GET /api/sessions/{name}/tracked-files` — the paths this session is
+   *  "watching" (the DB-backed `tracked_files` table, sorted; NOT a git ls-files),
+   *  which is the source the chat composer's `@` picker filters over. Returns
+   *  `[]` on any failure so the picker degrades to empty rather than erroring. */
+  trackedFiles: async (name: string): Promise<string[]> => {
+    try {
+      const body = await sessReq<{ files?: unknown }>(
+        `/api/sessions/${encodeURIComponent(name)}/tracked-files`,
+      )
+      const arr = body?.files
+      return Array.isArray(arr)
+        ? arr.filter((f): f is string => typeof f === 'string')
+        : []
+    } catch {
+      return []
+    }
   },
 
   /** `GET /api/sessions/{name}/peek?ansi=1&lines=N` — colour-true pty tail
