@@ -852,3 +852,33 @@ describe('the picker is reachable by assistive tech', () => {
     expect(html).toContain('role="presentation"')
   })
 })
+
+describe('the choice card stops calling a live surface read-only', () => {
+  test('it names what is still true instead', () => {
+    // A1/A3's line was "Answer in the terminal — chat is read-only for now."
+    // A4's composer sends, so the first half is now false, and a line that is
+    // wrong about the obvious half is not trusted about the half that matters
+    // (that no key may be pressed into this dialog until T7 lands).
+    const html = renderToStaticMarkup(
+      <ChatConversation
+        name={NAME}
+        session={
+          {
+            name: NAME,
+            status: 'active',
+            dir: '/tmp',
+            provider: 'claude',
+            preview_lines: [],
+            updated_at: '',
+            permission_request: { tool: 'Bash', summary: '⚡ cargo publish', kind: 'bash' },
+          } as unknown as TileSession
+        }
+        items={[]}
+        nowMs={0}
+        turnStart={0}
+      />,
+    )
+    expect(text(html)).toContain('Answer in the terminal')
+    expect(text(html)).not.toContain('read-only')
+  })
+})

@@ -226,10 +226,15 @@ export function PermissionCard({
         why={why || undefined}
         options={PERMISSION_OPTIONS}
       />
-      {/* The A1 honesty string, kept verbatim in spirit: A3 still cannot send
-          a key, so the card must not imply that clicking it would. */}
+      {/* The A1 honesty string, kept in spirit and corrected in fact (A4
+          review): the composer below is live now, so "chat is read-only" is no
+          longer true of this surface — and a line that is wrong about the
+          obvious half is not trusted about the half that matters. What IS still
+          true is that no key may be pressed into this dialog until T7 lands, so
+          that is what it says. Same sentence the composer's own refusal uses
+          when there is nothing above it to point at. */}
       <p className="ml-11 mt-[7px] text-[12.6px] tracking-[-0.05px] text-ink-2">
-        Answer in the terminal — chat is read-only for now.
+        Answer in the terminal — chat can’t answer this one yet.
       </p>
     </div>
   )
