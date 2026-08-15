@@ -26,8 +26,14 @@ import type { TileSession } from '@/components/session-tile/types'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSessions } from '@/hooks/use-sessions'
 import { filesApi } from '@/lib/api'
+import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
+import { topAttention } from './attention'
+import { ChatComposer } from './composer'
 import { ChatConversation, PHONE_QUERY } from './conversation'
+import { useComposer } from './use-composer'
+import { usePeekLens } from './use-peek-lens'
+import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
 import { ProvisionalTail } from './provisional-tail'
@@ -38,9 +44,22 @@ const FOLLOW_THRESHOLD_PX = 48
 export default function ChatPanel({
   name,
   session,
+  input,
+  onOpenTerminal,
 }: {
   name: string
   session: TileSession | null
+  /**
+   * The write plane (fase A4 T1/T3). The parent surface owns it because the
+   * parent is what knows which renderer is mounted — and because every OTHER
+   * insert surface in that parent (snippets, attachments, the dock) holds the
+   * same handle, so a snippet inserted from the dock and a `@`-pick made in the
+   * composer land in the same draft. Omitted (bench, tests) → the panel builds
+   * the REST plane for itself.
+   */
+  input?: SessionInput
+  /** Switch this pane to the terminal renderer — every refusal offers it. */
+  onOpenTerminal?: () => void
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is wiring only.
@@ -91,6 +110,53 @@ export default function ChatPanel({
 
   const samples = latencySamples()
 
+  // ── The input plane (fase A4 T3) ───────────────────────────────────────────
+  // ONE peek poller for the whole surface (T2): the composer's pre-send draft
+  // guard reads it here, and T5/T6/T7's cards will read the same frame. It runs
+  // fast while a turn is live, slow otherwise.
+  const peek = usePeekLens(name, { live: turnStart != null })
+  const fallbackInput = React.useMemo(() => restSessionInput(name), [name])
+  // P10 (T4) sits BETWEEN the composer and the input plane: `pending.input` is
+  // the same handle with every submit tracked, so the echo cannot get out of
+  // step with the POST it is drawn for. `pending.attention` is T5's cause —
+  // an undelivered send raises the Attention card there; until it lands the
+  // undelivered ROW carries the reason and the way out.
+  const pending = usePendingSends({
+    name,
+    input: input ?? fallbackInput,
+    peek,
+    entries,
+    active: session?.status === 'active',
+  })
+  const composer = useComposer({
+    name,
+    input: pending.input,
+    peek,
+    active: session?.status === 'active',
+  })
+
+  // ── The Attention card (fase A4 T5) ────────────────────────────────────────
+  // ONE card, so the causes are ranked rather than stacked (`topAttention`).
+  // Today exactly one raiser is wired — a send the watchdog gave up on; T6/T7
+  // add the dialog causes and pass their own context. The card's evidence is
+  // the SAME capture every other consumer reads (one poller, T2), so what it
+  // shows is what the refusal was decided on.
+  const attention = topAttention([pending.attention])
+  const attentionCtx = React.useMemo(
+    () => ({ version: peek.lens.bannerVersion }),
+    [peek.lens.bannerVersion],
+  )
+  // Dismissing the card dismisses what raised it: the undelivered echoes are
+  // the failure, and a card that could be closed while its rows stayed on
+  // screen would just be a second thing to close.
+  const pendingItems = pending.items
+  const dismissPending = pending.dismiss
+  const dismissAttention = React.useCallback(() => {
+    for (const p of pendingItems) {
+      if (p.state === 'undelivered') dismissPending(p.id)
+    }
+  }, [pendingItems, dismissPending])
+
   return (
     <ChatConversation
       // The surface IS the panel's root element, so it keeps the panel's
@@ -111,17 +177,37 @@ export default function ChatPanel({
       rawUrl={filesApi.rawUrl}
       scrollRef={scrollRef}
       onScroll={onScroll}
+      pending={pending.items}
+      onRetryPending={pending.retry}
+      onDismissPending={pending.dismiss}
+      attention={attention}
+      attentionCtx={attentionCtx}
+      attentionCapture={peek.capture}
+      onDismissAttention={dismissAttention}
+      onOpenTerminal={onOpenTerminal}
       provisional={
         showProvisional ? <ProvisionalTail name={name} show={showProvisional} surface={phone ? 'phone' : 'desktop'} /> : null
       }
-      stat={
-        samples.length > 0 ? (
-          /* The dogfood number, readable without devtools (re-renders on the
-             live-layer ticker / tail refetches). */
-          <>
-            hook→UI p50 {p50(samples)} ms (n={samples.length})
-          </>
-        ) : null
+      composer={
+        <ChatComposer
+          name={name}
+          label={session?.display_name?.trim() ? session.display_name : name}
+          handle={composer}
+          surface={phone ? 'phone' : 'desktop'}
+          active={session?.status === 'active'}
+          onOpenTerminal={onOpenTerminal}
+          // The dogfood number, readable without devtools (re-renders on the
+          // live-layer ticker / tail refetches). It rides the composer's frame
+          // now — the read-only shell this replaced is only reached when NO
+          // composer slot is passed, and the panel always passes one.
+          stat={
+            samples.length > 0 ? (
+              <>
+                hook→UI p50 {p50(samples)} ms (n={samples.length})
+              </>
+            ) : null
+          }
+        />
       }
     />
   )

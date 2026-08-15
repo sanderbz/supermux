@@ -68,6 +68,17 @@ export interface ChatSurfaceProps {
   footer?: React.ReactNode
   /** Transcript + live layer. */
   children?: React.ReactNode
+  /**
+   * A layer over this pane, above the header and the composer (fase A4 T5 — the
+   * Attention card's expanded form). Scoped to the SURFACE, not portalled to the
+   * document: a refusal belongs to the session it happened in, so the roster and
+   * the other pane of a split stay live while it is up. The slot renders
+   * nothing of its own — the occupant owns its scrim, its motion and its exit.
+   *
+   * TODO §11.4: when the shell-scoped overlay layer lands (Track B) it adopts
+   * this slot's occupant and this becomes its mount point.
+   */
+  overlay?: React.ReactNode
   /** The scroll region's element, for the follow-bottom arithmetic (A3 T7). */
   scrollRef?: React.Ref<HTMLDivElement>
   onScroll?: React.UIEventHandler<HTMLDivElement>
@@ -150,6 +161,7 @@ export function ChatSurface({
   headerOverlay,
   footer,
   children,
+  overlay,
   scrollRef,
   onScroll,
   testId = 'chat-surface',
@@ -189,6 +201,10 @@ export function ChatSurface({
       </div>
 
       {footer != null && <div className="absolute inset-x-0 bottom-0 z-[4]">{footer}</div>}
+
+      {/* Above both floating layers (header z-3, composer z-4): the card is
+          telling the user that one of them just refused to do something. */}
+      {overlay}
     </div>
   )
 }

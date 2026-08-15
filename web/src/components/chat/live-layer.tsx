@@ -6,6 +6,8 @@
  * neither — only what each band looks like. Top to bottom:
  *
  *   confirmed content   (the transcript, `transcript-item.tsx`)
+ *   attention           what this surface could NOT do (A4 T5) — a slot, and
+ *                       empty on every A1/A3 path
  *   permission          the one thing on screen that is asking (`ChoiceCard`)
  *   overlay receipts    hook-driven, last line still running
  *   working row         the P12 state ladder, or a delegation pill when the
@@ -97,6 +99,15 @@ export interface LiveLayerProps {
    * below be asserted in a hermetic test.
    */
   provisional?: React.ReactNode
+  /**
+   * The Attention card's inline row (fase A4 T5), TOP of the band — above even
+   * the permission card, because it is the one thing here that may be about the
+   * band itself: a send that never arrived, or a dialog this surface has just
+   * declined to answer. A slot for the same reason `provisional` is one: it is
+   * driven by the peek lens and the pending store, and this module fetches
+   * nothing.
+   */
+  attention?: React.ReactNode
 }
 
 export function LiveLayer({
@@ -108,6 +119,7 @@ export function LiveLayer({
   pinFor,
   surface,
   provisional,
+  attention,
 }: LiveLayerProps) {
   // The turn is running AND anchored. The anchor is what the elapsed clause
   // counts from, so a row without one would have nothing honest to say.
@@ -120,6 +132,8 @@ export function LiveLayer({
   // reserve air for the always-mounted swap cell below.
   return (
     <div data-testid="chat-live-layer">
+      {attention}
+
       {session?.permission_request && (
         <PermissionCard
           request={session.permission_request}

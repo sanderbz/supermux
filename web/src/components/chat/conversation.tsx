@@ -32,17 +32,24 @@
  * imported from here, never the reverse.
  */
 import * as React from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import type { MarkPin } from '../../brand/marks'
+import { eases } from '../../lib/springs'
+import { cn } from '../../lib/utils'
 import type { TileSession } from '../session-tile/types'
 
+import type { AttentionCause, AttentionContext } from './attention'
+import { AttentionOverlay, AttentionRow } from './attention-card'
 import { ChatSurface } from './chat-surface'
 import { ComposerShell } from './composer-shell'
 import type { ChatItem } from './entries'
 import { buildTranscript } from './grouping'
 import { SessionHeaderPill } from './header-pill'
 import { LiveLayer } from './live-layer'
+import type { PendingSend } from './pending'
 import { TranscriptItem } from './transcript-item'
+import { Bubble, MessageRow } from './ui'
 import type { OverlayLine } from './use-receipt-overlay'
 
 /**
@@ -73,6 +80,44 @@ export interface ChatConversationProps {
   overlay?: readonly OverlayLine[]
   /** The P13 block — a slot, because it is the one child that talks to `/peek`. */
   provisional?: React.ReactNode
+  /**
+   * The LIVE composer (fase A4 T3) — a slot, for the same reason `provisional`
+   * is one: it talks to the input plane and the peek lens, and this component
+   * may not. Omit it and the footer is A3's read-only `ComposerShell`, which is
+   * exactly what `/dev/chat-live`'s static states and `chat-conversation.test`
+   * still render. So "can this surface send?" is one prop, not a fork.
+   */
+  composer?: React.ReactNode
+  /**
+   * P10 optimistic echoes (fase A4 T4), oldest first — already reconciled and
+   * watchdog-evaluated by `use-pending-sends`. Data rather than a slot, unlike
+   * the composer: nothing here talks to the network, and the bench state that
+   * proves the three states exist should be three objects, not a mounted hook.
+   */
+  pending?: readonly PendingSend[]
+  /**
+   * The one thing this surface currently cannot do (fase A4 T5). Data, not a
+   * slot: the copy is a pure function of the cause (`attention.ts`), so the
+   * bench state that proves each cause reads correctly is one string.
+   */
+  attention?: AttentionCause | null
+  /** What the cause's sentence may quote — the CC version, a POST's error. */
+  attentionCtx?: AttentionContext
+  /** The raw `/peek?ansi=1` capture the card shows as evidence. Blank → the
+   *  card degrades to message-only, which is what a stopped session gets. */
+  attentionCapture?: string
+  /** Start expanded. The card is inline-first everywhere else; this exists so
+   *  `/dev/chat-live` (T10) can screenshot the overlay without a click. */
+  attentionExpanded?: boolean
+  /** Stop showing this cause — the user has read it. Omit and the card can only
+   *  be collapsed, never dismissed. */
+  onDismissAttention?: () => void
+  /** Send it again (the hook re-runs the pre-send gate). */
+  onRetryPending?: (id: string) => void
+  /** Stop showing this failure — the user has read it. */
+  onDismissPending?: (id: string) => void
+  /** Switch this pane to the terminal renderer. Every refusal offers it. */
+  onOpenTerminal?: () => void
   /** Absolute path → fetchable URL (`filesApi.rawUrl`). */
   rawUrl?: (path: string) => string
   /** Seed → identity pin, when a roster has assigned one (TODO §10). */
@@ -103,6 +148,16 @@ export function ChatConversation({
   turnStart,
   overlay,
   provisional,
+  composer,
+  pending,
+  attention = null,
+  attentionCtx,
+  attentionCapture,
+  attentionExpanded = false,
+  onDismissAttention,
+  onRetryPending,
+  onDismissPending,
+  onOpenTerminal,
   rawUrl,
   pinFor,
   surface,
@@ -122,6 +177,18 @@ export function ChatConversation({
   )
   const label = session?.display_name?.trim() ? session.display_name : name
   const pin = pinFor?.(name)
+
+  // Inline-first (A4 T5): the row is in the band, the evidence is one tap away.
+  // The expansion is presentation-local state — nothing above this component
+  // needs to know whether the user has opened the card — and it RESETS when the
+  // cause changes, so a card opened for a failed send does not silently become
+  // an open card about an unmapped dialog.
+  const [expanded, setExpanded] = React.useState(attentionExpanded)
+  const shownFor = React.useRef(attention)
+  if (shownFor.current !== attention) {
+    shownFor.current = attention
+    if (expanded !== attentionExpanded) setExpanded(attentionExpanded)
+  }
 
   return (
     <ChatSurface
@@ -149,7 +216,24 @@ export function ChatConversation({
         />
       }
       footer={
-        <ComposerShell label={label} surface={phone ? 'phone' : 'desktop'} stat={stat} />
+        composer ?? (
+          <ComposerShell label={label} surface={phone ? 'phone' : 'desktop'} stat={stat} />
+        )
+      }
+      // The expanded card, over this pane only (see `attention-card.tsx`).
+      overlay={
+        attention && (
+          <AttentionOverlay
+            open={expanded}
+            cause={attention}
+            ctx={attentionCtx}
+            capture={attentionCapture}
+            surface={phone ? 'phone' : 'desktop'}
+            onClose={() => setExpanded(false)}
+            onOpenTerminal={onOpenTerminal}
+            onDismiss={onDismissAttention}
+          />
+        )
       }
     >
       <div
@@ -193,6 +277,19 @@ export function ChatConversation({
             />
           ))}
 
+          {/* P10 (fase A4 T4) — what this client has SENT but the transcript
+              has not confirmed yet. It sits between the confirmed layer and the
+              live layer because that is where a just-sent message belongs in
+              time: after everything Claude has said, before whatever it is
+              saying now. */}
+          <PendingEchoes
+            pending={pending}
+            surface={phone ? 'phone' : 'desktop'}
+            onRetry={onRetryPending}
+            onDismiss={onDismissPending}
+            onOpenTerminal={onOpenTerminal}
+          />
+
           {/* Live layer (fase A3 T4) — permission first (nothing silently
               invisible), then overlay receipts, then the working row (or the
               delegation pill), then provisional text. */}
@@ -205,10 +302,151 @@ export function ChatConversation({
             pinFor={pinFor}
             surface={phone ? 'phone' : 'desktop'}
             provisional={provisional}
+            attention={
+              attention && (
+                <AttentionRow
+                  cause={attention}
+                  ctx={attentionCtx}
+                  expanded={expanded}
+                  onExpand={() => setExpanded(true)}
+                />
+              )
+            }
           />
         </div>
       </div>
     </ChatSurface>
+  )
+}
+
+/** §11.6's same-cell swap, the number `live-layer.tsx` already uses. An echo
+ *  reconciling is the same kind of event as a provisional block being
+ *  superseded — one thing becoming another — so it is the same move. */
+const ECHO_SWAP_S = 0.26
+
+/** One tap target for the undelivered row's three controls. `h-[34px]` is the
+ *  height `ChoiceCard`'s pill has off the approved boards — the smallest thing
+ *  this surface asks anybody to hit — even though the label reads at 12px. */
+const ECHO_ACTION = 'inline-flex h-[34px] items-center rounded-full px-2'
+
+/**
+ * P10 — the optimistic echo band (fase A4 T4).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A sent message drawn at REDUCED EMPHASIS, with an affordance that says
+ * exactly how much this surface currently knows about it:
+ *
+ *   sending      the POST is in flight. Nothing but the lowered opacity — the
+ *                bubble already says "your Enter was received".
+ *   unconfirmed  the POST returned 2xx and the transcript has not echoed it
+ *                yet. A 12px line, no alarm: this is the normal state for the
+ *                seconds between a send and Claude writing it down.
+ *   undelivered  the watchdog gave up (`pending.ts`). Calm orange, the reason
+ *                when one is known, and the two ways out — send it again, or
+ *                go and look at the pty yourself.
+ *
+ * It RECONCILES as a no-op crossfade, never a second entry-pop: the confirmed
+ * bubble lands in the transcript above at the same moment this row fades, so
+ * the message never appears to arrive twice. That is the same technique
+ * `live-layer.tsx`'s `SwapCell` uses for P13, and the reason `AnimatePresence`
+ * wraps the list rather than each row.
+ */
+export function PendingEchoes({
+  pending,
+  surface = 'desktop',
+  onRetry,
+  onDismiss,
+  onOpenTerminal,
+}: {
+  pending?: readonly PendingSend[]
+  surface?: 'desktop' | 'phone'
+  onRetry?: (id: string) => void
+  onDismiss?: (id: string) => void
+  onOpenTerminal?: () => void
+}) {
+  const reduce = useReducedMotion() ?? false
+  return (
+    // The live region is the PERSISTENT wrapper (the same rule the composer's
+    // refusal banner follows): a role mounted at the same moment as its text is
+    // announced inconsistently, and "this message did not land" is the one thing
+    // on this surface a user learns by NOT getting what they asked for.
+    <div data-testid="chat-pending-band" role="status" aria-live="polite">
+      <AnimatePresence initial={false}>
+        {(pending ?? []).map((p) => (
+          <motion.div
+            key={p.id}
+            data-testid="chat-pending"
+            data-state={p.state}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduce ? 0 : ECHO_SWAP_S, ease: eases.inOut }}
+          >
+            <MessageRow me>
+              <div className="flex min-w-0 flex-col items-end">
+                <Bubble
+                  variant="user"
+                  surface={surface}
+                  // Reduced emphasis while it is still a claim; full weight once
+                  // it is a stated failure, because that row has to be read.
+                  className={cn(p.state !== 'undelivered' && 'opacity-[0.62]')}
+                >
+                  <span className="whitespace-pre-wrap break-words">{p.text}</span>
+                </Bubble>
+
+                {p.state === 'unconfirmed' && (
+                  <p className="mt-[5px] text-[12px] tracking-[-0.05px] text-ink-2">
+                    Sending…
+                  </p>
+                )}
+
+                {p.state === 'undelivered' && (
+                  <div className="mt-[1px] flex flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 text-[12px] tracking-[-0.05px]">
+                    {/* Calm orange, never alarmist red — the `--status-error`
+                        token the tiles already use for a dead agent. */}
+                    <span data-tone="warn" className="mr-1 text-status-error">
+                      {p.note ?? 'This didn’t reach the session.'}
+                    </span>
+                    {/* 34px, the height every actionable control on this surface
+                        has (`ChoiceCard`'s pill, off the approved boards) —
+                        NOT the 12px the label reads at. Retry is the one control
+                        here that writes to the pty, it sits a thumb's width from
+                        two others, and a mis-tap on a phone is a duplicate
+                        prompt in somebody's agent. */}
+                    <button
+                      type="button"
+                      data-testid="chat-pending-retry"
+                      onClick={() => onRetry?.(p.id)}
+                      className={cn(ECHO_ACTION, 'font-medium text-ink underline underline-offset-2')}
+                    >
+                      Retry
+                    </button>
+                    {onOpenTerminal && (
+                      <button
+                        type="button"
+                        data-testid="chat-pending-open-terminal"
+                        onClick={onOpenTerminal}
+                        className={cn(ECHO_ACTION, 'text-ink underline underline-offset-2')}
+                      >
+                        Open terminal
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      aria-label="Dismiss"
+                      data-testid="chat-pending-dismiss"
+                      onClick={() => onDismiss?.(p.id)}
+                      className={cn(ECHO_ACTION, 'text-ink-2')}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+              </div>
+            </MessageRow>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
   )
 }
 
