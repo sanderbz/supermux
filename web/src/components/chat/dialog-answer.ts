@@ -9,15 +9,23 @@
 //
 // THE SEQUENCE, and why every step is a refusal point (a0-findings §3):
 //
-//   1  verify-BEFORE-send   re-peek. The fingerprint, the option rows AND the
-//                           caret must still be what the user was looking at.
-//                           A0 watched a concurrent terminal client move the
-//                           caret and resolve dialogs mid-probe, twice.
+//   1  verify-BEFORE-send   re-peek. The FULL, strict fingerprint — including
+//                           `Tab to amend` — plus the option rows AND the caret
+//                           must still be what the user was looking at. A0
+//                           watched a concurrent terminal client move the caret
+//                           and resolve dialogs mid-probe, twice.
 //   2  navigate             one key at a time, re-peeking between each, and the
 //                           caret must have moved by EXACTLY one row in the
 //                           direction we pressed. Anything else aborts with the
 //                           keys already sent recorded — a caret that moved two
 //                           rows means something else is typing too.
+//                           These re-peeks (and the dismissal looks below) are
+//                           CONTINUITY reads: same question, same option rows,
+//                           same title, footer excluded, because CC 2.1.232
+//                           redraws the footer as the caret moves and step 1 has
+//                           already established what this dialog is. The whole
+//                           argument, with its evidence, is in `peek-lens.ts`
+//                           beside `DialogContinuity`.
 //   3  commit               Enter (or Escape, for the feedback branch).
 //   4  dismissal check      2 re-peeks, 300 ms apart: the dialog must be GONE.
 //                           A DIFFERENT dialog counts as gone — Claude asking
@@ -35,7 +43,7 @@
 import type { KeyName } from '../../lib/session-input/types'
 
 import type { AttentionCause } from './attention'
-import type { DialogSighting, PeekLens } from './peek-lens'
+import { continuityOf, type DialogContinuity, type DialogSighting, type PeekLens } from './peek-lens'
 import {
   entryFor,
   keyPlan,
@@ -113,8 +121,13 @@ export const DISMISS_DELAY_MS = 300
 export interface AnswerDeps {
   /** Peek NOW. `null` = could not look (never `EMPTY_LENS` — "the screen is
    *  clear" and "I could not read the screen" are different facts and this
-   *  module refuses on the second one). */
-  refresh: () => Promise<PeekLens | null>
+   *  module refuses on the second one).
+   *
+   *  `continuing` is passed on every look AFTER the strict one, and only ever
+   *  carries a dialog this sequence already sighted strictly. Implementations
+   *  hand it to `readLens` and change nothing else; the shared poll frame stays
+   *  strict (`use-peek-lens.ts`). */
+  refresh: (continuing?: DialogContinuity | null) => Promise<PeekLens | null>
   sendKey: (key: KeyName) => Promise<void>
   /** The session's BOOT-BANNER version (`registry.pinFor`). */
   pin: string | null
@@ -148,6 +161,10 @@ export async function answerDialog(
   if ('failure' in start) return { ok: false, sent, committed: false, ...start }
 
   const { entry, sighting } = start
+  // Earned by the STRICT look above, and by nothing else: `continuityOf` refuses
+  // an `unknown` family and a sighting with no question, so a screen that never
+  // passed phase 1 cannot hand itself a phase-2 pass.
+  const anchor = continuityOf(sighting)
   const escape = req.target === 'escape'
   const option = escape ? null : entry.options[req.target as number]
   const gate = escape ? entry.escape : option
@@ -193,7 +210,7 @@ export async function answerDialog(
       if (posted) return { ...posted, sent, committed: false }
       sent.push(key)
 
-      const step = await look(deps, req)
+      const step = await look(deps, req, anchor)
       if ('failure' in step) return { ok: false, sent, committed: false, ...step }
       const moved: number | null = step.sighting.caretIndex
       const expected = at + (key === 'Down' ? 1 : -1)
@@ -224,7 +241,11 @@ export async function answerDialog(
   let looked = false
   for (let i = 0; i < DISMISS_ATTEMPTS; i++) {
     await wait(DISMISS_DELAY_MS)
-    const lens = await deps.refresh()
+    // The anchor matters MOST here. "Gone" is inferred from the sighting key no
+    // longer matching, and a strict read of a dialog that SURVIVED the commit
+    // with its caret on row 2 reports `unknown` — a different key, i.e. a false
+    // success on the one frame where being wrong is worst.
+    const lens = await deps.refresh(anchor)
     if (!lens) continue
     looked = true
     // Gone, or replaced by a different question: the key landed. A permission
@@ -247,15 +268,28 @@ export async function answerDialog(
   }
 }
 
-/** One peek + the full re-verification: family, variant, rows, entry, version. */
+/** What an abort says when the registry recognises nothing on screen — most
+ *  often because the option rows are not the ones that were read. */
+const ROWS_MOVED =
+  'The options on the terminal are not the ones this card was drawn from, so no further keys were sent.'
+
+/** One peek + the full re-verification: family, variant, rows, entry, version.
+ *
+ *  With no `continuing` this is the STRICT look (step 1). With one it is the
+ *  continuity look — same everything except the caret-dependent footer, which
+ *  the anchor's owner has already seen once. Note what does NOT relax: the
+ *  registry match, the version pin and `shapeHolds` all run again on the
+ *  continuity reading, so a row that stopped matching its `rowPattern` still
+ *  degrades the entry and still aborts. */
 async function look(
   deps: AnswerDeps,
   req: AnswerRequest,
+  continuing: DialogContinuity | null = null,
 ): Promise<
   | { entry: RegistryEntry; sighting: DialogSighting }
   | { failure: AnswerFailure; attention: AttentionCause; detail?: string }
 > {
-  const lens = await deps.refresh()
+  const lens = await deps.refresh(continuing)
   if (!lens) {
     return {
       failure: 'peek-failed',
@@ -281,7 +315,13 @@ async function look(
       // back to "could not confirm what the terminal is showing" would replace
       // the one fact the user needs (an option list that gained a row is how
       // "No" becomes "Yes, and always allow") with a shrug.
-      detail: match.entry?.options[0]?.disabledReason,
+      //
+      // NO entry is the one case the registry has no sentence for: it matched
+      // nothing, so there was nothing to stamp. That is also the abort that
+      // matters most mid-sequence — the rows moved under a key that has already
+      // gone — so it says so itself rather than falling through to the generic
+      // "could not confirm" line.
+      detail: match.entry?.options[0]?.disabledReason ?? ROWS_MOVED,
     }
   }
   if (match.entry.id !== req.entryId || sightingKey(lens.dialog) !== req.key) {

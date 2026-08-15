@@ -17,7 +17,13 @@ import * as React from 'react'
 
 import { sessionsApi } from '@/lib/api'
 
-import { EMPTY_LENS, peekCadenceMs, readLens, type PeekLens } from './peek-lens'
+import {
+  EMPTY_LENS,
+  peekCadenceMs,
+  readLens,
+  type DialogContinuity,
+  type PeekLens,
+} from './peek-lens'
 
 /** The window every consumer reads. 60 lines covers a permission dialog with its
  *  file/diff body and still leaves the composer in frame; the boot banner is NOT
@@ -51,8 +57,12 @@ export interface PeekLensHandle {
    *  running, request error) — deliberately not `EMPTY_LENS`, because "I looked
    *  and the screen is clear" and "I could not look" must never collapse into
    *  one value: T3 sends anyway on a failure and lets the watchdog be honest,
-   *  T7 aborts. */
-  refresh: () => Promise<PeekLens | null>
+   *  T7 aborts.
+   *
+   *  `continuing` is the answer sequencer's continuity anchor (T7). It affects
+   *  only the reading handed BACK; the frame this hook publishes to every other
+   *  consumer stays strict. */
+  refresh: (continuing?: DialogContinuity | null) => Promise<PeekLens | null>
 }
 
 /** The last capture, WITH the session it came from. Carrying the name is what
@@ -123,13 +133,23 @@ export function usePeekLens(
     [name],
   )
 
-  const refresh = React.useCallback(async (): Promise<PeekLens | null> => {
-    try {
-      return apply(await peek())
-    } catch {
-      return null
-    }
-  }, [apply, peek])
+  const refresh = React.useCallback(
+    async (continuing?: DialogContinuity | null): Promise<PeekLens | null> => {
+      try {
+        const text = await peek()
+        // The SHARED frame is always the strict reading: the card, the composer
+        // gate and the Attention view must never be shown a relaxed one, not
+        // even for the tick an answer is in flight. The anchor buys a second,
+        // private reading for the caller that earned it — one more pass over 60
+        // lines of string, and the surface keeps its refusals.
+        const strict = apply(text)
+        return continuing ? readLens(text, continuing) : strict
+      } catch {
+        return null
+      }
+    },
+    [apply, peek],
+  )
 
   // One boot-banner read per session, ever.
   React.useEffect(() => {

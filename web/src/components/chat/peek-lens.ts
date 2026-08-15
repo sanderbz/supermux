@@ -15,7 +15,7 @@
 //
 // RELATIVE import so `bun test` runs without alias config (same rule as
 // `provisional.ts`); `lib/ansi`'s React dependency is type-only.
-import { parseAnsiLine } from '../../lib/ansi'
+import { hasAnsi, parseAnsiLine } from '../../lib/ansi'
 
 /** A dialog the lens can SEE. Whether it may be answered is the registry's call
  *  (T6) — the lens reports, it never decides. */
@@ -43,6 +43,85 @@ export interface DialogSighting {
   /** `~/.claude/plans/plan-<slug>.md`, when the footer exposes it (plan family
    *  only — a0 §3 "bonus for P5": the card can read the full plan from disk). */
   planPath?: string
+  /**
+   * The dialog's OWN question, verbatim — `Do you want to make this edit to
+   * case3.txt?`, `Would you like to proceed?`.
+   *
+   * Caret-INVARIANT, and that is what it is for: CC redraws the FOOTER as the
+   * caret moves (a4c, below) but never the question, so this is the token a
+   * continuity check can lean on. It also names the target, which is what makes
+   * it a discriminator and not just a shape: two permission prompts for two
+   * different files never share it.
+   */
+  question?: string
+}
+
+/* ── the two-phase fingerprint ────────────────────────────────────────────────
+ *
+ * SIGHTING is strict and stays strict. CONTINUITY is caret-invariant. The split
+ * exists because Claude Code 2.1.232 rewrites the permission footer as the caret
+ * walks:
+ *
+ *   caret on row 1 or 3:  Esc to cancel · Tab to amend · ctrl+e to explain
+ *   caret on row 2:       Esc to cancel · ctrl+e to explain
+ *
+ * (Live, on all three permission variants — bash/write/edit — captured in
+ * `tests/fixtures/tui/a4c/`, index + verdicts in that dir's README.)
+ *
+ * `Tab to amend` is a REQUIRED token of the permission fingerprint, and it must
+ * stay required: it is the thing that keeps Read/WebFetch/MCP prompts — which
+ * have nothing to amend and so never print it — in `family: unknown`, where this
+ * app answers nothing. Dropping it from the sighting would quietly widen the set
+ * of prompts chat is willing to press keys into. So the sighting does not move.
+ *
+ * What moved is the check BETWEEN the keys of an answer already in flight. Once
+ * a dialog has been sighted strictly, the question the re-peek has to answer is
+ * narrower: *is this still the same dialog, with the caret one row further on?*
+ * That question is answerable from the caret-invariant half alone —
+ *
+ *   · the question line          (names the tool AND its target)
+ *   · every option row, in order (exact text, exact count)
+ *   · the variant title          (`Bash command` / `Create file` / `Edit file`)
+ *   · the section rule above the dialog body
+ *
+ * — and the footer is EXCLUDED, because the evidence proves the footer is a
+ * function of the caret. Every abort the safety wave verified survives: an
+ * option list that gained, lost or reworded a row still fails continuity, so a
+ * `3. No` that became `2. Yes, and always allow` still stops the sequence with
+ * the keys sent so far recorded. What it stops doing is aborting on a footer
+ * that CC redrew by itself.
+ *
+ * Continuity is never a way IN. It is only ever offered a prior sighting that
+ * passed the strict test, by the one caller that holds one (`dialog-answer.ts`);
+ * every ambient read — the poll, the composer's pre-send gate, the Attention
+ * card — calls `readLens` with no anchor and gets the strict reading.
+ */
+
+/** The caret-INVARIANT half of a strict sighting: what must still hold while an
+ *  answer sequence walks the caret down the dialog. */
+export interface DialogContinuity {
+  family: 'permission' | 'plan'
+  variant?: DialogSighting['variant']
+  question: string
+  options: readonly string[]
+}
+
+/**
+ * The continuity anchor of a sighting, or `null` when there is nothing strict to
+ * anchor to.
+ *
+ * `unknown` yields null on purpose — an unfixtured modal has not passed the
+ * strict test, so it has nothing to extend — and so does a sighting whose
+ * question scrolled out of the window: no question, no anchor, no relaxation.
+ */
+export function continuityOf(s: DialogSighting): DialogContinuity | null {
+  if (s.family === 'unknown' || !s.question) return null
+  return {
+    family: s.family,
+    variant: s.variant,
+    question: s.question,
+    options: s.options,
+  }
 }
 
 export interface PeekLens {
@@ -52,6 +131,24 @@ export interface PeekLens {
   bannerVersion: string | null
   /** Non-empty text sitting at the TUI's `❯` composer, else null. */
   composerDraft: string | null
+  /**
+   * Could this reading tell a TYPED draft from Claude Code's own prediction?
+   *
+   * 2.1.232 pre-fills the composer with a model-predicted next prompt drawn in
+   * DIM (SGR 2) — live capture `a4c/composer-ghost-ansi.txt`. In plain text the
+   * ghost is byte-identical to a half-written sentence, so a plain capture can
+   * only report "there is something there" and say it is unsure. With the SGR
+   * channel (`?ansi=1`) the dim runs are stripped and what is left is what a
+   * human actually typed — `true` then means the draft is real.
+   *
+   * FEATURE-DETECTED BY RESPONSE SHAPE, not by a version or a flag: a capture
+   * that carries no escape at all is a server that answered `?ansi=1` in plain
+   * (the deployed one does), and the honest reading of it is `false`. T3 turns
+   * an unverified draft into a WARNING instead of a refusal, because refusing
+   * every send on a ghost that is always there is not a safety property, it is
+   * an outage.
+   */
+  composerDraftVerified: boolean
   dialog: DialogSighting | null
 }
 
@@ -173,6 +270,48 @@ function readFamily(
   return null
 }
 
+/** The permission families' question line. Bounded so a `?` far down the
+ *  scrollback cannot be dragged into one. */
+const PERMISSION_QUESTION_RE = /Do you want[^?]{0,200}\?/g
+/** The plan dialog's, which is fixed prose rather than a per-target sentence. */
+const PLAN_QUESTION = 'Would you like to proceed?'
+/** The rule CC draws above a dialog's body. Part of the continuity check: the
+ *  dialog is a BOX, and a box that lost its rule is not the same screen. */
+const SECTION_RULE_RE = /─{8,}/
+
+/** The dialog's own question, for the sighting to carry. The LAST match wins:
+ *  the block reaches back over the prompt that provoked the dialog, and the
+ *  question the user is being asked is the one nearest its options. */
+function readQuestion(block: string, family: 'permission' | 'plan'): string | undefined {
+  if (family === 'plan') return block.includes(PLAN_QUESTION) ? PLAN_QUESTION : undefined
+  let last: string | undefined
+  for (const m of block.matchAll(PERMISSION_QUESTION_RE)) last = m[0]
+  return last
+}
+
+/**
+ * Is this the SAME dialog as the one already being answered, footer aside?
+ *
+ * Every token here is caret-invariant (see the two-phase note at the top), and
+ * every one of them is required. Exact row text and exact row COUNT are what
+ * keep the verified aborts: a list that gained a row, lost one, or reworded one
+ * fails here and the sequence stops with the keys already sent recorded.
+ */
+function continues(
+  block: string,
+  rows: readonly OptionRow[],
+  prior: DialogContinuity,
+): boolean {
+  if (rows.length !== prior.options.length) return false
+  if (!rows.every((r, i) => r.text === prior.options[i])) return false
+  if (!SECTION_RULE_RE.test(block)) return false
+  if (!block.includes(prior.question)) return false
+  // The title is caret-invariant too, and it is what decides WHICH option 2 the
+  // registry believes in — so a frame whose title stopped saying `Create file`
+  // is not this dialog, whatever else still matches.
+  return readVariant(block) === prior.variant
+}
+
 /** Bash vs Edit/Write. Title beats footer: `ctrl+e to explain` is bash-only
  *  (a0 §3), but a title is what the human sees. Scoped to the dialog's own
  *  region so a stray "Edit file" in scrollback cannot rename the sighting. */
@@ -221,7 +360,10 @@ function looksModal(block: string, rows: readonly OptionRow[]): boolean {
   return rows.some((r) => r.caret) || /\bEsc to (cancel|interrupt|exit|go back)\b/i.test(block)
 }
 
-function readDialog(lines: readonly string[]): DialogSighting | null {
+function readDialog(
+  lines: readonly string[],
+  continuing: DialogContinuity | null,
+): DialogSighting | null {
   const rows = readOptions(lines)
   if (rows.length < 2) return null
   // LIVE SCREEN ONLY — see `DIALOG_TAIL_SLACK`.
@@ -240,8 +382,14 @@ function readDialog(lines: readonly string[]): DialogSighting | null {
   // does not decide whether something is THERE. Anything modal-shaped that no
   // fingerprint claims is reported as `unknown` — refused by the composer,
   // unanswerable by the registry, visible in the Attention card.
+  //
+  // PHASE 2 sits between the two: only when the caller is already answering a
+  // strictly-sighted dialog, and only for that dialog. With no anchor this line
+  // is not reachable, which is why an ambient read can never be relaxed.
   const family: DialogSighting['family'] | null =
-    readFamily(block, rows) ?? (looksModal(block, rows) ? 'unknown' : null)
+    readFamily(block, rows) ??
+    (continuing && continues(block, rows, continuing) ? continuing.family : null) ??
+    (looksModal(block, rows) ? 'unknown' : null)
   if (!family) return null
 
   const caret = rows.find((r) => r.caret)
@@ -249,6 +397,10 @@ function readDialog(lines: readonly string[]): DialogSighting | null {
     family,
     options: rows.map((r) => r.text),
     caretIndex: caret ? caret.index : null,
+  }
+  if (family !== 'unknown') {
+    const question = readQuestion(block, family)
+    if (question) sighting.question = question
   }
   if (family === 'permission') {
     const variant = readVariant(block)
@@ -291,10 +443,10 @@ const BOXED_COMPOSER_RE = /^\s*│\s*❯(.*?)\s*│?\s*$/
  *  A multi-line draft reads as its FIRST line. The guard's job is to say "the
  *  terminal has something unsent" and show enough of it to be recognised — T3
  *  truncates to 60 chars anyway — not to reproduce it. */
-function readComposerDraft(lines: readonly string[]): string | null {
+function composerLineIndex(lines: readonly string[]): number {
   let fallback = -1
   let preferred = -1
-  let boxed: string | null = null
+  let boxed = -1
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line.startsWith(CARET)) {
@@ -302,15 +454,51 @@ function readComposerDraft(lines: readonly string[]): string | null {
       if (line[1] === NBSP) preferred = i
       continue
     }
-    const m = BOXED_COMPOSER_RE.exec(line)
-    if (m) boxed = m[1]
+    if (BOXED_COMPOSER_RE.test(line)) boxed = i
   }
-  const raw =
-    preferred >= 0
-      ? lines[preferred].slice(CARET.length)
-      : (boxed ?? (fallback >= 0 ? lines[fallback].slice(CARET.length) : ''))
-  const draft = norm(raw)
-  return draft.length > 0 ? draft : null
+  if (preferred >= 0) return preferred
+  if (boxed >= 0) return boxed
+  return fallback
+}
+
+/** The draft text on one composer line, by whichever of the two shapes it is. */
+function draftOn(line: string): string {
+  if (line.startsWith(CARET)) return norm(line.slice(CARET.length))
+  const m = BOXED_COMPOSER_RE.exec(line)
+  return m ? norm(m[1]) : ''
+}
+
+/** The line with its DIM runs dropped — what a human actually typed, on a
+ *  capture that carries SGR. Everything CC drew for itself in dim (the 2.1.232
+ *  predicted prompt) goes; a typed draft has no SGR 2 on it and survives whole
+ *  (`tests/fixtures/tui/composer-draft-ansi.txt`). */
+function undimmed(rawLine: string): string {
+  return parseAnsiLine(rawLine)
+    .filter((s) => !s.dim)
+    .map((s) => s.text)
+    .join('')
+}
+
+interface DraftRead {
+  text: string | null
+  verified: boolean
+}
+
+function readComposerDraft(
+  plainLines: readonly string[],
+  rawLines: readonly string[],
+  ansi: boolean,
+): DraftRead {
+  const i = composerLineIndex(plainLines)
+  // Plain channel: report what is there and say the reading is unverified. The
+  // alternative — silently treating every draft as a ghost — would drop the
+  // guard entirely on the servers that need it most.
+  const draft = i < 0 ? '' : draftOn(ansi ? undimmed(rawLines[i] ?? '') : plainLines[i])
+  // NO DRAFT IS ALWAYS VERIFIED. `verified` qualifies the text, and there is
+  // nothing uncertain about an empty prompt — a plain capture of a genuinely
+  // empty composer would otherwise report "unsure" about a fact it is sure of,
+  // and `readLens('')` would stop equalling `EMPTY_LENS`.
+  return draft.length > 0 ? { text: draft, verified: ansi } : { text: null, verified: true }
 }
 
 /** The session's boot binary, from the banner it printed at launch — never
@@ -340,14 +528,32 @@ function readBannerVersion(lines: readonly string[]): string | null {
   return null
 }
 
-/** Read one `/peek` capture. Pure, total, cheap: no capture ever throws, and an
- *  empty one reads as "nothing on screen" rather than as a failure. */
-export function readLens(capture: string): PeekLens {
-  const lines = capture ? capture.split('\n').map(plain) : []
-  const dialog = readDialog(lines)
+/**
+ * Read one `/peek` capture. Pure, total, cheap: no capture ever throws, and an
+ * empty one reads as "nothing on screen" rather than as a failure.
+ *
+ * `continuing` is the SECOND phase of the fingerprint and the only way to get a
+ * relaxed reading: pass the anchor of a dialog that has ALREADY been sighted
+ * strictly and this call will also recognise the same dialog with CC's
+ * caret-dependent footer redrawn (see the note beside `DialogContinuity`).
+ * Omit it — as every ambient reader does — and the reading is strict.
+ */
+export function readLens(
+  capture: string,
+  continuing?: DialogContinuity | null,
+): PeekLens {
+  const raw = capture ? capture.split('\n') : []
+  const lines = raw.map(plain)
+  const dialog = readDialog(lines, continuing ?? null)
+  // A dialog's caret row is not a draft, so the draft read is gated on there
+  // being no dialog — unchanged.
+  const draft: DraftRead = dialog
+    ? { text: null, verified: true }
+    : readComposerDraft(lines, raw, hasAnsi(capture))
   return {
     bannerVersion: readBannerVersion(lines),
-    composerDraft: dialog ? null : readComposerDraft(lines),
+    composerDraft: draft.text,
+    composerDraftVerified: draft.verified,
     dialog,
   }
 }
@@ -358,6 +564,9 @@ export function readLens(capture: string): PeekLens {
 export const EMPTY_LENS: PeekLens = {
   bannerVersion: null,
   composerDraft: null,
+  // Nothing was read, so nothing is in doubt: `true` here only ever means "the
+  // absent draft is not a ghost", and no gate consults it with a null draft.
+  composerDraftVerified: true,
   dialog: null,
 }
 
