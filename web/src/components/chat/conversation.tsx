@@ -48,7 +48,7 @@ import type { ChatItem } from './entries'
 import { buildTranscript } from './grouping'
 import { SessionHeaderPill } from './header-pill'
 import { LiveLayer } from './live-layer'
-import type { PendingSend } from './pending'
+import { deliveryLine, type PendingSend } from './pending'
 import { TranscriptItem } from './transcript-item'
 import { Bubble, MessageRow } from './ui'
 import type { OverlayLine } from './use-receipt-overlay'
@@ -307,6 +307,7 @@ export function ChatConversation({
               saying now. */}
           <PendingEchoes
             pending={pending}
+            active={session?.status === 'active'}
             surface={phone ? 'phone' : 'desktop'}
             onRetry={onRetryPending}
             onDismiss={onDismissPending}
@@ -382,12 +383,16 @@ const ECHO_ACTION = 'inline-flex h-[34px] items-center rounded-full px-2'
  */
 export function PendingEchoes({
   pending,
+  active = false,
   surface = 'desktop',
   onRetry,
   onDismiss,
   onOpenTerminal,
 }: {
   pending?: readonly PendingSend[]
+  /** A turn is running — what a delivered-but-unechoed send is waiting behind
+   *  (`deliveryLine`). */
+  active?: boolean
   surface?: 'desktop' | 'phone'
   onRetry?: (id: string) => void
   onDismiss?: (id: string) => void
@@ -423,9 +428,19 @@ export function PendingEchoes({
                   <span className="whitespace-pre-wrap break-words">{p.text}</span>
                 </Bubble>
 
+                {/* The RECEIPT, not a spinner: once the server has confirmed
+                    it typed the text into the pty, the row says so — and names
+                    the running turn the message is queued behind, which is the
+                    normal reason a mid-turn send is not in the transcript yet
+                    (`deliveryLine`, which also records why CC's own queue
+                    receipt cannot reach this client on this branch). */}
                 {p.state === 'unconfirmed' && (
-                  <p className="mt-[5px] text-[12px] tracking-[-0.05px] text-ink-2">
-                    Sending…
+                  <p
+                    data-testid="chat-pending-receipt"
+                    data-receipted={p.receipted || undefined}
+                    className="mt-[5px] text-[12px] tracking-[-0.05px] text-ink-2"
+                  >
+                    {deliveryLine(p, { active })}
                   </p>
                 )}
 

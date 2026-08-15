@@ -275,6 +275,37 @@ export function applyReceipt(
   return changed ? next : pending
 }
 
+/**
+ * What an unconfirmed echo SAYS — the delivery receipt, in words.
+ *
+ * "Sending…" is a lie the moment the POST has returned: the app is not sending
+ * any more, it is waiting. What it is waiting FOR depends on the one piece of
+ * evidence this branch actually has — `set_last_send`, written by `POST /send`
+ * AFTER the paste and the Enter and broadcast on the session delta. That is the
+ * server stating it typed the text into the pty, which is precisely the fact a
+ * mid-turn send needs: Claude Code queues it, and the transcript echo can be
+ * minutes away.
+ *
+ * WHY NOT CLAUDE CODE'S OWN QUEUE RECEIPT. A0 measured the `queue-operation`
+ * `enqueue` line on disk 158 ms after the POST, and it carries the queued text
+ * verbatim — a far better receipt than this one. It does not reach this client
+ * on this branch: `recall.rs read_chat_turns` emits `user`/`assistant`/title
+ * lines only, so no `queue-operation` entry is ever parsed, and A4's own plan
+ * puts that server change in T8 (unimplemented here) with A2's WS parser
+ * superseding it. Rather than draw a queue pill from an optimistic guess, the
+ * row states the receipt it can prove and names the turn it is behind.
+ *
+ * A2-SEAM: when the chat WS emits `queued` entries, this line becomes "queued
+ * behind N" and the pill grows a position; the receipt below stays as the
+ * fallback for the window before the first frame arrives.
+ */
+export function deliveryLine(p: PendingSend, ctx: { active: boolean }): string {
+  if (!p.receipted) return 'Sending…'
+  return ctx.active
+    ? 'The session has it — Claude is mid-turn, so it’s queued behind the running turn.'
+    : 'The session has it — waiting for the transcript to catch up.'
+}
+
 /** How long a send may go unconfirmed before the surface says so. */
 export const WATCHDOG_MS = 5_000
 
