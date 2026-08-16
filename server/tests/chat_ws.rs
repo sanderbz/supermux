@@ -290,7 +290,19 @@ async fn ineligible_session_is_refused() {
         .await
         .expect("host");
     make_session(&h, "chat-remote", "claude", Some(host.id)).await;
-    // A team lead.
+    // A team lead — with a REAL on-disk roster: eligibility no longer trusts
+    // the (pollution-prone) team_name column alone, it demands an actual
+    // teammate in the roster. The harness already points CLAUDE_CONFIG_DIR at
+    // its private `claude_dir`, so the fixture lands there, never in ~/.claude.
+    let squad = h.claude_dir.join("teams").join("squad");
+    std::fs::create_dir_all(&squad).unwrap();
+    std::fs::write(
+        squad.join("config.json"),
+        r#"{"name":"squad","leadAgentId":"team-lead@squad","members":[
+            {"agentId":"team-lead@squad","name":"team-lead","agentType":"team-lead"},
+            {"agentId":"worker@squad","name":"worker","agentType":"claude"}]}"#,
+    )
+    .unwrap();
     make_session(&h, "chat-lead", "claude", None).await;
     db::sessions::set_team_name(&h.state.pool, "chat-lead", Some("squad"))
         .await
