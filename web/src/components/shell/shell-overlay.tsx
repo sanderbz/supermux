@@ -30,7 +30,7 @@ import { FocusScope } from '@radix-ui/react-focus-scope'
 import { X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs, tweens } from '@/lib/springs'
+import { motionOff, springs, tweens } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   ResponsiveSheet,
@@ -175,8 +175,13 @@ export function ShellOverlayBody({
             aria-hidden="true"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={reduce ? { duration: 0 } : tweens.popoverIn}
+            // A6/T6.1 — the scrim's exit carries `tweens.popoverOut` (100ms)
+            // against its 150ms entry. Before A6 the exit silently inherited
+            // the ENTRY transition, which inverted the exits-are-faster rule
+            // on the one surface BRAND.md §6f cites as its worked example —
+            // and left `popoverOut` a documented token with no consumer.
+            exit={{ opacity: 0, transition: reduce ? motionOff : tweens.popoverOut }}
+            transition={reduce ? motionOff : tweens.popoverIn}
             onClick={() => onOpenChange(false)}
             className="absolute inset-0 cursor-default"
             style={{ background: 'var(--sm-scrim)' }}
@@ -202,12 +207,12 @@ export function ShellOverlayBody({
               // than entries (the rule is stated in lib/springs.ts).
               exit={
                 reduce
-                  ? { opacity: 0, transition: { duration: 0 } }
+                  ? { opacity: 0, transition: motionOff }
                   : variant === 'pane'
                     ? { opacity: 0, x: 24, transition: tweens.overlayExit }
                     : { opacity: 0, scale: 0.98, transition: tweens.overlayExit }
               }
-              transition={reduce ? { duration: 0 } : springs.settle}
+              transition={reduce ? motionOff : springs.settle}
               className={cn(
                 'absolute flex flex-col overflow-hidden bg-paper-raised shadow-[var(--sm-card-shadow)] outline-none',
                 variant === 'pane'

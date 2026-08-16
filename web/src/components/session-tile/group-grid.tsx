@@ -1369,11 +1369,12 @@ function GroupSection({
       ref={droppable.setNodeRef}
       // Container indication — a smart-sort dest gets a tinted outline + bg;
       // a custom-sort dest gets a quieter outline (the inter-tile line owns
-      // the precision). Duration + easing source-of-truth is
-      // `tweens.containerIndicate` in @/lib/springs (Tailwind classes
-      // mirror that token: 350ms ease-out). Under prefers-reduced-motion the
-      // tween is dropped — the colour swap is instant.
-      className={`relative rounded-lg transition-[background-color,box-shadow,border-color] duration-[350ms] ease-out motion-reduce:transition-none ${
+      // the precision). A6/T6.1: the duration is now READ from
+      // `tweens.containerIndicate` instead of being hand-copied into a
+      // `duration-[350ms]` literal that could drift from it silently.
+      // Reduced motion is handled by the blanket reset in globals.css.
+      style={{ transitionDuration: `${tweens.containerIndicate.duration}s` }}
+      className={`relative rounded-lg transition-[background-color,box-shadow,border-color] ease-out ${
         containerIndicate === 'smart'
           ? 'bg-primary/5 outline outline-2 outline-primary/40'
           : containerIndicate === 'custom'
@@ -1639,9 +1640,11 @@ function SortableTileSlot({
     // discards the precise position when the dest is smart-sort.
     disabled: false,
     // S11 — Reflow timing comes from `tweens.reflow` (100ms ease-out) instead
-    // of dnd-kit's ~200ms default; matches spec. Reduce-motion handled by
-    // the explicit `transition: reduce ? undefined : ...` at the style level.
-    transition: { duration: 100, easing: 'ease-out' },
+    // of dnd-kit's ~200ms default; matches spec. A6/T6.1: READ from the token
+    // (dnd-kit's unit is ms, the bank's is seconds) rather than re-typing 100.
+    // Reduce-motion handled by the explicit `transition: reduce ? undefined :
+    // ...` at the style level.
+    transition: { duration: tweens.reflow.duration * 1000, easing: 'ease-out' },
   })
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(sortable.transform),
@@ -2349,22 +2352,24 @@ function GapAddGroup({
         // (hairline + chip) reveals on hover or focus-within.
         className="group/gap absolute inset-x-0 inset-y-0 flex items-center focus-visible:outline-none"
       >
-        {/* Hairline — full-width 1px, fades in on hover. Duration source-of-
-            truth: `tweens.gapReveal` in @/lib/springs (S10 — Tailwind class
-            mirrors that token: 120ms ease-out). Under prefers-reduced-motion
-            the colour swaps but no opacity tween (we drop the
-            transition-opacity via the media query). */}
+        {/* Hairline — full-width 1px, fades in on hover. A6/T6.1: the 120ms
+            is READ from `tweens.gapReveal` (itself the shared `.12s` hover
+            speed) instead of being hand-copied into a `duration-[120ms]`
+            literal. Under prefers-reduced-motion the colour swaps but no
+            opacity tween — the blanket reset in globals.css drops it. */}
         <span
           aria-hidden
+          style={{ transitionDuration: `${tweens.gapReveal.duration}s` }}
           className={
-            'absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-primary/60 opacity-0 transition-opacity duration-[120ms] group-hover/gap:opacity-100 group-focus-visible/gap:opacity-100 motion-reduce:transition-none' +
+            'absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-primary/60 opacity-0 transition-opacity group-hover/gap:opacity-100 group-focus-visible/gap:opacity-100' +
             (reduce ? ' motion-reduce:opacity-100 motion-reduce:bg-primary/30' : '')
           }
         />
         {/* The chip on the LEFT (Notion's left-margin convention). */}
         <span
           aria-hidden
-          className="relative ml-0 inline-flex items-center gap-1 rounded-md bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground opacity-0 shadow-sm transition-opacity duration-[120ms] group-hover/gap:opacity-100 group-focus-visible/gap:opacity-100 motion-reduce:transition-none"
+          style={{ transitionDuration: `${tweens.gapReveal.duration}s` }}
+          className="relative ml-0 inline-flex items-center gap-1 rounded-md bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground opacity-0 shadow-sm transition-opacity group-hover/gap:opacity-100 group-focus-visible/gap:opacity-100"
         >
           <Plus className="size-3" aria-hidden />
           Add group here
