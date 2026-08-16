@@ -1975,4 +1975,83 @@ mod tests {
         assert_eq!(rt.target(), "supermux-legacy");
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    fn relabel(display_name: &str) -> ConfigInput {
+        ConfigInput {
+            rename: None,
+            display_name: Some(display_name.into()),
+            desc: None,
+            dir: None,
+            branch: None,
+            mcp: None,
+            tags: None,
+            toggle_pin: None,
+            toggle_auto_continue: None,
+            notif: None,
+        }
+    }
+
+    /// The rename line is an attribution claim, so the ledger row behind it has
+    /// to be exact: the label it replaced, the label it set, and NO row at all
+    /// when nothing moved (a "renamed from X to X" line in a transcript is a
+    /// lie about an event that never happened).
+    #[tokio::test]
+    async fn a_label_change_audits_its_real_from_and_to_and_a_no_op_audits_nothing() {
+        let (state, dir) = test_state().await;
+        create(&state, input("web-ui")).await.expect("create");
+        let feed = |state: AppState| async move {
+            db::audit::events_for_session(&state.pool, "web-ui", 0, 50).await.unwrap()
+        };
+
+        // Clearing an already-empty label resets it to the slug — the value the
+        // UI was already showing. Nothing changed, so nothing is claimed.
+        config_patch(&state, "web-ui", relabel("   ")).await.expect("no-op relabel");
+        assert!(feed(state.clone()).await.is_empty(), "a no-op clear must not audit a rename");
+
+        config_patch(&state, "web-ui", relabel("Web UI")).await.expect("relabel");
+        let events = feed(state.clone()).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "session.rename");
+        assert_eq!(events[0].actor, "user");
+        assert_eq!(events[0].target, "web-ui");
+        let detail: serde_json::Value = serde_json::from_str(&events[0].detail).unwrap();
+        // An empty stored label reads as the slug everywhere else in the UI, so
+        // that — not "" — is what it was renamed FROM.
+        assert_eq!(detail["from"], "web-ui");
+        assert_eq!(detail["to"], "Web UI");
+
+        // Setting the same label again is not a second rename.
+        config_patch(&state, "web-ui", relabel("Web UI")).await.expect("idempotent relabel");
+        assert_eq!(feed(state.clone()).await.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The feed is a per-session read: an unknown name is a 404, not an empty
+    /// page that reads as "this session had no harness events".
+    #[tokio::test]
+    async fn the_events_feed_404s_on_an_unknown_session_and_clamps_its_limit() {
+        let (state, dir) = test_state().await;
+        create(&state, input("web-ui")).await.expect("create");
+
+        let err = events_handler(
+            State(state.clone()),
+            Path("nope".into()),
+            Query(EventsQuery { since_id: 0, limit: EVENTS_LIMIT_DEFAULT }),
+        )
+        .await
+        .err()
+        .expect("an unknown session must not return a page");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+
+        // A negative cursor and an absurd limit are clamped, never passed to SQL.
+        let out = events_handler(
+            State(state.clone()),
+            Path("web-ui".into()),
+            Query(EventsQuery { since_id: -5, limit: 100_000 }),
+        )
+        .await
+        .expect("known session");
+        assert!(out.0.data.events.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

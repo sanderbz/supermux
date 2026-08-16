@@ -78,11 +78,19 @@ pub async fn list(pool: &SqlitePool, limit: i64) -> sqlx::Result<Vec<AuditEntry>
 /// explicit here means a new destructive action can never start narrating
 /// itself into someone's chat by accident.
 pub const SURFACED_ACTIONS: [&str; 4] = [
-    "session.delegate",
+    DELEGATE_ACTION,
     "session.rename",
     "schedule.create",
     "schedule.run",
 ];
+
+/// The one surfaced action whose `detail.from` is a session SLUG.
+///
+/// `session.rename` also writes a `from` key, but it holds the previous
+/// *display label* — free text the owner typed. Matching the two against the
+/// same arm would put one session's rename in another session's transcript the
+/// moment a label collides with a slug, so the arm is scoped to this action.
+const DELEGATE_ACTION: &str = "session.delegate";
 
 /// The feed's one SQL statement, with the action list built from
 /// [`SURFACED_ACTIONS`] so the filter and the const can never drift. No user
@@ -98,7 +106,7 @@ static EVENTS_SQL: Lazy<String> = Lazy::new(|| {
          WHERE id > ? \
            AND action IN ({actions}) \
            AND ( target = ? \
-              OR json_extract(detail,'$.from') = ? \
+              OR (action = '{DELEGATE_ACTION}' AND json_extract(detail,'$.from') = ?) \
               OR json_extract(detail,'$.session') = ? \
               OR actor = 'agent:' || ? ) \
          ORDER BY id ASC LIMIT ?"
@@ -111,8 +119,9 @@ static EVENTS_SQL: Lazy<String> = Lazy::new(|| {
 /// A session is the subject through four columns, because the ledger was never
 /// designed as a per-session feed:
 /// - `target = ?` — a delegation landed on it, or it was renamed;
-/// - `json_extract(detail,'$.from') = ?` — it delegated OUT (the row's target
-///   is the *recipient*);
+/// - `json_extract(detail,'$.from') = ?` on a `session.delegate` row — it
+///   delegated OUT (the row's target is the *recipient*). Scoped to that action
+///   on purpose: `session.rename`'s `from` is a display label, not a slug;
 /// - `json_extract(detail,'$.session') = ?` — schedule rows target the SCHEDULE
 ///   id, so only the detail ties a fire to the session it fires into;
 /// - `actor = 'agent:' || ?` — it acted as an agent.
@@ -127,13 +136,13 @@ pub async fn events_for_session(
 ) -> sqlx::Result<Vec<AuditEntry>> {
     sqlx::query_as::<_, AuditEntry>(EVENTS_SQL.as_str())
         .bind(since_id)
-    .bind(session)
-    .bind(session)
-    .bind(session)
-    .bind(session)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
+        .bind(session)
+        .bind(session)
+        .bind(session)
+        .bind(session)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
 }
 
 // ── delegations (migration 0005) ─────────────────────────────────────────────
@@ -241,5 +250,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_rename_never_leaks_into_the_feed_of_the_session_that_owns_the_old_label() {
+        let (pool, _dir) = test_pool().await;
+        // `detail.from` means two different things: a session SLUG on
+        // `session.delegate` (who delegated out) and a free-text DISPLAY LABEL
+        // on `session.rename` (what the label used to be). Renaming a session
+        // whose old label happens to be another session's slug must not put
+        // that rename in the other session's transcript — the feed would be
+        // attributing someone else's event to it.
+        log(
+            &pool,
+            "user",
+            "session.rename",
+            "alpha",
+            json!({"from":"web-ui","to":"Alpha"}),
+        )
+        .await
+        .unwrap();
+        let leaked = events_for_session(&pool, "web-ui", 0, 50).await.unwrap();
+        assert!(leaked.is_empty(), "web-ui was never renamed, got {leaked:?}");
+        // …and the session that WAS renamed still sees it (via `target`).
+        let own = events_for_session(&pool, "alpha", 0, 50).await.unwrap();
+        assert_eq!(own.len(), 1);
     }
 }
