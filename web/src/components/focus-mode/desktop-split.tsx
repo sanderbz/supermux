@@ -340,7 +340,16 @@ export function DesktopSplit({
     (value: ChatRenderer) => setOverride({ name, value }),
     [name],
   )
-  const chatActive = chatPaneActive(chatSetting, chatOn, renderer, status)
+  // `stopped`, not `status`: the seam's "a stopped session is never chat" rule
+  // has to see the SOCKET's conclusion too (`termGone`), not only the row's, or
+  // the two disagree for exactly the window `useTerminalGone` exists to cover.
+  // The mobile seam makes the same substitution, for the same reason.
+  const chatActive = chatPaneActive(
+    chatSetting,
+    chatOn,
+    renderer,
+    stopped ? 'stopped' : status,
+  )
   // The terminal mounts unless chat has the pane — false for exactly one frame
   // (experiment on, row unresolved), which is what stops the doomed-terminal
   // flash.
