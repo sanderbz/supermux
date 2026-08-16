@@ -6,9 +6,11 @@
 //! orchestration graph (`GET /api/agents/delegations?session=X`).
 //!
 //! **Audit.** A delegation is a side-effecting cross-session action, so it
-//! writes an `audit_log` row with `actor=agent:<from>, action=session.delegate,
-//! target=<to>`. The prompt text is NOT logged (it is application content, kept
-//! out of the audit detail per the secret-hygiene rule).
+//! writes an `audit_log` row with `action=session.delegate, target=<to>`. The
+//! actor is honest about who asked: `user` when the caller says `actor=human`
+//! (the composer @-send), otherwise `agent:<from>`. The prompt text is NOT
+//! logged (it is application content, kept out of the audit detail per the
+//! secret-hygiene rule).
 
 use axum::extract::{Query, State};
 use axum::Json;
@@ -29,6 +31,18 @@ pub struct DelegateInput {
     pub to: String,
     /// The prompt text sent to `to` (same path as a human `send`).
     pub prompt: String,
+    /// Who initiated this: `"human"` (composer @-send) or absent (agent curl).
+    /// Anything unrecognised is treated as the agent — never impersonates the user.
+    #[serde(default)]
+    pub actor: Option<String>,
+}
+
+/// Audit-log actor string for a delegation. `"human"` is the composer path.
+pub(crate) fn audit_actor(actor: Option<&str>, from: &str) -> String {
+    match actor {
+        Some("human") => "user".to_string(),
+        _ => format!("agent:{from}"),
+    }
 }
 
 /// `POST /api/agents/delegate` — send `prompt` to `to`, record the edge.
@@ -62,7 +76,7 @@ pub async fn delegate(
     // Audit the cross-session action (prompt body intentionally omitted).
     db::audit::log(
         &state.pool,
-        &format!("agent:{from}"),
+        &audit_actor(input.actor.as_deref(), from),
         "session.delegate",
         to,
         json!({ "from": from }),
@@ -102,4 +116,25 @@ pub async fn delegations(
         "ok": true,
         "data": DelegationsView { outgoing, incoming },
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actor_human_audits_as_user() {
+        assert_eq!(audit_actor(Some("human"), "web-ui"), "user");
+    }
+
+    #[test]
+    fn actor_absent_audits_as_agent_from() {
+        assert_eq!(audit_actor(None, "git-stacker"), "agent:git-stacker");
+    }
+
+    #[test]
+    fn unknown_actor_falls_back_to_agent_from() {
+        // Forward-compat: an unrecognised actor string never impersonates the user.
+        assert_eq!(audit_actor(Some("robot"), "x"), "agent:x");
+    }
 }
