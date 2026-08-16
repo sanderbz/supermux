@@ -31,6 +31,7 @@ import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { eases, springs } from '../../lib/springs'
+import { SessionMark } from '../../brand/marks'
 import { cn } from '../../lib/utils'
 
 import { ComposerFrame } from './composer-shell'
@@ -255,7 +256,22 @@ export function ChatComposer({
                     onClick={handle.submit}
                     disabled={handle.sending}
                   >
-                    <SendIcon />
+                    {/* THE GLYPH CHANGES TOO, not just the label (fase B4
+                        T4.4). An `aria-label` alone is not "visible before the
+                        key is pressed" for a sighted user — so while the intent
+                        holds the arrow becomes the RECIPIENT'S FACE, which is
+                        this app's word for "this is going to them" everywhere
+                        else. Same cell, same size, no reflow. */}
+                    {handle.handoff ? (
+                      <SessionMark
+                        seed={handle.handoff.to}
+                        size={phone ? 19 : 21}
+                        animate={false}
+                        label={null}
+                      />
+                    ) : (
+                      <SendIcon />
+                    )}
                   </TrailingButton>
                 ) : active ? (
                   <TrailingButton
@@ -412,10 +428,15 @@ function ComposerBanner({
           )}
           <span className="ml-auto flex items-center gap-2">
             {/* A NOTE is not a refusal: the message went. Offering the terminal
-                beside it would imply something still has to be done there. */}
+                beside it would imply something still has to be done there.
+                Neither hand-off receipt offers it either — a delegation
+                succeeds or fails on ANOTHER session's pane, so "open the
+                terminal" would point at the one screen that cannot help. The
+                draft is still in the box; retrying is the action. */}
             {onOpenTerminal &&
               notice.kind !== 'slash-note' &&
-              notice.kind !== 'handoff-sent' && (
+              notice.kind !== 'handoff-sent' &&
+              notice.kind !== 'handoff-failed' && (
               <button
                 type="button"
                 data-testid="chat-composer-open-terminal"
