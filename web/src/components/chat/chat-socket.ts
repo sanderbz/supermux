@@ -77,7 +77,22 @@ export interface ChatSnapshot {
    *  where the CONVERSATION id comes from: the server stamped it, so the client
    *  never guesses at the id its 409 is keyed on. */
   nextBefore: string | null
+  /** Epoch ms of the last AUTHORITATIVE signal — a frame the server sent
+   *  because something happened, not because the socket exists. `null` until
+   *  the first one lands. The staleness ceiling (`connection.ts`) measures
+   *  from here; before A6 no timestamp was tracked anywhere in this layer, so
+   *  a socket that had been silent for an hour still read as `live`. */
+  lastSignalAt: number | null
+  /** Uuids whose fetch-full is in flight right now — the loading state a
+   *  clipped entry's "Show full message" affordance renders (A6 T4.2). */
+  fetching: ReadonlySet<string>
+  /** Uuids whose fetch-full came back an error. The entry keeps its condensed
+   *  text (that is the honest outcome), and the surface offers a RETRY rather
+   *  than a dead end. */
+  fetchFailed: ReadonlySet<string>
 }
+
+const NO_UUIDS: ReadonlySet<string> = new Set()
 
 export const EMPTY_SNAPSHOT: ChatSnapshot = {
   entries: [],
@@ -86,6 +101,9 @@ export const EMPTY_SNAPSHOT: ChatSnapshot = {
   resyncCount: 0,
   hasMore: false,
   nextBefore: null,
+  lastSignalAt: null,
+  fetching: NO_UUIDS,
+  fetchFailed: NO_UUIDS,
 }
 
 // ── close codes (the terminal socket's table, `use-live-term.ts`) ────────────
@@ -139,6 +157,9 @@ export interface ChatSocketOptions {
   schedule?: (fn: () => void, ms: number) => number
   cancel?: (id: number) => void
   rand?: () => number
+  /** Injectable clock — the staleness ceiling is arithmetic on this, and a
+   *  test that cannot move time cannot test a ceiling. */
+  now?: () => number
 }
 
 /**
@@ -163,6 +184,11 @@ export class ChatSocket {
    *  marker, which is honest, where a retry loop against a 404 is not. */
   private readonly attempted = new Set<string>()
   private inflight = 0
+  /** In-flight and failed fetch-full uuids — the two states a clipped entry's
+   *  affordance renders (A6 T4.2). */
+  private readonly fetching = new Set<string>()
+  private readonly failed = new Set<string>()
+  private lastSignalAt: number | null = null
 
   constructor(options: ChatSocketOptions) {
     this.opts = {
@@ -173,6 +199,7 @@ export class ChatSocket {
       schedule: (fn, ms) => setTimeout(fn, ms) as unknown as number,
       cancel: (id) => clearTimeout(id),
       rand: Math.random,
+      now: () => Date.now(),
       ...options,
     }
   }
@@ -185,12 +212,65 @@ export class ChatSocket {
       resyncCount: this.wire.resyncCount,
       hasMore: this.wire.hasMore,
       nextBefore: this.wire.nextBefore,
+      lastSignalAt: this.lastSignalAt,
+      fetching: this.fetching.size ? new Set(this.fetching) : NO_UUIDS,
+      fetchFailed: this.failed.size ? new Set(this.failed) : NO_UUIDS,
     }
   }
 
   start(): void {
     if (this.disposed) return
     this.open()
+  }
+
+  /**
+   * Dial NOW, with a fresh attempt budget (A6 T2.3).
+   *
+   * The foreground path, not the failure path. A phone that slept past the
+   * 8-attempt ceiling lands in `offline` and — because `use-chat-ws.ts` only
+   * disposes when the LAST subscriber leaves — a backgrounded-but-mounted
+   * panel would sit there permanently. Resetting `attempt` is the whole point:
+   * a human coming back to the tab is new information, so the budget that was
+   * burned while nobody was looking is not held against it.
+   *
+   * Debouncing is the caller's job (`use-chat-ws.ts`), because the thing worth
+   * debouncing is the GESTURE, not the dial.
+   */
+  redial(): void {
+    if (this.disposed) return
+    this.attempt = 0
+    const ws = this.ws
+    this.ws = null
+    if (ws) {
+      // Retire the zombie with its handlers dropped first, or its eventual
+      // close schedules a reconnect competing with the one we are about to
+      // make. Same order as `use-live-term.ts`'s stale-resume.
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null
+      try {
+        ws.close(CLOSE_UNMOUNT, 'stale-resume')
+      } catch {
+        /* already closing */
+      }
+    }
+    this.open()
+  }
+
+  /**
+   * Re-run a fetch-full the user asked for again (A6 T4.2).
+   *
+   * The automatic policy stays exactly as it was: `AUTOFETCH_WINDOW` newest
+   * entries, `AUTOFETCH_CONCURRENCY` at a time, and a failure is never retried
+   * BY THE SOCKET. What changes is that "never retried" stops meaning "the
+   * text is unreachable forever" — the user gets the retry, so the clipped
+   * entry reads as deliberately condensed rather than broken.
+   */
+  retryFull(uuid: string): void {
+    if (this.disposed) return
+    if (this.fetching.has(uuid)) return
+    this.attempted.delete(uuid)
+    this.failed.delete(uuid)
+    this.pump(uuid)
+    this.emit()
   }
 
   dispose(): void {
@@ -266,6 +346,13 @@ export class ChatSocket {
       const before = this.wire
       this.wire = applyFrame(this.wire, frame)
       if (frame.type === 'seed_done') this.attempt = 0
+      // The staleness clock (A6 T2.2). It ticks on frames the server sent
+      // because something HAPPENED — a seed completing, an entry, a tail-state
+      // transition. `auth_ok` is handled above with its own `return` and so
+      // never reaches here, which is the point: a socket can be perfectly open
+      // against a tailer that stopped reading, and letting the handshake tick
+      // this clock would hide exactly that.
+      this.lastSignalAt = this.opts.now()
       if (this.wire !== before) {
         this.conn = stateFor(this.wire)
         this.pump()
@@ -344,29 +431,50 @@ export class ChatSocket {
   // ── fetch-full ────────────────────────────────────────────────────────────
 
   /** Start fetches for clipped entries the renderer is showing, up to the
-   *  concurrency cap. Idempotent: called after every applied frame. */
-  private pump(): void {
+   *  concurrency cap. Idempotent: called after every applied frame.
+   *
+   *  `extra` is a uuid the USER asked for (`retryFull`). It is fetched even
+   *  when it has fallen out of the `AUTOFETCH_WINDOW`, because the window is a
+   *  policy about what to fetch UNASKED — an explicit request is not that. It
+   *  still respects the concurrency cap: the server cost of `find_full_entry`
+   *  is the same whoever asked. */
+  private pump(extra?: string): void {
     if (this.disposed) return
-    for (const uuid of truncatedUuids(this.wire.entries, AUTOFETCH_WINDOW)) {
+    const wanted = extra
+      ? [extra, ...truncatedUuids(this.wire.entries, AUTOFETCH_WINDOW)]
+      : truncatedUuids(this.wire.entries, AUTOFETCH_WINDOW)
+    for (const uuid of wanted) {
       if (this.inflight >= AUTOFETCH_CONCURRENCY) return
       if (this.attempted.has(uuid)) continue
       this.attempted.add(uuid)
       this.inflight++
+      this.fetching.add(uuid)
       void this.opts
         .fetchFull(this.opts.name, uuid)
         .then((body) => {
-          if (this.disposed || body === undefined) return
+          if (this.disposed) return
+          if (body === undefined) {
+            // A 200 with no body is a miss, not a success: the entry stays
+            // clipped, so say so rather than leaving a spinner spinning.
+            this.failed.add(uuid)
+            return
+          }
           const next = applyFullBody(this.wire, uuid, body)
           if (next === this.wire) return
           this.wire = next
-          this.emit()
         })
         .catch(() => {
           // The entry keeps `truncated`, so the surface keeps saying "clipped"
-          // — the honest outcome, and the one the marker exists for.
+          // — the honest outcome, and the one the marker exists for. A6 adds
+          // the other half: the failure is REMEMBERED, so the surface can
+          // offer a retry instead of a `title` tooltip pointing at the
+          // terminal.
+          this.failed.add(uuid)
         })
         .finally(() => {
           this.inflight--
+          this.fetching.delete(uuid)
+          if (!this.disposed) this.emit()
           this.pump()
         })
     }

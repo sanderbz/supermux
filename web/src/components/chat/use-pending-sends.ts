@@ -115,6 +115,11 @@ export interface UsePendingSendsOptions {
   /** The server's delivery receipt (`last_send_text`/`last_send_at`), or null
    *  when the session has never received a submission. */
   receipt?: SendReceipt | null
+  /** The chat socket is known-dead (A6 T2.5). The watchdog measures echo
+   *  arrival in the transcript, and the transcript rides that socket — so
+   *  while it is down, silence is evidence about the socket and nothing else.
+   *  See `pending.ts::watchdogState`. */
+  planeDown?: boolean
 }
 
 export interface PendingSendsHandle {
@@ -136,6 +141,7 @@ export function usePendingSends({
   active,
   dialogCard = false,
   receipt = null,
+  planeDown = false,
 }: UsePendingSendsOptions): PendingSendsHandle {
   const raw = React.useSyncExternalStore(
     React.useCallback((fn) => subscribe(name, fn), [name]),
@@ -216,7 +222,7 @@ export function usePendingSends({
 
   const items = live.map((p) => ({
     ...p,
-    state: watchdogState(p, { nowMs, sawActiveSince }),
+    state: watchdogState(p, { nowMs, sawActiveSince, planeDown }),
   }))
 
   // LATCH THE ESCALATION. `watchdogState` promises that `undelivered`, once

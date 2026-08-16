@@ -177,6 +177,31 @@ export const CONNECTION = {
   offline: 'Offline — tap to retry',
 } as const
 
+/**
+ * The chat data plane's four words, and no surface may invent a fifth
+ * (fase A6 T2.6). The same vocabulary is the type in
+ * `components/chat/connection.ts`, and the contract is written out in
+ * `BRAND.md` §6f.
+ *
+ * `live` has no copy on purpose: the healthy state is silence. A chip that
+ * says "Live" on every screen is wallpaper within a day, and then the day it
+ * says something else nobody reads it.
+ */
+export const CHAT_CONNECTION = {
+  reconnecting: {
+    label: 'Reconnecting…',
+    detail: 'Reconnecting. What is on screen stays, but it is not up to date.',
+  },
+  stale: {
+    label: 'Not up to date',
+    detail: 'No update has arrived for a while. What is on screen stays, but it may be behind.',
+  },
+  offline: {
+    label: 'Offline',
+    detail: 'The live connection gave up. Tap to try again.',
+  },
+} as const
+
 // ── Toast presets (short, neutral confirmations) ──────────────────────────────
 
 export const TOAST = {

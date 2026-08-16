@@ -379,9 +379,22 @@ export const WATCHDOG_MS = 5_000
  */
 export function watchdogState(
   p: PendingSend,
-  ctx: { nowMs: number; sawActiveSince: (ms: number) => boolean },
+  ctx: { nowMs: number; sawActiveSince: (ms: number) => boolean; planeDown?: boolean },
 ): PendingState {
   if (p.state !== 'unconfirmed') return p.state
+  // A6 T2.5 — the watchdog measures ECHO ARRIVAL IN THE TRANSCRIPT, and the
+  // transcript arrives over the chat socket. When that socket is the thing
+  // that is down, the absence of an echo is evidence about the socket and
+  // about nothing else, so escalating manufactures a false "undelivered" for a
+  // message that very likely arrived: `POST /send` is an independent REST path
+  // that succeeds perfectly well while the WS is dead.
+  //
+  // A false undelivered is the worst possible outcome here — it teaches the
+  // user that the honesty mechanism lies, which is the exact opposite of what
+  // T2 is for. The surface says which plane is down instead (`ConnectionNote`),
+  // and the send stays `unconfirmed` until the socket comes back and the echo
+  // either lands or does not.
+  if (ctx.planeDown) return 'unconfirmed'
   // The server said it typed this into the pty. There is nothing left for the
   // watchdog to be honest about — the message is in the session, and the only
   // open question is when the transcript will echo it (a queued prompt can sit
