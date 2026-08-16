@@ -415,9 +415,38 @@ a face that moves is not a face.
 and no `unknown`; Rust's `Status` has `Unknown` and no `Error` — errors ride the
 separate `error:{type,message}` delta key).
 
-**Kill switch**: `localStorage['supermux:roster-marks'] = '0'` puts the pre-B2
-`StatusDot` back in every row's footprint, no redeploy.
-`components/roster/session-face.tsx` is the one place that reads it.
+**Attention — the vocabulary, so it cannot drift.** Four words, one precedence:
+
+| tier | means | drawn as |
+|---|---|---|
+| `needs` | waiting · a live permission dialog · `session.error` | the 7px dot on the mark's shoulder — the ONLY glyph on a silhouette |
+| `unread` | it said something after you last looked | a dot, or a NUMBER when (and only when) the chat store's epoch matches the cursor |
+| `working` | `active` or `starting` | the eyes (no extra glyph) |
+| `quiet` | none of the above | nothing at all |
+
+Two things this vocabulary is careful about:
+
+- **`lib/attention-tiers.ts` is not `components/chat/attention.ts`.** The latter
+  (A4) is the renderer's HONESTY copy — what to say when the chat surface cannot
+  show a live dialog. The former is the roster's tier model. Two files named
+  `attention.ts` in one app is the drift to avoid; they have different names and
+  different jobs on purpose.
+- **Every row gets a tier**, whatever its provider, host or team-ness. The tier
+  is derived from `status` plus seen-cursor arithmetic on a provider-neutral
+  stamp ladder (`activity_at` → `last_activity` → `updated_at`, with
+  `chat_tail` LAST because it is Claude Code's clock and exists only while
+  someone has the chat open). No byte heuristics, ever — that is the
+  false-positive class this model was built to avoid, and its unit suite is
+  written as a false-positive suite.
+
+**Kill switches** — both are console-flippable, no redeploy, PR-#27 pattern:
+
+| key | `'0'` does what | read by |
+|---|---|---|
+| `supermux:roster-marks` | every row draws the pre-B2 `StatusDot` in the mark's footprint | `components/roster/session-face.tsx` |
+| `supermux:attention` | every row collapses to `quiet` — no dot, no count, no rollup | `hooks/use-attention.ts` |
+
+Everything else in B2 is additive and flag-free.
 
 **Bench**: `/dev/roster` (DEV-only, lazy) — three densities × six states × three
 tiers + quiet × both themes, plus the tile at all four overview tiers. Coverage
