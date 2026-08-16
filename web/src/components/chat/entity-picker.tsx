@@ -153,8 +153,7 @@ export default function EntityPicker({
       anchor="token"
       rows={rows}
       activeIndex={activeIndex}
-      kind={kind}
-      query={query}
+      emptyLabel={emptyCopy(kind, query)}
       loading={loading}
       surface={surface}
       listboxId={PICKER_LISTBOX_ID}
@@ -164,6 +163,18 @@ export default function EntityPicker({
       onPick={onPick}
     />
   )
+}
+
+/**
+ * What the popover says when it has nothing to offer — CHAT's sentence, not the
+ * primitive's (fase B3 T2). It is the only one of the three consumers whose
+ * empty state depends on which trigger opened it, and the blank-query branch
+ * exists because quoting an empty query printed a pair of bare quotation marks
+ * with nothing between them (mobile proof, 21-at-picker-light.png).
+ */
+export function emptyCopy(kind: '@' | '/', query: string): string {
+  if (!query) return `Nothing to ${kind === '@' ? 'mention' : 'run'} here yet`
+  return `No ${kind === '@' ? 'tracked file or session' : 'command'} matches “${query}”`
 }
 
 // The presentational half now lives in `components/ui/entity-picker.tsx` and is

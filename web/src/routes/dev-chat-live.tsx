@@ -293,8 +293,6 @@ function BenchComposer({
               : slashRows(p.commands, p.query)
           }
           activeIndex={0}
-          kind={p.kind}
-          query={p.query}
           surface={surface}
           onHover={noop}
           onPick={noop}

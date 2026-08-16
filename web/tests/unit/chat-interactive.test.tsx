@@ -34,7 +34,7 @@ import {
   insertIntoComposer,
   setDraft,
 } from '../../src/components/chat/composer-draft'
-import { EntityPickerView } from '../../src/components/chat/entity-picker'
+import { emptyCopy, EntityPickerView } from '../../src/components/chat/entity-picker'
 import { TranscriptItem } from '../../src/components/chat/transcript-item'
 import {
   atRows,
@@ -44,12 +44,12 @@ import {
   type EntityRow,
 } from '../../src/components/chat/slash'
 import {
-  composerKeyIntent,
   draftAfterSend,
   sendGate,
   stopGate,
   type ComposerHandle,
 } from '../../src/components/chat/use-composer'
+import { composerKeyIntent } from '../../src/components/chat/composer-keys'
 import type { TileSession } from '../../src/components/session-tile/types'
 
 const NAME = 'release-train'
@@ -655,7 +655,11 @@ describe('the popover, rendered', () => {
   })
 
   test('an empty result says what it looked for instead of showing nothing', () => {
-    expect(text(view({ rows: [] }))).toContain('No tracked file or session matches')
+    // The COPY is chat's (`emptyCopy` in `chat/entity-picker.tsx`) since fase
+    // B3 — the primitive knows how many rows it has and nothing else, and the
+    // three consumers need three different sentences.
+    expect(text(view({ rows: [], emptyLabel: 'No tracked file or session matches “mai”' })))
+      .toContain('No tracked file or session matches')
     expect(text(view({ rows: [], loading: true }))).toContain('Looking…')
   })
 
@@ -1039,15 +1043,17 @@ describe('the popover DOM, pinned before the promotion', () => {
   })
 
   test('the empty state says what was looked for, per trigger and per state', () => {
+    // Chat's four sentences, asserted at their SOURCE — `emptyCopy` — because
+    // fase B3 moved the copy out of the shared primitive and into the consumer
+    // that knows which trigger opened the list.
     expect(text(view({ rows: [], loading: true }))).toContain('Looking…')
-    expect(text(view({ rows: [] }))).toContain('No tracked file or session matches')
-    expect(text(view({ rows: [], kind: '/' }))).toContain('No command matches')
+    expect(emptyCopy('@', 'mai')).toContain('No tracked file or session matches')
+    expect(emptyCopy('/', 'mo')).toContain('No command matches')
     // A blank query must not print a bare pair of quotation marks (the mobile
     // proof that produced this copy, 21-at-picker-light.png).
-    const blank = text(view({ rows: [], query: '' }))
-    expect(blank).toContain('Nothing to mention here yet')
-    expect(blank).not.toContain('““')
-    expect(text(view({ rows: [], query: '', kind: '/' }))).toContain('Nothing to run here yet')
+    expect(emptyCopy('@', '')).toBe('Nothing to mention here yet')
+    expect(emptyCopy('@', '')).not.toContain('““')
+    expect(emptyCopy('/', '')).toBe('Nothing to run here yet')
   })
 
   test('the phone surface is a 44pt row and the desktop one is not', () => {

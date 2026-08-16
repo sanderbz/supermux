@@ -28,15 +28,10 @@ import type { PickerJump } from './composer-keys'
  *  recognise the sentence, short enough that the banner stays one line. */
 export const DRAFT_PREVIEW_CHARS = 60
 
-// The key contract moved to `composer-keys.ts` in fase B3 so the scheduler's
-// PromptField could share it without pulling this hook (and React, and
-// delegate-intent) into its chunk. Re-exported here because the composer, its
-// tests and the bench all reach for it by this name.
-export {
-  composerKeyIntent,
-  type ComposerIntent,
-  type ComposerKeyEvent,
-} from './composer-keys'
+// The key contract lives in `composer-keys.ts` since fase B3, so the
+// scheduler's PromptField and the ⌘K palette can share it without pulling this
+// hook — and React, and delegate-intent, and the session-input plumbing — into
+// their chunks. NOT re-exported: a barrel here would undo exactly that.
 import { composerKeyIntent } from './composer-keys'
 
 // ── The hook ────────────────────────────────────────────────────────────────

@@ -154,6 +154,29 @@ describe('resolveEntityTarget is the one indirection', () => {
   })
 })
 
+describe('nothing leaks into the rendered text', () => {
+  test('no source comment is rendered as content', () => {
+    // This is not a hypothetical. Wrapping each row in a Fragment to hold the
+    // group heading turned the `//` comment above the `<li>` from a JS comment
+    // into a JSX TEXT CHILD, and every row in every picker in the app rendered
+    // two lines of source above it. `toContain` assertions all stayed green —
+    // they check what IS there, never what is also there — and the offline VR
+    // shot is what caught it. So the guard is an absence, asserted here.
+    const html = view({ headingAt: (i) => (i === 0 ? 'Sessions' : undefined) })
+    expect(html).not.toContain('//')
+    expect(html).not.toContain('/*')
+    expect(html).not.toContain('presentation`:')
+  })
+
+  test('a heading opens its group and is not an option', () => {
+    const html = view({ headingAt: (i) => (i === 0 ? 'Sessions' : undefined) })
+    expect(html).toContain('Sessions')
+    // Headings are `presentation`, so the arrows skip them for free and a
+    // screen reader still counts three choices, not four.
+    expect((html.match(/role="option"/g) ?? []).length).toBe(3)
+  })
+})
+
 describe('the empty state', () => {
   test('a field anchor says what IT looked for, not what chat would have', () => {
     const html = view({ rows: [], emptyLabel: 'No match for “zzz”.' })

@@ -28,7 +28,7 @@
 // TYPE-ONLY. Erased at build, so this module still has no runtime import — the
 // point of the header comment above, and the reason a lucide icon can be named
 // here without lucide being on this file's import path.
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 
 /** An icon component, structurally — any lucide glyph satisfies it, and so does
  *  a plain SVG component, without this module knowing about either. */
@@ -64,6 +64,15 @@ interface EntityRowBase {
    *  to the typing. */
   warn?: string
   icon?: EntityIcon
+  /**
+   * A fully-drawn leading element, for rows whose identity is not an icon.
+   *
+   * The one real case is a SESSION: fase B2 gave the palette's session rows the
+   * session's own `SessionFace` — a 24px procedural mark, deliberately static
+   * under the keyboard cursor — and a 14px lucide glyph would throw that away.
+   * Takes precedence over `icon`; a row should not set both.
+   */
+  leading?: ReactNode
 }
 
 /** A row that INSERTS. `value` is the text that lands in the draft. */

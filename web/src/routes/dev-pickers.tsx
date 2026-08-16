@@ -132,8 +132,7 @@ export default function DevPickers() {
               surface={surface}
               rows={CHAT_ROWS}
               activeIndex={0}
-              kind="@"
-              query="com"
+              emptyLabel="Nothing to mention here yet"
               onHover={noop}
               onPick={noop}
             />
@@ -193,8 +192,7 @@ export default function DevPickers() {
               surface={surface}
               rows={[]}
               activeIndex={0}
-              kind="@"
-              query=""
+              emptyLabel="Nothing to mention here yet"
               onHover={noop}
               onPick={noop}
             />
@@ -209,8 +207,7 @@ export default function DevPickers() {
                 surface={surface}
                 rows={[]}
                 activeIndex={0}
-                kind="/"
-                query="zzz"
+                emptyLabel="No command matches “zzz”"
                 onHover={noop}
                 onPick={noop}
               />

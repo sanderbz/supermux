@@ -68,9 +68,6 @@ const MAX_H: Record<PickerAnchor, string> = {
 export interface EntityPickerViewProps {
   rows: readonly EntityRow[]
   activeIndex: number
-  /** Which trigger opened it — only used for the empty-state copy. */
-  kind?: '@' | '/'
-  query?: string
   loading?: boolean
   surface?: 'desktop' | 'phone'
   anchor?: PickerAnchor
@@ -81,8 +78,28 @@ export interface EntityPickerViewProps {
   /** `id` for row `i`, so a FIELD can point `aria-activedescendant` at it. */
   optionId?: (index: number) => string
   ariaLabel?: string
-  /** Empty-state copy. The token anchor's is trigger-specific; a field anchor
-   *  passes its own ("No match for “foo”."). */
+  /**
+   * The heading that opens the group row `i` belongs to, or undefined.
+   *
+   * Headings live INSIDE the listbox as `role="presentation"` — they are not
+   * options, so the arrow keys skip them for free and a screen reader still
+   * counts the right number of choices. The alternative (one listbox per
+   * group) would make "how many results are there" unanswerable and would
+   * break every selector that names the list.
+   */
+  headingAt?: (index: number) => string | undefined
+  /**
+   * What to say when there is nothing to show.
+   *
+   * ALWAYS THE CALLER'S SENTENCE. The primitive knows how many rows it has and
+   * nothing else — not what was searched, not what the corpus was, not whether
+   * "nothing" means "no match" or "none exist yet". Chat's copy is
+   * trigger-specific ("No tracked file or session matches …", and a distinct
+   * line for the blank query so it never prints a bare pair of quotation
+   * marks); the palette's names the query; the scheduler's distinguishes "no
+   * match" from "nothing installed". Three different sentences, none of which
+   * this component could have written.
+   */
   emptyLabel?: string
   onHover: (index: number) => void
   onPick: (row: EntityRow) => void
@@ -101,8 +118,6 @@ export interface EntityPickerViewProps {
 export function EntityPickerView({
   rows,
   activeIndex,
-  kind = '@',
-  query = '',
   loading,
   surface = 'desktop',
   anchor = 'token',
@@ -110,6 +125,7 @@ export function EntityPickerView({
   listboxId,
   optionId,
   ariaLabel = 'Suggestions',
+  headingAt,
   emptyLabel,
   onHover,
   onPick,
@@ -167,10 +183,20 @@ export function EntityPickerView({
         {rows.map((row, i) => {
           const on = i === activeIndex
           const Icon = row.icon
+          const heading = headingAt?.(i)
           return (
-            // `presentation`: a listbox owns OPTIONS, and an `li` between the
-            // two breaks that ownership for a screen reader.
-            <li key={row.id} role="presentation">
+            <React.Fragment key={row.id}>
+            {heading && (
+              <li
+                role="presentation"
+                className="px-2 pb-1 pt-2.5 text-[11px] font-semibold uppercase tracking-[0.4px] text-ink-3 first:pt-1"
+              >
+                {heading}
+              </li>
+            )}
+            {/* `presentation`: a listbox owns OPTIONS, and an `li` between the
+                two breaks that ownership for a screen reader. */}
+            <li role="presentation">
               <button
                 type="button"
                 role="option"
@@ -197,9 +223,7 @@ export function EntityPickerView({
                   on && 'bg-fill-soft-2',
                 )}
               >
-                {Icon && (
-                  <Icon className="size-3.5 shrink-0 text-ink-3" />
-                )}
+                {row.leading ?? (Icon && <Icon className="size-3.5 shrink-0 text-ink-3" />)}
                 <span
                   className={cn(
                     'min-w-0 flex-none truncate tracking-[-0.1px] text-ink',
@@ -226,21 +250,16 @@ export function EntityPickerView({
                 )}
               </button>
             </li>
+            </React.Fragment>
           )
         })}
         {rows.length === 0 && (
           <li role="presentation" className="px-2 py-[9px] text-[12.6px] text-ink-2">
-            {loading
-              ? 'Looking…'
-              : (emptyLabel ??
-                (query
-                  ? `No ${kind === '@' ? 'tracked file or session' : 'command'} matches “${query}”`
-                  : // The trigger has just been typed and there is nothing to
-                    // offer yet — a repo with no tracked files, an instance with
-                    // no other session. Quoting the empty query printed a pair
-                    // of bare quotation marks with nothing between them (mobile
-                    // proof, 21-at-picker-light.png).
-                    `Nothing to ${kind === '@' ? 'mention' : 'run'} here yet`))}
+            {/* "Looking…" outranks the empty copy: "I have not answered yet"
+                and "there is nothing" are different facts, and showing the
+                second while the first is true is the list lying about a
+                request still in flight. */}
+            {loading ? 'Looking…' : emptyLabel}
           </li>
         )}
       </ul>

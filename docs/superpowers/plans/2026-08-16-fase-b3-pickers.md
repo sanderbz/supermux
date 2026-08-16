@@ -477,15 +477,15 @@ evidence in the PR body. VR the scheduler form with the `/` popover open, both t
 
 ### T4 — Rebuild the ⌘K palette on the primitive
 
-- [ ] **T4.1** Replace `PaletteRowView` (`command-palette.tsx:944-1044`) and the hand-rolled listbox
+- [x] **T4.1** Replace `PaletteRowView` (`command-palette.tsx:944-1044`) and the hand-rolled listbox
       (`:870-875`) with `<EntityPickerView anchor="field">`. Keep the Radix `Dialog`, the input, the
       board sub-flow step machine (`:740-765` Escape-steps-back included), and
       `pickFreshestSession` (`:1048`).
-- [ ] **T4.2** Replace the six substring predicates (`matchesSession:181` … `matchesIssue:225`) with
+- [x] **T4.2** Replace the six substring predicates (`matchesSession:181` … `matchesIssue:225`) with
       `rankEntities`/`fuzzyScore`. This is a **user-visible improvement and a behaviour change** —
       the palette gains subsequence matching and score ordering. Keep the leading-`/` slash-mode
       filter (`:481-482`).
-- [ ] **T4.3** Real group headings (`Sessions`, `Go to`, `Actions`, `Commands`, `Skills`, `MCP`),
+- [x] **T4.3** Real group headings (`Sessions`, `Go to`, `Actions`, `Commands`, `Skills`, `MCP`),
       replacing today's implicit ordering-only grouping. Headings are non-focusable and skipped by
       arrow keys.
 - [ ] **T4.4** **A mobile entry point.** Today ⌘K is reachable only from a physical keyboard or the
@@ -493,7 +493,7 @@ evidence in the PR body. VR the scheduler form with the `/` popover open, both t
       nav (`layout.tsx:167-209`) has none — the palette is **unreachable on a phone**. Add a search
       affordance to the mobile shell, and render the palette as `ResponsiveSheet` on coarse pointers
       so it gets safe-area + keyboard-viewport handling instead of a fixed `top-[20%]` box.
-- [ ] **T4.5** Delete the now-duplicate `scrollIntoView` at `:771-774` (T2.6 owns it).
+- [x] **T4.5** Delete the now-duplicate `scrollIntoView` at `:771-774` (T2.6 owns it).
 
 **Verify:** `palette-keys.spec.ts` (T1.4) and both existing palette e2e specs green **unchanged** —
 they select by `getByRole('listbox', { name: 'Palette results' })` and by option text, so a correct
@@ -796,3 +796,4 @@ Base `a7cc52c` (`main`). Budget at branch point: **entry 144.94 / 160 · app 209
 | T1 regression net | done | **209.99** (+0.20) | 1424 unit pass; pill spec + palette-keys spec green; found & fixed the ⌘K stale-query defect; VR pre in `~/b3-vr/pre` (14 shots). **0.01 KB headroom left — no additive task may run until T3/T4 delete.** |
 | T2 promote the primitive | done | 210.25 (**over**) | `ui/entity-picker.tsx` + `lib/entity.ts`; scrollIntoView defect fixed; `data-highlighted`; `--sm-popover-shadow`; `/dev/pickers`; BRAND §6c.1. A move that adds capability cannot pay for itself — T4 is the payer. |
 | T3 both type-ahead popovers | done | **210.84** (over) | scheduler rides `anchor="field"`, its keyboard engine and its `includes()` ranker deleted. Forced two extractions: `lib/rank.ts` and `chat/composer-keys.ts`, so the scheduler chunk stops inheriting chat's command table and 800-line hook. VR: chat popover delta confined to the row inset/radius. |
+| T4 palette on the primitive | done (T4.4 deferred) | **210.23** (over by 0.23) | `PaletteRowView` (96 lines), the five `includes()` predicates and the THIRD keyboard engine deleted; group headings; `resolveEntityTarget` is the only pick path. Paid back 0.61 KB of T3's 1.05. Three further attempts at recovery (barrel removal, chunk consolidation, moving chat's empty-state copy out of the primitive) returned 0.02 KB total — the remainder is §14 capability, not packaging. **T4.4 (mobile entry) and T5–T9 deferred: all net-additive, and the ceiling is spent.** |

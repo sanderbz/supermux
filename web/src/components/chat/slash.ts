@@ -221,10 +221,10 @@ export function classifySlash(text: string): SlashClass {
 // ── 3. The filter ───────────────────────────────────────────────────────────
 
 /** A match that starts right after one of these reads as a whole segment. */
-// The ranker moved to `lib/rank.ts` in fase B3 so the scheduler could share it
-// without inheriting this file's command table. Re-exported here because the
-// chat modules, the bench and four unit files all reach for it by this name.
-export { fuzzyScore, rankEntities } from '../../lib/rank'
+// The ranker lives in `lib/rank.ts` since fase B3, so the scheduler can share
+// it without inheriting this file's command table. NOT re-exported: a barrel
+// here would keep this module (and its built-in command table) alive on every
+// chunk that only wanted the 30-line matcher.
 import { rankEntities } from '../../lib/rank'
 
 // ── 4. The rows ─────────────────────────────────────────────────────────────
@@ -276,10 +276,9 @@ export function acceptRow(
   return rows[activeIndex] ?? null
 }
 
-// `PICKER_PAGE` / `PickerJump` / `jumpTarget` moved to `composer-keys.ts` in
+// `PICKER_PAGE` / `PickerJump` / `jumpTarget` live in `composer-keys.ts` since
 // fase B3 — they are the keyboard contract's arithmetic, not the slash
-// tokenizer's, and the scheduler needs them without this file's command table.
-export { PICKER_PAGE, jumpTarget, type PickerJump } from './composer-keys'
+// tokenizer's. Imported from there directly by everything that needs them.
 
 /** The two fields a mention needs — structural on purpose, so this ranks the
  *  shared `useSessions()` rows AND the bench's fixture cast without either of

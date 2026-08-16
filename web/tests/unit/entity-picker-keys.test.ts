@@ -20,8 +20,8 @@
  */
 import { describe, expect, test } from 'bun:test'
 
-import { composerKeyIntent, type ComposerIntent } from '../../src/components/chat/use-composer'
-import { jumpTarget, PICKER_PAGE } from '../../src/components/chat/slash'
+import { composerKeyIntent, type ComposerIntent } from '../../src/components/chat/composer-keys'
+import { jumpTarget, PICKER_PAGE } from '../../src/components/chat/composer-keys'
 
 /** The composer with a popover up, on a textarea (the TOKEN anchor). */
 const token = { draft: '@ma', active: false, picker: true }
