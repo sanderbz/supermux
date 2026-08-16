@@ -846,3 +846,39 @@ Base `a7cc52c` (`main`). Budget at branch point: **entry 144.94 / 160 · app 209
 | T7.4 a11y (pill rail) | done | 210.23 (±0) | `role="listbox"` with no options → `tablist`/`tab`. A rail with no highlight, no arrow-key nav and no selection model was never a listbox. Not converted to a picker: a scroll-snap strip is not a result list. |
 | T9.1 spike | done — **verdict NO** | 0 (no code) | Recall's offset would address the wrong file for `scope=project` hits, is not a unique address (subagent entries share offsets), and is not free to compute. §5b records the evidence and the indexing hook. |
 | T4.4, T5, T6, T7.1–T7.3, T8, T9.2–T9.6 | **deferred** | would exceed 210 | All net-additive. Deferred at a task boundary rather than shipped over a ratcheted gate or paid for by deleting a §14 deliverable. |
+
+### The budget, resolved as a question rather than a decision
+
+Final: **entry 146.28 / 160 (91%) · app JS 210.23 / 210.00 (over by 0.23) · CSS
+19.86 / 30.** The branch point was 209.79.
+
+Every recovery avenue was tried and measured:
+
+| attempt | recovered |
+|---|---|
+| dropping the re-export barrels (`slash.ts`, `use-composer.ts`) — did clean up the chunk graph | 0.00 KB |
+| moving chat's trigger-specific empty-state copy out of the primitive (a better seam regardless) | 0.02 KB |
+| deleting the group headings (T4.3) outright, as a test | 0.09 KB |
+
+No single feature is responsible; the overage is spread thin across the second
+anchor, the nine-kind union, `resolveEntityTarget`, the icon slot, the `leading`
+slot that keeps B2's `SessionFace`, the headings and the four new keys.
+**The consolidation itself is byte-neutral — three keyboard engines, five
+substring predicates and a 96-line row renderer came out — and it is §14's
+capability that costs the 0.44 KB.**
+
+That leaves exactly two honest options, and both belong to the owner:
+
+1. **Re-ratchet to 211 KB** (+0.5%). The ceiling has never been a designed
+   limit — `size-budget.mjs`'s own comment block narrates it being set at
+   whatever the then-current value was (200 → 210 at B2, measured 205.46), and
+   B4 then filled the slack to 209.79 without re-ratcheting. The hero path,
+   which is the number a user feels, is at 91% with 13.7 KB spare.
+2. **Drop a §14 deliverable.** The cheapest is the group headings at 0.09 KB,
+   which does not close the gap on its own.
+
+The executor did neither: raising a ratcheted gate is not an executor's call,
+and quietly deleting what §14 asked for would hide the trade rather than
+present it. T4.4 and T5–T8 are deferred for the same reason — every one of them
+is net-additive, and spending a budget that is already overdrawn to ship them
+would make the ask bigger while burying it.
