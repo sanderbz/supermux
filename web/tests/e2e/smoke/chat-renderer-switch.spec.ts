@@ -81,7 +81,13 @@ test.describe('chat renderer switch (fase A1)', () => {
     // One tap to the terminal fallback…
     await page.getByTestId('renderer-terminal').click()
     await expect(page.locator('.xterm')).toBeVisible()
-    await expect(page.getByTestId('chat-panel')).toHaveCount(0)
+    // FASE A5 — this used to read `toHaveCount(0)`. That assertion encoded "the
+    // toggle UNMOUNTS the other renderer", which is exactly what A5 exists to
+    // stop: the panel is now RETAINED, hidden in the other half of one grid
+    // cell, so the escape hatch is a crossfade instead of a handshake. It must
+    // still be invisible, and Playwright's `toBeHidden` is satisfied by
+    // `visibility: hidden` — which is the mechanism, not an accident.
+    await expect(page.getByTestId('chat-panel')).toBeHidden()
 
     // …and one tap back.
     await page.getByTestId('renderer-chat').click()
@@ -133,5 +139,144 @@ test.describe('chat renderer switch (fase A1)', () => {
     await page.goto(`${backend.baseUrl}/focus/a1-shell`)
     await expect(page.locator('.xterm')).toBeVisible()
     await expect(page.getByTestId('chat-panel')).toHaveCount(0)
+  })
+
+  // ── FASE A5 ──────────────────────────────────────────────────────────────
+
+  test('A5: the panel is RETAINED across toggles — mounted once, never re-created', async ({
+    page,
+  }) => {
+    test.skip(!hasClaudeCli, 'claude CLI not on this runner')
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript((flag: string) => {
+      window.localStorage.setItem('supermux-ui', flag)
+    }, FLAG_ON)
+
+    const name = 'a5-retain'
+    expect([200, 201]).toContain(
+      (await api(backend).createSession({ name, provider: 'claude', dir: backend.dataDir }))
+        .status,
+    )
+    expect((await api(backend).startSession(name)).ok).toBeTruthy()
+
+    await page.goto(`${backend.baseUrl}/focus/${name}`)
+    await expect(page.getByTestId('chat-panel')).toBeVisible()
+
+    // Stamp the mounted panel. A remount replaces the ELEMENT, so a property
+    // set on it cannot survive one — which is a mount counter without needing
+    // product code to carry one.
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="chat-panel"]') as HTMLElement & {
+        __mountId?: number
+      }
+      el.__mountId = 4242
+    })
+
+    for (let i = 0; i < 20; i++) {
+      await page.getByTestId('renderer-terminal').click()
+      await expect(page.getByTestId('chat-panel')).toBeHidden()
+      await page.getByTestId('renderer-chat').click()
+      await expect(page.getByTestId('chat-panel')).toBeVisible()
+    }
+
+    const stillTheSameElement = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="chat-panel"]') as HTMLElement & {
+        __mountId?: number
+      }
+      return el?.__mountId
+    })
+    expect(stillTheSameElement).toBe(4242)
+
+    // …and the terminal is retained in the other direction: after the first
+    // tap it never leaves the tree, it only stops being visible.
+    await page.getByTestId('renderer-terminal').click()
+    await expect(page.locator('.xterm')).toBeVisible()
+    await page.getByTestId('renderer-chat').click()
+    await expect(page.locator('.xterm')).toHaveCount(1)
+    await expect(page.locator('.xterm')).toBeHidden()
+  })
+
+  test('A5: the choice PERSISTS across a reload (it is a pref, not useState)', async ({
+    page,
+  }) => {
+    test.skip(!hasClaudeCli, 'claude CLI not on this runner')
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.addInitScript(injectGlobals(backend.token))
+    // SEED ONLY — `addInitScript` runs on EVERY document, so an unconditional
+    // write would re-seed (and wipe the pin) on the reload this test is about.
+    await page.addInitScript((flag: string) => {
+      if (!window.localStorage.getItem('supermux-ui')) {
+        window.localStorage.setItem('supermux-ui', flag)
+      }
+    }, FLAG_ON)
+
+    const name = 'a5-persist'
+    expect([200, 201]).toContain(
+      (await api(backend).createSession({ name, provider: 'claude', dir: backend.dataDir }))
+        .status,
+    )
+    expect((await api(backend).startSession(name)).ok).toBeTruthy()
+
+    await page.goto(`${backend.baseUrl}/focus/${name}`)
+    await expect(page.getByTestId('chat-panel')).toBeVisible()
+
+    // Pin Terminal, reload, land on Terminal. Before A5 this reset to chat.
+    await page.getByTestId('renderer-terminal').click()
+    await expect(page.locator('.xterm')).toBeVisible()
+    await page.reload()
+    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(page.getByTestId('chat-panel')).toHaveCount(0)
+    await expect(page.getByTestId('renderer-terminal')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+
+    // Pin Auto, reload, land on the default (chat, with the experiment on).
+    await page.getByTestId('renderer-auto').click()
+    await expect(page.getByTestId('chat-panel')).toBeVisible()
+    await page.reload()
+    await expect(page.getByTestId('chat-panel')).toBeVisible()
+    await expect(page.getByTestId('renderer-auto')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    // …and Auto MARKS what it resolved to, so "Auto, currently Chat" is one
+    // glance rather than two controls.
+    await expect(page.getByTestId('renderer-chat')).toHaveAttribute(
+      'data-resolved',
+      'true',
+    )
+  })
+
+  test('A5: ineligibility beats a stale pin', async ({ page }) => {
+    // No CLI needed: a `shell` session is ineligible by provider.
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript((flag: string) => {
+      window.localStorage.setItem('supermux-ui', flag)
+    }, JSON.stringify({
+      state: {
+        chatRenderer: true,
+        // A pin left behind by a session that USED to be eligible, or written
+        // by a peer device. It must not conjure a chat surface on a shell.
+        rendererOverrides: { 'a5-stale': 'chat' },
+      },
+      version: 0,
+    }))
+
+    const name = 'a5-stale'
+    expect([200, 201]).toContain(
+      (await api(backend).createSession({ name, provider: 'shell', dir: backend.dataDir }))
+        .status,
+    )
+    expect((await api(backend).startSession(name)).ok).toBeTruthy()
+
+    await page.goto(`${backend.baseUrl}/focus/${name}`)
+    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(page.getByTestId('chat-panel')).toHaveCount(0)
+    // …and no switch at all: an ineligible session has exactly one renderer.
+    await expect(page.getByTestId('renderer-chat')).toHaveCount(0)
+    await expect(page.getByTestId('renderer-auto')).toHaveCount(0)
   })
 })

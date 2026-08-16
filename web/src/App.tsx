@@ -65,6 +65,12 @@ const DevShell = import.meta.env.DEV
 const DevChatLive = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-chat-live'))
   : null
+// The toggle-thrash bench (fase A5 T6): the REAL RendererShell + LiveTerminal,
+// toggled 100× against a firehosing `shell` pty by
+// `tests/e2e/smoke/chat-toggle-thrash.spec.ts`. Not a product surface.
+const DevRendererThrash = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-renderer-thrash'))
+  : null
 
 // TanStack Query is the source of truth for server data; SSE invalidates it
 // (no polling — see use-sse.ts).
@@ -150,6 +156,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevTiles />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevRendererThrash && (
+                <Route
+                  path="/dev/renderer-thrash/:name"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevRendererThrash />
                     </Suspense>
                   }
                 />

@@ -32,7 +32,7 @@ import {
 } from '@/components/focus-mode/quick-keys'
 import { SESSION_RENDERER_QUERY_KEY } from '@/hooks/use-renderer-prefs-sync'
 import {
-  parseRendererPrefs,
+  parseRendererPrefsOrNull,
   SESSION_RENDERER_PREF_KEY,
   type RendererState,
 } from '@/components/chat/renderer-pref'
@@ -220,9 +220,9 @@ export function useSessions(): UseSessionsResult {
             // `use-renderer-prefs-sync` reconciles it into the UI store, skipping
             // any session the user is mid-change on (local wins for what you are
             // looking at; the peer wins otherwise).
-            qc.setQueryData<RendererState>(
+            qc.setQueryData<RendererState | null>(
               SESSION_RENDERER_QUERY_KEY,
-              parseRendererPrefs(p.value as string | null),
+              parseRendererPrefsOrNull(p.value as string | null),
             )
           }
         }

@@ -189,3 +189,17 @@ export function serializeRendererPrefs(st: RendererState): string {
     overrides: st.overrides,
   })
 }
+
+/**
+ * `null` for UNSET, a state for anything else.
+ *
+ * The distinction matters exactly once, and it is a data-loss bug when it is
+ * missed: on a fresh account `GET /api/prefs/session_renderer` 404s, and if
+ * that read as "an empty preference" the sync would immediately apply it over
+ * whatever the user had already chosen in localStorage — pins wiped on every
+ * first load against a server that has not been written to yet.
+ */
+export function parseRendererPrefsOrNull(raw: string | null): RendererState | null {
+  if (raw == null || raw === '') return null
+  return parseRendererPrefs(raw)
+}

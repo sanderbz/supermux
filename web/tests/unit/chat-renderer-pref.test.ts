@@ -11,6 +11,7 @@ import {
   MAX_PINS,
   capPins,
   parseRendererPrefs,
+  parseRendererPrefsOrNull,
   prefFor,
   prune,
   resolveRenderer,
@@ -139,6 +140,15 @@ describe('parse / serialize', () => {
     expect(parseRendererPrefs('not json')).toEqual(EMPTY)
     expect(parseRendererPrefs('[]')).toEqual(EMPTY)
     expect(parseRendererPrefs('"str"')).toEqual(EMPTY)
+  })
+
+  test('UNSET is distinguishable from empty (or the sync wipes local pins)', () => {
+    // A fresh account 404s on this key. Reading that as "an empty preference"
+    // would let the sync apply it over whatever localStorage already held.
+    expect(parseRendererPrefsOrNull(null)).toBeNull()
+    expect(parseRendererPrefsOrNull('')).toBeNull()
+    expect(parseRendererPrefsOrNull('{}')).toEqual(EMPTY)
+    expect(parseRendererPrefsOrNull(serializeRendererPrefs(EMPTY))).toEqual(EMPTY)
   })
 
   test('unknown values are dropped, not adopted', () => {

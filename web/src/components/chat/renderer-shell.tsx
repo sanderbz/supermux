@@ -205,9 +205,21 @@ function Pane({
   // this exists to stop. `inert` (below) prevents focus from getting BACK in;
   // this evicts whatever was already there.
   React.useEffect(() => {
-    if (visible) return
     const el = ref.current
     if (!el) return
+    // `inert`, set IMPERATIVELY.
+    //
+    // The `inert={!visible}` prop below is what renders in SSR (and is what the
+    // unit test reads), but framer-motion's DOM prop filter DROPS it in the
+    // browser — measured on the thrash bench: the hidden pane came back with
+    // `data-testid,data-visible,aria-hidden,class,style` and no `inert`. Since
+    // `inert` is the one attribute that stops a hidden xterm from being focused
+    // (Risk 1, the worst failure in the fase), it is not something to leave to
+    // a third party's allowlist.
+    if (visible) el.removeAttribute('inert')
+    else el.setAttribute('inert', '')
+
+    if (visible) return
     const active = document.activeElement
     if (active instanceof HTMLElement && el.contains(active)) active.blur()
     onHidden?.()
