@@ -338,6 +338,10 @@ export function ChatConversation({
     !dialogResolved &&
     !attention &&
     !session?.permission_request &&
+    // A hand-off in flight is conversation too (fase B4 T5): the pill is on
+    // screen, and "No conversation yet." printed directly above it is the same
+    // lie the pending-echo case fixed.
+    !handoff &&
     !(session?.status === 'active' && turnStart != null)
 
   // The room the floating composer needs, MEASURED (daily-driver QA #12).

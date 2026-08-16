@@ -45,29 +45,48 @@ import * as React from 'react'
 
 export type SseStatus = 'connecting' | 'open' | 'closed'
 
-/** Known SSE event types. The payload shape is event-specific; callers
- *  parse it. `ping` is a 10s keep-alive — it only resets the staleness clock. */
-export type SseEventType =
-  | 'sessions'
-  | 'board'
+/**
+ * Every named channel this client subscribes to, as VALUES.
+ *
+ * THE LIST AND THE TYPE ARE ONE THING NOW. They used to be two — a
+ * `SseEventType` union up here and a `NAMED` array down in `connect()` — and
+ * they drifted the first time somebody added a channel: `harness` was added to
+ * the union, its hook was written and its server frame shipped, and the
+ * `addEventListener` was never registered. An `EventSource` silently ignores a
+ * named event nobody is listening for, so the transcript's whole management log
+ * only ever appeared on a reload, with nothing red anywhere (fase B4 T11).
+ *
+ * Deriving the type FROM the array is what makes that impossible: a channel you
+ * can name is a channel that is subscribed. `sse-events.test.ts` pins it against
+ * the server's own emitters.
+ */
+export const SSE_NAMED_EVENTS = [
+  'sessions',
+  'board',
   // The boards list (switcher options) — re-published when a board is
   // created / renamed / deleted / registered for a team.
-  | 'boards'
-  | 'schedules'
-  | 'alerts'
-  | 'status'
-  | 'prefs'
+  'boards',
+  'schedules',
+  'alerts',
+  'status',
+  'prefs',
   // Experimental settings toggles (e.g. `experimental.agent_teams`) —
   // payload `{ key, enabled }`, routed by `use-settings.ts`.
-  | 'settings'
-  | 'teams'
+  'settings',
+  'teams',
   // A surfaced audit row (delegate / rename / schedule create+run) — payload
   // `{ sessions: [slug…], entry }`. An INVALIDATION TICK only: the transcript's
   // system lines are read from `/api/sessions/{name}/events`, the durable
   // ledger, so they survive a reload. `use-harness-events.ts` subscribes.
-  | 'harness'
-  | 'external-edit'
-  | 'ping'
+  'harness',
+  'external-edit',
+  // A 10s keep-alive — it only resets the staleness clock.
+  'ping',
+] as const
+
+/** Known SSE event types. The payload shape is event-specific; callers
+ *  parse it. */
+export type SseEventType = (typeof SSE_NAMED_EVENTS)[number]
 
 export interface SseHandlers {
   /** Called with the parsed payload of each named event (except `ping`). */
@@ -243,21 +262,7 @@ function connect() {
     }
   }
 
-  // Named channels (axum SSE adapter emits `event: sessions`, etc.).
-  const NAMED: SseEventType[] = [
-    'sessions',
-    'board',
-    'boards',
-    'schedules',
-    'alerts',
-    'status',
-    'prefs',
-    'settings',
-    'teams',
-    'external-edit',
-    'ping',
-  ]
-  for (const type of NAMED) {
+  for (const type of SSE_NAMED_EVENTS) {
     es.addEventListener(type, (ev) =>
       dispatchNamed(type, (ev as MessageEvent).data),
     )

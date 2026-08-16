@@ -237,7 +237,7 @@ async fn create_handler(
     ] {
         if present {
             return Err(AppError::BadRequest(format!(
-                "'{field}' is not permitted on this endpoint — a session token may only                  schedule a prompt for its own pane"
+                "'{field}' is not permitted on this endpoint — a session token may only schedule a prompt for its own pane"
             )));
         }
     }
@@ -258,8 +258,7 @@ async fn create_handler(
         .count();
     if owned >= MAX_SCHEDULES_PER_SESSION {
         return Err(AppError::TooManyRequests(format!(
-            "this session already owns {owned} schedules (max {MAX_SCHEDULES_PER_SESSION}) \
-             — delete one before creating another"
+            "this session already owns {owned} schedules (max {MAX_SCHEDULES_PER_SESSION}) — delete one before creating another"
         )));
     }
 
