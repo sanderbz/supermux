@@ -348,10 +348,33 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
       // token colours do.
       const diff = diffLines(plainText(children))
       return (
-        // `overflow-x-auto` over B0's `overflow-hidden`: a fenced block is the one
-        // place a chat message legitimately holds a line wider than the bubble,
-        // and clipping a command in half is worse than a scrollbar.
-        <BubbleCode className={cn('overflow-x-auto', className)}>
+        <BubbleCode
+          className={cn(
+            // ON THE PHONE THE FENCE WRAPS (daily-driver QA #18).
+            //
+            // Measured on the live instance: `clientWidth 228` against a
+            // `scrollWidth` of up to 540, with `overflow-x: auto` and NO visible
+            // scrollbar — touch platforms draw overlay scrollbars, which appear
+            // while you scroll and are therefore invisible to somebody deciding
+            // whether there is anything to scroll to. `wget -c
+            // https://example.com,` and `find / -type f -size +500M :` simply
+            // stopped mid-command (`29-back-from-background.png`).
+            //
+            // A hint would be one more thing to draw and to explain. Wrapping is
+            // the honest version of the same fix: nothing is off screen, so
+            // there is nothing to hint at. `[overflow-wrap:anywhere]` is what
+            // makes it work on the offender — a long URL or path has no space in
+            // it to break at.
+            //
+            // The desktop keeps the scroll: a 648px bubble holds most lines, a
+            // pointer device draws a real scrollbar, and column-aligned output
+            // (`ls -la`, a table) is worth more than a guaranteed fit.
+            ctx.surface === 'phone'
+              ? 'whitespace-pre-wrap [overflow-wrap:anywhere]'
+              : 'overflow-x-auto',
+            className,
+          )}
+        >
           {diff ? diffNodes(diff) : children}
         </BubbleCode>
       )
