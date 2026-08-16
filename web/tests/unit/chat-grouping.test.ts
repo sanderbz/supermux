@@ -18,6 +18,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 
+import type { HarnessEvent } from '../../src/lib/api/harness'
 import type { ChatEntry, ChatItem } from '../../src/components/chat/entries'
 import {
   buildTranscript,
@@ -512,5 +513,82 @@ describe('displayNames', () => {
     // to the slug — which is what that session is called.
     expect(names.has('patch')).toBe(false)
     expect(names.has('quill')).toBe(false)
+  })
+})
+
+/* ── the harness feed ────────────────────────────────────────────────────── */
+
+/**
+ * The transcript as a management log (Task 5). The events come from
+ * `GET /api/sessions/{name}/events` — the durable audit ledger, not SSE — and
+ * they are merged into the SAME ts-ordered stream the messages are in, so a
+ * delegation that happened between two turns reads where it happened.
+ *
+ * Two of them are deliberately NOT lines:
+ *   · an INBOUND delegate already has a rendering — the arrival divider over
+ *     the message it delivered. A line as well would say it twice.
+ *   · a rename the OWNER typed is ceremony: they did it two seconds ago, in
+ *     this app. Only a session renaming ITSELF is news.
+ */
+describe('harness events in the stream', () => {
+  const events: HarnessEvent[] = [
+    { id: 1, ts: 1500, actor: 'user', action: 'session.delegate', target: 'deploy-fix', detail: { from: 'web-ui' } },
+    { id: 2, ts: 1600, actor: 'user', action: 'session.delegate', target: 'web-ui', detail: { from: 'deploy-fix' } },
+    { id: 3, ts: 1700, actor: 'user', action: 'session.rename', target: 'web-ui', detail: { from: 'a', to: 'b' } },
+  ]
+
+  test('merges by ts and suppresses inbound delegate + user rename', () => {
+    const items = [user('u1', 1000), assistant('a1', 2000)]
+    const nodes = buildTranscript(items, { nowMs: 3000, events, self: 'web-ui' })
+    const harness = nodes.filter((n) => n.kind === 'harness')
+    expect(harness.map((h) => (h.kind === 'harness' ? h.ev.id : -1))).toEqual([1])
+    const idx = nodes.findIndex((n) => n.kind === 'harness')
+    // ts-ordered: it sits between the two turns, not at either end.
+    expect(nodes[idx - 1]).toMatchObject({ kind: 'item', key: 'u1' })
+    expect(nodes[idx + 1]).toMatchObject({ kind: 'item', key: 'a1' })
+  })
+
+  test('a session renaming ITSELF is news', () => {
+    const self: HarnessEvent[] = [
+      { id: 9, ts: 1500, actor: 'agent:web-ui', action: 'session.rename', target: 'web-ui', detail: { from: 'a', to: 'b' } },
+    ]
+    const nodes = buildTranscript([user('u1', 1000)], { nowMs: 3000, events: self, self: 'web-ui' })
+    expect(nodes.filter((n) => n.kind === 'harness')).toHaveLength(1)
+  })
+
+  test('a centred line breaks the run under it', () => {
+    // Two assistant turns one second apart would stack into one run; a system
+    // line between them ends it, so the second re-hangs its mark.
+    const items = [assistant('a1', 1000), assistant('a2', 1001)]
+    const plain = buildTranscript(items, { nowMs: 3000 })
+    expect(plain[2]).toMatchObject({ kind: 'item', key: 'a2', grouped: true, showGutter: false })
+    const nodes = buildTranscript(items, {
+      nowMs: 3000,
+      self: 'web-ui',
+      events: [
+        { id: 4, ts: 1000, actor: 'user', action: 'schedule.create', target: 's1', detail: { session: 'web-ui', title: 'Nightly' } },
+      ],
+    })
+    const a2 = nodes.find((n) => n.kind === 'item' && n.key === 'a2')
+    expect(a2).toMatchObject({ grouped: false, showGutter: true })
+  })
+
+  test('no events is the old stream, byte for byte', () => {
+    const items = [user('u1', 1000), assistant('a1', 1001)]
+    expect(buildTranscript(items, { nowMs: 3000, events: [], self: 'web-ui' })).toEqual(
+      buildTranscript(items, { nowMs: 3000 }),
+    )
+  })
+
+  test('an action nothing can render is not printed', () => {
+    // The server filters to the surfaced set; the renderer has copy for four
+    // actions and no fallback sentence, so an unknown one is dropped here
+    // rather than rendered as an empty line.
+    const nodes = buildTranscript([user('u1', 1000)], {
+      nowMs: 3000,
+      self: 'web-ui',
+      events: [{ id: 5, ts: 1500, actor: 'user', action: 'session.delete', target: 'web-ui', detail: {} }],
+    })
+    expect(nodes.filter((n) => n.kind === 'harness')).toHaveLength(0)
   })
 })
