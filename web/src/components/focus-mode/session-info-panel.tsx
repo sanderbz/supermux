@@ -495,15 +495,46 @@ function GitRow({ name }: { name: string }) {
   )
 }
 
+/**
+ * LAZY, and it is budget-load-bearing (fase B4 T8).
+ *
+ * The sheet pulls in the whole scheduler editor — the form, the recurrence
+ * builder, the fire log, the session picker. Imported statically it landed 8 KB
+ * gz in the HERO path, for a modal nobody has opened yet. It is only ever
+ * mounted while `open`, so the chunk is fetched at the moment of the tap, which
+ * is the same trade the `@`/`/` picker makes (`composer.tsx`).
+ */
+const SessionSchedulesSheet = React.lazy(
+  () => import('@/components/session-schedules/session-schedules-sheet'),
+)
+
 // ── schedules ────────────────────────────────────────────────────────────────
 
 function SchedulesList({ name }: { name: string }) {
   const { data, isLoading } = useSchedules()
   const reduce = useReducedMotion()
+  // The rows open THIS SESSION's Schedules sheet (fase B4 T8.6). They used to
+  // link to `/scheduler` — a route B1 has since turned into a redirect to a
+  // global admin table, where the reader would have had to find their own rows
+  // again. The sheet is the per-session answer to a per-session question, and
+  // it exists whether or not the fold landed (§0.6).
+  const [sheet, setSheet] = React.useState<{ id: string | null; create: boolean } | null>(null)
 
   const mine = React.useMemo<ScheduleRow[]>(
     () => (data ?? []).filter((s) => s.session === name && !s.deleted),
     [data, name],
+  )
+
+  const sheetEl = sheet && (
+    <React.Suspense fallback={null}>
+    <SessionSchedulesSheet
+      session={name}
+      open
+      onClose={() => setSheet(null)}
+      scheduleId={sheet.id}
+      createOnOpen={sheet.create}
+    />
+    </React.Suspense>
   )
 
   if (isLoading && !data) {
@@ -517,52 +548,60 @@ function SchedulesList({ name }: { name: string }) {
 
   if (mine.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
-        No schedules.{' '}
-        <Link
-          to="/scheduler"
-          className="font-medium text-primary underline-offset-2 hover:underline"
-        >
-          Add one
-        </Link>
-        .
-      </p>
+      <>
+        <p className="text-sm text-muted-foreground">
+          No schedules.{' '}
+          <button
+            type="button"
+            onClick={() => setSheet({ id: null, create: true })}
+            className="font-medium text-primary underline-offset-2 hover:underline"
+          >
+            Add one
+          </button>
+          .
+        </p>
+        {sheetEl}
+      </>
     )
   }
 
   return (
-    <ul className="flex flex-col gap-1.5">
-      {mine.map((s, i) => (
-        <motion.li
-          key={s.id}
-          initial={reduce ? false : { opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={reduce ? { duration: 0 } : { ...springs.snappy, delay: i * 0.02 }}
-        >
-          <Link
-            to="/scheduler"
-            className={cn(
-              'flex min-h-11 items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5',
-              'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            )}
+    <>
+      <ul className="flex flex-col gap-1.5">
+        {mine.map((s, i) => (
+          <motion.li
+            key={s.id}
+            initial={reduce ? false : { opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={reduce ? { duration: 0 } : { ...springs.snappy, delay: i * 0.02 }}
           >
-            <CalendarClock
-              className="size-4 shrink-0 text-muted-foreground"
-              aria-hidden
-            />
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-[13px] font-medium text-foreground">
-                {s.title}
+            <button
+              type="button"
+              onClick={() => setSheet({ id: s.id, create: false })}
+              className={cn(
+                'flex min-h-11 w-full items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-left',
+                'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              )}
+            >
+              <CalendarClock
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[13px] font-medium text-foreground">
+                  {s.title}
+                </span>
+                <span className="truncate text-[11px] text-muted-foreground">
+                  {describeSchedule(s.schedule_expr)}
+                  {s.next_run ? ` · next ${formatRunTime(s.next_run)}` : ''}
+                </span>
               </span>
-              <span className="truncate text-[11px] text-muted-foreground">
-                {describeSchedule(s.schedule_expr)}
-                {s.next_run ? ` · next ${formatRunTime(s.next_run)}` : ''}
-              </span>
-            </span>
-          </Link>
-        </motion.li>
-      ))}
-    </ul>
+            </button>
+          </motion.li>
+        ))}
+      </ul>
+      {sheetEl}
+    </>
   )
 }
 

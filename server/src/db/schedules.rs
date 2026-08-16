@@ -358,7 +358,24 @@ pub async fn patch(pool: &SqlitePool, id: &str, p: &SchedulePatch) -> sqlx::Resu
 
 // ── run ledger ──────────────────────────────────────────────────────────────
 
-/// Append a `schedule_runs` row. Returns the new row id.
+/// How many `schedule_runs` rows are kept per schedule (fase B4 T8.3, §13.3).
+///
+/// Twenty is what the run history is FOR: "did last night's job work, and the
+/// one before it". Nobody scrolls a nightly job's 400th entry, and a schedule
+/// firing `every 5m` writes ~105k rows a year into a table with no retention
+/// policy at all before this — on a host whose whole database is a single
+/// SQLite file that the app reads on every page load.
+pub const RUN_HISTORY_KEEP: i64 = 20;
+
+/// Append a `schedule_runs` row, then prune this schedule's history to the
+/// newest [`RUN_HISTORY_KEEP`]. Returns the new row id.
+///
+/// Pruned ON INSERT rather than by a sweeper: the table only grows here, so
+/// this is the one place that can keep the invariant without a second moving
+/// part. The delete is scoped to `schedule_id`, so two schedules' histories are
+/// independent and a busy job cannot evict a quiet one's rows.
+///
+/// This is a DELETE, not a schema change — no migration (§0.7).
 pub async fn insert_run(
     pool: &SqlitePool,
     schedule_id: &str,
@@ -375,6 +392,28 @@ pub async fn insert_run(
     .bind(note)
     .execute(pool)
     .await?;
+    // Ordered by the SAME key `runs_for` reads by (`ran_at DESC, id DESC`), so
+    // what survives is exactly what the history would have shown. A prune that
+    // failed must not fail the run it is recording — the fire happened, and the
+    // ledger row for it is already in.
+    if let Err(e) = sqlx::query(
+        "DELETE FROM schedule_runs
+          WHERE schedule_id = ?
+            AND id NOT IN (
+                SELECT id FROM schedule_runs
+                 WHERE schedule_id = ?
+                 ORDER BY ran_at DESC, id DESC
+                 LIMIT ?
+            )",
+    )
+    .bind(schedule_id)
+    .bind(schedule_id)
+    .bind(RUN_HISTORY_KEEP)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(schedule = %schedule_id, error = %e, "run-history prune failed");
+    }
     Ok(res.last_insert_rowid())
 }
 

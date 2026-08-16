@@ -412,3 +412,86 @@ async fn requires_auth() {
     state.pool.close().await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Fase B4 T8.3 — run history is capped, and per schedule.
+///
+/// `schedule_runs` had no retention policy at all: a job firing `every 5m`
+/// writes ~105k rows a year into the same SQLite file the app reads on every
+/// page load, and nobody has ever scrolled a nightly job's 400th entry.
+#[tokio::test]
+async fn run_history_keeps_the_newest_twenty_per_schedule() {
+    let (state, dir) = new_state().await;
+    let keep = supermux_server::db::schedules::RUN_HISTORY_KEEP;
+
+    // Real schedules: `schedule_runs.schedule_id` is a FK.
+    let mk = |title: &str| supermux_server::scheduler::CreateScheduleInput {
+        title: title.to_string(),
+        command: "true".into(),
+        kind: Some("shell".into()),
+        schedule_expr: Some("daily at 09:00".into()),
+        ..Default::default()
+    };
+    let busy_id = supermux_server::scheduler::create(&state, mk("busy"))
+        .await
+        .unwrap()
+        .id;
+    let quiet_id = supermux_server::scheduler::create(&state, mk("quiet"))
+        .await
+        .unwrap()
+        .id;
+
+    // 25 fires on one schedule; 3 on another, to prove the prune is scoped.
+    for i in 0..25 {
+        supermux_server::db::schedules::insert_run(
+            &state.pool,
+            &busy_id,
+            1_760_000_000 + i,
+            if i % 5 == 0 { "error" } else { "ok" },
+            &format!("run {i}"),
+        )
+        .await
+        .unwrap();
+    }
+    for i in 0..3 {
+        supermux_server::db::schedules::insert_run(
+            &state.pool,
+            &quiet_id,
+            1_760_000_000 + i,
+            "ok",
+            &format!("quiet {i}"),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Ask for MORE than the cap, so this reads the table rather than the query's
+    // own limit.
+    let busy = supermux_server::db::schedules::runs_for(&state.pool, &busy_id, 500)
+        .await
+        .unwrap();
+    assert_eq!(busy.len() as i64, keep, "capped at {keep}");
+    // The NEWEST survive — `runs_for` returns newest-first, so run 24 leads and
+    // run 5 is the oldest kept (25 inserted, 20 kept).
+    assert_eq!(busy[0].note, "run 24");
+    assert_eq!(busy[busy.len() - 1].note, "run 5");
+
+    // A busy schedule must not evict a quiet one's history.
+    let quiet = supermux_server::db::schedules::runs_for(&state.pool, &quiet_id, 500)
+        .await
+        .unwrap();
+    assert_eq!(quiet.len(), 3);
+
+    // Under the cap, nothing is pruned at all.
+    supermux_server::db::schedules::insert_run(&state.pool, &quiet_id, 1, "ok", "one more")
+        .await
+        .unwrap();
+    assert_eq!(
+        supermux_server::db::schedules::runs_for(&state.pool, &quiet_id, 500)
+            .await
+            .unwrap()
+            .len(),
+        4
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

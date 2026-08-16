@@ -58,6 +58,18 @@ interface ScheduleEditorProps {
   sessions: SessionPickerOption[]
   /** Close the host sheet (e.g. after a successful create). */
   onClose: () => void
+  /**
+   * Seed values for CREATE mode (fase B4 T8/T9).
+   *
+   * The per-session Schedules sheet opens this already knowing the session, and
+   * the composer affordance opens it already knowing the prompt — asking the
+   * user to retype either would be the whole reason those entry points exist.
+   * Merged over `EMPTY_FORM` once, at mount: it is a starting point, not a
+   * controlled value, so the user can change anything in it.
+   *
+   * Ignored in edit mode, where the row is the truth.
+   */
+  prefill?: Partial<ScheduleFormValue>
 }
 
 export function ScheduleEditor({
@@ -65,9 +77,12 @@ export function ScheduleEditor({
   schedule,
   sessions,
   onClose,
+  prefill,
 }: ScheduleEditorProps) {
   const [form, setForm] = React.useState<ScheduleFormValue>(() =>
-    mode === 'edit' && schedule ? rowToForm(schedule) : { ...EMPTY_FORM },
+    mode === 'edit' && schedule
+      ? rowToForm(schedule)
+      : { ...EMPTY_FORM, ...(prefill ?? {}) },
   )
   const create = useCreateSchedule()
   const patch = usePatchSchedule()

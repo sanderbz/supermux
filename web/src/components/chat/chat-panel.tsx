@@ -48,7 +48,21 @@ import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
 import { ProvisionalTail } from './provisional-tail'
+import type { ScheduleRef } from './transcript-item'
 import { exposeLatency, latencySummary, serverNowMs } from './latency'
+
+/**
+ * LAZY, and it is budget-load-bearing (fase B4 T8).
+ *
+ * The sheet pulls in the whole scheduler editor — the form, the recurrence
+ * builder, the fire log, the session picker. Imported statically it landed 8 KB
+ * gz in the HERO path, for a modal nobody has opened yet. It is only ever
+ * mounted while `open`, so the chunk is fetched at the moment of the tap, which
+ * is the same trade the `@`/`/` picker makes (`composer.tsx`).
+ */
+const SessionSchedulesSheet = React.lazy(
+  () => import('@/components/session-schedules/session-schedules-sheet'),
+)
 
 const FOLLOW_THRESHOLD_PX = 48
 
@@ -134,6 +148,20 @@ export default function ChatPanel({
     },
     [name, navigate],
   )
+  // The `⏱` chip's destination (fase B4 T8.5): this session's own Schedules
+  // sheet, scrolled to the schedule when the ledger row knows its id. NOT a
+  // route — the sheet exists whether or not B1's scheduler fold landed, and
+  // that independence is §0.6's whole rule.
+  const [scheduleSheet, setScheduleSheet] = React.useState<{
+    scheduleId: string | null
+    create: boolean
+    draft?: string
+  } | null>(null)
+  const openSchedule = React.useCallback(
+    (ref: ScheduleRef) => setScheduleSheet({ scheduleId: ref.id ?? null, create: false }),
+    [],
+  )
+  const closeScheduleSheet = React.useCallback(() => setScheduleSheet(null), [])
   // The wire labels `ChatItem` deliberately does not carry: the slash name of a
   // command, the teammate id of an arrival, the subject of a system event.
   const labels = React.useMemo(() => entryLabels(entries), [entries])
@@ -375,6 +403,7 @@ export default function ChatPanel({
   }, [pendingItems, dismissPending])
 
   return (
+    <>
     <ChatConversation
       // The surface IS the panel's root element, so it keeps the panel's
       // long-standing test id — the renderer-switch e2e asserts on it.
@@ -387,6 +416,7 @@ export default function ChatPanel({
       names={names}
       events={events}
       onOpenSession={openSession}
+      onOpenSchedule={openSchedule}
       // The handoff pill's ONLY source (fase B4 T5): a POST this client made
       // and the ledger has not confirmed yet. The activity-string heuristic
       // that used to draw it is gone — see `live-layer.tsx::pendingHandoff`.
@@ -469,5 +499,24 @@ export default function ChatPanel({
         />
       }
     />
+    {/* Mounted only while it is open: the sheet subscribes to the scheduler
+        stream and the schedules query, and neither should be running for every
+        session anybody happens to be looking at. */}
+    {scheduleSheet && (
+      // No fallback: the sheet's own shell IS the loading state once it lands,
+      // and a spinner for a chunk that arrives in one frame from cache would be
+      // the only thing most people ever see of it.
+      <React.Suspense fallback={null}>
+      <SessionSchedulesSheet
+        session={name}
+        open
+        onClose={closeScheduleSheet}
+        scheduleId={scheduleSheet.scheduleId}
+        createOnOpen={scheduleSheet.create}
+        draftPrompt={scheduleSheet.draft}
+      />
+      </React.Suspense>
+    )}
+    </>
   )
 }

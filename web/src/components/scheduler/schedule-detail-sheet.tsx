@@ -34,6 +34,7 @@ import {
   useScheduleRuns,
 } from '@/hooks/use-scheduler'
 import { ScheduleEditor } from './schedule-editor'
+import type { ScheduleFormValue } from './schedule-form'
 import { describeSchedule, formatRanAt } from './helpers'
 import { EnableToggle } from './enable-toggle'
 
@@ -43,6 +44,8 @@ interface ScheduleDetailSheetProps {
   schedule: ScheduleRow | null
   onClose: () => void
   sessions: SessionPickerOption[]
+  /** CREATE-mode seed values — see `ScheduleEditor.prefill` (fase B4 T8/T9). */
+  prefill?: Partial<ScheduleFormValue>
 }
 
 export function ScheduleDetailSheet({
@@ -50,13 +53,23 @@ export function ScheduleDetailSheet({
   schedule,
   onClose,
   sessions,
+  prefill,
 }: ScheduleDetailSheetProps) {
   // Both modes render through the shared <ResponsiveSheet> (Vaul drag-detent
   // bottom sheet on mobile, side Sheet on desktop). Keyed remount per mode/row
   // keeps the form state pristine, same as before.
   if (mode === 'create') {
     return (
-      <CreateBody key="create" open onClose={onClose} sessions={sessions} />
+      <CreateBody
+        // Keyed by the prefill so opening it for a DIFFERENT session (or with a
+        // different draft) starts from that seed rather than reusing the last
+        // form state — the editor merges `prefill` once, at mount.
+        key={`create:${prefill?.session ?? ''}:${prefill?.prompt ?? ''}`}
+        open
+        onClose={onClose}
+        sessions={sessions}
+        prefill={prefill}
+      />
     )
   }
   if (mode === 'edit' && schedule) {
@@ -79,10 +92,12 @@ function CreateBody({
   open,
   onClose,
   sessions,
+  prefill,
 }: {
   open: boolean
   onClose: () => void
   sessions: SessionPickerOption[]
+  prefill?: Partial<ScheduleFormValue>
 }) {
   return (
     <ResponsiveSheet
@@ -92,7 +107,12 @@ function CreateBody({
       description="Prompt a session, boot a fresh one, or run a shell command on a timer."
     >
       <div className="px-5 py-5">
-        <ScheduleEditor mode="create" sessions={sessions} onClose={onClose} />
+        <ScheduleEditor
+          mode="create"
+          sessions={sessions}
+          onClose={onClose}
+          prefill={prefill}
+        />
       </div>
     </ResponsiveSheet>
   )
