@@ -21,6 +21,7 @@
 // URL:
 //   ?mock            seed the shared sessions cache from the mocks (the app's
 //                    existing DEV switch; this page needs no backend either way)
+//   &conn=<state>    reconnecting · stale · offline — the A6 honesty chip
 //   &state=<id>      idle · working · provisional · permission · delegation ·
 //                    error · offline · patch
 //   &surface=phone   the phone composition at any window width
@@ -32,6 +33,7 @@ import { useSearchParams } from 'react-router-dom'
 import { PAPER } from '@/brand/tokens'
 import { ChatComposer } from '@/components/chat/composer'
 import { ChatConversation, PHONE_QUERY } from '@/components/chat/conversation'
+import { ConnectionNote } from '@/components/chat/connection-note'
 import { toDisplayList } from '@/components/chat/entries'
 import { EntityPickerView } from '@/components/chat/entity-picker'
 import { handoffLabel, readDelegateIntent } from '@/components/chat/delegate-intent'
@@ -78,13 +80,28 @@ export default function DevChatLive() {
   const wantedState = params.get('state') ?? 'idle'
   const state = states.find((s) => s.id === wantedState) ?? states[0]
 
+  // `?conn=reconnecting|stale|offline` — the data plane's honesty chip (A6 T2).
+  //
+  // It exists because the VR matrix could not see this work at all: the chip
+  // renders NOTHING while `live`, which is the whole design, so a bench with no
+  // knob for the other three states produces 148/148 SAME and proves only that
+  // nothing regressed. A capture rig that cannot reach a state is not evidence
+  // about it.
+  const conn = params.get('conn')
+  const connState =
+    conn === 'reconnecting' || conn === 'stale' || conn === 'offline' ? conn : null
+
   const viewportPhone = useMediaQuery(PHONE_QUERY)
   const phone = params.get('surface') === 'phone' || viewportPhone
   const bare = params.has('bare')
 
   return (
     <div className="h-dvh w-full overflow-hidden bg-paper text-ink">
-      {phone ? <PhoneFrame state={state} nowMs={nowMs} /> : <BoardFrame state={state} nowMs={nowMs} />}
+      {phone ? (
+        <PhoneFrame state={state} nowMs={nowMs} conn={connState} />
+      ) : (
+        <BoardFrame state={state} nowMs={nowMs} conn={connState} />
+      )}
       {!bare && (
         <Picker
           current={state.id}
@@ -304,7 +321,7 @@ function BenchComposer({
 
 /* ── desktop: the surface, in the boards' window ─────────────────────────── */
 
-function BoardFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
+function BoardFrame({ state, nowMs, conn }: { state: LiveState; nowMs: number; conn: 'reconnecting' | 'stale' | 'offline' | null }) {
   const { resolvedTheme } = useTheme()
   const ring = PAPER[resolvedTheme].paper
   return (
@@ -340,7 +357,12 @@ function BoardFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
       </aside>
 
       <main className="relative min-w-0 flex-1">
-        <Surface state={state} nowMs={nowMs} surface="desktop" />
+        <Surface
+          state={state}
+          nowMs={nowMs}
+          surface="desktop"
+          headerTrailing={conn ? <ConnectionNote state={conn} onRetry={NOOP} /> : undefined}
+        />
       </main>
     </div>
   )
@@ -348,7 +370,7 @@ function BoardFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
 
 /* ── phone: the surface, under the status bar ────────────────────────────── */
 
-function PhoneFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
+function PhoneFrame({ state, nowMs, conn }: { state: LiveState; nowMs: number; conn: 'reconnecting' | 'stale' | 'offline' | null }) {
   return (
     <div className="relative mx-auto flex h-full w-full max-w-[390px] flex-col bg-paper-raised">
       {/* Device chrome, not ours: the status bar and the notch `mobile-*.png`
@@ -388,7 +410,10 @@ function PhoneFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
             </span>
           }
           headerTrailing={
-            <RendererSwitch size="sm" labels="selected" value="auto" resolved="chat" onChange={() => {}} />
+            <>
+              {conn ? <ConnectionNote state={conn} onRetry={NOOP} /> : null}
+              <RendererSwitch size="sm" labels="selected" value="auto" resolved="chat" onChange={() => {}} />
+            </>
           }
         />
       </div>
