@@ -34,6 +34,15 @@ use super::resumable;
 /// Cap on the per-entry prompt text. Mirrors `db::sessions::LAST_SEND_TEXT_MAX_CHARS`
 /// — same shape as the bar/popover already render today.
 const PROMPT_MAX_CHARS: usize = 8_000;
+/// Cap on an ASSISTANT entry's prose in the chat view. The prompt cap above is
+/// a PREVIEW budget for the recall popover; the chat view renders the message
+/// itself, so reusing 8 000 silently cut real answers mid-word (assistant text
+/// blocks over that length exist in this host's own transcripts). Wide enough
+/// that no realistic answer is touched, still bounded so one pathological
+/// block cannot define the response size. Whenever it does bite, the entry
+/// carries `truncated: true` so the client can say so instead of pretending
+/// the message ended there.
+const ASSISTANT_MAX_CHARS: usize = 64_000;
 /// Cap on the reply preview. Big enough for `line-clamp-3` on the widest popover.
 const REPLY_MAX_CHARS: usize = 600;
 /// Hard cap on the user-requested `limit`. Keeps a single response bounded
@@ -108,6 +117,12 @@ pub struct RecallEntry {
     /// = `is_error`). `None` until the result lands / for non-tool entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    /// `Some(true)` when `text` was clipped by the wire cap. Absent (the
+    /// common case) means the text is complete. The client renders a marker;
+    /// without it a clipped message is indistinguishable from one that simply
+    /// ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 /// What flavour of "user" turn the transcript line represents. The JSONL
@@ -308,12 +323,15 @@ fn gather_in_proj(
     'files: for path in &files {
         // `read_user_turns` walks the file FORWARD and reverses its own output
         // so the file's own entries arrive newest-first.
+        // `Arc` on both arms so the cached vector is never deep-cloned just to
+        // be iterated; only the <= `limit + 1` entries that survive the
+        // filters are cloned.
         let file_entries = if chat {
             read_chat_turns_cached(path)
         } else {
-            read_user_turns(path, include_sidechains)
+            std::sync::Arc::new(read_user_turns(path, include_sidechains))
         };
-        for entry in file_entries {
+        for entry in file_entries.iter() {
             if !cursor_consumed {
                 if let Some((ref c_sid, ref c_uuid)) = cursor {
                     if entry.session_id == *c_sid && entry.uuid == *c_uuid {
@@ -334,7 +352,7 @@ fn gather_in_proj(
                     continue;
                 }
             }
-            out.push(entry);
+            out.push(entry.clone());
             if out.len() >= target {
                 break 'files;
             }
@@ -352,11 +370,20 @@ fn gather_in_proj(
     };
 
     // Final wire-shape clamp: search ran over the full sanitised text (so a
-    // needle past PROMPT_MAX_CHARS still matches), but the response carries
-    // only the preview.
+    // needle past the cap still matches), but the response carries only the
+    // preview. The cap is PER KIND — an assistant message is content, not a
+    // preview of one, so it gets `ASSISTANT_MAX_CHARS`; every other kind keeps
+    // the popover's `PROMPT_MAX_CHARS` budget. Anything actually clipped is
+    // flagged.
     for e in &mut out {
-        if e.text.chars().count() > PROMPT_MAX_CHARS {
-            e.text = clamp(&e.text, PROMPT_MAX_CHARS);
+        let cap = if e.kind == Kind::Assistant {
+            ASSISTANT_MAX_CHARS
+        } else {
+            PROMPT_MAX_CHARS
+        };
+        if e.text.chars().count() > cap {
+            e.text = clamp(&e.text, cap);
+            e.truncated = Some(true);
         }
     }
 
@@ -497,6 +524,7 @@ fn read_user_turns(path: &Path, include_sidechains: bool) -> Vec<RecallEntry> {
                     kind: classified.kind,
                     label: classified.label,
                     ok: None,
+                    truncated: None,
                 });
                 // Non-prompt turns aren't a "user asking a question" — don't
                 // arm a reply pairing on them. (A `<task-notification>` is
@@ -520,7 +548,7 @@ fn read_user_turns(path: &Path, include_sidechains: bool) -> Vec<RecallEntry> {
                 }
                 if let Some(idx) = pending_idx.take() {
                     if let Some(reply) = extract_message_text(&v) {
-                        let clean = clamp(&sanitise_text(&reply), REPLY_MAX_CHARS);
+                        let clean = preview(&reply, REPLY_MAX_CHARS);
                         if !clean.is_empty() {
                             entries[idx].reply = Some(clean);
                         }
@@ -624,8 +652,8 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                             let is_err =
                                 b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
                             entries[idx].ok = Some(!is_err);
-                            let preview =
-                                clamp(&sanitise_text(&tool_result_text(b)), REPLY_MAX_CHARS);
+                            let text = tool_result_text(b, preview_budget(REPLY_MAX_CHARS));
+                            let preview = preview(&text, REPLY_MAX_CHARS);
                             if !preview.is_empty() {
                                 entries[idx].reply = Some(preview);
                             }
@@ -655,6 +683,7 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                     kind: c.kind,
                     label: c.label,
                     ok: None,
+                    truncated: None,
                 });
             }
             "assistant" => {
@@ -664,11 +693,18 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                 let Some(content) = v.get("message").and_then(|m| m.get("content")) else {
                     continue;
                 };
-                let blocks: Vec<serde_json::Value> = match content {
+                // BORROW the block array. Cloning it duplicated every `text`
+                // and `thinking` block on the line (a0 measured single lines
+                // up to ~950 KB) purely so the loop could own a `Vec`, which
+                // only ever reads `b` by reference. The `String` form is the
+                // rare one, so materialising a single block for it is fine.
+                let owned_single;
+                let blocks: &[serde_json::Value] = match content {
                     serde_json::Value::String(s) => {
-                        vec![serde_json::json!({"type": "text", "text": s})]
+                        owned_single = [serde_json::json!({"type": "text", "text": s})];
+                        &owned_single
                     }
-                    serde_json::Value::Array(a) => a.clone(),
+                    serde_json::Value::Array(a) => a.as_slice(),
                     _ => continue,
                 };
                 for (i, b) in blocks.iter().enumerate() {
@@ -699,6 +735,7 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                                 kind: Kind::Assistant,
                                 label: None,
                                 ok: None,
+                                truncated: None,
                             });
                         }
                         Some("tool_use") => {
@@ -717,6 +754,7 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                                 kind: Kind::ToolUse,
                                 label: Some(name.to_string()),
                                 ok: None,
+                                truncated: None,
                             });
                         }
                         // thinking / image / unknown block types: skipped in A1.
@@ -767,47 +805,140 @@ fn tool_line(name: &str, input: Option<&serde_json::Value>) -> String {
 
 /// Printable text of a `tool_result` block: string content verbatim, array
 /// content = concatenated `text` sub-blocks. Anything else → empty.
-fn tool_result_text(b: &serde_json::Value) -> String {
+///
+/// Bounded on purpose. The output is only ever a `REPLY_MAX_CHARS` preview,
+/// but a `tool_result` carries the WHOLE tool output — a `Read` of a 5 MB file
+/// is a 5 MB JSON string. Copying that, then regex-scanning and re-collecting
+/// it in `sanitise_text`, then keeping 600 chars, cost three full-length
+/// allocations per tool result on every parse. `budget` is the number of
+/// SOURCE chars worth taking; see [`preview`].
+fn tool_result_text(b: &serde_json::Value, budget: usize) -> String {
     match b.get("content") {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Array(parts)) => parts
-            .iter()
-            .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
-            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-            .collect::<Vec<_>>()
-            .join("\n"),
+        Some(serde_json::Value::String(s)) => clamp(s, budget),
+        Some(serde_json::Value::Array(parts)) => {
+            let mut out = String::new();
+            for p in parts
+                .iter()
+                .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            {
+                if out.chars().count() >= budget {
+                    break;
+                }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&clamp(p, budget));
+            }
+            out
+        }
         _ => String::new(),
     }
 }
 
-/// Single-slot parse cache for the chat view (the A1 poll-cost guard): the A1
-/// client re-pulls the FOCUSED session's tail on every SSE tick, and
+/// Source-char budget for a `max`-char preview: clamp BEFORE sanitising so the
+/// expensive scan runs over a bounded slice, with generous headroom for the
+/// escape sequences and control bytes `sanitise_text` removes. 16× covers the
+/// pathological shape (`ESC[31m` + one char + `ESC[0m` = 9 source chars per
+/// visible char, pinned by `ansi_dense_result_still_yields_a_full_preview`)
+/// and still bounds the work at ~10 KB per tool result instead of the whole
+/// multi-MB output.
+fn preview_budget(max: usize) -> usize {
+    max.saturating_mul(16).saturating_add(64)
+}
+
+/// `max`-char preview of `s`: bounded clamp → sanitise → final clamp.
+fn preview(s: &str, max: usize) -> String {
+    clamp(&sanitise_text(&clamp(s, preview_budget(max))), max)
+}
+
+/// Parse cache for the chat view (the A1 poll-cost guard): the A1 client
+/// re-pulls the FOCUSED session's tail on every SSE tick, and
 /// `read_chat_turns` otherwise re-streams the entire JSONL each time (a0
 /// measured 21k+ line transcripts with single lines up to ~950 KB). Keyed on
-/// (path, mtime, len): an unchanged file costs one stat + a clone. One slot is
-/// enough — only the focused session polls. The A2 chat WS replaces this whole
-/// read path.
-static CHAT_PARSE_CACHE: std::sync::Mutex<
-    Option<(std::path::PathBuf, std::time::SystemTime, u64, Vec<RecallEntry>)>,
-> = std::sync::Mutex::new(None);
+/// (path, mtime, len).
+///
+/// Entries are handed out as an `Arc`, never deep-cloned. The single-slot
+/// version cloned the whole `Vec<RecallEntry>` on a HIT — while holding the
+/// mutex — and cloned it a second time to store it on a miss, so a big
+/// conversation moved ~9 MB per poll to deliver 30 rows, and two concurrent
+/// pollers serialised on the copy rather than on the lookup.
+///
+/// A handful of slots (LRU, front = most recent), not one: two clients on two
+/// sessions alternated paths and turned every poll into a miss, and
+/// `scope=project` walks every file in the project dir, so a single request
+/// evicted the focused session's entry on its way past.
+///
+/// Still a full re-parse whenever the file has GROWN — the tailer that reads
+/// only the appended bytes is fase A2's chat data plane, which replaces this
+/// read path wholesale.
+const CHAT_CACHE_SLOTS: usize = 4;
 
-fn read_chat_turns_cached(path: &Path) -> Vec<RecallEntry> {
+struct ChatCacheSlot {
+    path: PathBuf,
+    mtime: SystemTime,
+    len: u64,
+    entries: std::sync::Arc<Vec<RecallEntry>>,
+}
+
+static CHAT_PARSE_CACHE: std::sync::Mutex<Vec<ChatCacheSlot>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Cache lookup, LRU-promoting the hit. Split out from the global so the
+/// slot policy is testable without racing the process-wide static.
+fn cache_get(
+    slots: &mut Vec<ChatCacheSlot>,
+    path: &Path,
+    mtime: SystemTime,
+    len: u64,
+) -> Option<std::sync::Arc<Vec<RecallEntry>>> {
+    let i = slots
+        .iter()
+        .position(|s| s.path == path && s.mtime == mtime && s.len == len)?;
+    // Refcount bump only — the payload is never copied.
+    let hit = slots[i].entries.clone();
+    let slot = slots.remove(i);
+    slots.insert(0, slot);
+    Some(hit)
+}
+
+/// Store (replacing any stale generation of the same path) at the front,
+/// dropping the least-recently-used slot past the cap.
+fn cache_put(
+    slots: &mut Vec<ChatCacheSlot>,
+    path: &Path,
+    mtime: SystemTime,
+    len: u64,
+    entries: &std::sync::Arc<Vec<RecallEntry>>,
+) {
+    slots.retain(|s| s.path != path);
+    slots.insert(
+        0,
+        ChatCacheSlot {
+            path: path.to_path_buf(),
+            mtime,
+            len,
+            entries: entries.clone(),
+        },
+    );
+    slots.truncate(CHAT_CACHE_SLOTS);
+}
+
+fn read_chat_turns_cached(path: &Path) -> std::sync::Arc<Vec<RecallEntry>> {
     let key = fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
     if let Some((mtime, len)) = key {
-        if let Ok(guard) = CHAT_PARSE_CACHE.lock() {
-            if let Some((p, t, l, cached)) = guard.as_ref() {
-                if p == path && *t == mtime && *l == len {
-                    return cached.clone();
-                }
+        if let Ok(mut slots) = CHAT_PARSE_CACHE.lock() {
+            if let Some(hit) = cache_get(&mut slots, path, mtime, len) {
+                return hit;
             }
         }
     }
-    let parsed = read_chat_turns(path);
+    let parsed = std::sync::Arc::new(read_chat_turns(path));
     if let Some((mtime, len)) = key {
-        if let Ok(mut guard) = CHAT_PARSE_CACHE.lock() {
-            *guard = Some((path.to_path_buf(), mtime, len, parsed.clone()));
+        if let Ok(mut slots) = CHAT_PARSE_CACHE.lock() {
+            cache_put(&mut slots, path, mtime, len, &parsed);
         }
     }
     parsed
@@ -1806,6 +1937,229 @@ please prepare the next stacked branch
         assert_eq!(r.entries[1].ok, Some(true));
         assert_eq!(r.entries[2].kind, Kind::Prompt);
         assert_eq!(r.entries[2].text, "do the thing");
+    }
+
+    /// An assistant message longer than the PROMPT preview cap must arrive
+    /// whole. The chat view renders the message itself, so reusing the
+    /// popover's 8 000-char preview budget cut real answers mid-word with no
+    /// marker and no continuation — the reader could not tell. Assistant text
+    /// blocks past 8 000 chars exist in this host's own transcripts.
+    #[test]
+    fn chat_view_assistant_text_survives_the_prompt_preview_cap() {
+        let proj = temp_dir();
+        let cc = "chat-longprose";
+        let long = "y".repeat(PROMPT_MAX_CHARS + 732);
+        write_jsonl(
+            &proj,
+            cc,
+            &[
+                &user_line("u1", "2026-01-01T10:00:00Z", "explain", false),
+                &assistant_line("a1", "2026-01-01T10:00:05Z", &long, false),
+            ],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        let e = r.entries.iter().find(|e| e.kind == Kind::Assistant).unwrap();
+        assert_eq!(
+            e.text.chars().count(),
+            PROMPT_MAX_CHARS + 732,
+            "assistant prose must not be clipped at the prompt preview cap"
+        );
+        assert_eq!(e.truncated, None, "nothing was clipped, so no marker");
+    }
+
+    /// A USER prompt keeps the preview budget — the chat view must not become
+    /// a licence to ship an unbounded prompt down the popover's wire shape.
+    #[test]
+    fn chat_view_user_prompt_keeps_the_preview_cap_and_is_flagged() {
+        let proj = temp_dir();
+        let cc = "chat-longprompt";
+        let long = "z".repeat(PROMPT_MAX_CHARS + 500);
+        write_jsonl(
+            &proj,
+            cc,
+            &[&user_line("u1", "2026-01-01T10:00:00Z", &long, false)],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        let e = r.entries.iter().find(|e| e.kind == Kind::Prompt).unwrap();
+        assert_eq!(e.text.chars().count(), PROMPT_MAX_CHARS);
+        assert_eq!(
+            e.truncated,
+            Some(true),
+            "a clipped entry must say so on the wire"
+        );
+    }
+
+    /// Even the generous assistant cap is a cap — when it bites, the entry is
+    /// flagged rather than silently ending mid-sentence.
+    #[test]
+    fn chat_view_assistant_beyond_its_own_cap_is_flagged() {
+        let proj = temp_dir();
+        let cc = "chat-hugeprose";
+        let huge = "w".repeat(ASSISTANT_MAX_CHARS + 10);
+        write_jsonl(
+            &proj,
+            cc,
+            &[&assistant_line("a1", "2026-01-01T10:00:05Z", &huge, false)],
+        );
+        let r = gather_in_proj(&proj, cc, Scope::Session, "", false, false, true, None, 10);
+        let e = r.entries.iter().find(|e| e.kind == Kind::Assistant).unwrap();
+        assert_eq!(e.text.chars().count(), ASSISTANT_MAX_CHARS);
+        assert_eq!(e.truncated, Some(true));
+    }
+
+    // ── chat parse cache: slot policy ───────────────────────────────
+    //
+    // Driven against a local slot vec, not the process-wide static, so the
+    // policy is pinned deterministically while tests run in parallel.
+
+    fn slot_entries(tag: &str) -> std::sync::Arc<Vec<RecallEntry>> {
+        std::sync::Arc::new(vec![RecallEntry {
+            uuid: tag.to_string(),
+            ts: 0,
+            session_id: tag.to_string(),
+            session_title: None,
+            text: tag.to_string(),
+            reply: None,
+            sidechain: false,
+            kind: Kind::Assistant,
+            label: None,
+            ok: None,
+            truncated: None,
+        }])
+    }
+
+    /// A hit hands back the SAME allocation. The previous single-slot cache
+    /// deep-cloned the whole entry vector on every hit — while holding the
+    /// mutex — to serve at most `limit + 1` rows.
+    #[test]
+    fn chat_cache_hit_shares_the_allocation_instead_of_cloning_it() {
+        let mut slots = Vec::new();
+        let t = SystemTime::UNIX_EPOCH;
+        let stored = slot_entries("a");
+        cache_put(&mut slots, Path::new("/a.jsonl"), t, 10, &stored);
+        let hit = cache_get(&mut slots, Path::new("/a.jsonl"), t, 10).expect("hit");
+        assert!(
+            std::sync::Arc::ptr_eq(&stored, &hit),
+            "a cache hit must not copy the entries"
+        );
+    }
+
+    /// Two clients on two sessions (and every `scope=project` walk) alternate
+    /// paths. With one slot each file evicted the other and EVERY poll was a
+    /// miss — a full re-parse of the transcript, twice per tick.
+    #[test]
+    fn chat_cache_keeps_alternating_paths_warm() {
+        let mut slots = Vec::new();
+        let t = SystemTime::UNIX_EPOCH;
+        let a = slot_entries("a");
+        let b = slot_entries("b");
+        cache_put(&mut slots, Path::new("/a.jsonl"), t, 1, &a);
+        cache_put(&mut slots, Path::new("/b.jsonl"), t, 1, &b);
+        assert!(cache_get(&mut slots, Path::new("/a.jsonl"), t, 1).is_some());
+        assert!(cache_get(&mut slots, Path::new("/b.jsonl"), t, 1).is_some());
+    }
+
+    /// A grown/rewritten file (mtime or len changed) must MISS, and must not
+    /// leave the stale generation behind.
+    #[test]
+    fn chat_cache_misses_on_a_changed_file_and_replaces_the_slot() {
+        let mut slots = Vec::new();
+        let t = SystemTime::UNIX_EPOCH;
+        cache_put(&mut slots, Path::new("/a.jsonl"), t, 10, &slot_entries("v1"));
+        assert!(
+            cache_get(&mut slots, Path::new("/a.jsonl"), t, 20).is_none(),
+            "a grown file must not serve the stale parse"
+        );
+        cache_put(&mut slots, Path::new("/a.jsonl"), t, 20, &slot_entries("v2"));
+        assert_eq!(slots.len(), 1, "the stale generation must be replaced");
+        let hit = cache_get(&mut slots, Path::new("/a.jsonl"), t, 20).unwrap();
+        assert_eq!(hit[0].uuid, "v2");
+    }
+
+    /// The cache is bounded, and it evicts the LEAST-recently-used slot — a
+    /// `scope=project` walk over a large project dir must not be able to
+    /// unbound it.
+    #[test]
+    fn chat_cache_is_bounded_and_evicts_lru() {
+        let mut slots = Vec::new();
+        let t = SystemTime::UNIX_EPOCH;
+        for i in 0..CHAT_CACHE_SLOTS {
+            let p = format!("/f{i}.jsonl");
+            cache_put(&mut slots, Path::new(&p), t, 1, &slot_entries(&p));
+        }
+        // Touch the oldest so it is no longer the LRU victim.
+        assert!(cache_get(&mut slots, Path::new("/f0.jsonl"), t, 1).is_some());
+        cache_put(&mut slots, Path::new("/new.jsonl"), t, 1, &slot_entries("new"));
+        assert_eq!(slots.len(), CHAT_CACHE_SLOTS);
+        assert!(
+            cache_get(&mut slots, Path::new("/f0.jsonl"), t, 1).is_some(),
+            "the recently used slot must survive"
+        );
+        assert!(
+            cache_get(&mut slots, Path::new("/f1.jsonl"), t, 1).is_none(),
+            "the least-recently-used slot must be the one evicted"
+        );
+    }
+
+    // ── preview allocation bound ────────────────────────────────────
+
+    /// A 600-char preview must not cost three copies of the whole tool
+    /// result. `tool_result_text` now takes only the budget it can possibly
+    /// need, and the preview is byte-identical to the unbounded computation.
+    #[test]
+    fn tool_result_preview_is_bounded_and_unchanged() {
+        let huge = "a".repeat(2_000_000);
+        let block = serde_json::json!({"type": "tool_result", "content": huge.clone()});
+        let taken = tool_result_text(&block, preview_budget(REPLY_MAX_CHARS));
+        assert_eq!(
+            taken.chars().count(),
+            preview_budget(REPLY_MAX_CHARS),
+            "must copy only the preview budget, not the whole 2 MB result"
+        );
+        assert_eq!(
+            preview(&taken, REPLY_MAX_CHARS),
+            clamp(&sanitise_text(&huge), REPLY_MAX_CHARS),
+            "the bounded path must produce the same preview as the unbounded one"
+        );
+    }
+
+    /// The headroom is real: an ANSI-dense result (every visible char wrapped
+    /// in an escape sequence) still yields a FULL preview after sanitising.
+    #[test]
+    fn ansi_dense_result_still_yields_a_full_preview() {
+        let unit = "\u{1b}[31mx\u{1b}[0m"; // 9 source chars → 1 visible
+        let dense = unit.repeat(4_000);
+        let block = serde_json::json!({"type": "tool_result", "content": dense.clone()});
+        let taken = tool_result_text(&block, preview_budget(REPLY_MAX_CHARS));
+        assert_eq!(
+            preview(&taken, REPLY_MAX_CHARS).chars().count(),
+            REPLY_MAX_CHARS,
+            "escape-heavy output must still fill the preview"
+        );
+        assert_eq!(
+            preview(&taken, REPLY_MAX_CHARS),
+            clamp(&sanitise_text(&dense), REPLY_MAX_CHARS)
+        );
+    }
+
+    /// Array-form `tool_result` content is bounded per part AND in total.
+    #[test]
+    fn array_tool_result_is_bounded_too() {
+        let block = serde_json::json!({
+            "type": "tool_result",
+            "content": [
+                {"type": "text", "text": "b".repeat(1_000_000)},
+                {"type": "text", "text": "c".repeat(1_000_000)},
+            ],
+        });
+        let budget = preview_budget(REPLY_MAX_CHARS);
+        let taken = tool_result_text(&block, budget);
+        assert!(
+            taken.chars().count() <= budget + 1,
+            "array parts must respect the budget, got {}",
+            taken.chars().count()
+        );
+        assert_eq!(preview(&taken, REPLY_MAX_CHARS).chars().count(), REPLY_MAX_CHARS);
     }
 
     #[test]

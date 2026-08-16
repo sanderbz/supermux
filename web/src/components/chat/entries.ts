@@ -13,6 +13,9 @@ export interface ChatEntry {
   kind: string
   label?: string
   ok?: boolean
+  /** Server clipped `text` at the wire cap. Rendered as a marker: without it
+   *  a clipped message is indistinguishable from one that simply ended. */
+  truncated?: boolean
 }
 
 export interface ReceiptLine {
@@ -23,8 +26,15 @@ export interface ReceiptLine {
 }
 
 export type ChatItem =
-  | { type: 'user'; uuid: string; ts: number; text: string; badge?: string }
-  | { type: 'assistant'; uuid: string; ts: number; text: string }
+  | {
+      type: 'user'
+      uuid: string
+      ts: number
+      text: string
+      badge?: string
+      truncated?: boolean
+    }
+  | { type: 'assistant'; uuid: string; ts: number; text: string; truncated?: boolean }
   | {
       type: 'receipts'
       uuid: string
@@ -59,7 +69,13 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         out.push({ type: 'receipts', uuid: e.uuid, ts: e.ts, lines: [line], overflow: 0 })
       }
     } else if (e.kind === 'assistant') {
-      out.push({ type: 'assistant', uuid: e.uuid, ts: e.ts, text: e.text })
+      out.push({
+        type: 'assistant',
+        uuid: e.uuid,
+        ts: e.ts,
+        text: e.text,
+        truncated: e.truncated,
+      })
     } else {
       out.push({
         type: 'user',
@@ -67,6 +83,7 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         ts: e.ts,
         text: e.text,
         badge: e.kind === 'prompt' ? undefined : e.kind,
+        truncated: e.truncated,
       })
     }
   }
@@ -98,4 +115,30 @@ export function formatElapsed(ms: number): string {
  *  provisional→confirmed supersede must never visibly re-label a row. */
 export function stripEmojiPrefix(label: string): string {
   return label.replace(/^[^\p{L}\p{N}]{1,3}\s+/u, '')
+}
+
+/** End of the confirmed entry's second, in ms.
+ *
+ *  Wire timestamps on transcript entries have SECOND resolution (`RecallEntry.ts`
+ *  is `parse_ts` → `.timestamp()`, floored) while the live overlay stamps lines
+ *  with millisecond `activity_at`. `ts * 1000` therefore under-shoots by up to
+ *  999 ms and leaves an overlay line whose confirmed twin has already landed on
+ *  screen. Rounding up to the end of the second is the conservative reading of
+ *  "at or before the newest confirmed entry": at worst a not-yet-confirmed line
+ *  disappears up to a second early, which is invisible, whereas the other
+ *  direction renders the same receipt twice for the rest of the turn. */
+export function supersededCutoffMs(lastConfirmedTs: number): number {
+  return (lastConfirmedTs + 1) * 1000
+}
+
+/** Drop overlay lines the confirmed transcript now represents. Returns the
+ *  SAME array when nothing was superseded, so an unchanged live layer does not
+ *  force a re-render. */
+export function pruneSuperseded<T extends { at: number }>(
+  lines: T[],
+  lastConfirmedTs: number,
+): T[] {
+  const cutoff = supersededCutoffMs(lastConfirmedTs)
+  const kept = lines.filter((l) => l.at > cutoff)
+  return kept.length === lines.length ? lines : kept
 }

@@ -15,6 +15,18 @@
 const dayKey = () =>
   `supermux:chat-a1-latency:${new Date().toISOString().slice(0, 10)}`
 
+/** Ring size, IN MEMORY as well as in localStorage. The persisted copy was
+ *  always capped; the in-memory array was not, so a long dogfood session grew
+ *  it without bound — and every delta then sorted the whole thing for a
+ *  console line while the 1 Hz panel ticker sorted it again per render. */
+const MAX_SAMPLES = 500
+
+/** Minimum gap between localStorage writes. `setItem` is synchronous on the
+ *  main thread and Claude emits a hook delta per tool call (30–100 a turn);
+ *  persisting on each one put a stringify + write in the middle of the
+ *  render path for data that only needs to survive a reload. */
+const PERSIST_INTERVAL_MS = 5_000
+
 function loadSamples(): number[] {
   if (typeof window === 'undefined') return []
   try {
@@ -26,15 +38,30 @@ function loadSamples(): number[] {
   }
 }
 
-const samples: number[] = loadSamples()
+const samples: number[] = loadSamples().slice(-MAX_SAMPLES)
+
+let lastPersistMs = 0
 
 function persist(): void {
   if (typeof window === 'undefined') return
+  lastPersistMs = Date.now()
   try {
-    window.localStorage.setItem(dayKey(), JSON.stringify(samples.slice(-500)))
+    window.localStorage.setItem(dayKey(), JSON.stringify(samples))
   } catch {
     /* quota/private mode — console + in-memory still work */
   }
+}
+
+/** Persist at most every [`PERSIST_INTERVAL_MS`]; a final flush is wired to
+ *  `pagehide` so a reload never loses more than one interval. */
+function persistThrottled(): void {
+  if (typeof window === 'undefined') return
+  if (Date.now() - lastPersistMs < PERSIST_INTERVAL_MS) return
+  persist()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', persist)
 }
 
 /** Nearest-rank p50 (matches a0-findings' small-n honesty: no interpolation). */
@@ -49,13 +76,26 @@ export function latencySamples(): number[] {
   return samples
 }
 
+/** Footer summary in ONE pass — the panel re-renders every second off the
+ *  live-layer ticker, and calling `latencySamples()` three times plus `p50`
+ *  per render sorted the ring on every tick for a read-only caption. */
+export function latencySummary(): { n: number; p50: number } {
+  return { n: samples.length, p50: p50(samples) }
+}
+
+/** Test seam: the in-memory ring size (also the persisted size). */
+export const MAX_LATENCY_SAMPLES = MAX_SAMPLES
+
 export function recordHookLatency(activityAtMs: number | undefined): void {
   if (typeof activityAtMs !== 'number') return
   const lag = Date.now() - activityAtMs
   // Clock skew / stale replays: discard absurd values instead of polluting p50.
   if (lag < -5_000 || lag > 60_000) return
+  // Bounded ring. `splice` (not reassignment) so the array IDENTITY survives —
+  // `exposeLatency` hands this exact array to `window.__supermuxChatLatency`.
   samples.push(lag)
-  persist()
+  if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES)
+  persistThrottled()
   console.info(
     `[chat-a1] hook→UI ${lag}ms · p50 ${p50(samples)}ms · n=${samples.length}`,
   )

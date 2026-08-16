@@ -15,9 +15,14 @@
 //!   │      UPDATE last_status / last_status_at
 //!   │      status_watch[name].send_replace((status, ver+1))      ← wait primitive
 //!   │      SSE  { type:'status',   payload:{name,status,version} }
-//!   └─ if status changed OR tail6 changed:
-//!          SSE  { type:'sessions', payload:{delta:[{name,status?,preview_lines?}]} }
+//!   └─ if status changed OR tail6 changed OR the chat tail changed:
+//!          SSE  { type:'sessions', payload:{delta:[{name,status?,preview_lines?,chat_tail?}]} }
 //! ```
+//!
+//! `chat_tail` (fase A2) is the one-line-per-side summary of the session's chat
+//! ring — last prompt + last assistant line. It rides THIS delta rather than any
+//! new request, is read from memory only (never a transcript file read), and is
+//! change-gated + debounced by [`ChatTailGate`].
 //!
 //! `last_capture` is the single canonical source the `SessionView.preview_lines`
 //! builder reads — written every tick, classification or not.
@@ -42,6 +47,7 @@ use crate::db;
 use crate::db::hosts::{Host, HostStatus};
 use crate::state::{AppState, SseEvent};
 
+use super::chat::store::{ChatStore, ChatTail};
 use super::runtime::RUNTIME_NATIVE;
 use super::status::{self, Status, StatusDetector};
 use super::tmux::Tmux;
@@ -66,6 +72,15 @@ const FLAP_DEBOUNCE: Duration = Duration::from_millis(50);
 /// the bottom 6 (CSS-clipped via container height + fade mask), and the
 /// Settings → Expanded-text hover mode reveals the full ~20-line tail.
 const PREVIEW_LINES: usize = 20;
+
+/// Floor between two `chat_tail` publications for ONE session.
+///
+/// A landing transcript batch is 30-100 entries (a0-findings: tool-heavy turns
+/// flush per completed message), and every one of them can move the tail. The
+/// tile shows a single line, so publishing per entry would be a fan-out storm to
+/// every connected SSE client for no visible difference. One per second is
+/// already faster than the detector's own idle cadence.
+const CHAT_TAIL_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Reconcile every persisted session's stored status against tmux reality on
 /// boot. The `session_runtime.last_status` column keeps its last-known value
@@ -139,6 +154,28 @@ pub async fn reconcile_on_boot(state: &AppState) {
             continue;
         }
         tracing::info!(name = %s.name, runtime = %s.runtime, "status reconcile: terminal gone → stopped");
+        // Consume the death-badge EDGE for native rows found dead at boot: the
+        // detector's auto-heal fires on `set_error`'s first-set edge, and
+        // without this a daemon restart would "discover" every long-dead
+        // session anew and try to heal it. Pre-setting the badge here (with
+        // the real reason when the exit marker has one) both explains the
+        // stop in the UI and makes the detector's later set_error a no-op.
+        // Sessions that were RUNNING at shutdown are healed deliberately by
+        // the post-update audit, which snapshots before this pass.
+        if s.runtime == RUNTIME_NATIVE {
+            DEATH_SEEN.insert(s.name.clone(), ());
+            if let Some(d) =
+                crate::sessions::native::death_marker(&s.name, &state.config.data_dir)
+            {
+                if d.unexpected {
+                    state.set_error(
+                        &s.name,
+                        HOLDER_DIED.to_string(),
+                        format!("terminal died: {}", d.reason),
+                    );
+                }
+            }
+        }
     }
 
     // ── REMOTE pass — per-host `tmux ls` with a 5s timeout each ──────────────
@@ -438,6 +475,10 @@ pub fn spawn_status_loop(state: AppState, name: String) {
         // cadence tier — not a fixed 4s — so a 1s-tier hot session
         // re-captures within ~1s. Seed it "stale" so the very first tick captures.
         let mut last_capture_at = Instant::now() - status::MAX_PREVIEW_STALENESS;
+        // Per-session memo for the A2 chat tail: what we last put on the delta
+        // and when. Lives here (not in `AppState`) because the detector loop is
+        // already the one-per-session actor that owns delta publication.
+        let mut chat_tail = ChatTailGate::new();
 
         // Sub-second wake: the hook endpoint pings this so a real Claude
         // notification surfaces well within the "1s" bound, not at the next
@@ -487,6 +528,7 @@ pub fn spawn_status_loop(state: AppState, name: String) {
                 &mut detector,
                 &mut last_tail,
                 &mut last_capture_at,
+                &mut chat_tail,
             )
             .await
             {
@@ -516,6 +558,8 @@ pub fn spawn_status_loop(state: AppState, name: String) {
 /// tail6 changed" SSE rule. `last_capture_at` is the time of the last actual
 /// `capture-pane`, used to bound the capture-skip optimization so the live
 /// preview never freezes while an agent streams (see [`status::should_skip_capture_within`]).
+/// `chat_tail` is the per-session A2 chat-tail gate (change + 1s debounce), also
+/// carried across ticks.
 ///
 /// Returns the session's status AS OF THIS TICK (the detector's `last_status`
 /// after the tick, whether it ran a capture or held on a skip). The loop feeds
@@ -527,6 +571,7 @@ pub async fn tick(
     detector: &mut StatusDetector,
     last_tail: &mut Option<Vec<String>>,
     last_capture_at: &mut Instant,
+    chat_tail: &mut ChatTailGate,
 ) -> anyhow::Result<Status> {
     // While the detector's internal status is still `Unknown` (cold-start), pull
     // the persisted `last_status` from the DB and force it in. This satisfies
@@ -606,12 +651,27 @@ pub async fn tick(
         Err(_) => return Ok(held),
     };
     if !rt.alive().await {
-        // Not running: the detector cannot capture. Leave the status untouched —
-        // a never-started session stays Unknown (API renders 'stopped'), and the
-        // explicit 'Any → Stopped' transition + side-effects on tmux death are a
-        // separate auto-actions concern deferred past the current core.
+        // The terminal is gone. When the backend can PROVE it (and say why), the
+        // session must flip to `stopped` NOW — that is the only way a session
+        // whose terminal died MID-RUN ever leaves its last status: the boot
+        // reconcile probes liveness once at startup, and the classifier below
+        // works off a capture, which can only ever yield active/waiting/idle. A
+        // native session whose holder crashed used to sit on `active` with a
+        // blank screen until somebody resumed it by hand.
+        if let Some(death) = rt.death().await {
+            return force_stopped_on_death(state, name, detector, persisted, death).await;
+        }
+        // No proof (tmux, or a native session that never had a holder): leave the
+        // status untouched — a never-started session stays Unknown (API renders
+        // 'stopped'), and the explicit 'Any → Stopped' transition + side-effects
+        // on tmux death are a separate auto-actions concern deferred past the
+        // current core.
         return Ok(held);
     }
+    // Alive again (a Resume, or a holder that came back): drop the "holder died"
+    // badge this loop raised, so the card is not stuck on a stale crash notice
+    // for a session that has no Claude hooks to clear it.
+    clear_holder_death_badge(state, name);
 
     // Heartbeat wire-up. The PTY reader is what stamps `pty_heartbeat` (so
     // the detector's heartbeat branch fires) and is normally spawned on the
@@ -630,6 +690,57 @@ pub async fn tick(
     // read the ANSI-stripped form, the colour-true tile preview reads the raw
     // form. A single shell-out feeds both — no extra `capture-pane` per tick.
     let raw_ansi = rt.capture_ansi(status::CAPTURE_LINES).await?;
+    // A BLANK capture from a backend that admits it has no view of the terminal
+    // is a placeholder, not a screen. Persisting it would overwrite the stored
+    // preview with nothing — the blank overview cards a daemon restart produced
+    // while a session's holder was dead (the native grid starts empty, and its
+    // capture calls deliberately answer rather than hang when no holder is
+    // there). Hold everything: no writeback, no classification, no broadcast.
+    // The status stays whatever it was, and the tick that follows the first real
+    // attach refreshes it.
+    if raw_ansi.trim().is_empty() && !rt.capture_is_authoritative().await {
+        // …but only for so long. The hold is there to survive the SECONDS a
+        // fresh daemon needs to attach and replay; a session that is still
+        // non-authoritative a minute later has a holder that answers the
+        // liveness probe (we got past `rt.alive()` above) and yet has never once
+        // served this daemon a grid. Holding forever is the silent freeze this
+        // whole wave is about — a card that keeps its last preview and its last
+        // status while nothing at all is behind it. So the hold is BOUNDED, and
+        // past the bound the session is treated as a death: badge, `stopped`,
+        // and the Resume affordance the user needs.
+        let waited = {
+            let mut slot = BLANK_HOLD
+                .entry(name.to_string())
+                .or_insert_with(|| BlankHold { since: Instant::now(), warned: false });
+            let waited = slot.since.elapsed();
+            if waited >= BLANK_HOLD_MAX && !slot.warned {
+                slot.warned = true;
+                tracing::warn!(
+                    name = %name,
+                    held_secs = waited.as_secs(),
+                    "status detector: the grid has never become authoritative — giving up on \
+                     the hold and reporting the terminal as gone",
+                );
+            }
+            waited
+        };
+        if waited < BLANK_HOLD_MAX {
+            tracing::debug!(
+                name = %name,
+                "status detector: blank capture from a runtime with no live terminal \
+                 view — keeping the stored preview",
+            );
+            return Ok(held);
+        }
+        let death = crate::sessions::runtime::TerminalDeath {
+            reason: "grid never became authoritative (holder unreachable)".to_string(),
+            unexpected: true,
+        };
+        return force_stopped_on_death(state, name, detector, persisted, death).await;
+    }
+    // A real capture: this session's view is healthy again, so the next blank
+    // one starts its own hold from scratch.
+    BLANK_HOLD.remove(name);
     // Stamp the capture time the moment a shell-out succeeds so the per-tier skip
     // bound (status::cadence_for) measures from the last REAL capture.
     *last_capture_at = Instant::now();
@@ -739,8 +850,21 @@ pub async fn tick(
         maybe_push_on_transition(state, name, s);
     }
 
-    // ── SSE `sessions` delta — when status committed OR the tail changed ───────
-    if committed.is_some() || tail_changed {
+    // ── A2 chat tail for the tile (zero new requests: it rides this delta) ────
+    // Sampled from the in-memory ring only — see `ChatTailGate::poll`. Sampled
+    // HERE, after the capture-skip early return, so it shares the delta the tick
+    // was already going to send; a tick that skipped its capture emits no delta
+    // at all, and the next real tick carries the newest tail anyway.
+    let chat_tail = chat_tail.poll(state.chat_store(name).as_deref());
+
+    // ── SSE `sessions` delta — when status committed OR a tail changed ─────────
+    // `chat_tail` joins the trigger for the same reason `preview_lines` is one:
+    // the transcript lands in batches up to ~30s after the pane went quiet
+    // (a0-findings: text-only first-visible p50 31.4s), so gating it behind a
+    // pane-tail change would strand the last turn's summary until the NEXT
+    // keystroke. The gate above already guarantees this fires at most once per
+    // second per session and only on a real change.
+    if committed.is_some() || tail_changed || chat_tail.is_some() {
         let mut item = serde_json::Map::new();
         item.insert("name".into(), Value::String(name.to_string()));
         if let Some(s) = committed {
@@ -772,6 +896,18 @@ pub async fn tick(
             );
             *last_tail = Some(tail);
         }
+        // The chat one-liner pair for the tile. Absent key = "unchanged" (never
+        // "empty"), exactly like `preview_lines`.
+        if let Some(t) = chat_tail {
+            match serde_json::to_value(&t) {
+                Ok(v) => {
+                    item.insert("chat_tail".into(), v);
+                }
+                // Unreachable for three owned strings + an i64; a serialisation
+                // failure must cost the chat tail, never the whole delta.
+                Err(e) => tracing::debug!(name = %name, error = %e, "chat_tail serialize failed"),
+            }
+        }
         broadcast(state, "sessions", json!({ "delta": [Value::Object(item)] }));
     }
 
@@ -784,6 +920,572 @@ pub async fn tick(
     state.record_recency(name, observed);
 
     Ok(observed)
+}
+
+/// How long the detector will keep a session's stored preview (and its status)
+/// while the runtime says its grid has NEVER become authoritative. Generous
+/// against the honest cause — a daemon that has just restarted has to connect,
+/// replay up to 8 MiB and only then counts as attached, and the pump's reconnect
+/// backoff is jittered up to 5 s — and short enough that a session nothing can
+/// serve does not sit there looking alive for the rest of the day.
+pub const BLANK_HOLD_MAX: Duration = Duration::from_secs(60);
+
+/// Since when each session has been serving blank, non-authoritative captures.
+#[derive(Debug, Clone, Copy)]
+struct BlankHold {
+    since: Instant,
+    /// The WARN is emitted once per hold, not once per 2 s tick.
+    warned: bool,
+}
+
+/// In-memory on purpose: the hold is about THIS daemon's view of the session,
+/// and a daemon restart legitimately starts the clock again.
+static BLANK_HOLD: once_cell::sync::Lazy<dashmap::DashMap<String, BlankHold>> =
+    once_cell::sync::Lazy::new(dashmap::DashMap::new);
+
+/// Test-only: pretend `name`'s blank hold started [`BLANK_HOLD_MAX`] ago.
+#[cfg(test)]
+pub(crate) fn expire_blank_hold(name: &str) {
+    let since = Instant::now()
+        .checked_sub(BLANK_HOLD_MAX + Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    BLANK_HOLD.insert(name.to_string(), BlankHold { since, warned: false });
+}
+
+/// The error type for the "your session's terminal died under it" badge. Rides
+/// the same in-memory `{type, message}` channel the hook-fed agent errors use
+/// (`rate_limit`, `billing_error`), so it appears on the overview card AND in
+/// the focus header with no new wire field; the frontend labels it
+/// "Terminal died" and puts the full reason in the tooltip.
+pub const HOLDER_DIED: &str = "holder_died";
+
+/// Force `session` to `Stopped` because its terminal is PROVABLY gone, pushing
+/// the flip through the same triplet every other lifecycle writer uses — DB,
+/// the status watch (the `wait` primitive's baseline), and the SSE `status` +
+/// `sessions` events — so overview tiles and the focus screen flip to the
+/// stopped UI (with its Resume/Start affordance) within one tick instead of
+/// showing a live-looking blank terminal forever.
+///
+/// IDEMPOTENT: the detector keeps ticking on a stopped session, so everything is
+/// gated on the PERSISTED status. Only the transition writes and broadcasts;
+/// subsequent ticks are a pair of in-memory reads.
+///
+/// An `unexpected` death (a holder that crashed or was killed, as opposed to a
+/// child that exited) also raises the in-memory error badge carrying the
+/// reason — the difference between the user seeing "holder died: panic: …" and
+/// seeing nothing at all.
+async fn force_stopped_on_death(
+    state: &AppState,
+    name: &str,
+    detector: &mut StatusDetector,
+    persisted: Option<Status>,
+    death: crate::sessions::runtime::TerminalDeath,
+) -> anyhow::Result<Status> {
+    // Keep the detector's own baseline in step, so the tick after a resume sees
+    // `stopped → active` as a real edge.
+    detector.force(Status::Stopped);
+    state.record_recency(name, Status::Stopped);
+
+    if death.unexpected {
+        let message = format!("terminal died: {}", death.reason);
+        if state.set_error(name, HOLDER_DIED.to_string(), message.clone()) {
+            broadcast(state, "sessions", json!({ "delta": [{
+                "name": name,
+                "error": { "type": HOLDER_DIED, "message": message },
+            }] }));
+        }
+        // AUTO-HEAL triggers on the DEATH_SEEN edge, not the persisted-status
+        // edge: the native reader's stream-death path (pty.rs) persists
+        // `stopped` within ~100ms of a holder dying — long before this tick —
+        // so `persisted == Stopped` below is the NORMAL case for a fresh death
+        // and a bottom-of-function spawn never ran (caught live in E2E: badge
+        // appeared, heal never fired). Nor is the badge-change edge safe: a
+        // boot-time badge with a slightly different message would re-trigger
+        // `set_error`. DEATH_SEEN is explicit: first observer of this death
+        // (detector here, or `reconcile_on_boot` pre-inserting at boot) claims
+        // the edge; the entry clears on the next alive tick.
+        if DEATH_SEEN.insert(name.to_string(), ()).is_none() {
+            spawn_auto_heal(state, name, &death.reason);
+        }
+    }
+
+    if persisted == Some(Status::Stopped) {
+        return Ok(Status::Stopped);
+    }
+    tracing::warn!(
+        name = %name,
+        reason = %death.reason,
+        unexpected = death.unexpected,
+        "status detector: terminal is gone → stopped",
+    );
+    db::sessions::set_last_status(&state.pool, name, Status::Stopped.as_str()).await?;
+    let version = {
+        let tx = state.status_watch_for(name);
+        let next = tx.borrow().1.wrapping_add(1);
+        tx.send_replace((Status::Stopped.as_str().to_string(), next));
+        next
+    };
+    broadcast(state, "status", json!({
+        "name": name,
+        "status": Status::Stopped.as_str(),
+        "version": version,
+    }));
+    broadcast(state, "sessions", json!({
+        "delta": [{ "name": name, "status": Status::Stopped.as_str() }],
+    }));
+    // A dead terminal ends the turn: no Task subagent can still be running.
+    if state.reset_subagents(name) {
+        broadcast(state, "sessions", json!({ "delta": [{ "name": name, "subagents": 0 }] }));
+    }
+    maybe_push_on_transition(state, name, Status::Stopped);
+
+    // (The auto-heal spawn lives on the badge edge near the top of this
+    // function — see the comment there for why the persisted-status edge is
+    // the wrong trigger.)
+    Ok(Status::Stopped)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTO-HEAL — one automatic restart after a terminal dies under a running agent
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// No second automatic restart for the same session inside this window. The
+/// point is a SINGLE recovery from a one-off fault, never a flapping loop: a
+/// session whose terminal dies again right after a heal has something
+/// systematically wrong with it (a crashing agent, a full disk, an OOM-happy
+/// host), and hammering it makes that worse while hiding it from the user
+/// behind a card that keeps looking healthy.
+pub const AUTO_HEAL_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+
+/// When each session was last auto-healed. In-memory on purpose: the cooldown
+/// exists to stop a flap within one daemon's lifetime, and a daemon restart is
+/// itself a legitimate reason to try again (that is what the post-update audit
+/// does).
+/// Death events the daemon has already SEEN (and, if eligible, healed) — the
+/// auto-heal edge. Inserted by the detector on a fresh death and PRE-inserted
+/// by `reconcile_on_boot` for sessions found dead at boot, so a daemon restart
+/// can never re-discover a long-dead session and heal it. Cleared on the next
+/// alive tick (same place the death badge clears), so a future death of the
+/// same session is a new edge.
+static DEATH_SEEN: once_cell::sync::Lazy<dashmap::DashMap<String, ()>> =
+    once_cell::sync::Lazy::new(dashmap::DashMap::new);
+
+static LAST_HEAL: once_cell::sync::Lazy<dashmap::DashMap<String, Instant>> =
+    once_cell::sync::Lazy::new(dashmap::DashMap::new);
+
+/// Why a heal did or did not happen. Returned rather than logged-and-forgotten
+/// so the post-update audit can COUNT outcomes and the tests can assert them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Heal {
+    /// A restart ran and the session is live again.
+    Healed,
+    /// A restart ran and failed — the session stays stopped, badge and all.
+    Failed,
+    /// `recovery.auto_heal` is off.
+    Disabled,
+    /// Another heal for this session landed less than [`AUTO_HEAL_COOLDOWN`]
+    /// ago.
+    Cooldown,
+    /// This session is not one we will restart unattended (see
+    /// [`heal_is_supported`]).
+    Unsupported,
+    /// The row is gone or archived — nothing to heal.
+    Gone,
+    /// The session stopped being the thing this heal was for while the heal was
+    /// deciding: the user pressed Stop or Resume, or another lifecycle op holds
+    /// the session lock. Their action wins.
+    Superseded,
+}
+
+/// Fire-and-forget [`auto_heal`]. The detector tick must not block on a `start`
+/// (which spawns a holder, waits for the agent's boot gate and can take
+/// seconds); every other session's classification would stall behind it.
+fn spawn_auto_heal(state: &AppState, name: &str, reason: &str) {
+    let state = state.clone();
+    let name = name.to_string();
+    let reason = reason.to_string();
+    tokio::spawn(async move {
+        auto_heal(&state, &name, &reason).await;
+    });
+}
+
+/// Can this session be restarted unattended WITHOUT losing the user's place?
+///
+/// * `claude` — only with a resume link (`cc_session_name` or
+///   `cc_conversation_id`). `start` turns that into `claude --resume …`, so the
+///   heal lands the user back in the same conversation. Without one, a heal
+///   would silently open a BLANK Claude wearing the dead session's name, which
+///   is worse than an honest "Terminal died" badge with a Resume button.
+/// * `shell` — a shell has no conversation to lose; a restart is just a fresh
+///   prompt, which is exactly what the user would do by hand.
+/// * everything else (`codex`, `kimi`, …) — restarted fresh. Their launchers
+///   own their own session continuity; supermux's job is to get the terminal
+///   back.
+fn heal_is_supported(s: &db::sessions::Session) -> bool {
+    if s.provider != "claude" {
+        return true;
+    }
+    !s.cc_session_name.trim().is_empty() || !s.cc_conversation_id.trim().is_empty()
+}
+
+/// Attempt ONE automatic recovery of `name` after its terminal died.
+///
+/// Guards, in order — each one is a reason to stay stopped rather than restart:
+///
+/// 1. the row still exists, is not archived, is NATIVE and is LOCAL (tmux is out
+///    of scope for this wave: its `death()` is `None`, so it never gets here,
+///    and a remote row has no local holder to heal);
+/// 2. [`heal_is_supported`] — a restart must not lose the user's place;
+/// 3. `recovery.auto_heal` is on (default ON, operator can disable);
+/// 4. no other heal for this session within [`AUTO_HEAL_COOLDOWN`]. The stamp is
+///    taken BEFORE the restart, so a heal that itself dies (or two callers
+///    racing — a detector tick and the boot audit) can never produce a second
+///    attempt inside the window.
+///
+/// On success the [`HOLDER_DIED`] badge is cleared and the session flows through
+/// `start`'s ordinary `starting → active` broadcasts, so the user sees a session
+/// that simply came back. The death is NOT hidden: it stays in `holder.log`, in
+/// the session dir's crash evidence, and in the WARN line this writes.
+pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
+    let s = match db::sessions::get(&state.pool, name).await {
+        Ok(Some(s)) if s.archived == 0 => s,
+        Ok(_) => return Heal::Gone,
+        Err(e) => {
+            tracing::warn!(name = %name, error = %e, "auto-heal: could not read the session row");
+            return Heal::Gone;
+        }
+    };
+    if s.runtime != RUNTIME_NATIVE || s.host_id.is_some() {
+        return Heal::Unsupported;
+    }
+    if !heal_is_supported(&s) {
+        tracing::info!(
+            name = %name,
+            provider = %s.provider,
+            "auto-heal: skipped — a claude session with no resume link would come back empty",
+        );
+        return Heal::Unsupported;
+    }
+    if !db::prefs::auto_heal_enabled(&state.pool).await {
+        tracing::info!(name = %name, "auto-heal: skipped — recovery.auto_heal is off");
+        return Heal::Disabled;
+    }
+    // Claim the window BEFORE doing anything slow. One atomic map entry op, so
+    // two racing callers (a detector tick and the boot audit) can not both win.
+    // `Instant` is monotonic-since-boot and can underflow on subtraction, hence
+    // the explicit occupied/vacant match rather than an `or_insert(now - window)`.
+    {
+        use dashmap::mapref::entry::Entry;
+        match LAST_HEAL.entry(name.to_string()) {
+            Entry::Occupied(mut slot) => {
+                let since = slot.get().elapsed();
+                if since < AUTO_HEAL_COOLDOWN {
+                    tracing::warn!(
+                        name = %name,
+                        reason = %reason,
+                        since_last_secs = since.as_secs(),
+                        "auto-heal: NOT restarting — already healed this session recently; \
+                         it stays stopped with the terminal-died badge",
+                    );
+                    return Heal::Cooldown;
+                }
+                slot.insert(Instant::now());
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(Instant::now());
+            }
+        }
+    }
+
+    // THE USER WINS. Everything above (the row read, the pref read, the cooldown
+    // claim) is `await`ed, and a person watching their session die reacts inside
+    // that window: they press Stop, or Resume, or delete it. Re-read the state
+    // now, as late as possible, and restart only a session that is still exactly
+    // what the death stamped — `stopped`, with no lifecycle op of its own in
+    // flight. Without this an auto-heal could resurrect a session the user had
+    // just deliberately stopped, which reads as the daemon fighting them.
+    if !still_death_stamped(state, name).await {
+        tracing::info!(
+            name = %name,
+            "auto-heal: skipped — the session moved on while we were deciding (a Stop, a \
+             Resume, or another lifecycle op is in flight)",
+        );
+        return Heal::Superseded;
+    }
+
+    tracing::warn!("auto-heal: restarting '{name}' after terminal death ({reason})");
+    match run_heal_start(state, name).await {
+        Ok(()) => {
+            // The session is serving again: drop the crash badge the detector
+            // raised. `start` already broadcast `starting → active`.
+            clear_holder_death_badge(state, name);
+            tracing::info!(name = %name, "auto-heal: '{name}' is back up");
+            Heal::Healed
+        }
+        Err(e) => {
+            tracing::error!(
+                name = %name,
+                error = %e,
+                "auto-heal: restart FAILED — the session stays stopped with its badge",
+            );
+            Heal::Failed
+        }
+    }
+}
+
+/// Is `name` still in the state a terminal death leaves behind — persisted
+/// `stopped`, and nobody else mid-operation on it?
+///
+/// The lock probe is the half that catches a Stop or a Resume the user started a
+/// moment ago: every mutating lifecycle op holds the per-session lock for its
+/// whole duration (a Stop can take seconds), and the row it is going to write
+/// has not been written yet. `try_lock` never blocks and the guard is dropped
+/// immediately — this is a probe, not a claim; `start` takes the lock properly
+/// when we go on to call it.
+async fn still_death_stamped(state: &AppState, name: &str) -> bool {
+    let lock = state.lock_for(name);
+    if lock.try_lock().is_err() {
+        return false;
+    }
+    matches!(
+        db::sessions::runtime(&state.pool, name).await.ok().flatten(),
+        Some(rt) if rt.last_status == Status::Stopped.as_str(),
+    )
+}
+
+/// The restart itself — the very same entry point the user's Resume button
+/// takes, so a healed claude session resumes its conversation exactly as a
+/// manual Resume would.
+async fn run_heal_start(state: &AppState, name: &str) -> anyhow::Result<()> {
+    #[cfg(test)]
+    {
+        HEAL_ATTEMPTS
+            .entry(name.to_string())
+            .and_modify(|n| *n += 1)
+            .or_insert(1);
+        // Test hook, compiled out of production builds: a lib test has no
+        // `pty-holder` binary to spawn, and the guard semantics (one attempt,
+        // then a cooldown) are what the tests are about — not `start`'s own
+        // behaviour, which has its own tests. Defaults to ON so no unrelated
+        // test can accidentally launch a session from a heal.
+        if HEAL_DRY_RUN.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+    }
+    crate::sessions::lifecycle::start(state, name, None).await?;
+    Ok(())
+}
+
+/// Test-only: how many times [`run_heal_start`] was entered, per session.
+#[cfg(test)]
+static HEAL_ATTEMPTS: once_cell::sync::Lazy<dashmap::DashMap<String, u32>> =
+    once_cell::sync::Lazy::new(dashmap::DashMap::new);
+
+/// Test-only: suppress the real `start` inside [`run_heal_start`]. See there.
+#[cfg(test)]
+/// Dry-run gate for the heal's restart. In PRODUCTION this must be false —
+/// a true default here shipped a no-op auto-heal (caught live in E2E: the
+/// death badge appeared but the session never restarted). Tests default it ON
+/// so unrelated tests can't spawn real sessions; the one end-to-end heal test
+/// flips it off explicitly.
+#[cfg(not(test))]
+static HEAL_DRY_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static HEAL_DRY_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Test-only: forget `name`'s cooldown stamp and attempt count.
+#[cfg(test)]
+pub(crate) fn reset_heal_state(name: &str) {
+    LAST_HEAL.remove(name);
+    HEAL_ATTEMPTS.remove(name);
+}
+
+/// Test-only: how many heal attempts `name` has had.
+#[cfg(test)]
+pub(crate) fn heal_attempts(name: &str) -> u32 {
+    HEAL_ATTEMPTS.get(name).map(|n| *n).unwrap_or(0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST-UPDATE ATTACH AUDIT
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// How long the audit waits after boot before judging anything. The native
+/// pump's reconnect backoff is randomised up to 5s and an attach has to replay
+/// the spool before it counts, so a verdict taken any earlier would fail
+/// sessions that were merely still settling. 20s is comfortably past that and
+/// still inside the window an operator watches a deploy.
+pub const AUDIT_DELAY: Duration = Duration::from_secs(20);
+
+/// One session the audit will hold to account: it was RUNNING when this daemon
+/// (or the previous one) went down, so after an update it had better be
+/// attached again.
+#[derive(Debug, Clone)]
+pub struct AuditTarget {
+    pub name: String,
+    /// The persisted `last_status` as it was BEFORE `reconcile_on_boot` rewrote
+    /// it — the whole point of snapshotting separately.
+    pub was: String,
+}
+
+/// What one audit pass found. Every field is in the single summary line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditSummary {
+    /// Sessions that were running at shutdown and got checked.
+    pub checked: usize,
+    /// …of those, still attached (or with a live holder) afterwards.
+    pub reattached: usize,
+    /// …of those, not attached but successfully auto-healed.
+    pub healed: usize,
+    /// …of those, still down (heal disabled, in cooldown, unsupported, failed).
+    pub failed: usize,
+    /// …of those, mid-START when the audit looked: not a verdict, and never a
+    /// heal (see [`post_update_audit`]).
+    pub skipped: usize,
+}
+
+/// Which sessions the post-update audit should check.
+///
+/// MUST be called BEFORE [`reconcile_on_boot`], which rewrites `last_status` to
+/// `stopped` for every session it finds dead — after that pass the "was it
+/// running at shutdown?" fact is gone. Native + local only: tmux sessions are
+/// out of scope for this wave and a remote row has no local holder to attach to.
+pub async fn snapshot_for_audit(state: &AppState) -> Vec<AuditTarget> {
+    let sessions = match db::sessions::list(&state.pool).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "post-update audit: could not list sessions");
+            return Vec::new();
+        }
+    };
+    let runtimes = match db::sessions::list_runtimes(&state.pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "post-update audit: could not list session runtimes");
+            return Vec::new();
+        }
+    };
+    let status_by_name: std::collections::HashMap<&str, &str> = runtimes
+        .iter()
+        .map(|r| (r.name.as_str(), r.last_status.as_str()))
+        .collect();
+
+    sessions
+        .iter()
+        .filter(|s| s.archived == 0 && s.runtime == RUNTIME_NATIVE && s.host_id.is_none())
+        .filter_map(|s| {
+            let was = *status_by_name.get(s.name.as_str())?;
+            // Only a session that was RUNNING owes us a re-attach. `starting`
+            // counts: a deploy that lands mid-start must not lose that session.
+            if !matches!(was, "active" | "idle" | "waiting" | "starting") {
+                return None;
+            }
+            Some(AuditTarget {
+                name: s.name.clone(),
+                was: was.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Schedule the one-shot post-update attach audit. Returns immediately; the
+/// audit itself runs [`AUDIT_DELAY`] later, off the boot path.
+pub fn spawn_post_update_audit(state: &AppState, targets: Vec<AuditTarget>) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(AUDIT_DELAY).await;
+        post_update_audit(&state, &targets).await;
+    });
+}
+
+/// EVERY update must leave an explicit trail: for each session that was running
+/// when the daemon went down, prove it is attached again — and if it is not, say
+/// so and try to fix it.
+///
+/// A session passes when THIS daemon's pump is attached to its holder, or when
+/// the non-destructive holder probe says the holder + child are still up (the
+/// pump may simply not have dialled yet for a session nobody has opened). Both
+/// checks are filesystem/in-memory only; neither dials the holder's socket,
+/// which would evict a live daemon connection.
+///
+/// A failure gets a WARN naming the session and — when the holder left one — the
+/// reason it recorded, then the same [`auto_heal`] the detector uses, cooldown
+/// and pref included. One INFO summary line is emitted ALWAYS, even for zero
+/// sessions, so "the audit ran and found nothing wrong" is distinguishable from
+/// "the audit never ran".
+pub async fn post_update_audit(state: &AppState, targets: &[AuditTarget]) -> AuditSummary {
+    let mut summary = AuditSummary {
+        checked: targets.len(),
+        ..Default::default()
+    };
+    for t in targets {
+        let name = t.name.as_str();
+        let ok = crate::sessions::native::attached(name)
+            || crate::sessions::native::holder_alive(name, &state.config.data_dir);
+        if ok {
+            summary.reattached += 1;
+            continue;
+        }
+        // MID-START is not a failure. `snapshot_for_audit` deliberately includes
+        // `starting` sessions, and a start that is still running has by
+        // definition no holder to be attached to yet — the holder is what it is
+        // busy spawning. WARNing about that would be noise, and healing it would
+        // be worse: `auto_heal` → `start` blocks on the very lock the running
+        // start holds, then starts the session a SECOND time behind it.
+        if is_mid_start(state, name).await {
+            tracing::info!("post-update audit: '{name}' is mid-start — no verdict");
+            summary.skipped += 1;
+            continue;
+        }
+        let reason = crate::sessions::native::death_reason(name, &state.config.data_dir)
+            .unwrap_or_else(|| "no exit marker — the holder vanished".to_string());
+        tracing::warn!("post-update audit: '{name}' failed to re-attach ({reason})");
+        match auto_heal(state, name, &reason).await {
+            Heal::Healed => summary.healed += 1,
+            _ => summary.failed += 1,
+        }
+    }
+    tracing::info!(
+        "post-update audit: {} sessions checked, {} re-attached, {} healed, {} failed, \
+         {} skipped (mid-start)",
+        summary.checked,
+        summary.reattached,
+        summary.healed,
+        summary.failed,
+        summary.skipped,
+    );
+    summary
+}
+
+/// Is a `start` for `name` running RIGHT NOW? Two independent signs, either of
+/// which means "come back later": the per-session lifecycle lock is held (a
+/// mutating op is in flight — `start` holds it end to end), or the persisted row
+/// still says `starting`.
+async fn is_mid_start(state: &AppState, name: &str) -> bool {
+    let lock = state.lock_for(name);
+    if lock.try_lock().is_err() {
+        return true;
+    }
+    matches!(
+        db::sessions::runtime(&state.pool, name).await.ok().flatten(),
+        Some(rt) if rt.last_status == "starting",
+    )
+}
+
+/// Drop the [`HOLDER_DIED`] badge once the session's terminal is serving again.
+/// Only ever clears OUR badge: an agent error from a `StopFailure` hook is a
+/// different fact with a different lifecycle (cleared by the next prompt).
+fn clear_holder_death_badge(state: &AppState, name: &str) {
+    // The terminal is alive again: the death is history — release the
+    // DEATH_SEEN edge so a FUTURE death of this session is a fresh heal edge.
+    DEATH_SEEN.remove(name);
+    let ours = state
+        .session_activity(name)
+        .and_then(|a| a.error)
+        .is_some_and(|(t, _)| t == HOLDER_DIED);
+    if ours && state.clear_error(name) {
+        broadcast(state, "sessions", json!({ "delta": [{ "name": name, "error": null }] }));
+    }
 }
 
 /// Session→board reaction. Called on a COMMITTED status
@@ -1064,6 +1766,75 @@ fn tail_lines(capture: &str) -> Vec<String> {
     lines[start..].iter().map(|s| s.to_string()).collect()
 }
 
+/// Publication policy for the tile chat tail on the `sessions` SSE delta.
+///
+/// One per session, owned by that session's detector loop — which is what makes
+/// the debounce per-session by construction (a busy session cannot throttle a
+/// quiet one).
+///
+/// Two gates, in order:
+/// 1. **change** — the same rule `preview_lines` uses: the delta carries what
+///    changed, and an idle session ticks forever;
+/// 2. **debounce** — at most one publication per [`CHAT_TAIL_MIN_INTERVAL`].
+///
+/// A suppressed tail is never "lost": it is simply not recorded as published, so
+/// the next tick past the window ships whatever the tail is *then* — the newest
+/// truth rather than a replay of a batch's intermediate states.
+///
+/// `None` in ⇒ `None` out. A session with no chat store (nobody attached) and a
+/// store whose ring is empty (or was just cleared by a resync) both omit the key
+/// rather than publishing an empty tail: on the wire, "empty chat" is a claim,
+/// and it is the exact claim A2's staleness work exists to stop making.
+pub struct ChatTailGate {
+    last: Option<ChatTail>,
+    last_sent_at: Option<Instant>,
+}
+
+impl Default for ChatTailGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChatTailGate {
+    /// A gate that has never published: the first non-empty tail it sees ships
+    /// immediately (a fresh detector loop must not sit on the tail for a second).
+    pub fn new() -> Self {
+        Self { last: None, last_sent_at: None }
+    }
+
+    /// Sample the session's ring and decide whether this tick publishes.
+    ///
+    /// Takes the NON-creating [`AppState::chat_store`](crate::state::AppState::chat_store)
+    /// result: a session nobody has a chat client on must not grow a store (and
+    /// therefore an in-memory transcript) just because its detector ticked. The
+    /// read is a `DashMap` hit plus a ring walk under the store's own mutex —
+    /// **never** a file read (a full recall scan per tile per tick would flood
+    /// the blocking pool; the live corpus is 8.9 MB).
+    fn poll(&mut self, store: Option<&ChatStore>) -> Option<ChatTail> {
+        self.poll_at(Instant::now(), store.and_then(|s| s.tail_summary()))
+    }
+
+    /// [`poll`](Self::poll) with the clock and the sample injected — the whole
+    /// policy, as a pure function, so the tests need no tmux and no sleeping.
+    fn poll_at(&mut self, now: Instant, current: Option<ChatTail>) -> Option<ChatTail> {
+        let current = current?;
+        if self.last.as_ref() == Some(&current) {
+            return None;
+        }
+        if let Some(sent) = self.last_sent_at {
+            if now.duration_since(sent) < CHAT_TAIL_MIN_INTERVAL {
+                // Deliberately does NOT update `last`: the change is still
+                // pending, so a later tick publishes the tail as it stands then.
+                return None;
+            }
+        }
+        self.last = Some(current.clone());
+        self.last_sent_at = Some(now);
+        Some(current)
+    }
+}
+
 /// Inverse of [`Status::as_str`] — parse the persisted token back into a
 /// [`Status`] so the detector loop can seed its internal `last_status` from the
 /// DB on spawn. Unknown tokens (including the literal `"unknown"`) return
@@ -1147,6 +1918,7 @@ mod board_reaction_tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = crate::db::init(&config).await.expect("init pool");
@@ -1317,14 +2089,18 @@ mod boot_reconcile_tests {
     fn fake_holder_state(dir: &std::path::Path, name: &str, running: bool) {
         let sdir = spool::session_dir(dir, name);
         std::fs::create_dir_all(&sdir).unwrap();
+        let pid = std::process::id();
         spool::write_meta(
             &sdir,
             &spool::Meta {
                 session: name.into(),
-                pid: if running { std::process::id() } else { 0 },
+                pid: if running { pid } else { 0 },
                 cols: 80,
                 rows: 24,
-                started_at: 0,
+                // A live holder's sidecar records when its child really started;
+                // the probe now checks that, because a LIVE pid alone is no
+                // proof of identity once pids get recycled.
+                started_at: crate::sessions::native::runtime::proc_start_unix(pid).unwrap_or(0),
                 command: "claude".into(),
             },
         )
@@ -1394,6 +2170,1161 @@ mod boot_reconcile_tests {
         let row = db::sessions::runtime(&state.pool, "never-ran").await.unwrap().unwrap();
         assert_eq!(row.last_status, "stopped");
         crate::sessions::native::forget("never-ran");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod chat_tail_tests {
+    //! The `chat_tail` delta key (fase A2, Task 5).
+    //!
+    //! [`ChatTailGate`] is the whole publication policy — change gate + debounce
+    //! — as a pure function of `(now, current tail)`, so it is tested without a
+    //! tmux, a tailer, or a clock that actually ticks. The tick body only reads
+    //! the ring and inserts what the gate returns.
+
+    use super::*;
+    use crate::sessions::chat::store::ChatTail;
+
+    fn tail(user: &str, agent: &str, ts: i64) -> ChatTail {
+        ChatTail { user: user.into(), agent: agent.into(), ts }
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // the plan names this test; keep it greppable
+    fn delta_carries_chat_tail_only_when_it_CHANGED() {
+        let t0 = Instant::now();
+        let mut gate = ChatTailGate::new();
+
+        // No ring (nobody is watching this session's chat) → the key is omitted
+        // entirely. An empty `chat_tail` on the wire would read as "this chat is
+        // empty", which is exactly the lie A2 exists to prevent.
+        assert_eq!(gate.poll_at(t0, None), None);
+
+        let first = tail("run the tests", "running them now", 10);
+        assert_eq!(
+            gate.poll_at(t0, Some(first.clone())),
+            Some(first.clone()),
+            "the first tail must publish"
+        );
+
+        // Unchanged, well past the debounce window → still omitted. This is the
+        // `preview_lines` gate's shape: the delta carries what CHANGED, and the
+        // detector ticks every 1-5s forever on an idle session.
+        assert_eq!(gate.poll_at(t0 + Duration::from_secs(5), Some(first.clone())), None);
+        assert_eq!(gate.poll_at(t0 + Duration::from_secs(30), Some(first)), None);
+
+        // A changed agent line publishes again.
+        let next = tail("run the tests", "3 failed", 20);
+        assert_eq!(
+            gate.poll_at(t0 + Duration::from_secs(31), Some(next.clone())),
+            Some(next.clone())
+        );
+
+        // A ring that went empty (a resync cleared it) must NOT blank the tile:
+        // the field is omitted, and the client keeps the last value it has.
+        assert_eq!(gate.poll_at(t0 + Duration::from_secs(60), None), None);
+
+        // Wire shape pin — the tile reads these three keys.
+        assert_eq!(
+            serde_json::to_value(&next).unwrap(),
+            json!({ "user": "run the tests", "agent": "3 failed", "ts": 20 })
+        );
+    }
+
+    #[test]
+    fn chat_tail_publication_is_debounced_to_at_most_one_per_second_per_session() {
+        // A landing batch is 30-100 entries (a0: tool-heavy turns) and every one
+        // of them moves the tail. One SSE broadcast per entry would be a fan-out
+        // storm to EVERY connected client, for a tile that shows one line.
+        assert_eq!(CHAT_TAIL_MIN_INTERVAL, Duration::from_secs(1));
+
+        let t0 = Instant::now();
+        let mut gate = ChatTailGate::new();
+        let first = tail("go", "a0", 0);
+        assert_eq!(gate.poll_at(t0, Some(first.clone())), Some(first));
+
+        let mut published = 0;
+        for i in 1..=100u64 {
+            // 100 distinct tails inside 500ms.
+            let t = t0 + Duration::from_millis(i * 5);
+            if gate.poll_at(t, Some(tail("go", &format!("a{i}"), i as i64))).is_some() {
+                published += 1;
+            }
+        }
+        assert_eq!(published, 0, "a landing batch must cost AT MOST one broadcast per second");
+
+        // Suppressed is not lost: the next tick past the window ships the NEWEST
+        // tail (the intermediate ones were never the truth for longer than 5ms).
+        let latest = tail("go", "a100", 100);
+        assert_eq!(
+            gate.poll_at(t0 + Duration::from_millis(1_001), Some(latest.clone())),
+            Some(latest.clone())
+        );
+        // …and the fresh publication re-arms the window.
+        assert_eq!(gate.poll_at(t0 + Duration::from_millis(1_500), Some(tail("go", "a101", 101))), None);
+
+        // "per session": the gate lives in the per-session detector loop, so a
+        // busy session can never throttle a quiet one.
+        let mut other = ChatTailGate::new();
+        let o = tail("other", "b0", 1);
+        assert_eq!(other.poll_at(t0 + Duration::from_millis(1), Some(o.clone())), Some(o));
+    }
+}
+
+#[cfg(test)]
+mod dead_holder_tests {
+    //! The two detector-side halves of the blank-screen incident.
+    //!
+    //! A native session's holder died mid-run. The boot reconcile had already
+    //! happened, and the running detector classifies off the CAPTURE — which can
+    //! only ever yield active/waiting/idle — so the session kept its last status
+    //! forever: a card that said "active", a focus screen that said nothing at
+    //! all, and 500s on input, for half an hour. Meanwhile the daemon kept
+    //! writing the empty grid's capture over the session's stored preview, which
+    //! is what emptied the overview card as well.
+
+    use super::board_reaction_tests::test_state;
+    use super::*;
+    use crate::sessions::native::spool;
+    use std::time::Instant;
+
+    async fn native_row(state: &AppState, name: &str, status: &str) {
+        let inp = crate::sessions::CreateInput {
+            name: name.into(),
+            display_name: None,
+            dir: Some("/tmp".into()),
+            desc: None,
+            provider: Some("claude".into()),
+            creator: None,
+            flags: None,
+            bypass_permissions: None,
+            tags: None,
+            branch: None,
+            mcp: None,
+            worktree: None,
+            host_id: None,
+            runtime: Some("native".into()),
+        };
+        crate::sessions::create(state, inp).await.expect("create");
+        db::sessions::set_last_status(&state.pool, name, status).await.unwrap();
+    }
+
+    /// One detector tick, driven directly (the loop's cadence is not under test).
+    async fn one_tick(state: &AppState, name: &str, seed: Status) -> Status {
+        let mut detector = StatusDetector::for_provider("claude");
+        detector.force(seed);
+        let mut last_tail = None;
+        // "stale" so the capture-skip optimization never hides the path.
+        let mut last_capture_at = Instant::now() - Duration::from_secs(60);
+        // A fresh gate per driven tick. These sessions have no chat ring, so
+        // `poll` answers `None` and the `chat_tail` key never reaches the delta
+        // — the holder-death assertions below are unaffected by fase A2.
+        let mut chat_tail = ChatTailGate::new();
+        tick(
+            state,
+            name,
+            &mut detector,
+            &mut last_tail,
+            &mut last_capture_at,
+            &mut chat_tail,
+        )
+        .await
+        .expect("tick")
+    }
+
+    fn drain(rx: &mut tokio::sync::broadcast::Receiver<SseEvent>) -> Vec<SseEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    /// (b) A REAL holder, killed mid-run without a chance to write its exit
+    /// marker — the production shape. The very next detector tick must flip the
+    /// session to `stopped` (DB + status watch + SSE, the same triplet every
+    /// other lifecycle writer uses) and surface WHY.
+    #[tokio::test]
+    async fn a_holder_that_dies_mid_run_is_forced_stopped_with_a_reason() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "crasher", "active").await;
+
+        // A real holder + a real child on a real pty.
+        let args = crate::sessions::native::holder::Args {
+            session: "crasher".to_string(),
+            dir: spool::session_dir(&dir, "crasher"),
+            socket: spool::socket_path(&dir, "crasher"),
+            cols: 80,
+            rows: 24,
+            command: "sleep 300".to_string(),
+        };
+        let holder = tokio::spawn(async move {
+            let _ = crate::sessions::native::holder::run(args).await;
+        });
+        let rt = state.runtime_for("crasher").await.expect("native runtime");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && !rt.alive().await {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(rt.alive().await, "the holder never came up");
+        let pid = rt.pane_pid().await.unwrap().expect("child pid");
+
+        // Kill it the way the incident did: the holder goes before it can write
+        // anything, and its child goes with it. What is left is exactly what the
+        // daemon woke up to — a stale `meta.json`, a socket nobody listens on,
+        // and NO exit marker.
+        //
+        // The holder here runs as a task rather than a process (there is no
+        // `pty-holder` binary in a unit test), and aborting that task leaves its
+        // own inner tasks — the accept loop and the pty pump — alive, so the
+        // daemon-side connection would never drop on its own. `stop_pump` stands
+        // in for the socket dying with a real holder process; every other fact
+        // the probe reads is genuine.
+        holder.abort();
+        // SAFETY: plain libc call; an already-reaped pid yields ESRCH.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        crate::sessions::native::runtime_for("crasher", &dir).stop_pump();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && rt.alive().await {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!rt.alive().await, "the probe still calls a dead holder alive");
+        assert!(
+            spool::read_exit(&spool::session_dir(&dir, "crasher")).is_none(),
+            "precondition: this is the NO-exit-marker crash path",
+        );
+
+        let mut sse = state.sse_tx.subscribe();
+        let observed = one_tick(&state, "crasher", Status::Active).await;
+
+        assert_eq!(observed, Status::Stopped, "the tick must settle on stopped");
+        let row = db::sessions::runtime(&state.pool, "crasher").await.unwrap().unwrap();
+        assert_eq!(row.last_status, "stopped", "the DB must say stopped");
+        assert_eq!(
+            state.status_watch_for("crasher").borrow().0,
+            "stopped",
+            "the wait primitive must see the transition",
+        );
+
+        let events = drain(&mut sse);
+        assert!(
+            events.iter().any(|e| e.event == "status"
+                && e.payload["status"] == "stopped"
+                && e.payload["name"] == "crasher"),
+            "an SSE status event must flip connected clients to the stopped UI",
+        );
+
+        // …and the user is told WHY, instead of being shown nothing.
+        let error = state
+            .session_activity("crasher")
+            .and_then(|a| a.error)
+            .expect("a crashed holder must raise the error badge");
+        assert_eq!(error.0, HOLDER_DIED);
+        assert!(
+            error.1.contains("terminal died"),
+            "the badge must carry the reason, got {:?}",
+            error.1,
+        );
+
+        // IDEMPOTENT: the loop keeps ticking on a stopped session, and must not
+        // re-broadcast the same transition every few seconds.
+        let mut sse = state.sse_tx.subscribe();
+        assert_eq!(one_tick(&state, "crasher", Status::Stopped).await, Status::Stopped);
+        assert!(
+            !drain(&mut sse).iter().any(|e| e.event == "status"),
+            "a second tick on an already-stopped session must be silent",
+        );
+
+        crate::sessions::native::forget("crasher");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (c) A daemon that has never attached holds an EMPTY grid, and its capture
+    /// calls answer from it rather than hanging (a stopped session must never
+    /// block a capture). Persisting that answer is what blanked the overview
+    /// cards after a restart: the good preview was overwritten with nothing.
+    #[tokio::test]
+    async fn an_unattached_daemon_never_blanks_the_stored_preview() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "preview", "idle").await;
+        db::sessions::set_last_capture(&state.pool, "preview", "real screen", "real screen")
+            .await
+            .unwrap();
+
+        // A holder that PROBES alive (fresh pid + honest metadata) but that this
+        // daemon has no connection to — there is no socket to dial, so the pump
+        // never attaches and the grid stays empty. This is the deploy/restart
+        // window, and the window in which a dead holder's session lived.
+        let sdir = spool::session_dir(&dir, "preview");
+        std::fs::create_dir_all(&sdir).unwrap();
+        let pid = std::process::id();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: "preview".into(),
+                pid,
+                cols: 80,
+                rows: 24,
+                started_at: crate::sessions::native::runtime::proc_start_unix(pid).unwrap_or(0),
+                command: "claude".into(),
+            },
+        )
+        .unwrap();
+
+        let rt = state.runtime_for("preview").await.expect("native runtime");
+        assert!(rt.alive().await, "precondition: the holder probes alive");
+        assert!(
+            !rt.capture_is_authoritative().await,
+            "precondition: nothing has ever attached, so the grid is a placeholder",
+        );
+        assert!(rt.capture_ansi(status::CAPTURE_LINES).await.unwrap().trim().is_empty());
+
+        let observed = one_tick(&state, "preview", Status::Idle).await;
+
+        let row = db::sessions::runtime(&state.pool, "preview").await.unwrap().unwrap();
+        assert_eq!(
+            row.last_capture, "real screen",
+            "a blank placeholder capture must NEVER overwrite a real preview",
+        );
+        assert_eq!(row.last_capture_ansi, "real screen");
+        assert_eq!(observed, Status::Idle, "the held status survives the skipped tick");
+
+        crate::sessions::native::forget("preview");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (d) …but the hold is BOUNDED. The same "holder probes alive, nothing has
+    /// ever attached" state, left alone for [`BLANK_HOLD_MAX`], is not a session
+    /// that is still settling — it is one nothing can serve, and holding its
+    /// preview and status for ever is precisely the silent freeze the user sat
+    /// in front of. Past the bound the detector reports it as gone.
+    #[tokio::test]
+    async fn a_blank_grid_that_never_becomes_authoritative_stops_being_held() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "frozen", "active").await;
+        db::sessions::set_last_capture(&state.pool, "frozen", "real screen", "real screen")
+            .await
+            .unwrap();
+        let sdir = spool::session_dir(&dir, "frozen");
+        std::fs::create_dir_all(&sdir).unwrap();
+        let pid = std::process::id();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: "frozen".into(),
+                pid,
+                cols: 80,
+                rows: 24,
+                started_at: crate::sessions::native::runtime::proc_start_unix(pid).unwrap_or(0),
+                command: "claude".into(),
+            },
+        )
+        .unwrap();
+
+        // Inside the window: held, exactly as the test above pins.
+        assert_eq!(one_tick(&state, "frozen", Status::Active).await, Status::Active);
+        let row = db::sessions::runtime(&state.pool, "frozen").await.unwrap().unwrap();
+        assert_eq!(row.last_status, "active", "the hold keeps the status while it lasts");
+        assert_eq!(row.last_capture, "real screen");
+
+        // Past it: a death-equivalent, with the badge that names the evidence.
+        expire_blank_hold("frozen");
+        assert_eq!(one_tick(&state, "frozen", Status::Active).await, Status::Stopped);
+        let row = db::sessions::runtime(&state.pool, "frozen").await.unwrap().unwrap();
+        assert_eq!(row.last_status, "stopped", "an endless blank must surface as stopped");
+        assert_eq!(
+            row.last_capture, "real screen",
+            "…and it still must not overwrite the preview with blanks",
+        );
+        let error = state.session_activity("frozen").and_then(|a| a.error);
+        let (kind, message) = error.expect("the user must be told why it stopped");
+        assert_eq!(kind, HOLDER_DIED);
+        assert!(
+            message.contains("never became authoritative"),
+            "the badge must name the evidence, got {message:?}",
+        );
+
+        BLANK_HOLD.remove("frozen");
+        crate::sessions::native::forget("frozen");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    //! The two automatic recoveries of this wave, plus the audit that proves an
+    //! update did not quietly leave a session behind.
+    //!
+    //! * ORPHAN REAPING — a holder that dies while its CHILD survives leaves the
+    //!   child reparented to `init` with a live pid in `meta.json` and no `exit`
+    //!   marker. `Spool::create` refuses to run over exactly that state, so the
+    //!   holder a Resume spawns bailed out and the Resume failed. The reap runs
+    //!   in `start`, in front of the spawn.
+    //! * AUTO-HEAL — one automatic restart after an UNEXPECTED death, guarded by
+    //!   a pref, a support check and a per-session cooldown so a flapping session
+    //!   stays stopped (visibly, with its badge) instead of looping.
+    //! * POST-UPDATE AUDIT — one pass, ~20s after boot, over the sessions that
+    //!   were running at shutdown, ending in a single summary line.
+
+    use super::board_reaction_tests::test_state;
+    use super::*;
+    use crate::sessions::native::spool;
+
+    /// A native, local session row — inserted directly (not via
+    /// `sessions::create`) so no detector loop races the assertions.
+    async fn native_row(state: &AppState, name: &str, provider: &str, status: &str) {
+        db::sessions::insert_minimal(&state.pool, name, "/tmp", provider)
+            .await
+            .unwrap();
+        db::sessions::set_runtime(&state.pool, name, RUNTIME_NATIVE)
+            .await
+            .unwrap();
+        // `set_last_status` is a plain UPDATE — the `session_runtime` row has to
+        // exist first (in production `start` creates it).
+        db::sessions::ensure_runtime(&state.pool, name, "test-token")
+            .await
+            .unwrap();
+        db::sessions::set_last_status(&state.pool, name, status)
+            .await
+            .unwrap();
+    }
+
+    /// `/proc/<pid>/stat` field 4. Used to WAIT for the orphan to be reparented
+    /// to `init`, which is the fact that makes it an orphan.
+    fn ppid(pid: u32) -> Option<u32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let rest = &stat[stat.rfind(')')? + 1..];
+        rest.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    fn alive(pid: u32) -> bool {
+        // SAFETY: plain libc call with signal 0 — nothing is delivered.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    /// Fork a REAL process that outlives its parent: `sh` backgrounds `sleep`
+    /// and exits, so the sleep is reparented to `init`. That is precisely the
+    /// shape a holder that died without taking its child down leaves behind.
+    fn spawn_real_orphan() -> u32 {
+        spawn_real_orphan_running("sleep 300")
+    }
+
+    /// [`spawn_real_orphan`] running an arbitrary command (which must not
+    /// contain single quotes), so a test can make the orphan survive `SIGTERM`
+    /// and reach the escalation path.
+    ///
+    /// `setsid` is what makes it a faithful stand-in: the holder's child calls
+    /// `setsid` too, so its pgid EQUALS its pid, which is the assumption the
+    /// whole `killpg`-the-group reap rests on. A background job in a
+    /// non-interactive shell inherits its parent's (already dead) group instead,
+    /// and would prove nothing about the real path.
+    fn spawn_real_orphan_running(command: &str) -> u32 {
+        // The redirections matter: a background job that inherits our stdout
+        // pipe keeps it open, and `output()` would block on EOF for the whole
+        // 300s.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "setsid sh -c '{command}' </dev/null >/dev/null 2>&1 & echo $!"
+            ))
+            .output()
+            .expect("fork an orphan");
+        let pid: u32 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("orphan pid");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && ppid(pid) != Some(1) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        pid
+    }
+
+    /// THE GAP, end to end. A crashed holder + a surviving child; `Spool::create`
+    /// refuses to run over it (asserted, so this test fails loudly if that
+    /// refusal is ever weakened rather than silently testing nothing); `start`
+    /// reaps the orphan, preserves the crashed spool as evidence, and a fresh
+    /// holder comes up on the cleared dir with the session live again.
+    #[tokio::test]
+    async fn start_reaps_an_orphaned_child_and_brings_a_new_holder_up() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "orphaned", "shell", "active").await;
+        let sdir = spool::session_dir(&dir, "orphaned");
+        std::fs::create_dir_all(&sdir).unwrap();
+
+        let orphan = spawn_real_orphan();
+        assert_eq!(ppid(orphan), Some(1), "precondition: reparented to init");
+
+        // What the dead holder left on disk: its last screen, a sidecar naming
+        // the still-live child, and NO exit marker.
+        std::fs::write(spool::spool_path(&sdir), b"the screen when it crashed").unwrap();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: "orphaned".into(),
+                pid: orphan,
+                cols: 80,
+                rows: 24,
+                started_at: crate::sessions::native::runtime::proc_start_unix(orphan).unwrap_or(0),
+                command: "bash".into(),
+            },
+        )
+        .unwrap();
+        spool::clear_exit(&sdir);
+
+        // PRECONDITION — the refusal this whole fix exists to clear.
+        let refused = spool::Spool::create(&sdir);
+        let err = refused.err().expect("Spool::create must refuse a live pid");
+        assert!(
+            err.to_string().contains("refusing to truncate"),
+            "unexpected refusal text: {err}",
+        );
+        assert!(
+            spool::spool_path(&sdir).exists(),
+            "the refusal must leave the crashed spool intact",
+        );
+
+        // The `pty-holder` binary `start` execs does not exist in a lib test, so
+        // point the spawn at a harmless no-op and stand the REAL holder up here
+        // instead — the moment the reap has cleared the dir, exactly as the
+        // exec'd one would. `Spool::create` inside `holder::run` is the same
+        // refusal path, so this only succeeds if the reap really worked.
+        // (No other test calls `NativeSession::spawn`, so the env var is safe.)
+        std::env::set_var("SUPERMUX_HOLDER_BIN", "/bin/true");
+        let hargs = crate::sessions::native::holder::Args {
+            session: "orphaned".to_string(),
+            dir: sdir.clone(),
+            socket: spool::socket_path(&dir, "orphaned"),
+            cols: 80,
+            rows: 24,
+            command: "sleep 300".to_string(),
+        };
+        let meta_path = sdir.join("meta.json");
+        let holder = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline && meta_path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = crate::sessions::native::holder::run(hargs).await;
+        });
+
+        let started = crate::sessions::lifecycle::start(&state, "orphaned", None).await;
+        assert!(started.is_ok(), "start must recover: {:?}", started.err());
+
+        // The orphan is gone…
+        assert!(!alive(orphan), "the orphaned child must have been reaped");
+        // …its screen was PRESERVED, not deleted…
+        let evidence = sdir.join(crate::sessions::native::CRASHED_SPOOL);
+        assert_eq!(
+            std::fs::read_to_string(&evidence).unwrap(),
+            "the screen when it crashed",
+            "the crashed run's spool must be kept aside as evidence",
+        );
+        // …and a NEW holder owns the session now.
+        let meta = spool::read_meta(&sdir).expect("the new holder wrote its sidecar");
+        assert_ne!(meta.pid, orphan, "a new child, not the reaped one");
+        assert!(alive(meta.pid), "the new child is running");
+        let rt = state.runtime_for("orphaned").await.unwrap();
+        assert!(rt.alive().await, "the session must be live again");
+
+        // SAFETY: plain libc call; an already-reaped pid yields ESRCH.
+        unsafe {
+            libc::killpg(meta.pid as i32, libc::SIGKILL);
+            libc::kill(orphan as i32, libc::SIGKILL);
+        }
+        holder.abort();
+        std::env::remove_var("SUPERMUX_HOLDER_BIN");
+        crate::sessions::native::forget("orphaned");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The reap must be INERT for a session that is genuinely serving — it is
+    /// reached on every native `start`, including the "wake an already-running
+    /// session" one, and killing that session's process group would be the worst
+    /// bug in this wave.
+    #[tokio::test]
+    async fn reap_never_touches_a_live_session_or_a_clean_stop() {
+        let (_state, dir) = test_state().await;
+        let sdir = spool::session_dir(&dir, "live");
+        std::fs::create_dir_all(&sdir).unwrap();
+        let me = std::process::id();
+        std::fs::write(spool::spool_path(&sdir), b"live bytes").unwrap();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: "live".into(),
+                pid: me,
+                cols: 80,
+                rows: 24,
+                started_at: crate::sessions::native::runtime::proc_start_unix(me).unwrap_or(0),
+                command: "bash".into(),
+            },
+        )
+        .unwrap();
+        spool::clear_exit(&sdir);
+        assert!(
+            crate::sessions::native::runtime::probe_alive(&sdir),
+            "precondition: this session probes ALIVE",
+        );
+
+        assert!(
+            crate::sessions::native::reap_orphan("live", &dir).await.unwrap().is_none(),
+            "a live session must never be reaped",
+        );
+        assert!(spool::read_meta(&sdir).is_some(), "meta.json survives");
+        assert!(spool::spool_path(&sdir).exists(), "out.raw survives");
+
+        // A CLEAN stop → start cycle (marker written, pid gone) is likewise not
+        // an orphan: `Spool::create` has no quarrel with it, so nothing moves.
+        let sdir = spool::session_dir(&dir, "stopped");
+        std::fs::create_dir_all(&sdir).unwrap();
+        std::fs::write(spool::spool_path(&sdir), b"old bytes").unwrap();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: "stopped".into(),
+                pid: 0,
+                cols: 80,
+                rows: 24,
+                started_at: 0,
+                command: "bash".into(),
+            },
+        )
+        .unwrap();
+        spool::mark_exit(&sdir, 0);
+        assert!(
+            crate::sessions::native::reap_orphan("stopped", &dir).await.unwrap().is_none(),
+            "a cleanly stopped session is not an orphan",
+        );
+        assert!(spool::spool_path(&sdir).exists(), "its spool is left alone");
+        assert!(spool::read_exit(&sdir).is_some(), "its exit marker is left alone");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Write the sidecar a dead holder leaves behind for `name`: it names
+    /// `pid` as the still-live child and (honestly) when that pid started.
+    fn write_orphan_meta(dir: &std::path::Path, name: &str, pid: u32) {
+        let sdir = spool::session_dir(dir, name);
+        std::fs::create_dir_all(&sdir).unwrap();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: name.into(),
+                pid,
+                cols: 80,
+                rows: 24,
+                started_at: crate::sessions::native::runtime::proc_start_unix(pid).unwrap_or(0),
+                command: "bash".into(),
+            },
+        )
+        .unwrap();
+        spool::clear_exit(&sdir);
+    }
+
+    /// THE TOCTOU. `SIGTERM` … 600 ms … `SIGKILL` is a window in which the pid
+    /// can be freed and handed to somebody else, and the proof that authorised
+    /// the kill was taken BEFORE it. So the proof is re-taken, and a pid that is
+    /// no longer provably ours is left alone — a missed kill is recoverable,
+    /// `SIGKILL`ing a stranger's process group is not.
+    #[tokio::test]
+    async fn the_sigkill_escalation_re_proves_the_pid_first() {
+        let (_state, dir) = test_state().await;
+        // An orphan that IGNORES SIGTERM, so the reap has to reach the
+        // escalation branch to have any effect at all.
+        let orphan = spawn_real_orphan_running("trap \"\" TERM; while :; do sleep 1; done");
+        assert_eq!(ppid(orphan), Some(1), "precondition: reparented to init");
+        write_orphan_meta(&dir, "toctou", orphan);
+
+        // Honest for the first proof (so the SIGTERM is sent), a stranger by the
+        // time the escalation asks again.
+        crate::sessions::native::reap_hooks::vanish_after("toctou", 1);
+        let reaped = crate::sessions::native::reap_orphan("toctou", &dir)
+            .await
+            .expect("an orphaned session is still reaped")
+            .expect("there was an orphan to reap");
+        crate::sessions::native::reap_hooks::clear("toctou");
+
+        assert!(reaped.signalled, "the first, honest proof authorised the SIGTERM");
+        assert!(
+            !reaped.killed,
+            "the escalation must NOT fire once the pid stopped being provably ours",
+        );
+        assert!(
+            alive(orphan),
+            "a pid that is no longer ours must survive the reap untouched",
+        );
+
+        // SAFETY: plain libc call; an already-reaped pid yields ESRCH.
+        unsafe {
+            libc::killpg(orphan as i32, libc::SIGKILL);
+            libc::kill(orphan as i32, libc::SIGKILL);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// UNPROVABLE is not "probably fine". A live pid whose identity cannot be
+    /// established means the session dir may still belong to a running agent:
+    /// clearing `meta.json` there lifts `Spool::create`'s refusal and puts a
+    /// SECOND agent on one session. The reap refuses, and `start` fails visibly.
+    #[tokio::test]
+    async fn an_unprovable_identity_refuses_the_reap_instead_of_clearing_it() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "unprovable", "shell", "stopped").await;
+        let orphan = spawn_real_orphan();
+        write_orphan_meta(&dir, "unprovable", orphan);
+        let sdir = spool::session_dir(&dir, "unprovable");
+        std::fs::write(spool::spool_path(&sdir), b"somebody may still own this").unwrap();
+
+        crate::sessions::native::reap_hooks::unprovable("unprovable");
+        let refused = crate::sessions::native::reap_orphan("unprovable", &dir)
+            .await
+            .expect_err("an unprovable live pid must refuse the reap");
+        assert_eq!(
+            refused,
+            crate::sessions::native::ReapRefused::UnprovableIdentity { pid: orphan },
+        );
+        assert!(alive(orphan), "nothing may be signalled");
+        assert!(spool::read_meta(&sdir).is_some(), "the sidecar must be left in place");
+        assert!(
+            spool::spool_path(&sdir).exists(),
+            "and the spool must not be rotated aside",
+        );
+
+        // …and the start it is guarding fails LOUDLY rather than starting a
+        // second agent on this dir.
+        let err = crate::sessions::lifecycle::start(&state, "unprovable", None)
+            .await
+            .expect_err("start must not proceed over an unprovable session dir");
+        assert!(
+            err.to_string().contains("can not be proven"),
+            "the error must say why, got {err}",
+        );
+        crate::sessions::native::reap_hooks::clear("unprovable");
+
+        // SAFETY: plain libc call; an already-reaped pid yields ESRCH.
+        unsafe {
+            libc::kill(orphan as i32, libc::SIGKILL);
+        }
+        crate::sessions::native::forget("unprovable");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// ONE heal per death, then a cooldown. The second death inside the window
+    /// must leave the session stopped (badge and all) rather than start a
+    /// restart loop against something that is systematically broken.
+    /// The E2E-caught race: the native reader persists `stopped` ~100ms after a
+    /// holder dies, so by the detector's tick `persisted == Stopped` already —
+    /// the heal must fire anyway (DEATH_SEEN edge), exactly once; and a boot
+    /// that pre-inserted the edge (long-dead session) must suppress it.
+    #[tokio::test]
+    async fn the_heal_edge_survives_a_racing_stopped_write_and_respects_boot_preseed() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "racer", "shell", "stopped").await;
+        reset_heal_state("racer");
+        DEATH_SEEN.remove("racer");
+        let death = || crate::sessions::runtime::TerminalDeath {
+            reason: "holder is gone (test)".into(),
+            unexpected: true,
+        };
+        let mut det = StatusDetector::new();
+        // First observation with the status ALREADY persisted as Stopped (the
+        // race): the heal must still be spawned once.
+        force_stopped_on_death(&state, "racer", &mut det, Some(Status::Stopped), death())
+            .await
+            .unwrap();
+        // The spawn is fire-and-forget; give it a beat.
+        for _ in 0..50 {
+            if heal_attempts("racer") == 1 { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(heal_attempts("racer"), 1, "heal must fire despite persisted==Stopped");
+        // Repeat ticks: edge already claimed → no second heal.
+        force_stopped_on_death(&state, "racer", &mut det, Some(Status::Stopped), death())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert_eq!(heal_attempts("racer"), 1, "repeat ticks must not re-heal");
+
+        // Boot pre-seed: a session found dead AT BOOT must never heal via the
+        // detector edge.
+        native_row(&state, "longdead", "shell", "stopped").await;
+        reset_heal_state("longdead");
+        DEATH_SEEN.insert("longdead".to_string(), ());
+        force_stopped_on_death(&state, "longdead", &mut det, Some(Status::Stopped), death())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert_eq!(heal_attempts("longdead"), 0, "boot-preseeded edge must suppress the heal");
+        DEATH_SEEN.remove("racer");
+        DEATH_SEEN.remove("longdead");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn auto_heal_fires_once_then_holds_off_for_the_cooldown() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        // `stopped` is what a terminal death leaves behind, and what `auto_heal`
+        // now re-reads before restarting anything (a user Stop must win).
+        native_row(&state, "flapper", "claude", "stopped").await;
+        db::sessions::set_cc_conversation_id(&state.pool, "flapper", "conv-1")
+            .await
+            .unwrap();
+        reset_heal_state("flapper");
+
+        assert_eq!(
+            auto_heal(&state, "flapper", "panic: boom").await,
+            Heal::Healed,
+            "the first unexpected death earns one restart",
+        );
+        assert_eq!(heal_attempts("flapper"), 1);
+
+        assert_eq!(
+            auto_heal(&state, "flapper", "panic: boom again").await,
+            Heal::Cooldown,
+            "a second death inside the cooldown must NOT restart again",
+        );
+        assert_eq!(
+            heal_attempts("flapper"),
+            1,
+            "the restart path must not have been entered a second time",
+        );
+
+        reset_heal_state("flapper");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The operator's off-switch. `recovery.auto_heal = off` means a dead
+    /// terminal stays dead until a human presses Resume.
+    #[tokio::test]
+    async fn the_pref_disables_auto_heal_and_defaults_on() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "prefless", "shell", "stopped").await;
+        reset_heal_state("prefless");
+
+        assert!(
+            db::prefs::auto_heal_enabled(&state.pool).await,
+            "an unconfigured install must default to ON",
+        );
+
+        db::prefs::set_auto_heal_enabled(&state.pool, false).await.unwrap();
+        assert!(!db::prefs::auto_heal_enabled(&state.pool).await);
+        assert_eq!(
+            auto_heal(&state, "prefless", "signal: SIGKILL").await,
+            Heal::Disabled,
+        );
+        assert_eq!(heal_attempts("prefless"), 0, "nothing was restarted");
+
+        db::prefs::set_auto_heal_enabled(&state.pool, true).await.unwrap();
+        assert_eq!(auto_heal(&state, "prefless", "signal: SIGKILL").await, Heal::Healed);
+        assert_eq!(heal_attempts("prefless"), 1);
+
+        reset_heal_state("prefless");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A claude session with no resume link would come back as a BLANK claude
+    /// wearing the dead session's name — worse than an honest badge. tmux and
+    /// remote rows are likewise out of scope.
+    #[tokio::test]
+    async fn auto_heal_refuses_what_it_can_not_restore() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "linkless", "claude", "active").await;
+        native_row(&state, "tmuxy", "shell", "active").await;
+        db::sessions::set_runtime(&state.pool, "tmuxy", "tmux").await.unwrap();
+        reset_heal_state("linkless");
+        reset_heal_state("tmuxy");
+
+        assert_eq!(
+            auto_heal(&state, "linkless", "holder is gone").await,
+            Heal::Unsupported,
+            "claude without a resume link stays stopped",
+        );
+        assert_eq!(
+            auto_heal(&state, "tmuxy", "holder is gone").await,
+            Heal::Unsupported,
+            "tmux rows are untouched by this wave",
+        );
+        assert_eq!(
+            auto_heal(&state, "no-such-session", "holder is gone").await,
+            Heal::Gone,
+        );
+        assert_eq!(heal_attempts("linkless"), 0);
+        assert_eq!(heal_attempts("tmuxy"), 0);
+
+        reset_heal_state("linkless");
+        reset_heal_state("tmuxy");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// THE REAL THING. Every other heal test stops at the guard and returns
+    /// through the dry-run hook, which proves the guards and nothing about the
+    /// recovery. This one turns the hook OFF and drives an actual restart: a
+    /// session whose holder died (crash marker, no live pid) goes through
+    /// `auto_heal` → `lifecycle::start` → a REAL holder on a REAL pty, and comes
+    /// out the other side attached, with an authoritative grid.
+    #[tokio::test]
+    async fn auto_heal_really_restarts_a_dead_session_end_to_end() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        // `stopped` + a crash marker is exactly what `force_stopped_on_death`
+        // leaves behind before it spawns the heal.
+        native_row(&state, "healme", "shell", "stopped").await;
+        reset_heal_state("healme");
+        let sdir = spool::session_dir(&dir, "healme");
+        std::fs::create_dir_all(&sdir).unwrap();
+        std::fs::write(spool::spool_path(&sdir), b"the screen when it died").unwrap();
+        spool::mark_exit_reason(&sdir, -1, "panic: injected");
+
+        let rt = state.runtime_for("healme").await.unwrap();
+        assert!(!rt.alive().await, "precondition: the session is dead");
+
+        // Same rig as the orphan test: `start` execs `SUPERMUX_HOLDER_BIN`, and
+        // a lib test has no `pty-holder` binary — so point it at a no-op and
+        // stand the real holder up here the moment `spawn` clears the marker.
+        std::env::set_var("SUPERMUX_HOLDER_BIN", "/bin/true");
+        let hargs = crate::sessions::native::holder::Args {
+            session: "healme".to_string(),
+            dir: sdir.clone(),
+            socket: spool::socket_path(&dir, "healme"),
+            cols: 80,
+            rows: 24,
+            command: "sleep 300".to_string(),
+        };
+        let exit_marker = sdir.join("exit");
+        let holder = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline && exit_marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = crate::sessions::native::holder::run(hargs).await;
+        });
+
+        HEAL_DRY_RUN.store(false, std::sync::atomic::Ordering::Relaxed);
+        let outcome = auto_heal(&state, "healme", "panic: injected").await;
+        HEAL_DRY_RUN.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        assert_eq!(outcome, Heal::Healed, "the restart must actually have worked");
+        assert_eq!(heal_attempts("healme"), 1);
+        assert!(rt.alive().await, "the healed session must be serving again");
+        assert!(
+            rt.capture_is_authoritative().await,
+            "a healed session's grid must be REAL — an attach that never happened, or a \
+             delta the daemon had to reject, would leave it a blank placeholder",
+        );
+        let meta = spool::read_meta(&sdir).expect("the new holder wrote its sidecar");
+        assert!(alive(meta.pid), "a live child on a real pty");
+
+        // SAFETY: plain libc call; an already-reaped pid yields ESRCH.
+        unsafe {
+            libc::killpg(meta.pid as i32, libc::SIGKILL);
+        }
+        holder.abort();
+        std::env::remove_var("SUPERMUX_HOLDER_BIN");
+        reset_heal_state("healme");
+        crate::sessions::native::forget("healme");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The user outranks the heal. Everything before the restart is `await`ed,
+    /// and a person whose session just died reacts inside that window — so the
+    /// state is re-read as late as possible and a session that has moved on (a
+    /// Stop, a Resume, any lifecycle op holding the session lock) is left alone.
+    #[tokio::test]
+    async fn a_user_action_inside_the_heal_window_wins() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "raced", "shell", "stopped").await;
+
+        // (a) The row moved off the death-stamped `stopped` — a Resume landed.
+        reset_heal_state("raced");
+        db::sessions::set_last_status(&state.pool, "raced", "active").await.unwrap();
+        assert_eq!(
+            auto_heal(&state, "raced", "panic: boom").await,
+            Heal::Superseded,
+            "a session that is running again must not be restarted under the user",
+        );
+        assert_eq!(heal_attempts("raced"), 0, "the restart path was never entered");
+
+        // (b) The row still says stopped, but a lifecycle op holds the session
+        //     lock — a Stop in flight, whose own write has not landed yet.
+        reset_heal_state("raced");
+        db::sessions::set_last_status(&state.pool, "raced", "stopped").await.unwrap();
+        let lock = state.lock_for("raced");
+        let guard = lock.lock().await;
+        assert_eq!(
+            auto_heal(&state, "raced", "panic: boom").await,
+            Heal::Superseded,
+            "a heal must never queue up behind the user's own Stop and undo it",
+        );
+        assert_eq!(heal_attempts("raced"), 0);
+        drop(guard);
+
+        // …and with nothing in the way it heals as before.
+        reset_heal_state("raced");
+        assert_eq!(auto_heal(&state, "raced", "panic: boom").await, Heal::Healed);
+
+        reset_heal_state("raced");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The audit must not judge — or heal — a session that is MID-START. Its
+    /// holder is the thing the running `start` is busy spawning, so "not
+    /// attached" says nothing, and healing it would block on the very lock that
+    /// start holds and then start the session a second time behind it.
+    #[tokio::test]
+    async fn the_audit_skips_a_session_that_is_mid_start() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "starting-up", "shell", "starting").await;
+        native_row(&state, "locked-up", "shell", "stopped").await;
+        reset_heal_state("starting-up");
+        reset_heal_state("locked-up");
+
+        // One is mid-start by its ROW, the other by holding the session lock.
+        let lock = state.lock_for("locked-up");
+        let guard = lock.lock().await;
+        let targets = vec![
+            AuditTarget { name: "starting-up".into(), was: "starting".into() },
+            AuditTarget { name: "locked-up".into(), was: "active".into() },
+        ];
+        assert_eq!(
+            post_update_audit(&state, &targets).await,
+            AuditSummary { checked: 2, skipped: 2, ..Default::default() },
+            "a start in flight is not a failed re-attach",
+        );
+        assert_eq!(heal_attempts("starting-up"), 0);
+        assert_eq!(heal_attempts("locked-up"), 0);
+        drop(guard);
+
+        reset_heal_state("starting-up");
+        reset_heal_state("locked-up");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The audit's target list is taken BEFORE the boot reconcile rewrites
+    /// statuses, and covers only the sessions that owe us a re-attach: native,
+    /// local, and running at shutdown.
+    #[tokio::test]
+    async fn the_audit_snapshot_only_takes_running_native_local_sessions() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "was-active", "claude", "active").await;
+        native_row(&state, "was-waiting", "claude", "waiting").await;
+        native_row(&state, "was-stopped", "claude", "stopped").await;
+        native_row(&state, "was-tmux", "claude", "active").await;
+        db::sessions::set_runtime(&state.pool, "was-tmux", "tmux").await.unwrap();
+
+        let mut names: Vec<String> = snapshot_for_audit(&state)
+            .await
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["was-active", "was-waiting"]);
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The audit's verdict + the single summary line every update must leave
+    /// behind: one session that came back on its own, one that did not and was
+    /// healed, one that did not and could not be (claude, no resume link).
+    #[tokio::test]
+    async fn the_audit_counts_reattached_healed_and_failed() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "audit-up", "claude", "active").await;
+        native_row(&state, "audit-heal", "claude", "active").await;
+        db::sessions::set_cc_conversation_id(&state.pool, "audit-heal", "conv-9")
+            .await
+            .unwrap();
+        native_row(&state, "audit-lost", "claude", "active").await;
+        reset_heal_state("audit-heal");
+        reset_heal_state("audit-lost");
+
+        // `audit-up` has a holder that probes ALIVE (our own pid, honest
+        // sidecar) — the deploy-survival case the audit must pass silently.
+        let sdir = spool::session_dir(&dir, "audit-up");
+        std::fs::create_dir_all(&sdir).unwrap();
+        let me = std::process::id();
+        spool::write_meta(
+            &sdir,
+            &spool::Meta {
+                session: "audit-up".into(),
+                pid: me,
+                cols: 80,
+                rows: 24,
+                started_at: crate::sessions::native::runtime::proc_start_unix(me).unwrap_or(0),
+                command: "claude".into(),
+            },
+        )
+        .unwrap();
+        spool::clear_exit(&sdir);
+        // The other two left an exit marker with a reason — the WARN's source.
+        for name in ["audit-heal", "audit-lost"] {
+            let sdir = spool::session_dir(&dir, name);
+            std::fs::create_dir_all(&sdir).unwrap();
+            spool::mark_exit_reason(&sdir, -1, "panic: attempt to subtract with overflow");
+        }
+        assert_eq!(
+            crate::sessions::native::death_reason("audit-heal", &dir).as_deref(),
+            Some("panic: attempt to subtract with overflow"),
+            "the WARN must be able to name the reason the holder recorded",
+        );
+
+        let targets = snapshot_for_audit(&state).await;
+        assert_eq!(targets.len(), 3);
+        // The snapshot is taken BEFORE `reconcile_on_boot`; by the time the
+        // audit runs, the reconcile has stamped every dead session `stopped`.
+        // Reproduce that here, because the heal refuses to restart a session
+        // whose row is anything else (a user Stop inside the window wins).
+        for name in ["audit-heal", "audit-lost"] {
+            db::sessions::set_last_status(&state.pool, name, "stopped").await.unwrap();
+        }
+        let summary = post_update_audit(&state, &targets).await;
+
+        assert_eq!(
+            summary,
+            AuditSummary {
+                checked: 3,
+                reattached: 1,
+                healed: 1,
+                failed: 1,
+                skipped: 0,
+            },
+        );
+        assert_eq!(heal_attempts("audit-heal"), 1, "the lost session was restarted");
+        assert_eq!(heal_attempts("audit-lost"), 0, "…the unrestorable one was not");
+
+        // Always ONE line, even with nothing to check.
+        assert_eq!(
+            post_update_audit(&state, &[]).await,
+            AuditSummary::default(),
+            "an empty audit still runs and still reports",
+        );
+
+        reset_heal_state("audit-heal");
+        reset_heal_state("audit-lost");
+        crate::sessions::native::forget("audit-up");
         state.pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

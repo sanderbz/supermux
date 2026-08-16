@@ -35,6 +35,7 @@ enum Op {
     Write(PathBuf, Vec<u8>),
     Rename(PathBuf, PathBuf),
     Stat(PathBuf),
+    Exists(PathBuf),
 }
 
 /// In-memory transport that records every call. Behaves like a tiny
@@ -43,6 +44,10 @@ enum Op {
 struct MockFileTransport {
     files: Mutex<std::collections::HashMap<PathBuf, Vec<u8>>>,
     ops: Mutex<Vec<Op>>,
+    /// Models a remote whose `stat -c` is not GNU (macOS/BSD): the real
+    /// `SshFileTransport::stat` shells out to `stat -c %F\t%s\t%Y\t%a` and
+    /// exits non-zero there. `read`/`write`/`rename` keep working.
+    stat_broken: bool,
 }
 
 impl MockFileTransport {
@@ -50,6 +55,14 @@ impl MockFileTransport {
         Self {
             files: Mutex::new(std::collections::HashMap::new()),
             ops: Mutex::new(Vec::new()),
+            stat_broken: false,
+        }
+    }
+
+    fn with_broken_stat() -> Self {
+        Self {
+            stat_broken: true,
+            ..Self::new()
         }
     }
 
@@ -105,8 +118,20 @@ impl FileTransport for MockFileTransport {
         Ok(vec![])
     }
 
+    /// A real remote answers this with `test -e`, which is decisive. The mock
+    /// answers from its in-memory filesystem. Deliberately NOT routed through
+    /// `stat`: the whole point of the split is that existence must survive a
+    /// `stat` that cannot run (a non-GNU remote, a blipped ControlMaster).
+    async fn exists(&self, path: &Path) -> Result<bool> {
+        self.ops.lock().unwrap().push(Op::Exists(path.to_path_buf()));
+        Ok(self.files.lock().unwrap().contains_key(path))
+    }
+
     async fn stat(&self, path: &Path) -> Result<Stat> {
         self.ops.lock().unwrap().push(Op::Stat(path.to_path_buf()));
+        if self.stat_broken {
+            return Err(anyhow!("stat: illegal option -- c"));
+        }
         let files = self.files.lock().unwrap();
         let bytes = files
             .get(path)
@@ -146,10 +171,23 @@ fn default_remote_settings_path() -> PathBuf {
 }
 
 /// The temp sibling install_hooks writes to before the atomic rename.
-fn tmp_sibling(path: &Path) -> PathBuf {
+/// The temp sibling's PREFIX. The suffix is unique per writer (pid +
+/// sequence) so two concurrent installs cannot fight over one temp path, so
+/// tests match on the prefix and on the directory.
+fn tmp_sibling_prefix(path: &Path) -> PathBuf {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().unwrap().to_string_lossy();
     dir.join(format!("{name}.supermux-tmp"))
+}
+
+/// Does `candidate` look like the temp sibling of `final_path` — same
+/// directory (the atomic-rename invariant) and the expected prefix?
+fn is_tmp_sibling_of(candidate: &Path, final_path: &Path) -> bool {
+    let prefix = tmp_sibling_prefix(final_path);
+    candidate.parent() == final_path.parent()
+        && candidate
+            .to_string_lossy()
+            .starts_with(prefix.to_string_lossy().as_ref())
 }
 
 #[tokio::test]
@@ -208,17 +246,18 @@ async fn fresh_install_records_atomic_write_then_rename() {
         .unwrap();
 
     let final_path = default_remote_settings_path();
-    let tmp = tmp_sibling(&final_path);
     let ops = mock.ops();
 
     // Find indices of the write(tmp) and rename(tmp, final) ops.
     let write_idx = ops
         .iter()
-        .position(|op| matches!(op, Op::Write(p, _) if p == &tmp))
+        .position(|op| matches!(op, Op::Write(p, _) if is_tmp_sibling_of(p, &final_path)))
         .expect("must record a write to the temp sibling");
     let rename_idx = ops
         .iter()
-        .position(|op| matches!(op, Op::Rename(f, t) if f == &tmp && t == &final_path))
+        .position(
+            |op| matches!(op, Op::Rename(f, t) if is_tmp_sibling_of(f, &final_path) && t == &final_path),
+        )
         .expect("must record a rename(tmp -> final)");
 
     assert!(
@@ -365,16 +404,15 @@ async fn explicit_settings_path_override_is_honored() {
 
     // Temp sibling lived in the SAME directory (so the rename is same-fs,
     // and therefore atomic). Verify via the recorded ops.
-    let tmp = tmp_sibling(&custom);
     let ops = mock.ops();
     assert!(
         ops.iter()
-            .any(|op| matches!(op, Op::Write(p, _) if p == &tmp)),
+            .any(|op| matches!(op, Op::Write(p, _) if is_tmp_sibling_of(p, &custom))),
         "tmp sibling lives in the same dir as the final (atomic rename invariant), ops = {ops:?}",
     );
     assert!(
         ops.iter()
-            .any(|op| matches!(op, Op::Rename(f, t) if f == &tmp && t == &custom)),
+            .any(|op| matches!(op, Op::Rename(f, t) if is_tmp_sibling_of(f, &custom) && t == &custom)),
         "rename(tmp -> final) is recorded, ops = {ops:?}",
     );
 }
@@ -388,5 +426,45 @@ async fn empty_hook_token_refused() {
     assert!(
         mock.read_final(&default_remote_settings_path()).is_none(),
         "no settings file should have been created"
+    );
+}
+
+/// REGRESSION (remote flavour): a remote whose `stat -c` is unsupported must
+/// not lose the user's settings. Existence used to be `stat(..).is_ok()`, so
+/// on a BSD/macOS remote every session start read as "no settings file yet"
+/// and published a document containing only supermux's hooks over the real
+/// one — statusLine, permissions, env and the user's own hooks gone.
+#[tokio::test]
+async fn broken_remote_stat_preserves_the_users_settings() {
+    let mock = MockFileTransport::with_broken_stat();
+    let path = default_remote_settings_path();
+    mock.seed(
+        &path,
+        br#"{"statusLine":{"type":"command","command":"~/bin/mine"},
+             "env":{"MY_VAR":"1"},
+             "hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"notify-send done"}]}]}}"#,
+    );
+
+    claude_config::install_hooks("remote-sess", "tok", &mock, None)
+        .await
+        .expect("a broken remote stat must not fail the install either");
+
+    let bytes = mock.read_final(&path).expect("settings must still exist");
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        v["statusLine"]["command"], "~/bin/mine",
+        "the user's statusLine must survive a stat-less remote"
+    );
+    assert_eq!(v["env"]["MY_VAR"], "1");
+    let stop = v["hooks"]["Stop"].as_array().unwrap();
+    assert!(
+        stop.iter().any(|e| e["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("notify-send"))),
+        "the user's own Stop hook must survive"
+    );
+    assert!(
+        v["hooks"]["PreToolUse"].is_array(),
+        "and supermux's hooks are still installed"
     );
 }

@@ -35,6 +35,11 @@ function errorLabel(type: string): string {
       return 'Auth error'
     case 'server_error':
       return 'Server error'
+    // The session's terminal died under it (a crashed pty holder), not the
+    // agent failing a turn — the session is stopped and needs a restart, so the
+    // badge says so plainly and the tooltip carries the crash reason.
+    case 'holder_died':
+      return 'Terminal died'
     default:
       return 'Error'
   }

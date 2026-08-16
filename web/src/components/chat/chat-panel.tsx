@@ -31,7 +31,7 @@ import { ChatConversation, PHONE_QUERY } from './conversation'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
 import { ProvisionalTail } from './provisional-tail'
-import { exposeLatency, latencySamples, p50, serverNowMs } from './latency'
+import { exposeLatency, latencySummary, serverNowMs } from './latency'
 
 const FOLLOW_THRESHOLD_PX = 48
 
@@ -50,6 +50,8 @@ export default function ChatPanel({
   )
 
   React.useEffect(() => exposeLatency(), [])
+  // One pass over the ring per render (the ticker re-renders us every second).
+  const latency = latencySummary()
 
   // A name in prose becomes a mention chip only when it names a session that
   // actually exists (fase A3 T3 — no regex over arbitrary words). The list comes
@@ -89,8 +91,6 @@ export default function ChatPanel({
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
   })
 
-  const samples = latencySamples()
-
   return (
     <ChatConversation
       // The surface IS the panel's root element, so it keeps the panel's
@@ -115,11 +115,12 @@ export default function ChatPanel({
         showProvisional ? <ProvisionalTail name={name} show={showProvisional} surface={phone ? 'phone' : 'desktop'} /> : null
       }
       stat={
-        samples.length > 0 ? (
+        latency.n > 0 ? (
           /* The dogfood number, readable without devtools (re-renders on the
-             live-layer ticker / tail refetches). */
+             live-layer ticker / tail refetches). One pass over the bounded ring
+             per render, not three array reads plus a sort (#59). */
           <>
-            hook→UI p50 {p50(samples)} ms (n={samples.length})
+            hook→UI p50 {latency.p50} ms (n={latency.n})
           </>
         ) : null
       }

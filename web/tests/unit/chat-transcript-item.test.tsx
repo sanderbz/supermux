@@ -77,6 +77,44 @@ describe('the human', () => {
   })
 })
 
+describe('the wire cap', () => {
+  // `recall.rs` clamps per kind (`ASSISTANT_MAX_CHARS` / `PROMPT_MAX_CHARS`) and
+  // flags the entry it bit. A clipped message that just STOPS reads as an answer
+  // that ended mid-sentence, so the flag must reach the pixels — this is the
+  // A1-hardening behaviour (#59) that survived A3's rewrite of the panel.
+  test('a clipped assistant answer says so', () => {
+    const out = text(
+      render([
+        {
+          uuid: 'a1',
+          ts: 1_760_000_000,
+          text: 'the long answer, cut at the cap',
+          kind: 'assistant',
+          truncated: true,
+        },
+      ]),
+    )
+    expect(out).toContain('the long answer, cut at the cap')
+    expect(out).toContain('clipped')
+  })
+
+  test('a clipped prompt says so', () => {
+    const out = text(
+      render([
+        { uuid: 'u1', ts: 1_760_000_000, text: 'a very long prompt', kind: 'prompt', truncated: true },
+      ]),
+    )
+    expect(out).toContain('clipped')
+  })
+
+  test('an intact message carries no marker', () => {
+    const out = text(
+      render([{ uuid: 'a1', ts: 1_760_000_000, text: 'short and whole', kind: 'assistant' }]),
+    )
+    expect(out).toBe('short and whole')
+  })
+})
+
 describe('a colleague', () => {
   test('arrives with their own name, once', () => {
     const out = text(

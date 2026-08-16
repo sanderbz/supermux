@@ -79,6 +79,26 @@ pub trait FileTransport: Send + Sync {
     async fn delete(&self, path: &Path) -> Result<()>;
     async fn rename(&self, from: &Path, to: &Path) -> Result<()>;
 
+    /// DEFINITIVE existence check: `Ok(false)` ONLY when the transport proved
+    /// the path is absent, `Err` when it could not tell (permission denied,
+    /// a dropped ssh mux, a non-GNU remote `stat`, …).
+    ///
+    /// This exists because `stat(..).is_ok()` conflates "absent" with "could
+    /// not ask", and callers that MERGE into a file (see
+    /// [`crate::claude_config`]) turn that conflation into data loss: an
+    /// indeterminate answer reads as "no file yet" and the merge writes a
+    /// fresh document over the user's real settings. Never re-derive existence
+    /// from `stat`'s `Result`; call this.
+    ///
+    /// The default impl is deliberately conservative: any transport that has
+    /// not implemented a real existence probe reports "cannot tell".
+    async fn exists(&self, path: &Path) -> Result<bool> {
+        anyhow::bail!(
+            "transport cannot determine whether {} exists",
+            path.display()
+        )
+    }
+
     /// Marker that's `true` ONLY for [`LocalFileTransport`]. Callers use it to
     /// take faster `tokio::fs` shortcuts (e.g. streaming reads via
     /// `safe_open_read` + `O_NOFOLLOW`) instead of routing through `read()`,
@@ -175,6 +195,15 @@ impl FileTransport for LocalFileTransport {
             readable: true,
             writable: !meta.permissions().readonly(),
         })
+    }
+
+    /// `tokio::fs::try_exists` maps ENOENT to `Ok(false)` and surfaces every
+    /// other errno (EACCES on a parent dir, EIO, …) as `Err` — exactly the
+    /// definitive/indeterminate split the trait contract requires.
+    async fn exists(&self, path: &Path) -> Result<bool> {
+        tokio::fs::try_exists(path)
+            .await
+            .with_context(|| format!("checking existence of {}", path.display()))
     }
 
     async fn delete(&self, path: &Path) -> Result<()> {
@@ -401,6 +430,38 @@ trap - EXIT
             readable,
             writable,
         })
+    }
+
+    /// POSIX `test -e` rather than the GNU-only `stat -c` used above: exit 0 =
+    /// present, exit 1 = definitively absent, anything else (255 = ssh could
+    /// not run it, a dropped ControlMaster, a shell that could not even start)
+    /// = indeterminate → `Err`. That distinction is load-bearing: a merge
+    /// caller must never read "the mux blipped" as "the user has no settings
+    /// file" and overwrite it.
+    async fn exists(&self, path: &Path) -> Result<bool> {
+        let transport = self.ssh_transport().await?;
+        let p = path_str(path)?;
+        let mut cmd = transport.spawn_command("test", &["-e", p]);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::piped());
+        let out = cmd
+            .output()
+            .await
+            .with_context(|| format!("ssh test -e {}", path.display()))?;
+        match out.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            other => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                bail!(
+                    "remote existence check of {} was indeterminate (exit {:?}): {}",
+                    path.display(),
+                    other,
+                    stderr
+                )
+            }
+        }
     }
 
     async fn delete(&self, path: &Path) -> Result<()> {

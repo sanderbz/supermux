@@ -206,6 +206,64 @@ pub trait SessionRuntime: Send + Sync {
     fn attach_generation(&self) -> Option<watch::Receiver<u64>> {
         None
     }
+
+    /// WHY this session's terminal is gone, when the backend can PROVE it is
+    /// gone without disturbing anything. `None` means "can not prove it" — the
+    /// session is serving, or the backend simply has no such evidence.
+    ///
+    /// Exists because "is it alive?" is not enough to keep the UI honest: the
+    /// status detector classifies off the CAPTURE and can only ever produce
+    /// active/waiting/idle, so a terminal that dies MID-RUN keeps its last
+    /// status forever unless something hands the detector a `Stopped` (see
+    /// `auto_actions::tick`). The reason string is what turns a silent blank
+    /// screen into "holder died: panic: …".
+    ///
+    /// Default `None` keeps the tmux path exactly as it was — its own
+    /// "any → stopped" reconciliation is a separate, deliberately deferred
+    /// concern.
+    async fn death(&self) -> Option<TerminalDeath> {
+        None
+    }
+
+    /// Is what `capture_*` returns right now AUTHORITATIVE — i.e. is it really
+    /// this session's screen, rather than a placeholder the backend serves while
+    /// it has no view of the terminal?
+    ///
+    /// `true` for tmux: `capture-pane` either reads the live pane or fails. The
+    /// native backend answers `false` until its pump has attached at least once,
+    /// because a fresh daemon holds an EMPTY grid and its capture calls
+    /// deliberately do not block forever waiting for a holder that may be dead.
+    /// Callers that PERSIST a capture (the detector's `last_capture` writeback)
+    /// must skip it while this is false — otherwise a daemon restart overwrites
+    /// every stored preview with blanks, which is what emptied the overview
+    /// cards when a holder died.
+    async fn capture_is_authoritative(&self) -> bool {
+        true
+    }
+}
+
+/// A proven, non-destructive verdict that a session's terminal is gone, plus the
+/// human-readable reason ([`SessionRuntime::death`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalDeath {
+    /// One short line, safe to render: `exited with status 0`,
+    /// `panic: …`, `holder is gone (pid 1234 left no exit marker …)`.
+    pub reason: String,
+    /// The terminal did NOT end the ordinary way (a child that exited, an
+    /// explicit stop) — it crashed, was killed, or vanished. Only an unexpected
+    /// death earns the user a visible error badge; a normal exit is just
+    /// `stopped`.
+    pub unexpected: bool,
+}
+
+impl TerminalDeath {
+    /// The ordinary ending: the child process exited with `code`.
+    pub fn exited(code: i32) -> Self {
+        Self {
+            reason: format!("exited with status {code}"),
+            unexpected: false,
+        }
+    }
 }
 
 /// The tmux backend: **pure delegation** to [`Tmux`]. Every method below is a
@@ -475,6 +533,19 @@ impl SessionRuntime for NativeRuntime {
     /// runtime is exactly the case this hook exists for.
     fn attach_generation(&self) -> Option<watch::Receiver<u64>> {
         Some(self.session.attach_generation())
+    }
+
+    /// The holder can die under a running session (crash, OOM kill, a stray
+    /// `SIGKILL`), and the spool's `exit` marker + the meta pid prove it without
+    /// touching the socket.
+    async fn death(&self) -> Option<TerminalDeath> {
+        self.session.death().await
+    }
+
+    /// A fresh daemon holds an EMPTY grid until its pump has attached and
+    /// replayed the spool; a capture taken before that is blank, not real.
+    async fn capture_is_authoritative(&self) -> bool {
+        self.session.grid_is_authoritative()
     }
 }
 

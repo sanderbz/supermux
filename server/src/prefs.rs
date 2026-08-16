@@ -61,7 +61,14 @@ fn is_known_pref_key(key: &str) -> bool {
     // `quick_keys` — the mobile quick-keys tap-to-send selection (an ordered id
     // list). Account-wide so the user's curated keys follow them phone↔desktop,
     // same rationale as `overview_layout`.
-    matches!(key, "overview_layout" | "quick_keys")
+    // `recovery.auto_heal` — the operator's off-switch for automatically
+    // restarting a session whose terminal died unexpectedly (default ON; see
+    // [`db::prefs::auto_heal_enabled`]). Allowlisted here so the toggle is
+    // reachable without a bespoke endpoint or a hand-edited SQLite row.
+    matches!(
+        key,
+        "overview_layout" | "quick_keys" | db::prefs::AUTO_HEAL_PREF_KEY
+    )
 }
 
 /// Maximum bytes accepted for a single pref value. Generous (50 KB) — enough
