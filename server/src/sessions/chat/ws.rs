@@ -95,7 +95,14 @@ pub const SEED_WARMUP: Duration = Duration::from_millis(1_500);
 /// * not a team lead — a lead's window is multiplexed across teammate panes,
 ///   which the A2 single-conversation data plane does not model.
 pub fn chat_eligible(provider: &str, host_id: Option<i64>, team_name: Option<&str>) -> bool {
-    provider == "claude" && host_id.is_none() && team_name.is_none()
+    // `team_name` alone is NOT a team signal: with the global agent-teams pref
+    // on, CC ≥2.1.178 writes an implicit solo team for every plain session and
+    // the watcher stamps the column — refusing on the column made the chat
+    // plane 4404-unreachable on real sessions (found live). Only a lead with an
+    // ACTUAL roster (≥1 teammate besides the lead) is refused.
+    provider == "claude"
+        && host_id.is_none()
+        && !team_name.is_some_and(crate::teams::scan::real_team)
 }
 
 /// Load `name`'s row and refuse anything the chat data plane does not serve.
@@ -881,10 +888,16 @@ mod tests {
             !chat_eligible("claude", Some(3), None),
             "a remote host's transcript is not on this filesystem"
         );
+        // `Some(team_name)` alone no longer refuses: the column is polluted by
+        // CC's implicit solo teams (one per plain session with agent-teams on).
+        // With no on-disk roster for "squad", it's not a real team → eligible.
         assert!(
-            !chat_eligible("claude", None, Some("squad")),
-            "a team lead's pane is multiplexed — out of Track A v1 scope"
+            chat_eligible("claude", None, Some("squad")),
+            "a rosterless team_name (the solo-implicit pollution) must stay eligible"
         );
+        // A REAL team (roster with a teammate) still refuses — proven at the
+        // path-parameterized level in teams::scan::tests (real_team_in); the
+        // fs-backed default resolver is exercised here only for the None path.
     }
 
     // ── the history cursor ──────────────────────────────────────────────────
