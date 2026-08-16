@@ -1,0 +1,142 @@
+{
+  "case": "case5-edit-escape",
+  "session": "spike-233-capture",
+  "at": "2026-08-16T06:57:43.723Z",
+  "looks": [
+    {
+      "tag": "case5-edit-escape-01-strict",
+      "anchor": null,
+      "strict": {
+        "family": "permission",
+        "variant": "edit",
+        "caret": 0,
+        "key": "permission/edit/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "edit",
+        "caret": 0,
+        "key": "permission/edit/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "footerHasTabToAmend": true
+    },
+    {
+      "tag": "case5-edit-escape-02-strict",
+      "anchor": null,
+      "strict": {
+        "family": "permission",
+        "variant": "edit",
+        "caret": 0,
+        "key": "permission/edit/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "edit",
+        "caret": 0,
+        "key": "permission/edit/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "footerHasTabToAmend": true
+    },
+    {
+      "tag": "case5-edit-escape-03-continuity",
+      "anchor": {
+        "question": "Do you want to make this edit to edit1.txt?",
+        "options": [
+          "Yes",
+          "Yes, allow all edits during this session (shift+tab)",
+          "No"
+        ]
+      },
+      "strict": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "returned": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "footerHasTabToAmend": false
+    }
+  ],
+  "sent": [
+    "Escape"
+  ],
+  "livePin": "2.1.233",
+  "pinUsed": "2.1.233",
+  "pinOverridden": false,
+  "sighting": {
+    "family": "permission",
+    "variant": "edit",
+    "caret": 0,
+    "question": "Do you want to make this edit to edit1.txt?",
+    "options": [
+      "Yes",
+      "Yes, allow all edits during this session (shift+tab)",
+      "No"
+    ],
+    "key": "permission/edit/Yes|Yes, allow all edits during this session (shift+tab)|No"
+  },
+  "continuityAnchor": {
+    "family": "permission",
+    "variant": "edit",
+    "question": "Do you want to make this edit to edit1.txt?",
+    "options": [
+      "Yes",
+      "Yes, allow all edits during this session (shift+tab)",
+      "No"
+    ]
+  },
+  "registry": {
+    "entry": "permission.edit",
+    "degraded": false,
+    "attention": null
+  },
+  "card": {
+    "id": "permission.edit",
+    "family": "permission",
+    "variant": "edit",
+    "key": "permission/edit/Yes|Yes, allow all edits during this session (shift+tab)|No",
+    "options": [
+      {
+        "label": "Allow once",
+        "kbd": "1",
+        "actOn": true,
+        "primary": true
+      },
+      {
+        "label": "Yes, allow all edits during this session",
+        "kbd": "2",
+        "actOn": true,
+        "primary": false
+      },
+      {
+        "label": "Not now",
+        "kbd": "3",
+        "actOn": true,
+        "primary": false
+      }
+    ],
+    "escape": {
+      "label": "Say something instead",
+      "actOn": true
+    },
+    "verifiedVersions": [
+      "2.1.231",
+      "2.1.232",
+      "2.1.233"
+    ],
+    "disabled": false,
+    "attention": null
+  },
+  "target": "escape",
+  "outcome": {
+    "ok": true,
+    "sent": [
+      "Escape"
+    ],
+    "committed": true,
+    "effect": "feedback"
+  }
+}

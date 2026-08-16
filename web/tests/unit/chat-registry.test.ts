@@ -26,6 +26,9 @@ const read = (name: string) => readFileSync(join(DIR, name), 'utf8')
 const lensOf = (name: string) => readLens(read(name))
 /** The 2.1.232 live self-test corpus — provenance in `../fixtures/tui/a4c/README.md`. */
 const a4cOf = (name: string) => readLens(readFileSync(join(DIR, 'a4c', name), 'utf8'))
+/** The 2.1.233 corpus — provenance in `../fixtures/tui/cc233/README.md`. */
+const cc233Raw = (name: string) => readFileSync(join(DIR, 'cc233', name), 'utf8')
+const cc233Of = (name: string) => readLens(cc233Raw(name))
 
 /** Every act-on claim in the registry is backed by one of these files — the
  *  provenance of each is in `tests/fixtures/tui/README.md`. */
@@ -40,13 +43,16 @@ const pinned = (entry: RegistryEntry) => entry.verifiedVersions[0]
 
 describe('registry — what may be acted on, and what may not', () => {
   test('bash option 2 is rendered but never actionable', () => {
-    // a0 §3: "executes, but persistence NOT FOUND … inconclusive". A grant whose
-    // scope is unknown is not one this app hands out.
+    // a0 §3 could not find what it persists; the 2.1.233 run found BOTH answers
+    // and neither is sayable here — `don’t ask again for: <pattern>` writes a
+    // rule into <project>/.claude/settings.local.json that outlives the session,
+    // `always allow access to <dir>/` flips the session to accept-edits
+    // (`tests/fixtures/tui/cc233/README.md` §option-2 semantics).
     const match = entryFor(lensOf('perm-bash.txt'), '2.1.231')
     expect(match.degraded).toBe(false)
     const o = match.entry!.options[1]
     expect(o.actOn).toBe(false)
-    expect(o.disabledReason).toMatch(/unverified/i)
+    expect(o.disabledReason).toMatch(/settings\.local\.json/i)
     // Rendered: the words are still there to read.
     expect(o.label.length).toBeGreaterThan(0)
   })
@@ -158,16 +164,31 @@ describe('registry — the version pin', () => {
   test('each entry pins the versions its own capture proves', () => {
     // 2.1.232 is on all four because the A4c self-test drove all four against
     // it, end to end, with the side-effect proof recorded per case
-    // (`tests/fixtures/tui/a4c/README.md`). The older numbers are a0's, and each
-    // variant still carries exactly the ones its own bytes prove.
+    // (`tests/fixtures/tui/a4c/README.md`); 2.1.233 for the same reason, from
+    // `tests/fixtures/tui/cc233/` — and that run needed no `PIN=` substitution,
+    // the sequencer read 2.1.233 off the live boot banner itself. The older
+    // numbers are a0's, and each variant still carries what its own bytes prove.
     expect(entryById('permission.bash')!.verifiedVersions).toEqual([
       '2.1.227',
       '2.1.231',
       '2.1.232',
+      '2.1.233',
     ])
-    expect(entryById('permission.edit')!.verifiedVersions).toEqual(['2.1.231', '2.1.232'])
-    expect(entryById('permission.write')!.verifiedVersions).toEqual(['2.1.227', '2.1.232'])
-    expect(entryById('plan.approval')!.verifiedVersions).toEqual(['2.1.231', '2.1.232'])
+    expect(entryById('permission.edit')!.verifiedVersions).toEqual([
+      '2.1.231',
+      '2.1.232',
+      '2.1.233',
+    ])
+    expect(entryById('permission.write')!.verifiedVersions).toEqual([
+      '2.1.227',
+      '2.1.232',
+      '2.1.233',
+    ])
+    expect(entryById('plan.approval')!.verifiedVersions).toEqual([
+      '2.1.231',
+      '2.1.232',
+      '2.1.233',
+    ])
   })
 
   test('the live 2.1.232 captures are ACT-ON, not merely rendered', () => {
@@ -184,6 +205,170 @@ describe('registry — the version pin', () => {
       expect(m.entry?.id).toBe(id)
       expect(m.degraded).toBe(false)
       expect(m.attention).toBeNull()
+    }
+  })
+
+  test('the live 2.1.233 captures are ACT-ON, not merely rendered', () => {
+    // Same claim, one CLI release later, from the frames the sequencer itself
+    // read (`tests/fixtures/tui/cc233/live/`).
+    for (const [file, id] of [
+      ['live/case1-bash-deny-01-strict.txt', 'permission.bash'],
+      ['live/case2-write-option2-01-strict.txt', 'permission.write'],
+      ['live/case5-edit-escape-01-strict.txt', 'permission.edit'],
+      ['live/case4-plan-manual-01-strict.txt', 'plan.approval'],
+    ] as const) {
+      const m = entryFor(cc233Of(file), '2.1.233')
+      expect(m.entry?.id).toBe(id)
+      expect(m.degraded).toBe(false)
+      expect(m.attention).toBeNull()
+    }
+  })
+
+  test('the boot banner in the 2.1.233 corpus IS the pin the entries name', () => {
+    // The pin is read off the session's banner, so the fixture that proves the
+    // number and the list that trusts it have to be the same string.
+    const pin = pinFor(cc233Of('00-boot-banner.txt'))
+    expect(pin).toBe('2.1.233')
+    for (const entry of ENTRIES) expect(entry.verifiedVersions).toContain(pin!)
+  })
+})
+
+/**
+ * CC 2.1.233 — the one thing that moved, and the thing that must not move with
+ * it. Evidence: `tests/fixtures/tui/cc233/README.md`.
+ */
+describe('registry — the 2.1.233 Bash option-2 copy', () => {
+  /** All three grants the SAME dialog printed on ONE version, live. */
+  const FORMS = [
+    ['01-bash-access-caret1.txt', 'Yes, and always allow access to spike-233/ from this project'],
+    ['05-bash-read-caret1.txt', 'Yes, allow reading from etc/ from this project'],
+    ['06-bash-cmdrule-caret1.txt', 'Yes, and don’t ask again for: python3 *'],
+    // The 52-col frame: row 2 spans two lines on the terminal and the lens folds
+    // it back, so the wrap must not be a fourth "form".
+    [
+      '08-bash-access-52col-caret1.txt',
+      'Yes, and always allow access to spike-233/ from this project',
+    ],
+  ] as const
+
+  test('all three forms are the row the capture shows', () => {
+    for (const [file, row] of FORMS) {
+      expect(cc233Of(file).dialog!.options[1]).toBe(row)
+    }
+  })
+
+  test('every form keeps options 1 and 3 act-on — the card does not go inert', () => {
+    // The regression this pins: against the 2.1.232 pattern
+    // (`^yes, and always allow`) the read and command-rule forms failed
+    // `shapeHolds`, which disabled `Yes` and `No` as well and left chat unable to
+    // answer a dialog it could read perfectly.
+    for (const [file] of FORMS) {
+      const lens = cc233Of(file)
+      const m = entryFor(lens, '2.1.233')
+      expect(m.entry?.id).toBe('permission.bash')
+      expect(m.degraded).toBe(false)
+      expect(m.entry!.options[0]).toMatchObject({ actOn: true, effect: 'accept' })
+      expect(m.entry!.options[2]).toMatchObject({ actOn: true, effect: 'deny' })
+      expect(m.entry!.escape.actOn).toBe(true)
+    }
+  })
+
+  test('and none of them makes option 2 pressable', () => {
+    for (const [file] of FORMS) {
+      const o = entryFor(cc233Of(file), '2.1.233').entry!.options[1]
+      expect(o.actOn).toBe(false)
+      expect(o.disabledReason).toMatch(/settings\.local\.json/i)
+    }
+  })
+
+  test('the card shows the grant’s OWN sentence, whichever of the three it is', () => {
+    // A user asked to grant something is owed the actual words — and on 2.1.233
+    // the actual words are the only place the difference between "a rule on disk"
+    // and "auto-accept for this session" is visible at all.
+    for (const [file, row] of FORMS) {
+      const lens = cc233Of(file)
+      const entry = entryFor(lens, '2.1.233').entry!
+      expect(optionLabel(entry.options[1], lens.dialog)).toBe(row)
+    }
+  })
+
+  test('the widened pattern still refuses a row that is not a Yes', () => {
+    // `^yes\b` is weaker than the other rows on purpose (no key is ever sent for
+    // this one) — but "weaker" must not mean "anything". A row 2 that stopped
+    // offering a grant, or a row 3 that started offering one, still kills the
+    // card.
+    const dialog = cc233Of('06-bash-cmdrule-caret1.txt').dialog!
+    for (const options of [
+      ['Yes', 'No, and tell Claude why', 'No'],
+      ['Yes', dialog.options[1], 'Yes, and always allow everything'],
+      ['Yes', dialog.options[1], 'No', 'Yes, for this directory'],
+    ]) {
+      const m = entryFor({ dialog: { ...dialog, options } }, '2.1.233')
+      expect(m.degraded).toBe(true)
+      expect(m.entry?.options.every((o) => !o.actOn) ?? true).toBe(true)
+    }
+  })
+})
+
+/** The families 2.1.233 did NOT touch — asserted from that version's own frames,
+ *  because "unchanged" is a claim like any other. */
+describe('registry — 2.1.233 left the other three alone', () => {
+  test('write, edit and plan read exactly as they did on 2.1.232', () => {
+    for (const [file, id, rows] of [
+      [
+        '20-write-caret1.txt',
+        'permission.write',
+        ['Yes', 'Yes, allow all edits during this session (shift+tab)', 'No'],
+      ],
+      [
+        '30-edit-caret1.txt',
+        'permission.edit',
+        ['Yes', 'Yes, allow all edits during this session (shift+tab)', 'No'],
+      ],
+      [
+        '40-plan-caret1.txt',
+        'plan.approval',
+        [
+          'Yes, and use auto mode',
+          'Yes, manually approve edits',
+          'Tell Claude what to change shift+tab to approve with this feedback',
+        ],
+      ],
+    ] as const) {
+      const lens = cc233Of(file)
+      expect(lens.dialog!.options).toEqual([...rows])
+      const m = entryFor(lens, '2.1.233')
+      expect(m.entry?.id).toBe(id)
+      expect(m.degraded).toBe(false)
+    }
+  })
+
+  test('the plan footer still exposes a plan path — with a NEW shape', () => {
+    // a0 captured `~/.claude/plans/plan-<slug>.md`; 2.1.233 drops the `plan-`
+    // prefix. The lens matches the directory, not the prefix, which is why P5's
+    // "read the plan off disk" still works — and why this is a test rather than
+    // a footnote.
+    expect(cc233Of('40-plan-caret1.txt').dialog!.planPath).toBe(
+      '~/.claude/plans/cuddly-brewing-eagle.md',
+    )
+  })
+
+  test('the caret-dependent footer is still a permission-only fact', () => {
+    // Permission: `Tab to amend` vanishes while the caret is on row 2, on all
+    // three variants. Plan: the footer does not move at all.
+    for (const [onRow2, elsewhere] of [
+      ['02-bash-access-caret2.txt', '03-bash-access-caret3.txt'],
+      ['21-write-caret2.txt', '22-write-caret3.txt'],
+      ['31-edit-caret2.txt', '32-edit-caret3.txt'],
+    ] as const) {
+      expect(cc233Raw(onRow2)).not.toContain('Tab to amend')
+      expect(cc233Raw(elsewhere)).toContain('Tab to amend')
+      // …and the strict reading of the row-2 frame is `unknown`, which is what
+      // the two-phase fingerprint exists to survive (`chat-a4c-continuity`).
+      expect(cc233Of(onRow2).dialog!.family).toBe('unknown')
+    }
+    for (const f of ['40-plan-caret1.txt', '41-plan-caret2.txt', '42-plan-caret3.txt']) {
+      expect(cc233Of(f).dialog!.family).toBe('plan')
     }
   })
 })
@@ -315,10 +500,8 @@ describe('optionLabel — the live row wins', () => {
 
   test('without a sighting it falls back to the registry’s stable words', () => {
     const entry = entryById('permission.bash')!
-    expect(optionLabel(entry.options[1])).toBe('Yes, and always allow this kind of command')
-    expect(optionLabel(entry.options[1], null)).toBe(
-      'Yes, and always allow this kind of command',
-    )
+    expect(optionLabel(entry.options[1])).toBe('Yes, and don’t ask again')
+    expect(optionLabel(entry.options[1], null)).toBe('Yes, and don’t ask again')
   })
 
   test('the folded shift+tab sub-hint never reaches the card', () => {
@@ -351,8 +534,6 @@ describe('optionLabel — the live row wins', () => {
   test('a row that does not match the pattern is not shown as that option', () => {
     const entry = entryById('permission.bash')!
     const drifted = { ...lensOf('perm-bash.txt').dialog!, options: ['Yes', 'Delete it all', 'No'] }
-    expect(optionLabel(entry.options[1], drifted)).toBe(
-      'Yes, and always allow this kind of command',
-    )
+    expect(optionLabel(entry.options[1], drifted)).toBe('Yes, and don’t ask again')
   })
 })

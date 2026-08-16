@@ -114,16 +114,41 @@ export interface RegistryEntry {
  */
 const A4C = '2.1.232'
 
+/**
+ * 2.1.233 — the third live re-verification, 2026-08-16.
+ *
+ * Same playbook, same discipline: session `spike-233-capture` booted
+ * `Claude Code v2.1.233` (`tests/fixtures/tui/cc233/00-boot-banner.txt`), every
+ * family was re-captured verbatim with the caret at each row, and every entry
+ * below was then DRIVEN by `answerDialog()` itself — the shipped sequencer wired
+ * to `GET /peek` and `POST /keys`, so each key was chosen by this branch's code.
+ * Index, per-case verdicts and the side-effect proofs:
+ * `tests/fixtures/tui/cc233/README.md`.
+ *
+ *   permission.bash   opt 3 denied (`⎿ Interrupted`, artifact ABSENT) ·
+ *                     opt 1 executed (artifact present)
+ *   permission.write  opt 2 wrote the file AND flipped `⏵⏵ accept edits on`
+ *   permission.edit   Esc denied (file unchanged on disk)
+ *   plan.approval     opt 2 → `⏸ manual mode on`, execution resumed
+ *
+ * WHAT CHANGED IN 2.1.233 — one row, and it is the row nobody presses. The Bash
+ * variant's option 2 is no longer one sentence: the same dialog now prints three
+ * different grants depending on what the command touches (see
+ * `BASH_ALWAYS_ALLOW` below). Options 1 and 3, the footer's caret dependence, all
+ * three Write/Edit rows and all three plan rows are byte-identical to 2.1.232.
+ */
+const CC233 = '2.1.233'
+
 /** a0 §3, Family 1: "Pinned v2.1.227, Bash variant re-verified structurally
  *  identical v2.1.231." The Bash capture therefore holds on both; the Edit
  *  capture in `tests/fixtures/tui/` is recorded at 2.1.231 and the Write one at
  *  2.1.227, so each variant pins exactly what its own bytes prove. Widening a
  *  list without a new capture is the one edit this file forbids. */
-const PERMISSION_BASH_VERSIONS = ['2.1.227', '2.1.231', A4C] as const
-const PERMISSION_EDIT_VERSIONS = ['2.1.231', A4C] as const
-const PERMISSION_WRITE_VERSIONS = ['2.1.227', A4C] as const
+const PERMISSION_BASH_VERSIONS = ['2.1.227', '2.1.231', A4C, CC233] as const
+const PERMISSION_EDIT_VERSIONS = ['2.1.231', A4C, CC233] as const
+const PERMISSION_WRITE_VERSIONS = ['2.1.227', A4C, CC233] as const
 /** a0 §3, Family 2 (ExitPlanMode): pinned v2.1.231. */
-const PLAN_VERSIONS = ['2.1.231', A4C] as const
+const PLAN_VERSIONS = ['2.1.231', A4C, CC233] as const
 
 /** Option 1 is the same row on all three permission variants: exactly `1. Yes`
  *  — which is also the family's own fingerprint anchor (a0 §3), so a sighting
@@ -172,24 +197,72 @@ function permissionEntry(
   }
 }
 
+/**
+ * Row 2 of the BASH permission dialog — the one row this registry deliberately
+ * cannot pin to a sentence.
+ *
+ * On 2.1.233 the same dialog prints three different grants, chosen by what the
+ * command touches. All three captured live in one session, one afternoon
+ * (`tests/fixtures/tui/cc233/`, files named beside each form):
+ *
+ *   `Yes, and always allow access to spike-233/ from this project`
+ *        — 01-bash-access-caret1.txt (`touch <file in project>`)
+ *   `Yes, allow reading from etc/ from this project`
+ *        — 05-bash-read-caret1.txt   (`sha256sum /etc/hostname`)
+ *   `Yes, and don’t ask again for: python3 *`
+ *        — 06-bash-cmdrule-caret1.txt (`python3 -c …`, with a new body line
+ *          `This command requires approval` above the question)
+ *
+ * So the pattern is `^yes\b` and no narrower. That is a WEAKER identity claim
+ * than every other row in this file, and it is the right one *for this row only*
+ * because of what the claim is FOR: `rowPattern` exists so a key is never pressed
+ * into a row that stopped being the option it was read as. No key is ever pressed
+ * into this one (`actOn: false`, below, on all of them). What a narrow pattern
+ * buys here is therefore nothing — and what it costs is the whole card: a copy
+ * change on row 2 fails `shapeHolds`, which disables options 1 and 3 as well, and
+ * chat goes inert on a dialog it can read perfectly well. That is exactly what
+ * 2.1.233 did to the 2.1.232 pattern (`^yes, and always allow`) the moment a
+ * command asked to read a file.
+ *
+ * The guards that actually stop a mis-answer are untouched and still exact: row 1
+ * must be `Yes`, row 3 must be `No`, the count must be 3, and the sighting must
+ * still carry the `bash` title. A list that gained, lost or reworded a row fails
+ * on those, in `shapeHolds` and again in `continues()` mid-sequence.
+ */
+const BASH_ALWAYS_ALLOW = /^yes\b/i
+
 export const ENTRIES: readonly RegistryEntry[] = [
   permissionEntry('permission.bash', 'bash', PERMISSION_BASH_VERSIONS, {
-    // Live row: `2. Yes, and always allow access to <dir>/ from this project`.
-    // The directory is dynamic (a0 §3 "option-2 dir token = parent dir of the
-    // target"), so it is not in the label and not in the pattern.
-    label: 'Yes, and always allow this kind of command',
+    // The fallback words only — the live row wins in `optionLabel()`, and on
+    // 2.1.233 the live row is the ONLY honest description of this grant (see
+    // `BASH_ALWAYS_ALLOW`). Everything variable stays out of the label: the
+    // directory, the command pattern, the verb.
+    label: 'Yes, and don’t ask again',
     tuiIndex: 1,
-    // a0 §3, verbatim: "Bash option 2 ('always allow'): executes, but
-    // persistence NOT FOUND (no rule in ~/.claude.json, no
-    // .claude/settings.local.json, ~/.claude/settings.json unchanged; a later
-    // subdir command re-prompted — inconclusive) and its side-effect rounds were
-    // contaminated by a concurrent client." A grant whose SCOPE is unknown is
-    // exactly the one no app should hand out on a user's behalf.
+    // STILL false, and now for a stronger reason than a0's "persistence NOT
+    // FOUND". 2.1.233 was driven end to end (`cc233/README.md` §option-2
+    // semantics) and the answer is that this ONE row does TWO different things:
+    //
+    //   `don’t ask again for: python3 *` → writes `"Bash(python3 *)"` into
+    //      <project>/.claude/settings.local.json `permissions.allow`
+    //      (cc233/10-optsem-cmdrule-98-artifact.txt) — a rule on DISK, in the
+    //      user's repo, that outlives the session and the next `python3` command
+    //      ran with no prompt at all (11-optsem-cmdrule-99-rule-applies.txt);
+    //   `always allow access to <dir>/` → writes NOTHING, and instead flips the
+    //      whole session into `⏵⏵ accept edits on`
+    //      (cc233/12-optsem-access-98-artifact.txt).
+    //
+    // Neither is what this file's vocabulary can say. `accept-session` — the
+    // widest word it has — would render as “Allowed for this session”
+    // (`resolutionLine`), which for the first form is simply false: the grant is
+    // still there tomorrow, in a file the user may well commit. Chat does not get
+    // to describe a persistent grant as a temporary one, so chat does not press
+    // this row.
     actOn: false,
     disabledReason:
-      'What “always allow” persists here is unverified — A0 found no rule written to disk and a later command in the same project asked again. Choose it in the terminal if you mean it.',
+      'This row grants more than one thing on 2.1.233 — for a command pattern it writes a permanent rule into this project’s .claude/settings.local.json, for a directory it switches the whole session to auto-accept. Chat has no honest way to say which, so choose it in the terminal if you mean it.',
     effect: 'accept-session',
-    rowPattern: /^yes, and always allow\b/i,
+    rowPattern: BASH_ALWAYS_ALLOW,
   }),
 
   permissionEntry('permission.edit', 'edit', PERMISSION_EDIT_VERSIONS, {
