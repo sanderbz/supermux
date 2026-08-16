@@ -14,7 +14,11 @@ import { Focus, FocusEntry } from '@/routes/focus'
 import { Board } from '@/routes/board'
 import { Files } from '@/routes/files'
 import { Scheduler } from '@/routes/scheduler'
-import { Settings } from '@/routes/settings'
+// Settings is entry-lazy: it is a cold administrative surface, and its eager
+// import tipped the hero-path bundle over the 200 KB gz budget (#67 red).
+const Settings = lazy(() =>
+  import('@/routes/settings').then((m) => ({ default: m.Settings })),
+)
 
 // DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
 // neither the route component nor its mock data lands in the production bundle.
@@ -104,7 +108,14 @@ export default function App() {
                   path="/hosts"
                   element={<Navigate to="/settings#hosts" replace />}
                 />
-                <Route path="/settings" element={<Settings />} />
+                <Route
+                  path="/settings"
+                  element={
+                    <Suspense fallback={null}>
+                      <Settings />
+                    </Suspense>
+                  }
+                />
               </Route>
               {DevTiles && (
                 <Route
