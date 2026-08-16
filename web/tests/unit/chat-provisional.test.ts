@@ -131,3 +131,83 @@ describe('extractProvisionalTail — the tail is THIS turn', () => {
     expect(extractProvisionalTail(capture)).toEqual(['still writing this', 'and this'])
   })
 })
+
+/**
+ * What the block leaked into the owner's very first message (daily-driver QA #8).
+ *
+ * The rule these three assert is one rule: THE BLOCK IS PROSE OR IT IS NOTHING.
+ * A capture that still contains shell, a launch command or a TUI dialog is a
+ * capture that never reached the agent's own output, and half of one is not more
+ * honest than all of it — the transcript below is complete either way.
+ */
+describe('extractProvisionalTail — prose, or nothing', () => {
+  test('a launch command whose prompt head wrapped off the window is suppressed', () => {
+    // Verbatim from the QA capture: the login line is above the 30-line window,
+    // so `SHELL_PROMPT_HEAD` matched nothing and the block drew the session's
+    // own `claude …` invocation, word-broken, captioned "Live terminal".
+    const capture = [
+      'ash_profile 2>/dev/null; sour',
+      "ermux/.supermux/bin/supermux--edit'; claude --name spike-q",
+      'a-daily',
+      '╭──────────╮',
+      '│ ❯        │',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('an env-assignment wrapper is shell too', () => {
+    const capture = ['VISUAL=/home/me/bin/edit claude --name spike', '╭──╮', '│ ❯│'].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('a permission dialog belongs to the CARD, not to the tail', () => {
+    // The other half of QA #8: mid-turn the block showed the dialog's own rows,
+    // one wrap behind the real screen and mid-word —
+    //   `2. Yes, and don't ask agai … 3. No / Esc to cancel · Tab to amend`
+    // — beside a choice card drawn from the same capture by a reader that can
+    // actually parse it.
+    const capture = [
+      'Do you want to run this command?',
+      ' ❯ 1. Yes',
+      '   2. Yes, and don’t ask again for: python3 *',
+      '   3. No, and tell Claude what to do differently',
+      '',
+      'Esc to cancel · Tab to amend · ctrl+e to explain',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('a numbered list in PROSE is not a dialog', () => {
+    // The rule that keeps the previous one from eating half the turns on this
+    // surface: `1.` `2.` `3.` is also how Claude writes a list. Only the
+    // dialog's own footer condemns a block.
+    const capture = [
+      'Three things to do next:',
+      '1. Rerun the migration',
+      '2. Redeploy the worker',
+      '3. Watch the queue',
+      '╭──╮',
+      '│ ❯│',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([
+      'Three things to do next:',
+      '1. Rerun the migration',
+      '2. Redeploy the worker',
+      '3. Watch the queue',
+    ])
+  })
+
+  test('a row that FILLS the pane and opens the window is a continuation, and is dropped', () => {
+    // A pty hard-wraps at the pane width: a first row that reaches the edge ran
+    // off the end of a row above the window, so it starts mid-word. Rows that
+    // stop short ended because their own line ended.
+    const wide = 'x'.repeat(60)
+    const capture = [wide, 'a whole line of prose', '╭──╮', '│ ❯│'].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['a whole line of prose'])
+  })
+
+  test('…and a first row that stops short of the edge is kept', () => {
+    const capture = ['a whole line of prose', 'x'.repeat(60), '╭──╮', '│ ❯│'].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['a whole line of prose', 'x'.repeat(60)])
+  })
+})
