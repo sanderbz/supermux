@@ -1,0 +1,377 @@
+/**
+ * The chat socket: one live conversation, dialled and kept dialled (fase A2→A3).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Framework-free ON PURPOSE. React's job here is to mount and unmount this
+ * thing (`use-chat-ws.ts`); everything that can go wrong with a socket — the
+ * first-frame auth, the backoff, which close codes are terminal, the re-seed
+ * after a drop, the fetch-full queue, and above all the teardown — is behaviour
+ * that has to be tested, and a hook is not testable in a `bun test` with no
+ * DOM. `tests/unit/chat-socket.test.ts` drives this class through a fake
+ * socket, including the rapid mount/unmount thrash that must leave nothing
+ * open.
+ *
+ * The handshake is the terminal socket's, byte for byte (`use-live-term.ts`,
+ * `ws.rs::verify_auth_frame`): connect token-less, send `{type:'auth',token}`
+ * as the FIRST frame, wait for `{"type":"auth_ok"}`. The token is never in the
+ * URL — a browser `WebSocket` cannot set an `Authorization` header, and a
+ * query-string token ends up in logs.
+ *
+ * WHAT THIS OWNS THAT THE SERVER DOES NOT: the re-seed after a network drop.
+ * The server re-seeds every attach, so a reconnect is a fresh seed by
+ * construction — the client's part is to stop trusting the OLD `high_water`
+ * the moment the socket dies, which is why `highWater` is cleared on connect
+ * and live frames are ignored until `seed_done` lands again.
+ */
+
+import { authToken, wsUrl } from '../../env'
+import { sessionRequest } from '../../lib/api/sessions'
+
+import {
+  applyFrame,
+  applyFullBody,
+  authFrame,
+  EMPTY_WIRE,
+  parseFrame,
+  type WireEntry,
+  type WireState,
+} from './wire'
+import { truncatedUuids } from './wire-entries'
+
+/** The slice of `WebSocket` this module uses — so a test can be a socket. */
+export interface SocketLike {
+  send(data: string): void
+  close(code?: number, reason?: string): void
+  onopen: ((ev: unknown) => void) | null
+  onmessage: ((ev: { data: unknown }) => void) | null
+  onerror: ((ev: unknown) => void) | null
+  onclose: ((ev: { code: number; reason?: string }) => void) | null
+}
+
+/** What the surface is told about the data plane. */
+export type ChatConnState =
+  /** No seed yet — the transcript below is empty or from a previous socket. */
+  | 'connecting'
+  /** Seeded, and the tailer says it is reading the right file. */
+  | 'live'
+  /** The socket or the tailer is between states. What is on screen STAYS on
+   *  screen — it is just not a claim about now. */
+  | 'reconnecting'
+  /** The conversation pointer cannot self-heal (no hooks installed). Shown,
+   *  but never presented as current. */
+  | 'no_hooks'
+  /** Terminal: this session has no chat data plane, or the socket gave up. */
+  | 'offline'
+
+export interface ChatSnapshot {
+  entries: readonly WireEntry[]
+  state: ChatConnState
+  /** A complete seed page is on screen (`seed_done` landed at least once). */
+  seeded: boolean
+  /** Bumped by every server-ordered re-seed — a different conversation. */
+  resyncCount: number
+}
+
+export const EMPTY_SNAPSHOT: ChatSnapshot = {
+  entries: [],
+  state: 'connecting',
+  seeded: false,
+  resyncCount: 0,
+}
+
+// ── close codes (the terminal socket's table, `use-live-term.ts`) ────────────
+
+const CLOSE_UNMOUNT = 1000 // our own teardown
+const CLOSE_AUTH = 1008 // auth / origin reject — permanent
+const CLOSE_AGAIN = 1013 // subscriber cap, or a transient tailer stop — retry
+const CLOSE_REVOKED = 4001 // token revoked — permanent
+const CLOSE_NOT_RUNNING = 4404 // no such session / not chat-eligible — terminal
+
+const BASE_BACKOFF_MS = 300
+const MAX_BACKOFF_MS = 30_000
+const MAX_ATTEMPTS = 8
+/** `auth_ok` has to arrive inside this or the connection is a failed one. */
+const AUTH_GRACE_MS = 10_000
+
+/** Exponential backoff with ±20% jitter, from the FIRST retry — the same
+ *  anti-storm rule the terminal socket uses when the server restarts. */
+export function backoffDelay(attempt: number, rand: () => number = Math.random): number {
+  const delay = Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS)
+  return Math.round(delay * (0.8 + rand() * 0.4))
+}
+
+// ── fetch-full ──────────────────────────────────────────────────────────────
+
+/** How many of the NEWEST rendered entries are eligible for auto-fetch, and
+ *  how many fetches may be in flight at once. Both are about the server's
+ *  cost: `find_full_entry` streams the transcript until the uuid matches. */
+export const AUTOFETCH_WINDOW = 12
+export const AUTOFETCH_CONCURRENCY = 2
+
+/** `GET /api/sessions/{name}/chat/entry/{uuid}` — `sessionRequest` unwraps the
+ *  `{ok,data}` envelope and throws a `SessionError` on 404/409. */
+async function defaultFetchFull(name: string, uuid: string): Promise<unknown> {
+  const full = await sessionRequest<{ body?: unknown }>(
+    `/api/sessions/${encodeURIComponent(name)}/chat/entry/${encodeURIComponent(uuid)}`,
+  )
+  return full?.body
+}
+
+export interface ChatSocketOptions {
+  /** Session slug. */
+  name: string
+  /** Called on every state change, with an immutable snapshot. */
+  onSnapshot: (s: ChatSnapshot) => void
+  // ── seams (defaults are the real thing; tests replace them) ───────────────
+  connect?: (url: string) => SocketLike
+  token?: () => string
+  baseUrl?: () => string
+  fetchFull?: (name: string, uuid: string) => Promise<unknown>
+  schedule?: (fn: () => void, ms: number) => number
+  cancel?: (id: number) => void
+  rand?: () => number
+}
+
+/**
+ * One session's chat data plane. `start()` dials; `dispose()` is final — a
+ * disposed socket never reconnects, never emits and never leaves a WebSocket
+ * or a timer behind. Everything the class does after `dispose()` is a no-op,
+ * which is what makes React's mount→unmount→mount (StrictMode, a fast tab
+ * switch, a re-keyed panel) safe.
+ */
+export class ChatSocket {
+  private readonly opts: Required<ChatSocketOptions>
+  private wire: WireState = EMPTY_WIRE
+  private conn: ChatConnState = 'connecting'
+  private ws: SocketLike | null = null
+  private authed = false
+  private attempt = 0
+  private retryTimer: number | null = null
+  private authTimer: number | null = null
+  private disposed = false
+  /** Every uuid fetch-full was ever ASKED for on this socket — success or
+   *  failure. A failure is not retried: the entry keeps its "… clipped"
+   *  marker, which is honest, where a retry loop against a 404 is not. */
+  private readonly attempted = new Set<string>()
+  private inflight = 0
+
+  constructor(options: ChatSocketOptions) {
+    this.opts = {
+      connect: (url) => new WebSocket(url) as unknown as SocketLike,
+      token: authToken,
+      baseUrl: wsUrl,
+      fetchFull: defaultFetchFull,
+      schedule: (fn, ms) => setTimeout(fn, ms) as unknown as number,
+      cancel: (id) => clearTimeout(id),
+      rand: Math.random,
+      ...options,
+    }
+  }
+
+  snapshot(): ChatSnapshot {
+    return {
+      entries: this.wire.entries,
+      state: this.conn,
+      seeded: this.wire.seeded,
+      resyncCount: this.wire.resyncCount,
+    }
+  }
+
+  start(): void {
+    if (this.disposed) return
+    this.open()
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.clearTimers()
+    const ws = this.ws
+    this.ws = null
+    if (ws) {
+      // Detach FIRST: a close handler that runs after disposal would schedule
+      // a reconnect for a socket nobody is listening to any more.
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null
+      try {
+        ws.close(CLOSE_UNMOUNT, 'unmount')
+      } catch {
+        /* already closing — nothing to do */
+      }
+    }
+  }
+
+  // ── connection ────────────────────────────────────────────────────────────
+
+  private url(): string {
+    const base = this.opts.baseUrl().replace(/\/$/, '')
+    return `${base}/ws/sessions/${encodeURIComponent(this.opts.name)}/chat`
+  }
+
+  private open(): void {
+    if (this.disposed) return
+    this.clearTimers()
+    this.authed = false
+    // The previous connection's boundary is void the moment the socket is: a
+    // live frame from the OLD ring must not be spliced onto the NEW seed. The
+    // entries stay on screen (a reconnect is not a reason to blank the
+    // transcript) and are replaced wholesale when the fresh seed lands.
+    this.wire = { ...this.wire, seeded: false, highWater: null }
+
+    let ws: SocketLike
+    try {
+      ws = this.opts.connect(this.url())
+    } catch {
+      this.retry()
+      return
+    }
+    this.ws = ws
+
+    ws.onopen = () => {
+      if (this.ws !== ws) return
+      try {
+        ws.send(authFrame(this.opts.token()))
+      } catch {
+        /* surfaced by onclose */
+      }
+      this.authTimer = this.opts.schedule(() => {
+        if (this.ws === ws && !this.authed) ws.close()
+      }, AUTH_GRACE_MS)
+    }
+
+    ws.onmessage = (ev) => {
+      if (this.ws !== ws || typeof ev.data !== 'string') return
+      const frame = parseFrame(ev.data)
+      if (!frame) return
+      if (frame.type === 'auth_ok') {
+        this.authed = true
+        this.clearAuthTimer()
+        // The backoff is NOT reset here. A socket that upgrades, acks and then
+        // closes (an ineligible session, a tailer that just stopped) is not a
+        // useful connection — resetting on `auth_ok` would let that cycle
+        // storm the endpoint. It resets on `seed_done`, which is the first
+        // frame that proves the data plane actually works.
+        return
+      }
+      const before = this.wire
+      this.wire = applyFrame(this.wire, frame)
+      if (frame.type === 'seed_done') this.attempt = 0
+      if (this.wire !== before) {
+        this.conn = stateFor(this.wire)
+        this.pump()
+        this.emit()
+      }
+    }
+
+    ws.onerror = () => {
+      /* every actionable case arrives as a close */
+    }
+
+    ws.onclose = (ev) => {
+      if (this.ws !== ws || this.disposed) return
+      this.ws = null
+      this.authed = false
+      this.clearAuthTimer()
+      switch (ev.code) {
+        case CLOSE_NOT_RUNNING:
+        case CLOSE_AUTH:
+        case CLOSE_REVOKED:
+          // Terminal. 4404 is the server saying this session has no chat data
+          // plane at all (gone, codex, remote, a team lead) — redialing can
+          // only storm it, so the surface is told and the loop stops.
+          this.conn = 'offline'
+          this.emit()
+          return
+        case CLOSE_AGAIN:
+        default:
+          // 1013 (subscriber cap / a transient tailer stop) and every network
+          // close: back off and redial. A redial starts a fresh tailer, which
+          // is precisely what a transient stop needs.
+          this.retry()
+      }
+    }
+  }
+
+  private retry(): void {
+    if (this.disposed) return
+    if (this.attempt >= MAX_ATTEMPTS) {
+      this.conn = 'offline'
+      this.emit()
+      return
+    }
+    const attempt = this.attempt++
+    this.conn = 'reconnecting'
+    this.emit()
+    this.retryTimer = this.opts.schedule(
+      () => {
+        this.retryTimer = null
+        this.open()
+      },
+      backoffDelay(attempt, this.opts.rand),
+    )
+  }
+
+  private clearAuthTimer(): void {
+    if (this.authTimer !== null) {
+      this.opts.cancel(this.authTimer)
+      this.authTimer = null
+    }
+  }
+
+  private clearTimers(): void {
+    this.clearAuthTimer()
+    if (this.retryTimer !== null) {
+      this.opts.cancel(this.retryTimer)
+      this.retryTimer = null
+    }
+  }
+
+  private emit(): void {
+    if (this.disposed) return
+    this.opts.onSnapshot(this.snapshot())
+  }
+
+  // ── fetch-full ────────────────────────────────────────────────────────────
+
+  /** Start fetches for clipped entries the renderer is showing, up to the
+   *  concurrency cap. Idempotent: called after every applied frame. */
+  private pump(): void {
+    if (this.disposed) return
+    for (const uuid of truncatedUuids(this.wire.entries, AUTOFETCH_WINDOW)) {
+      if (this.inflight >= AUTOFETCH_CONCURRENCY) return
+      if (this.attempted.has(uuid)) continue
+      this.attempted.add(uuid)
+      this.inflight++
+      void this.opts
+        .fetchFull(this.opts.name, uuid)
+        .then((body) => {
+          if (this.disposed || body === undefined) return
+          const next = applyFullBody(this.wire, uuid, body)
+          if (next === this.wire) return
+          this.wire = next
+          this.emit()
+        })
+        .catch(() => {
+          // The entry keeps `truncated`, so the surface keeps saying "clipped"
+          // — the honest outcome, and the one the marker exists for.
+        })
+        .finally(() => {
+          this.inflight--
+          this.pump()
+        })
+    }
+  }
+}
+
+/** The tail's own state, as the surface's state. `stopped` is only ever seen
+ *  in-band right before the server closes (with 1013 or 4404), so it is read
+ *  as "not live" and the close code decides whether that is terminal. */
+function stateFor(wire: WireState): ChatConnState {
+  if (!wire.seeded) return 'connecting'
+  switch (wire.status?.state) {
+    case 'live':
+      return 'live'
+    case 'no_hooks':
+      return 'no_hooks'
+    default:
+      return 'reconnecting'
+  }
+}
