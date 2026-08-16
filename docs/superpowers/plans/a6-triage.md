@@ -313,3 +313,64 @@ new policy that promise is superseded rather than quietly broken — but **"floa
 only stays honest while every PR is actually made to justify its bytes.** The moment that becomes a
 formality, the ceiling stops being a budget and becomes a ratchet with extra steps. The per-stream
 table above is what the justification should look like.
+
+## T1, T3 and T9 — what ran, and what did not
+
+### T1.1 visual regression — DONE, and the rig got a real fix
+
+**148 / 148 SAME** between `origin/main` @ `0fa9cea` and this branch merged with it. Full annotated
+result in `~/a6-vr/DIFF.md`; rig, both capture sets and the differ in `~/a6-vr/`.
+
+The first run reported 4 DIFFs and **all four were false**, for two separate reasons worth carrying
+forward:
+
+1. **The baseline predated B3.** It was captured from `a7cc52c`; B3 (#75) merged mid-fase. Diffing
+   A6+B3 against pre-B3 main attributes B3's work to A6. Re-baselined.
+2. **`/?mock` was a nondeterministic capture target.** Capturing the *identical tree twice* gave a
+   **23.02%** diff. Cause: the overview's scroll-driven header crossfade (`overview.tsx` fades the
+   large title out over 0→52px of scroll). A capture landing at `scrollY≈6` collapses a 52 px title
+   and shifts the page. **Fixed in the rig** — `shot.mjs` now parks every scroll container at the
+   top before shooting; the same tree twice is now 0.00% on all four. Any route with a scroll-linked
+   header is a flaky VR target until pinned, which the T10–T13 showcase will need to know.
+
+A green VR number was also concealing a gap: the chip under test renders nothing while `live`, so
+`/dev/chat-live` gained **`?conn=`** and the three non-live states are now captured in both themes.
+
+### T1.2 escape hatch — PARTIAL, and the honest half is stated
+
+**Verified by diff:** no terminal-path source file and **no smoke spec was edited** in this fase,
+except `status-dot-pulse.spec.ts`, which T1.3 deliberately *adopted* (it was covered by no config's
+`testDir`). **Not verified:** that those specs still *pass*, and that `/dev/renderer-thrash`
+round-trips. Both need a live backend run that did not happen — see T3 below. The static claim is
+evidence; the dynamic one is not, and is not claimed.
+
+### T3 reconnect correctness — NOT RUN
+
+**The five e2e specs (T3.1–T3.5) were not written and were not run.** Saying otherwise would be the
+one unforgivable outcome, so: they do not exist.
+
+What DOES cover this mechanism, and what it is worth:
+
+- **21 unit tests** across `chat-connection.test.ts` and `chat-a7-blockers.test.ts` drive the socket
+  through a fake `WebSocket` and a manual clock: the close-code table, the redial's fresh attempt
+  budget after all 8 are burned, the dispose totality, the staleness clock ticking on frames and
+  **not** on `auth_ok`, the ceiling against A0's measured latencies, the retry of a failed
+  fetch-full, and the watchdog's `planeDown` suppression.
+- That is genuine coverage of the *logic* and **no** coverage of the *integration*: nothing here
+  proves the real server's close codes match the table, that a real re-seed leaves no duplicate or
+  gap, that the follow-bottom pin survives a real reconnect, or that toggle-thrash and a re-dial do
+  not collide (T3.5, the pairing the plan calls the program's two hardest mechanisms).
+
+**T3 is the highest-value unfinished work in this fase and should be the next thing done.** The
+plan's §0.6 already names the primitives (`harness.ts`'s `killBackend()`/`restartBackend()`), the
+debug binary is built, and the chip carries `data-vr="chat-connection"` + `data-state` as ready-made
+assertion hooks.
+
+### T9 mobile reality — NOT RUN
+
+**No mobile spec was written or run.** T0.4's finding stands and is the input for whoever picks this
+up: webkit installs and cannot launch on this host, so the engine is chromium with an iPhone
+descriptor at DPR 1 — emulation, which proves layout, touch geometry, `visualViewport` and
+safe-area behaviour, and proves nothing WebKit-specific. The `backdrop-filter`-captures-
+`position:fixed` hazard (§0.1 #29) therefore **remains unguarded**, which matters because the
+refactor it guards was deliberately deferred.

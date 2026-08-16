@@ -477,13 +477,13 @@ the triage table is committed; the mobile config launches.
 
 ### T1 — The regression net, before anything moves
 
-- [ ] **T1.1** Baseline VR sweep, **both themes, DPR 1**, via the §0.6 rig: `/dev/chat-ui`,
+- [x] **T1.1** Baseline VR sweep, **both themes, DPR 1**, via the §0.6 rig: `/dev/chat-ui`,
       `/dev/chat-live` at every `state=`, `/dev/focus`, `/dev/focus-mobile`, `/dev/roster`,
       `/dev/tiles`, `/dev/shell` (incl. `overlay=1`, `variant=frame|pane`, `keyboard=1`),
       `/dev/marks`, `/?mock` at every density tier, plus the mobile pass now that T0.4 unblocked it.
       Store as `~/a6-vr/before/`. Every later diff is annotated against it with `imgdiff.py`; an
       unannotated diff is a bug.
-- [ ] **T1.2** Assert the escape hatch: the terminal path's smoke specs pass **unedited**, and
+- [x] **T1.2** Assert the escape hatch: the terminal path's smoke specs pass **unedited**, and
       `/dev/renderer-thrash` round-trips. A6 may not make the terminal fallback worse — it is the
       thing A7 falls back to.
 - [x] **T1.3** Adopt or delete the orphaned `tests/e2e/status-dot-pulse.spec.ts` (§0.1 #32) and say
@@ -600,7 +600,7 @@ up a stale release binary from the main checkout.
       alongside `desc`/`tags`/reroll/initial-prompt, reusing the existing `ModelPicker`
       (`settings.tsx:108`). And **correct the B2 ledger's ticked box** in the same commit: a plan
       that lies about what shipped is worse than a missing field.
-- [ ] **T5.2** **The B3 defects worth pulling forward (§0.1 #36)** — `role="option"` on
+- [x] **T5.2** **The B3 defects worth pulling forward (§0.1 #36)** — `role="option"` on
       `mobile-bottom-panel.tsx:472-478`'s pills (a genuine a11y bug inside an existing
       `role="listbox"`), and the **duplicate `⌘1..9` registration** with two different slot maps
       (`use-keyboard-capture.ts:78-82` vs `overview.tsx:489-512`). Both are small, both are real
@@ -614,7 +614,7 @@ up a stale release binary from the main checkout.
 - [x] **T5.4** Fix the one pre-existing lint error in a file A6 touches
       (`chat/attention-card.tsx`, §0.1 #27) and leave the other five, so the "zero NEW" bar
       improves by one rather than being restated.
-- [ ] **T5.5** Every other `A6`-triaged item from T0.3 gets its own checkbox and verification line
+- [x] **T5.5** Every other `A6`-triaged item from T0.3 gets its own checkbox and verification line
       appended here at execution time. Everything triaged `B5`/`later`/`wontfix` is written into the
       PR body **and** into the relevant plan's out-of-scope section, so the next executor inherits a
       ledger rather than an archaeology problem.
@@ -674,29 +674,29 @@ frame against §0.2's extracted numbers.
 
 ### T7 — Accessibility, part 1: semantics, announcements, labels
 
-- [ ] **T7.1** **G1 — the streaming region announces.** `live-layer.tsx` has zero `aria-*`/`role`
+- [x] **T7.1** **G1 — the streaming region announces.** `live-layer.tsx` has zero `aria-*`/`role`
       today. Give the transcript the correct role and a politeness that announces *arrivals* without
       re-reading the backlog on every flush. **The hard case is P13**: working row → provisional
       tail → the confirmed entry that supersedes it must produce **one** coherent announcement, not
       three. Assert by **announcement count over a scripted turn**, so a naive "just add aria-live"
       fix is caught.
-- [ ] **T7.2** **G2/G3** — the working row gets `aria-busy` and a live status; bubbles get author
+- [x] **T7.2** **G2/G3** — the working row gets `aria-busy` and a live status; bubbles get author
       attribution so AT does not read an undifferentiated wall (`ui/bubble.tsx:48,91`).
-- [ ] **T7.3** **G4/G5 — choice cards.** Name the `role="group"` (`choice-card.tsx:91`); expose
+- [x] **T7.3** **G4/G5 — choice cards.** Name the `role="group"` (`choice-card.tsx:91`); expose
       selection with a real ARIA state instead of `data-selected` + colour; move `option.hint` out
       of `title=`; make the "why this is inert" reason reachable even though disabled buttons leave
       the tab order; focus the card when it appears. Give `CardCode` (`<pre tabIndex={0}>`,
       `:180-183`) a role and a name, or take it out of the tab order.
-- [ ] **T7.4** **G6/G13** — `aria-controls` alongside every `aria-expanded`
+- [x] **T7.4** **G6/G13** — `aria-controls` alongside every `aria-expanded`
       (`ui/receipt-group.tsx:231`, `attention-card.tsx:120`); resolve the duplicate status
       announcement between `chat-surface.tsx:158-161` and `header-pill.tsx:241`.
-- [ ] **T7.5** **G9/G11 — structure.** Landmarks and one heading for the chat surface; fix the
+- [x] **T7.5** **G9/G11 — structure.** Landmarks and one heading for the chat surface; fix the
       roster's two competing "Overview" titles (`overview.tsx:602` vs `:610`) and give
       `group-grid.tsx:1362`'s `<section>` an `aria-labelledby`.
-- [ ] **T7.6** **G10 — a skip link.** Zero exist app-wide; every route makes a keyboard user
+- [x] **T7.6** **G10 — a skip link.** Zero exist app-wide; every route makes a keyboard user
       traverse ~10 nav items. `layout.tsx` already has `<nav aria-label="Primary">` ×2 and a
       `<main>` at `:325` — this is a small, high-value addition.
-- [ ] **T7.7** **Tooling, so it cannot regress**: add an axe scan to the existing Playwright setup
+- [x] **T7.7** **Tooling, so it cannot regress**: add an axe scan to the existing Playwright setup
       over `/dev/chat-ui`, `/dev/chat-live`, `/dev/focus`, `/dev/roster`, `/?mock` and the mobile
       focus, both themes, failing on new violations. If any existing violation must be carried,
       enumerate it by name. **Watch the bundle** — axe is a devDependency and must not reach the
@@ -709,25 +709,25 @@ the spec; no VR diff beyond annotated intent.
 
 ### T8 — Accessibility, part 2: keyboard and focus
 
-- [ ] **T8.1** **G8 — focus after send.** `use-composer.ts` has no `.focus()` in its submit path;
+- [x] **T8.1** **G8 — focus after send.** `use-composer.ts` has no `.focus()` in its submit path;
       on a button-click send the Send button swaps out via `AnimatePresence`
       (`composer.tsx:221-241`) and focus lands on `<body>`. `focusComposer()` already exists
       (`composer-draft.ts:78-80`) and is called from exactly two places — wire it into the normal
       path. Same for: after a choice card is answered, and after a sheet/overlay dismisses (focus
       returns to the opener — the Attention card already does this correctly; copy it).
-- [ ] **T8.2** **Traps where traps belong.** `ShellOverlay` and `ResponsiveSheet` trap focus and
+- [x] **T8.2** **Traps where traps belong.** `ShellOverlay` and `ResponsiveSheet` trap focus and
       close on `Esc` — and `Esc` in the composer keeps its existing meaning (interrupt). Write the
       collision matrix down; this is the class of bug A5's T7 hit with the `T` hotkey, and §0.1 #36
       records a live duplicate-registration defect of exactly this shape.
-- [ ] **T8.3** **G7/G12 — everything interactive is reachable.** Entity/mention chips become real
+- [x] **T8.3** **G7/G12 — everything interactive is reachable.** Entity/mention chips become real
       links or buttons (`transcript-item.tsx` dispatches from click handlers today). The roster gets
       list semantics (`role="list"` has **zero hits app-wide**) and a roving tabindex so a
       40-session roster is not 40 tab stops — note `chat/ui/roster-row.tsx:140-152` is already a real
       button with `aria-label`, `aria-current` and an `onKeyDown` prop that no caller supplies.
-- [ ] **T8.4** **`:focus-visible` is visible on glass** — check `--ring` against every substrate the
+- [x] **T8.4** **`:focus-visible` is visible on glass** — check `--ring` against every substrate the
       shell paints, in both themes. A ring that vanishes on the tinted column is the same bug as no
       ring.
-- [ ] **T8.5** **The keyboard-only walkthrough spec**: from a cold load — reach the chat, type and
+- [x] **T8.5** **The keyboard-only walkthrough spec**: from a cold load — reach the chat, type and
       send, answer a choice card, toggle to terminal and back, open and close the session sheet —
       with zero mouse events. This spec is also the showcase's "practical keyboard-driven use"
       evidence (S24), so write it to be *recordable*.
