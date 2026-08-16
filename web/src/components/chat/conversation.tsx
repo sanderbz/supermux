@@ -50,7 +50,7 @@ import { SessionHeaderPill } from './header-pill'
 import { LiveLayer } from './live-layer'
 import { deliveryLine, type PendingSend } from './pending'
 import { TranscriptItem } from './transcript-item'
-import { Bubble, MessageRow } from './ui'
+import { Bubble, MessageRow, SystemLine } from './ui'
 import type { OverlayLine } from './use-receipt-overlay'
 
 /**
@@ -222,6 +222,21 @@ export interface ChatConversationProps {
   scrollRef?: React.Ref<HTMLDivElement>
   onScroll?: React.UIEventHandler<HTMLDivElement>
   testId?: string
+
+  // ── back-pagination (daily-driver QA #3) ─────────────────────────────────
+  // Data + callbacks, not a slot: the whole affordance is one of four states
+  // (more to come / fetching / failed / this is the start), and the bench state
+  // that proves each of them reads correctly should be a boolean, not a hook.
+  /** The server has said there is a page below what is on screen. */
+  hasOlder?: boolean
+  /** That page is in flight. */
+  loadingOlder?: boolean
+  /** The last attempt failed — stated and retryable, never a silent hole. */
+  olderError?: boolean
+  /** Everything this conversation contains is on screen. Draws the marker whose
+   *  absence made a truncated transcript indistinguishable from a short one. */
+  atStart?: boolean
+  onLoadOlder?: () => void
 }
 
 export function ChatConversation({
@@ -261,6 +276,11 @@ export function ChatConversation({
   scrollRef,
   onScroll,
   testId = 'chat-surface',
+  hasOlder = false,
+  loadingOlder = false,
+  olderError = false,
+  atStart = false,
+  onLoadOlder,
 }: ChatConversationProps) {
   const phone = surface === 'phone'
   const nodes = React.useMemo(
@@ -381,6 +401,17 @@ export function ChatConversation({
             <p className="py-8 text-center text-[13px] text-ink-2">No conversation yet.</p>
           )}
 
+          {/* Where the conversation continues upward, or where it began
+              (QA #3). Above the confirmed content because that is where the
+              user's scroll arrives. */}
+          <BacklogHead
+            hasOlder={hasOlder}
+            loading={loadingOlder}
+            error={olderError}
+            atStart={atStart && items.length > 0}
+            onLoad={onLoadOlder}
+          />
+
           {/* Confirmed content (fase A3 T3). Vertical rhythm belongs to the rows
               themselves — `MessageRow` spends 14px between speakers and 8px
               inside a run — so this column adds no gap of its own. */}
@@ -445,6 +476,87 @@ export function ChatConversation({
         </div>
       </div>
     </ChatSurface>
+  )
+}
+
+/**
+ * The top of the track — the four things that can be true above the oldest
+ * message on screen (daily-driver QA #3).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The defect this replaces was not a missing fetch, it was a missing STATEMENT:
+ * a conversation that stopped mid-air under a bare "Wednesday" divider says
+ * nothing about whether that is where it started or where the seed window ran
+ * out. Each branch below is one sentence about which of those it is.
+ *
+ * The control is a real button even though the scroll handler auto-fetches at
+ * 320px: a conversation whose entire seed window fits the viewport never
+ * produces a scroll event at all, and "reachable only by a gesture that this
+ * content cannot generate" is the same wall in a nicer coat. 44px, the phone
+ * target every other control on this surface is held to.
+ */
+const BACKLOG_ROW = 'flex justify-center py-3'
+
+export function BacklogHead({
+  hasOlder = false,
+  loading = false,
+  error = false,
+  atStart = false,
+  onLoad,
+}: {
+  hasOlder?: boolean
+  loading?: boolean
+  error?: boolean
+  atStart?: boolean
+  onLoad?: () => void
+}) {
+  if (loading) {
+    return (
+      <div className={BACKLOG_ROW} role="status" aria-live="polite">
+        <span
+          data-testid="chat-load-older"
+          data-state="loading"
+          aria-disabled
+          className="inline-flex h-11 items-center rounded-full px-4 text-[13px] tracking-[-0.05px] text-ink-2"
+        >
+          Loading earlier messages…
+        </span>
+      </div>
+    )
+  }
+
+  if (hasOlder) {
+    return (
+      <div className={BACKLOG_ROW}>
+        <div className="flex flex-col items-center gap-1">
+          {/* Stated, and retryable by the same control — a page that failed
+              silently is indistinguishable from a conversation that has no
+              more history, which is the whole defect. */}
+          {error && (
+            <span data-tone="warn" className="text-[12px] text-status-error">
+              Couldn’t load earlier messages.
+            </span>
+          )}
+          <button
+            type="button"
+            data-testid="chat-load-older"
+            data-state={error ? 'error' : 'idle'}
+            onClick={onLoad}
+            className={cn(
+              'inline-flex h-11 items-center rounded-full px-4',
+              'border-[0.5px] border-hairline bg-surface text-[13px] font-medium tracking-[-0.05px] text-ink',
+              'shadow-[var(--sm-card-shadow)] active:opacity-70',
+            )}
+          >
+            {error ? 'Try again' : 'Load earlier'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!atStart) return null
+  return (
+    <SystemLine testId="chat-start-of-conversation">Start of the conversation</SystemLine>
   )
 }
 

@@ -21,6 +21,7 @@ import type { RecallResponse } from '@/lib/api'
 import type { TileSession } from '@/components/session-tile/types'
 
 import { newestAgentTs, toDisplayList, type ChatEntry, type ChatItem } from './entries'
+import { useChatBacklog, type ChatBacklog } from './use-chat-backlog'
 import { useChatTail } from './use-chat-tail'
 import { useReceiptOverlay, type OverlayLine } from './use-receipt-overlay'
 import { serverNowMs } from './latency'
@@ -53,18 +54,22 @@ export interface ChatTurn {
   overlay: OverlayLine[]
   /** The `/recall?chat=true` query itself (loading/error/refetch). */
   tail: UseQueryResult<RecallResponse>
+  /** Pages BELOW the tail's window, and the affordance state for them
+   *  (daily-driver QA #3). */
+  backlog: ChatBacklog
 }
 
 export function useChatTurn(name: string, session: TileSession | null): ChatTurn {
   const active = session?.status === 'active'
   const tail = useChatTail(name, true)
-  // Memoised so the `?? []` fallback doesn't hand `toDisplayList` a fresh
-  // array identity on every render (it would recompute the whole list each
-  // 1s live-layer tick).
-  const entries = React.useMemo(
-    () => (tail.data?.entries ?? []) as unknown as ChatEntry[],
-    [tail.data],
-  )
+  // The tail is a WINDOW; this is the window plus whatever the user has paged
+  // in under it, newest-first and deduped (QA #3). Every rule below reads the
+  // NEWEST end of the list, which back-pagination never touches — an older page
+  // cannot change the turn anchor, the supersede gate or the confirmed clock.
+  // Memoised inside the hook, so `toDisplayList` is not recomputed on the 1s
+  // live-layer tick.
+  const backlog = useChatBacklog(name, tail.data)
+  const entries = backlog.entries
   const items = React.useMemo(() => toDisplayList(entries), [entries])
   const lastConfirmedTs = entries.length > 0 ? entries[0].ts : 0
   const lastConfirmedMs = lastConfirmedTs * 1000
@@ -138,5 +143,5 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
     turnStart != null &&
     serverNowMs() - lastConfirmedMs > PROVISIONAL_LAG_MS
 
-  return { entries, items, turnStart, liveLayerUp, showProvisional, overlay, tail }
+  return { entries, items, turnStart, liveLayerUp, showProvisional, overlay, tail, backlog }
 }

@@ -8,6 +8,10 @@
 export interface ChatEntry {
   uuid: string
   ts: number
+  /** The transcript file this entry came from. Half of the server's history
+   *  cursor (`backlog.ts`, `encode_cursor` in `recall.rs`) — the uuid alone
+   *  cannot address an entry across a project-scope read. */
+  sessionId?: string
   text: string
   reply?: string
   kind: string

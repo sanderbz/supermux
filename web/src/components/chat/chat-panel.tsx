@@ -30,6 +30,7 @@ import { commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
 import { detailFor, topAttention } from './attention'
+import { restoredScrollTop, shouldLoadOlder, type ScrollMark } from './backlog'
 import { ChatComposer } from './composer'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
@@ -88,7 +89,7 @@ export default function ChatPanel({
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is wiring only.
-  const { entries, items, turnStart, showProvisional, overlay, tail } = useChatTurn(
+  const { entries, items, turnStart, showProvisional, overlay, tail, backlog } = useChatTurn(
     name,
     session,
   )
@@ -127,12 +128,49 @@ export default function ChatPanel({
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const pinnedRef = React.useRef(true)
+
+  // ── back-pagination (QA #3) ────────────────────────────────────────────────
+  // Reaching the top fetches the page below what is on screen, and the scroll
+  // region is put back where the reader's eye was: the same distance from the
+  // top of the OLD content, i.e. the height the prepend added, added on. Without
+  // it, "load earlier" reads as the conversation teleporting.
+  const restoreRef = React.useRef<ScrollMark | null>(null)
+  const loadOlder = backlog.loadOlder
+  const requestOlder = React.useCallback(() => {
+    const el = scrollRef.current
+    // Marked BEFORE the fetch, not in the response handler: by the time the
+    // page lands the user may have scrolled on, and the mark has to describe
+    // the layout the delta will be measured against.
+    if (el) restoreRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop }
+    loadOlder()
+  }, [loadOlder])
+
+  const pagesLoaded = backlog.pagesLoaded
+  const restoredFor = React.useRef(pagesLoaded)
+  React.useLayoutEffect(() => {
+    // Layout effect, and only on the commit that prepended: the correction has
+    // to land before the browser paints, or the page visibly jumps first.
+    if (restoredFor.current === pagesLoaded) return
+    restoredFor.current = pagesLoaded
+    const el = scrollRef.current
+    const mark = restoreRef.current
+    restoreRef.current = null
+    if (!el || !mark) return
+    el.scrollTop = restoredScrollTop(mark, el.scrollHeight)
+  }, [pagesLoaded])
+
+  const hasOlder = backlog.hasOlder
+  const loadingOlder = backlog.loadingOlder
   const onScroll = React.useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    pinnedRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_THRESHOLD_PX
-  }, [])
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
+    if (shouldLoadOlder({ scrollTop: el.scrollTop, hasOlder, loading: loadingOlder })) {
+      requestOlder()
+    }
+  }, [hasOlder, loadingOlder, requestOlder])
+
   React.useEffect(() => {
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
@@ -296,6 +334,12 @@ export default function ChatPanel({
       rawUrl={filesApi.rawUrl}
       scrollRef={scrollRef}
       onScroll={onScroll}
+      // QA #3 — reaching the top loads the page below what is on screen.
+      hasOlder={backlog.hasOlder}
+      loadingOlder={backlog.loadingOlder}
+      olderError={backlog.olderError}
+      atStart={backlog.atStart}
+      onLoadOlder={requestOlder}
       pending={pending.items}
       dialog={dialog.card}
       dialogBusy={dialog.busy}
