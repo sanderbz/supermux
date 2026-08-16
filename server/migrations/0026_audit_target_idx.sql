@@ -1,0 +1,13 @@
+-- Per-session harness-event reads (GET /api/sessions/{name}/events).
+--
+-- The feed asks "which audit rows have THIS session as their subject", and a
+-- session is the subject through four different columns: `target` (a delegation
+-- lands on it, a rename renames it), `detail.from` (it delegated OUT),
+-- `detail.session` (a schedule row targets the SCHEDULE id, so only the detail
+-- ties the fire to the session) and `actor = 'agent:<name>'`.
+--
+-- Only the `target` arm is indexable cheaply; the json_extract/actor arms scan
+-- the action-filtered subset, which is small at audit_log's size. If it ever
+-- shows up in a trace, the escape hatch is a UNION ALL of separately indexed
+-- arms (json_extract expression indexes), not a wider index here.
+CREATE INDEX idx_audit_target ON audit_log(target, id);

@@ -9,6 +9,7 @@
 //! metadata (path, byte count, which env var). Callers are responsible for
 //! keeping secrets out of the JSON they pass here.
 
+use once_cell::sync::Lazy;
 use serde_json::Value;
 use sqlx::SqlitePool;
 
@@ -22,16 +23,41 @@ pub async fn log(
     target: &str,
     detail: Value,
 ) -> sqlx::Result<()> {
+    log_entry(pool, actor, action, target, detail).await.map(|_| ())
+}
+
+/// [`log`], but hands back the row it just wrote.
+///
+/// The harness-event feed's SSE echo needs to ship the entry it is announcing,
+/// and re-reading the ledger to find the row we just inserted would be a race
+/// with every other writer. Building the entry from the same values we bound is
+/// exact by construction.
+pub async fn log_entry(
+    pool: &SqlitePool,
+    actor: &str,
+    action: &str,
+    target: &str,
+    detail: Value,
+) -> sqlx::Result<AuditEntry> {
     let ts = chrono::Utc::now().timestamp();
-    sqlx::query("INSERT INTO audit_log (ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)")
-        .bind(ts)
-        .bind(actor)
-        .bind(action)
-        .bind(target)
-        .bind(detail.to_string())
-        .execute(pool)
-        .await?;
-    Ok(())
+    let detail = detail.to_string();
+    let res =
+        sqlx::query("INSERT INTO audit_log (ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)")
+            .bind(ts)
+            .bind(actor)
+            .bind(action)
+            .bind(target)
+            .bind(&detail)
+            .execute(pool)
+            .await?;
+    Ok(AuditEntry {
+        id: res.last_insert_rowid(),
+        ts,
+        actor: actor.to_string(),
+        action: action.to_string(),
+        target: target.to_string(),
+        detail,
+    })
 }
 
 /// The most-recent `limit` audit rows, newest first (`GET /api/audit?limit=N`).
@@ -40,6 +66,71 @@ pub async fn list(pool: &SqlitePool, limit: i64) -> sqlx::Result<Vec<AuditEntry>
     sqlx::query_as::<_, AuditEntry>(
         "SELECT id, ts, actor, action, target, detail FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?",
     )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+// ── the per-session harness-event feed ───────────────────────────────────────
+
+/// The audit actions the transcript surfaces as system lines. Everything else
+/// in `audit_log` is operator forensics, not conversation: keeping the list
+/// explicit here means a new destructive action can never start narrating
+/// itself into someone's chat by accident.
+pub const SURFACED_ACTIONS: [&str; 4] = [
+    "session.delegate",
+    "session.rename",
+    "schedule.create",
+    "schedule.run",
+];
+
+/// The feed's one SQL statement, with the action list built from
+/// [`SURFACED_ACTIONS`] so the filter and the const can never drift. No user
+/// input is interpolated — the values are compile-time literals.
+static EVENTS_SQL: Lazy<String> = Lazy::new(|| {
+    let actions = SURFACED_ACTIONS
+        .iter()
+        .map(|a| format!("'{a}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "SELECT id, ts, actor, action, target, detail FROM audit_log \
+         WHERE id > ? \
+           AND action IN ({actions}) \
+           AND ( target = ? \
+              OR json_extract(detail,'$.from') = ? \
+              OR json_extract(detail,'$.session') = ? \
+              OR actor = 'agent:' || ? ) \
+         ORDER BY id ASC LIMIT ?"
+    )
+});
+
+/// Audit rows where `session` is the *subject*, ascending by id, for
+/// `GET /api/sessions/{name}/events`.
+///
+/// A session is the subject through four columns, because the ledger was never
+/// designed as a per-session feed:
+/// - `target = ?` — a delegation landed on it, or it was renamed;
+/// - `json_extract(detail,'$.from') = ?` — it delegated OUT (the row's target
+///   is the *recipient*);
+/// - `json_extract(detail,'$.session') = ?` — schedule rows target the SCHEDULE
+///   id, so only the detail ties a fire to the session it fires into;
+/// - `actor = 'agent:' || ?` — it acted as an agent.
+///
+/// `since_id` is EXCLUSIVE (pass `0` for "from the beginning"), so a client can
+/// poll with the last id it holds. `limit` is clamped by the caller.
+pub async fn events_for_session(
+    pool: &SqlitePool,
+    session: &str,
+    since_id: i64,
+    limit: i64,
+) -> sqlx::Result<Vec<AuditEntry>> {
+    sqlx::query_as::<_, AuditEntry>(EVENTS_SQL.as_str())
+        .bind(since_id)
+    .bind(session)
+    .bind(session)
+    .bind(session)
+    .bind(session)
     .bind(limit)
     .fetch_all(pool)
     .await
@@ -90,4 +181,65 @@ pub async fn delegations_in(pool: &SqlitePool, session: &str) -> sqlx::Result<Ve
     .bind(session)
     .fetch_all(pool)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use sqlx::SqlitePool;
+
+    async fn test_pool() -> (SqlitePool, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("supermux-audit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            data_dir: dir.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            extra_binds: vec![],
+            tls: Default::default(),
+            auth_token: "test-token".to_string(),
+            provider_defaults: Default::default(),
+            ws: Default::default(),
+            remote_callback_url: None,
+            push_sub: None,
+            github_token: None,
+            statusline_tap: false,
+            extra_origins: Vec::new(),
+        };
+        let pool = crate::db::init(&config).await.expect("init pool");
+        (pool, dir)
+    }
+
+    #[tokio::test]
+    async fn events_for_session_sees_all_subject_arms_and_only_surfaced_actions() {
+        let (pool, _dir) = test_pool().await;
+        log(&pool, "user", "session.delegate", "deploy-fix", json!({"from":"web-ui"}))
+            .await
+            .unwrap();
+        log(&pool, "user", "session.rename", "web-ui", json!({"from":"a","to":"b"}))
+            .await
+            .unwrap();
+        // schedule rows target the SCHEDULE id — only detail.session ties them to the session:
+        log(
+            &pool,
+            "system",
+            "schedule.run",
+            "sched-1",
+            json!({"session":"web-ui","title":"Nightly","status":"ok"}),
+        )
+        .await
+        .unwrap();
+        log(&pool, "user", "session.delete", "web-ui", json!({}))
+            .await
+            .unwrap(); // not surfaced
+        let out = events_for_session(&pool, "web-ui", 0, 50).await.unwrap();
+        assert_eq!(out.len(), 3); // outbound delegate (detail.from) + rename (target) + schedule fire (detail.session)
+        let inbound = events_for_session(&pool, "deploy-fix", 0, 50).await.unwrap();
+        assert_eq!(inbound.len(), 1);
+        // since_id is exclusive and ascending:
+        let after = events_for_session(&pool, "web-ui", out[0].id, 50)
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 2);
+    }
 }

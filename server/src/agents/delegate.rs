@@ -106,13 +106,17 @@ pub async fn delegate(
     // Record the edge for the graph view (indices idx_delegations_from/to).
     let id = db::audit::record_delegation(&state.pool, from, to, &input.prompt).await?;
 
-    // Audit the cross-session action (prompt body intentionally omitted).
-    db::audit::log(
-        &state.pool,
+    // Audit the cross-session action (prompt body intentionally omitted) and
+    // tick the `harness` feed for BOTH ends: the sender's transcript shows an
+    // outbound line, the receiver's shows the arrival. `detail.from` is what
+    // ties the row to the sender — the target column only names the recipient.
+    crate::sessions::audit_harness(
+        &state,
         &audit_actor(input.actor.as_deref(), from),
         "session.delegate",
         to,
         json!({ "from": from }),
+        &[from, to],
     )
     .await?;
 
