@@ -29,6 +29,7 @@ import * as React from 'react'
 import { PAPER } from '@/brand/tokens'
 import type { MarkState } from '@/brand/marks'
 import { RosterRow } from '@/components/chat/ui'
+import { AttentionRollup } from '@/components/roster/attention-rollup'
 import { SessionTile } from '@/components/session-tile'
 import { MOCK_TILES } from '@/components/session-tile/mock'
 import { getOverviewSizeConfig } from '@/lib/overview-size'
@@ -349,7 +350,22 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
           title="The attention rollup"
           note={`"needs you: N" on B0's facepile, in the overview header. N=${ROLLUP_COUNTS.join(' · N=')} — 0 must render NOTHING (no empty chrome) and 9 must collapse to three marks and a +6.`}
         >
-          <Pending task="T6" what="Attention rollup" />
+          <div className="flex flex-col gap-4">
+            {ROLLUP_COUNTS.map((n) => (
+              <div key={n} data-bench-rollup={n} className="flex items-center gap-3">
+                <span className="w-10 shrink-0 text-[11px] tabular-nums text-ink-3">N={n}</span>
+                <div className="min-h-6">
+                  <AttentionRollup
+                    sessions={ROSTER_CAST.slice(0, n).map((m, i) => ({
+                      name: m.name,
+                      status: 'waiting' as const,
+                      activity_at: 1_800_000_000_000 - (n - i) * 60_000,
+                    }))}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
         </Section>
 
         <Section

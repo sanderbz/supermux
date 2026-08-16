@@ -56,6 +56,8 @@ import {
   type OverviewSize,
 } from '@/lib/overview-size'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { useAttentionContext } from '@/hooks/use-attention'
+import { AttentionRollup } from '@/components/roster/attention-rollup'
 import {
   hasImplicitUngrouped,
   newGroupId,
@@ -153,6 +155,9 @@ export function Overview() {
   // Fork the density value/setter by viewport so phone and desktop sizes are
   // saved independently.
   const isMobile = useMediaQuery('(max-width: 767px)')
+  // The needs-you list, from the app-wide attention provider so the rollup and
+  // the tiles it points at can never disagree.
+  const { needs: needsYou } = useAttentionContext()
   const overviewSize = isMobile ? overviewSizeMobile : overviewSizeDesktop
   const setOverviewSize = isMobile
     ? setOverviewSizeMobile
@@ -573,6 +578,12 @@ export function Overview() {
         </motion.h1>
 
       <header className="mb-4 flex flex-wrap items-center gap-2 sm:gap-3">
+        {/* "needs you: N" (fase B2 T6) — the one place that answers "is anything
+            waiting on me?" without reading the grid. Renders NOTHING at N=0, so
+            the header is unchanged on a calm roster. Inside B1's header grammar:
+            it is a header-row control like the search field and the display
+            chips, not a banner. */}
+        <AttentionRollup sessions={needsYou} className="order-first w-full sm:order-none sm:w-auto" />
 
         <div className="relative order-last w-full sm:order-none sm:w-auto sm:flex-1 sm:max-w-sm">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
