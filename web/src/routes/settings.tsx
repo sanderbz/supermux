@@ -56,6 +56,7 @@ import {
 } from '@/components/settings/secret-field'
 import { SnippetsSection } from '@/components/settings/snippets-section'
 import { HostsSection } from '@/components/settings/hosts-section'
+import { SchedulesSection } from '@/components/settings/schedules-section'
 import { AuditLog } from '@/components/settings/audit-log'
 import { UpdatesSection } from '@/components/settings/updates-panel'
 import { Button } from '@/components/ui/button'
@@ -807,11 +808,25 @@ export function Settings() {
           so the big `<h1>` title block below it also clears the notch. */}
       <motion.header
         style={{ opacity: navOpacity }}
-        // min-h (not h) so the notch inset (pt-safe) ADDS to the bar height
-        // instead of eating into a fixed 48px — otherwise the title is squished
-        // under the Dynamic Island in the iOS standalone PWA. Desktop resets
-        // pt-safe (sm:pt-0), where min-h-12 renders identically to h-12.
-        className="pointer-events-none sticky top-0 z-20 flex min-h-12 items-center justify-center border-b border-border/60 bg-background/70 pt-safe backdrop-blur-xl sm:pt-0"
+        // B1 T7.1 — the tokenised route-header contract. Was a hand-rolled
+        // `min-h-12 … bg-background/70 backdrop-blur-xl`; now `glass
+        // safe-header`, which is the same idea expressed once:
+        //   · `safe-header` = min-height var(--sm-toolbar-min-h) (56px, the
+        //     ROUTE floor) + additive padding-top: env(safe-area-inset-top).
+        //     min-h, never h, so the notch inset GROWS the bar instead of
+        //     eating into it and squishing the title under the Dynamic Island.
+        //   · `glass` = the shared material, which also brings the
+        //     `prefers-reduced-transparency` and no-backdrop-filter fallbacks
+        //     the hand-rolled version never had.
+        // DECISION (VR'd both ways, light + dark, desktop + iPhone 14 Pro): the
+        // 56px route floor does NOT crowd the large title below — the 34px
+        // title sits in the scrolling body with its own padding, and the extra
+        // 8px reads as a more confident bar. So Settings takes the standard
+        // route floor rather than keeping its 48px exception.
+        // `sm:pt-0` still resets the mobile-only inset once the desktop SideNav
+        // owns the chrome. z-20 is deliberately unchanged — B1 renumbers no
+        // existing z-index (see BRAND.md §6d).
+        className="glass safe-header pointer-events-none sticky top-0 z-20 flex items-center justify-center border-b border-hairline sm:pt-0"
       >
         <span className="text-[17px] font-semibold tracking-tight">Settings</span>
       </motion.header>
@@ -908,6 +923,11 @@ export function Settings() {
           </Section>
 
           <HostsSection />
+
+          {/* B1 T8 — the former /scheduler route, folded in. Sits between Hosts
+              and Claude tools: the three are registry-ish configuration
+              neighbours, and `/scheduler` now redirects to `#schedules`. */}
+          <SchedulesSection />
 
           <ClaudeToolsSection />
 

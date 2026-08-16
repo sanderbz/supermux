@@ -2,9 +2,15 @@
 //
 // Archive is a soft delete (the row survives with `archived = 1`), but archived
 // sessions are otherwise unbrowsable + unrecoverable from the UI. This is the
-// opt-in recovery surface — NO permanent screen estate. It reuses
-// <ResponsiveSheet> (Vaul drag-detent bottom sheet on touch / right-side dialog
-// on desktop) so it matches every other detail panel in the app.
+// opt-in recovery surface — NO permanent screen estate.
+//
+// B1 T6: this is <ShellOverlay>'s FIRST CONSUMER. On mobile nothing changes —
+// ShellOverlay renders <ResponsiveSheet> verbatim, so the Vaul drag-detent
+// bottom sheet is byte-identical. On desktop the right-side dialog becomes the
+// shell overlay: a frame centred in the content column, with the nav rail and
+// route header still visible beside its scrim. Chosen as the first consumer
+// because it is shell-mounted (layout.tsx), low-traffic, and reversible in one
+// import.
 //
 // Each row shows the session name + when it was archived, with two actions:
 //   • Restore  → unarchive (the row springs back into the live overview via the
@@ -21,7 +27,7 @@ import { Archive, RotateCcw, Trash2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
+import { ShellOverlay } from '@/components/shell/shell-overlay'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useToast } from '@/components/ui/use-toast'
 import {
@@ -66,7 +72,7 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
       : `${count} archived session${count === 1 ? '' : 's'}`
 
   return (
-    <ResponsiveSheet
+    <ShellOverlay
       open={open}
       onOpenChange={onOpenChange}
       title="Archived sessions"
@@ -106,7 +112,7 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
           </ul>
         )}
       </div>
-    </ResponsiveSheet>
+    </ShellOverlay>
   )
 }
 

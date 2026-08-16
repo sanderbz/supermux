@@ -197,8 +197,8 @@ export const ONBOARDING = {
   tourStart: 'Take the tour',
   tourSkip: 'Skip',
   tourDone: 'Got it',
-  /** 4-step tour copy — anchored to a tile, the focus button, the scheduler,
-   *  then the create menu. */
+  /** 4-step tour copy — anchored to a tile, the focus button, Settings (where
+   *  schedules now live), then the create menu. */
   tour: [
     {
       title: 'Peek without leaving',
@@ -210,7 +210,7 @@ export const ONBOARDING = {
     },
     {
       title: 'Schedule the routine',
-      body: 'Boot agents or send commands on a cron expression. Set it once, walk away.',
+      body: 'Schedules live in Settings now — boot agents or send commands on a cron expression. Set it once, walk away.',
     },
     {
       title: 'Start another agent',

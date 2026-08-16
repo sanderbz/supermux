@@ -3,5 +3,17 @@
   "references": [
     { "path": "./tsconfig.app.json" },
     { "path": "./tsconfig.node.json" }
-  ]
+  ],
+  /* The `@/*` alias is declared in tsconfig.app.json for the app build, but
+     BUN reads only the root tsconfig (it does not follow project references),
+     so `bun test` could not resolve `@/…` and any unit test that rendered a
+     component importing by alias failed with "Cannot find module '@/lib/utils'".
+     Mirrored here purely so the test runner resolves the same alias the bundler
+     does. `"files": []` keeps this config a pure solution file for tsc — adding
+     compilerOptions here changes nothing about the build. */
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
 }

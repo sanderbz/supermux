@@ -1,7 +1,6 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import * as React from 'react'
+import { Outlet, useLocation } from 'react-router-dom'
 import {
-  CalendarClock,
   FolderClosed,
   LayoutGrid,
   Settings as SettingsIcon,
@@ -11,7 +10,15 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
+import {
+  ShellOverlayProvider,
+  useShellOverlayProvider,
+} from '@/components/shell/use-shell-overlay'
+import {
+  MorphNavLink,
+  NAV_ACTIVE_VT_NAME,
+} from '@/components/view-transitions/morph'
 import { Logo } from '@/components/logo'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -53,11 +60,20 @@ const NAV: NavItem[] = [
   { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true },
   { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
-  { to: '/scheduler', label: 'Scheduler', icon: CalendarClock, tour: 'scheduler' },
-  // Hosts registry moved into Settings → Remote hosts (rare-use config
-  // doesn't need a primary-nav slot). `/hosts` redirects to /settings#hosts
-  // (App.tsx) so old bookmarks land in the right section.
-  { to: '/settings', label: 'Settings', icon: SettingsIcon, badgeKind: 'updates' },
+  // Hosts registry AND the scheduler both moved into Settings (rare-use config
+  // doesn't need a primary-nav slot). `/hosts` → /settings#hosts and
+  // `/scheduler` → /settings#schedules (App.tsx) so old bookmarks land in the
+  // right section. Settings therefore carries the onboarding tour's step-3
+  // anchor, which used to point at the Scheduler item.
+  // Nav is at FIVE items after B1; Board leaves in B2, gated on the issue read
+  // surface.
+  {
+    to: '/settings',
+    label: 'Settings',
+    icon: SettingsIcon,
+    tour: 'settings',
+    badgeKind: 'updates',
+  },
 ]
 
 /** Tiny notification dot rendered over a nav icon. The colour distinguishes
@@ -88,6 +104,12 @@ function SideNav() {
   return (
     <nav
       aria-label="Primary"
+      // `data-shell-rail` is the substrate hook (B1 T3): under
+      // `[data-substrate]` globals.css repaints this column onto `--sm-paper`,
+      // drops the 1px border and draws a 0.5px `::after` hairline instead. The
+      // Tailwind classes stay so removing the attribute is a true one-attribute
+      // revert to the pre-B1 look.
+      data-shell-rail=""
       className="hidden w-16 shrink-0 flex-col items-center border-r border-border bg-card pb-4 pt-safe md:flex"
     >
       <div className="flex h-16 w-full items-center justify-center">
@@ -99,7 +121,7 @@ function SideNav() {
           return (
             <Tooltip key={item.to}>
               <TooltipTrigger asChild>
-                <NavLink
+                <MorphNavLink
                   to={item.to}
                   end={item.end}
                   aria-label={
@@ -111,9 +133,14 @@ function SideNav() {
                   {({ isActive }) => (
                     <>
                       {isActive && (
-                        <motion.span
-                          layoutId="nav-active-desktop"
-                          transition={springs.snappy}
+                        <span
+                          data-nav-active=""
+                          // B1 T4 — the pill is a VIEW-TRANSITION-named element,
+                          // not a framer `layoutId`. See NAV_ACTIVE_VT_NAME for
+                          // why: with nav clicks running inside
+                          // startViewTransition, layoutId double-animates (a
+                          // frozen snapshot sliding under a live spring).
+                          style={{ viewTransitionName: NAV_ACTIVE_VT_NAME }}
                           className="absolute inset-0 rounded-xl bg-primary"
                         />
                       )}
@@ -126,7 +153,7 @@ function SideNav() {
                       </span>
                     </>
                   )}
-                </NavLink>
+                </MorphNavLink>
               </TooltipTrigger>
               <TooltipContent side="right">{item.label}</TooltipContent>
             </Tooltip>
@@ -166,12 +193,14 @@ function BottomNav() {
   return (
     <nav
       aria-label="Primary"
+      // Substrate hook — same contract as the desktop rail, hairline on top.
+      data-shell-tabs=""
       className="flex shrink-0 items-stretch justify-around border-t border-border bg-card pb-safe md:hidden"
     >
       {NAV.filter((item) => !item.desktopOnly).map((item) => {
         const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
         return (
-          <NavLink
+          <MorphNavLink
             key={item.to}
             to={item.to}
             end={item.end}
@@ -184,9 +213,13 @@ function BottomNav() {
             {({ isActive }) => (
               <>
                 {isActive && (
-                  <motion.span
-                    layoutId="nav-active-mobile"
-                    transition={springs.snappy}
+                  <span
+                    data-nav-active=""
+                    // Same contract as the desktop pill — one VT name per
+                    // snapshot. Desktop and mobile nav are mutually exclusive
+                    // (`hidden md:flex` vs `md:hidden`), so a `display: none`
+                    // nav is never captured and the name stays unique.
+                    style={{ viewTransitionName: NAV_ACTIVE_VT_NAME }}
                     className="absolute left-1/2 top-1.5 h-1 w-8 -translate-x-1/2 rounded-full bg-primary"
                   />
                 )}
@@ -203,7 +236,7 @@ function BottomNav() {
                 </span>
               </>
             )}
-          </NavLink>
+          </MorphNavLink>
         )
       })}
     </nav>
@@ -248,16 +281,36 @@ export function Layout() {
   // estate — the sheet is only in the DOM as an overlay when opened).
   const archivedOpen = useArchivedSheet((s) => s.open)
   const setArchivedOpen = useArchivedSheet((s) => s.setOpen)
+  // Kill switch, read ONCE at mount (see the attribute below).
+  const [substrate] = React.useState(isShellSubstrateEnabled)
+  // The shell-overlay host: the content column, published on context so any
+  // route can raise a <ShellOverlay> without prop-drilling and without a
+  // body-level portal (which could not be bounded by the column).
+  const [attachOverlayHost, overlayHostValue] = useShellOverlayProvider()
   return (
+    <ShellOverlayProvider value={overlayHostValue}>
     <div
       className="flex h-full w-full"
       data-standalone={standalone ? '' : undefined}
+      // B1 T3 — the painted substrate. One attribute gates the whole layer
+      // (globals.css scopes every substrate rule under `[data-substrate]`), so
+      // `localStorage['supermux:shell-substrate'] = '0'` + reload is a complete
+      // revert to the pre-B1 appearance with no redeploy. Read once, at mount:
+      // the flag is a kill switch, not a preference, and must not re-render.
+      data-substrate={substrate ? '' : undefined}
     >
       <SideNav />
       <div className="flex h-full min-w-0 flex-1 flex-col">
         {!isFocus && <MobileTopBar overview={isOverview} />}
         <ReconnectBanner />
-        <main className={cn('min-h-0 flex-1 overflow-auto')}>
+        {/* The content column. `data-shell-content` raises it one step off the
+            paper under the substrate; it is also the host `<ShellOverlay>`
+            mounts into (see components/shell/use-shell-overlay.ts). */}
+        <main
+          ref={attachOverlayHost}
+          data-shell-content=""
+          className={cn('min-h-0 flex-1 overflow-auto')}
+        >
           <Outlet />
         </main>
         {!isFocus && <BottomNav />}
@@ -274,5 +327,6 @@ export function Layout() {
        *  (it's only in the DOM as an overlay while open). */}
       <ArchivedSheet open={archivedOpen} onOpenChange={setArchivedOpen} />
     </div>
+    </ShellOverlayProvider>
   )
 }

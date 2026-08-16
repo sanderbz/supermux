@@ -274,6 +274,92 @@ renderer slices in `components/chat/` keep the data plane.
   literal, deliberately outside the `--status-*` family (it must survive at 7px
   on all seven pigments). Flagged in `metrics.ts` for owner review.
 
+## 6d. The shell — chrome, z-ladder, overlay vocabulary (B1)
+
+B0 gave the app a palette; B1 gives it a body. Three vocabularies, all declared
+in the fenced `FASE B1` block at the tail of `globals.css` and asserted by
+`tests/unit/shell-chrome-tokens.test.ts`.
+
+### Chrome heights — a floor, never a fixed height
+
+Tailwind is border-box, so `h-14 pt-safe` lets the notch inset *eat* the header
+instead of growing it. Every top bar is therefore **`min-height` (a floor) plus
+an additive `padding-top: env(safe-area-inset-top)`**, packaged as one utility:
+
+| column | floor | token | utility |
+|---|---|---|---|
+| route headers — overview, files, settings | 56px | `--sm-toolbar-min-h` | `safe-header` |
+| in-pane headers — focus, side pane, shell overlay | 44px | `--sm-toolbar-min-h-compact` | `safe-header-compact` |
+
+The guard against regressions is `tests/e2e/smoke/ios-pwa-chrome.spec.ts`.
+
+### The route-header grammar — one shape for every route
+
+Overview, Files and Settings now share it, and any new route inherits it:
+
+- a **sticky `glass safe-header` bar** at the top of the route's own scroller,
+  carrying the route title at **17px / 600**, fading IN over 8→44px of scroll;
+- the **large title (34px / 700) in the scrolling body**, fading OUT over
+  0→52px — so exactly one title is legible at any scroll position;
+- the bar **owns the safe-area inset**. A route must not ALSO pad its body with
+  `env(safe-area-inset-top)`, or the two stack into a dead band on a notched
+  phone;
+- **crossfading inners go in `.sm-swap`.** A control that appears in one state
+  and not another (the overview's density chip, which is tile-view only) would
+  otherwise shunt every control beside it sideways. `.sm-swap` puts both states
+  in one grid cell, so the swap is an opacity change that cannot move layout.
+
+A route with a sticky header must be **its own scroller**
+(`h-full overflow-y-auto`), not rely on the shell's `<main>`: `position: sticky`
+resolves against the nearest scrolling ancestor, and a route root sized `h-full`
+gives a sticky child a containing block one viewport tall — the bar unsticks
+mid-scroll.
+
+### The z-ladder — names over the shipped numbers
+
+The app already had a stacking order (14 call sites at `z-[60]` alone). B1 does
+**not renumber it**; it writes it down, so new code has names to use and B2+ can
+converge the literals one file at a time.
+
+| token | z | who lives there |
+|---|---|---|
+| `--sm-z-content` | 10 | in-flow content, sticky route bodies |
+| `--sm-z-pane` | 20 | side panes, split columns |
+| `--sm-z-header` | 30 | sticky route headers over their own scroller |
+| `--sm-z-overlay` | 50 | Radix popover / dropdown / tooltip / dialog, and `<ShellOverlay>`'s scrim + frame |
+| `--sm-z-sheet` | 60 | Vaul sheets, `ResponsiveSheet`, the focus KeyBar, the connection overlay |
+| `--sm-z-compose` | 65 | the compose panel |
+| `--sm-z-actionsheet` | 70 | action sheets, the A2HS sheet, the snippet editor |
+| `--sm-z-tour` | 78 | the onboarding tour's scrim |
+| `--sm-z-tip` | 80 | the tour's floating tip — always the top layer |
+
+### The substrate — paint, never blur
+
+The shell is **one painted substrate** (`[data-substrate]` on the shell root),
+not six independent page backgrounds: nav rail on `--sm-paper`, content column
+on `--sm-paper-raised`, side panes on the 6% `sm-accent-wash`. Columns are
+separated by 0.5px absolute `::after` strips (`--sm-hairline` /
+`--sm-hairline-w`), never a `border` — a 1px border is a different physical line
+at DPR 2.
+
+`.glass` stays the **only** `backdrop-filter` in the app, and only ever on
+*floating* chrome (headers, composer, popovers, KeyBar) — never on an ancestor
+of a `position: fixed` element, because a backdrop-filter makes its element the
+containing block for fixed descendants and silently breaks the mobile focus
+sheet's `visualViewport` math. Two tests enforce this: the CSS parse above and
+`tests/e2e/smoke/shell-containing-block.spec.ts`.
+
+Kill switch: `localStorage['supermux:shell-substrate'] = '0'`, reload. Without
+the attribute every pre-B1 class still applies, so the revert needs no redeploy.
+
+### Motion — exits are always faster than entries
+
+Sourced from `lib/springs.ts` only. The shell adds `springs.settle` (overlay
+entrance, ~520ms) against `tweens.overlayExit` (300ms), and
+`tweens.popoverIn` (150ms) against `tweens.popoverOut` (100ms).
+`.sm-swap` is the one sanctioned CSS transition: a 1×1 grid whose two children
+share a cell and crossfade at 0.26s, so a state swap cannot shift layout.
+
 ## 7. How the rest of the app consumes this
 
 - **Theme**: extend the `:root` brand block in `globals.css`; keep `--brand` /

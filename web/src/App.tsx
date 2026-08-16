@@ -13,8 +13,12 @@ import { Overview } from '@/routes/overview'
 import { Focus, FocusEntry } from '@/routes/focus'
 import { Board } from '@/routes/board'
 import { Files } from '@/routes/files'
-import { Scheduler } from '@/routes/scheduler'
-import { Settings } from '@/routes/settings'
+// Settings is entry-lazy: it is a cold administrative surface, and its eager
+// import tipped the hero-path bundle over the 200 KB gz budget (#67 red).
+// (B1 folded the Scheduler route into Settings, so no Scheduler import here.)
+const Settings = lazy(() =>
+  import('@/routes/settings').then((m) => ({ default: m.Settings })),
+)
 
 // DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
 // neither the route component nor its mock data lands in the production bundle.
@@ -47,6 +51,12 @@ const DevMarks = import.meta.env.DEV
 // shipped primitives, plus every variant it has no room for, in both themes.
 const DevChatUi = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-chat-ui'))
+  : null
+// Shell bench (fase B1): the painted substrate's three columns, the chrome
+// floors and <ShellOverlay> in both variants at the real container-query size —
+// the page every B1 VR shot comes from. URL-driven so a rig can request a state.
+const DevShell = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-shell'))
   : null
 // Chat RENDERER bench (fase A3): the real conversation component, fed the wire
 // shapes the server sends, in every state the surface can be in — the page the
@@ -96,7 +106,14 @@ export default function App() {
                 <Route path="/focus/:name" element={<Focus />} />
                 <Route path="/board" element={<Board />} />
                 <Route path="/files/:name?" element={<Files />} />
-                <Route path="/scheduler" element={<Scheduler />} />
+                {/* Scheduler moved into Settings → Schedules (B1 T8: a route
+                    whose 5-column table did not earn a primary-nav slot).
+                    Redirect old bookmarks / deep links to the Settings anchor
+                    so no link breaks — the exact pattern /hosts uses below. */}
+                <Route
+                  path="/scheduler"
+                  element={<Navigate to="/settings#schedules" replace />}
+                />
                 {/* Hosts moved into Settings → Remote hosts. Redirect old
                     bookmarks / deep links to the Settings anchor so no link
                     breaks. The fragment lands on the section header. */}
@@ -104,7 +121,14 @@ export default function App() {
                   path="/hosts"
                   element={<Navigate to="/settings#hosts" replace />}
                 />
-                <Route path="/settings" element={<Settings />} />
+                <Route
+                  path="/settings"
+                  element={
+                    <Suspense fallback={null}>
+                      <Settings />
+                    </Suspense>
+                  }
+                />
               </Route>
               {DevTiles && (
                 <Route
@@ -172,6 +196,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevChatUi />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevShell && (
+                <Route
+                  path="/dev/shell"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevShell />
                     </Suspense>
                   }
                 />

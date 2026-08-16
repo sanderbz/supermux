@@ -6,7 +6,8 @@
 //   1. a session tile        — "peek without leaving"     ([data-tour="tile"])
 //   2. the focus / agent     — "focus on one agent"       ([data-tour="tile"] too,
 //      the tap-target is the same tile; the tile IS the focus entry point)
-//   3. the scheduler tab     — "schedule the routine"     ([data-tour="scheduler"])
+//   3. the Settings tab      — "schedule the routine"     ([data-tour="settings"])
+//      (was the Scheduler tab, until B1 folded the scheduler into Settings)
 //   4. the new-session button — "start another agent"     ([data-tour="new-session"])
 //
 // Dismissable via the tip's X or by finishing the last step ("Got it") — both
@@ -32,7 +33,14 @@ interface TourStep {
 const STEP_TARGETS: TourStep[] = [
   { anchor: '[data-tour="tile"]', placement: 'bottom' },
   { anchor: '[data-tour="tile"]', placement: 'bottom' },
-  { anchor: '[data-tour="scheduler"]', placement: 'top' },
+  // Step 3 pointed at the Scheduler nav item until B1 folded the scheduler into
+  // Settings and dropped that item. It now points at Settings, which is where
+  // schedules live. Placement stays 'top' for the mobile tab bar; the desktop
+  // rail resolves 'right' through floating-tip.tsx's visible-match logic.
+  // `tests/unit/tour-anchors.test.ts` asserts every selector here still exists
+  // somewhere in web/src — the guard that makes "the tour points at a page that
+  // no longer exists" structurally impossible.
+  { anchor: '[data-tour="settings"]', placement: 'top' },
   { anchor: '[data-tour="new-session"]', placement: 'bottom' },
 ]
 
