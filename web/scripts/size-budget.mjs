@@ -25,12 +25,25 @@ const DIST = join(import.meta.dirname, '..', 'dist', 'assets')
 // before anything renders — hold it tight (~6% headroom over today's 151 KB).
 const BUDGET_ENTRY_JS = 160 * KB
 // TOTAL app JS (entry + lazy app chunks; vendor cached separately).
-// TEMPORARILY 232 KB (was 200): #66/#67 landed the chat WS + QA surface while
-// the Board page (~its whole component tree) still ships; fase B2 deletes the
-// Board and this MUST be ratcheted back to 200 in that same PR — the ratchet
-// is named in the B2 plan. Raising a ceiling silently is not allowed; this
-// paragraph is the audit trail.
-const BUDGET_APP_JS = 232 * KB
+//
+// RATCHETED 232 → 210 by fase B2, the PR that deletes the Board page. #70 set
+// the 232 ceiling as explicitly TEMPORARY and required B2 to ratchet it back in
+// the same PR as the removal. It did not come back to 200, and the audit trail
+// for that is here rather than in a commit message:
+//
+//   with the Board page, all of B2 landed   entry 156.13 KB · app JS 216.88 KB
+//   without it (this build)                 entry 144.73 KB · app JS 205.46 KB
+//                                           ────────────────────────────────
+//   the removal itself                      −11.40 KB entry · −11.42 KB total
+//
+// The removal is worth 11.4 KB gz on the HERO path — and it is what keeps the
+// entry gate green: with the page still in, the entry chunk sat at 98% of its
+// 160 KB budget. The 200 KB target in the plan predated #71 (the fabric spine)
+// and #72 (fase A5) landing under this branch, plus B2's own roster, attention,
+// issue and display surfaces. 205.46 KB is the honest floor today, so the
+// ceiling is that plus ~2% headroom. Raising a ceiling silently is still not
+// allowed; lowering it with the measurement attached is the point.
+const BUDGET_APP_JS = 210 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

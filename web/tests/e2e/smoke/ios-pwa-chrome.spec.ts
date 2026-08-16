@@ -29,7 +29,9 @@ test.describe('iOS PWA chrome (SD-6)', () => {
     page,
   }) => {
     await page.addInitScript(injectGlobals(backend.token))
-    await page.goto(`${backend.baseUrl}/board`)
+    // Was `/board` before fase B2 removed that page. `/files` is the same kind
+    // of check — a non-root route with its own chrome — on a page that exists.
+    await page.goto(`${backend.baseUrl}/files`)
 
     // Simulate the iOS notch inset (headless reports 0px) by overriding the
     // utility the banner uses, plus a probe to prove the override is live.
@@ -63,7 +65,7 @@ test.describe('iOS PWA chrome (SD-6)', () => {
       expect(pt, 'banner row top inset when healthy').toBe('0px')
     }).toPass({ timeout: 8_000 })
 
-    await page.screenshot({ path: 'test-results/sd-6-board-top.png' })
+    await page.screenshot({ path: 'test-results/sd-6-files-top.png' })
   })
 
   test('settings header grows for the notch (title not squished under it)', async ({

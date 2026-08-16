@@ -32,22 +32,15 @@
 // text, spring transitions (no `transition: all`).
 
 import * as React from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   Archive,
-  Bot,
-  CheckCircle2,
-  ChevronLeft,
   Command as CommandIcon,
   FolderPlus,
-  MessageSquare,
-  Play,
-  Send,
   ServerCog,
   SlidersHorizontal,
   Sparkles,
   TerminalSquare,
-  User,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -59,14 +52,9 @@ import {
 import { useSessions } from '@/hooks/use-sessions'
 import { useSlashCommands } from '@/hooks/use-commands'
 import { useClaudeRegistry } from '@/hooks/use-claude-tools'
-import { useBoard } from '@/hooks/use-board'
-import { useStartAgent, useSendToAgent, claimErrorMessage } from '@/hooks/use-send-to-agent'
-import { useToast } from '@/components/ui/use-toast'
 import { settingsRequest } from '@/lib/api/client'
 import {
-  boardApi,
   type ApiSession,
-  type BoardIssue,
   type McpEntry,
   type SkillEntry,
   type SlashCommand,
@@ -112,8 +100,7 @@ interface McpRow {
 }
 
 /** An in-app action (not a session, not a slash command) — e.g. "View archived
- *  sessions", or a board verb that opens a sub-flow. Routed to a local handler
- *  rather than a pty send. `group` lets the palette scope a row to a route. */
+ *  sessions". Routed to a local handler rather than a pty send. */
 interface ActionRow {
   kind: 'action'
   id: string // `action:${key}`
@@ -123,29 +110,14 @@ interface ActionRow {
   run: () => void
 }
 
-/** A board issue offered as a pick target inside a board sub-flow (pick the
- *  issue to send / comment on / mark done). */
-interface IssueRow {
-  kind: 'issue'
-  id: string // `issue:${issue.id}`
-  issue: BoardIssue
-}
+type PaletteRow = SessionRow | CommandRow | SkillRow | McpRow | ActionRow
 
-type PaletteRow = SessionRow | CommandRow | SkillRow | McpRow | ActionRow | IssueRow
-
-/** Board ⌘K verbs run as small step-machines inside the palette so the keyboard
- *  flow matches the overview's jump-session muscle memory (no new surface):
- *    root → pick-issue → (send: pick-session | comment: type | done: act)
- *  `null` is the normal palette (sessions + commands + actions). */
-type PaletteMode =
-  | { step: 'root' }
-  | { step: 'send-pick-issue' }
-  | { step: 'send-pick-session'; issue: BoardIssue }
-  | { step: 'start-pick-issue' }
-  | { step: 'start-pick-session'; issue: BoardIssue }
-  | { step: 'comment-pick-issue' }
-  | { step: 'comment-type'; issue: BoardIssue }
-  | { step: 'done-pick-issue' }
+// The palette used to run BOARD verbs as step-machines (root → pick-issue →
+// send/comment/done). Fase B2 T11 removed the Board page and with it the four
+// verbs, their seven steps, the issue rows, the sub-flow breadcrumb and the
+// back-out machine: ~250 lines whose only reason to exist was a page that no
+// longer does. Issues now live where the work does — session detail and the team
+// card — and B3 owns the palette's navigation-to-an-issue result kind.
 
 // ── Hook: the global ⌘K / Ctrl+K listener ────────────────────────────────────
 //
@@ -222,21 +194,11 @@ function matchesAction(a: ActionRow, q: string): boolean {
   )
 }
 
-function matchesIssue(i: BoardIssue, q: string): boolean {
-  if (!q) return true
-  const needle = q.toLowerCase()
-  return (
-    i.title.toLowerCase().includes(needle) ||
-    i.id.toLowerCase().includes(needle)
-  )
-}
-
 // ── The palette ──────────────────────────────────────────────────────────────
 
 export function CommandPalette() {
   const [open, setOpenRaw] = useGlobalCommandKey()
   const navigate = useNavigate()
-  const location = useLocation()
   const { sessions } = useSessions()
   const { data: commands = [] } = useSlashCommands()
   // Scope the Claude registry to the freshest session's project (when any), so ⌘K
@@ -256,21 +218,9 @@ export function CommandPalette() {
   // The Overview installs its handler while mounted; absent on every other
   // route, so the "New group" row is conditionally surfaced below.
   const newGroupAction = useNewGroupAction((s) => s.action)
-  const board = useBoard()
-  const { toast } = useToast()
-  const { sendToAgent } = useSendToAgent()
-  const { startAgent } = useStartAgent()
-
-  // Board verbs only surface on the board route (so they don't clutter the
-  // palette elsewhere). `useLocation` keeps it reactive to client-side nav.
-  const onBoard = location.pathname.startsWith('/board')
 
   const [query, setQuery] = React.useState('')
   const [active, setActive] = React.useState(0)
-  // The board sub-flow step machine (root = normal palette).
-  const [mode, setMode] = React.useState<PaletteMode>({ step: 'root' })
-  const [comment, setComment] = React.useState('')
-  const [busy, setBusy] = React.useState(false)
 
   // Wrap setOpen so the reset always fires from a user-input handler (Cmd+K
   // toggle, Dialog onOpenChange, pickRow close) rather than from an effect —
@@ -286,24 +236,12 @@ export function CommandPalette() {
         if (resolved && !prev) {
           setQuery('')
           setActive(0)
-          setMode({ step: 'root' })
-          setComment('')
-          setBusy(false)
         }
         return resolved
       })
     },
     [setOpenRaw],
   )
-
-  // Enter a board sub-flow: clear the filter + highlight so the picker starts
-  // fresh (mirrors the open-transition reset, from a user-input handler).
-  const enterMode = React.useCallback((next: PaletteMode) => {
-    setMode(next)
-    setQuery('')
-    setActive(0)
-    setComment('')
-  }, [])
 
   // Wrap setQuery so the active-row reset happens from the user-input change
   // event — most-relevant match first, mirroring Spotlight / VSCode — without
@@ -315,8 +253,7 @@ export function CommandPalette() {
 
   // In-app actions (not sessions, not slash commands). Hidden in slash mode
   // (a leading "/" means the user wants a command). Stable identity so arrow-key
-  // state survives re-renders. Board verbs are appended only on the board route
-  // and open a sub-flow (pick issue → …) rather than running immediately.
+  // state survives re-renders.
   const actions: ActionRow[] = React.useMemo(() => {
     const base: ActionRow[] = [
       {
@@ -351,74 +288,8 @@ export function CommandPalette() {
         run: newGroupAction,
       })
     }
-    if (!onBoard) return base
-    return [
-      ...base,
-      {
-        kind: 'action',
-        id: 'action:board-start',
-        label: 'Start agent on issue…',
-        keywords: 'board issue start agent run begin work attach spawn session',
-        icon: Play,
-        run: () => enterMode({ step: 'start-pick-issue' }),
-      },
-      {
-        kind: 'action',
-        id: 'action:board-send',
-        label: 'Send issue to session…',
-        keywords: 'board issue send deliver agent claim dispatch session',
-        icon: Send,
-        run: () => enterMode({ step: 'send-pick-issue' }),
-      },
-      {
-        kind: 'action',
-        id: 'action:board-comment',
-        label: 'Comment on issue…',
-        keywords: 'board issue comment note reply message',
-        icon: MessageSquare,
-        run: () => enterMode({ step: 'comment-pick-issue' }),
-      },
-      {
-        kind: 'action',
-        id: 'action:board-done',
-        label: 'Mark issue done',
-        keywords: 'board issue done complete finish close mark',
-        icon: CheckCircle2,
-        run: () => enterMode({ step: 'done-pick-issue' }),
-      },
-    ]
-  }, [openArchived, openClaudeTools, sessions, onBoard, enterMode, newGroupAction])
-
-  // The board's issues, hardened to an array at the consumption boundary too.
-  // `useBoard` already guarantees an array, but a malformed / 404 board payload
-  // must never make these `.filter` calls throw and blank the whole palette —
-  // belt-and-braces against the data source ever regressing. Memoized so the
-  // identity stays stable for the dependent `useMemo`s below.
-  const boardIssues = React.useMemo(
-    () => (Array.isArray(board.issues) ? board.issues : []),
-    [board.issues],
-  )
-  // Issues a board verb can target. "Send" only offers agent-owned issues (a
-  // human-owned card can't be claimed/dispatched); comment + done offer any
-  // non-done issue.
-  const sendableIssues = React.useMemo(
-    () => boardIssues.filter((i) => i.owner_type === 'agent'),
-    [boardIssues],
-  )
-  const openIssues = React.useMemo(
-    () => boardIssues.filter((i) => i.status !== 'done'),
-    [boardIssues],
-  )
-  // "Start agent" targets the entry columns (`todo`/`backlog`) — the only place
-  // an agent gets started. Owner is NOT a precondition (starting MAKES the issue
-  // agent-owned), so this offers every startable card, human- or agent-owned.
-  const startableIssues = React.useMemo(
-    () =>
-      boardIssues.filter(
-        (i) => i.status === 'todo' || i.status === 'backlog',
-      ),
-    [boardIssues],
-  )
+    return base
+  }, [openArchived, openClaudeTools, sessions, newGroupAction])
 
   // Merge the slash-command list (built-ins + supermux skills) with the registry's
   // file commands (e.g. ~/.claude/commands/*.md, project commands) — deduped by
@@ -443,41 +314,10 @@ export function CommandPalette() {
     [mergedCommands],
   )
 
-  // Build the flat row list. In a board sub-flow the list is the step's pick
-  // targets (issues / sessions); otherwise it's the normal palette — sessions
-  // first (when query is not slash-prefixed), then in-app actions, then MCP
-  // servers, then skills, then commands. Memoized so arrow-key state stays stable.
+  // Build the flat row list: sessions first (when the query is not
+  // slash-prefixed), then in-app actions, then MCP servers, then skills, then
+  // commands. Memoized so arrow-key state stays stable.
   const rows: PaletteRow[] = React.useMemo(() => {
-    if (mode.step === 'send-pick-issue' || mode.step === 'comment-pick-issue') {
-      const pool = mode.step === 'send-pick-issue' ? sendableIssues : openIssues
-      return pool
-        .filter((i) => matchesIssue(i, query))
-        .map<IssueRow>((i) => ({ kind: 'issue', id: `issue:${i.id}`, issue: i }))
-    }
-    if (mode.step === 'start-pick-issue') {
-      return startableIssues
-        .filter((i) => matchesIssue(i, query))
-        .map<IssueRow>((i) => ({ kind: 'issue', id: `issue:${i.id}`, issue: i }))
-    }
-    if (mode.step === 'done-pick-issue') {
-      return openIssues
-        .filter((i) => matchesIssue(i, query))
-        .map<IssueRow>((i) => ({ kind: 'issue', id: `issue:${i.id}`, issue: i }))
-    }
-    if (mode.step === 'send-pick-session' || mode.step === 'start-pick-session') {
-      return sessions
-        .filter((s) => matchesSession(s, query))
-        .map<SessionRow>((s) => ({
-          kind: 'session',
-          id: `session:${s.name}`,
-          name: s.name,
-          session: s,
-        }))
-    }
-    if (mode.step === 'comment-type') {
-      // No rows — the body renders a comment textarea instead.
-      return []
-    }
     const slashMode = query.startsWith('/')
     const cmdQ = slashMode ? query.slice(1) : query
     const sessionRows: PaletteRow[] = slashMode
@@ -509,7 +349,6 @@ export function CommandPalette() {
       .map<CommandRow>((c) => ({ kind: 'command', id: `command:${c.cmd}`, cmd: c }))
     return [...sessionRows, ...actionRows, ...mcpRows, ...skillRows, ...commandRows]
   }, [
-    mode,
     sessions,
     actions,
     mergedCommands,
@@ -517,92 +356,11 @@ export function CommandPalette() {
     regMcp,
     regSkills,
     query,
-    sendableIssues,
-    openIssues,
-    startableIssues,
   ])
 
   // Clamp the highlight whenever the row list shrinks (so a narrowing filter
   // never leaves the active index past the end).
   const clampedActive = rows.length === 0 ? 0 : Math.min(active, rows.length - 1)
-
-  // ── board verb effects (claim+deliver / comment / mark done) ───────────────
-  // Each closes the palette, runs the board mutation, and surfaces the outcome
-  // via the shared toast. Errors (incl. the atomic-claim 409) are non-fatal.
-
-  const sendIssueToSession = React.useCallback(
-    async (issue: BoardIssue, session: string) => {
-      setOpen(false)
-      // The shared send-to-agent flow (claim→toast→Undo) through the board's
-      // optimistic mutation. Undo failures are swallowed silently here, as before.
-      await sendToAgent({
-        id: issue.id,
-        session,
-        claim: (a) => board.claimIssue(a),
-        // Match the palette toast's prior styling: default tone + default duration.
-        sentTone: 'default',
-        onError: (e) => toast({ message: claimErrorMessage(e), tone: 'error' }),
-      })
-    },
-    [board, setOpen, sendToAgent, toast],
-  )
-
-  // ── Start agent on an issue (the one unified flow) ─────────────────────────
-  // Calm + state-aware: when the issue already has a live linked session, one
-  // pick starts + delivers right away (toast + Undo, shared toast system). With
-  // no live session, advance to a pick-a-running-agent step so the start can
-  // attach to one — never the internal "claim" verb, never a dead-end. (Spawning
-  // a brand-new agent in a project lives in the board's detail-sheet picker,
-  // which has the dir/provider/worktree inputs ⌘K shouldn't reproduce.)
-  const startAgentOnIssue = React.useCallback(
-    async (issue: BoardIssue, session: string) => {
-      setOpen(false)
-      await startAgent({
-        id: issue.id,
-        session,
-        start: (a) => board.startIssue(a),
-        sentMessage: () => `Sent to ${session}`,
-        sentDuration: 6000,
-        assignedMessage: () => `Agent started on ${session}`,
-        onError: (e) => toast({ message: claimErrorMessage(e), tone: 'error' }),
-      })
-    },
-    [board, setOpen, startAgent, toast],
-  )
-
-  const markIssueDone = React.useCallback(
-    async (issue: BoardIssue) => {
-      setOpen(false)
-      try {
-        await board.patchIssue(issue.id, { status: 'done' })
-        toast({ message: `Marked ${issue.id} done` })
-      } catch (e) {
-        toast({
-          message: e instanceof Error ? e.message : 'Could not mark done.',
-          tone: 'error',
-        })
-      }
-    },
-    [board, setOpen, toast],
-  )
-
-  const submitComment = React.useCallback(async () => {
-    if (mode.step !== 'comment-type') return
-    const body = comment.trim()
-    if (!body || busy) return
-    setBusy(true)
-    try {
-      await boardApi.comment(mode.issue.id, body)
-      setOpen(false)
-      toast({ message: `Commented on ${mode.issue.id}` })
-    } catch (e) {
-      toast({
-        message: e instanceof Error ? e.message : 'Could not post comment.',
-        tone: 'error',
-      })
-      setBusy(false)
-    }
-  }, [mode, comment, busy, setOpen, toast])
 
   // Run a slash command / skill in the freshest session: navigate to it, then
   // POST the text + carriage return to its send endpoint so the agent runs it.
@@ -629,51 +387,17 @@ export function CommandPalette() {
   // Pick + dismiss. Session picks navigate; command/skill picks run in the most
   // recently active session (so the slash command actually runs against a real
   // pty); MCP picks open the Claude tools manager. If no session exists, a
-  // command/skill row is a no-op (the palette closes). Inside a board sub-flow,
-  // an issue/session pick advances the step machine or runs the verb.
+  // command/skill row is a no-op (the palette closes).
   const pickRow = React.useCallback(
     (row: PaletteRow | undefined) => {
       if (!row) return
-      // ── board sub-flow picks ──────────────────────────────────────────────
-      if (row.kind === 'issue') {
-        if (mode.step === 'send-pick-issue') {
-          enterMode({ step: 'send-pick-session', issue: row.issue })
-        } else if (mode.step === 'start-pick-issue') {
-          // Confidently-live linked session → start + deliver in one pick;
-          // otherwise advance to "pick a running agent" to attach to.
-          if (row.issue.session && row.issue.session_live) {
-            void startAgentOnIssue(row.issue, row.issue.session)
-          } else {
-            enterMode({ step: 'start-pick-session', issue: row.issue })
-          }
-        } else if (mode.step === 'comment-pick-issue') {
-          enterMode({ step: 'comment-type', issue: row.issue })
-        } else if (mode.step === 'done-pick-issue') {
-          void markIssueDone(row.issue)
-        }
-        return
-      }
-      if (row.kind === 'session' && mode.step === 'send-pick-session') {
-        void sendIssueToSession(mode.issue, row.name)
-        return
-      }
-      if (row.kind === 'session' && mode.step === 'start-pick-session') {
-        void startAgentOnIssue(mode.issue, row.name)
-        return
-      }
       if (row.kind === 'session') {
         setOpen(false)
         navigate(`/focus/${encodeURIComponent(row.name)}`)
         return
       }
       if (row.kind === 'action') {
-        // In-app action (e.g. open the Archived sheet, or open a board verb's
-        // sub-flow) — run the handler. Board verbs switch `mode` and KEEP the
-        // palette open; the archived action opens a sheet so it closes first.
-        if (row.id.startsWith('action:board-')) {
-          row.run()
-          return
-        }
+        // In-app action (e.g. open the Archived sheet) — close, then run.
         setOpen(false)
         row.run()
         return
@@ -696,50 +420,16 @@ export function CommandPalette() {
     [
       navigate,
       setOpen,
-      mode,
-      enterMode,
-      markIssueDone,
-      sendIssueToSession,
-      startAgentOnIssue,
       runSlash,
       openClaudeTools,
       freshest,
     ],
   )
 
-  // Step back out of a board sub-flow to the previous step (or to root). Used by
-  // the back button and by Escape inside a sub-flow (Escape at root closes).
-  const stepBack = React.useCallback(() => {
-    setMode((m) => {
-      switch (m.step) {
-        case 'send-pick-session':
-          return { step: 'send-pick-issue' }
-        case 'start-pick-session':
-          return { step: 'start-pick-issue' }
-        case 'comment-type':
-          return { step: 'comment-pick-issue' }
-        case 'send-pick-issue':
-        case 'start-pick-issue':
-        case 'comment-pick-issue':
-        case 'done-pick-issue':
-          return { step: 'root' }
-        default:
-          return m
-      }
-    })
-    setQuery('')
-    setActive(0)
-    setComment('')
-  }, [])
-
   // Window-level Arrow / Enter while open, so the input never has to consume
-  // the events explicitly (and Enter works from the empty state too). In the
-  // comment-type step the textarea owns the keys (Enter submits there), so the
-  // list keyboard is suspended.
-  const inSubFlow = mode.step !== 'root'
+  // the events explicitly (and Enter works from the empty state too).
   React.useEffect(() => {
     if (!open) return
-    if (mode.step === 'comment-type') return
     function onKey(e: KeyboardEvent) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -752,17 +442,11 @@ export function CommandPalette() {
       } else if (e.key === 'Enter') {
         e.preventDefault()
         pickRow(rows[clampedActive])
-      } else if (e.key === 'Escape' && inSubFlow) {
-        // In a sub-flow, Escape steps back one level instead of closing — the
-        // Radix Dialog's own Escape-to-close still fires at root.
-        e.preventDefault()
-        e.stopPropagation()
-        stepBack()
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, rows, clampedActive, pickRow, mode.step, inSubFlow, stepBack])
+  }, [open, rows, clampedActive, pickRow])
 
   // Keep the active row in view as arrow-keys walk the list.
   const listRef = React.useRef<HTMLDivElement | null>(null)
@@ -774,9 +458,7 @@ export function CommandPalette() {
     el?.scrollIntoView({ block: 'nearest' })
   }, [open, clampedActive])
 
-  // Mode-aware chrome: a breadcrumb (what verb you're in) + a filter placeholder.
-  const breadcrumb = subFlowBreadcrumb(mode)
-  const placeholder = subFlowPlaceholder(mode)
+  const placeholder = 'Jump to a session or run a /command'
 
   return (
     <>
@@ -798,61 +480,7 @@ export function CommandPalette() {
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
-        {breadcrumb && (
-          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-            <button
-              type="button"
-              onClick={stepBack}
-              aria-label="Back"
-              className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-            >
-              <ChevronLeft className="size-4" />
-            </button>
-            <span className="truncate text-[13px] font-medium text-foreground">
-              {breadcrumb}
-            </span>
-          </div>
-        )}
-        {mode.step === 'comment-type' ? (
-          // Comment composer step — a styled textarea (no window.prompt). Enter
-          // submits, Shift+Enter inserts a newline, Escape steps back.
-          <div className="flex flex-col gap-3 p-4">
-            <textarea
-              autoFocus
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void submitComment()
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  stepBack()
-                }
-              }}
-              rows={4}
-              placeholder={`Comment on ${mode.issue.id}…`}
-              aria-label="Comment"
-              className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-base outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring md:text-sm"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[12px] text-muted-foreground">
-                Enter to post · Shift+Enter for a new line
-              </span>
-              <button
-                type="button"
-                onClick={() => void submitComment()}
-                disabled={!comment.trim() || busy}
-                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-              >
-                {busy ? 'Posting…' : 'Post comment'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-3 border-b border-border px-4 py-3">
               <CommandIcon
                 className="size-4 shrink-0 text-muted-foreground"
                 aria-hidden
@@ -877,9 +505,7 @@ export function CommandPalette() {
                 <p className="px-4 py-6 text-center text-[13px] text-muted-foreground">
                   {query
                     ? `No match for “${query}”.`
-                    : inSubFlow
-                      ? 'No issues here yet.'
-                      : 'Type to filter, or pick a row.'}
+                    : 'Type to filter, or pick a row.'}
                 </p>
               ) : (
                 rows.map((row, i) => (
@@ -893,51 +519,11 @@ export function CommandPalette() {
                   />
                 ))
               )}
-            </div>
-          </>
-        )}
+        </div>
       </DialogContent>
     </Dialog>
     </>
   )
-}
-
-/** Breadcrumb label for the active board sub-flow step (null = root). */
-function subFlowBreadcrumb(mode: PaletteMode): string | null {
-  switch (mode.step) {
-    case 'start-pick-issue':
-      return 'Start agent on issue — pick an issue'
-    case 'start-pick-session':
-      return `Start ${mode.issue.id} — pick an agent`
-    case 'send-pick-issue':
-      return 'Send issue to session — pick an issue'
-    case 'send-pick-session':
-      return `Send ${mode.issue.id} — pick a session`
-    case 'comment-pick-issue':
-      return 'Comment on issue — pick an issue'
-    case 'comment-type':
-      return `Comment on ${mode.issue.id}`
-    case 'done-pick-issue':
-      return 'Mark issue done — pick an issue'
-    default:
-      return null
-  }
-}
-
-/** Filter-input placeholder per step. */
-function subFlowPlaceholder(mode: PaletteMode): string {
-  switch (mode.step) {
-    case 'start-pick-issue':
-    case 'send-pick-issue':
-    case 'comment-pick-issue':
-    case 'done-pick-issue':
-      return 'Filter issues by title or id'
-    case 'send-pick-session':
-    case 'start-pick-session':
-      return 'Filter sessions'
-    default:
-      return 'Jump to a session or run a /command'
-  }
 }
 
 /** A single ≥44pt row — session pill or mono command. */
@@ -987,20 +573,6 @@ function PaletteRowView({
               {row.session.task_summary}
             </span>
           )}
-        </>
-      ) : row.kind === 'issue' ? (
-        <>
-          {row.issue.owner_type === 'agent' ? (
-            <Bot className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          ) : (
-            <User className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          )}
-          <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
-            {row.issue.title}
-          </span>
-          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-            {row.issue.id}
-          </span>
         </>
       ) : row.kind === 'action' ? (
         <>

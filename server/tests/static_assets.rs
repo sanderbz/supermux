@@ -82,16 +82,33 @@ async fn root_serves_spa_with_injected_token() {
 
 #[tokio::test]
 async fn spa_fallback_serves_shell_for_client_routes() {
-    // A client-side route like `/board` has no server route — the SPA shell is
-    // served so the front-end router resolves it.
+    // A client-side route has no server route — the SPA shell is served so the
+    // front-end router resolves it.
+    //
+    // `/board` used to be the example here. Fase B2 removed that PAGE, and the
+    // route now resolves to a client-side redirect to `/` — which is still the
+    // SPA shell as far as this test is concerned, and is exactly why the
+    // assertion had to move to a route the app actually renders: a fallback test
+    // that names a redirect proves nothing about the fallback.
     let (app, dir) = test_app().await;
     let resp = app
-        .oneshot(Request::builder().uri("/board").body(Body::empty()).unwrap())
+        .oneshot(Request::builder().uri("/files").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let html = body_string(resp).await;
     assert!(html.contains("<div id=\"root\">"), "client route must fall back to SPA shell");
+
+    // …and the REMOVED page's route is still served (it redirects client-side),
+    // so a bookmark lands on the app rather than on a 404 from the static server.
+    let (app, dir2) = test_app().await;
+    let gone = app
+        .oneshot(Request::builder().uri("/board").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::OK, "an old /board bookmark still reaches the SPA");
+    let _ = std::fs::remove_dir_all(dir2);
+
     let _ = std::fs::remove_dir_all(dir);
 }
 

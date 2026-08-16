@@ -37,6 +37,10 @@ export interface IssueSurfaceProps {
   title?: string
   /** Open a session's focus route from the detail's "Open terminal". */
   onFocusSession?: (name: string) => void
+  /** Open straight onto one issue. The entry points are LISTS — the info
+   *  panel's inline list, the team card — so a click there has to carry which
+   *  row was clicked, or the overlay opens on a list the user has already read. */
+  initialIssueId?: string | null
 }
 
 export function IssueSurface({
@@ -46,10 +50,11 @@ export function IssueSurface({
   boardId,
   title,
   onFocusSession,
+  initialIssueId,
 }: IssueSurfaceProps) {
   const scope = session ? sessionBoardId(session) : (boardId ?? '')
   const { issues, replyIssue, commentIssue, deleteIssue } = useBoard(scope)
-  const [selectedId, setSelectedId] = React.useState<string | null>(null)
+  const [selectedId, setSelectedId] = React.useState<string | null>(initialIssueId ?? null)
 
   // Closing forgets the selection — but it is done in the CLOSE handler, not in
   // an effect on `open`: a setState in an effect re-renders the whole overlay a
@@ -66,8 +71,12 @@ export function IssueSurface({
   // Re-derive the open issue from the LIVE list rather than holding the object:
   // acceptance ticks and comments arrive over the `board` SSE event, and a held
   // copy would freeze the detail at the moment it was opened.
+  // `initialIssueId` wins until the user picks another row: the overlay is
+  // usually opened BY clicking a row, and re-deriving from the prop means the
+  // caller does not have to reset state to open a different issue.
+  const activeId = selectedId ?? initialIssueId ?? null
   const selected: BoardIssue | null =
-    (selectedId && issues.find((i) => i.id === selectedId)) || null
+    (activeId && issues.find((i) => i.id === activeId)) || null
 
   const live = useLiveSession(selected?.session)
 
@@ -97,7 +106,7 @@ export function IssueSurface({
         <IssueList
           session={session}
           boardId={boardId}
-          selectedId={selectedId}
+          selectedId={activeId}
           onOpen={(issue) => setSelectedId(issue.id)}
           className="shrink-0"
         />

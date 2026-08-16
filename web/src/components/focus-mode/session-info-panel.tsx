@@ -166,6 +166,9 @@ function PanelBody({
   const { session } = useSession(name)
   const clone = useCloneSession()
   const [issuesOpen, setIssuesOpen] = React.useState(false)
+  // Which row was clicked — the overlay opens on THAT issue rather than on a
+  // list the user has already read.
+  const [openIssueId, setOpenIssueId] = React.useState<string | null>(null)
   const { toast } = useToast()
 
   const dir = session?.dir?.trim() || ''
@@ -252,11 +255,17 @@ function PanelBody({
         <div className="flex flex-col gap-2">
           <IssueList
             session={name}
-            onOpen={() => setIssuesOpen(true)}
+            onOpen={(issue) => {
+              setOpenIssueId(issue.id)
+              setIssuesOpen(true)
+            }}
           />
           <button
             type="button"
-            onClick={() => setIssuesOpen(true)}
+            onClick={() => {
+              setOpenIssueId(null)
+              setIssuesOpen(true)
+            }}
             data-vr="open-issue-surface"
             className="self-start rounded-md px-1 py-1 text-xs text-primary hover:underline"
           >
@@ -267,6 +276,7 @@ function PanelBody({
       <IssueSurface
         open={issuesOpen}
         onOpenChange={setIssuesOpen}
+        initialIssueId={openIssueId}
         session={name}
         title={displayLabel(session ?? { name })}
         onFocusSession={(target) => {

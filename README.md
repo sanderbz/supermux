@@ -66,7 +66,7 @@ That's the problem supermux solves.
 - **Live overview** with color-true terminal previews. Refresh tiers self-throttle: 1 s for hot-active sessions, 2 s for the rest active, 4 s idle.
 - **Quick peek**: hover a tile (desktop) or long-press it (mobile) to read the latest output, type a reply, or hit a quick action without leaving the overview.
 - **Focus mode**: tap any tile to zoom into a keyboard-captured xterm.js terminal (desktop) or a detented bottom-sheet (mobile). `⌘1..9` jumps instantly between sessions.
-- **⌘K command palette**: fuzzy search across sessions, board issues, slash commands, MCP tools, and Claude Code skills.
+- **⌘K command palette**: fuzzy search across sessions, slash commands, MCP tools, and Claude Code skills.
 - **Mixed fleets welcome**: Claude Code is the default, but the same overview runs [Codex CLI](https://developers.openai.com/codex/cli/) and [Kimi Code](https://code.kimi.com) sessions side by side — same live status, push notifications, and prompt history.
 
 <p align="center"><a href="docs/screenshots/new-session.png"><img src="docs/screenshots/new-session.png" alt="New session sheet on the overview: Quick start (Blank Claude / Code reviewer / Doc writer presets) and Advanced" width="780"></a></p>
@@ -101,10 +101,8 @@ That's the problem supermux solves.
 
 ### Keep Claude working while you're away
 - **Scheduler**: cron and "every Nm/Nh" jobs. Schedule a daily `claude --resume` with a prompt. iCal feed. Live job list.
-- **Kanban board**: session-scoped issue tracker. Sessions can comment, mark issues done, attach commits, or ask for input via per-session hook tokens. Wire it into your agent flow and let Claude pull its own next task.
-- **Schedules and board updates trigger push notifications** when something needs you.
-
-<p align="center"><a href="docs/screenshots/board.png"><img src="docs/screenshots/board.png" alt="Kanban board with To do, Doing and Done columns, a task card assigned to a session" width="780"></a></p>
+- **Issue tracker**: session-scoped issues, read from the session that owns them (and from a team's card). Sessions can comment, mark issues done, attach commits, or ask for input via per-session hook tokens. Wire it into your agent flow and let Claude pull its own next task.
+- **Schedules and issue updates trigger push notifications** when something needs you.
 
 ### Reach across machines
 - **Add any host you can SSH to** under Settings → Hosts (Tailscale, VPN, public DNS, reverse tunnel). supermux multiplexes one SSH ControlMaster per host.
@@ -135,7 +133,7 @@ A few good tools run many Claude Code agents. supermux is the only one that adds
 | Runs on a VPS / Pi / Mac mini, not your laptop | ✅ | ❌ | ❌ | ❌ | ⚠️ |
 | Self-hosted, no vendor cloud in the path | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Full lifecycle harness (start/stop/restart/resume/schedule) | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| Kanban board agents read & write | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Issue tracker agents read & write | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Open source | ✅ MIT | ❌ | ⚠️ CLI only | ✅ | ✅ |
 
 <sub>Best-effort snapshot of fast-moving tools — corrections welcome via PR.</sub>
@@ -258,7 +256,7 @@ curl -sf http://127.0.0.1:<SUPERMUX_INTERNAL_PORT>/api/health
 journalctl -u supermux -n 50
 ```
 
-Public routes are `/api/health`, the PWA shell, and the board iCal feed. Everything else needs the bearer.
+Public routes are `/api/health`, the PWA shell, and the issue iCal feed. Everything else needs the bearer.
 
 </details>
 

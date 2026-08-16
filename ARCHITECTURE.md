@@ -57,7 +57,7 @@ A design reference for contributors. Setup and deploy live in [`README.md`](READ
 | `claude_config.rs` | Writes `~/.claude/settings.json` for the service user. |
 | `sessions/` | tmux lifecycle, pty reader, status detector, teams, host pool, transport, steering deliver loop. |
 | `ws/` | WebSocket router — pty fan-out (`broadcast::channel<Bytes>` per session), in-band first-frame auth. |
-| `board/` | Issue tracker, hook protocol (`/api/hook/board/*`), iCal feed, claim flow, dispatch. |
+| `board/` | Issue tracker, hook protocol (`/api/hook/board/*`), iCal feed, claim flow, dispatch. The Kanban PAGE was removed in fase B2 — the API, the hook edge, the iCal feed and the `supermux-task` skill are unchanged, and issues are read from session detail and the team card (`web/src/components/issues/`). |
 | `scheduler/` | 10s tick, expression parser (`cron`, `every Nm/Nh`, named), runner (tmux/shell/boot), watch mode. |
 | `files/` | Path-jailed file browser + editor; `path_safe.rs` enforces the jail. |
 | `agents/` | `GET /api/agents/{name}/wait?state=...` long-poll on the session's status watch channel. |
@@ -74,9 +74,17 @@ A new module is one `mod` declaration in `lib.rs`, one `router_for(state)`, and 
 
 `web/src/` — directories:
 
-- `routes/` — top-level pages: `overview.tsx`, `focus.tsx` (responsive switcher into `focus/desktop.tsx` / `focus/mobile.tsx`), `board.tsx`, `files.tsx`, `scheduler.tsx`, `settings.tsx`, plus the dev harness routes (`dev-focus`, `dev-teams`, `dev-term`, `dev-tiles`).
-- `components/` — feature folders: `board/`, `focus-mode/`, `command-palette/`, `terminal/`, `session-tile/`, `files/`, `scheduler/`, `team/`, `onboarding/`, `ui/`, …
-- `hooks/` — TanStack Query bindings + UI hooks: `use-sessions`, `use-board`, `use-teams`, `use-hosts`, `use-files`, `use-scheduler`, `use-push`, `use-live-term`, `use-sse`, `use-claude-tools`, `use-commands`, `use-overview-layout`, `use-connection-link`, `use-send-to-agent`, etc.
+> **Issues after fase B2.** The Kanban page is gone; the issue READ surface lives
+> in `components/issues/` (`issue-list` · `issue-detail` · `issue-surface`, hosted
+> in B1's `ShellOverlay`) and is reachable from a session's info panel and from a
+> team card. The board API, the `/api/hook/board/*` agent edge, the public iCal
+> feed, `teams/board_sync.rs` and the `supermux-task` skill are all UNCHANGED —
+> `web/tests/unit/board-removal-keeplist.test.ts` asserts every one of them,
+> including the skill's hash.
+
+- `routes/` — top-level pages: `overview.tsx`, `focus.tsx` (responsive switcher into `focus/desktop.tsx` / `focus/mobile.tsx`), `files.tsx`, `settings.tsx`, plus the dev harness routes (`dev-focus`, `dev-teams`, `dev-term`, `dev-tiles`, `dev-marks`, `dev-roster`, `dev-shell`, `dev-chat-*`). The Scheduler folded into Settings (B1) and the Board page was removed (B2); both routes redirect.
+- `components/` — feature folders: `issues/`, `roster/`, `chat/`, `shell/`, `focus-mode/`, `command-palette/`, `terminal/`, `session-tile/`, `files/`, `scheduler/`, `team/`, `onboarding/`, `ui/`, …
+- `hooks/` — TanStack Query bindings + UI hooks: `use-sessions`, `use-board`, `use-teams`, `use-hosts`, `use-files`, `use-scheduler`, `use-push`, `use-live-term`, `use-sse`, `use-claude-tools`, `use-commands`, `use-overview-layout`, `use-connection-link`, `use-roster-marks`, `use-attention`, `use-session-config`, etc.
 - `stores/` — Zustand stores: `ui-store`, `connection-store`, `archived-sheet-store`, `board-create-session-store`, `claude-tools-store`, `new-group-store`, `team-density-store`, `team-width-store`.
 - `lib/` — utilities, API client (`api/`), motion bank (`springs.ts`), overview layout math.
 - `brand/` — copy + tokens.

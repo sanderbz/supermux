@@ -4,7 +4,6 @@ import {
   FolderClosed,
   LayoutGrid,
   Settings as SettingsIcon,
-  SquareKanban,
   Terminal,
   type LucideIcon,
 } from 'lucide-react'
@@ -63,15 +62,16 @@ const NAV: NavItem[] = [
   // Terminal glyph (>_) matches the abstract-geometric rest of the rail and
   // names what focus mode IS — sitting inside a terminal session.
   { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true },
-  { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
   // Hosts registry AND the scheduler both moved into Settings (rare-use config
   // doesn't need a primary-nav slot). `/hosts` → /settings#hosts and
   // `/scheduler` → /settings#schedules (App.tsx) so old bookmarks land in the
   // right section. Settings therefore carries the onboarding tour's step-3
   // anchor, which used to point at the Scheduler item.
-  // Nav is at FIVE items after B1; Board leaves in B2, gated on the issue read
-  // surface.
+  // Nav is at FOUR items after B2: the Board page left once issues became
+  // reachable from the session that owns them (and from the team card). The
+  // deletion keyed on `to === '/board'`, never on an index — one removal, both
+  // surfaces (SideNav + BottomNav).
   {
     to: '/settings',
     label: 'Settings',

@@ -131,7 +131,7 @@ paths; these 20 are the *feel/timing* criteria that need a human + a device.
   are 16 pt visible / 44 pt hit. *Test:* long-press terminal text to select.
 - [ ] **18. Swipe-to-delete.** On list rows, a full-swipe past 50 % width
   auto-fires the destructive action with a `.medium` haptic; a short swipe
-  reveals buttons and snaps back below 30 %. *Test:* swipe a board issue / file
+  reveals buttons and snaps back below 30 %. *Test:* swipe an issue row / file
   row.
 - [ ] **19. Transition budget.** No tab/section transition exceeds **400 ms**
   (first-launch hero animation may reach 600 ms). *Test:* screen-record tab
@@ -150,7 +150,7 @@ machine-checkable slices of the criteria above:
 | --- | --- | --- |
 | `overview-loads` | boot → overview empty-state → tile render | — |
 | `focus-types-and-sees-output` | the hero loop: keystroke → pty → xterm | — |
-| `board-claim-race-no-500s` | 100 parallel claims → exactly-once, zero 500s | — |
+| `server/tests/board_claim.rs` | 100 parallel claims → exactly-once, zero 500s (the web spec went with the Board page in B2; the API-level proof stayed) | — |
 | `ws-reconnect-restores-stream` | backend kill/restart → WS reconnect | 8 |
 | `files-edit-save` | browse → edit in CodeMirror → Save → on-disk | — |
 | `scheduler-fires` | create "in 5s" shell job → marker file on disk | — |
