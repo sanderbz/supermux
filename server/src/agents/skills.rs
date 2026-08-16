@@ -110,10 +110,31 @@ pub const MANAGED_MARKER: &str = "supermux-managed: true";
 pub const SUPERMUX_TASK_NAME: &str = "supermux-task";
 pub const SUPERMUX_TASK_SKILL: &str = include_str!("supermux-task.md");
 
+/// The `/supermux-schedule` command — the agent's natural surface for putting
+/// work on its OWN calendar (fase B4 T7). It expands to a scoped `curl` against
+/// `POST /api/hook/schedule/create`, authed by `$SUPERMUX_HOOK_TOKEN` and scoped
+/// by the server to `$SUPERMUX_SESSION` — an agent can never schedule for a
+/// colleague.
+///
+/// **The name is `supermux-schedule`, not `schedule`**: `/schedule` would be a
+/// second meaning for a name Claude Code already uses
+/// ([`BUILTIN_SLASH_COMMANDS`], mirrored by `TUI_BUILTINS` in the composer's
+/// `slash.ts`), and a managed command that shadowed a built-in would be a
+/// silent behaviour change in somebody's terminal.
+///
+/// The file teaches the agent to do the natural-language parsing ITSELF and to
+/// post a concrete `schedule_expr`: the server has no NL layer and answers an
+/// unrecognised expression with a 400 rather than a guess.
+pub const SUPERMUX_SCHEDULE_NAME: &str = "supermux-schedule";
+pub const SUPERMUX_SCHEDULE_SKILL: &str = include_str!("supermux-schedule.md");
+
 /// The set of commands supermux manages + auto-installs. `(name, content)`.
 /// Adding a row here means it's seeded to `~/.claude/commands/<name>.md` on the
 /// next boot.
-pub const MANAGED_COMMANDS: &[(&str, &str)] = &[(SUPERMUX_TASK_NAME, SUPERMUX_TASK_SKILL)];
+pub const MANAGED_COMMANDS: &[(&str, &str)] = &[
+    (SUPERMUX_TASK_NAME, SUPERMUX_TASK_SKILL),
+    (SUPERMUX_SCHEDULE_NAME, SUPERMUX_SCHEDULE_SKILL),
+];
 
 /// Skill-name slug rule — no path separators, so a name can never escape the
 /// skills directories.
@@ -521,18 +542,94 @@ mod tests {
         seed_managed_commands_at(&dir).await;
         seed_managed_commands_at(&dir).await;
 
-        // Exactly one file, content unchanged.
-        let entries: Vec<_> = std::fs::read_dir(&dir)
+        // Exactly one file PER MANAGED COMMAND, content unchanged.
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(entries, vec!["supermux-task.md".to_string()]);
-        assert_eq!(
-            std::fs::read_to_string(dir.join("supermux-task.md")).unwrap(),
-            SUPERMUX_TASK_SKILL
-        );
+        entries.sort();
+        let mut expected: Vec<String> =
+            MANAGED_COMMANDS.iter().map(|(n, _)| format!("{n}.md")).collect();
+        expected.sort();
+        assert_eq!(entries, expected);
+        for (name, content) in MANAGED_COMMANDS {
+            assert_eq!(
+                &std::fs::read_to_string(dir.join(format!("{name}.md"))).unwrap(),
+                content
+            );
+        }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn supermux_schedule_template_teaches_the_grammar_and_the_boundaries() {
+        // The file IS the agent's interface to `POST /api/hook/schedule/create`
+        // — there is no other documentation it ever sees — so the things the
+        // server refuses have to be stated in it, or every agent learns them by
+        // getting a 400.
+        let md = SUPERMUX_SCHEDULE_SKILL;
+        assert!(md.contains(MANAGED_MARKER), "must carry the managed marker");
+
+        let fm = parse_frontmatter(md);
+        assert!(!fm.description.is_empty(), "needs a frontmatter description");
+        assert!(!fm.hint.is_empty(), "needs an argument-hint");
+
+        for v in ["$SUPERMUX_HOOK_TOKEN", "$SUPERMUX_SESSION", "$SUPERMUX_URL"] {
+            assert!(md.contains(v), "template must reference {v}");
+        }
+        assert!(md.contains("X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN"));
+        assert!(md.contains("/api/hook/schedule/create"), "must wrap the endpoint");
+
+        // EVERY FORM THE PARSER ACCEPTS is documented, and the worked example
+        // the plan calls for is present. If `parser.rs` grows a form and this
+        // file does not, agents will never use it; if this file teaches one the
+        // parser does not have, every agent that tries gets a 400.
+        for form in [
+            "in <N><unit>",
+            "every <N><unit>",
+            "every morning",
+            "every weekday at <time>",
+            "daily at <time>",
+            "weekly on <dayname> at <time>",
+            "monthly on <N> at <time>",
+            "every <dayname> at <time>",
+            "5-field cron",
+        ] {
+            assert!(md.contains(form), "the grammar must document {form}");
+        }
+        assert!(
+            md.contains("every weekday at 08:00"),
+            "the worked example must show a concrete expression"
+        );
+
+        // The boundaries the server enforces, stated in the agent's own terms.
+        assert!(md.contains("YOUR OWN session"), "must state the scoping rule");
+        assert!(md.contains("`disable` or `notify`"), "must state the done_action rule");
+        assert!(md.contains("20 live schedules"), "must state the cap");
+        assert!(
+            md.contains("429") && md.contains("400"),
+            "must name the statuses a rejection arrives as"
+        );
+        assert!(
+            md.contains("does no natural-language interpretation"),
+            "must say the agent parses and the server validates"
+        );
+    }
+
+    #[test]
+    fn no_managed_command_shadows_a_claude_built_in() {
+        // A managed command that collided with a built-in would be a silent
+        // behaviour change in somebody's terminal — which is exactly why this
+        // one is `supermux-schedule` and not `schedule`.
+        for (name, _) in MANAGED_COMMANDS {
+            assert!(
+                !BUILTIN_SLASH_COMMANDS.contains(&format!("/{name}").as_str()),
+                "/{name} shadows a Claude Code built-in"
+            );
+        }
+        // …and the near-miss is a real built-in, so the rule above has teeth.
+        assert!(BUILTIN_SLASH_COMMANDS.contains(&"/schedule"));
     }
 
     #[tokio::test]

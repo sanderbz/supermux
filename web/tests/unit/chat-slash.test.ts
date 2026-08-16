@@ -38,13 +38,32 @@ import { insertAtCaret } from '../../src/components/chat/composer-insert'
  * to it — a command added there without being classified here is a command the
  * composer would send as text.
  */
+const SKILLS_RS = readFileSync(
+  new URL('../../../server/src/agents/skills.rs', import.meta.url),
+  'utf8',
+)
+
 const BUILTIN_FROM_SERVER: string[] = (() => {
-  const src = readFileSync(
-    new URL('../../../server/src/agents/skills.rs', import.meta.url),
-    'utf8',
-  )
-  const block = src.slice(src.indexOf('BUILTIN_SLASH_COMMANDS'))
+  const block = SKILLS_RS.slice(SKILLS_RS.indexOf('BUILTIN_SLASH_COMMANDS'))
   return [...block.slice(0, block.indexOf('];')).matchAll(/"(\/[a-z0-9-]+)"/g)].map((m) => m[1]!)
+})()
+
+/**
+ * The commands supermux SEEDS into `~/.claude/commands/`, read from the same
+ * file for the same reason: a managed command is not a built-in, and the
+ * composer's classifier has to keep treating it as ordinary text. Parsed from
+ * the `*_NAME` consts `MANAGED_COMMANDS` is built out of.
+ */
+const MANAGED_FROM_SERVER: string[] = (() => {
+  const block = SKILLS_RS.slice(SKILLS_RS.indexOf('pub const MANAGED_COMMANDS'))
+  const names = [...block.slice(0, block.indexOf('];')).matchAll(/\((\w+_NAME),/g)].map(
+    (m) => m[1]!,
+  )
+  return names.map((constName) => {
+    const m = new RegExp(`${constName}: &str = "([^"]+)"`).exec(SKILLS_RS)
+    if (!m) throw new Error(`no literal for ${constName} in skills.rs`)
+    return m[1]!
+  })
 })()
 
 // ── 1. The trigger ──────────────────────────────────────────────────────────
@@ -197,6 +216,29 @@ describe('classifySlash — what may be sent', () => {
     expect(BUILTIN_FROM_SERVER.length).toBeGreaterThan(40)
     expect(isBuiltin('/supermux-task')).toBe(false)
     expect(isBuiltin('/deploy-self')).toBe(false)
+  })
+
+  test('a supermux-managed command is NOT a built-in, and is passed through as text', () => {
+    // `/supermux-task` and `/supermux-schedule` are seeded into
+    // `~/.claude/commands/` (server `skills.rs::MANAGED_COMMANDS`) and reach the
+    // picker through `GET /api/slash-commands` like any user skill. They are
+    // Claude-SIDE commands: the composer must send them as text and raise the
+    // `slash-note` receipt, NOT classify them as picker-opening. Asserted so
+    // nobody later "fixes" the receipt away by adding them to `PICKER_OPENING`.
+    for (const name of MANAGED_FROM_SERVER) {
+      expect(isBuiltin(`/${name}`)).toBe(false)
+      expect(classifySlash(`/${name}`)).toBe('unknown')
+      expect(classifySlash(`/${name} every weekday at 8 — check the deploy`)).toBe('unknown')
+      // …and the name it does NOT collide with is a real built-in, so the
+      // naming rule on the server side has teeth here too.
+      expect(BUILTIN_FROM_SERVER).not.toContain(`/${name}`)
+    }
+    expect(MANAGED_FROM_SERVER).toContain('supermux-task')
+    expect(MANAGED_FROM_SERVER).toContain('supermux-schedule')
+    // The near-miss: `/schedule` IS Claude's, which is why the managed one is
+    // named `supermux-schedule`.
+    expect(BUILTIN_FROM_SERVER).toContain('/schedule')
+    expect(classifySlash('/schedule')).not.toBe('unknown')
   })
 
   test('every listed family is inside that namespace (except the one that is not a built-in)', () => {
