@@ -21,6 +21,7 @@ import { Eye, EyeOff } from 'lucide-react'
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
+import { useTerminalGone } from '@/hooks/use-terminal-gone'
 import type { TileSession } from '@/components/session-tile/types'
 import type { Team, TeamMember } from '@/lib/api/teams'
 import { sessionTitle } from '@/lib/api'
@@ -290,6 +291,14 @@ export function DesktopSplit({
   )
 
   const status = current?.status ?? 'starting'
+
+  // The terminal WS learns a dead pty (4404) BEFORE the row's status flips —
+  // and, when the backend never flipped it at all, instead of it. Without this
+  // the pane sat on a frozen, silent terminal with no way to restart the
+  // session. `termGone` renders the same stopped surface the row-driven branch
+  // does, and clears itself the moment the session runs again.
+  const { gone: termGone, onTermState } = useTerminalGone(status)
+  const stopped = status === 'stopped' || termGone
 
   // Fase A1 chat renderer — desktop seam only (mobile follows in A5; the
   // mobile seam is routes/focus/mobile.tsx:490-515). Guard: local Claude,
@@ -670,15 +679,19 @@ export function DesktopSplit({
         >
           <Dropzone
             onFiles={attach.handleFiles}
-            disabled={status === 'stopped' || chatActive}
+            disabled={stopped || chatActive}
             className="h-full w-full"
           >
-            {/* A `stopped` session's tmux pty is gone — opening the live WS would
+            {/* A `stopped` session's pty is gone — opening the live WS would
                 just 101-upgrade then get closed in a loop. Detect it up front
                 from the session row and render the calm StoppedSession surface
                 instead. When it transitions back to running, this swaps to
-                LiveTerminal. */}
-            {status === 'stopped' ? (
+                LiveTerminal.
+
+                `termGone` is the same surface reached from the other side: the
+                socket was refused with 4404 while the row still claimed the
+                session was running. */}
+            {stopped ? (
               <StoppedSession name={name} />
             ) : chatActive ? (
               /* Fase A1: read-only chat renderer. The chat client NEVER sends
@@ -700,7 +713,11 @@ export function DesktopSplit({
                  deliberately does NOT preventDefault on ordinary keys, so
                  Ctrl-C / arrows / Tab / Shift+Tab / Esc / text all reach xterm's
                  onData → the pty WS. */
-              <LiveTerminal name={name} onReady={handleTermReady} />
+              <LiveTerminal
+                name={name}
+                onReady={handleTermReady}
+                onStateChange={onTermState}
+              />
             ) : null /* experiment on, sessions query still resolving — render
                         nothing for a frame rather than flash a doomed terminal */}
           </Dropzone>
@@ -708,7 +725,7 @@ export function DesktopSplit({
               focus. Click outside (header / dock / strip) releases. Esc is NOT
               the release because Esc must reach the terminal (vim, REPLs). */}
           <TerminalCaptureIndicator
-            capturing={capturingInput && status !== 'stopped' && !chatActive}
+            capturing={capturingInput && !stopped && !chatActive}
           />
         </div>
 

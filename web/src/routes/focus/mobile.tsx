@@ -50,6 +50,7 @@ import { useNavigateMorph } from '@/components/view-transitions/morph'
 
 import { LiveTerminal } from '@/components/terminal/live-terminal'
 import { StoppedSession } from '@/components/terminal/stopped-session'
+import { useTerminalGone } from '@/hooks/use-terminal-gone'
 import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useSessions } from '@/hooks/use-sessions'
@@ -133,6 +134,12 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
 
   const current =
     sessions.find((s) => s.name === name) ?? placeholderSession(name)
+
+  // The terminal WS proves a dead pty (4404) before — or, when the backend
+  // never flipped the row, INSTEAD of — the status delta. Without this the pane
+  // keeps a frozen terminal with no way to restart the session.
+  const { gone: termGone, onTermState } = useTerminalGone(current.status)
+  const stopped = current.status === 'stopped' || termGone
 
   const next = React.useMemo(
     () => neighborSession(sessions, name, 1),
@@ -250,11 +257,11 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
       // other tap = "I want to type" → focus xterm so iOS raises the keyboard
       // INSIDE this user gesture. A swipe just scrolled the scrollback — do
       // nothing (no keyboard). Stopped sessions never focus.
-      if (isTap && current.status !== 'stopped') {
+      if (isTap && !stopped) {
         if (!termRef.current?.tryOpenLinkAt(e.clientX, e.clientY)) focusTerm()
       }
     },
-    [current.status, focusTerm],
+    [stopped, focusTerm],
   )
   const onTermPointerCancel = React.useCallback(() => {
     tapRef.current = null
@@ -450,11 +457,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
             onBack={goOverviewMorph}
             // Manual resync — re-pull a clean screen on the live handle. Omitted
             // for a stopped session (no live WS to resync) so the control hides.
-            onRefresh={
-              current.status === 'stopped'
-                ? undefined
-                : () => termRef.current?.resync()
-            }
+            onRefresh={stopped ? undefined : () => termRef.current?.resync()}
             onTitleClick={() => setInfoOpen(true)}
             hasLastSend={!!lastSend}
             lastSendOpen={lastSendOpen}
@@ -487,10 +490,12 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
             onPointerUp={onTermPointerUp}
             onPointerCancel={onTermPointerCancel}
           >
-            {current.status === 'stopped' ? (
-              /* The session's tmux pty is gone — render the calm stopped state
+            {stopped ? (
+              /* The session's pty is gone — render the calm stopped state
                  instead of mounting a live WS that would 101-upgrade then get
-                 closed in a no-backoff loop. No joystick: nothing to drive. */
+                 closed in a no-backoff loop. No joystick: nothing to drive.
+                 `termGone` is the same conclusion reached from the socket, for
+                 the window (or the incident) where the row still says otherwise. */
               <StoppedSession name={name} />
             ) : (
               <>
@@ -503,6 +508,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
                 <LiveTerminal
                   name={name}
                   onReady={onTermReady}
+                  onStateChange={onTermState}
                   previewAnsi={current.preview_ansi}
                   previewLines={current.preview_lines}
                 />

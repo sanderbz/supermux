@@ -81,6 +81,45 @@ pub async fn set_agent_teams_enabled(pool: &SqlitePool, on: bool) -> sqlx::Resul
     put_pref(pool, AGENT_TEAMS_PREF_KEY, if on { "on" } else { "off" }).await
 }
 
+/// The `prefs` key holding the "auto-heal a session whose terminal died" toggle.
+/// Same k/v table as [`AGENT_TEAMS_PREF_KEY`], so no migration.
+///
+/// **Default ON**, unlike the experimental gate above: a terminal that dies
+/// under a running agent is a FAULT, and leaving it dead until a human notices
+/// is the incident this whole wave exists to end. The pref is the operator's
+/// off-switch, not an opt-in.
+pub const AUTO_HEAL_PREF_KEY: &str = "recovery.auto_heal";
+
+/// May supermux automatically restart a session whose terminal died
+/// unexpectedly? Reads [`AUTO_HEAL_PREF_KEY`].
+///
+/// * absent row → ON (the default; nothing has ever been configured);
+/// * `"off"` / `"false"` / `"0"` / `"no"` → OFF;
+/// * anything else → ON.
+///
+/// A DB read ERROR reads OFF, deliberately: auto-heal takes a real action
+/// (spawning a terminal and re-launching an agent), and acting on configuration
+/// we could not read is worse than skipping one recovery. Every other path —
+/// including a totally unconfigured install — gets the ON default.
+pub async fn auto_heal_enabled(pool: &SqlitePool) -> bool {
+    match get_pref(pool, AUTO_HEAL_PREF_KEY).await {
+        Ok(None) => true,
+        Ok(Some(v)) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "false" | "0" | "no"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "auto-heal pref unreadable — treating as off");
+            false
+        }
+    }
+}
+
+/// Set the auto-heal toggle. `on` → `"on"`, off → `"off"`.
+pub async fn set_auto_heal_enabled(pool: &SqlitePool, on: bool) -> sqlx::Result<()> {
+    put_pref(pool, AUTO_HEAL_PREF_KEY, if on { "on" } else { "off" }).await
+}
+
 // ── snippets ─────────────────────────────────────────────────────────────────
 
 /// List all snippets, ordered by `position` then insertion (`id`).

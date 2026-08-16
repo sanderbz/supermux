@@ -358,6 +358,7 @@ fn read_rollout(rollout: &Rollout) -> Vec<RecallEntry> {
                     },
                     label: slash,
                     ok: None,
+                    truncated: None,
                 });
                 pending = Some(entries.len() - 1);
             }

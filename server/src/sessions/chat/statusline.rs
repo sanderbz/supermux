@@ -344,6 +344,13 @@ fn sidecar_path(settings_path: &Path) -> PathBuf {
 pub async fn install_local(mode: Mode) -> Result<PathBuf> {
     let t = LocalFileTransport;
     let path = crate::claude_config::local_settings_path();
+    // Same per-path lock the hook installer holds. `install_hooks` runs on every
+    // session start from independent tasks (HTTP start, scheduler, board
+    // dispatch, teams); this is a read→modify→write of the SAME file, so
+    // without the shared lock an overlapping install drops one of the two
+    // merges — the user's `statusLine` or supermux's hooks.
+    let lock = crate::claude_config::settings_write_lock(&path);
+    let _guard = lock.lock().await;
     let before = crate::claude_config::read_settings_or_empty(&t, &path).await?;
     let after = install(&before, mode)?;
     let sidecar = sidecar_for(&before, mode);
@@ -394,6 +401,9 @@ pub struct UninstallOutcome {
 pub async fn uninstall_local() -> Result<UninstallOutcome> {
     let t = LocalFileTransport;
     let path = crate::claude_config::local_settings_path();
+    // See `install_local`: the same shared per-path lock, for the same reason.
+    let lock = crate::claude_config::settings_write_lock(&path);
+    let _guard = lock.lock().await;
     let before = crate::claude_config::read_settings_or_empty(&t, &path).await?;
     let sc_path = sidecar_path(&path);
     let sidecar = tokio::fs::read_to_string(&sc_path)

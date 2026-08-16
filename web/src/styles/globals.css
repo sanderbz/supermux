@@ -134,6 +134,96 @@
   /* --brand and --status-* are theme-independent; inherited from :root. */
 }
 
+/* ══ B0 — warm paper / ink / hairline ladder ═══════════════════════════════
+   The approved design system (fase B0). Values are byte-identical to the
+   approved hero mockup that produced board-light.png / board-dark.png, and are
+   mirrored for TS consumers in web/src/brand/tokens.ts (`PAPER`) — the pair is
+   guarded by tests/unit/brand-tokens.test.ts, which parses THIS file.
+
+   ADDITIVE: nothing above is replaced. The iOS/shadcn semantic palette
+   (--background, --card, --border, …) stays exactly as it was; the `--sm-*`
+   ladder is the new surface language and rolls out per component.
+
+   Naming: `paper` (the substrate), `ink` (three-step type ladder),
+   `hairline` (0.5px separators — never 1px, §1.11 of the concept contract),
+   `fill-soft` (pressed/hover washes), plus the elevation triple.
+
+   Theme selection: `.dark` on <html> is the app-wide switch (ThemeProvider,
+   unchanged). `[data-theme='light'|'dark']` is the SUBTREE switch used by the
+   design surfaces (a dark board rendered inside a light app, mockup parity).
+   A direct declaration always beats an inherited one, so a `[data-theme]`
+   subtree wins over the ancestor `.dark` regardless of source order. */
+:root,
+[data-theme='light'] {
+  --sm-paper: #faf7f4;              /* the page the whole app sits on */
+  --sm-paper-raised: #fdfbf9;       /* conversation pane — above the paper */
+  --sm-surface: rgba(255, 253, 251, 0.86); /* raised glass: bars, composer */
+  --sm-bubble-agent: #f1ece8;       /* fixed warm neutral — never accent-tinted */
+  --sm-bubble-user: #1c1917;
+  --sm-bubble-user-ink: #f7f3ef;
+  --sm-ink: #1c1917;
+  --sm-ink-2: #79716b;
+  --sm-ink-3: #a8a09a;
+  --sm-hairline: rgba(28, 20, 10, 0.09);
+  --sm-hairline-soft: rgba(28, 20, 10, 0.05);
+  --sm-fill-soft: rgba(28, 20, 10, 0.045);
+  --sm-fill-soft-2: rgba(28, 20, 10, 0.07);
+  --sm-code-bg: rgba(28, 20, 10, 0.05);
+  --sm-bubble-shadow: 0 1px 2px rgba(60, 40, 20, 0.05);
+  --sm-card-shadow: 0 10px 30px -14px rgba(60, 40, 20, 0.22), 0 1px 2px rgba(60, 40, 20, 0.05);
+  --sm-elev: 0 46px 90px -34px rgba(52, 34, 20, 0.3), 0 6px 18px -6px rgba(52, 34, 20, 0.07), 0 0 0 0.5px rgba(35, 25, 15, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  /* Selected-row accent mix — lighter paper needs less accent than dark. */
+  --sm-accent-row-mix: 9%;
+}
+
+.dark,
+[data-theme='dark'] {
+  --sm-paper: #1a1a18;
+  --sm-paper-raised: #201f1d;
+  --sm-surface: rgba(58, 54, 50, 0.72);
+  --sm-bubble-agent: #2c2926;
+  --sm-bubble-user: #f2ede7;
+  --sm-bubble-user-ink: #1c1917;
+  --sm-ink: #f5f1ec;
+  --sm-ink-2: #a8a29b;
+  --sm-ink-3: #7d766f;
+  --sm-hairline: rgba(255, 246, 235, 0.085);
+  --sm-hairline-soft: rgba(255, 246, 235, 0.055);
+  --sm-fill-soft: rgba(255, 246, 235, 0.06);
+  --sm-fill-soft-2: rgba(255, 246, 235, 0.1);
+  --sm-code-bg: rgba(0, 0, 0, 0.3);
+  --sm-bubble-shadow: none;
+  --sm-card-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.6);
+  --sm-elev: 0 46px 100px -30px rgba(0, 0, 0, 0.62), 0 8px 24px -10px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 246, 235, 0.07), inset 0 1px 0 rgba(255, 246, 235, 0.06);
+  --sm-accent-row-mix: 12%;
+}
+
+/* ── Per-session accent (concept contract C7) ──────────────────────────────
+   `--sm-accent` is the FOCUSED session's identity hue. It is theme-independent
+   and is REWRITTEN at runtime on the app shell by the character engine
+   (`hash(name)` → OKLCH body colour). Everything accent-coloured derives from
+   it, so one property write re-skins the shell.
+
+   The default below is the existing brand amber, so a shell with no focused
+   session still reads as supermux — it is a fallback, never a session colour.
+
+   The derived surfaces are NOT stored as variables on :root: an unregistered
+   custom property containing var() is substituted where it is DECLARED, so a
+   `--sm-accent-row` on :root would freeze to :root's accent and paper and would
+   not see the shell's per-session write. They are therefore utilities, which
+   substitute at the USE site and pick up the nearest inherited accent + theme.
+
+   Mix ratios are the approved ones: selected row 9% light / 12% dark,
+   side-pane wash 6%, mention chip 14%. The accent NEVER encodes status
+   (that is the --status-* family) and status colours never use the accent. */
+:root {
+  --sm-accent: hsl(var(--brand));
+  --sm-accent-wash-mix: 6%;
+  --sm-accent-chip-mix: 14%;
+  /* Every separator in the design system. 0.5px, never 1px. */
+  --sm-hairline-w: 0.5px;
+}
+
 /* ── Map CSS variables → Tailwind color/utility namespace (v4 @theme) ──────── */
 @theme inline {
   --color-background: var(--background);
@@ -168,6 +258,27 @@
   --color-status-waiting: hsl(var(--status-waiting));
   --color-status-error: hsl(var(--status-error));
 
+  /* B0 warm ladder → Tailwind namespace: bg-paper, bg-paper-raised, text-ink,
+     text-ink-2, border-hairline, bg-fill-soft, … The `--sm-*` vars stay the
+     source of truth (and stay usable raw, e.g. in box-shadow). `agent` is the
+     per-session accent — deliberately NOT named `accent`, which is shadcn's
+     hover fill. */
+  --color-paper: var(--sm-paper);
+  --color-paper-raised: var(--sm-paper-raised);
+  --color-surface: var(--sm-surface);
+  --color-bubble-agent: var(--sm-bubble-agent);
+  --color-bubble-user: var(--sm-bubble-user);
+  --color-bubble-user-ink: var(--sm-bubble-user-ink);
+  --color-ink: var(--sm-ink);
+  --color-ink-2: var(--sm-ink-2);
+  --color-ink-3: var(--sm-ink-3);
+  --color-hairline: var(--sm-hairline);
+  --color-hairline-soft: var(--sm-hairline-soft);
+  --color-fill-soft: var(--sm-fill-soft);
+  --color-fill-soft-2: var(--sm-fill-soft-2);
+  --color-code-bg: var(--sm-code-bg);
+  --color-agent: var(--sm-accent);
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -198,6 +309,35 @@
 }
 @utility pr-safe {
   padding-right: env(safe-area-inset-right);
+}
+
+/* ── Per-session accent surfaces (B0) ─────────────────────────────────────
+   Each mixes `--sm-accent` into the current theme's paper AT THE USE SITE, so
+   the nearest inherited accent (written per session on the shell) and the
+   nearest `[data-theme]` both apply. See the C7 note beside the token block.
+     · sm-accent-row  — the selected roster row (9% light / 12% dark)
+     · sm-accent-wash — a side-pane / header wash (6%)
+     · sm-accent-chip — mention + provenance chips (14%, over anything) */
+@utility sm-accent-row {
+  background-color: color-mix(
+    in oklab,
+    var(--sm-accent) var(--sm-accent-row-mix),
+    var(--sm-paper)
+  );
+}
+@utility sm-accent-wash {
+  background-color: color-mix(
+    in oklab,
+    var(--sm-accent) var(--sm-accent-wash-mix),
+    var(--sm-paper)
+  );
+}
+@utility sm-accent-chip {
+  background-color: color-mix(
+    in oklab,
+    var(--sm-accent) var(--sm-accent-chip-mix),
+    transparent
+  );
 }
 
 /* ── Top route-header inset (ios-pwa) — drift-proof convention ────────────────
@@ -482,4 +622,140 @@
 }
 .hljs-emphasis {
   font-style: italic;
+}
+
+/* ── Session marks — the character engine's ambient life (APPENDED) ───────
+   <SessionMark> (src/brand/marks/session-mark.tsx) renders a face per session.
+   Its two motions are here rather than in JS because they are ambient and
+   uninterruptible: a 5.4s breathe with a per-seed phase (set inline as a
+   negative animation-delay, so a roster never rises and falls in unison), and
+   the paused state an offscreen mark drops into. The blink and the micro-
+   saccade are geometry, not CSS — they redraw the eye paths from one shared rAF
+   loop (src/brand/marks/ticker.ts).
+
+   The silhouette itself never moves: `breathe` translates the whole SVG by
+   0.7px and rotates it 0.35°, which reads as breathing, not as a wobbling icon.
+   Appended at the file tail (never the shared token blocks) so parallel agents
+   editing globals.css never conflict. */
+.sm-mark {
+  position: relative;
+  flex: none;
+  display: block;
+  line-height: 0;
+}
+.sm-mark svg {
+  display: block;
+  overflow: visible;
+}
+.sm-mark[data-live='1'] svg {
+  animation: sm-breathe 5.4s ease-in-out infinite;
+}
+@keyframes sm-breathe {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-0.7px) rotate(0.35deg);
+  }
+}
+/* Reduce Motion: the face is identical, simply still — the eye geometry alone
+   carries state, so nothing is lost when the breathe and the blink stop. */
+@media (prefers-reduced-motion: reduce) {
+  .sm-mark[data-live='1'] svg {
+    animation: none;
+  }
+}
+
+/* ── Chat UI primitives — the three things Tailwind cannot say (APPENDED) ──
+   `components/chat/ui/` is otherwise pure utility classes. Three cases need a
+   stylesheet, and they are here rather than inline for the reasons given:
+
+   1. The dot wave and the receipt spinner are AMBIENT loops — no state to
+      spring between, nothing to interrupt, and a rAF-driven opacity loop on a
+      scrolling transcript is pure cost. Same call as the mark's breathe, so
+      they live beside it. (lib/springs.ts stays the source of truth for every
+      framer-motion transition; these are not transitions.)
+   2. `.sm-ink-accent` picks a session's text-tier pigment per theme. The
+      component publishes BOTH tiers as custom properties because it cannot know
+      whether it is inside `.dark` (the app-wide switch) or a `[data-theme]`
+      subtree — and Tailwind's `dark:` variant only knows the former.
+   3. `.sm-mic` is the composer's one inverted control: a soft wash on light
+      paper, a warm near-white disc on dark. Same theme-pick problem.
+
+   The light rules come LAST so that a `[data-theme='light']` subtree rendered
+   inside the app-wide `.dark` — exactly what /dev/chat-ui and /dev/marks do —
+   wins on source order at equal specificity.
+
+   Appended at the file tail (never the shared token blocks) so parallel agents
+   editing globals.css never conflict. */
+.sm-dots i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: sm-blip 1.25s ease-in-out infinite;
+}
+.sm-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.sm-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+@keyframes sm-blip {
+  0%,
+  60%,
+  100% {
+    opacity: 0.28;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+/* The slow spinner of the running receipt line — BRAND's 2.4s, not a fast
+   loader: a tool call that takes a while should look patient, not frantic. */
+.sm-spin {
+  animation: sm-spin 2.4s linear infinite;
+}
+@keyframes sm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sm-ink-accent {
+  color: var(--sm-ink-accent-light);
+}
+:is(.dark, [data-theme='dark']) .sm-ink-accent {
+  color: var(--sm-ink-accent-dark);
+}
+[data-theme='light'] .sm-ink-accent {
+  color: var(--sm-ink-accent-light);
+}
+
+.sm-mic {
+  background: var(--sm-fill-soft-2);
+  color: var(--sm-ink);
+}
+:is(.dark, [data-theme='dark']) .sm-mic {
+  background: rgba(244, 238, 231, 0.94);
+  color: #1c1917;
+}
+[data-theme='light'] .sm-mic {
+  background: var(--sm-fill-soft-2);
+  color: var(--sm-ink);
+}
+
+/* Reduce Motion: the dots stop at their bright frame and the spinner stops at
+   its start angle — both still read as "in progress", which is the point. */
+@media (prefers-reduced-motion: reduce) {
+  .sm-dots i,
+  .sm-spin {
+    animation: none;
+  }
+  .sm-dots i {
+    opacity: 0.6;
+  }
 }
