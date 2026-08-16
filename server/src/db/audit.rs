@@ -92,20 +92,34 @@ pub const SURFACED_ACTIONS: [&str; 4] = [
 /// moment a label collides with a slug, so the arm is scoped to this action.
 const DELEGATE_ACTION: &str = "session.delegate";
 
+/// The two surfaced actions whose `target` column is a session NAME.
+///
+/// The schedule actions target a SCHEDULE ID (`SCHED-<8 hex>`), so an unscoped
+/// `target = ?` arm made a session literally named after a schedule id the
+/// subject of that schedule's events — two namespaces sharing one column, which
+/// is one session reading another's transcript for the price of a name (B4
+/// T2.5). Scoping the arm to the actions whose target IS a session closes it by
+/// construction; the schedule rows still reach their feed through
+/// `detail.session`, which is the arm they were always meant to use.
+const TARGET_IS_A_SESSION: [&str; 2] = [DELEGATE_ACTION, "session.rename"];
+
 /// The feed's one SQL statement, with the action list built from
 /// [`SURFACED_ACTIONS`] so the filter and the const can never drift. No user
 /// input is interpolated — the values are compile-time literals.
 static EVENTS_SQL: Lazy<String> = Lazy::new(|| {
-    let actions = SURFACED_ACTIONS
-        .iter()
-        .map(|a| format!("'{a}'"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let quoted = |list: &[&str]| {
+        list.iter()
+            .map(|a| format!("'{a}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let actions = quoted(&SURFACED_ACTIONS);
+    let target_actions = quoted(&TARGET_IS_A_SESSION);
     format!(
         "SELECT id, ts, actor, action, target, detail FROM audit_log \
          WHERE id > ? \
            AND action IN ({actions}) \
-           AND ( target = ? \
+           AND ( (action IN ({target_actions}) AND target = ?) \
               OR (action = '{DELEGATE_ACTION}' AND json_extract(detail,'$.from') = ?) \
               OR json_extract(detail,'$.session') = ? \
               OR actor = 'agent:' || ? ) \
@@ -118,7 +132,9 @@ static EVENTS_SQL: Lazy<String> = Lazy::new(|| {
 ///
 /// A session is the subject through four columns, because the ledger was never
 /// designed as a per-session feed:
-/// - `target = ?` — a delegation landed on it, or it was renamed;
+/// - `target = ?` **on a session-targeting action** — a delegation landed on
+///   it, or it was renamed. Scoped by [`TARGET_IS_A_SESSION`], because the
+///   schedule actions put a schedule id in the same column;
 /// - `json_extract(detail,'$.from') = ?` on a `session.delegate` row — it
 ///   delegated OUT (the row's target is the *recipient*). Scoped to that action
 ///   on purpose: `session.rename`'s `from` is a display label, not a slug;

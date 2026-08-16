@@ -10,7 +10,21 @@
 //! actor is honest about who asked: `user` when the caller says `actor=human`
 //! (the composer @-send), otherwise `agent:<from>`. The prompt text is NOT
 //! logged (it is application content, kept out of the audit detail per the
-//! secret-hygiene rule).
+//! secret-hygiene rule) — [`audit_detail`] is the one place that decides what
+//! does go in, so "the body never reaches the ledger" is an assertion rather
+//! than a code-review claim.
+//!
+//! **`actor` IS NOT AN AUTHENTICATION RESULT.** This route sits in the bearer
+//! layer, so every caller has already presented the dashboard token, which is
+//! admin-equivalent. `from` is *caller-declared* and nothing proves the caller
+//! is that session; `actor` is likewise a label chosen by an already-
+//! bearer-authenticated caller. It distinguishes the composer path from the
+//! curl path for the reader of the ledger, and it is not a privilege boundary.
+//! The real boundary in this codebase is the per-session hook token
+//! (`scheduler/hook.rs`), which this endpoint deliberately does not accept in
+//! this fase — an agent that delegates still needs the dashboard bearer. Only
+//! the exact string `"human"` maps to `user`, so a typo can never quietly
+//! impersonate the owner.
 
 use axum::extract::{Query, State};
 use axum::Json;
@@ -100,11 +114,37 @@ pub fn wraps_for_provider(provider: &str) -> bool {
 }
 
 /// Audit-log actor string for a delegation. `"human"` is the composer path.
-pub(crate) fn audit_actor(actor: Option<&str>, from: &str) -> String {
+///
+/// EXACT match only, and everything else falls to the agent: see the module
+/// doc — this is honest labelling from an already-admin caller, not an
+/// authentication result, so the one string that can name the owner is spelled
+/// out and a near-miss (`"Human"`, `"user"`, `"HUMAN"`) never gets there.
+pub fn audit_actor(actor: Option<&str>, from: &str) -> String {
     match actor {
         Some("human") => "user".to_string(),
         _ => format!("agent:{from}"),
     }
+}
+
+/// The largest delegate `prompt` this endpoint will accept, in bytes.
+///
+/// 64 KiB. Above it the request is refused rather than pushed through
+/// `send_text` and pasted into another agent's context: a delegated prompt is
+/// typed into a live TUI a byte at a time, so an unbounded string is both a
+/// denial of service against the recipient's pane and a way to fill a
+/// colleague's context window from outside. The number is generous — the
+/// biggest legitimate hand-off anyone has written is three orders of magnitude
+/// under it.
+pub const PROMPT_MAX_BYTES: usize = 64 * 1024;
+
+/// What a delegation writes into `audit_log.detail`.
+///
+/// One function, so the "no prompt body in the ledger" rule (module doc) is a
+/// property a test can assert rather than a comment beside a `json!`. The
+/// sender's slug is the whole of it: `target` already names the recipient, and
+/// the feed's `$.from` arm is what puts the row in the sender's own transcript.
+pub fn audit_detail(from: &str) -> serde_json::Value {
+    json!({ "from": from })
 }
 
 /// `POST /api/agents/delegate` — send `prompt` to `to`, record the edge.
@@ -119,6 +159,15 @@ pub async fn delegate(
     }
     if input.prompt.trim().is_empty() {
         return Err(AppError::BadRequest("'prompt' is required".into()));
+    }
+    // The size ceiling, refused BEFORE delivery for the same reason the wrapper
+    // guard below is: everything past this point types into somebody else's
+    // live pane. See [`PROMPT_MAX_BYTES`].
+    if input.prompt.len() > PROMPT_MAX_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "'prompt' is too large ({} bytes, max {PROMPT_MAX_BYTES})",
+            input.prompt.len()
+        )));
     }
     // Refuse wrapper markup BEFORE anything is delivered or recorded, and refuse
     // it on every provider path — whether a prompt is legal must not depend on
@@ -172,7 +221,7 @@ pub async fn delegate(
         &audit_actor(input.actor.as_deref(), from),
         "session.delegate",
         to,
-        json!({ "from": from }),
+        audit_detail(from),
         &[from, to],
     )
     .await?;
@@ -230,6 +279,44 @@ mod tests {
     fn unknown_actor_falls_back_to_agent_from() {
         // Forward-compat: an unrecognised actor string never impersonates the user.
         assert_eq!(audit_actor(Some("robot"), "x"), "agent:x");
+    }
+
+    #[test]
+    fn only_the_exact_string_human_can_name_the_owner() {
+        // `actor` is a label from an already-bearer-authenticated caller, not an
+        // authentication result (module doc). The one thing that must hold is
+        // that a NEAR MISS can never quietly become "the owner did this" in the
+        // ledger — so the match is exact and every neighbour falls to the agent.
+        for near_miss in ["HUMAN", "Human", "human ", " human", "user", "agent", "owner", ""] {
+            assert_eq!(
+                audit_actor(Some(near_miss), "deploy-fix"),
+                "agent:deploy-fix",
+                "{near_miss:?} must not audit as the user"
+            );
+        }
+        assert_eq!(audit_actor(None, "deploy-fix"), "agent:deploy-fix");
+        assert_eq!(audit_actor(Some("human"), "deploy-fix"), "user");
+    }
+
+    #[test]
+    fn the_ledger_detail_carries_the_sender_and_never_the_prompt_body() {
+        // Audit hygiene (module doc): `detail` is metadata. The prompt is
+        // application content and belongs in the recipient's transcript, not in
+        // an operator forensics log that `GET /api/audit` hands out whole.
+        let detail = audit_detail("git-stacker");
+        assert_eq!(detail, json!({ "from": "git-stacker" }));
+        assert_eq!(
+            detail.as_object().map(|o| o.len()),
+            Some(1),
+            "one key only — a new key here is a new thing leaking into the ledger"
+        );
+    }
+
+    #[test]
+    fn the_prompt_ceiling_is_a_documented_number_not_a_vibe() {
+        // The cap exists so a delegation cannot be a denial of service against
+        // the recipient's pane; the handler asserts it, this pins the number.
+        assert_eq!(PROMPT_MAX_BYTES, 65_536);
     }
 
     #[test]
