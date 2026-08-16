@@ -1987,7 +1987,6 @@ mod tests {
             tags: None,
             toggle_pin: None,
             toggle_auto_continue: None,
-            notif: None,
         }
     }
 
