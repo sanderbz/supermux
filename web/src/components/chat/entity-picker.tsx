@@ -33,7 +33,7 @@ import * as React from 'react'
 
 import { cn } from '../../lib/utils'
 
-import { acceptRow, atRows, pickerOptionId, PICKER_LISTBOX_ID, slashRows } from './slash'
+import { acceptRow, atRows, jumpTarget, pickerOptionId, PICKER_LISTBOX_ID, slashRows } from './slash'
 import type { EntityPickerData, EntityRow } from './slash'
 import type { ComposerPickerApi } from './use-composer'
 
@@ -117,6 +117,11 @@ export default function EntityPicker({
         if (now.rows.length === 0) return
         const next = (now.activeIndex + delta + now.rows.length) % now.rows.length
         setSel({ key: now.key, index: next })
+      },
+      jump: (to) => {
+        const now = live.current
+        if (now.rows.length === 0) return
+        setSel({ key: now.key, index: jumpTarget(to, now.activeIndex, now.rows.length) })
       },
       accept: () => {
         // `false` means "nothing to accept" and the keystroke keeps its normal

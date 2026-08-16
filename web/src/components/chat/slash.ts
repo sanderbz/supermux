@@ -321,6 +321,37 @@ export function acceptRow(
   return rows[activeIndex] ?? null
 }
 
+/** How many rows a PageUp/PageDown covers. Deliberately smaller than the
+ *  12-row list, so a page is a GEAR and not a synonym for Home/End. */
+export const PICKER_PAGE = 5
+
+/** Where a coarse jump lands (fase B3 T1.2). */
+export type PickerJump = 'first' | 'last' | 'page-up' | 'page-down'
+
+/**
+ * The index a coarse jump selects — pure, so the truth table is a unit test.
+ *
+ * CLAMPED, NEVER WRAPPED, and that asymmetry with `move()` is deliberate: the
+ * arrows wrap because a short list is a ring you can spin past the end and keep
+ * going, but a user who presses End means "the end". A Home that wrapped to the
+ * bottom, or a PageDown that silently re-entered at the top, would move the
+ * highlight to somewhere the keystroke did not name.
+ *
+ * An empty list yields 0 rather than -1: there is no row to highlight, and the
+ * callers all guard on `rows.length` first — returning a negative index here
+ * would put the same "is this a real row" decision in two places.
+ */
+export function jumpTarget(to: PickerJump, from: number, length: number): number {
+  if (length <= 0) return 0
+  const last = length - 1
+  const next =
+    to === 'first' ? 0
+    : to === 'last' ? last
+    : to === 'page-up' ? from - PICKER_PAGE
+    : from + PICKER_PAGE
+  return Math.min(Math.max(next, 0), last)
+}
+
 /** The two fields a mention needs — structural on purpose, so this ranks the
  *  shared `useSessions()` rows AND the bench's fixture cast without either of
  *  them having to be the other's type. */

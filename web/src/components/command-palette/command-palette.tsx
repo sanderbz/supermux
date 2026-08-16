@@ -126,8 +126,15 @@ type PaletteRow = SessionRow | CommandRow | SkillRow | McpRow | ActionRow
 // Stored on `window` (not document) with capture=true so we beat any per-route
 // or per-component listeners. The hook returns `[open, setOpen]`.
 
-function useGlobalCommandKey(): [boolean, React.Dispatch<React.SetStateAction<boolean>>] {
-  const [open, setOpen] = React.useState(false)
+/**
+ * @param toggle what ⌘K means. A CALLBACK rather than a `setState` the hook
+ *   owns, because the palette's reset-on-open lives in a wrapper around the
+ *   setter — and a hook that held the state itself would flip it directly and
+ *   sail straight past that wrapper (fase B3 T1.4: the palette reopened with
+ *   the previous search still in the box, contradicting the comment three
+ *   lines below the wrapper that says it cannot).
+ */
+function useGlobalCommandKey(toggle: () => void): void {
   React.useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       // macOS = metaKey, others = ctrlKey. Reject if Shift/Alt are also held so
@@ -137,15 +144,14 @@ function useGlobalCommandKey(): [boolean, React.Dispatch<React.SetStateAction<bo
       if (e.key.toLowerCase() !== 'k') return
       e.preventDefault()
       e.stopPropagation()
-      setOpen((v) => !v)
+      toggle()
     }
     // Capture phase so we run before any sub-tree keydown handlers — the focus
     // route's `useKeyboardCapture` also wants ⌘K, but only delegates to a stub;
     // we own the real palette now, so winning the race is correct.
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [])
-  return [open, setOpen]
+  }, [toggle])
 }
 
 // ── Filtering: case-insensitive substring on session name / task / command ───
@@ -197,7 +203,7 @@ function matchesAction(a: ActionRow, q: string): boolean {
 // ── The palette ──────────────────────────────────────────────────────────────
 
 export function CommandPalette() {
-  const [open, setOpenRaw] = useGlobalCommandKey()
+  const [open, setOpenRaw] = React.useState(false)
   const navigate = useNavigate()
   const { sessions } = useSessions()
   const { data: commands = [] } = useSlashCommands()
@@ -242,6 +248,10 @@ export function CommandPalette() {
     },
     [setOpenRaw],
   )
+
+  // ⌘K toggles THROUGH the wrapper, so the reset-on-open above is the one and
+  // only definition of "the palette opened" (fase B3 T1.4).
+  useGlobalCommandKey(React.useCallback(() => setOpen((v) => !v), [setOpen]))
 
   // Wrap setQuery so the active-row reset happens from the user-input change
   // event — most-relevant match first, mirroring Spotlight / VSCode — without

@@ -370,18 +370,18 @@ Nine build tasks + an integration gate. Each is one commit; T1 lands first and s
 
 ### T1 — The regression net, before anything moves
 
-- [ ] **T1.1** Pin today's picker DOM: extend `tests/unit/chat-interactive.test.tsx` with a
+- [x] **T1.1** Pin today's picker DOM: extend `tests/unit/chat-interactive.test.tsx` with a
       `renderToStaticMarkup` snapshot of `EntityPickerView` for all three `kind`s, asserting exactly
       one highlighted row, `role=listbox`/`role=option`/`role=presentation` nesting, the
       `PICKER_LISTBOX_ID`/`pickerOptionId` wiring, and the empty-state copy. These assertions must
       survive T2 **unchanged except for the attribute rename** — that is the proof the promotion was
       lossless.
-- [ ] **T1.2** New `tests/unit/entity-picker-keys.test.ts`: a truth table for the new pure reducer
+- [x] **T1.2** New `tests/unit/entity-picker-keys.test.ts`: a truth table for the new pure reducer
       `entityPickerKeyIntent(event, state) → 'move-up'|'move-down'|'accept'|'close'|'pass'`, extracted
       from `use-composer.ts:104-111` *without changing composer behaviour*. Cover Home/End/PageUp/
       PageDown (new), wrap-around at both ends, IME (`isComposing`, keyCode 229) outranking
       everything, and Shift+Tab passing through.
-- [ ] **T1.3** **The mobile session-pill lock** (§4.2). One Playwright test in
+- [x] **T1.3** **The mobile session-pill lock** (§4.2). One Playwright test in
       `tests/e2e/smoke/mobile-session-pill.spec.ts` — *one* test, not two, because this box's
       `--single-process` chromium cannot open a second context. It must assert, against the real
       dock: (a) a short stationary tap on `ComposeField` opens the session sheet (chat mode, where
@@ -390,12 +390,12 @@ Nine build tasks + an integration gate. Each is one commit; T1 lands first and s
       stops short snaps back and opens nothing; (d) after the tap, `document.activeElement` is **not**
       `textarea.xterm-helper-textarea`. Constants under test: `TAP_SLOP_PX = 10`, `TAP_MAX_MS = 500`
       (`dock.tsx:886-887`).
-- [ ] **T1.4** Palette e2e baseline: record that `board-cmdk-drag-send.spec.ts` and
+- [x] **T1.4** Palette e2e baseline: record that `board-cmdk-drag-send.spec.ts` and
       `archived-recover.spec.ts` pass on the branch point, and add
       `tests/e2e/smoke/palette-keys.spec.ts` covering the paths nothing tests today — ⌘K toggles
       *closed*, ArrowDown wraps at the end, Escape steps back one sub-flow level, and the highlighted
       row is scrolled into view after 12 downs.
-- [ ] **T1.5** VR baseline into `~/b3-vr/pre/`: chat popover (`/dev/chat-live?mock&state=idle`, with
+- [x] **T1.5** VR baseline into `~/b3-vr/pre/`: chat popover (`/dev/chat-live?mock&state=idle`, with
       and without `&surface=phone`), the palette open on `/` and on `/board`, and the focus-mode
       session sheet — **light and dark, DPR 1**, desktop 1440×900 + iPhone 14 Pro.
 
@@ -793,3 +793,4 @@ Base `a7cc52c` (`main`). Budget at branch point: **entry 144.94 / 160 · app 209
 | task | status | app JS gz | notes |
 |---|---|---|---|
 | addendum | done | 209.79 (base) | re-audit vs real `main`; §A1 budget finding |
+| T1 regression net | done | **209.99** (+0.20) | 1424 unit pass; pill spec + palette-keys spec green; found & fixed the ⌘K stale-query defect; VR pre in `~/b3-vr/pre` (14 shots). **0.01 KB headroom left — no additive task may run until T3/T4 delete.** |

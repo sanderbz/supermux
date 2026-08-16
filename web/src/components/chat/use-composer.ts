@@ -21,7 +21,7 @@ import {
 } from './composer-draft'
 import { handoffLabel, readDelegateIntent, type DelegateIntent } from './delegate-intent'
 import type { PeekLens } from './peek-lens'
-import { classifySlash, readTrigger, slashName } from './slash'
+import { classifySlash, readTrigger, slashName, type PickerJump } from './slash'
 
 /** How much of the terminal's own draft the block banner quotes back. Enough to
  *  recognise the sentence, short enough that the banner stays one line. */
@@ -45,6 +45,10 @@ export type ComposerIntent =
   | 'picker-down'
   | 'picker-accept'
   | 'picker-close'
+  | 'picker-page-up'
+  | 'picker-page-down'
+  | 'picker-first'
+  | 'picker-last'
 
 /** The shape a React keydown event and a plain object both satisfy. */
 export interface ComposerKeyEvent {
@@ -88,7 +92,7 @@ function composing(e: ComposerKeyEvent): boolean {
  */
 export function composerKeyIntent(
   e: ComposerKeyEvent,
-  ctx: { draft: string; active: boolean; picker?: boolean },
+  ctx: { draft: string; active: boolean; picker?: boolean; caret?: boolean },
 ): ComposerIntent {
   // A COMPOSITION OWNS EVERY KEY IT IS GIVEN, not just Enter. Escape during an
   // IME composition means "cancel this conversion" — swallowing it to clear the
@@ -106,6 +110,26 @@ export function composerKeyIntent(
     if (e.key === 'ArrowDown') return 'picker-down'
     if (e.key === 'Escape') return 'picker-close'
     if (e.key === 'Tab' && !e.shiftKey) return 'picker-accept'
+    // PageUp/PageDown are always the list's (fase B3 T1.2). In a 1–3 line
+    // composer they do nothing a user wants — the browser scrolls the
+    // TRANSCRIPT out from under the sentence being written — so taking them
+    // costs nothing and gives a 40-row list a coarse gear.
+    if (e.key === 'PageUp') return 'picker-page-up'
+    if (e.key === 'PageDown') return 'picker-page-down'
+    // HOME/END BELONG TO THE CARET, and the token anchor sits on a textarea
+    // where the caret is the whole point: `@foo` is typed INSIDE a sentence,
+    // and stealing Home to jump a suggestion list would strand a user who
+    // wanted the start of their own line. The FIELD anchor (`caret: false` —
+    // the palette, a sheet's filter box) has no such claim: its input holds a
+    // query, not prose, so there Home/End address the list.
+    //
+    // This is the one cell of the truth table where the two anchors disagree,
+    // and it is why the anchor is a parameter of the reducer rather than a
+    // second reducer.
+    if (ctx.caret === false) {
+      if (e.key === 'Home') return 'picker-first'
+      if (e.key === 'End') return 'picker-last'
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       // Falls back to `submit` in the hook when the list has nothing to accept
       // (a query that matches nothing must not swallow the message).
@@ -373,6 +397,8 @@ export interface UseComposerOptions {
 export interface ComposerPickerApi {
   /** Move the highlight; wraps at both ends. */
   move: (delta: number) => void
+  /** Coarse, clamped movement (Home/End/PageUp/PageDown). */
+  jump: (to: PickerJump) => void
   /** Accept the highlighted row. `false` = there was nothing to accept, and the
    *  keystroke falls through to its normal meaning (Enter still SENDS). */
   accept: () => boolean
@@ -740,6 +766,10 @@ export function useComposer({
       } else if (intent === 'stop') stop()
       else if (intent === 'picker-up') pickerApi.current?.move(-1)
       else if (intent === 'picker-down') pickerApi.current?.move(1)
+      else if (intent === 'picker-page-up') pickerApi.current?.jump('page-up')
+      else if (intent === 'picker-page-down') pickerApi.current?.jump('page-down')
+      else if (intent === 'picker-first') pickerApi.current?.jump('first')
+      else if (intent === 'picker-last') pickerApi.current?.jump('last')
       else if (intent === 'picker-close') closePicker()
     },
     [active, closePicker, name, pickerOpen, set, stop, submit],
