@@ -333,6 +333,12 @@ function ComposerBanner({
               <code className="font-mono text-[11.5px] text-ink">{notice.detail}</code>
             )}
           <span className="text-ink">{NOTICE_TITLE[notice.kind]}</span>
+          {/* The panel's own dismissal footer (`Esc to cancel`), verbatim — the
+              evidence for a refusal the user cannot otherwise see, since the
+              screen it is about is on the other renderer. */}
+          {notice.kind === 'dialog-terminal' && notice.detail && (
+            <code className="font-mono text-[11.5px] text-ink-2">{notice.detail}</code>
+          )}
           {(notice.kind === 'tui-draft' || notice.kind === 'tui-draft-unverified') &&
             notice.detail && (
               <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">

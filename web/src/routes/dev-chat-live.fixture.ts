@@ -691,6 +691,27 @@ export function liveStates(nowMs: number): LiveState[] {
       },
     },
     {
+      id: 'panel',
+      title: 'Panel — a full-screen TUI screen is up, so the send is refused and named',
+      board: 'daily-driver QA #1',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // The wedge, as the user meets it. `/status` opened Claude Code's Status
+        // panel on the pty; the peek lens sights the panel (its `Esc to cancel`
+        // footer is the evidence, quoted here), so the composer refuses and
+        // names the only surface that can dismiss it. Before this the refusal
+        // read "The terminal has an unsent draft `/status`" — about a terminal
+        // with no draft, quoting the echo of the command that opened the panel.
+        draft: 'and when that lands, tag it',
+        notice: { kind: 'dialog-terminal', detail: 'Esc to cancel' },
+      },
+    },
+    {
       id: 'dialog-live',
       title: 'Answerable — the permission card with the keys chat will actually press',
       board: 'board-light.png (choice card) + A4 T7',
@@ -832,6 +853,7 @@ export const STATE_IDS = [
   'composing',
   'slash',
   'refused',
+  'panel',
   'dialog-live',
   'answering',
   'plan-approval',

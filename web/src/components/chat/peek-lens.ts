@@ -124,6 +124,29 @@ export function continuityOf(s: DialogSighting): DialogContinuity | null {
   }
 }
 
+/**
+ * A FULL-SCREEN PANEL with no numbered rows — `/status`, `/cost`, `/config`.
+ *
+ * It is not a `DialogSighting`: there is nothing to answer and nothing for the
+ * registry to map. It is still the most important thing on the screen, because
+ * it EATS THE NEXT ENTER. Live on 2.1.233 (`tests/fixtures/tui/cc233-modal/`):
+ * `/status` sent from chat drew the Status panel, the composer went off screen,
+ * and the only `❯` left in the capture was the ECHO of `/status` up in the
+ * scrollback — which the draft reader then reported as an unsent draft. The
+ * composer refused every later message with "the terminal has an unsent draft
+ * `/status`", about a terminal that had no draft at all, and the channel stayed
+ * wedged until somebody pressed Esc in the pty (daily-driver QA #1).
+ *
+ * So the lens reports the panel, the draft read stands down (a scrollback echo
+ * is not a draft), and the composer's refusal names the surface that can
+ * actually dismiss it.
+ */
+export interface ModalSighting {
+  /** The panel's own dismissal footer, verbatim — `Esc to cancel`. It is the
+   *  evidence, and it is what makes this a sighting rather than a guess. */
+  hint: string
+}
+
 export interface PeekLens {
   /** `╭─── Claude Code v2.1.231 ───╮` → `2.1.231`. Null when the banner has
    *  scrolled off the window — which is why `use-peek-lens.ts` reads it ONCE
@@ -150,6 +173,10 @@ export interface PeekLens {
    */
   composerDraftVerified: boolean
   dialog: DialogSighting | null
+  /** A full-screen panel is covering the composer (see `ModalSighting`). Never
+   *  set at the same time as `dialog`: a dialog is the more specific reading of
+   *  the same fact, and one screen may only be one thing. */
+  modal: ModalSighting | null
 }
 
 /** U+276F — the glyph a0 proved is NEVER a fingerprint on its own: the composer
@@ -461,6 +488,56 @@ function composerLineIndex(lines: readonly string[]): number {
   return fallback
 }
 
+/**
+ * How far above the bottom of the capture the TUI's composer may sit and still
+ * be the LIVE one.
+ *
+ * `/peek` returns scrollback followed by the viewport, so the composer is always
+ * within a couple of rows of the last printed line — 2 on every idle and every
+ * mid-turn capture in `cc233-modal/`. 14 is slack for a multi-line draft. What
+ * it EXCLUDES is the echoed `❯ /status` 20 rows up in the scrollback, which is
+ * what a full-screen panel leaves behind as the only caret on screen.
+ */
+const COMPOSER_TAIL_SLACK = 14
+
+/**
+ * The footer every full-screen Claude Code panel prints — `Esc to cancel`
+ * (`/status`, `/cost`), `Esc to close` / `Esc to clear` (`/config`).
+ *
+ * CAPITAL `Esc`, and that is load-bearing: the status line CC draws WHILE A TURN
+ * RUNS says `esc to interrupt` in lower case (`53-running-turn.txt`), and
+ * refusing every send during a running turn would be an outage wearing a safety
+ * argument. The composer test below is the second half of the discriminator —
+ * that line sits UNDER a live composer, a panel replaces it.
+ */
+const MODAL_FOOTER_RE = /\bEsc to [a-z]+(?: [a-z]+)?/
+
+/**
+ * Is a full-screen panel covering the composer?
+ *
+ * Two facts, both read off the live viewport rather than off the scrollback:
+ *   1. the TUI's composer is NOT in the last `COMPOSER_TAIL_SLACK` rows — the
+ *      panel has taken the screen (an echoed `❯` up in the history is not a
+ *      prompt, which is exactly the misreading this fixes);
+ *   2. something down there says how to dismiss itself.
+ *
+ * Both are required. (1) alone would call a session that has not drawn its
+ * composer yet a modal; (2) alone would fire on a permission dialog's own footer
+ * — which is `readDialog`'s to report, and it is asked first.
+ */
+function readModal(lines: readonly string[]): ModalSighting | null {
+  const tail = lastContentLine(lines)
+  if (tail < 0) return null
+  const from = Math.max(0, tail - COMPOSER_TAIL_SLACK + 1)
+  const composer = composerLineIndex(lines)
+  if (composer >= from) return null
+  for (let i = tail; i >= from; i--) {
+    const m = MODAL_FOOTER_RE.exec(lines[i])
+    if (m) return { hint: m[0] }
+  }
+  return null
+}
+
 /** The draft text on one composer line, by whichever of the two shapes it is. */
 function draftOn(line: string): string {
   if (line.startsWith(CARET)) return norm(line.slice(CARET.length))
@@ -545,16 +622,24 @@ export function readLens(
   const raw = capture ? capture.split('\n') : []
   const lines = raw.map(plain)
   const dialog = readDialog(lines, continuing ?? null)
-  // A dialog's caret row is not a draft, so the draft read is gated on there
-  // being no dialog — unchanged.
-  const draft: DraftRead = dialog
-    ? { text: null, verified: true }
-    : readComposerDraft(lines, raw, hasAnsi(capture))
+  // A dialog is the more specific reading of "something is covering the prompt",
+  // so it is asked first and a screen is never both.
+  const modal = dialog ? null : readModal(lines)
+  // A dialog's caret row is not a draft — and neither is the scrollback echo a
+  // full-screen panel leaves as the only `❯` on screen. Both gate the read for
+  // the same reason: what is at the prompt is unknowable while something else
+  // owns the screen, and "unknowable" must not be reported as "the user left
+  // half a sentence there" (daily-driver QA #1).
+  const draft: DraftRead =
+    dialog || modal
+      ? { text: null, verified: true }
+      : readComposerDraft(lines, raw, hasAnsi(capture))
   return {
     bannerVersion: readBannerVersion(lines),
     composerDraft: draft.text,
     composerDraftVerified: draft.verified,
     dialog,
+    modal,
   }
 }
 
@@ -568,6 +653,7 @@ export const EMPTY_LENS: PeekLens = {
   // absent draft is not a ghost", and no gate consults it with a null draft.
   composerDraftVerified: true,
   dialog: null,
+  modal: null,
 }
 
 /** Live turn, or a dialog on screen: the caret can move under us, and the whole

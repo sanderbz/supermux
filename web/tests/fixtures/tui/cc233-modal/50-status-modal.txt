@@ -1,0 +1,30 @@
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Added GitLab merge req… │
+│      Fable 5 with high effort · Claude Max ·       │ Added an opt-in `forwa… │
+│      operator@example.com     's Organization      │ Added opt-in memory cg… │
+│             /…/scratchpad/tui-cap/work             │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ /status
+
+────────────────────────────────────────────────────────────────────────────────
+  Settings  Status   Config   Usage   Stats
+
+  Version:          2.1.233
+  Session name:     /rename to add a name
+  Session ID:       00000000-1111-2222-3333-444444444444
+  Session kind:     interactive
+  Peer address:     uds:/tmp/cc-socks/000000.sock
+  cwd:              /tmp/scratch-000/-opt-projects-supermux/aaaaaaaa-bbbb-1111-c
+                    ccc-222222222222/scratchpad/tui-cap/work
+  Login method:     Claude Max account
+  Organization:     operator@example.com     's Organization
+  Email:            operator@example.com     
+
+  Model:            claude-fable-5[1m] (claude-fable-5)
+  MCP servers:      1 connected, 3 need auth · /mcp
+  Setting sources:  User settings
+
+  Esc to cancel
+

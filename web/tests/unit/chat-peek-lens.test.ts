@@ -281,3 +281,58 @@ describe('readLens — the version pin is the BANNER, not any mention of a versi
     expect(readLens('▐▛███▜▌ Claude Code v2.1.231').bannerVersion).toBe('2.1.231')
   })
 })
+
+/**
+ * The FULL-SCREEN PANELS (daily-driver QA #1).
+ *
+ * `/status` sent from chat opened the CLI's Status panel; chat kept showing an
+ * idle dot and an inviting composer, and every later send was refused with "the
+ * terminal has an unsent draft `/status`" — quoting the ECHO of the command that
+ * opened the panel, 20 rows up in the scrollback. The lens now reports the panel
+ * and stops reporting that draft.
+ *
+ * Fixtures captured live on 2.1.233 in a real pty; provenance in
+ * `tests/fixtures/tui/cc233-modal/README.md`.
+ */
+describe('readLens — a panel is not a draft', () => {
+  const modal = (name: string) => readLens(readFileSync(join(DIR, 'cc233-modal', name), 'utf8'))
+
+  test('/status: the panel is sighted, and the scrollback echo is NOT a draft', () => {
+    const lens = modal('50-status-modal.txt')
+    expect(lens.modal?.hint).toBe('Esc to cancel')
+    // The bug, as an assertion: this capture contains `❯ /status` on row 8.
+    expect(lens.composerDraft).toBeNull()
+    // A panel has nothing to answer, so it is not a dialog either.
+    expect(lens.dialog).toBeNull()
+  })
+
+  test('/cost: sighted with no ❯ on screen at all', () => {
+    expect(modal('51-cost-modal.txt').modal?.hint).toBe('Esc to cancel')
+  })
+
+  test('the composer at rest is not a panel', () => {
+    const lens = modal('52-idle-composer.txt')
+    expect(lens.modal).toBeNull()
+    expect(lens.composerDraft).toBeNull()
+  })
+
+  test('a RUNNING TURN is not a panel — `esc to interrupt` is lower case, and the prompt is live', () => {
+    // The screen a naive "does the tail mention esc?" rule would wreck: it says
+    // `esc to interrupt`, and refusing every send during a turn would be an
+    // outage wearing a safety argument.
+    const lens = modal('53-running-turn.txt')
+    expect(lens.modal).toBeNull()
+    expect(lens.composerDraft).toBeNull()
+  })
+
+  test('a permission dialog stays a DIALOG — one screen, one reading', () => {
+    const lens = readLens(read('perm-bash.txt'))
+    expect(lens.dialog?.family).toBe('permission')
+    expect(lens.modal).toBeNull()
+  })
+
+  test('an empty capture is not a panel', () => {
+    expect(readLens('').modal).toBeNull()
+    expect(readLens('')).toEqual(EMPTY_LENS)
+  })
+})

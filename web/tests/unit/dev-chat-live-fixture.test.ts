@@ -155,6 +155,16 @@ describe('coverage: every state the surface can be in', () => {
     expect(rows[0]?.warn).toBe('terminal only')
   })
 
+  test('panel refuses a plain message and names the terminal, with the panel’s own footer as evidence', () => {
+    // daily-driver QA #1: a full-screen TUI screen (`/status`, `/cost`) is up.
+    // There is no card above the composer to point at, so the refusal points at
+    // the terminal — and it is NOT the draft refusal, which is what this state
+    // exists to keep true.
+    const c = byId.get('panel')!.composer!
+    expect(classifySlash(c.draft)).toBe('pass') // an ordinary message, not a command
+    expect(c.notice).toEqual({ kind: 'dialog-terminal', detail: 'Esc to cancel' })
+  })
+
   test('every other state leaves the composer to A3’s read-only shell', () => {
     const live = states.filter((s) => s.composer)
     expect(live.map((s) => s.id)).toEqual([
@@ -163,6 +173,7 @@ describe('coverage: every state the surface can be in', () => {
       'composing',
       'slash',
       'refused',
+      'panel',
     ])
   })
 
