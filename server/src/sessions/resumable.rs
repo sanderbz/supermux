@@ -91,7 +91,10 @@ pub fn encode_project_dir(abs_dir: &str) -> String {
 /// Resolve a session's working dir to its `~/.claude/projects/<encoded>` folder.
 /// The cwd is symlink-canonicalized first (Claude records the resolved path);
 /// if canonicalization fails (dir gone), we encode the raw dir as a fallback.
-pub(crate) fn project_dir_for(dir: &str) -> PathBuf {
+/// Public so tests can place a transcript where the readers will actually look
+/// for it: re-deriving Claude's project-dir encoding inside a test would make
+/// the test agree with itself rather than with the code.
+pub fn project_dir_for(dir: &str) -> PathBuf {
     let resolved = std::fs::canonicalize(dir)
         .ok()
         .map(|p| p.to_string_lossy().to_string())

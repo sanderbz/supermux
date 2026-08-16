@@ -218,6 +218,7 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/push/test", post(test_push))
         .route("/api/push/prefs", get(get_prefs).put(put_prefs))
         .route("/api/push/attempts", get(get_attempts))
+        .route("/api/push/preview", get(get_preview))
         .with_state(state)
 }
 
@@ -390,6 +391,72 @@ async fn get_attempts(
     Ok(Json(json!({
         "ok": true,
         "data": state.push_attempts.snapshot(),
+    })))
+}
+
+/// `GET /api/push/preview?session=X&event=stop` — compose the notification
+/// this session would send RIGHT NOW for `event`, and return it. Sends nothing,
+/// stores nothing, records nothing.
+///
+/// The attempts ring stores titles only, by privacy posture — bodies now carry
+/// the agent's own words, which is MORE sensitive, so that posture stays. This
+/// endpoint is the answer to the question the ring can therefore not answer:
+/// "what exactly would my phone say?". It is the same `compose` + tail
+/// resolution the real trigger runs, so an assertion here is an assertion
+/// about the real thing.
+#[derive(Debug, Deserialize)]
+struct PreviewQuery {
+    session: String,
+    /// Which trigger to preview. Defaults to `stop` — the one whose copy
+    /// depends on state the caller cannot see (the transcript).
+    #[serde(default)]
+    event: Option<String>,
+}
+
+async fn get_preview(
+    State(state): State<AppState>,
+    Query(q): Query<PreviewQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use crate::notify::NotifEvent;
+    let ev = match q.event.as_deref().unwrap_or("stop") {
+        "stop" | "finished" => NotifEvent::TurnFinished,
+        "permission" => NotifEvent::PermissionAsked,
+        "notice" => {
+            // Preview what the LIVE notice would say; there is no notice to
+            // relay when the agent has not sent one.
+            let msg = state
+                .session_activity(&q.session)
+                .and_then(|a| a.notice)
+                .unwrap_or_default();
+            NotifEvent::AgentNotice(msg)
+        }
+        "stop_failure" | "error" => {
+            let (etype, msg) = state
+                .session_activity(&q.session)
+                .and_then(|a| a.error)
+                .unwrap_or_else(|| ("error".to_string(), String::new()));
+            NotifEvent::TurnFailed { etype, msg }
+        }
+        "session_end" | "crashed" => NotifEvent::SessionCrashed { reason: "other".to_string() },
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "unknown preview event '{other}' (expected stop|permission|notice|error|crashed)"
+            )))
+        }
+    };
+    let payload = crate::notify::build_payload(&state, &q.session, &ev)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("session '{}'", q.session)))?;
+    // What WOULD happen to it, so the preview answers "and would it ring?" too.
+    let muted = mute_reason(&state, ev.category(), payload.tier, Some(&q.session)).await;
+    Ok(Json(json!({
+        "ok": true,
+        "data": {
+            "payload": payload,
+            "category": ev.category().as_str(),
+            "muted": muted.is_some(),
+            "muted_reason": muted,
+        }
     })))
 }
 

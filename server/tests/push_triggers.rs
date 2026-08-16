@@ -389,6 +389,136 @@ async fn nothing_but_the_table_touches_the_ring_over_a_full_turn() {
 }
 
 #[tokio::test]
+async fn a_finish_is_not_pushed_to_a_session_the_user_is_already_watching() {
+    // The calm tier is suppressed across devices when the session is being
+    // viewed anywhere — the user watched it land, a phone buzz adds nothing.
+    // v1 signal: a chat store is attached (true while a chat WS is up, plus the
+    // tailer's idle grace).
+    let (state, app, dir) = setup().await;
+    db::push::set_pref(&state.pool, db::push::NotifCategory::AgentFinished, true)
+        .await
+        .unwrap();
+
+    let _viewer = state.chat_store_for(SESSION);
+    hook(&app, "stop", serde_json::json!({})).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    assert!(
+        categories(&state).is_empty(),
+        "a finish must not ring a phone for a session on screen; got {:?}",
+        categories(&state),
+    );
+
+    // A BLOCKING event is never server-suppressed: it blocks the agent, and the
+    // worst case is the device layer eating the banner on the one device that
+    // is already looking.
+    hook(&app, "permission_request", live_permission_request()).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(
+        categories(&state),
+        vec!["agent_waiting"],
+        "needs-attention is never server-suppressed",
+    );
+
+    // Detach the viewer → the finish rings again.
+    state.drop_chat_store(SESSION);
+    hook(&app, "user_prompt", serde_json::json!({})).await;
+    hook(&app, "stop", serde_json::json!({})).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    assert_eq!(
+        categories(&state),
+        vec!["agent_waiting", "agent_finished"],
+        "with nobody watching, the finish rings",
+    );
+
+    cleanup(&state, dir).await;
+}
+
+// ── "what would my phone say right now" ─────────────────────────────────────
+
+async fn preview(app: &axum::Router, query: &str) -> serde_json::Value {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/api/push/preview?{query}"))
+        .header(header::AUTHORIZATION, format!("Bearer {BEARER}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 200, "preview {query}");
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn the_preview_endpoint_reads_the_closing_line_off_disk_verbatim() {
+    // The case that matters for an actual phone notification: nobody has a chat
+    // WS attached, so the in-memory ring is empty and the body has to come from
+    // the transcript on disk. The `Stop` push waits out a transcript-flush
+    // grace precisely so this read finds the final entry.
+    let (state, app, dir) = setup().await;
+
+    // Point the session at a temp project dir with a real-shaped transcript.
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    db::sessions::set_dir(&state.pool, SESSION, work.to_str().unwrap())
+        .await
+        .unwrap();
+    let conv = "550e8400-e29b-41d4-a716-446655440000";
+    db::sessions::track_cc_conversation_id(&state.pool, SESSION, conv)
+        .await
+        .unwrap();
+
+    let proj = supermux_server::sessions::resumable::project_dir_for(work.to_str().unwrap());
+    std::fs::create_dir_all(&proj).unwrap();
+    let transcript = proj.join(format!("{conv}.jsonl"));
+    let closing = "DONE-MARKER-7 all checks pass";
+    std::fs::write(
+        &transcript,
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "type": "user", "uuid": "u1", "timestamp": "2026-08-16T10:00:00.000Z",
+                "message": { "role": "user", "content": [{ "type": "text", "text": "ship it" }] },
+            }),
+            serde_json::json!({
+                "type": "assistant", "uuid": "a1", "timestamp": "2026-08-16T10:00:05.000Z",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": closing }] },
+            }),
+        ),
+    )
+    .unwrap();
+
+    let v = preview(&app, &format!("session={SESSION}&event=stop")).await;
+    assert_eq!(
+        v["data"]["payload"]["body"], closing,
+        "the lock screen shows the agent's ACTUAL closing line, verbatim",
+    );
+    assert_eq!(v["data"]["payload"]["tier"], "unread");
+    assert_eq!(v["data"]["payload"]["tag"], format!("session:{SESSION}"));
+    // …and it says whether it would actually ring, which the ring cannot.
+    assert_eq!(v["data"]["muted"], true, "the unread tier ships OFF");
+    assert_eq!(v["data"]["muted_reason"], "global:agent_finished");
+
+    let _ = std::fs::remove_file(&transcript);
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn the_preview_shows_the_live_dialog_and_the_badge() {
+    let (state, app, dir) = setup().await;
+    hook(&app, "permission_request", live_permission_request()).await;
+    tokio::time::sleep(SETTLE).await;
+
+    let v = preview(&app, &format!("session={SESSION}&event=permission")).await;
+    assert_eq!(v["data"]["payload"]["body"], "Needs permission — ⚡ run the test suite (Bash)");
+    assert_eq!(v["data"]["payload"]["url"], format!("/focus/{SESSION}#pending"));
+    assert_eq!(v["data"]["payload"]["renotify"], true);
+    assert_eq!(v["data"]["payload"]["badge"], 1, "one bot is blocked on the human");
+    assert_eq!(v["data"]["muted"], false);
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
 async fn a_session_the_user_muted_stays_silent_and_the_ring_names_the_bot() {
     // The per-bot opt-in: `off` mutes every session-scoped tier, and the
     // diagnostics say WHICH layer did it.

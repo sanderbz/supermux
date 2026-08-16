@@ -192,6 +192,11 @@ pub struct SessionView {
     /// the UI can badge a native session (and so a native-vs-tmux bug report
     /// carries the answer without a DB dump).
     pub runtime: String,
+    /// This bot's own notification setting: `inherit` (follow the global
+    /// category toggles — the default) | `all` | `attention` | `off`. The
+    /// per-BOT half of the mute rule; the detail sheet renders it as a
+    /// four-way. ADDITIVE and always present.
+    pub notif: String,
     /// Last 6 lines of `last_capture`, ANSI-stripped.
     pub preview_lines: Vec<String>,
     /// Same last 6 lines, with SGR escape sequences preserved — the colour-true
@@ -317,6 +322,10 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         } else {
             s.runtime.clone()
         },
+        // Normalised through the same parser the send gate uses, so the sheet
+        // renders exactly what would actually apply — including for a
+        // pre-migration row whose column reads back empty.
+        notif: crate::notify::NotifPolicy::parse(&s.notif).as_str().to_string(),
         preview_lines: preview_lines(last_capture),
         preview_ansi: last_n_lines(last_capture_ansi, 20),
         activity: act.as_ref().and_then(|a| a.activity.clone()),
@@ -843,6 +852,12 @@ pub struct ConfigInput {
     pub tags: Option<Vec<String>>,
     pub toggle_pin: Option<bool>,
     pub toggle_auto_continue: Option<bool>,
+    /// This bot's own notification setting (migration 0025):
+    /// `inherit` | `all` | `attention` | `off`. The per-BOT half of the mute
+    /// rule — it ANDs with the global category toggles in Settings. An
+    /// unrecognised value is a 400 rather than a silent fall-through to
+    /// `inherit`, so a typo in a client can never look like it worked.
+    pub notif: Option<String>,
 }
 
 pub async fn config_patch(
@@ -958,6 +973,20 @@ pub async fn config_patch(
     }
     if patch.toggle_auto_continue.is_some() {
         db::sessions::toggle_auto_continue(&state.pool, &current).await?;
+        changed = true;
+    }
+    if let Some(v) = patch.notif.as_deref() {
+        let policy = crate::notify::NotifPolicy::parse(v);
+        // `parse` fails toward Inherit by design (a junk value in the DB must
+        // never mute a bot), so the API validates explicitly instead of
+        // inheriting that leniency — a client typo is a 400, not a silent
+        // reset of the user's choice.
+        if policy.as_str() != v.trim().to_ascii_lowercase() {
+            return Err(AppError::BadRequest(format!(
+                "unknown notification setting '{v}' (expected inherit|all|attention|off)"
+            )));
+        }
+        db::sessions::set_notif_policy(&state.pool, &current, policy).await?;
         changed = true;
     }
 
@@ -1723,6 +1752,7 @@ mod tests {
                 tags: None,
                 toggle_pin: None,
                 toggle_auto_continue: None,
+                notif: None,
             },
         )
         .await
@@ -1762,6 +1792,7 @@ mod tests {
                 tags: None,
                 toggle_pin: None,
                 toggle_auto_continue: None,
+                notif: None,
             },
         )
         .await
