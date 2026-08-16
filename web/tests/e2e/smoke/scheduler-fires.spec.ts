@@ -57,8 +57,10 @@ test.describe('scheduler fires a one-shot job', () => {
     })
     expect(created.status, 'create schedule').toBe(201)
 
-    // Load the Scheduler route — the new schedule must show up in the list,
-    // proving the UI reads the same backend state.
+    // Load the schedules surface — the new schedule must show up in the list,
+    // proving the UI reads the same backend state. B1 folded /scheduler into
+    // Settings; the old URL redirects to the `#schedules` anchor, so this also
+    // keeps exercising the redirect.
     await page.goto(`${backend.baseUrl}/scheduler`)
     await expect(page.getByText('e2e-marker')).toBeVisible({ timeout: 15_000 })
 

@@ -56,6 +56,7 @@ import {
 } from '@/components/settings/secret-field'
 import { SnippetsSection } from '@/components/settings/snippets-section'
 import { HostsSection } from '@/components/settings/hosts-section'
+import { SchedulesSection } from '@/components/settings/schedules-section'
 import { AuditLog } from '@/components/settings/audit-log'
 import { UpdatesSection } from '@/components/settings/updates-panel'
 import { Button } from '@/components/ui/button'
@@ -922,6 +923,11 @@ export function Settings() {
           </Section>
 
           <HostsSection />
+
+          {/* B1 T8 — the former /scheduler route, folded in. Sits between Hosts
+              and Claude tools: the three are registry-ish configuration
+              neighbours, and `/scheduler` now redirects to `#schedules`. */}
+          <SchedulesSection />
 
           <ClaudeToolsSection />
 

@@ -13,7 +13,6 @@ import { Overview } from '@/routes/overview'
 import { Focus, FocusEntry } from '@/routes/focus'
 import { Board } from '@/routes/board'
 import { Files } from '@/routes/files'
-import { Scheduler } from '@/routes/scheduler'
 import { Settings } from '@/routes/settings'
 
 // DEV-only verification pages (/dev/tiles, /dev/term/:name, …). Lazy so
@@ -102,7 +101,14 @@ export default function App() {
                 <Route path="/focus/:name" element={<Focus />} />
                 <Route path="/board" element={<Board />} />
                 <Route path="/files/:name?" element={<Files />} />
-                <Route path="/scheduler" element={<Scheduler />} />
+                {/* Scheduler moved into Settings → Schedules (B1 T8: a route
+                    whose 5-column table did not earn a primary-nav slot).
+                    Redirect old bookmarks / deep links to the Settings anchor
+                    so no link breaks — the exact pattern /hosts uses below. */}
+                <Route
+                  path="/scheduler"
+                  element={<Navigate to="/settings#schedules" replace />}
+                />
                 {/* Hosts moved into Settings → Remote hosts. Redirect old
                     bookmarks / deep links to the Settings anchor so no link
                     breaks. The fragment lands on the section header. */}

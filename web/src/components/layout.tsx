@@ -1,7 +1,6 @@
 import * as React from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import {
-  CalendarClock,
   FolderClosed,
   LayoutGrid,
   Settings as SettingsIcon,
@@ -61,11 +60,20 @@ const NAV: NavItem[] = [
   { to: '/focus', label: 'Focus', icon: Terminal, desktopOnly: true },
   { to: '/board', label: 'Board', icon: SquareKanban },
   { to: '/files', label: 'Files', icon: FolderClosed },
-  { to: '/scheduler', label: 'Scheduler', icon: CalendarClock, tour: 'scheduler' },
-  // Hosts registry moved into Settings → Remote hosts (rare-use config
-  // doesn't need a primary-nav slot). `/hosts` redirects to /settings#hosts
-  // (App.tsx) so old bookmarks land in the right section.
-  { to: '/settings', label: 'Settings', icon: SettingsIcon, badgeKind: 'updates' },
+  // Hosts registry AND the scheduler both moved into Settings (rare-use config
+  // doesn't need a primary-nav slot). `/hosts` → /settings#hosts and
+  // `/scheduler` → /settings#schedules (App.tsx) so old bookmarks land in the
+  // right section. Settings therefore carries the onboarding tour's step-3
+  // anchor, which used to point at the Scheduler item.
+  // Nav is at FIVE items after B1; Board leaves in B2, gated on the issue read
+  // surface.
+  {
+    to: '/settings',
+    label: 'Settings',
+    icon: SettingsIcon,
+    tour: 'settings',
+    badgeKind: 'updates',
+  },
 ]
 
 /** Tiny notification dot rendered over a nav icon. The colour distinguishes
