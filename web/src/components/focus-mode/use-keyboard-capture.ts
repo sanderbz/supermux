@@ -16,8 +16,20 @@
 // own `onData` hook carries Ctrl-C, arrows, Tab, Shift+Tab/BTab, Esc,
 // printable text, IME composition — all of it — straight to the pty. Capturing
 // Ctrl-C/Tab here would break the terminal, which is the whole point.
+//
+// FASE A5 T7 adds EXACTLY ONE plain-key branch — `T`, chat ⇄ terminal — and it
+// is guarded by a six-refusal ladder that lives in a pure module
+// (`components/chat/renderer-hotkey.ts`) so the matrix is assertable without a
+// DOM. Every refusal returns WITHOUT `preventDefault`, so the key reaches
+// whoever wanted it; the absolute one is "xterm has focus", because a `t` at a
+// pty is a byte for the pty.
 
 import * as React from 'react'
+
+import {
+  shouldToggleRenderer,
+  type HotkeyCtx,
+} from '@/components/chat/renderer-hotkey'
 
 export interface KeyboardCaptureHandlers {
   /** ⌘/Ctrl+D — detach. */
@@ -31,6 +43,13 @@ export interface KeyboardCaptureHandlers {
    *  the shortcut is a no-op so we never preventDefault on a key we can't
    *  service. */
   onShowLastSend?: () => void
+  /** `T` — flip between chat and terminal (fase A5 T7). Optional: omitted (or
+   *  paired with `rendererEligible: false`) means the branch never fires and
+   *  the key is never swallowed. */
+  onToggleRenderer?: () => void
+  /** Is the chat renderer possible for THIS session (`flag.ts`)? The sixth
+   *  refusal — with no toggle to perform there is no key to take. */
+  rendererEligible?: boolean
 }
 
 /** Register the global-shortcut keydown capture for the lifetime of the focus
@@ -46,6 +65,16 @@ export function useKeyboardCapture(handlers: KeyboardCaptureHandlers): void {
 
   React.useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      // The ONE plain-key branch (fase A5 T7). Evaluated before the modifier
+      // gate because it is itself a refusal ladder — `shouldToggleRenderer`
+      // rejects every modifier combination, so `⌘T` still falls through to the
+      // browser and `Alt+t` still reaches the terminal.
+      if (ref.current.onToggleRenderer && shouldToggleRenderer(hotkeyCtx(e, ref.current))) {
+        e.preventDefault()
+        ref.current.onToggleRenderer()
+        return
+      }
+
       // Only the Cmd (macOS) / Ctrl (others) modifier bank is global. Plain keys
       // — Ctrl-C, arrows, Tab, Shift+Tab, Esc, text — are NOT touched here so
       // they reach xterm verbatim.
@@ -87,4 +116,34 @@ export function useKeyboardCapture(handlers: KeyboardCaptureHandlers): void {
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [])
+}
+
+/**
+ * Read the DOM facts `shouldToggleRenderer` needs. The only part of the hotkey
+ * that touches a `KeyboardEvent`, kept here so the decision itself stays pure.
+ */
+function hotkeyCtx(e: KeyboardEvent, h: KeyboardCaptureHandlers): HotkeyCtx {
+  const el = (e.target as HTMLElement | null) ?? null
+  const active = document.activeElement as HTMLElement | null
+  return {
+    key: e.key,
+    metaKey: e.metaKey,
+    ctrlKey: e.ctrlKey,
+    altKey: e.altKey,
+    shiftKey: e.shiftKey,
+    isComposing: e.isComposing,
+    keyCode: e.keyCode,
+    target: {
+      tag: el?.tagName ?? '',
+      editable: !!el?.isContentEditable,
+      role: el?.getAttribute('role') ?? null,
+    },
+    // Radix (dialog / popover / dropdown) and Vaul both stamp `role="dialog"`
+    // on their content; `[data-state=open]` covers the menus that do not.
+    inOverlay: !!active?.closest('[role="dialog"],[role="menu"],[role="listbox"]'),
+    // xterm's hidden textarea is the terminal's keyboard owner. `.xterm` on an
+    // ancestor covers the helper textarea AND anything else inside the viewport.
+    terminalFocused: !!active?.closest('.xterm'),
+    eligible: h.rendererEligible ?? false,
+  }
 }

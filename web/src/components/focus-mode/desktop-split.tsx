@@ -64,6 +64,7 @@ import {
   type ChatRenderer,
 } from '@/components/chat/seam'
 import { useRenderer } from '@/components/chat/use-renderer-pref'
+import { togglePref } from '@/components/chat/renderer-pref'
 import { composerSessionInput } from '@/components/chat/composer-draft'
 
 // Lazy: the chat renderer is its own chunk — nothing chat-related may land in
@@ -551,6 +552,16 @@ export function DesktopSplit({
     onStop,
     onJump: jump,
     onShowLastSend,
+    // FASE A5 T7 — `T` flips between the two CONCRETE renderers and writes a
+    // PIN. Never selects `auto`: a hotkey does one obvious thing, and `auto` is
+    // reachable from the switch and both menus. The six refusals (modifiers,
+    // IME, an editable target, an open overlay, xterm holding focus, and
+    // ineligibility) live in `components/chat/renderer-hotkey.ts`; every one of
+    // them returns WITHOUT preventDefault, so the key reaches whoever wanted it.
+    onToggleRenderer: () => {
+      if (renderer) setRendererPref(togglePref(renderer))
+    },
+    rendererEligible: chatOn,
   })
 
   const title = current ? sessionTitle(current) : name
