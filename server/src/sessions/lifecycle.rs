@@ -1160,6 +1160,23 @@ pub async fn kill_teammate_pane(
 
 /// Send literal text followed by Enter. Auto-wakes a stopped session.
 pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), AppError> {
+    send_text_with_preview(state, name, text, None).await
+}
+
+/// [`send_text`], but the string recorded as the session's `last_send_text` can
+/// differ from the string typed into the pty.
+///
+/// Harness-authored deliveries wrap the payload (`<supermux-delegation>`, and
+/// Task 10's schedule tag). That wrapper is machinery for the receiving agent's
+/// transcript — it must never surface as the send preview the roster renders
+/// (`last-send-recall.tsx`) or as the text `receiptClaims` matches against.
+/// `preview: None` keeps the old behaviour (preview == what was sent).
+pub async fn send_text_with_preview(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    preview_text: Option<&str>,
+) -> Result<(), AppError> {
     if !db::sessions::exists(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
@@ -1193,7 +1210,8 @@ pub async fn send_text(state: &AppState, name: &str, text: &str) -> Result<(), A
         submit_gap(rt.as_ref()).await;
     }
     rt.send_key("Enter").await?;
-    let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
+    let (preview, at) =
+        db::sessions::set_last_send(&state.pool, name, preview_text.unwrap_or(text)).await?;
     broadcast_send(state, name, &preview, at);
     Ok(())
 }
