@@ -27,7 +27,7 @@
  * VISUAL ONLY: `onChoose` is called with the option index; nothing here sends a
  * key, checks a caret or dismisses a dialog.
  */
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 
 import { cn } from '../../../lib/utils'
 
@@ -86,9 +86,16 @@ export function ChoiceCard({
   onChoose,
   className,
 }: ChoiceCardProps) {
+  // A `role="group"` with no accessible name is a group of nothing (gap G4):
+  // AT announced "group, 3 buttons" and the ask itself — the only sentence that
+  // makes the buttons mean anything — was just loose text above it. The
+  // question IS the name, so it is pointed at rather than duplicated into an
+  // `aria-label` that could drift from the visible words.
+  const qid = useId()
   return (
     <div
       role="group"
+      aria-labelledby={qid}
       className={cn(
         'ml-11 mt-3 max-w-[592px] rounded-[16px] px-[17px] py-3.5',
         'border-[0.5px] border-hairline bg-surface backdrop-blur-[30px] backdrop-saturate-[170%]',
@@ -96,7 +103,7 @@ export function ChoiceCard({
         className,
       )}
     >
-      <div className="text-[15px] font-medium leading-[1.4] tracking-[-0.15px] text-ink">
+      <div id={qid} className="text-[15px] font-medium leading-[1.4] tracking-[-0.15px] text-ink">
         {question}
       </div>
       {detail}
@@ -129,7 +136,12 @@ function ChoiceButton({
       type="button"
       onClick={option.disabled ? undefined : onClick}
       disabled={option.disabled}
-      title={option.hint}
+      // THE KEYBOARD CURSOR, IN ARIA (gap G4). It used to be `data-selected`
+      // plus an accent border and nothing else, so the one thing telling a user
+      // which answer they were on was a colour. `aria-current` rather than
+      // `aria-pressed`/`aria-checked`: nothing is pressed or checked yet — this
+      // is a cursor over answers, the same thing `RosterRow` uses it for.
+      aria-current={selected || undefined}
       data-selected={selected || undefined}
       data-disabled={option.disabled || undefined}
       style={
@@ -149,6 +161,15 @@ function ChoiceButton({
       )}
     >
       {option.label}
+      {/* WHY IT IS INERT, REACHABLE (gap G4). It was a `title=`, which is a
+          mouse tooltip: never spoken by a keyboard user, never surfaced on a
+          phone, and hung on a control that — being genuinely `disabled` — is
+          not even a tab stop. As text inside the button it is part of the
+          button's accessible name, so a virtual cursor reads the refusal with
+          the option it belongs to. Disabled controls stay in the a11y tree;
+          they are only removed from the TAB order, which is the whole reason
+          the tooltip was unreachable and this is not. */}
+      {option.hint && <span className="sr-only"> — {option.hint}</span>}
       {option.kbd && (
         <kbd className="ml-0.5 font-sans text-[11px] font-medium tabular-nums text-ink-3">
           {option.kbd}
@@ -174,11 +195,20 @@ function ChoiceButton({
  * it is honest at rest (a short command's fade sits over blank card), and the
  * alternative is a ResizeObserver inside a primitive.
  */
-export function CardCode({ children }: { children: ReactNode }) {
+export function CardCode({ children, label = 'Details' }: { children: ReactNode; label?: string }) {
   return (
     <div className="relative mt-[9px]">
       <pre
         data-testid="chat-dialog-body"
+        // A NAMED TAB STOP (gap G5). `tabIndex={0}` is required — a scroll box
+        // a mouse can pan must be pannable by a keyboard too — but a `<pre>`
+        // has no implicit role, so the stop announced as nothing at all: a
+        // keyboard user landed somewhere silent between the question and the
+        // answers. `region` because it is a NAMED SCROLL BOX — the one role for
+        // which "focusable but not interactive" is the documented shape (see
+        // `eslint.config.js`'s `no-noninteractive-tabindex` allowlist).
+        role="region"
+        aria-label={label}
         tabIndex={0}
         className="max-h-[132px] overflow-auto overscroll-contain whitespace-pre rounded-[10px] border-[0.5px] border-hairline-soft bg-code-bg px-[11px] py-2 font-mono text-[12.4px] leading-[1.55] tracking-[-0.1px] text-ink"
       >

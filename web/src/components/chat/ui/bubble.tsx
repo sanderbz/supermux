@@ -75,6 +75,20 @@ export interface BubbleProps {
    * the reply-side asymmetry visible on a 390pt screen.
    */
   surface?: 'desktop' | 'phone'
+  /**
+   * WHO SAID IT, for assistive tech only (fase A6 T7.2 — gap G3).
+   *
+   * On screen the speaker is carried by the gutter mark and by the bubble's
+   * side of the column; neither survives linearisation, so AT read the surface
+   * as an undifferentiated wall of prose. This adds the one word that fixes it,
+   * as the bubble's accessible NAME, so it travels with the message when a
+   * screen reader navigates by article.
+   *
+   * Opt-in rather than derived from `variant`, because not every bubble is
+   * speech: a receipt group and a captured frame are the same primitive and
+   * prefixing them with a name would be a lie. Absent → byte-identical to A5.
+   */
+  author?: string
   className?: string
 }
 
@@ -83,6 +97,7 @@ export function Bubble({
   variant = 'assistant',
   padding = 'text',
   surface = 'desktop',
+  author,
   className,
 }: BubbleProps) {
   const user = variant === 'user'
@@ -90,6 +105,15 @@ export function Bubble({
   return (
     <div
       data-variant={variant}
+      // A message is an ARTICLE, named by its speaker. Two things come out of
+      // that one pair: AT gains a navigable unit per turn (what makes "jump to
+      // the previous message" possible at all), and entering it announces who
+      // is talking. Carried as a NAME rather than as sr-only text inside the
+      // bubble, deliberately — the bubble's text content is the message, and
+      // three transcript tests read it verbatim to prove a slash command is
+      // rendered as exactly its own name.
+      role={author ? 'article' : undefined}
+      aria-label={author}
       style={{
         maxWidth: phone
           ? user

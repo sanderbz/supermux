@@ -536,6 +536,14 @@ function SessionPill({
   return (
     <motion.button
       type="button"
+      // THE LISTBOX HAD NO OPTIONS (§0.1 #36, pulled forward from B3). The row
+      // above claims `role="listbox"`, which makes every child that is not an
+      // `option` invisible to the mapping: VoiceOver announced "list box, 0
+      // items" over a row of six sessions. `aria-selected` replaces the
+      // `aria-current` that was here — inside a listbox, selection is the
+      // vocabulary, and `aria-current` on an option is ignored.
+      role="option"
+      aria-selected={isCurrent}
       data-vr-session-name={session.name}
       data-vr-current={isCurrent || undefined}
       whileTap={{ scale: 0.94 }}
@@ -544,7 +552,6 @@ function SessionPill({
       aria-label={`Switch to ${displayLabel(session)} — ${STATUS_LABEL[session.status]}${
         isCurrent ? ' (current)' : ''
       }`}
-      aria-current={isCurrent || undefined}
       className={cn(
         'flex h-11 shrink-0 snap-start items-center gap-2 rounded-xl px-3 text-[14px] font-medium',
         isCurrent

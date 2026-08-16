@@ -1360,6 +1360,13 @@ function GroupSection({
 
   return (
     <section
+      // A `<section>` with no accessible name is not a region at all — AT skips
+      // it, so the roster's group boundaries existed only as pixels (gap G11).
+      // `aria-label` off the same string the header draws, rather than
+      // `aria-labelledby` into `GroupHeader`: the implicit "Ungrouped" bucket
+      // has no header node to point at, and one mechanism that works for both
+      // beats two that each work for half.
+      aria-label={section.isImplicit ? 'Ungrouped' : section.groupName}
       data-vr="group-section"
       data-vr-group-id={section.groupId}
       data-vr-sort-mode={section.sortMode}

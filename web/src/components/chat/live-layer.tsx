@@ -197,12 +197,32 @@ export function LiveLayer({
         }
       : undefined
 
+  const phase = livePhase({
+    working,
+    asking: !!(dialog || session?.permission_request),
+    handoff: !!target,
+  })
+
   // No `gap` here, deliberately: every primitive in this stack carries its own
   // vertical rhythm (`MessageRow` 14/8px, `WorkingRow` 14px, `DelegationPill`
   // 15px), exactly as the confirmed transcript does — and a gap would also
   // reserve air for the always-mounted swap cell below.
   return (
-    <div data-testid="chat-live-layer">
+    <div
+      data-testid="chat-live-layer"
+      // THE VISUAL BAND IS MUTE (fase A6 T7.1, gap G1). Every pixel in here
+      // re-renders on a cadence a screen reader must not be subjected to: the
+      // provisional tail rewrites itself on every pty flush, the elapsed clause
+      // ticks, the receipt group grows a row per tool call. A live region over
+      // this subtree would narrate all of it. The one thing that IS said out
+      // loud is the coalesced phase below.
+      aria-live="off"
+      // The band's honest machine state, for AT that queries rather than
+      // listens — `working-row.tsx` is the motion pass's file this fase, so the
+      // busy flag is carried by the band that owns the row instead (G2).
+      aria-busy={phase === 'working' || phase === 'handoff' || undefined}
+    >
+      <LiveAnnouncer phase={phase} />
       {attention}
 
       {/* The lens' sighting outranks the hook: it is the one that knows which
@@ -284,6 +304,57 @@ export function LiveLayer({
 
       <SwapCell>{provisional}</SwapCell>
     </div>
+  )
+}
+
+/* ── what a screen reader is told (fase A6 T7.1 — gap G1) ────────────────── */
+
+/**
+ * THE ONE ANNOUNCEMENT PER TURN.
+ *
+ * Before A6 this layer carried zero `aria-*`: a screen-reader user was never
+ * told a turn had started, and the naive repair — `aria-live` on the band —
+ * is worse than nothing. The band is the fastest-changing subtree in the
+ * product: the provisional tail rewrites on every pty flush, the elapsed clause
+ * ticks, the receipt group grows a row per tool call. P13 alone (working row →
+ * provisional tail → the confirmed entry that supersedes it) would narrate
+ * three different things about ONE reply, plus one per flush in between.
+ *
+ * So the band is `aria-live="off"` and the only thing that speaks is a phase,
+ * derived with NO memory: the region's text is a pure function of which of the
+ * four states this layer is in. A phase that does not change re-renders to the
+ * same string, and an unchanged live region is silent — which is what makes the
+ * whole P13 sequence exactly ONE announcement rather than N+3. That property is
+ * asserted by count in `tests/unit/chat-a11y.test.tsx`, so a later "just add
+ * aria-live" fix fails the suite instead of shipping.
+ *
+ * Ordered by what outranks what on screen, so the sentence and the pixels can
+ * never disagree: an ask is the one thing waiting on a human, a hand-off is
+ * more specific than "working", and idle says nothing at all.
+ */
+export type LivePhase = 'idle' | 'working' | 'asking' | 'handoff'
+
+export function livePhase(s: { working: boolean; asking: boolean; handoff: boolean }): LivePhase {
+  if (s.asking) return 'asking'
+  if (s.handoff) return 'handoff'
+  if (s.working) return 'working'
+  return 'idle'
+}
+
+/** The four sentences. `idle` is empty on purpose — clearing a live region says
+ *  nothing, which is the correct amount to say when nothing is happening. */
+export const PHASE_SAY: Record<LivePhase, string> = {
+  idle: '',
+  working: 'Claude is working.',
+  asking: 'Claude is asking for permission.',
+  handoff: 'Handing this over.',
+}
+
+function LiveAnnouncer({ phase }: { phase: LivePhase }) {
+  return (
+    <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+      {PHASE_SAY[phase]}
+    </p>
   )
 }
 

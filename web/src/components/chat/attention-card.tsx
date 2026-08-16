@@ -67,6 +67,12 @@ const MINI_LINES = 28
  *  60-line capture is taller than that on every surface. */
 const MINI_MAX_H = 220
 
+/** The overlay card's DOM id, derived from the cause so the inline row can name
+ *  what its `aria-expanded` controls without either half holding a ref (G6). */
+export function attentionCardId(cause: AttentionCause): string {
+  return `attention-card-${cause}`
+}
+
 /* ── the inline row ──────────────────────────────────────────────────────── */
 
 /**
@@ -118,6 +124,12 @@ export function AttentionRow({
           type="button"
           data-testid="chat-attention-show"
           aria-expanded={!!expanded}
+          // `aria-expanded` alone said "something opened" and never said WHAT
+          // (gap G6). The thing it opens is the overlay card, which derives the
+          // same id from the same cause — pointed at only while it exists,
+          // because `aria-controls` naming an absent node is the same broken
+          // promise in the other direction.
+          aria-controls={expanded ? attentionCardId(cause) : undefined}
           onClick={onExpand}
           className={cn(
             'inline-flex h-[34px] shrink-0 items-center rounded-full border-[0.5px] border-hairline px-[15px]',
@@ -176,6 +188,10 @@ export function AttentionCard({
       // Focus lands HERE when the overlay opens, so the title is what gets read
       // first; `-1` because it is a target, not a tab stop (A4 review).
       tabIndex={cardRef ? -1 : undefined}
+      // Only the MODAL instance claims the id: the inline row renders this same
+      // component too, and two nodes sharing one id would make `aria-controls`
+      // resolve to whichever the browser found first (G6).
+      id={cardRef ? attentionCardId(cause) : undefined}
       data-testid="chat-attention-card"
       data-cause={cause}
       // `aria-modal` only when the overlay above is actually cycling Tab inside

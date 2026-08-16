@@ -597,6 +597,13 @@ export function Overview() {
     <div ref={scrollRef} className="relative h-full overflow-y-auto">
       <motion.header
         style={{ opacity: navOpacity }}
+        // TWO COMPETING TITLES, ONE OF THEM DECORATIVE (gap G11). This bar is a
+        // scroll-driven ECHO of the `<h1>` below — it cross-fades in as the
+        // real title scrolls away. Linearised, that is the word "Overview"
+        // twice at the top of the page, once as a heading and once as loose
+        // text that no heading list will explain. It is hidden from AT rather
+        // than promoted, because it is the copy, not the original.
+        aria-hidden
         className="glass safe-header pointer-events-none sticky top-0 z-30 flex items-center justify-center border-b border-hairline sm:pt-0"
       >
         <span className="text-[17px] font-semibold tracking-tight">Overview</span>
@@ -807,7 +814,16 @@ export function Overview() {
           <LayoutGroup>
             <div className="flex flex-col gap-5">
               {presetSections.map((section) => (
-                <div key={section.groupId || '__all__'} className="flex flex-col gap-2">
+                <section
+                  key={section.groupId || '__all__'}
+                  // A named section per group, and the sessions inside it are a
+                  // LIST (gap G11/G12): `role="list"` had zero hits app-wide, so
+                  // AT was handed forty untitled buttons with no count and no
+                  // boundaries between groups. The name comes from the same
+                  // string the `<h2>` draws, so they cannot drift.
+                  aria-label={section.isImplicit ? undefined : section.groupName}
+                  className="flex flex-col gap-2"
+                >
                   {!section.isImplicit && (
                     <div
                       data-vr="preset-group-header"
@@ -821,10 +837,14 @@ export function Overview() {
                       </span>
                     </div>
                   )}
-                  <div className={viewMode === 'tile' ? tileGridClass : 'flex flex-col gap-1.5'}>
+                  <div
+                    role="list"
+                    className={viewMode === 'tile' ? tileGridClass : 'flex flex-col gap-1.5'}
+                  >
                     {section.sessions.map((s, i) => (
                       <motion.div
                         key={s.name}
+                        role="listitem"
                         data-tour={section === presetSections[0] && i === 0 ? 'tile' : undefined}
                         layout={!reduce}
                         layoutId={`session-${s.name}`}
@@ -838,7 +858,7 @@ export function Overview() {
                       </motion.div>
                     ))}
                   </div>
-                </div>
+                </section>
               ))}
             </div>
           </LayoutGroup>
@@ -892,8 +912,15 @@ function AddGroupInput({
 }) {
   const inputRef = React.useRef<HTMLInputElement | null>(null)
   const settledRef = React.useRef(false)
+  // WHERE FOCUS CAME FROM (fase A6 T7.5 — gap G14). This editor steals focus on
+  // mount from one of four openers (a hover gap, the header button, the `g n`
+  // chord, the command palette) and, on Esc, simply unmounted — dropping focus
+  // to `<body>` and stranding a keyboard user at the top of the document with
+  // no idea where they were. Same primitive the Attention overlay already uses.
+  const openerRef = React.useRef<Element | null>(null)
 
   React.useEffect(() => {
+    openerRef.current = document.activeElement
     inputRef.current?.focus()
   }, [])
 
@@ -905,6 +932,10 @@ function AddGroupInput({
   const cancel = () => {
     if (settledRef.current) return
     settledRef.current = true
+    // Restore BEFORE the unmount so the opener is still in the document; a node
+    // the reflow removed is skipped rather than thrown at.
+    const back = openerRef.current
+    if (back instanceof HTMLElement && document.contains(back)) back.focus()
     onCancel()
   }
 

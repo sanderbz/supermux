@@ -315,6 +315,18 @@ export function Layout() {
       // the flag is a kill switch, not a preference, and must not re-render.
       data-substrate={substrate ? '' : undefined}
     >
+      {/* THE SKIP LINK (fase A6 T7.6 — gap G10). Zero existed app-wide, so
+          every route made a keyboard user tab through the whole side nav, the
+          mobile top bar and the bottom nav before reaching a single message.
+          First in DOM order so it is the first stop, invisible until focused,
+          and it targets `<main>` (which takes `tabIndex={-1}` below so the jump
+          actually moves focus rather than only the scroll position). */}
+      <a
+        href="#shell-content"
+        className="sr-only bg-background px-4 py-2 text-sm font-medium ring-2 ring-ring focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50"
+      >
+        Skip to content
+      </a>
       <SideNav />
       <div className="flex h-full min-w-0 flex-1 flex-col">
         {!isFocus && <MobileTopBar overview={isOverview} />}
@@ -324,6 +336,12 @@ export function Layout() {
             mounts into (see components/shell/use-shell-overlay.ts). */}
         <main
           ref={attachOverlayHost}
+          id="shell-content"
+          // The skip link's target. `-1` so focus really lands here — an anchor
+          // to a non-focusable element scrolls and leaves the tab cursor where
+          // it was, which is the failure mode that makes skip links look like
+          // they work and not help anyone.
+          tabIndex={-1}
           data-shell-content=""
           className={cn('min-h-0 flex-1 overflow-auto')}
         >

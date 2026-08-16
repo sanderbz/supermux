@@ -154,12 +154,15 @@ export function SurfaceStatus({ session }: { session: TileSession | null }) {
           subtle, so it is carried by colour + accessible name, the way every
           other status dot in the app does it. */}
       <span className="min-w-0 truncate text-[15px] font-semibold text-ink">{label}</span>
-      <span
-        role="img"
-        title={STATUS_WORD[session.status]}
-        aria-label={STATUS_WORD[session.status]}
-        className={`size-2 shrink-0 rounded-full ${STATUS_TOKEN[session.status]}`}
-      />
+      {/* ONE STATUS VOICE (gap G13). This used to be `role="img"` on an EMPTY
+          span carrying both a `title` and an `aria-label` — a widget invented
+          out of a coloured dot, announced twice by some AT and not at all by
+          others, and duplicated again whenever `header-pill.tsx` filled this
+          slot with the real `StatusDot`. The dot is now decoration (which is
+          what it is), and the word rides in this row's own text, where it reads
+          as "release-train, Running" — one name, one state, once. */}
+      <span aria-hidden className={`size-2 shrink-0 rounded-full ${STATUS_TOKEN[session.status]}`} />
+      <span className="sr-only">{STATUS_WORD[session.status]}</span>
     </div>
   )
 }
@@ -183,6 +186,17 @@ export function ChatSurface({
       <SurfaceStatus session={session} />
     </div>
   )
+  // THE SURFACE'S ONE HEADING, AND ITS LANDMARK (gap G9). This pane was divs
+  // all the way down: no heading to jump to, no named region, and the only
+  // visible title (`header-pill.tsx`) is a `<header>` with neither. A screen
+  // reader's heading list showed nothing for the busiest surface in the app.
+  // The heading is sr-only because the pill already draws it — this names the
+  // room for AT without drawing a second title over the boards' composition.
+  // Id derived from the slug rather than `useId()`: the slug is already unique
+  // per surface (a split pane renders two, with two different names) and it costs
+  // a template literal instead of a hook.
+  const hid = `chat-title-${name}`
+  const title = session?.display_name?.trim() ? session.display_name : name
   return (
     <div
       data-testid={testId}
@@ -198,6 +212,9 @@ export function ChatSurface({
       // header and the composer float (see the props above).
       className="relative flex h-full w-full flex-col bg-paper-raised text-ink"
     >
+      <h2 id={hid} className="sr-only">
+        Conversation with {title}
+      </h2>
       {/* The top slot owns its own box: the A3 T6 header pill has a safe-area
           inset and a height floor of its own, and a padded wrapper here would
           inset it twice. The DEFAULT occupant keeps the padding it always had,
@@ -208,7 +225,19 @@ export function ChatSurface({
         <div className="shrink-0">{top}</div>
       )}
 
-      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        // A named region, NOT a live one: the transcript's arrivals are spoken
+        // by the live layer's single coalesced status (see `live-layer.tsx`'s
+        // `LiveAnnouncer`). Making this a `log`/`aria-live` container is the
+        // naive repair the A6 plan warns about — the WS seed inserts the whole
+        // backlog into it after mount, and every one of those entries would be
+        // read out loud before the user reached the message they asked for.
+        role="region"
+        aria-labelledby={hid}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
         {children}
       </div>
 
