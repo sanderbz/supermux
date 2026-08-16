@@ -835,3 +835,83 @@
     transition: none;
   }
 }
+
+/* ── FASE B1 T3 — the painted substrate ──────────────────────────────────────
+   One substrate instead of six independent page backgrounds. The whole layer is
+   scoped under `[data-substrate]` — an attribute the shell root only carries
+   while `lib/shell-substrate-flag.ts` says so — and the pre-B1 Tailwind classes
+   (`bg-card`, `border-r`, `border-t`) are STILL on the elements underneath. So
+   `localStorage['supermux:shell-substrate'] = '0'` + reload restores the
+   pre-B1 appearance exactly, with no rebuild and no redeploy.
+
+   THE RULE THIS LAYER OBEYS: the substrate is PAINT, NEVER BLUR. A
+   `backdrop-filter` here would make the shell column the containing block for
+   every `position: fixed` descendant — the mobile focus sheet, the KeyBar, the
+   joystick, the tour overlay — and their viewport math would silently start
+   measuring the wrong box. `.glass` stays the only backdrop-filter in
+   globals.css and only ever sits on FLOATING chrome, never on a shell column.
+   Guarded by tests/unit/shell-chrome-tokens.test.ts and
+   tests/e2e/smoke/shell-containing-block.spec.ts.
+
+   Tints are OPAQUE color-mixes, not alpha over an unknown backdrop, so a column
+   reads the same whatever happens to be painted behind it.
+
+   These rules are unlayered (they sit after `@import "tailwindcss"` and outside
+   every `@layer`), so they beat the utility classes they override without any
+   `!important`. */
+[data-substrate] {
+  background: var(--sm-paper);
+}
+
+/* Nav rail (desktop) — the deepest column: plain paper. */
+[data-substrate] [data-shell-rail] {
+  position: relative;
+  background: var(--sm-paper);
+  border-right-width: 0;
+}
+/* Mobile tab bar — same paper, hairline on its TOP edge. */
+[data-substrate] [data-shell-tabs] {
+  position: relative;
+  background: var(--sm-paper);
+  border-top-width: 0;
+}
+/* Content column — one step up from the paper. */
+[data-substrate] [data-shell-content] {
+  position: relative;
+  background: var(--sm-paper-raised);
+}
+/* Side panes — the 6% accent wash (`sm-accent-wash`, B0). Reused, not forked,
+   so a per-session accent write on the shell re-skins the pane for free. */
+[data-substrate] [data-shell-pane] {
+  position: relative;
+  background-color: color-mix(
+    in oklab,
+    var(--sm-accent) var(--sm-accent-wash-mix),
+    var(--sm-paper)
+  );
+}
+
+/* Column separators are 0.5px ABSOLUTE STRIPS, never `border`. A 1px border is
+   a different physical line at DPR 2 (and a different one again at DPR 3); an
+   absolutely-positioned strip at `--sm-hairline-w` is the same optical hairline
+   everywhere. `::after` on the column itself, so it needs no extra element. */
+[data-substrate] [data-shell-rail]::after,
+[data-substrate] [data-shell-tabs]::after,
+[data-substrate] [data-shell-pane]::after {
+  content: '';
+  position: absolute;
+  background: var(--sm-hairline);
+  pointer-events: none;
+}
+[data-substrate] [data-shell-rail]::after {
+  inset: 0 0 0 auto;
+  width: var(--sm-hairline-w);
+}
+[data-substrate] [data-shell-tabs]::after {
+  inset: 0 0 auto 0;
+  height: var(--sm-hairline-w);
+}
+[data-substrate] [data-shell-pane]::after {
+  inset: 0 auto 0 0;
+  width: var(--sm-hairline-w);
+}

@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -12,6 +13,7 @@ import {
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
+import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
 import { Logo } from '@/components/logo'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -88,6 +90,12 @@ function SideNav() {
   return (
     <nav
       aria-label="Primary"
+      // `data-shell-rail` is the substrate hook (B1 T3): under
+      // `[data-substrate]` globals.css repaints this column onto `--sm-paper`,
+      // drops the 1px border and draws a 0.5px `::after` hairline instead. The
+      // Tailwind classes stay so removing the attribute is a true one-attribute
+      // revert to the pre-B1 look.
+      data-shell-rail=""
       className="hidden w-16 shrink-0 flex-col items-center border-r border-border bg-card pb-4 pt-safe md:flex"
     >
       <div className="flex h-16 w-full items-center justify-center">
@@ -166,6 +174,8 @@ function BottomNav() {
   return (
     <nav
       aria-label="Primary"
+      // Substrate hook — same contract as the desktop rail, hairline on top.
+      data-shell-tabs=""
       className="flex shrink-0 items-stretch justify-around border-t border-border bg-card pb-safe md:hidden"
     >
       {NAV.filter((item) => !item.desktopOnly).map((item) => {
@@ -248,16 +258,27 @@ export function Layout() {
   // estate — the sheet is only in the DOM as an overlay when opened).
   const archivedOpen = useArchivedSheet((s) => s.open)
   const setArchivedOpen = useArchivedSheet((s) => s.setOpen)
+  // Kill switch, read ONCE at mount (see the attribute below).
+  const [substrate] = React.useState(isShellSubstrateEnabled)
   return (
     <div
       className="flex h-full w-full"
       data-standalone={standalone ? '' : undefined}
+      // B1 T3 — the painted substrate. One attribute gates the whole layer
+      // (globals.css scopes every substrate rule under `[data-substrate]`), so
+      // `localStorage['supermux:shell-substrate'] = '0'` + reload is a complete
+      // revert to the pre-B1 appearance with no redeploy. Read once, at mount:
+      // the flag is a kill switch, not a preference, and must not re-render.
+      data-substrate={substrate ? '' : undefined}
     >
       <SideNav />
       <div className="flex h-full min-w-0 flex-1 flex-col">
         {!isFocus && <MobileTopBar overview={isOverview} />}
         <ReconnectBanner />
-        <main className={cn('min-h-0 flex-1 overflow-auto')}>
+        {/* The content column. `data-shell-content` raises it one step off the
+            paper under the substrate; it is also the host `<ShellOverlay>`
+            mounts into (see components/shell/use-shell-overlay.ts). */}
+        <main data-shell-content="" className={cn('min-h-0 flex-1 overflow-auto')}>
           <Outlet />
         </main>
         {!isFocus && <BottomNav />}
