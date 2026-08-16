@@ -70,7 +70,16 @@ import {
   rectSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Plus, MoveRight, Square, Archive, Info, ChevronRight } from 'lucide-react'
+import {
+  Plus,
+  MoveRight,
+  Square,
+  Archive,
+  Info,
+  ChevronRight,
+  Check,
+  MessageSquare,
+} from 'lucide-react'
 
 import { springs, tweens } from '@/lib/springs'
 import {
@@ -107,6 +116,10 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useUI } from '@/stores/ui-store'
+import { useChatRenderer } from '@/components/chat/use-chat-renderer'
+import { useRendererState } from '@/components/chat/use-renderer-pref'
+import { prefFor, type RendererPref } from '@/components/chat/renderer-pref'
 import { GroupHeader } from './group-header'
 import { SessionTile } from './tile'
 import { SessionRow } from './session-row'
@@ -1820,6 +1833,8 @@ function SortableRow({
         sessionName={session.name}
         sessionLabel={sessionTitle(session)}
         sessionStatus={session.status}
+        sessionProvider={session.provider}
+        sessionHostId={session.host_id}
         currentGroupId={currentGroupId}
         allSections={allSections}
         onMoveToGroup={onMoveToGroup}
@@ -1915,6 +1930,8 @@ function SessionTileWrapper({
         sessionName={session.name}
         sessionLabel={sessionTitle(session)}
         sessionStatus={session.status}
+        sessionProvider={session.provider}
+        sessionHostId={session.host_id}
         currentGroupId={currentGroupId}
         allSections={allSections}
         onMoveToGroup={onMoveToGroup}
@@ -1959,10 +1976,21 @@ function SessionTileWrapper({
 // Visual-critic hook: `data-vr-tile-kebab` on the trigger and
 // `data-vr-move-to-submenu` on the submenu trigger so the VR battery can
 // click through deterministically.
+/** The three renderer choices, in the order the switch shows them. `Auto` is
+ *  first because it is the fixpoint — it is what a session is until somebody
+ *  decides otherwise, and picking it again is how a pin is undone. */
+const RENDERER_PREFS: { id: RendererPref; label: string; hint: string }[] = [
+  { id: 'auto', label: 'Auto', hint: 'Follow the default' },
+  { id: 'chat', label: 'Chat', hint: 'Always the conversation' },
+  { id: 'terminal', label: 'Terminal', hint: 'Always the pty' },
+]
+
 function TileMoveToKebab({
   sessionName,
   sessionLabel,
   sessionStatus,
+  sessionProvider,
+  sessionHostId,
   currentGroupId,
   allSections,
   onMoveToGroup,
@@ -1971,6 +1999,9 @@ function TileMoveToKebab({
   sessionName: string
   sessionLabel: string
   sessionStatus: ApiSession['status']
+  /** Fase A5 — the two fields `flag.ts`'s eligibility guard reads. */
+  sessionProvider: string
+  sessionHostId?: number | null
   currentGroupId: string
   allSections: ReadonlyArray<Section>
   onMoveToGroup: (destGroupId: string) => void
@@ -1994,6 +2025,25 @@ function TileMoveToKebab({
   // cache update, toasts). The kebab's gating decides whether to SHOW the
   // item; the hook decides whether to RUN it.
   const { busy, stop, archive } = useSessionActions(sessionName)
+
+  // FASE A5 T5 — the per-session renderer override.
+  //
+  // This kebab, not `tile.tsx`, is the overview's context menu (Info / Stop /
+  // Archive / Move to ▸), so this is where the pin belongs. The whole submenu
+  // is hidden for an INELIGIBLE session and while the experiment is off: a
+  // control that decides nothing is worse than no control, and `resolveRenderer`
+  // would overrule it anyway.
+  const chatExperiment = useUI((st) => st.chatRenderer)
+  // Team leads never reach this menu — the grid splits them out
+  // (`splitTeamLeads`) and the team card renders the lead without a kebab.
+  const rendererEligible = useChatRenderer(
+    { provider: sessionProvider, host_id: sessionHostId },
+    false,
+  )
+  const rendererState = useRendererState()
+  const rendererPref = prefFor(rendererState, sessionName)
+  const setRendererPref = useUI((st) => st.setRendererPref)
+  const showRenderer = chatExperiment && rendererEligible
 
   // Session info — the SAME panel the focus-page title-click opens,
   // hosted here for overview parity. Desktop = anchored Popover (we pass
@@ -2092,9 +2142,46 @@ function TileMoveToKebab({
               <span>Archive</span>
             </DropdownMenuItem>
           )}
-          {canMove && (
+          {showRenderer && (
             <>
               {(canStop || canArchive) && <DropdownMenuSeparator />}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger data-vr="tile-renderer">
+                  <MessageSquare className="size-4" aria-hidden />
+                  <span>Renderer</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuPortal>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+                      {sessionLabel} opens as
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {RENDERER_PREFS.map(({ id, label, hint }) => (
+                      <DropdownMenuItem
+                        key={id}
+                        data-vr="tile-renderer-item"
+                        data-vr-renderer={id}
+                        onSelect={() => setRendererPref(sessionName, id)}
+                      >
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span>{label}</span>
+                          <span className="text-[11px] leading-tight text-muted-foreground">
+                            {hint}
+                          </span>
+                        </span>
+                        {rendererPref === id && (
+                          <Check className="size-4 shrink-0" aria-hidden />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuPortal>
+              </DropdownMenuSub>
+            </>
+          )}
+          {canMove && (
+            <>
+              {(canStop || canArchive || showRenderer) && <DropdownMenuSeparator />}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger
                   data-vr="tile-move-to"

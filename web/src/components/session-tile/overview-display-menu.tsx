@@ -18,9 +18,11 @@ import {
   EyeOff,
   LayoutGrid,
   List,
+  MessageSquare,
   Rows2,
   Rows3,
   SlidersHorizontal,
+  SquareTerminal,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -28,7 +30,8 @@ import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { type ViewMode } from '@/stores/ui-store'
+import { useUI, type ViewMode } from '@/stores/ui-store'
+import type { Renderer } from '@/components/chat/renderer-pref'
 import {
   MAX_OVERVIEW_SIZE_MOBILE,
   MIN_OVERVIEW_SIZE,
@@ -59,6 +62,16 @@ export function OverviewDisplayMenu({
   onHideStopped,
 }: OverviewDisplayMenuProps) {
   const [open, setOpen] = React.useState(false)
+  // Fase A5 T5 — the GLOBAL default renderer. Read from the store rather than
+  // taken as two more props: the value has no overview-local meaning and the
+  // sheet is already the home of the account-wide display choices.
+  //
+  // The whole block is hidden while the experiment is off, so the app never
+  // shows a control that decides nothing (`chatRenderer` is the master gate;
+  // an ineligible session ignores this value entirely — `resolveRenderer`).
+  const chatExperiment = useUI((s) => s.chatRenderer)
+  const defaultRenderer = useUI((s) => s.defaultRenderer)
+  const setDefaultRenderer = useUI((s) => s.setDefaultRenderer)
   // Mobile size only has two meaningful tiers (the grid is single-column, so
   // the tier just changes tile HEIGHT) — collapse to Compact / Roomy.
   const sizeValue = (
@@ -132,6 +145,24 @@ export function OverviewDisplayMenu({
                 })}
               </div>
             </Section>
+
+            {chatExperiment && (
+              <Section label="Default renderer">
+                <Segmented<Renderer>
+                  value={defaultRenderer}
+                  onChange={setDefaultRenderer}
+                  options={[
+                    { id: 'chat', icon: MessageSquare, label: 'Chat' },
+                    { id: 'terminal', icon: SquareTerminal, label: 'Terminal' },
+                  ]}
+                  layoutId="display-renderer"
+                />
+                <span className="text-[11px] leading-tight text-muted-foreground">
+                  What an eligible session opens as. Per-session choices (the
+                  switch, or a tile’s ⋯ → Renderer) win over this.
+                </span>
+              </Section>
+            )}
 
             {viewMode === 'tile' && (
               <Section label="Size">

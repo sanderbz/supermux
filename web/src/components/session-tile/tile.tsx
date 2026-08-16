@@ -20,6 +20,7 @@ import { usePeekPrewarm } from '@/hooks/use-peek-prewarm'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { useTerminalInput } from '@/lib/session-input'
 import { useUI } from '@/stores/ui-store'
+import { useSessionRenderer } from '@/components/chat/use-renderer-pref'
 import {
   MIN_OVERVIEW_SIZE,
   getOverviewSizeConfig,
@@ -33,6 +34,7 @@ import {
 import { StatusDot, STATUS_LABEL } from './status-dot'
 import { ActivityLine, ErrorBadge } from './activity-status'
 import { TailPreview } from './tail-preview'
+import { ChatTailPreview } from './chat-tail-preview'
 import { TileLiveTerminal } from './tile-live-terminal'
 import { TileError } from './tile-error'
 import { QuickPeekModal } from './quick-peek-modal'
@@ -175,6 +177,13 @@ export interface SessionTileProps {
    *  Desktop-only: hidden on touch / narrow viewports. Undefined for tiles
    *  past 9 (no hint). */
   jumpIndex?: number
+  /** Fase A5 — is this session a team LEAD? Only `team-card.tsx` knows, and it
+   *  is the only caller that renders a lead's tile: everywhere else the grid
+   *  has already excluded leads (`splitTeamLeads`). A prop rather than a
+   *  `useTeams()` call because the overview renders dozens of tiles and a query
+   *  subscription per tile is a lot of listeners for one boolean. Feeds the
+   *  eligibility gate (`flag.ts`: a team lead never gets the chat renderer). */
+  isTeamLead?: boolean
 }
 
 /** The hero surface. One tile = one agent: title (Claude chat summary),
@@ -192,6 +201,7 @@ export function SessionTile({
   onRemove,
   sizeTier = MIN_OVERVIEW_SIZE,
   jumpIndex,
+  isTeamLead = false,
 }: SessionTileProps) {
   const reduce = useReducedMotion()
   // Fall back to the surface-wide JumpIndexContext when the caller didn't
@@ -211,6 +221,11 @@ export function SessionTile({
   const fine = useMediaQuery('(pointer: fine)')
   const coarse = useMediaQuery('(pointer: coarse)')
   const navigateMorph = useNavigateMorph()
+  // FASE A5 T5 — the chat preview, governed by the same `resolveRenderer` the
+  // focus seams use. Declared beside the other preview-mode reads so the tile
+  // has ONE place where "what does this tile show" is decided.
+  const tileRenderer = useSessionRenderer(session, isTeamLead)
+  const chatPreview = session.chat_tail != null && tileRenderer === 'chat'
   const hoverPreview = useUI((s) => s.hoverPreview)
   // Master preview mode (Settings → "Overview preview"). `text` is a hard
   // override: the tile shows ONLY the static text tail — no live xterm peek and
@@ -977,11 +992,27 @@ export function SessionTile({
           animate={{ height: previewH }}
           transition={reduce ? { duration: 0 } : springs.cardExpand}
         >
-          <TailPreview
-            lines={session.preview_lines}
-            ansiLines={session.preview_ansi}
-            fill
-          />
+          {/* FASE A5 T5 — what the preview SAYS, not what the row is.
+              `chatPreview` is true only when the session actually has a chat
+              tail on the SSE delta AND `resolveRenderer` says this session's
+              renderer is chat (so an ineligible provider, a terminal pin or the
+              experiment being off all keep the ANSI tail, decided by the one
+              function). `chat_tail` being ABSENT means "unchanged", never
+              "empty" — which is why the test is `!= null` on the field rather
+              than a truthiness check on its contents.
+
+              Zero new requests: the tail rides the `sessions` SSE delta the
+              tile is already rendering. No chat subscription is opened here,
+              ever (§2.5). */}
+          {chatPreview ? (
+            <ChatTailPreview tail={session.chat_tail!} fill />
+          ) : (
+            <TailPreview
+              lines={session.preview_lines}
+              ansiLines={session.preview_ansi}
+              fill
+            />
+          )}
           <AnimatePresence>
             {showLiveTerm && cardWidth > 0 && (
               <LivePeekLayer

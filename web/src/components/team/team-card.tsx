@@ -150,6 +150,11 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
         <SessionTile
           session={leadSession as TileSession}
           sizeTier={sizeTier}
+          // Fase A5 — the ONE caller that renders a lead's tile. `flag.ts`
+          // excludes team leads from the chat renderer (Track A v1 scope), and
+          // this is the only place that knows; everywhere else the grid has
+          // already split leads out (`splitTeamLeads`).
+          isTeamLead
         />
       ) : team.lead_supermux_session ? (
         <div className="flex h-16 items-center justify-center rounded-xl border border-dashed border-border/60 px-3 text-center text-xs text-muted-foreground">

@@ -9,6 +9,9 @@ import * as React from 'react'
 
 import { useUI } from '@/stores/ui-store'
 
+import { useChatRenderer } from './use-chat-renderer'
+import type { ChatEligibleSession } from './flag'
+
 import {
   prefFor,
   resolveRenderer,
@@ -72,4 +75,26 @@ export function useRenderer(
   }, [write, name, resolved])
 
   return { resolved, pref, setPref, toggle }
+}
+
+/**
+ * The resolved renderer for a session on a NON-focus surface (the overview
+ * tiles, the quick-peek).
+ *
+ * `isTeamLead` is a PROP rather than a `useTeams()` call on purpose: the
+ * overview renders dozens of tiles, and a query subscription per tile would add
+ * dozens of SSE listeners for a fact exactly one caller knows
+ * (`team-card.tsx`, which renders the lead's tile). Everywhere else the grid
+ * has already excluded leads (`splitTeamLeads`), so `false` is correct.
+ *
+ * `sessionKnown` is `true` by construction: a tile only exists because its row
+ * does. The undecided frame is a focus-route concern.
+ */
+export function useSessionRenderer(
+  s: (ChatEligibleSession & { name: string }) | null,
+  isTeamLead = false,
+): Renderer | null {
+  const chatOn = useChatRenderer(s, isTeamLead)
+  const st = useRendererState()
+  return s ? resolveRenderer(st, s.name, chatOn, true) : null
 }
