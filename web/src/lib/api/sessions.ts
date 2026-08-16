@@ -271,6 +271,10 @@ export type RecallEntryKind =
   | 'prompt'
   | 'command'
   | 'teammate'
+  // A prompt another session delegated here: `agents/delegate.rs` wraps the
+  // delivery in `<supermux-delegation from="…">` and `recall.rs` classifies it.
+  // `label` carries the sending session's name.
+  | 'delegation'
   | 'notification'
   | 'system'
   | 'tool'
