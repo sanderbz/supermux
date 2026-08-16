@@ -1,0 +1,31 @@
+-- migrations/0027_session_mark_pin.sql
+-- The ONE schema change fase B2 makes: a nullable override for a session's
+-- identity mark.
+--
+-- Assignment stays DERIVED. `web/src/lib/roster-marks.ts` computes every
+-- session's silhouette + pigment from its own slug, deduped across the whole
+-- roster in creation order — nothing is stored, and the server can mirror the
+-- computation exactly because it is a pure function of the names. This column is
+-- written ONLY when the user explicitly rerolls a face, which is the one thing a
+-- derived assignment cannot survive: a preference has to outlive a reload.
+--
+-- Format: the compact `"<silhouette>:<hue>"` encoding
+-- (`encodeMarkPin`/`decodeMarkPin`, both in `roster-marks.ts` so the two halves
+-- of the format cannot drift). NULL = "no override, use the derived face", which
+-- is what every existing row backfills to. An unparseable value decodes to
+-- `undefined` client-side and the derived face is used, so a hand-edited or
+-- stale value degrades instead of rendering a face the engine cannot draw.
+--
+-- NUMBERING (recorded because it is not the obvious one): the plan reserved
+-- `0025`. At land time `origin/main` carried `0024` and `0026_audit_target_idx`
+-- with 0025 UNUSED on main and claimed by two different unmerged branches
+-- (`feat/grok-ui-integration`'s `0025_session_notif` and
+-- `feat/schedule-archive-on-stop`'s `0025_archive_on_stop`). Filling a gap BELOW
+-- an already-applied version is also exactly the shape that makes a deployed
+-- install's migration state ambiguous. So this takes the next free number after
+-- the highest applied one: 0027.
+--
+-- Additive, metadata-only (a nullable ADD COLUMN with no default), so an
+-- existing deployment upgrades with zero touch and nothing changes visually
+-- until someone rerolls.
+ALTER TABLE sessions ADD COLUMN mark_pin TEXT;

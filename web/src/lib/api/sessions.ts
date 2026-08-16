@@ -384,6 +384,11 @@ export interface SessionConfigPatch {
   tags?: string[]
   toggle_pin?: boolean
   toggle_auto_continue?: boolean
+  /** Freeze this session's identity mark (migration 0027), as
+   *  `"<silhouette>:<hue>"`. `''` CLEARS the override and returns the session to
+   *  its derived face. Written only by the reroll affordance — assignment stays
+   *  derived (`lib/roster-marks.ts`). */
+  mark_pin?: string
 }
 
 /** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode

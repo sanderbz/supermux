@@ -54,6 +54,12 @@ pub struct Session {
     /// 0018). The entire pre-remote-host fleet backfills to `NULL` so existing
     /// call sites that don't yet pass a host_id keep their local-only semantics.
     pub host_id: Option<i64>,
+    /// The user's explicit identity-mark override (migration 0027), as
+    /// `"<silhouette>:<hue>"`. `NULL` for every session that has never been
+    /// rerolled — which is almost all of them: the face is DERIVED from the slug
+    /// (`web/src/lib/roster-marks.ts`) and this column exists only so an
+    /// explicit choice outlives a reload.
+    pub mark_pin: Option<String>,
     /// Which terminal backend drives this session (migration 0024):
     /// `"tmux"` (the historical `supermux-<name>` tmux session) or `"native"`
     /// (the tmux-less pty holder in `sessions::native`). The whole pre-existing
@@ -480,6 +486,16 @@ async fn set_text_field(
 ) -> sqlx::Result<()> {
     let sql = format!("UPDATE sessions SET {column} = ? WHERE name = ?");
     sqlx::query(&sql)
+        .bind(value)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Set (or clear, with an empty string) the identity-mark override.
+pub async fn set_mark_pin(pool: &SqlitePool, name: &str, value: Option<&str>) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET mark_pin = ? WHERE name = ?")
         .bind(value)
         .bind(name)
         .execute(pool)

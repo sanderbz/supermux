@@ -17,9 +17,11 @@
  *
  * Facts at `list` tier 1, per the ladder: mark · attention · name · statusLabel
  * · branch · time · ⌘N · host badge · error badge. The preview line arrives at
- * tier 2 — A5 owns which preview renders (`chat_tail` vs the ANSI tail), so
- * until it lands the row leaves the slot to the status word rather than faking
- * a line the session never said.
+ * tier 2, and it is the session's OWN last line — A5's `chat_tail`, which is
+ * present only while a chat store exists. When there is none the row keeps the
+ * status word rather than faking a line the session never said; it never falls
+ * back to the ANSI tail, because a terminal frame collapsed to one line reads as
+ * noise at 13px.
  */
 import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
@@ -83,6 +85,15 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
     () => navigateMorph(`/focus/${session.name}`),
     [navigateMorph, session.name],
   )
+
+  // The preview, at the ladder's tier 2 and up: the session's own last line.
+  // `chat_tail` exists only while a chat store does (it is not roster-wide — see
+  // `lib/attention-tiers.ts`), so this is `undefined` for most rows and the
+  // status word below keeps the slot.
+  const preview =
+    hasFact('list', sizeTier, 'preview')
+      ? session.chat_tail?.agent?.trim() || session.chat_tail?.user?.trim() || undefined
+      : undefined
 
   // The secondary line at tier 1: the status word plus the branch, which is what
   // this row has always shown under the title. The ladder keeps both.
@@ -156,6 +167,7 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
         }
         state={markStateFor(session.status)}
         attention={showAttention}
+        preview={preview}
         meta={meta}
         trailing={trailing}
         timestamp={when || undefined}

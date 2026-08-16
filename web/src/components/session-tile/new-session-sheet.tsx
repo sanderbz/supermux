@@ -15,6 +15,9 @@ import {
   type NewWhereSelection,
 } from './where-picker'
 import { createProjectFolder } from '@/lib/create-project-folder'
+import { SessionMark } from '@/brand/marks'
+import { useRosterMarks } from '@/hooks/use-roster-marks'
+import { encodeMarkPin, freeTokens } from '@/lib/roster-marks'
 
 /** Derive the immutable slug from the free-typed display name (migration 0019):
  *  whitespace → `-`, drop anything outside the server's `valid_name` charset
@@ -139,6 +142,18 @@ function KindToggle({
                 className="absolute inset-0 rounded-md bg-card shadow-sm"
               />
             )}
+            {/* The provider wears a face too (fase B2 T8): three text labels in
+                a segmented control are three words to read; three marks are
+                three things to recognise. Seeded by the provider id so the same
+                provider always looks the same, and static — nothing on a form
+                should blink. */}
+            <SessionMark
+              seed={`provider:${it.id}`}
+              size={18}
+              animate={false}
+              label={null}
+              className="relative"
+            />
             <span className="relative">{it.label}</span>
           </button>
         )
@@ -170,6 +185,17 @@ function AgentForm({
   const [hostId, setHostId] = React.useState<number | null>(null)
   const [worktree, setWorktree] = React.useState(false)
   const [bypassPermissions, setBypassPermissions] = React.useState(false)
+  // Identity (fase B2 T8). `desc` and `tags` have been on the wire forever with
+  // no control; the create sheet is the first place a session can be given
+  // either. `prompt` is the create flow's answer to the one capability the
+  // removed Board page had ("Add & start").
+  const [desc, setDesc] = React.useState('')
+  const [tags, setTags] = React.useState('')
+  const [prompt, setPrompt] = React.useState('')
+  // The reroll counter. The face is DERIVED from the slug, so a reroll is
+  // "walk to the next token that nobody in the roster is wearing" — which is
+  // why it needs the roster, and why it can never hand out a duplicate.
+  const [reroll, setReroll] = React.useState(0)
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
@@ -178,6 +204,18 @@ function AgentForm({
   // spaces/emoji slugifies to "" → not valid.
   const slug = toSlug(name)
   const canSubmit = slug.length > 0
+
+  // The reroll's candidate pool: every token nobody in the roster wears. The
+  // pins come from the app-wide provider, so "free" means free across the whole
+  // product and not just this sheet. `reroll === 0` ⇒ no override at all, and
+  // the face stays derived (nothing is written to `mark_pin`).
+  const { pins } = useRosterMarks()
+  const pickedPin = React.useMemo(() => {
+    if (reroll === 0) return undefined
+    const free = freeTokens(pins)
+    if (free.length === 0) return undefined // a full roster: keep the derived face
+    return free[(reroll - 1) % free.length]
+  }, [reroll, pins])
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -209,6 +247,7 @@ function AgentForm({
         dir,
         provider,
         worktree,
+        desc: desc.trim() || undefined,
         // Omit when LOCAL so the wire stays clean (server treats missing/null
         // both as LOCAL). Only sent for a registered remote host.
         host_id: hostId ?? undefined,
@@ -218,9 +257,32 @@ function AgentForm({
           provider === 'claude' && bypassPermissions ? true : undefined,
       })
       const sessionName = created?.name ?? slug
-      // Boot tmux. Non-fatal — the row exists either way; focus can retry.
+
+      // Identity extras go in a follow-up PATCH rather than on `create`: the
+      // create endpoint deliberately takes a small, typed shape (it is the one
+      // the CLI and the scheduler share), and both of these are edits a user can
+      // make again later from the same controls.
+      const tagList = tags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+      const markPin = pickedPin ? encodeMarkPin(pickedPin) : null
+      if (tagList.length > 0 || markPin) {
+        try {
+          await sessionsApi.config(sessionName, {
+            ...(tagList.length > 0 ? { tags: tagList } : {}),
+            ...(markPin ? { mark_pin: markPin } : {}),
+          })
+        } catch {
+          /* the session exists; tags and a face are not worth failing create */
+        }
+      }
+
+      // Boot the agent, and deliver the first message in the same step — the
+      // start endpoint already takes a command, which is the path the Quick-start
+      // presets use. Non-fatal: the row exists either way; focus can retry.
       try {
-        await sessionsApi.start(sessionName, undefined)
+        await sessionsApi.start(sessionName, prompt.trim() || undefined)
       } catch {
         /* ignore — session created, start retryable from focus */
       }
@@ -269,6 +331,41 @@ function AgentForm({
         )}
       </Field>
 
+      {/* The session's FACE, before it exists (fase B2 T8). Derived from the
+          slug the user is typing, so it changes as they type — and the reroll
+          walks the tokens NOBODY in the roster is wearing, which is why it can
+          never hand out a duplicate. The choice is persisted on create through
+          `mark_pin` (migration 0027); with no reroll, nothing is stored and the
+          face stays derived. */}
+      <Field label="Face" htmlFor="ns-mark">
+        <div id="ns-mark" className="flex items-center gap-3">
+          <SessionMark
+            seed={slug || 'new-session'}
+            pin={pickedPin}
+            size={40}
+            animate={false}
+            label={null}
+          />
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="truncate text-sm">{name.trim() || 'Your new colleague'}</span>
+            <span className="text-[11px] text-muted-foreground">
+              {pickedPin
+                ? 'Frozen — this face is saved with the session.'
+                : 'Derived from the name, deduped against your roster.'}
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setReroll((n) => n + 1)}
+            disabled={submitting}
+          >
+            Reroll
+          </Button>
+        </div>
+      </Field>
+
       {/* Own-folder path: the same Projects list + "Create a new folder"
           picker, narrowed to 'new' picks (no session take-over for a brand-new
           session). gitHint="info" drops the amber non-git warning — a normal
@@ -304,6 +401,49 @@ function AgentForm({
         title="Isolated worktree"
         desc="Run in a fresh git worktree so it can’t touch your tree."
       />
+
+      <Field
+        label="Standing instructions"
+        htmlFor="ns-desc"
+        hint="Durable rules for this agent — not this task. Editable later in Info."
+      >
+        <textarea
+          id="ns-desc"
+          value={desc}
+          onChange={(e) => setDesc(e.target.value)}
+          rows={2}
+          placeholder="Always run the unit suite before you claim green."
+          className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring"
+        />
+      </Field>
+
+      <Field label="Tags" htmlFor="ns-tags" hint="Comma-separated. Searchable.">
+        <Input
+          id="ns-tags"
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+          placeholder="frontend, release"
+          autoComplete="off"
+        />
+      </Field>
+
+      {/* The initial prompt — the create flow's answer to the Board page's
+          "Add & start" (§12.6). It rides the existing create → start path, so a
+          session that is given one arrives already working. */}
+      <Field
+        label="First message"
+        htmlFor="ns-prompt"
+        hint="Optional. Sent as soon as the agent boots."
+      >
+        <textarea
+          id="ns-prompt"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          rows={2}
+          placeholder="Read the plan in docs/… and start with task 1."
+          className="w-full resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring"
+        />
+      </Field>
 
       {provider === 'claude' && (
         <CheckCard

@@ -1945,6 +1945,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            mark_pin: None,
             runtime: "tmux".into(),
         };
 
@@ -1997,6 +1998,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            mark_pin: None,
             runtime: "tmux".into(),
         };
 
@@ -2050,6 +2052,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            mark_pin: None,
             runtime: "tmux".into(),
         };
 
@@ -2109,6 +2112,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            mark_pin: None,
             runtime: "tmux".into(),
         };
 
@@ -2153,6 +2157,7 @@ mod build_env_tests {
             start_error: String::new(),
             team_name: None,
             host_id: None,
+            mark_pin: None,
             runtime: "tmux".into(),
         };
 

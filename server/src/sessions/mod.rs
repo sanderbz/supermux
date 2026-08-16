@@ -186,6 +186,10 @@ pub struct SessionView {
     pub archived: bool,
     pub auto_continue: bool,
     pub tags: Vec<String>,
+    /// The user's identity-mark override (migration 0027), `"<silhouette>:<hue>"`
+    /// or `None`. Assignment is derived client-side; this is written only by the
+    /// reroll affordance.
+    pub mark_pin: Option<String>,
     pub flags: String,
     pub branch: String,
     pub mcp: String,
@@ -309,6 +313,10 @@ fn view(s: &Session, rt: Option<&SessionRuntime>, act: Option<SessionActivity>) 
         archived: s.archived != 0,
         auto_continue: s.auto_continue != 0,
         tags: parse_tags(&s.tags),
+        // Empty string and NULL both mean "no override" — the client falls back
+        // to the derived face either way, and normalising here keeps the wire
+        // from carrying two spellings of the same absence.
+        mark_pin: s.mark_pin.as_deref().filter(|v| !v.is_empty()).map(str::to_string),
         flags: s.flags.clone(),
         branch: s.branch.clone(),
         mcp: s.mcp.clone(),
@@ -925,6 +933,10 @@ pub struct ConfigInput {
     pub tags: Option<Vec<String>>,
     pub toggle_pin: Option<bool>,
     pub toggle_auto_continue: Option<bool>,
+    /// Freeze this session's identity mark (migration 0027). `Some("")` clears
+    /// the override and returns the session to its derived face — the one way
+    /// back, and the reason this is not a bare `Option<String>` meaning "unset".
+    pub mark_pin: Option<String>,
 }
 
 pub async fn config_patch(
@@ -1056,6 +1068,20 @@ pub async fn config_patch(
     if let Some(v) = patch.tags {
         let json = serde_json::to_string(&v).unwrap_or_else(|_| "[]".into());
         db::sessions::set_tags(&state.pool, &current, &json).await?;
+        changed = true;
+    }
+    if let Some(v) = patch.mark_pin {
+        // An empty value CLEARS the override (back to the derived face) rather
+        // than storing "". Validation is deliberately light — the client owns
+        // the `"<silhouette>:<hue>"` vocabulary and decodes unknown values to
+        // "no override", so a stale string degrades instead of failing a PATCH.
+        let trimmed = v.trim();
+        db::sessions::set_mark_pin(
+            &state.pool,
+            &current,
+            if trimmed.is_empty() { None } else { Some(trimmed) },
+        )
+        .await?;
         changed = true;
     }
     if patch.toggle_pin.is_some() {
@@ -1832,6 +1858,7 @@ mod tests {
                 mcp: None,
                 tags: None,
                 toggle_pin: None,
+                mark_pin: None,
                 toggle_auto_continue: None,
             },
         )
@@ -1871,6 +1898,7 @@ mod tests {
                 mcp: None,
                 tags: None,
                 toggle_pin: None,
+                mark_pin: None,
                 toggle_auto_continue: None,
             },
         )
@@ -1960,6 +1988,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The identity-mark override round-trips through `PATCH /config`, and a
+    /// NULL column changes nothing (fase B2 T8, migration 0027).
+    ///
+    /// Assignment is DERIVED client-side; this column exists only so an explicit
+    /// reroll outlives a reload. So the three things worth pinning are: a fresh
+    /// session has no override, a set value comes back verbatim, and an empty
+    /// value CLEARS it — the way back to the derived face.
+    #[tokio::test]
+    async fn mark_pin_round_trips_through_config_and_null_changes_nothing() {
+        let (state, dir) = test_state().await;
+        create(&state, input("web-ui")).await.expect("create");
+
+        let fresh = get(&state, "web-ui").await.expect("get");
+        assert_eq!(fresh.mark_pin, None, "a new session wears its derived face");
+
+        let set = config_patch(&state, "web-ui", mark_pin("wedge:350"))
+            .await
+            .expect("patch");
+        assert_eq!(set.mark_pin.as_deref(), Some("wedge:350"));
+        assert_eq!(
+            get(&state, "web-ui").await.expect("get").mark_pin.as_deref(),
+            Some("wedge:350"),
+            "the override is persisted, not just echoed"
+        );
+
+        // An unrelated patch must not disturb it.
+        config_patch(&state, "web-ui", relabel("Web UI")).await.expect("patch");
+        assert_eq!(
+            get(&state, "web-ui").await.expect("get").mark_pin.as_deref(),
+            Some("wedge:350"),
+        );
+
+        // Empty clears — back to the derived face.
+        let cleared = config_patch(&state, "web-ui", mark_pin("")).await.expect("patch");
+        assert_eq!(cleared.mark_pin, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn mark_pin(value: &str) -> ConfigInput {
+        ConfigInput {
+            rename: None,
+            display_name: None,
+            desc: None,
+            dir: None,
+            branch: None,
+            mcp: None,
+            tags: None,
+            toggle_pin: None,
+            mark_pin: Some(value.into()),
+            toggle_auto_continue: None,
+        }
+    }
+
     /// A row with no `runtime` value on record (a pre-0024 row, or the
     /// test-only `insert_minimal`) reads as tmux everywhere — the backfill
     /// contract the DEFAULT encodes.
@@ -1986,6 +2067,7 @@ mod tests {
             mcp: None,
             tags: None,
             toggle_pin: None,
+            mark_pin: None,
             toggle_auto_continue: None,
         }
     }
