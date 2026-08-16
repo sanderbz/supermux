@@ -83,6 +83,7 @@ import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { restSessionInput, useTerminalInput } from '@/lib/session-input'
 import { composerSessionInput } from '@/components/chat/composer-draft'
 import { RendererSwitch } from '@/components/chat/renderer-switch'
+import { RendererShell } from '@/components/chat/renderer-shell'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import {
   chatPaneActive,
@@ -279,9 +280,19 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
   // emit a focusin event whose reporting bytes (`\x1b[I` under DECSET ?1004)
   // land back at the pty as part of the phantom-Enter symptom path. Status
   // changes don't warrant re-focusing the terminal.
+  //
+  // FASE A5 T3, invariant 4 — gated on `chatActive`. Before retention this
+  // fired unconditionally, which was harmless because the terminal was the only
+  // thing that could be there. With a retained xterm sitting hidden behind
+  // chat, focusing it is the silent keystroke sink of Risk 1 — and on iOS it
+  // also raises a soft keyboard over a surface that never asked for one.
   const wantFocusRef = React.useRef(false)
   React.useEffect(() => {
     if (current.status === 'stopped' || current.status === 'error') {
+      wantFocusRef.current = false
+      return
+    }
+    if (chatActive) {
       wantFocusRef.current = false
       return
     }
@@ -293,8 +304,11 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
       }
     })
     return () => window.cancelAnimationFrame(raf)
+    // `chatActive` joins `name`: entering under chat must not arm the focus,
+    // and revealing the terminal later must. Status is still excluded — see
+    // above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name])
+  }, [name, chatActive])
   const onTermReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t
     if (wantFocusRef.current) {
@@ -660,79 +674,99 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
                  Reached under BOTH renderers: `chatPaneActive` excludes a
                  stopped session for exactly this reason. */
               <StoppedSession name={name} />
-            ) : chatActive ? (
-              /* The chat renderer (fase A5), in the phone composition — the
-                 boards' floating header card + track + composer, filling the
-                 sheet between the (absent) focus header and the reduced dock.
-                 `surface="phone"` is FORCED rather than left to the 480px media
-                 query: this route is chosen by the app's 768px fork, so a wide
-                 phone would otherwise get the desktop board inside the mobile
-                 sheet. */
-              <React.Suspense fallback={null}>
-                <ChatPanel
-                  name={name}
-                  session={row}
-                  surface="phone"
-                  // The RAW plane. The panel is the one place that may write to
-                  // the session under chat, and it does it through its own gates
-                  // (peek-verify, the slash gate, the pending echo + watchdog).
-                  // Everything else on this route holds `chatInput`, whose text
-                  // paths stage into the composer instead — one draft, one gated
-                  // way out of it.
-                  input={restInput}
-                  onOpenTerminal={() => setRenderer('terminal')}
-                  // The card's two shell slots (`mobile-light.png`): navigation
-                  // on the left, the renderer choice on the right. The surface
-                  // owns neither, which is why they arrive as nodes.
-                  headerLeading={
-                    <button
-                      type="button"
-                      aria-label="Back to sessions"
-                      data-testid="chat-back"
-                      onClick={goOverviewMorph}
-                      className="grid size-[34px] flex-none place-items-center rounded-full bg-fill-soft text-ink-2 active:bg-fill-soft-2"
-                    >
-                      <BackIcon />
-                    </button>
-                  }
-                  headerTrailing={
-                    chrome.switchInHeader ? (
-                      <RendererSwitch
-                        size="sm"
-                        // The header card's own width rule (QA #6): the word
-                        // that goes is the one naming the surface you are not
-                        // looking at, and the session's name gets it back.
-                        labels="selected"
-                        value={rendererPref}
-                        resolved={renderer ?? 'chat'}
-                        onChange={setRendererPref}
-                      />
-                    ) : undefined
-                  }
-                />
-              </React.Suspense>
-            ) : terminalMounts ? (
-              <>
-                {/* Pass the session's cached last-screen capture so the terminal
-                    shows the CURRENT screen INSTANTLY on open (no blank, no
-                    replay scroll), then crossfades to the live xterm. The
-                    `current` row is the shared SSE-merged source the overview
-                    tiles render, so the static screen matches what the user just
-                    tapped (cached-tail crossfade). */}
-                <LiveTerminal
-                  name={name}
-                  onReady={onTermReady}
-                  onStateChange={onTermState}
-                  previewAnsi={current.preview_ansi}
-                  previewLines={current.preview_lines}
-                />
-                <Joystick
-                  enabled={gestureOn && chrome.joystick}
-                  sendKey={(key) => termRef.current?.sendKey(key)}
-                />
-              </>
-            ) : null /* experiment on, sessions query still resolving — render
-                        nothing for a frame rather than flash a doomed terminal */}
+            ) : (
+              /* FASE A5 T3/T4 — mounted-but-hidden retention, the SAME shell the
+                 desktop seam uses. #66 already gave this route the renderer seam
+                 (the chrome swap, the input-plane fork, the switch in two
+                 places); what was still missing is the retention, and with it
+                 the reason the phone needed it most: on a phone the terminal's
+                 handshake is the slowest and the soft keyboard is the least
+                 forgiving of a remount.
+
+                 The shell adds ONE `display:grid` box INSIDE this existing flex
+                 child, so `MobileSheet`'s `visualViewport` height chain is
+                 unchanged — and it sets no `backdrop-filter`, `transform`,
+                 `filter` or `contain`, so it cannot become a containing block
+                 for the `fixed` KeyBar and joystick (§11.1, asserted in
+                 `chat-renderer-shell.test.tsx`).
+
+                 `onTerminalHidden` is the mobile-specific half of invariant 4:
+                 an invisible xterm holding DOM focus keeps the iOS soft keyboard
+                 up over a chat surface that never asked for it. */
+              <RendererShell
+                key={name}
+                name={name}
+                chatActive={chatActive}
+                terminalMounts={terminalMounts}
+                onTerminalHidden={() => termRef.current?.blur()}
+                chat={
+                <React.Suspense fallback={null}>
+                  <ChatPanel
+                    name={name}
+                    session={row}
+                    surface="phone"
+                    // The RAW plane. The panel is the one place that may write to
+                    // the session under chat, and it does it through its own gates
+                    // (peek-verify, the slash gate, the pending echo + watchdog).
+                    // Everything else on this route holds `chatInput`, whose text
+                    // paths stage into the composer instead — one draft, one gated
+                    // way out of it.
+                    input={restInput}
+                    onOpenTerminal={() => setRenderer('terminal')}
+                    // The card's two shell slots (`mobile-light.png`): navigation
+                    // on the left, the renderer choice on the right. The surface
+                    // owns neither, which is why they arrive as nodes.
+                    headerLeading={
+                      <button
+                        type="button"
+                        aria-label="Back to sessions"
+                        data-testid="chat-back"
+                        onClick={goOverviewMorph}
+                        className="grid size-[34px] flex-none place-items-center rounded-full bg-fill-soft text-ink-2 active:bg-fill-soft-2"
+                      >
+                        <BackIcon />
+                      </button>
+                    }
+                    headerTrailing={
+                      chrome.switchInHeader ? (
+                        <RendererSwitch
+                          size="sm"
+                          // The header card's own width rule (QA #6): the word
+                          // that goes is the one naming the surface you are not
+                          // looking at, and the session's name gets it back.
+                          labels="selected"
+                          value={rendererPref}
+                          resolved={renderer ?? 'chat'}
+                          onChange={setRendererPref}
+                        />
+                      ) : undefined
+                    }
+                  />
+                </React.Suspense>
+                }
+                terminal={
+                  <>
+                  {/* Pass the session's cached last-screen capture so the terminal
+                      shows the CURRENT screen INSTANTLY on open (no blank, no
+                      replay scroll), then crossfades to the live xterm. The
+                      `current` row is the shared SSE-merged source the overview
+                      tiles render, so the static screen matches what the user just
+                      tapped (cached-tail crossfade). */}
+                  <LiveTerminal
+                    name={name}
+                    onReady={onTermReady}
+                    onStateChange={onTermState}
+                    previewAnsi={current.preview_ansi}
+                    previewLines={current.preview_lines}
+                  />
+                  <Joystick
+                    enabled={gestureOn && chrome.joystick}
+                    sendKey={(key) => termRef.current?.sendKey(key)}
+                  />
+                  </>
+                }
+              />
+            )}
           </div>
 
           {/* The swipeable kbd-accessory bar (formerly mounted here) was
