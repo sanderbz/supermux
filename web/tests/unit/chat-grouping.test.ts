@@ -328,7 +328,11 @@ describe('toReceiptRows', () => {
     // `outcome: undefined` is what makes `ReceiptLine` drop the arrow entirely;
     // an empty string would render a dangling `→`.
     expect(toReceiptRows([{ uuid: 'l1', label: 'Read /a/b.rs', result: '   ' }])[0]).toEqual({
+      // `short` rides along because the label HAS a shorter honest form — the
+      // phone read (QA #2). The outcome slot is what this test is about, and it
+      // is still absent.
       tool: 'Read /a/b.rs',
+      short: 'Read b.rs',
     })
   })
 
@@ -337,13 +341,20 @@ describe('toReceiptRows', () => {
     expect(rows[0].outcome).toBe('212 passed')
   })
 
-  test('long strings are clamped — a receipt is one line, always', () => {
+  test('long strings are clamped — the collapsed row stays short', () => {
     const rows = toReceiptRows([
       { uuid: 'l1', label: `Bash ${'x'.repeat(200)}`, result: 'y'.repeat(200) },
     ])
-    expect(rows[0].tool.length).toBeLessThanOrEqual(66)
+    // The label's own ceiling is now what an EXPANDED row may show (QA #2 — the
+    // row wraps and expands on tap, so 64 glyphs is no longer what keeps it
+    // readable); the COLLAPSED phone read is `short`, and that is the number
+    // that has to stay small.
+    expect(rows[0].tool.length).toBeLessThanOrEqual(162)
+    expect(rows[0].short!.length).toBeLessThanOrEqual(31)
     expect(rows[0].outcome!.length).toBeLessThanOrEqual(74)
     expect(rows[0].tool.endsWith('…')).toBe(true)
+    // …and the clamp is not a loss: the full result is carried for the tap.
+    expect(rows[0].full).toBe('y'.repeat(200))
   })
 
   test('a failed call says so in the outcome — no red bubble, no lost line', () => {

@@ -183,6 +183,46 @@ describe('ReceiptGroup', () => {
   })
 })
 
+describe('ReceiptGroup at phone width (daily-driver QA #2)', () => {
+  const long = {
+    tool: 'Read /home/supermux/spike-qa/notes.md',
+    short: 'Read notes.md',
+    outcome: '1 file · 8 lines',
+  }
+
+  test('the phone shows the condensed label; the desktop shows the full one', () => {
+    expect(html(<ReceiptGroup rows={[long]} surface="phone" />)).toContain('Read notes.md')
+    expect(html(<ReceiptGroup rows={[long]} surface="phone" />)).not.toContain('/home/supermux')
+    expect(html(<ReceiptGroup rows={[long]} />)).toContain('/home/supermux/spike-qa/notes.md')
+  })
+
+  test('nothing in the row truncates — what does not fit wraps', () => {
+    // The defect was two truncating cells fighting over 135px: `Read /home/s… →
+    // 1 …`. Neither `truncate` (which is `text-overflow: ellipsis`) nor
+    // `whitespace-nowrap` may come back to this row.
+    const out = html(<ReceiptGroup rows={[long]} surface="phone" />)
+    expect(out).not.toContain('truncate')
+    const row = out.slice(out.indexOf('chat-receipt'))
+    expect(row.slice(0, row.indexOf('</'))).not.toContain('whitespace-nowrap')
+  })
+
+  test('a row with more to show is a real control; one without is not', () => {
+    const more = html(<ReceiptGroup rows={[long]} surface="phone" />)
+    expect(more).toContain('aria-expanded="false"')
+    expect(more).toContain('<button')
+    // Nothing hidden → no tap target that answers with nothing.
+    const plain = html(<ReceiptGroup rows={[{ tool: 'Grep parse_locale' }]} surface="phone" />)
+    expect(plain).not.toContain('aria-expanded')
+  })
+
+  test('the desktop row is only a control when the OUTCOME was clamped', () => {
+    expect(html(<ReceiptGroup rows={[long]} />)).not.toContain('aria-expanded')
+    expect(html(<ReceiptGroup rows={[{ ...long, full: 'the whole result' }]} />)).toContain(
+      'aria-expanded',
+    )
+  })
+})
+
 describe('radii are the approved render s literals', () => {
   // This repo remaps Tailwind's named radius scale off `--radius` (sm 8 · md 10
   // · lg 12 · xl 16), so a named rung does NOT mean what stock Tailwind's does.
