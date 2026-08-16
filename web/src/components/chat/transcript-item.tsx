@@ -47,6 +47,13 @@ import { harnessNotice } from './entries'
 import { framesIn } from './frames'
 import { mentionSegments, toReceiptRows, type TranscriptNode } from './grouping'
 import {
+  clipStateFor,
+  CLIP_RETRY_TITLE,
+  CLIP_TITLE,
+  NO_REQUEST,
+  useTruncation,
+} from './truncation'
+import {
   ArrivalDivider,
   Bubble,
   BUBBLE_MAX,
@@ -62,6 +69,18 @@ import {
   SystemLine,
   SystemSep,
 } from './ui'
+
+/**
+ * Who the assistant side of the column is, for AT (fase A6 T7.2 — gap G3).
+ *
+ * Sighted readers get the speaker from the gutter mark and from which side of
+ * the column the bubble hangs on; neither survives linearisation. A cross-agent
+ * bubble names the colleague instead (the divider above it already does), and a
+ * bubble in a RUN says nothing at all — repeating the name on every one of six
+ * consecutive paragraphs is the audio equivalent of drawing the face six times,
+ * which is exactly what `grouped` exists to prevent on screen.
+ */
+const AGENT_VOICE = 'Claude'
 
 export interface TranscriptItemProps {
   node: TranscriptNode
@@ -211,14 +230,14 @@ function UserRow({
     command && item.text.startsWith(command) ? item.text.slice(command.length).trimStart() : item.text
   return (
     <MessageRow me grouped={grouped}>
-      <Bubble variant="user" surface={surface}>
+      <Bubble variant="user" surface={surface} author={grouped ? undefined : 'You'}>
         {chip && (
           <span className={cn('font-medium tracking-[-0.1px] opacity-70', text && 'mr-1.5')}>
             {chip}
           </span>
         )}
         {text && <span className="whitespace-pre-wrap break-words">{text}</span>}
-        {item.truncated && <ClippedMarker />}
+        {item.truncated && <ClippedMarker uuid={item.uuid} />}
       </Bubble>
     </MessageRow>
   )
@@ -251,7 +270,7 @@ function AgentRow({
   if (item.type !== 'assistant') return null
   return (
     <MessageRow grouped={grouped} gutter={mark}>
-      <Bubble surface={rest.surface}>
+      <Bubble surface={rest.surface} author={grouped ? undefined : AGENT_VOICE}>
         <Prose
           text={item.text}
           self={rest.name}
@@ -261,7 +280,7 @@ function AgentRow({
           rawUrl={rest.rawUrl}
           onOpenSession={rest.onOpenSession}
         />
-        {item.truncated && <ClippedMarker />}
+        {item.truncated && <ClippedMarker uuid={item.uuid} />}
       </Bubble>
     </MessageRow>
   )
@@ -283,14 +302,41 @@ function AgentRow({
  * the message renders complete up to the cap, flagged, and the terminal view
  * remains the escape hatch the tooltip points at.
  */
-function ClippedMarker() {
+function ClippedMarker({ uuid }: { uuid: string }) {
+  const seam = useTruncation()
+  const state = clipStateFor(uuid, seam)
+  const cls = 'ml-1 select-none align-baseline text-[12px] opacity-60'
+
+  // No provider (the benches, the unit tests) ⇒ no request to make ⇒ the A3
+  // marker, unchanged. A dead button is worse than an honest label.
+  if (seam.request === NO_REQUEST) {
+    return (
+      <span className={cls} title={CLIP_TITLE}>
+        … clipped
+      </span>
+    )
+  }
+
+  if (state === 'loading') {
+    return (
+      <span className={cls} aria-live="polite">
+        … loading the rest
+      </span>
+    )
+  }
+
+  // The failure KEEPS the condensed text and offers the request again. The
+  // socket's own rule (one automatic attempt, never retried) is untouched —
+  // what changes is that it stops meaning "unreachable forever".
   return (
-    <span
-      className="ml-1 select-none align-baseline text-[12px] opacity-60"
-      title="This message was clipped for transport — open the Terminal view for the full text."
+    <button
+      type="button"
+      className={cn(cls, 'underline decoration-dotted underline-offset-2')}
+      onClick={() => seam.request(uuid)}
+      title={state === 'failed' ? CLIP_RETRY_TITLE : CLIP_TITLE}
     >
-      … clipped
-    </span>
+      {state === 'failed' ? '… clipped — try again' : '… clipped — show the rest'}
+    </button>
   )
 }
 
@@ -330,7 +376,7 @@ function TeammateRow({
         grouped={grouped}
         gutter={!grouped && sender ? <Mark seed={seed} pinFor={rest.pinFor} /> : undefined}
       >
-        <Bubble surface={rest.surface}>
+        <Bubble surface={rest.surface} author={grouped ? undefined : rest.names?.get(sender ?? '') ?? AGENT_VOICE}>
           <Prose
             text={item.text}
             self={sender}
@@ -340,7 +386,7 @@ function TeammateRow({
             rawUrl={rest.rawUrl}
             onOpenSession={rest.onOpenSession}
           />
-          {item.truncated && <ClippedMarker />}
+          {item.truncated && <ClippedMarker uuid={item.uuid} />}
         </Bubble>
       </MessageRow>
     </>
@@ -388,7 +434,7 @@ function ScheduleRow({
         </ArrivalDivider>
       )}
       <MessageRow grouped={grouped}>
-        <Bubble surface={rest.surface}>
+        <Bubble surface={rest.surface} author={grouped ? undefined : AGENT_VOICE}>
           <Prose
             text={item.text}
             self={rest.name}
@@ -398,7 +444,7 @@ function ScheduleRow({
             rawUrl={rest.rawUrl}
             onOpenSession={rest.onOpenSession}
           />
-          {item.truncated && <ClippedMarker />}
+          {item.truncated && <ClippedMarker uuid={item.uuid} />}
         </Bubble>
       </MessageRow>
     </>

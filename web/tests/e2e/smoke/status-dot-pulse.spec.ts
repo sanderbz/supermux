@@ -19,10 +19,27 @@
 // rounded-xl that is a DIRECT child of the card; its inline boxShadow (written
 // by Framer) carries the glow colour/alpha. A status with no glow renders no
 // such element.
+//
+// ADOPTED by A6 T1.3 (§0.1 #32). This file sat at `tests/e2e/` — covered by NO
+// config's `testDir` (`./tests/e2e/smoke`, `./tests/e2e/mobile`,
+// `./tests/e2e/screens`), so it had not run since it was written. Kept rather
+// than deleted because it is the ONLY coverage of the card-glow model: no unit
+// test touches `StatusBorder`, and the header above records that this behaviour
+// was mis-fixed three times. It lives in `smoke` because it is an assertion
+// spec (not a `screens` capture) on chromium (`mobile` is iPhone/WebKit, which
+// cannot launch on this host).
+//
+// Two adoption-time changes, neither of which alters what is asserted:
+//   · it boots its own backend + Vite dev server via `harness.startBackend()`
+//     like every other spec here, instead of a `DEV_BASE_URL` the caller had to
+//     remember to start and export;
+//   · reduced motion is emulated on the EXISTING page rather than in a second
+//     `browser.newContext()` — this host runs chromium `--single-process`
+//     (SUPERMUX_E2E_NO_SANDBOX), where a second context per spec file cannot be
+//     created. The route's own `?reduce=1` override is still passed.
 
 import { expect, test } from '@playwright/test'
-
-const BASE = process.env.DEV_BASE_URL ?? 'http://localhost:5199'
+import { injectGlobals, startBackend, type Backend } from './harness'
 
 type CardProbe = {
   /** the status dot's aria-label, identifying the tile's status */
@@ -103,10 +120,21 @@ function hueOf(inline: string): 'green' | 'blue' | 'amber' | 'other' {
 }
 
 test.describe('card-glow (StatusBorder) model', () => {
+  let backend: Backend
+
+  test.beforeEach(async () => {
+    backend = await startBackend()
+  })
+  test.afterEach(async () => {
+    await backend?.dispose()
+  })
+
   test('active=no glow, idle=subtle green glow, waiting=blue glow; dots static', async ({
     page,
   }) => {
-    await page.goto(`${BASE}/dev/tiles`)
+    test.setTimeout(90_000)
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(`${backend.baseUrl}/dev/tiles`)
     await page.waitForSelector('[role="img"][aria-label="Idle"]', {
       state: 'attached',
       timeout: 15_000,
@@ -168,12 +196,19 @@ test.describe('card-glow (StatusBorder) model', () => {
     }
   })
 
+  // Reduced motion is emulated on THIS page (not a second context): chromium
+  // runs `--single-process` on the self-host box, where `browser.newContext()`
+  // throws. `emulateMedia` sets the same `prefers-reduced-motion: reduce` the
+  // context option would, and `?reduce=1` additionally forces Framer's
+  // `<MotionConfig reducedMotion="always">` on the route itself
+  // (`dev-tiles.tsx:36,83`), so the assertion holds either way.
   test('reduced motion → card glow is static (no pulse) on every status', async ({
-    browser,
+    page,
   }) => {
-    const ctx = await browser.newContext({ reducedMotion: 'reduce' })
-    const page = await ctx.newPage()
-    await page.goto(`${BASE}/dev/tiles?reduce=1`)
+    test.setTimeout(90_000)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(`${backend.baseUrl}/dev/tiles?reduce=1`)
     await page.waitForSelector('[role="img"][aria-label="Idle"]', {
       state: 'attached',
       timeout: 15_000,
@@ -186,6 +221,5 @@ test.describe('card-glow (StatusBorder) model', () => {
         `${label} card glow must be STATIC under reduced motion`,
       ).toBe(false)
     }
-    await ctx.close()
   })
 })

@@ -333,15 +333,41 @@ function toSeconds(tsMs: number): number {
 }
 
 /**
+ * A wire entry that came from `<conv>/subagents/agent-<id>.jsonl` rather than
+ * from the main transcript.
+ *
+ * Named (fase A6 T4.1) because the rule it encodes is now a **stated
+ * contract** rather than a `continue` in two loops. The chat surface does not
+ * render subagent turns, and A6 decided that deliberately rather than fixing
+ * it: giving them a voice means a new chat primitive, and the vocabulary is
+ * closed at A4's set plus B4's system lines. What A6 would not accept is the
+ * state it found — a spinner, a bare count, and silence during a five-way
+ * fan-out, with no statement anywhere that this was a choice.
+ *
+ * The two halves of making it total:
+ *   · the surface SAYS the work is happening elsewhere (`SUBAGENTS` in
+ *     `brand/copy.ts`, rendered by the live status clause), instead of showing
+ *     a count with no explanation of where the content went
+ *   · fetch-full is no longer a structural 404 for these
+ *     (`ws.rs::find_full_entry_anywhere`) — so the day a surface DOES want
+ *     them, the data path already works, and in the meantime a 404 from that
+ *     route means "no such entry" and nothing else
+ */
+export function isSubagent(w: WireEntry): boolean {
+  return w.agent_id != null
+}
+
+/**
  * Wire entries (oldest-first, as the socket holds them) → the renderer's
  * newest-first `ChatEntry` list.
  *
  * Everything the A1 chat view did not show is dropped here — see the module
  * header for the rule and why it is deliberately not widened in a wiring
  * slice. Subagent turns (`agent_id`) are among them: the socket sends them,
- * but the A3 surface has no voice for a subagent, so they would render as
+ * but the surface has no voice for a subagent, so they would render as
  * indistinguishable main-thread rows. `read_chat_turns` hid sidechains for
- * exactly that reason.
+ * exactly that reason. See [`isSubagent`] for the A6 decision that made this
+ * deliberate rather than accidental.
  */
 export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
   const out: ChatEntry[] = []
@@ -350,7 +376,7 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
   const receipts = new Map<string, number>()
 
   for (const w of wire) {
-    if (w.agent_id != null) continue
+    if (isSubagent(w)) continue
 
     if (w.kind === 'tool_result') {
       const id = w.tool_use_id
@@ -450,7 +476,11 @@ export function truncatedUuids(
   let seen = 0
   for (let i = wire.length - 1; i >= 0 && seen < window; i--) {
     const w = wire[i]
-    if (w.agent_id != null) continue
+    // A subagent uuid must never be asked for: the renderer does not show the
+    // entry, so a fetch would spend a `find_full_entry` scan on a body nothing
+    // will draw. This is the ONLY thing standing between the surface and a
+    // request for an entry it does not render — hence the named predicate.
+    if (isSubagent(w)) continue
     if (
       w.kind !== 'assistant' &&
       w.kind !== 'prompt' &&

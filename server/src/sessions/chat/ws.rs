@@ -378,6 +378,44 @@ pub(crate) fn find_full_entry(path: &FsPath, uuid: &str) -> Option<ChatEntry> {
     found
 }
 
+/// Fetch-full across **every** file this conversation is made of — the main
+/// transcript first, then `<conv-id>/subagents/agent-*.jsonl` (fase A6 T4.1).
+///
+/// WHY THIS EXISTS. [`find_full_entry`] scans one path, and until A6 the
+/// handler only ever handed it the main transcript. Subagent entries reach the
+/// client on the wire (the tailer's scope is the whole cursor SET, and
+/// `seed_page`/`history_page` carry them with their `agent_id`), so a uuid the
+/// client legitimately held could never be resolved: fetch-full was a
+/// **structural 404** for an entire class of entry. It went unnoticed only
+/// because the renderer drops subagent turns before it can ask
+/// (`wire-entries.ts`), which is a coincidence of two layers agreeing, not a
+/// contract — exactly the shape of dead signal A0's `b8daf73` lesson is about.
+///
+/// The main file is tried first because it is the overwhelmingly common case
+/// and the subagent sweep costs a `read_dir`. A conversation with no
+/// `subagents/` directory pays nothing beyond one failed `read_dir`.
+pub(crate) fn find_full_entry_anywhere(
+    project_dir: &FsPath,
+    conversation_id: &str,
+    uuid: &str,
+) -> Option<ChatEntry> {
+    let main = project_dir.join(format!("{conversation_id}.jsonl"));
+    if let Some(found) = find_full_entry(&main, uuid) {
+        return Some(found);
+    }
+    let dir = project_dir.join(conversation_id).join("subagents");
+    let read = std::fs::read_dir(&dir).ok()?;
+    // Sorted, so a hit is deterministic when two agents somehow share a uuid —
+    // and so a test can assert *which* file answered.
+    let mut files: Vec<PathBuf> = read
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    files.sort();
+    files.iter().find_map(|p| find_full_entry(p, uuid))
+}
+
 /// Fetch-full's response shape: every [`ChatEntry`] field a renderer needs,
 /// with the body at full size.
 #[derive(Debug, Serialize)]
@@ -809,11 +847,15 @@ pub async fn entry_handler(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, AppError> {
     let row = eligible_row(&state, &name).await?;
-    let path = transcript_path(&row);
+    // A6 T4.1 — the whole conversation, not just the main transcript. A 404
+    // from here now means "no such entry", which is what a 404 should mean.
+    let project_dir = resumable::project_dir_for(&row.dir);
+    let conv = row.cc_conversation_id.clone();
     let wanted = uuid.clone();
-    let found = tokio::task::spawn_blocking(move || find_full_entry(&path, &wanted))
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("chat entry read failed: {e}")))?;
+    let found =
+        tokio::task::spawn_blocking(move || find_full_entry_anywhere(&project_dir, &conv, &wanted))
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("chat entry read failed: {e}")))?;
     let entry = found.ok_or_else(|| AppError::NotFound(format!("chat entry {uuid}")))?;
     Ok(Json(json!({ "ok": true, "data": FullEntry::from(entry) })))
 }
@@ -1265,6 +1307,43 @@ mod tests {
             "fetch-full is the escape hatch — it must NOT be sealed"
         );
         assert!(find_full_entry(&path, "nope").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fetch_full_resolves_a_subagent_uuid_instead_of_404ing_structurally() {
+        // A6 T4.1. Subagent entries reach the client on the wire — the tailer's
+        // scope is the whole cursor SET and `seed_page` carries them with their
+        // `agent_id` — but fetch-full scanned ONLY the main transcript, so a
+        // uuid the client legitimately held was unresolvable by construction.
+        // The 404 was avoided only by the renderer happening to drop subagent
+        // turns before it could ask, which is two layers agreeing rather than a
+        // contract.
+        let dir = tmp_dir("fetchfull-sub");
+        let project = dir.clone();
+        let big = "z".repeat(64 * 1024);
+        write_lines(&project.join("conv-a.jsonl"), &[user_line("main-1", "hi")]);
+        let subs = project.join("conv-a").join("subagents");
+        std::fs::create_dir_all(&subs).expect("subagents dir");
+        write_lines(&subs.join("agent-x1.jsonl"), &[user_line("sub-1", &big)]);
+
+        // The main file still answers first, and cheapest.
+        let main = find_full_entry_anywhere(&project, "conv-a", "main-1").expect("main resolves");
+        assert_eq!(main.uuid, "main-1");
+
+        // …and the subagent file now answers at all.
+        let sub = find_full_entry_anywhere(&project, "conv-a", "sub-1").expect("subagent resolves");
+        assert_eq!(sub.uuid, "sub-1");
+        assert_eq!(
+            sub.body.get("text").and_then(|v| v.as_str()).map(str::len),
+            Some(64 * 1024),
+            "the escape hatch is unsealed for subagent entries too"
+        );
+
+        // A 404 from the handler now means "no such entry" and nothing else.
+        assert!(find_full_entry_anywhere(&project, "conv-a", "nope").is_none());
+        // A conversation with no subagents/ directory is not an error.
+        assert!(find_full_entry_anywhere(&project, "conv-none", "main-1").is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]

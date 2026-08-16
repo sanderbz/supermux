@@ -178,6 +178,23 @@ export const CONNECTION = {
 } as const
 
 /**
+ * Subagents, said out loud (fase A6 T4.1).
+ *
+ * The chat surface does not render subagent turns — that is a decision (a
+ * subagent voice would be a new chat primitive, and the vocabulary is closed),
+ * not an oversight. What A6 would not accept is the state it found: during a
+ * five-way `Task` fan-out the surface showed a spinner and a bare `· N
+ * subagents` and nothing else, while the terminal showed the work — with no
+ * statement anywhere that the content was deliberately elsewhere.
+ *
+ * A count is not a statement. This is.
+ */
+export const SUBAGENTS = {
+  /** Appended to the working row's clause when a fan-out is running. */
+  elsewhere: 'their work shows in the terminal',
+} as const
+
+/**
  * The chat data plane's four words, and no surface may invent a fifth
  * (fase A6 T2.6). The same vocabulary is the type in
  * `components/chat/connection.ts`, and the contract is written out in

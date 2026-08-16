@@ -164,3 +164,52 @@ bytes; the cheap shape is a lie.
 `CreateInput`, validated against an allow-list and turned into `--model <id>` by the server the way
 `BYPASS_FLAG` already is, plus `model?: string` on `NewSession` and the picker rebuilt as a
 controlled component (value + `onChange`) instead of one wired straight to the global pref.
+
+## T1.3 — the orphaned spec: ADOPTED
+
+`web/tests/e2e/status-dot-pulse.spec.ts` → `web/tests/e2e/smoke/status-dot-pulse.spec.ts`.
+
+**Adopted, not deleted**, because it is the *only* coverage of the card-glow model: `StatusBorder`
+is referenced by `tile.tsx` and `status-dot.tsx` and by **no** unit test (`tests/unit` has one
+`glow|pulse` hit, `motion-tokens.test.ts`, which asserts token values, not which status glows). The
+spec's own header records that this behaviour "was mis-fixed THREE times on the dot" — deleting the
+one artifact that pins the corrected model down is how it gets mis-fixed a fourth time.
+
+**Why `smoke`**: it is an assertion spec, not a screenshot capture (`screens`), and it runs on
+chromium (`mobile` is iPhone/WebKit, which cannot launch on this box at all — row #6). The smoke
+config is also the one with no global `webServer`, which is what a spec that boots its own server
+needs.
+
+**Two changes made while adopting**, both to remove a landmine rather than to change what is
+asserted:
+1. it now boots its own backend + Vite dev server through `smoke/harness.ts` (`startBackend()` /
+   `dispose()` / `injectGlobals`), like every other spec in that directory, instead of depending on
+   a `DEV_BASE_URL` a caller had to remember to start and set;
+2. the reduced-motion case uses `page.emulateMedia({ reducedMotion: 'reduce' })` on the existing
+   page instead of `browser.newContext()`. Row #5's constraint is structural — this host runs
+   chromium `--single-process`, where a second context per spec file cannot be created — so the
+   original form was guaranteed to fail here. The route's own `?reduce=1` override
+   (`<MotionConfig reducedMotion="always">`, `dev-tiles.tsx:36,83`) is still passed, so the
+   assertion is unchanged and now belt-and-braces.
+
+**Adopted but unrun.** The e2e harness needs a built `supermux-server` binary and boots a real
+backend + Vite per spec; T1.3's own verify line scopes this fase to "per-file e2e runs only" and
+this task's gates are tsc / unit / lint / build:perf. The move and the harness wiring are mechanical
+and copied from `smoke/nav-morph-pill.spec.ts`; the assertions were not re-executed. It is no longer
+orphaned — it is inside `testDir: './tests/e2e/smoke'` and will run the next time that suite does.
+
+## The bundle number this fase is actually working against
+
+T0.5 recorded **209.79 / 210.00 KB (0.21 KB headroom)** on `origin/main` at `a7cc52c`. Measured
+again on the `feat/a6-polish` worktree during T5.1/T1.3:
+
+| | entry JS | main app JS |
+|---|---|---|
+| T0.5 baseline (`a7cc52c`) | 144.94 / 160.00 KB | **209.79 / 210.00 KB** |
+| `feat/a6-polish` working tree, 2026-08-17 | 145.16 / 160.00 KB | **210.68 / 210.00 KB — ✗ OVER, build fails** |
+
+`bun run build:perf` **exits 1** on this branch already, before T5.1/T1.3 touch anything: the
+in-flight A6 work has spent the 0.21 KB and **0.68 KB more**. This is not a T5.1 regression (T5.1
+and T1.3 add zero JS bytes — one untracked-doc edit, one markdown append, one test file moved), but
+it is the fase's problem and the budget is a gate, not a guideline. Whoever closes A6 has to pay
+0.68 KB back with a deletion. **Do not raise the number in `web/perf/` or `scripts/size-budget.mjs`.**

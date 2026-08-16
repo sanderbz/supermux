@@ -34,6 +34,7 @@ import { useRosterMarks } from '@/hooks/use-roster-marks'
 
 import { detailFor, topAttention } from './attention'
 import { ConnectionNote } from './connection-note'
+import { TruncationProvider } from './truncation'
 import { isPlaneDown } from './connection'
 import { useChatPresentation } from './use-chat-ws'
 import {
@@ -437,8 +438,16 @@ export default function ChatPanel({
     }
   }, [pendingItems, dismissPending])
 
+  // A6 T4.2 — the seam a clipped row uses to ask for the rest of itself.
+  // Memoised on the three values it carries so a re-render that changed
+  // neither does not invalidate every transcript row.
+  const truncation = React.useMemo(
+    () => ({ fetching: tail.fetching, failed: tail.fetchFailed, request: tail.retryFull }),
+    [tail.fetching, tail.fetchFailed, tail.retryFull],
+  )
+
   return (
-    <>
+    <TruncationProvider value={truncation}>
     <ChatConversation
       // The surface IS the panel's root element, so it keeps the panel's
       // long-standing test id — the renderer-switch e2e asserts on it.
@@ -565,6 +574,6 @@ export default function ChatPanel({
       />
       </React.Suspense>
     )}
-    </>
+    </TruncationProvider>
   )
 }
