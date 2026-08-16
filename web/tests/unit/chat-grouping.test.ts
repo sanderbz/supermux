@@ -169,6 +169,35 @@ describe('groupItems', () => {
     expect(out[1].sender).toBe('patch')
   })
 
+  test('a scheduled fire is the SCHEDULE speaking, not the owner', () => {
+    // A schedule's prompt is user-role on the wire and lands at 03:00 with
+    // nobody at the keyboard. Grouping it into the human's last run says "you
+    // typed this" in whitespace — the impersonation this speaker exists to end.
+    const labels = entryLabels([
+      { uuid: 's1', ts: 101, text: 'check the release', kind: 'schedule', label: 'Nightly' },
+    ])
+    const out = groupItems([user('u1', 100), user('s1', 101, 'schedule')], labels)
+    expect(out.map((r) => r.speaker)).toEqual(['me', 'schedule:Nightly'])
+    expect(out[1].grouped).toBe(false)
+    // The arrival divider carries the identity (⏱ + title); a schedule has no
+    // session mark to hang in the gutter.
+    expect(out[1].showGutter).toBe(false)
+    expect(out[1].sender).toBeUndefined()
+  })
+
+  test('two schedules are two voices; one schedule keeps its own run', () => {
+    const labels = entryLabels([
+      { uuid: 's1', ts: 100, text: '', kind: 'schedule', label: 'Nightly' },
+      { uuid: 's2', ts: 101, text: '', kind: 'schedule', label: 'Nightly' },
+      { uuid: 's3', ts: 102, text: '', kind: 'schedule', label: 'Standup' },
+    ])
+    const out = groupItems(
+      [user('s1', 100, 'schedule'), user('s2', 101, 'schedule'), user('s3', 102, 'schedule')],
+      labels,
+    )
+    expect(out.map((r) => r.grouped)).toEqual([false, true, false])
+  })
+
   test('two colleagues do not stack into each other', () => {
     const labels = entryLabels([
       { uuid: 't1', ts: 100, text: '', kind: 'teammate', label: 'patch' },

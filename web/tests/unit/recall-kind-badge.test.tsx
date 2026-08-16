@@ -33,10 +33,18 @@ describe('recall kind badge', () => {
     expect(kindSpeaker('delegation')).not.toBe('You')
   })
 
+  test('a scheduled prompt gets its own chip and names its schedule', () => {
+    expect(kindBadgeMeta('schedule')?.label).toBe('scheduled')
+    expect(kindSpeaker('schedule', 'Nightly release watch')).toBe('Nightly release watch')
+    // Never "You": the owner asked for it once, not at 03:00.
+    expect(kindSpeaker('schedule')).not.toBe('You')
+  })
+
   test('a kind the client has never heard of degrades instead of throwing', () => {
-    // `<supermux-schedule>` (plan Task 10) lands server-side first.
-    const future = 'schedule' as RecallEntryKind
-    expect(kindBadgeMeta(future)?.label).toBe('schedule')
+    // A cached SPA routinely talks to a newer server: whatever wrapper kind
+    // lands next must render as its own raw name, not throw.
+    const future = 'sourdough' as RecallEntryKind
+    expect(kindBadgeMeta(future)?.label).toBe('sourdough')
   })
 
   test('prompts stay unlabelled and stay the owner', () => {

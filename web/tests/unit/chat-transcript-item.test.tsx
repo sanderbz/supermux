@@ -141,6 +141,50 @@ describe('a colleague', () => {
   })
 })
 
+describe('a schedule', () => {
+  test('announces the schedule that fired it, once, with the ⏱ mark', () => {
+    const out = text(
+      render([
+        {
+          uuid: 's2',
+          ts: 1_760_000_002,
+          text: 'check the deploy',
+          kind: 'schedule',
+          label: 'Nightly release watch',
+        },
+        {
+          uuid: 's1',
+          ts: 1_760_000_001,
+          text: 'check the release',
+          kind: 'schedule',
+          label: 'Nightly release watch',
+        },
+      ]),
+    )
+    expect(out).toContain('Sent by schedule ⏱ Nightly release watch')
+    expect(out.match(/Sent by schedule/g)).toHaveLength(1)
+    expect(out).toContain('check the release')
+  })
+
+  test('an unnamed schedule still says a schedule sent it', () => {
+    // `recall.rs` drops a blank title rather than inventing one; the divider
+    // must still name the speaker, or the prompt reads as the owner's own.
+    const out = text(
+      render([{ uuid: 's1', ts: 1_760_000_001, text: 'run the sweep', kind: 'schedule' }]),
+    )
+    expect(out).toContain('Sent by a schedule')
+    expect(out).toContain('run the sweep')
+  })
+
+  test('the message is left-aligned — it is not the human’s bubble', () => {
+    // `MessageRow me` right-aligns; a scheduled prompt must not take that lane.
+    const html = render([
+      { uuid: 's1', ts: 1_760_000_001, text: 'check the release', kind: 'schedule', label: 'Nightly' },
+    ])
+    expect(html).not.toContain('justify-end')
+  })
+})
+
 describe('receipts', () => {
   const run: ChatEntry[] = [
     {
