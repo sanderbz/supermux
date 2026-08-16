@@ -80,10 +80,13 @@ import {
   Check,
   MessageSquare,
   Mail,
+  Pin,
+  PencilLine,
 } from 'lucide-react'
 
 import { springs, tweens } from '@/lib/springs'
 import { useAttentionContext } from '@/hooks/use-attention'
+import { useSessionConfig, pinnedBoundary } from '@/hooks/use-session-config'
 import {
   removeCollapsed,
   useCollapsibleGroups,
@@ -1562,7 +1565,21 @@ function GroupSection({
           </div>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {section.sessions.map((sess) => (
+            {section.sessions.map((sess, rowIdx) => (
+              <React.Fragment key={sess.name}>
+                {/* The pinned block's boundary (fase B2 T7): a 0.5px separator
+                    and NO "Pinned" header — the boundary is visible, the label
+                    is not needed (§12.4). `pinnedBoundary` returns null when
+                    there is nothing to separate (no pins, all pins, or a
+                    manual order that is not pinned-first), so this renders
+                    exactly when it means something. */}
+                {pinnedBoundary(section.sessions) === rowIdx && (
+                  <div
+                    aria-hidden
+                    data-vr="pinned-hairline"
+                    className="my-0.5 h-px bg-hairline"
+                  />
+                )}
               <SortableRow
                 key={sess.name}
                 session={sess}
@@ -1580,6 +1597,7 @@ function GroupSection({
                   onMoveSessionToGroup(sess.name, destGroupId)
                 }
               />
+              </React.Fragment>
             ))}
             {/* End-of-list drop slot — row-view twin of the tile-view bar
                 above. Without it the list view had NO visual for "drop at
@@ -1842,6 +1860,7 @@ function SortableRow({
         sessionStatus={session.status}
         sessionProvider={session.provider}
         sessionHostId={session.host_id}
+        sessionPinned={session.pinned}
         currentGroupId={currentGroupId}
         allSections={allSections}
         onMoveToGroup={onMoveToGroup}
@@ -1939,6 +1958,7 @@ function SessionTileWrapper({
         sessionStatus={session.status}
         sessionProvider={session.provider}
         sessionHostId={session.host_id}
+        sessionPinned={session.pinned}
         currentGroupId={currentGroupId}
         allSections={allSections}
         onMoveToGroup={onMoveToGroup}
@@ -1998,6 +2018,7 @@ function TileMoveToKebab({
   sessionStatus,
   sessionProvider,
   sessionHostId,
+  sessionPinned,
   currentGroupId,
   allSections,
   onMoveToGroup,
@@ -2009,6 +2030,8 @@ function TileMoveToKebab({
   /** Fase A5 — the two fields `flag.ts`'s eligibility guard reads. */
   sessionProvider: string
   sessionHostId?: number | null
+  /** Drives the Pin/Unpin label — the item is never "Pin" on a pinned row. */
+  sessionPinned?: boolean
   currentGroupId: string
   allSections: ReadonlyArray<Section>
   onMoveToGroup: (destGroupId: string) => void
@@ -2054,12 +2077,18 @@ function TileMoveToKebab({
 
   // Attention (fase B2 T5) — the kebab is where "Mark unread" lives.
   const { markUnread, enabled: attentionEnabled } = useAttentionContext()
+  // The phantom fields' controls (fase B2 T7). `pinned` has driven `smartSort`
+  // and the focus strip's ordering since long before B2 with NO way to set it.
+  const { togglePin, pending: configPending } = useSessionConfig()
 
   // Session info — the SAME panel the focus-page title-click opens,
   // hosted here for overview parity. Desktop = anchored Popover (we pass
   // `infoAnchorRef` as the trigger), mobile = bottom Sheet (the panel forks
   // internally; no anchor needed for the touch path through the kebab).
   const [infoOpen, setInfoOpen] = React.useState(false)
+  // "Rename" opens the SAME panel with the name editor already focused — one
+  // rename path (`use-rename-session` + `<NameEditor>`), not a second one.
+  const [renameOpen, setRenameOpen] = React.useState(false)
   const infoAnchorRef = React.useRef<HTMLButtonElement>(null)
   const navigateMorph = useNavigateMorph()
 
@@ -2142,6 +2171,30 @@ function TileMoveToKebab({
               <span>Mark unread</span>
             </DropdownMenuItem>
           )}
+          {/* Pin (fase B2 T7) — `smartSort` orders by it and nothing could set
+              it. Optimistic through `useSessionConfig`; the config PATCH emits
+              no SSE, so the hook's invalidate is what moves the row. */}
+          {/* Rename — reachable everywhere the name shows (§10), reusing the
+              info panel's own editor rather than growing a second path. */}
+          <DropdownMenuItem
+            data-vr="tile-rename"
+            disabled={busy}
+            onSelect={() => {
+              setRenameOpen(true)
+              setInfoOpen(true)
+            }}
+          >
+            <PencilLine className="size-4" aria-hidden />
+            <span>Rename</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            data-vr="tile-pin"
+            disabled={busy || configPending}
+            onSelect={() => void togglePin(sessionName, sessionPinned)}
+          >
+            <Pin className="size-4" aria-hidden />
+            <span>{sessionPinned ? 'Unpin' : 'Pin'}</span>
+          </DropdownMenuItem>
           {canStop && (
             <DropdownMenuItem
               data-vr="tile-stop"
@@ -2252,8 +2305,12 @@ function TileMoveToKebab({
       <SessionInfoPanel
         name={sessionName}
         open={infoOpen}
-        onOpenChange={setInfoOpen}
+        onOpenChange={(open) => {
+          setInfoOpen(open)
+          if (!open) setRenameOpen(false)
+        }}
         triggerRef={infoAnchorRef}
+        autoEditName={renameOpen}
         onNavigate={(name) => {
           setInfoOpen(false)
           navigateMorph(`/focus/${name}`)

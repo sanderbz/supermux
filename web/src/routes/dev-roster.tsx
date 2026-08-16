@@ -334,7 +334,25 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
           title="The pinned block"
           note={`A 0.5px separator after the pinned rows and no "Pinned" text header — the boundary is visible, the label is not needed. Renders nothing when there are no pins and nothing when everything is pinned. Benched with ${PINNED_NAMES.length} pinned of ${ROSTER_CAST.length}.`}
         >
-          <Pending task="T7" what="Pinned-first hairline" />
+          <Plate label={`${PINNED_NAMES.length} pinned of ${ROSTER_CAST.length}`}>
+            {ROSTER_CAST.slice(0, 6).map((m, i) => {
+              const pinned = PINNED_NAMES.includes(m.name)
+              const boundary =
+                !pinned && PINNED_NAMES.includes(ROSTER_CAST[i - 1]?.name ?? '')
+              return (
+                <React.Fragment key={m.name}>
+                  {boundary && (
+                    <div
+                      aria-hidden
+                      data-vr="pinned-hairline"
+                      className="my-0.5 h-px bg-hairline"
+                    />
+                  )}
+                  <BenchRow member={m} density="list" />
+                </React.Fragment>
+              )
+            })}
+          </Plate>
         </Section>
 
         <Section
