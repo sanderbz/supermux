@@ -2629,10 +2629,15 @@ mod recovery_tests {
         // The redirections matter: a background job that inherits our stdout
         // pipe keeps it open, and `output()` would block on EOF for the whole
         // 300s.
-        let out = std::process::Command::new("sh")
+        // Explicitly bash, twice: `/bin/sh` is dash on Debian/Ubuntu (this box
+        // AND the CI runners), and dash resets `trap "" TERM` in subshell
+        // children — the SIGTERM the re-proof test expects to be ignored killed
+        // the orphan and the test failed everywhere sh==dash. Bash keeps the
+        // ignore-disposition across the background fork.
+        let out = std::process::Command::new("bash")
             .arg("-c")
             .arg(format!(
-                "setsid sh -c '{command}' </dev/null >/dev/null 2>&1 & echo $!"
+                "setsid bash -c '{command}' </dev/null >/dev/null 2>&1 & echo $!"
             ))
             .output()
             .expect("fork an orphan");
