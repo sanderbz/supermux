@@ -33,7 +33,7 @@ import * as React from 'react'
 
 import { cn } from '../../lib/utils'
 
-import { atRows, pickerOptionId, PICKER_LISTBOX_ID, slashRows } from './slash'
+import { acceptRow, atRows, pickerOptionId, PICKER_LISTBOX_ID, slashRows } from './slash'
 import type { EntityPickerData, EntityRow } from './slash'
 import type { ComposerPickerApi } from './use-composer'
 
@@ -43,8 +43,21 @@ export interface EntityPickerProps extends EntityPickerData {
   kind: '@' | '/'
   query: string
   surface?: 'desktop' | 'phone'
-  /** Insert this text over the trigger token (the composer's `picker.pick`). */
-  onPick: (value: string) => void
+  /**
+   * Take this row (the composer's `picker.pick`).
+   *
+   * THE WHOLE ROW, not just `row.value`, even though today's only consumer
+   * collapses to `.value` immediately: the row is the picker's identity for the
+   * thing that was chosen — `kind`, the slug in `id`/`meta`, the label a
+   * receipt would name — and a caller that has only the inserted string has to
+   * re-derive all of it by parsing the draft back.
+   *
+   * IT STILL ONLY EVER INSERTS. Picking a session does NOT dispatch to it
+   * (fase B4 T4.4): the hand-off happens at SUBMIT, after the send control has
+   * visibly relabelled, so nothing is ever sent by surprise. That is a design
+   * constraint, not an unfinished edge — see `delegate-intent.ts`.
+   */
+  onPick: (row: EntityRow) => void
   /** Hand the composer the two verbs its key handler needs. */
   bind: (api: ComposerPickerApi | null) => void
   /** Report the highlighted row upward, so the FIELD can carry
@@ -106,9 +119,12 @@ export default function EntityPicker({
         setSel({ key: now.key, index: next })
       },
       accept: () => {
-        const row = live.current.rows[live.current.activeIndex]
+        // `false` means "nothing to accept" and the keystroke keeps its normal
+        // meaning — Enter still SENDS. The decision is `acceptRow`'s so it can
+        // be asserted without a DOM (`slash.ts`).
+        const row = acceptRow(live.current.rows, live.current.activeIndex)
         if (!row) return false
-        onPick(row.value)
+        onPick(row)
         return true
       },
     })
@@ -124,7 +140,7 @@ export default function EntityPicker({
       loading={loading}
       surface={surface}
       onHover={(i) => setSel({ key, index: i })}
-      onPick={(row) => onPick(row.value)}
+      onPick={onPick}
     />
   )
 }

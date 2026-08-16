@@ -758,6 +758,64 @@ export function liveStates(nowMs: number): LiveState[] {
       },
     },
     {
+      id: 'handoff',
+      title: 'Hand-off — the send control says where the words are going',
+      board: 'master plan §13.2 (the composer hands work over)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // The MOMENT THAT MATTERS in T4: the draft opens with `@patch`, so
+        // Enter no longer sends here — and the control has already relabelled
+        // to "Hand to Patch". The whole safety argument is that this is visible
+        // BEFORE the key is pressed, which makes it a screenshot.
+        draft: '@patch can you re-run the export test on fix/money?',
+      },
+    },
+    {
+      id: 'handoff-sent',
+      title: 'Hand-off — the receipt, naming who has it now',
+      board: 'master plan §13.2 (the receipt)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // The box is empty because the hand-off landed: the draft is cleared on
+        // SUCCESS only. The durable `Delegated to ●Patch` line arrives in the
+        // transcript a tick later from the ledger — this banner is the
+        // immediate answer, not a second copy of it.
+        draft: '',
+        notice: { kind: 'handoff-sent', detail: 'Patch' },
+      },
+    },
+    {
+      id: 'handoff-failed',
+      title: 'Hand-off — refused, with the sentence still in the box',
+      board: 'master plan §13.2 (the failure branch)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // The draft is STILL THERE, and that is the thing under review: a
+        // hand-off that 500s must never eat the user's text. The server's own
+        // sentence is the detail — it is written to be read.
+        draft: '@patch can you re-run the export test on fix/money?',
+        notice: {
+          kind: 'handoff-failed',
+          detail: 'prompt may not contain supermux wrapper markup',
+        },
+      },
+    },
+    {
       id: 'panel',
       title: 'Panel — a full-screen TUI screen is up, so the send is refused and named',
       board: 'daily-driver QA #1',
@@ -921,6 +979,9 @@ export const STATE_IDS = [
   'composing',
   'slash',
   'refused',
+  'handoff',
+  'handoff-sent',
+  'handoff-failed',
   'panel',
   'dialog-live',
   'answering',

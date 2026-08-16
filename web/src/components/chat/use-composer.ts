@@ -19,6 +19,7 @@ import {
   setDraft,
   subscribeDraft,
 } from './composer-draft'
+import { handoffLabel, readDelegateIntent, type DelegateIntent } from './delegate-intent'
 import type { PeekLens } from './peek-lens'
 import { classifySlash, readTrigger, slashName } from './slash'
 
@@ -163,6 +164,16 @@ export interface ComposerNotice {
     /** A command that is not one of Claude's built-ins went out AS TEXT. Not a
      *  refusal — a receipt, so a typo does not quietly become a message. */
     | 'slash-note'
+    /** The draft was HANDED TO A COLLEAGUE rather than sent here (fase B4 T4).
+     *  A receipt, not a refusal — and the one that matters most on this
+     *  surface, because it is the only confirmation that the words left for
+     *  somewhere else. `detail` is the recipient, as a person reads it. */
+    | 'handoff-sent'
+    /** The hand-off was refused or never landed. The draft is still in the box
+     *  — a delegation that 500s must never eat the user's text. `detail` is the
+     *  server's own sentence ("prompt may not contain supermux wrapper
+     *  markup"), which is written to be read. */
+    | 'handoff-failed'
   /** The evidence: the terminal's own draft, the command, or the error. */
   detail?: string
 }
@@ -292,6 +303,34 @@ export function draftAfterSend(after: string, raw: string): string {
   return (after.slice(0, at) + after.slice(at + raw.length)).replace(/^\s+/, '')
 }
 
+/**
+ * What a finished hand-off leaves behind: the new draft, and the receipt.
+ *
+ * Extracted from the hook (fase B4 T4.5) so BOTH branches are assertable
+ * without a DOM — the same reason `sendGate` and `draftAfterSend` live out
+ * here. The branch that matters is the failure one: a hand-off that 500s must
+ * leave the sentence in the box, and "we only clear on success" is a claim a
+ * refactor can break in one line with nothing to catch it.
+ *
+ * @param after     the draft as it stands NOW (the user kept typing through the
+ *                  round-trip — measured at ~40 ms after Enter)
+ * @param raw       the draft as it was when Enter was pressed
+ * @param recipient the colleague, as a person reads them
+ * @param error     present → the hand-off did not land
+ */
+export function handoffResult(
+  after: string,
+  raw: string,
+  recipient: string,
+  error?: string,
+): { draft: string; notice: ComposerNotice } {
+  if (error !== undefined) {
+    return { draft: after, notice: { kind: 'handoff-failed', detail: error || undefined } }
+  }
+  // Subtraction, not assignment — see `draftAfterSend`.
+  return { draft: draftAfterSend(after, raw), notice: { kind: 'handoff-sent', detail: recipient } }
+}
+
 export interface UseComposerOptions {
   name: string
   /** The input plane. In the chat renderer this is the REST one. */
@@ -306,6 +345,20 @@ export interface UseComposerOptions {
    *  is on screen above this composer. Second source for the pre-send gate —
    *  see `sendGate`. */
   dialogCard?: boolean
+  /**
+   * The `@`-hand-off plane (fase B4 T4). ALL THREE OR NONE: without them the
+   * composer has no way to tell a colleague from a word, so `@patch do x` stays
+   * an ordinary message and nothing changes. A bench render and every existing
+   * test therefore keep their exact behaviour by omitting this.
+   */
+  handoff?: {
+    /** Lowercased known name → slug. The same index the chips use. */
+    mentions: ReadonlyMap<string, string>
+    /** Slug → display name, for the control's label. */
+    names?: ReadonlyMap<string, string>
+    /** Deliver. Resolving means the SERVER accepted and delivered it. */
+    send: (to: string, prompt: string) => Promise<unknown>
+  }
 }
 
 /**
@@ -349,6 +402,16 @@ export interface ComposerHandle {
   submit: () => void
   stop: () => void
   insert: (text: string) => void
+  /**
+   * The draft currently reads as a hand-off (fase B4 T4.4), so Enter will go to
+   * `to` instead of to this session.
+   *
+   * Derived from the live draft, published so the SEND CONTROL can relabel —
+   * "Hand to ●Patch" — while the intent holds. The change of meaning has to be
+   * visible BEFORE the key is pressed; a composer that quietly re-routed on
+   * Enter would be the worst version of this feature.
+   */
+  handoff: { to: string; label: string } | null
   /** The `@`/`/` surface (fase A4 T9). */
   picker: ComposerPickerState
   onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
@@ -364,6 +427,7 @@ export function useComposer({
   peek,
   active,
   dialogCard = false,
+  handoff,
 }: UseComposerOptions): ComposerHandle {
   const draft = React.useSyncExternalStore(
     React.useCallback((fn) => subscribeDraft(name, fn), [name]),
@@ -406,6 +470,16 @@ export function useComposer({
   // has re-rendered must still be refused (state alone would let it through).
   const sendingRef = React.useRef(false)
 
+  // One reading of "is this a hand-off", used by both the SUBMIT path (which
+  // must read the store, because the box is not frozen while a send is in
+  // flight) and the RENDER path (which reads the rendered draft, because that
+  // is what the user can see when the label changes).
+  const readIntent = React.useCallback(
+    (draft: string): DelegateIntent | null =>
+      handoff ? readDelegateIntent(draft, handoff.mentions, name) : null,
+    [handoff, name],
+  )
+
   const submit = React.useCallback(() => {
     // `raw` is what the box held when Enter was pressed; `text` is what goes on
     // the wire. Both are kept because the box is NOT frozen while the send is in
@@ -414,6 +488,44 @@ export function useComposer({
     const text = raw.trim()
     if (text.length === 0 || sendingRef.current) return
     setNotice(null)
+    // THE HAND-OFF BRANCH (fase B4 T4), beside the slash gate and before it:
+    // `@patch /clear` is a message to a colleague, not a slash command this
+    // session is about to run, and the slash classifier would never see a
+    // leading `@` anyway.
+    //
+    // NO PEEK GATE ON THIS PATH, deliberately. The pre-send peek exists because
+    // `POST /send` pastes at THIS session's TUI prompt and would concatenate
+    // onto a half-typed sentence there. A delegation touches this pty not at
+    // all — the server delivers to the RECIPIENT's — so gating it on the local
+    // terminal's draft would refuse a hand-off for a reason that has nothing to
+    // do with it. (The recipient's own prompt is the server's business; a
+    // delegated prompt goes through the same lifecycle path a human send does.)
+    const intent = readIntent(raw)
+    if (intent && handoff) {
+      void (async () => {
+        sendingRef.current = true
+        setSending(true)
+        const recipient = handoffLabel(intent.to, handoff.names)
+        let error: string | undefined
+        try {
+          await handoff.send(intent.to, intent.prompt)
+        } catch (err) {
+          // THE DRAFT SURVIVES A FAILURE — `handoffResult` is where that is
+          // decided, and where it is asserted. `''` rather than `undefined` on
+          // an unworded throw: the field is optional, the outcome is not.
+          error = err instanceof Error ? err.message : ''
+        }
+        try {
+          const out = handoffResult(getDraft(name), raw, recipient, error)
+          setDraft(name, out.draft)
+          setNotice(out.notice)
+        } finally {
+          sendingRef.current = false
+          setSending(false)
+        }
+      })()
+      return
+    }
     // THE SLASH GATE (fase A4 T9), before the peek because it needs no network
     // — and therefore it cannot fail open when the session or the command list
     // is unreachable, which is the one property a gate has to have.
@@ -479,7 +591,7 @@ export function useComposer({
         setSending(false)
       }
     })()
-  }, [dialogCard, input, name, peek])
+  }, [dialogCard, handoff, input, name, peek, readIntent])
 
   const stop = React.useCallback(() => {
     // Escape is the interrupt every one of the three TUIs understands; the
@@ -614,6 +726,16 @@ export function useComposer({
     [active, closePicker, name, pickerOpen, set, stop, submit],
   )
 
+  // Derived, never stored — the same discipline as `trigger`. A second copy of
+  // "the draft currently means a hand-off" in state is a second thing to get
+  // out of step with the box.
+  const intent = React.useMemo(() => readIntent(draft), [draft, readIntent])
+  const handoffState = React.useMemo(
+    () =>
+      intent ? { to: intent.to, label: handoffLabel(intent.to, handoff?.names) } : null,
+    [handoff?.names, intent],
+  )
+
   return {
     draft,
     setDraft: set,
@@ -624,6 +746,7 @@ export function useComposer({
     submit,
     stop,
     insert,
+    handoff: handoffState,
     picker: {
       open: pickerOpen,
       kind: trigger?.kind ?? '@',

@@ -298,6 +298,29 @@ export interface EntityRow {
   warn?: string
 }
 
+/**
+ * The row a picker `accept` would take, or `null` for "nothing to accept".
+ *
+ * Extracted from the component (fase B4 T4.6) because it carries a KEYBOARD
+ * CONTRACT that a rendered test cannot reach: `accept()` returns `false` when
+ * there is nothing to take, and the composer's Enter then falls through to
+ * SUBMIT. Get that backwards — return `true` on an empty list — and a query
+ * matching nothing silently swallows the user's message; return `false` on a
+ * real row and Enter both accepts and sends.
+ *
+ * The index is clamped rather than trusted: the highlight lives one render out
+ * of the list it points into (`entity-picker.tsx` reads both through a ref), so
+ * a list that shrank between the keystroke and the read must yield nothing, not
+ * a neighbouring row the user never saw.
+ */
+export function acceptRow(
+  rows: readonly EntityRow[],
+  activeIndex: number,
+): EntityRow | null {
+  if (activeIndex < 0 || activeIndex >= rows.length) return null
+  return rows[activeIndex] ?? null
+}
+
 /** The two fields a mention needs — structural on purpose, so this ranks the
  *  shared `useSessions()` rows AND the bench's fixture cast without either of
  *  them having to be the other's type. */

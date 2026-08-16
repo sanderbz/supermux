@@ -109,7 +109,10 @@ export function ChatComposer({
     query: handle.picker.query,
     surface,
     ...pickerData,
-    onPick: handle.picker.pick,
+    // The picker hands over the ROW; the composer's insert seam wants the text
+    // that lands in the draft. Collapsing here rather than in the picker keeps
+    // the row's identity available to any future caller (`entity-picker.tsx`).
+    onPick: (row) => handle.picker.pick(row.value),
     bind: handle.picker.bind,
     onActive: setActiveOption,
   }
@@ -202,8 +205,18 @@ export function ChatComposer({
                     contract) and the dock keeps its own Stop. */}
                 {canSend ? (
                   <TrailingButton
+                    // THE CONTROL SAYS WHERE THE WORDS ARE GOING (fase B4
+                    // T4.4). While the draft reads as a hand-off, Enter goes to
+                    // a COLLEAGUE rather than to this session — so the label
+                    // changes before the key is pressed, not after. Same
+                    // element, same cell, no swap: only the sentence differs.
                     testId="chat-send"
-                    label={`Send to ${label}`}
+                    label={
+                      handle.handoff
+                        ? `Hand to ${handle.handoff.label}`
+                        : `Send to ${label}`
+                    }
+                    data-handoff={handle.handoff ? handle.handoff.to : undefined}
                     phone={phone}
                     onClick={handle.submit}
                     disabled={handle.sending}
@@ -253,6 +266,7 @@ function TrailingButton({
   onClick,
   disabled,
   children,
+  ...rest
 }: {
   testId: string
   label: string
@@ -260,6 +274,9 @@ function TrailingButton({
   onClick: () => void
   disabled?: boolean
   children: React.ReactNode
+  /** Pass-through data attributes (the hand-off marker) — the E2E needs a way
+   *  to assert WHO the control is aimed at without reading its copy. */
+  'data-handoff'?: string
 }) {
   return (
     <motion.button
@@ -267,6 +284,7 @@ function TrailingButton({
       data-testid={testId}
       aria-label={label}
       title={label}
+      {...rest}
       onClick={onClick}
       disabled={disabled}
       aria-busy={disabled || undefined}
@@ -345,14 +363,25 @@ function ComposerBanner({
                 “{notice.detail.slice(0, DRAFT_PREVIEW_CHARS)}”
               </span>
             )}
-          {(notice.kind === 'send-failed' || notice.kind === 'stop-failed') &&
+          {(notice.kind === 'send-failed' ||
+            notice.kind === 'stop-failed' ||
+            notice.kind === 'handoff-failed') &&
             notice.detail && (
               <span className="min-w-0 truncate text-ink-2">{notice.detail}</span>
             )}
+          {/* The recipient reads as a name, in the sentence, after "Handed to".
+              Not a chip: this banner is transient chrome and a face here would
+              compete with the durable `Delegated to ●x` line the ledger writes
+              into the transcript a moment later. */}
+          {notice.kind === 'handoff-sent' && notice.detail && (
+            <span className="min-w-0 truncate font-medium text-ink">{notice.detail}</span>
+          )}
           <span className="ml-auto flex items-center gap-2">
             {/* A NOTE is not a refusal: the message went. Offering the terminal
                 beside it would imply something still has to be done there. */}
-            {onOpenTerminal && notice.kind !== 'slash-note' && (
+            {onOpenTerminal &&
+              notice.kind !== 'slash-note' &&
+              notice.kind !== 'handoff-sent' && (
               <button
                 type="button"
                 data-testid="chat-composer-open-terminal"
@@ -360,8 +389,8 @@ function ComposerBanner({
                 className="rounded-full px-2 py-1 text-[12.6px] text-ink underline underline-offset-2"
               >
                 Open terminal
-              </button>
-            )}
+                </button>
+              )}
             <button
               type="button"
               aria-label="Dismiss"
@@ -406,6 +435,13 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // what it does to the pty, and the ones it can't rule out leave a widget open.
   'slash-unverified': 'is a terminal command chat can’t verify — it wasn’t sent.',
   'slash-note': 'isn’t a built-in command — the session got it as text.',
+  // The receipt for the one action on this surface whose result is somewhere
+  // else entirely. It names the recipient and it says "handed", not "sent":
+  // what landed is a request in a colleague's context, not a message here.
+  'handoff-sent': 'Handed to',
+  // The draft is still in the box, and saying so is the point — the user's
+  // instinct after a failed send is to check whether they lost the sentence.
+  'handoff-failed': 'That hand-off didn’t go through — your message is still here.',
 }
 
 /** Send — an upward arrow, the one glyph every messenger agrees on. */

@@ -14,6 +14,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 
+import { readDelegateIntent } from '../../src/components/chat/delegate-intent'
 import { toDisplayList } from '../../src/components/chat/entries'
 import { mentionSegments } from '../../src/components/chat/grouping'
 import {
@@ -161,6 +162,31 @@ describe('coverage: every state the surface can be in', () => {
     expect(rows.every((r) => r.value.startsWith('@'))).toBe(true)
   })
 
+  test('the hand-off states are ones the shipped RULE would actually produce', () => {
+    // A bench that merely LOOKS like a relabelled send control is worth
+    // nothing. `handoff` must read as an intent through `readDelegateIntent`,
+    // and — the important half — `handoff-sent` must NOT, because its draft is
+    // empty: a receipt with the control still saying "Hand to" would be a
+    // screenshot of a state the app cannot be in.
+    const armed = byId.get('handoff')!.composer!
+    expect(readDelegateIntent(armed.draft, MENTIONS, 'release-train')).toEqual({
+      to: 'patch',
+      prompt: 'can you re-run the export test on fix/money?',
+    })
+    expect(armed.notice).toBeUndefined()
+
+    const sent = byId.get('handoff-sent')!.composer!
+    expect(sent.draft).toBe('')
+    expect(readDelegateIntent(sent.draft, MENTIONS, 'release-train')).toBeNull()
+    expect(sent.notice).toEqual({ kind: 'handoff-sent', detail: 'Patch' })
+
+    // The failure branch's whole claim: the sentence survived.
+    const failed = byId.get('handoff-failed')!.composer!
+    expect(failed.draft).toBe(armed.draft)
+    expect(failed.notice?.kind).toBe('handoff-failed')
+    expect(failed.notice?.detail?.length).toBeGreaterThan(0)
+  })
+
   test('slash shows a refusal the classifier actually makes', () => {
     const c = byId.get('slash')!.composer!
     expect(classifySlash(c.draft)).toBe('picker')
@@ -202,6 +228,9 @@ describe('coverage: every state the surface can be in', () => {
       'composing',
       'slash',
       'refused',
+      'handoff',
+      'handoff-sent',
+      'handoff-failed',
       'panel',
     ])
   })

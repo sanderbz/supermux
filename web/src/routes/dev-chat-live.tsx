@@ -34,6 +34,7 @@ import { ChatComposer } from '@/components/chat/composer'
 import { ChatConversation, PHONE_QUERY } from '@/components/chat/conversation'
 import { toDisplayList } from '@/components/chat/entries'
 import { EntityPickerView } from '@/components/chat/entity-picker'
+import { handoffLabel, readDelegateIntent } from '@/components/chat/delegate-intent'
 import { atRows, slashRows } from '@/components/chat/slash'
 import type { ComposerHandle } from '@/components/chat/use-composer'
 import { entryLabels } from '@/components/chat/grouping'
@@ -245,6 +246,13 @@ function BenchComposer({
     submit: noop,
     stop: noop,
     insert: noop,
+    // The send control's hand-off relabel (fase B4 T4.4) — derived from the
+    // fixture's own draft through the SHIPPED rule, so a bench that says
+    // "Hand to ●Patch" is one the composer would also say it on.
+    handoff: (() => {
+      const intent = readDelegateIntent(spec.draft, MENTIONS, name)
+      return intent ? { to: intent.to, label: handoffLabel(intent.to, NAMES) } : null
+    })(),
     picker: {
       open: spec.picker != null,
       kind: spec.picker?.kind ?? '@',

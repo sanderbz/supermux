@@ -9,6 +9,7 @@
 
 export { ApiError } from './client'
 
+export * from './agents'
 export * from './sessions'
 export * from './board'
 export * from './boards'

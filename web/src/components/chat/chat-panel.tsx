@@ -27,7 +27,7 @@ import { useNavigate } from 'react-router-dom'
 import type { TileSession } from '@/components/session-tile/types'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSessions } from '@/hooks/use-sessions'
-import { commandsApi, filesApi, sessionsApi } from '@/lib/api'
+import { agentsApi, commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
 import { detailFor, topAttention } from './attention'
@@ -275,12 +275,31 @@ export default function ChatPanel({
       ? { text: session.last_send_text, atS: session.last_send_at ?? 0 }
       : null,
   })
+  // ── The `@`-hand-off plane (fase B4 T4) ────────────────────────────────────
+  // A draft that OPENS with `@colleague` is a hand-off, not a message, and the
+  // send control says so before Enter is pressed. Dispatch is a real
+  // `POST /api/agents/delegate` — the same endpoint an agent's curl uses — with
+  // `actor: 'human'`, so the ledger records the owner rather than attributing
+  // their instruction to their own agent (`lib/api/agents.ts` is explicit that
+  // this is labelling, not authentication).
+  //
+  // The index is the one this panel already derives for the chips: a name that
+  // is not a live session can never become a recipient.
+  const handoff = React.useMemo(
+    () => ({
+      mentions,
+      names,
+      send: (to: string, prompt: string) => agentsApi.delegate({ from: name, to, prompt }),
+    }),
+    [mentions, name, names],
+  )
   const composer = useComposer({
     name,
     input: pending.input,
     peek,
     active: session?.status === 'active',
     dialogCard,
+    handoff,
   })
 
   // ── What the `@`/`/` popover offers (fase A4 T9) ───────────────────────────
