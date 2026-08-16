@@ -469,7 +469,16 @@ export function MobileBottomPanel({
           inert={state === 'closed'}
         >
           <div
-            role="listbox"
+            // NOT a listbox (fase B3 T7.4). It carried `role="listbox"` while
+            // its pills carried no `role="option"` — a listbox with no options,
+            // which is a container a screen reader announces and then finds
+            // empty. This rail is a horizontally scroll-snapping strip of
+            // buttons, not a vertical list of choices: it has no highlight, no
+            // arrow-key navigation and no selection model, so `tablist`/`tab`
+            // (with the current session as the selected tab) describes what it
+            // actually is. It is deliberately NOT converted to an EntityPicker —
+            // a scroll-snap rail is not a result list.
+            role="tablist"
             aria-label="Switch session"
             // pt-2 = the PILLS_GAP breathing above the pill row (between dock
             // buttons and pills). pb-2 = PILLS_PB inner breathing below the row,
@@ -536,6 +545,8 @@ function SessionPill({
   return (
     <motion.button
       type="button"
+      role="tab"
+      aria-selected={isCurrent}
       data-vr-session-name={session.name}
       data-vr-current={isCurrent || undefined}
       whileTap={{ scale: 0.94 }}

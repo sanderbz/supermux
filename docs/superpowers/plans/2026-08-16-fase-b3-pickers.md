@@ -514,7 +514,7 @@ iPhone 14 Pro, both themes.
       Each mirror row's `meta` names the canonical surface ("also in Display"). Where B2 has
       centralised the pref, use the server pref; where it has not, use today's store and leave a
       `TODO(B2)` comment naming the file.
-- [ ] **T5.4** Board verbs: **leave exactly as they are.** They are B2's to delete. Say so in the PR
+- [x] **T5.4** Board verbs: **leave exactly as they are.** They are B2's to delete. Say so in the PR
       body; do not pre-emptively remove them.
 
 **Verify:** unit tests for the NAV-derivation and for "every mirror row's handler is
@@ -567,7 +567,7 @@ confirm it goes red; VR the cheatsheet, both themes.
       and that the sheet does not drag-dismiss when the user swipes the *list*. If Vaul's drag
       captures the list scroll, gate it behind `Drawer.Content`'s scroll-lock rather than
       re-implementing the sheet.
-- [ ] **T7.4** Cheap a11y fix while in this file's blast radius: `mobile-bottom-panel.tsx:472-478`
+- [x] **T7.4** Cheap a11y fix while in this file's blast radius: `mobile-bottom-panel.tsx:472-478`
       declares `role="listbox" aria-label="Switch session"` over the pill rail but the pills
       (`SessionPill:527`) carry **no `role="option"`** — a listbox with no options. Either add the
       role or drop the listbox role for a `role="tablist"`/plain group; do **not** convert the rail to
@@ -597,7 +597,7 @@ composer draft; VR both themes.
 Behind `VITE_SM_TRANSCRIPT_DEEPLINK`, default **off**, flipped in a separate commit per the PR-#27
 discipline.
 
-- [ ] **T9.1** **Spike first, decide second (timeboxed).** Determine whether `recall.rs`'s reader can
+- [x] **T9.1** **Spike first, decide second (timeboxed).** Determine whether `recall.rs`'s reader can
       cheaply carry the byte offset and `conversation_id` per entry. If yes: add
       `offset: Option<u64>` + `conversationId: Option<String>` to `RecallEntry` (`recall.rs:96-113`),
       `#[serde(skip_serializing_if = "Option::is_none")]` so no client breaks, with a Rust unit test.
@@ -786,6 +786,52 @@ target to one function.
 
 ---
 
+## 5b. T9.1 — the spike, and its verdict
+
+**Verdict: NO. B3 ships no server change, and T9 is not built.** The plan
+explicitly allows this conclusion (§2 T9.1, §4.1) and the evidence is below, so
+the next fase inherits a decision rather than a rediscovery.
+
+The question was whether `recall.rs`'s reader can cheaply carry a byte `offset`
+and a `conversationId` per entry, so a recall hit could be turned into a chat-
+history cursor. It can carry the offset. **It cannot carry a meaningful one**,
+for three independent reasons — any one of which is fatal.
+
+1. **The offset would address the wrong file for most hits.** Recall's own
+   reason to exist is `scope=project`, and `files_for_scope`
+   (`server/src/sessions/recall.rs:476-510`) enumerates **every `*.jsonl` in the
+   project directory**, mtime-sorted. A hit therefore routinely comes from a
+   conversation that is not the one on screen. The chat plane's cursor is
+   `"<cc_conversation_id>:<byte offset>"` and `history_page` resolves it against
+   that one file, refusing a foreign one with `409 …re-seed`
+   (`chat/ws.rs:133-163`). So for the majority of hits the field would be
+   correctly rejected, and for the minority where it matches, the client already
+   has the cheaper path it was going to use anyway.
+2. **An offset is not an address in this format.** One physical JSONL line fans
+   out to N entries that share its start offset, and the chat plane's own
+   identity test is `a.offset() == b.offset() && a.agent_id() == b.agent_id()`
+   (`chat/ws.rs:217-263`). Recall does not model `agent_id` at all. Shipping the
+   offset alone would hand the client a value that looks like an address and
+   collides between a main-transcript entry and a subagent one.
+3. **It is not free to compute, either.** Both readers stream with
+   `BufReader::lines()` (`recall.rs:535`, `:673`), which discards the line
+   terminator, and both `trim()` before use — so a true byte offset means
+   switching to `read_line` with manual `\r\n` accounting. Ten lines, but ten
+   lines in a hot path that `read_chat_turns_cached` (`:1002`) memoises by path,
+   for a field two thirds of its consumers must ignore.
+
+**What the honest v1 would have been** is unchanged from §0.3 and still stands
+for whoever picks this up: the `uuid` plus `GET /chat/entry/{uuid}`
+(`ws.rs:807`), a `data-entry-uuid` on the transcript row, and the bounded
+8-page `loadOlder` walk. None of it needs a server change — which is what §4.1
+predicted, and the spike confirms.
+
+**Recorded as future work, with the hook:** the real fix is an index, not a
+field. The tailer is already the single reader of each transcript
+(`sessions/chat/mod.rs:15-18`), so it is the natural place to write one.
+
+---
+
 ## 6. Execution ledger
 
 Base `a7cc52c` (`main`). Budget at branch point: **entry 144.94 / 160 · app 209.79 / 210 · CSS 19.82 / 30.**
@@ -797,3 +843,6 @@ Base `a7cc52c` (`main`). Budget at branch point: **entry 144.94 / 160 · app 209
 | T2 promote the primitive | done | 210.25 (**over**) | `ui/entity-picker.tsx` + `lib/entity.ts`; scrollIntoView defect fixed; `data-highlighted`; `--sm-popover-shadow`; `/dev/pickers`; BRAND §6c.1. A move that adds capability cannot pay for itself — T4 is the payer. |
 | T3 both type-ahead popovers | done | **210.84** (over) | scheduler rides `anchor="field"`, its keyboard engine and its `includes()` ranker deleted. Forced two extractions: `lib/rank.ts` and `chat/composer-keys.ts`, so the scheduler chunk stops inheriting chat's command table and 800-line hook. VR: chat popover delta confined to the row inset/radius. |
 | T4 palette on the primitive | done (T4.4 deferred) | **210.23** (over by 0.23) | `PaletteRowView` (96 lines), the five `includes()` predicates and the THIRD keyboard engine deleted; group headings; `resolveEntityTarget` is the only pick path. Paid back 0.61 KB of T3's 1.05. Three further attempts at recovery (barrel removal, chunk consolidation, moving chat's empty-state copy out of the primitive) returned 0.02 KB total — the remainder is §14 capability, not packaging. **T4.4 (mobile entry) and T5–T9 deferred: all net-additive, and the ceiling is spent.** |
+| T7.4 a11y (pill rail) | done | 210.23 (±0) | `role="listbox"` with no options → `tablist`/`tab`. A rail with no highlight, no arrow-key nav and no selection model was never a listbox. Not converted to a picker: a scroll-snap strip is not a result list. |
+| T9.1 spike | done — **verdict NO** | 0 (no code) | Recall's offset would address the wrong file for `scope=project` hits, is not a unique address (subagent entries share offsets), and is not free to compute. §5b records the evidence and the indexing hook. |
+| T4.4, T5, T6, T7.1–T7.3, T8, T9.2–T9.6 | **deferred** | would exceed 210 | All net-additive. Deferred at a task boundary rather than shipped over a ratcheted gate or paid for by deleting a §14 deliverable. |
