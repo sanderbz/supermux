@@ -123,12 +123,17 @@ pub async fn run(state: AppState, sched: Schedule, trigger: Trigger) {
             } else {
                 format!("'{title}' errored: {note}")
             };
+            let payload = crate::notify::PushPayload::simple(
+                format!("schedule '{title}' errored"),
+                body,
+                "/scheduler",
+                crate::notify::Tier::Schedule,
+            );
             let _ = crate::push::send_push_for(
                 &st,
                 crate::db::push::NotifCategory::ScheduleError,
-                &format!("schedule '{title}' errored"),
-                &body,
-                "/scheduler",
+                &payload,
+                None,
             )
             .await;
         });

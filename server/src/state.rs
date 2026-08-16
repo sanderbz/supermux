@@ -70,6 +70,16 @@ pub struct SessionActivity {
     /// `SessionStart`) — no hook ever reports the user's choice. In-memory only,
     /// like everything else here.
     pub permission: Option<PermissionAsk>,
+    /// Claude's own `Notification` message ("Claude is waiting for your
+    /// input", a permission prompt it wants surfaced, …), VERBATIM.
+    ///
+    /// This is the one net-new delta field of the notification redesign, and it
+    /// exists so the lock screen and the conversation cannot disagree: the push
+    /// body for a notice IS this string, and the chat surface renders the same
+    /// one. Cleared exactly where `permission` clears — the notice describes a
+    /// block, and the same events that prove a dialog resolved prove the block
+    /// is over. In-memory only.
+    pub notice: Option<String>,
 }
 
 impl SessionActivity {
@@ -82,6 +92,7 @@ impl SessionActivity {
             && self.error.is_none()
             && self.subagents == 0
             && self.permission.is_none()
+            && self.notice.is_none()
     }
 }
 
@@ -337,16 +348,18 @@ pub struct AppState {
     /// Settings → Notifications — the diagnostic surface that answers "why
     /// didn't my phone ring?" without a log grep. Cheap `Arc` clone.
     pub push_attempts: Arc<crate::push::AttemptLog>,
-    /// Per-session pending push debounce timers. On each notify-worthy
-    /// status transition, `maybe_push_on_transition` cancels the prior handle
-    /// for the session and starts a fresh one — the trailing-edge "wait for
-    /// quiet" pattern. The timer task re-reads the session's current status
-    /// when it expires, then sends only if the state still implies the same
-    /// category. Collapses both the `Starting→Active→Idle` bootup flurry and
-    /// the team-lead-bouncing-through-Idle pattern (a lead orchestrating
-    /// teammates pulses Idle every few seconds) into one notification fired
-    /// after the system actually settles. Inserting cancels the prior task
-    /// via the abort handle stored alongside.
+    /// Per-session pending notification tasks — one slot per session, and
+    /// raising a new event CANCELS the one it replaces (via the abort handle
+    /// stored here).
+    ///
+    /// This is no longer a status-transition debounce: notifications are hook
+    /// anchored now (`crate::notify`), so there is no flapping to coalesce. It
+    /// survives for two reasons. (1) The `Stop` push waits out a short
+    /// transcript-flush grace so the agent's closing line has landed on disk
+    /// before it is read back — during which a second `Stop`, or an
+    /// intervening permission dialog, must replace it rather than double-buzz.
+    /// (2) A deleted or renamed session must be able to cancel a send that is
+    /// still in flight for it.
     pub pending_pushes: Arc<DashMap<String, tokio::task::AbortHandle>>,
     /// Persistent SSH ControlMaster pool. One master per
     /// remote host, shared by every `Transport::Ssh` shell-out; warmed on
@@ -891,7 +904,8 @@ impl AppState {
             || entry.activity_kind != before.activity_kind
             || entry.error != before.error
             || entry.subagents != before.subagents
-            || entry.permission != before.permission;
+            || entry.permission != before.permission
+            || entry.notice != before.notice;
         let empty = entry.is_empty();
         drop(entry);
         if empty {
@@ -973,10 +987,25 @@ impl AppState {
     /// Clear `name`'s live permission request. Called from every event that can
     /// only happen once the dialog resolved — the outcome itself is never
     /// reported by a hook, so "something else happened" IS the resolution signal.
+    ///
+    /// The pending NOTICE clears with it: both describe "the agent is blocked
+    /// on you", and every event that proves the dialog resolved proves the
+    /// notice is stale too. Keeping them in one call is what stops the two from
+    /// drifting apart in some future arm.
     /// Returns whether it changed.
     pub fn clear_permission_request(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.permission = None;
+            a.notice = None;
+        })
+    }
+
+    /// Set `name`'s live agent NOTICE — Claude's own `Notification` message,
+    /// verbatim. Returns whether it changed, so an identical re-fire neither
+    /// re-broadcasts nor re-pushes.
+    pub fn set_notice(&self, name: &str, message: String) -> bool {
+        self.mutate_activity(name, |a| {
+            a.notice = Some(message);
         })
     }
 
@@ -1097,21 +1126,6 @@ impl AppState {
             .entry(name.to_string())
             .or_insert_with(|| watch::channel(("unknown".to_string(), 0)).0)
             .clone()
-    }
-
-    /// The human-readable reason to put in a web-push notification body for
-    /// `name` transitioning into `status`. Generic by design:
-    /// a parallel worker is enriching a per-session blocked
-    /// reason / `last_error` in this struct; when that lands, this is the single
-    /// place to prefer it (e.g. `self.last_error.get(name)` / a blocked-reason
-    /// map) before falling back to these generics — keeping the push wiring
-    /// additive and the fallback always-present.
-    pub fn push_reason_for(&self, _name: &str, status: Status) -> String {
-        match status {
-            Status::Waiting => "The agent is waiting for your input.".to_string(),
-            Status::Stopped => "The agent stopped.".to_string(),
-            _ => "The agent needs your attention.".to_string(),
-        }
     }
 
     /// Get (creating on first use) the per-session lock.

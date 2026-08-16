@@ -27,6 +27,7 @@ use axum::body::Bytes;
 
 use crate::db;
 use crate::error::AppError;
+use crate::notify::{self, NotifEvent};
 use crate::sessions::activity::{self, HookPayload};
 use crate::sessions::status::{HookEvent, Status};
 use crate::state::{AppState, SseEvent};
@@ -293,6 +294,20 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // A tool call started → set the live activity label (`✎ tile.tsx`, …).
         // A payload with no tool name yields no label → leave activity as-is.
         "pre_tool" | "pre_tool_use" | "PreToolUse" => {
+            // `AskUserQuestion` is the agent ASKING — a needs-attention event,
+            // not a tool call to watch. It is raised from the pre-tool arm
+            // because that is where the question text arrives.
+            //
+            // Deliberately lenient about the payload shape: if `tool_input`
+            // does not carry a `questions[0].question`, NOTHING is raised and
+            // Claude's own `Notification` (arm below) remains the backstop. A
+            // shape we have not verified live can therefore only cost us a
+            // push, never invent one.
+            if payload.tool_name.as_deref() == Some("AskUserQuestion") {
+                if let Some(q) = activity::first_question(payload) {
+                    notify::notify_event(state, session, NotifEvent::Question(q));
+                }
+            }
             match activity::activity_label(payload) {
                 Some((label, kind)) => state.set_activity(session, label, kind),
                 None => false,
@@ -331,10 +346,42 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // nothing to show → no-op.
         "permission_request" | "PermissionRequest" => {
             match activity::permission_ask(payload) {
-                Some(ask) => state.set_permission_request(session, ask),
+                Some(ask) => {
+                    let changed = state.set_permission_request(session, ask);
+                    // TRIGGER 1 — needs-attention. Only on a CHANGE: Claude
+                    // re-fires the identical dialog payload, and the ask
+                    // comparison dedupes that for free, so the phone buzzes
+                    // once per dialog rather than once per re-render.
+                    if changed {
+                        notify::notify_event(state, session, NotifEvent::PermissionAsked);
+                    }
+                    changed
+                }
                 None => false,
             }
         }
+        // Claude's own `Notification` — its words for "I need you", which it
+        // emits both for a permission prompt it wants surfaced and after ~60 s
+        // idle at the input. The hook has been installed and feeding the turn
+        // clock all along; until now `apply_payload` dropped it on the floor.
+        "notification" | "Notification" => match activity::notice_message(payload) {
+            Some(msg) => {
+                // The dialog push already said this, with more substance.
+                // Recording the notice is still right (the chat surface renders
+                // it); buzzing twice for one block is not.
+                let dialog_up = state
+                    .session_activity(session)
+                    .and_then(|a| a.permission)
+                    .is_some();
+                let changed = state.set_notice(session, msg.clone());
+                // TRIGGER 2 — needs-attention.
+                if changed && !dialog_up {
+                    notify::notify_event(state, session, NotifEvent::AgentNotice(msg));
+                }
+                changed
+            }
+            None => false,
+        },
         // A Task sub-agent STARTED → bump the live outstanding count (the
         // display-only parallelism signal). Never touches the turn boundary.
         "subagent_start" | "SubagentStart" => state.inc_subagents(session),
@@ -346,6 +393,14 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
             let act = state.clear_activity(session);
             let sub = state.reset_subagents(session);
             let perm = state.clear_permission_request(session);
+            // TRIGGER 5 — unread. The MAIN `Stop` only: `SubagentStop` has its
+            // own arm and structurally cannot reach this one, so a Task
+            // subagent finishing can never be announced as "the turn is done".
+            //
+            // The permission clear happens FIRST (above), which is what makes
+            // this push's replacement of a pending "needs you" banner causally
+            // correct: by the time it lands, the dialog is provably resolved.
+            notify::notify_event(state, session, NotifEvent::TurnFinished);
             act || sub || perm
         }
         // A Task sub-agent finished. It shares the parent session token and the
@@ -382,6 +437,23 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // we ALSO push the stopped status straight through the DB + watch + SSE so
         // the tile flips immediately, mirroring lifecycle::stop's broadcast.
         "session_end" | "SessionEnd" => {
+            // TRIGGER 7 — error, and ONLY for a death the user did not cause.
+            // `clear` / `logout` / `prompt_input_exit` are the human at the
+            // keyboard: `/clear`ing a conversation or typing `/exit` must never
+            // ring their own phone. An absent reason is treated as `other`
+            // (a killed pane reports nothing).
+            //
+            // Raised BEFORE the activity clear so the crash body can still name
+            // what the session was doing when it died.
+            if crashed_reason(payload) {
+                notify::notify_event(
+                    state,
+                    session,
+                    NotifEvent::SessionCrashed {
+                        reason: payload.reason.clone().unwrap_or_default(),
+                    },
+                );
+            }
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
             let perm_changed = state.clear_permission_request(session);
@@ -397,7 +469,12 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "stop_failure" | "StopFailure" => {
             let (etype, msg) = activity::error_info(payload);
             let cleared = state.clear_activity(session);
-            let set = state.set_error(session, etype, msg);
+            let set = state.set_error(session, etype.clone(), msg.clone());
+            // TRIGGER 6 — error. The SAME `(type, message)` pair the error
+            // badge shows, so the lock screen and the chat cannot disagree.
+            if set {
+                notify::notify_event(state, session, NotifEvent::TurnFailed { etype, msg });
+            }
             cleared || set
         }
         _ => false,
@@ -405,6 +482,23 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
 
     if changed {
         broadcast_activity_delta(state, session);
+    }
+}
+
+/// Did this `SessionEnd` mean the session DIED, as opposed to the user acting?
+///
+/// Claude reports `clear` / `logout` / `prompt_input_exit` for a human at the
+/// keyboard — `/clear`, signing out, `/exit`. Those must never push: a user's
+/// own keystroke ringing their own phone was the single most-hated false
+/// positive. Everything else (`other`, or no reason at all, which is what a
+/// killed pane produces) is a real death.
+fn crashed_reason(payload: &HookPayload) -> bool {
+    match payload.reason.as_deref().map(str::trim) {
+        None | Some("") => true,
+        Some(r) => !matches!(
+            r.to_ascii_lowercase().as_str(),
+            "clear" | "logout" | "prompt_input_exit" | "exit"
+        ),
     }
 }
 
@@ -468,6 +562,10 @@ fn broadcast_activity_delta(state: &AppState, session: &str) {
             // The live permission dialog (`null` once it resolved — the client
             // must drop the card, so this is always present).
             "permission_request": permission,
+            // Claude's own `Notification` sentence, verbatim — the
+            // in-conversation counterpart of the notice push. Always present
+            // so a client clears it when the block ends.
+            "notice": act.notice,
             // Live outstanding-subagent count (display-only parallelism signal).
             // Always present so a drop back to 0 clears the client's clause.
             "subagents": act.subagents,

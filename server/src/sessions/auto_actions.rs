@@ -743,8 +743,7 @@ pub async fn tick(
     // would otherwise leave the count stuck high (the "I spawned 3 but it shows 6"
     // drift). The detector's turn-end is the reliable server-side correction
     // signal. Not Waiting — a subagent may still run while the main agent is
-    // blocked on the user. Computed BEFORE the push gate (which re-reads the count
-    // after its debounce) and surfaced on the `sessions` delta below so the
+    // blocked on the user. Surfaced on the `sessions` delta below so the
     // `· N subagents` clause clears promptly even on a pure-drift idle (one with
     // no `Stop` hook to broadcast the zero).
     let subagents_reset =
@@ -754,12 +753,15 @@ pub async fn tick(
         if let Err(e) = react_to_transition(state, name, s).await {
             tracing::debug!(name = %name, error = %e, "board reaction on status transition failed");
         }
-        // ── PUSH: phone notification on a blocked/error transition ─────────────
-        // Fires ONLY on the genuine, flap-confirmed transition edge (`committed`),
-        // so it is inherently debounced to one push per transition INTO the state
-        // — never every tick. The send is spawned so the detector tick is not
-        // blocked on network I/O to the push service.
-        maybe_push_on_transition(state, name, s);
+        // ── NO PUSH HERE, BY CONSTRUCTION ─────────────────────────────
+        // A status transition is a HEURISTIC: regex banks over pane captures, a
+        // PTY byte-heartbeat, a 30 s idle timeout, drift-heal commits, restart
+        // re-classification. It used to buzz phones, and every false-positive
+        // class the audit found originated right here. Notifications are now
+        // raised at the HOOK arms (`crate::notify`, called from
+        // `hooks::apply_payload`) — the same authoritative anchors the turn
+        // state machine already trusts. There is deliberately no code path from
+        // this function to `crate::push`; `tests/push_triggers.rs` pins that.
     }
 
     // ── A2 chat tail for the tile (zero new requests: it rides this delta) ────
@@ -938,35 +940,6 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
     Ok(())
 }
 
-/// Phone notification on a status transition edge. Called from [`tick`] on the
-/// `committed` (flap-confirmed) transition ONLY. Each branch maps to ONE
-/// user-facing category the operator can independently mute in Settings →
-/// Notifications:
-///
-/// * `Waiting` → `agent_waiting` ("agent {name} needs you"). Blocked on the
-///   user.
-/// * `Idle` → `agent_finished` ("agent {name} finished"). Turn done, ready for
-///   review — the "groene status" the user explicitly asked to be pinged on.
-/// * `Stopped` → `agent_stopped` ("agent {name} stopped"). The tmux pane went
-///   away.
-/// * Anything else (Active / Starting / Unknown) is intentionally silent — not
-///   a user-actionable edge.
-///
-/// **Trailing-coalesce debounce.** Instead of firing immediately, the
-/// send is scheduled after a quiet window — each fresh transition for this
-/// session CANCELS the prior pending send (via the abort handle in
-/// `state.pending_pushes`) and schedules a new one. At expiry the timer task
-/// re-reads the session's persisted status and only fires if it still maps to
-/// the same category. That collapses two real patterns into one notification:
-/// (1) the `Starting → Active → Idle` bootup flurry where Idle wins after a
-/// second or two, and (2) the team-lead-bouncing-through-Idle pattern where a
-/// lead orchestrating teammates pulses Idle every few seconds — we want one
-/// "team finished" ping after things actually settle, not six in a minute.
-///
-/// The body for Waiting is enriched via [`AppState::push_reason_for`] (set
-/// once a blocked reason / last_error is captured); a generic
-/// fallback covers cold-start. `send_push_for` itself no-ops cheaply when
-/// nobody is subscribed OR the category is muted.
 /// A committed status that means the turn is over, so the live outstanding-
 /// subagent count must be 0. Used to self-correct best-effort count drift at
 /// every turn end (idle/stopped), independent of whether the per-turn reset
@@ -974,131 +947,6 @@ async fn react_to_transition(state: &AppState, session: &str, new: Status) -> an
 /// main agent is blocked on the user mid-turn.
 fn turn_ends_subagents(s: Status) -> bool {
     matches!(s, Status::Idle | Status::Stopped)
-}
-
-/// Whether a settled transition into `cat` should actually send, given the
-/// session's freshly re-read persisted `last_status` and live outstanding
-/// `subagents` count. Pure so the debounce decision is unit-testable.
-fn push_should_fire(cat: crate::db::push::NotifCategory, last_status: &str, subagents: u32) -> bool {
-    use crate::db::push::NotifCategory;
-    let cat_matches = matches!(
-        (cat, last_status),
-        (NotifCategory::AgentWaiting, "waiting")
-            | (NotifCategory::AgentFinished, "idle")
-            | (NotifCategory::AgentStopped, "stopped"),
-    );
-    // The finished ping is held while Task subagents are still in flight: a
-    // multi-agent turn that momentarily reads idle between subagent dispatches
-    // must not cry "finished". Only AgentFinished is gated — a genuine
-    // needs-you (Waiting) or stopped signal always tells. Fail-safe: the count
-    // is force-0'd on the main Stop, so a lost SubagentStop can never
-    // permanently suppress a real finish.
-    cat_matches && !(matches!(cat, NotifCategory::AgentFinished) && subagents > 0)
-}
-
-pub fn maybe_push_on_transition(state: &AppState, name: &str, new: Status) {
-    use crate::db::push::NotifCategory;
-    let cat = match new {
-        Status::Waiting => NotifCategory::AgentWaiting,
-        Status::Idle => NotifCategory::AgentFinished,
-        Status::Stopped => NotifCategory::AgentStopped,
-        _ => return,
-    };
-
-    // Two timers: the default 2s quiet window handles the bootup flurry; a
-    // longer 15s window is used ONLY for "agent finished" on a team-tagged
-    // session, where the lead can legitimately bounce in and out of Idle every
-    // few seconds while it dispatches teammates. The longer window holds the
-    // ping until the lead has been idle long enough that the team is actually
-    // done. Waiting and Stopped keep the short window even on team leads —
-    // those are unambiguous "you need to act" signals and shouldn't be delayed.
-    const T_DEFAULT: Duration = Duration::from_secs(2);
-    const T_TEAM_FINISH: Duration = Duration::from_secs(15);
-
-    // Cancel any prior pending send for this session FIRST, then install the
-    // new task. Using `remove` (rather than `insert` + checking the return)
-    // lets us abort the prior handle before the new one is even spawned —
-    // there's no detector-loop concurrency for a single session, so no thread
-    // can squeeze a second insert in between.
-    if let Some((_, prev)) = state.pending_pushes.remove(name) {
-        prev.abort();
-    }
-
-    let task_state = state.clone();
-    let task_name = name.to_string();
-    let handle = tokio::spawn(async move {
-        let delay = if matches!(cat, NotifCategory::AgentFinished)
-            && db::sessions::team_name(&task_state.pool, &task_name).await.ok().flatten().is_some()
-        {
-            T_TEAM_FINISH
-        } else {
-            T_DEFAULT
-        };
-        tokio::time::sleep(delay).await;
-
-        // The timer fires only after `delay` of quiet. Re-read the persisted
-        // status: if the session has since transitioned OUT of the category
-        // this push was for, drop the send. (A later transition into a
-        // notify-worthy state will have scheduled its OWN debounce task.)
-        let still_matches = match db::sessions::runtime(&task_state.pool, &task_name).await {
-            Ok(Some(rt)) => push_should_fire(
-                cat,
-                rt.last_status.as_str(),
-                task_state.subagents(&task_name),
-            ),
-            _ => false,
-        };
-        if !still_matches {
-            // Drop the entry once we've decided not to send, so a future
-            // transition's `remove(...).abort()` doesn't try to cancel a stale
-            // already-completed task.
-            task_state.pending_pushes.remove(&task_name);
-            return;
-        }
-
-        // Re-read the freshest reason (it may have arrived via a hook during
-        // the quiet window) so the notification body reflects whatever's
-        // current at the moment of send.
-        let (title, body) = match cat {
-            NotifCategory::AgentWaiting => (
-                format!("agent {task_name} needs you"),
-                task_state.push_reason_for(&task_name, Status::Waiting),
-            ),
-            NotifCategory::AgentFinished => (
-                format!("agent {task_name} finished"),
-                "Turn done — ready for your review.".to_string(),
-            ),
-            NotifCategory::AgentStopped => (
-                format!("agent {task_name} stopped"),
-                task_state.push_reason_for(&task_name, Status::Stopped),
-            ),
-            // Other categories are not produced by maybe_push_on_transition.
-            _ => return,
-        };
-        let url = format!("/focus/{task_name}");
-        let n = crate::push::send_push_for(&task_state, cat, &title, &body, &url).await;
-        if n > 0 {
-            tracing::debug!(
-                name = %task_name,
-                category = cat.as_str(),
-                devices = n,
-                "push sent after debounce settle",
-            );
-        }
-        // The scheduled task has completed: clear its slot so the map doesn't
-        // grow unboundedly. A new transition between the send finishing and
-        // this remove will simply overwrite the slot, which is correct.
-        task_state.pending_pushes.remove(&task_name);
-    });
-
-    // Spawn → insert ordering note. We `tokio::spawn` BEFORE installing the
-    // abort handle, but the spawned task's first action is
-    // `tokio::time::sleep(delay).await` with `delay >= 2s`, so it cannot reach
-    // its `pending_pushes.remove(...)` bookkeeping until well after the insert
-    // below has completed on the calling task. Stale-slot scenarios are
-    // therefore unreachable as long as both `T_DEFAULT` and `T_TEAM_FINISH`
-    // stay well above scheduler-poll latency.
-    state.pending_pushes.insert(name.to_string(), handle.abort_handle());
 }
 
 /// Last [`PREVIEW_LINES`] lines of the (already ANSI-stripped) capture — the tile
@@ -1219,7 +1067,6 @@ mod board_reaction_tests {
     use super::*;
     use crate::config::Config;
     use crate::db::board::NewIssue;
-    use crate::db::push::NotifCategory;
 
     #[test]
     fn turn_end_resets_the_subagent_count_drift() {
@@ -1232,21 +1079,6 @@ mod board_reaction_tests {
         assert!(!turn_ends_subagents(Status::Active), "active = subagents may be running");
         assert!(!turn_ends_subagents(Status::Waiting), "waiting = subagent may still run");
         assert!(!turn_ends_subagents(Status::Starting));
-    }
-
-    #[test]
-    fn finished_push_is_gated_on_zero_subagents() {
-        // The "agent finished" ping must NOT fire while Task subagents are still
-        // outstanding — even if the status momentarily read idle on a missed-hook
-        // edge. It fires only once the count is genuinely 0 (the count is force-0'd
-        // on the main Stop, so this can never permanently suppress a real finish).
-        assert!(push_should_fire(NotifCategory::AgentFinished, "idle", 0), "idle + 0 subagents → fire");
-        assert!(!push_should_fire(NotifCategory::AgentFinished, "idle", 3), "idle + subagents in flight → hold");
-        assert!(!push_should_fire(NotifCategory::AgentFinished, "active", 0), "status moved on → no fire");
-
-        // Subagents must NOT suppress a genuine needs-you / stopped signal.
-        assert!(push_should_fire(NotifCategory::AgentWaiting, "waiting", 5), "waiting always tells, subagents or not");
-        assert!(push_should_fire(NotifCategory::AgentStopped, "stopped", 2), "stopped always tells");
     }
 
     pub(super) async fn test_state() -> (AppState, std::path::PathBuf) {

@@ -63,6 +63,13 @@ pub struct Session {
     /// backends under a live pane.
     #[serde(default)]
     pub runtime: String,
+    /// This bot's own notification setting (migration 0025):
+    /// `inherit` (follow the global category toggles — the default and the
+    /// backfill) / `all` / `attention` / `off`. Parsed by
+    /// [`crate::notify::NotifPolicy`]; an unknown value reads as `inherit`, so a
+    /// hand-edited row can never silently mute a session.
+    #[serde(default)]
+    pub notif: String,
 }
 
 /// A row of the `session_runtime` table (ephemeral, persisted across restarts).
@@ -325,6 +332,35 @@ pub async fn set_runtime(pool: &SqlitePool, name: &str, runtime: &str) -> sqlx::
     Ok(())
 }
 
+/// This bot's own notification setting (migration 0025).
+///
+/// Fails toward `Inherit`: a missing row, a DB error or a hand-edited junk
+/// value must never silently mute a session. Read on every send, so it is one
+/// indexed lookup on the primary key.
+pub async fn notif_policy(pool: &SqlitePool, name: &str) -> crate::notify::NotifPolicy {
+    let row: Option<(String,)> = sqlx::query_as("SELECT notif FROM sessions WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+    row.map(|(v,)| crate::notify::NotifPolicy::parse(&v))
+        .unwrap_or(crate::notify::NotifPolicy::Inherit)
+}
+
+/// Set this bot's notification setting (the four-way in its detail sheet).
+pub async fn set_notif_policy(
+    pool: &SqlitePool,
+    name: &str,
+    policy: crate::notify::NotifPolicy,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET notif = ? WHERE name = ?")
+        .bind(policy.as_str())
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn runtime_kind(pool: &SqlitePool, name: &str) -> sqlx::Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT runtime FROM sessions WHERE name = ?")
         .bind(name)
@@ -343,10 +379,10 @@ pub async fn duplicate(pool: &SqlitePool, src: &str, new_name: &str) -> sqlx::Re
         "INSERT INTO sessions
             (name, display_name, dir, desc, provider, flags, pinned, auto_continue, auto_continue_msg,
              rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-             host_id, runtime, created_at)
+             host_id, runtime, notif, created_at)
          SELECT ?, ?, dir, desc, provider, flags, 0, auto_continue, auto_continue_msg,
                 rate_limit_resume_text, tags, creator, branch, worktree, worktree_repo, mcp,
-                host_id, runtime, ?
+                host_id, runtime, notif, ?
          FROM sessions WHERE name = ?",
     )
     .bind(new_name)

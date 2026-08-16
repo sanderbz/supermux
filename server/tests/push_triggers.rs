@@ -1,0 +1,442 @@
+//! The trigger table, end-to-end over the REAL hook endpoint.
+//!
+//! Every push in supermux is now raised at a hook arm. These tests POST hook
+//! bodies at `/api/_internal/hook` exactly as the installed hook command does
+//! and then read `state.push_attempts` — the ring `send_push_for` writes on
+//! every fan-out, muted or not. What lands in that ring IS what would have
+//! reached a phone.
+//!
+//! Two halves, and the second one is the point:
+//!
+//! * **The table fires.** A permission dialog, Claude's own notice, a turn end,
+//!   a turn failure and a real session death each produce exactly one attempt,
+//!   in the right category.
+//! * **Nothing else does.** The audit's false-positive classes — a drift-heal
+//!   commit at session start, the word "approve" in scrollback, 30 s of silence
+//!   mid-turn, a restart wiping turn state, a plain shell going idle, `/clear`
+//!   and `/exit` bouncing to a shell prompt — are driven here and must produce
+//!   ZERO attempts. That is the property the redesign exists for, and it holds
+//!   BY CONSTRUCTION: the status detector has no code path to `crate::push`.
+//!
+//! The subscription is a loopback endpoint on port 1 (reserved/closed
+//! everywhere standard) so the fan-out records its attempt without a network.
+
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{header, Method, Request};
+use supermux_server::config::{Config, ProviderDefaults, TlsConfig};
+use supermux_server::state::AppState;
+use supermux_server::{db, http};
+use tower::ServiceExt;
+
+const BEARER: &str = "push-trigger-bearer";
+const TOK: &str = "push-trigger-hook-token";
+const SESSION: &str = "deploy-fix";
+
+/// Long enough for the spawned notify task to finish its DB reads and its
+/// (immediately refused) HTTPS connect. Finish pushes additionally wait out
+/// `notify::FINISH_GRACE`, so those get their own longer wait.
+const SETTLE: Duration = Duration::from_millis(900);
+
+async fn setup() -> (AppState, axum::Router, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("supermux-pushtrig-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = Config {
+        data_dir: dir.clone(),
+        bind: "127.0.0.1:0".parse().unwrap(),
+        extra_binds: vec![],
+        extra_origins: vec![],
+        tls: TlsConfig::default(),
+        auth_token: BEARER.to_string(),
+        provider_defaults: ProviderDefaults::default(),
+        ws: Default::default(),
+        remote_callback_url: None,
+        push_sub: None,
+        github_token: None,
+        statusline_tap: false,
+    };
+    let pool = db::init(&config).await.expect("db init");
+    let state = AppState::new(pool, config);
+    db::sessions::insert_minimal(&state.pool, SESSION, "/tmp", "claude")
+        .await
+        .unwrap();
+    db::sessions::ensure_runtime(&state.pool, SESSION, TOK)
+        .await
+        .unwrap();
+    // A "definitely closed" subscriber: the connect refuses immediately, so the
+    // attempt is recorded without burning seconds on a hung handshake.
+    db::push::upsert(
+        &state.pool,
+        "https://127.0.0.1:1/x",
+        "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM",
+        "tBHItJI5svbpez7KI4CCXg",
+    )
+    .await
+    .unwrap();
+    let app = http::router(state.clone());
+    (state, app, dir)
+}
+
+async fn hook(app: &axum::Router, event: &str, payload: serde_json::Value) {
+    let body = serde_json::json!({ "session": SESSION, "event": event, "payload": payload });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/_internal/hook")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-Supermux-Hook-Token", TOK)
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 200, "the hook endpoint must accept {event}");
+}
+
+/// Categories of every recorded attempt, oldest first.
+fn categories(state: &AppState) -> Vec<String> {
+    let mut v: Vec<String> = state
+        .push_attempts
+        .snapshot()
+        .into_iter()
+        .map(|a| a.category)
+        .collect();
+    v.reverse(); // the snapshot is newest-first
+    v
+}
+
+async fn cleanup(state: &AppState, dir: std::path::PathBuf) {
+    state.pending_pushes.iter().for_each(|e| e.value().abort());
+    state.pool.close().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The VERBATIM live capture (Claude Code 2.1.227, byte-identical on 2.1.231).
+fn live_permission_request() -> serde_json::Value {
+    serde_json::json!({
+        "session_id": "a2a3a5c5",
+        "permission_mode": "default",
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "Bash",
+        "tool_input": { "command": "cargo test", "description": "run the test suite" },
+        "permission_suggestions": [],
+    })
+}
+
+// ── the table fires ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_permission_dialog_pushes_once_and_a_re_fire_does_not() {
+    let (state, app, dir) = setup().await;
+
+    hook(&app, "permission_request", live_permission_request()).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(categories(&state), vec!["agent_waiting"], "the dialog rings once");
+
+    // Claude re-emits the identical dialog payload; the ask comparison dedupes
+    // it, so the phone must not buzz again for the same block.
+    hook(&app, "permission_request", live_permission_request()).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(
+        categories(&state),
+        vec!["agent_waiting"],
+        "an identical re-fire must not produce a second push",
+    );
+
+    // The body carries the agent's own words, via the same preview the owner
+    // can query. (The ring stores title-only by privacy posture.)
+    let payload = supermux_server::notify::build_payload(
+        &state,
+        SESSION,
+        &supermux_server::notify::NotifEvent::PermissionAsked,
+    )
+    .await
+    .expect("a payload for a live dialog");
+    assert_eq!(payload.title, SESSION);
+    assert_eq!(payload.body, "Needs permission — ⚡ run the test suite (Bash)");
+    assert_eq!(payload.tier, supermux_server::notify::Tier::Attention);
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn claudes_own_notice_pushes_but_not_on_top_of_a_live_dialog() {
+    let (state, app, dir) = setup().await;
+
+    hook(
+        &app,
+        "notification",
+        serde_json::json!({
+            "session_id": "a2a3a5c5",
+            "hook_event_name": "Notification",
+            "message": "Claude is waiting for your input",
+        }),
+    )
+    .await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(categories(&state), vec!["agent_waiting"], "the notice rings");
+
+    // The notice rides the activity snapshot too — the in-conversation mirror.
+    assert_eq!(
+        state.session_activity(SESSION).and_then(|a| a.notice).as_deref(),
+        Some("Claude is waiting for your input"),
+    );
+
+    // With a dialog up, a notice adds nothing the dialog push did not already
+    // say with more substance.
+    hook(&app, "permission_request", live_permission_request()).await;
+    tokio::time::sleep(SETTLE).await;
+    hook(
+        &app,
+        "notification",
+        serde_json::json!({ "message": "Claude needs your permission to use Bash" }),
+    )
+    .await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(
+        categories(&state),
+        vec!["agent_waiting", "agent_waiting"],
+        "the notice must not add a second banner on top of a live dialog",
+    );
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn a_finished_turn_pushes_agent_finished_when_the_user_opted_in() {
+    let (state, app, dir) = setup().await;
+    // The unread tier ships OFF; opt in explicitly so this test measures the
+    // TRIGGER rather than the default.
+    db::push::set_pref(&state.pool, db::push::NotifCategory::AgentFinished, true)
+        .await
+        .unwrap();
+
+    hook(&app, "stop", serde_json::json!({ "hook_event_name": "Stop" })).await;
+    // The finish waits out the transcript-flush grace before it composes.
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    assert_eq!(categories(&state), vec!["agent_finished"]);
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn the_unread_tier_is_muted_by_default_and_the_ring_says_why() {
+    let (state, app, dir) = setup().await;
+
+    hook(&app, "stop", serde_json::json!({})).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+
+    let snap = state.push_attempts.snapshot();
+    let row = snap.first().expect("a muted attempt is still recorded");
+    assert_eq!(row.category, "agent_finished");
+    assert!(row.muted, "the shipped default is needs-attention only");
+    assert_eq!(
+        row.reason.as_deref(),
+        Some("global:agent_finished"),
+        "'why didn't my phone ring' must stay answerable",
+    );
+    assert_eq!(row.attempted, 0, "a muted send never touches the network");
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn a_failed_turn_pushes_the_error_pair() {
+    let (state, app, dir) = setup().await;
+
+    hook(
+        &app,
+        "stop_failure",
+        serde_json::json!({
+            "hook_event_name": "StopFailure",
+            "error_type": "rate_limit",
+            "message": "You've reached your usage limit",
+        }),
+    )
+    .await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(categories(&state), vec!["agent_error"]);
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn a_session_that_dies_pushes_but_the_user_typing_clear_or_exit_never_does() {
+    // The single most-hated false positive: the user's own keystroke ringing
+    // their own phone. `clear` / `logout` / `prompt_input_exit` are the human
+    // at the keyboard; only an unexplained end is a death.
+    for reason in ["clear", "logout", "prompt_input_exit"] {
+        let (state, app, dir) = setup().await;
+        hook(&app, "session_end", serde_json::json!({ "reason": reason })).await;
+        tokio::time::sleep(SETTLE).await;
+        assert!(
+            categories(&state).is_empty(),
+            "SessionEnd reason={reason} is the user acting — it must never push",
+        );
+        cleanup(&state, dir).await;
+    }
+
+    for payload in [serde_json::json!({ "reason": "other" }), serde_json::json!({})] {
+        let (state, app, dir) = setup().await;
+        hook(&app, "session_end", payload.clone()).await;
+        tokio::time::sleep(SETTLE).await;
+        assert_eq!(
+            categories(&state),
+            vec!["agent_stopped"],
+            "a real death ({payload}) must push",
+        );
+        cleanup(&state, dir).await;
+    }
+}
+
+#[tokio::test]
+async fn a_subagent_finishing_is_never_announced_as_the_turn_being_done() {
+    // `SubagentStop` shares the parent's hook token and arrives constantly on a
+    // multi-agent turn. It has its own arm and structurally cannot reach the
+    // `Stop` arm — this pins that it stays that way.
+    let (state, app, dir) = setup().await;
+    db::push::set_pref(&state.pool, db::push::NotifCategory::AgentFinished, true)
+        .await
+        .unwrap();
+
+    hook(&app, "subagent_start", serde_json::json!({})).await;
+    hook(&app, "subagent_stop", serde_json::json!({})).await;
+    hook(&app, "subagent_stop", serde_json::json!({})).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    assert!(categories(&state).is_empty(), "a subagent is not the turn");
+
+    cleanup(&state, dir).await;
+}
+
+// ── nothing else does ───────────────────────────────────────────────────────
+
+/// The audit's whole false-positive family, killed BY CONSTRUCTION.
+///
+/// Class 1 (a drift-heal commit at session start), 2 (the word "approve"
+/// sitting in Claude's scrollback), 3 (30 s of silence mid-turn), 4 (a restart
+/// wiping turn state and re-classifying), 5 (a plain shell going idle) and 6
+/// (`/exit` bouncing to a shell prompt) were all ONE bug wearing six hats: the
+/// status detector could reach the push transport. Enumerating the six as
+/// behavioural tests would only ever sample that surface — regex banks, the PTY
+/// heartbeat, the idle timeout and restart re-classification can produce
+/// transitions this test would not think to script.
+///
+/// So the pin is structural and total: the classifier and its reaction layer
+/// must contain NO reference to the push module at all. No transition can
+/// notify anything, whatever the classifier decides, because there is nothing
+/// there to call.
+#[test]
+fn the_status_detector_has_no_edge_to_the_push_transport() {
+    for file in [
+        "src/sessions/auto_actions.rs",
+        "src/sessions/status.rs",
+        "src/sessions/pty.rs",
+    ] {
+        let src = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
+        // Strip comments so the doc-comments EXPLAINING the absence don't trip
+        // the check that enforces it.
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in ["crate::push", "send_push", "notify_event", "NotifCategory"] {
+            assert!(
+                !code.contains(forbidden),
+                "{file} references `{forbidden}` — the status detector must not be able to \
+                 notify anything. Push triggers belong at the hook arms (`crate::notify`).",
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn nothing_but_the_table_touches_the_ring_over_a_full_turn() {
+    // A realistic turn — prompt, tools, a subagent, a tool failure, tool
+    // boundaries — carries a dozen hook events and must produce exactly ZERO
+    // notifications. Only the table's own arms may ring.
+    let (state, app, dir) = setup().await;
+    db::push::set_pref(&state.pool, db::push::NotifCategory::AgentFinished, true)
+        .await
+        .unwrap();
+
+    hook(&app, "session_start", serde_json::json!({ "session_id": "conv-1" })).await;
+    hook(&app, "user_prompt", serde_json::json!({ "session_id": "conv-1" })).await;
+    for _ in 0..3 {
+        hook(
+            &app,
+            "pre_tool",
+            serde_json::json!({ "tool_name": "Read", "tool_input": { "file_path": "a.rs" } }),
+        )
+        .await;
+        hook(&app, "post_tool", serde_json::json!({ "tool_name": "Read" })).await;
+    }
+    hook(&app, "subagent_start", serde_json::json!({})).await;
+    hook(&app, "subagent_stop", serde_json::json!({})).await;
+    hook(
+        &app,
+        "post_tool_failure",
+        serde_json::json!({ "tool_name": "Read", "error": "File does not exist." }),
+    )
+    .await;
+    tokio::time::sleep(SETTLE).await;
+
+    assert!(
+        categories(&state).is_empty(),
+        "a turn in progress must be silent; got {:?}",
+        categories(&state),
+    );
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn a_session_the_user_muted_stays_silent_and_the_ring_names_the_bot() {
+    // The per-bot opt-in: `off` mutes every session-scoped tier, and the
+    // diagnostics say WHICH layer did it.
+    let (state, app, dir) = setup().await;
+    db::sessions::set_notif_policy(
+        &state.pool,
+        SESSION,
+        supermux_server::notify::NotifPolicy::Off,
+    )
+    .await
+    .unwrap();
+
+    hook(&app, "permission_request", live_permission_request()).await;
+    tokio::time::sleep(SETTLE).await;
+
+    let snap = state.push_attempts.snapshot();
+    let row = snap.first().expect("a muted attempt is still recorded");
+    assert!(row.muted);
+    assert_eq!(row.reason.as_deref(), Some("session:off"));
+
+    cleanup(&state, dir).await;
+}
+
+#[tokio::test]
+async fn attention_only_mutes_the_calm_tier_and_keeps_the_blocking_one() {
+    let (state, app, dir) = setup().await;
+    db::push::set_pref(&state.pool, db::push::NotifCategory::AgentFinished, true)
+        .await
+        .unwrap();
+    db::sessions::set_notif_policy(
+        &state.pool,
+        SESSION,
+        supermux_server::notify::NotifPolicy::Attention,
+    )
+    .await
+    .unwrap();
+
+    hook(&app, "stop", serde_json::json!({})).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let snap = state.push_attempts.snapshot();
+    assert!(snap[0].muted, "a finish is muted on an attention-only bot");
+    assert_eq!(snap[0].reason.as_deref(), Some("session:attention"));
+
+    hook(&app, "permission_request", live_permission_request()).await;
+    tokio::time::sleep(SETTLE).await;
+    let snap = state.push_attempts.snapshot();
+    assert!(!snap[0].muted, "a blocking dialog still rings");
+    assert_eq!(snap[0].category, "agent_waiting");
+
+    cleanup(&state, dir).await;
+}

@@ -1,0 +1,20 @@
+-- Per-session notification opt-in — it lives on the BOT.
+--
+-- Grok's model, and the one this redesign adopts: you turn notifications on (or
+-- off) in a bot's own settings, not in a global list of event types. The global
+-- Settings toggles stay as the per-CATEGORY mute; this column is the per-BOT
+-- one, and the effective decision is the AND of the two.
+--
+-- Values:
+--   inherit   — follow the global category toggles (the default, and what every
+--               existing row backfills to, so this migration changes nothing for
+--               anyone until they opt in)
+--   all       — every session-scoped tier may push
+--   attention — only needs-attention + errors; the calm "turn finished" tier is
+--               muted for this bot
+--   off       — this bot never pushes
+--
+-- On the sessions row rather than in prefs on purpose: it must follow the
+-- session across devices, `clone_session` copies it for free, and prefs is a
+-- single last-write-wins blob that cannot hold per-row state.
+ALTER TABLE sessions ADD COLUMN notif TEXT NOT NULL DEFAULT 'inherit';

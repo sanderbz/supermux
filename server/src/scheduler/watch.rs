@@ -238,12 +238,17 @@ async fn fire_done(state: &AppState, sched: &Schedule, signal: &str) {
         let st = state.clone();
         let title = sched.title.clone();
         tokio::spawn(async move {
+            let payload = crate::notify::PushPayload::simple(
+                format!("schedule '{title}' finished"),
+                format!("'{title}' finished."),
+                "/scheduler",
+                crate::notify::Tier::Schedule,
+            );
             let _ = crate::push::send_push_for(
                 &st,
                 crate::db::push::NotifCategory::ScheduleFinished,
-                &format!("schedule '{title}' finished"),
-                &format!("'{title}' finished."),
-                "/scheduler",
+                &payload,
+                None,
             )
             .await;
         });
@@ -282,12 +287,17 @@ async fn notify_timeout(state: &AppState, sched: &Schedule) {
     let st = state.clone();
     let title = sched.title.clone();
     tokio::spawn(async move {
+        let payload = crate::notify::PushPayload::simple(
+            format!("schedule '{title}' still running"),
+            format!("'{title}' hasn't confirmed completion after ~{mins}m — it may still be working."),
+            "/scheduler",
+            crate::notify::Tier::Schedule,
+        );
         let _ = crate::push::send_push_for(
             &st,
             crate::db::push::NotifCategory::ScheduleFinished,
-            &format!("schedule '{title}' still running"),
-            &format!("'{title}' hasn't confirmed completion after ~{mins}m — it may still be working."),
-            "/scheduler",
+            &payload,
+            None,
         )
         .await;
     });

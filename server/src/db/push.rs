@@ -81,10 +81,16 @@ pub enum NotifCategory {
     /// Agent transitioned to Waiting OR posted a board needs-input — the user
     /// is being asked a question. The original push trigger.
     AgentWaiting,
-    /// Agent went from Active/Waiting → Idle (turn finished, ready for
-    /// review). The "groene status" the user explicitly asked for.
+    /// The main turn ENDED cleanly (`Stop`) — the calm "unread" tier. Ships
+    /// default OFF: the shipped default is needs-attention only, and a finish
+    /// is something the roster already shows.
     AgentFinished,
-    /// Session ended unexpectedly (tmux pane gone). Low-frequency, high-signal.
+    /// The turn ended in an agent ERROR (`StopFailure`: rate limit, billing,
+    /// overload). Error tone, never suppressed.
+    AgentError,
+    /// The session died on its own (`SessionEnd` with reason `other`/absent).
+    /// A user-driven `/clear` or `/exit` is NOT this. Low-frequency,
+    /// high-signal.
     AgentStopped,
     /// A scheduled run produced `status == "error"`. Success runs intentionally
     /// do NOT push (would be noisy for periodic schedules).
@@ -104,6 +110,7 @@ impl NotifCategory {
         match self {
             Self::AgentWaiting => "agent_waiting",
             Self::AgentFinished => "agent_finished",
+            Self::AgentError => "agent_error",
             Self::AgentStopped => "agent_stopped",
             Self::ScheduleError => "schedule_error",
             Self::ScheduleFinished => "schedule_finished",
@@ -112,13 +119,25 @@ impl NotifCategory {
 
     /// The set of categories, iterated in display order (matches the Settings
     /// UI order).
-    pub const ALL: [NotifCategory; 5] = [
+    pub const ALL: [NotifCategory; 6] = [
         Self::AgentWaiting,
         Self::AgentFinished,
+        Self::AgentError,
         Self::AgentStopped,
         Self::ScheduleError,
         Self::ScheduleFinished,
     ];
+
+    /// The DEFAULT on/off state for a category when the user has never touched
+    /// it. The shipped default is **needs-attention only**: a finished turn is
+    /// already on the roster and does not block anyone, so it must not buzz a
+    /// phone unless the user asks for it.
+    ///
+    /// An explicit stored pref always wins — flipping this default can never
+    /// silently un-mute (or mute) a user who has already chosen.
+    pub const fn default_on(self) -> bool {
+        !matches!(self, Self::AgentFinished)
+    }
 
     /// Parse a wire-format identifier (the JSON enum tag) — `None` is an
     /// unknown category, which the caller turns into a 400.
@@ -132,17 +151,18 @@ impl NotifCategory {
     }
 }
 
-/// Read the on/off state for one category. Defaults to ON (the user just
-/// enabled push — they want pings) when the prefs row is absent. A DB error is
-/// treated as ON: notifications are NOT a cost-control gate (cf. agent-teams),
-/// so the safe fallback is to keep delivering rather than to silently mute the
-/// user. The user can always toggle off in Settings if a category is too noisy.
+/// Read the on/off state for one category. An ABSENT row falls back to
+/// [`NotifCategory::default_on`] — the shipped default is needs-attention only.
+/// A DB error, or a junk value from a manual sqlite edit, is treated as the
+/// category's default: notifications are NOT a cost-control gate (cf.
+/// agent-teams), so the fallback is the documented intent rather than silence.
 pub async fn pref_enabled(pool: &SqlitePool, cat: NotifCategory) -> bool {
     match super::prefs::get_pref(pool, &cat.prefs_key()).await {
-        // `"off"` (any case) → muted; everything else (including absent /
-        // `"on"` / a junk value from a manual sqlite edit) → enabled.
-        Ok(Some(v)) => !v.trim().eq_ignore_ascii_case("off"),
-        _ => true,
+        // An EXPLICIT stored choice always wins, in both directions — that is
+        // what makes flipping a default safe for existing installs.
+        Ok(Some(v)) if v.trim().eq_ignore_ascii_case("off") => false,
+        Ok(Some(v)) if v.trim().eq_ignore_ascii_case("on") => true,
+        _ => cat.default_on(),
     }
 }
 
@@ -193,21 +213,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pref_defaults_on_and_round_trips() {
-        // The notification prefs MUST default ON — the user just enabled push,
-        // they want pings. They also MUST round-trip cleanly through the prefs
-        // k/v table. And the "fail open" rule: a junk value reads as ON (the
-        // notifications gate is NOT a cost-control gate; the safe default is
-        // to keep delivering rather than silently mute the user).
+    async fn pref_defaults_are_needs_attention_only_and_round_trip() {
+        // The shipped default is NEEDS-ATTENTION ONLY: everything that blocks
+        // the user defaults ON, and the calm "turn finished" tier defaults OFF
+        // (the roster already shows it; a phone buzz for it is the noise this
+        // redesign exists to remove). Prefs must round-trip cleanly, and an
+        // unreadable value falls back to the category's documented default
+        // rather than to silence.
         let (pool, dir) = test_pool().await;
 
-        // 1. Absent row → ON for every category.
+        // 1. Absent row → the category's own default.
         for cat in NotifCategory::ALL {
-            assert!(
+            assert_eq!(
                 pref_enabled(&pool, cat).await,
-                "category {} must default ON when absent",
+                cat.default_on(),
+                "category {} must fall back to its documented default when absent",
                 cat.as_str()
             );
+        }
+        assert!(!NotifCategory::AgentFinished.default_on(), "the unread tier ships OFF");
+        for cat in [
+            NotifCategory::AgentWaiting,
+            NotifCategory::AgentError,
+            NotifCategory::AgentStopped,
+            NotifCategory::ScheduleError,
+            NotifCategory::ScheduleFinished,
+        ] {
+            assert!(cat.default_on(), "{} must ship ON", cat.as_str());
         }
 
         // 2. Round-trip OFF then ON for each category — independent rows.
@@ -223,15 +255,26 @@ mod tests {
         assert!(!pref_enabled(&pool, NotifCategory::AgentWaiting).await);
         assert!(pref_enabled(&pool, NotifCategory::AgentFinished).await);
 
-        // 4. Fail OPEN on garbage — a manual sqlite edit putting "maybe" in
-        //    the row reads as ON, never silently mutes the user.
-        crate::db::prefs::put_pref(&pool, "notif.agent_finished", "maybe")
-            .await
-            .unwrap();
+        // 4. Garbage falls back to the DEFAULT, not to silence — a manual
+        //    sqlite edit putting "maybe" in the row must not mute a blocking
+        //    category, and must not un-mute the calm one either.
+        crate::db::prefs::put_pref(&pool, "notif.agent_waiting", "maybe").await.unwrap();
         assert!(
-            pref_enabled(&pool, NotifCategory::AgentFinished).await,
-            "junk pref value MUST read as ON (fail-open for notifications)",
+            pref_enabled(&pool, NotifCategory::AgentWaiting).await,
+            "junk pref on a needs-attention category MUST read as ON",
         );
+        crate::db::prefs::put_pref(&pool, "notif.agent_finished", "maybe").await.unwrap();
+        assert!(
+            !pref_enabled(&pool, NotifCategory::AgentFinished).await,
+            "junk pref on the unread category MUST read as its OFF default",
+        );
+
+        // 5. An EXPLICIT choice beats the default in both directions — that is
+        //    what makes flipping a default safe for an existing install.
+        set_pref(&pool, NotifCategory::AgentFinished, true).await.unwrap();
+        assert!(pref_enabled(&pool, NotifCategory::AgentFinished).await);
+        set_pref(&pool, NotifCategory::AgentWaiting, false).await.unwrap();
+        assert!(!pref_enabled(&pool, NotifCategory::AgentWaiting).await);
 
         // 5. list_prefs returns every category exactly once.
         let snapshot = list_prefs(&pool).await;

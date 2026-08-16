@@ -63,6 +63,13 @@ pub struct HookPayload {
     /// the UI can say *which* mode the pending dialog is being asked under.
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// Why a `SessionEnd` fired: `clear` / `logout` / `prompt_input_exit` (the
+    /// human at the keyboard) versus `other` or absent (the session died).
+    /// This is the ONLY thing separating "the user typed /exit" from "the pane
+    /// was killed", and pushing on the former was an audit false-positive
+    /// class of its own.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// The live "Claude is asking permission to do X" state, derived from a
@@ -105,6 +112,23 @@ pub struct ToolInput {
     pub pattern: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// `AskUserQuestion`'s questions. Bounded on purpose: only the first
+    /// question's TEXT is ever read (the options are the chat surface's job),
+    /// so a large multi-question payload costs one small string.
+    ///
+    /// Every field is optional and an unrecognised shape simply parses to
+    /// `None`, which means no notification is raised and Claude's own
+    /// `Notification` event stays the backstop — the fail-safe direction.
+    #[serde(default)]
+    pub questions: Option<Vec<Question>>,
+}
+
+/// One entry of `AskUserQuestion`'s `questions` array. Only the prompt text is
+/// modelled; anything else Claude sends is ignored by the lenient parse.
+#[derive(Debug, Default, Deserialize)]
+pub struct Question {
+    #[serde(default)]
+    pub question: Option<String>,
 }
 
 /// Truncate `s` to [`MAX_LABEL`] chars (counting Unicode scalar values, not
@@ -242,6 +266,39 @@ pub fn permission_ask(p: &HookPayload) -> Option<PermissionAsk> {
         kind,
         mode,
     })
+}
+
+/// The agent's FIRST question from an `AskUserQuestion` payload, verbatim
+/// (whitespace-trimmed). `None` when the payload carries no question text —
+/// including when Claude's shape differs from the one modelled here, which is
+/// why the caller treats `None` as "raise nothing" rather than "raise something
+/// generic".
+///
+/// Deliberately NOT truncated here: the notification layer caps it with the
+/// same function the chat tile uses, so both show the identical string.
+pub fn first_question(p: &HookPayload) -> Option<String> {
+    p.tool_input
+        .as_ref()?
+        .questions
+        .as_ref()?
+        .iter()
+        .find_map(|q| q.question.as_deref())
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .map(str::to_string)
+}
+
+/// Claude's own `Notification` message, verbatim (whitespace-trimmed).
+/// `None` when the event carried no message — there is then nothing of the
+/// agent's to relay, and we do not invent a sentence for it.
+///
+/// Not truncated here for the same reason as [`first_question`].
+pub fn notice_message(p: &HookPayload) -> Option<String> {
+    p.message
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
 }
 
 /// Derive a `(type, message)` error pair from a `StopFailure` payload.

@@ -107,9 +107,16 @@ pub struct PushAttempt {
     /// Subscriber rows that failed for a non-Gone reason (encryption error,
     /// 4xx/5xx from the push service, network).
     pub failed: usize,
-    /// `true` when the category was muted in prefs and the fan-out never
-    /// happened (the row's `delivered == 0` is then NOT a transport failure).
+    /// `true` when a mute gate stopped the fan-out before it started (the
+    /// row's `delivered == 0` is then NOT a transport failure).
     pub muted: bool,
+    /// WHICH gate muted it — `"global:agent_finished"` (the Settings toggle) or
+    /// `"session:off"` / `"session:attention"` (the bot's own notification
+    /// setting). Present only on a muted row; this is the difference between
+    /// "your phone is broken" and "you turned this off", which is the whole
+    /// question the diagnostics panel exists to answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// In-memory bounded ring of recent send attempts. Wrapped in a `std::sync::Mutex`
@@ -315,12 +322,19 @@ async fn test_push(
             let cat = NotifCategory::from_str(name).ok_or_else(|| {
                 AppError::BadRequest(format!("unknown notification type '{name}'"))
             })?;
-            let title = format!("supermux test · {}", human_label(cat));
-            let body = format!(
-                "Test for the '{}' category. Toggle it off in Settings to mute.",
-                human_label(cat)
+            // Through the REAL gate — that is the point of the per-category
+            // test button. No session is named, so only the global toggle
+            // applies (a test must not be swallowed by one bot's mute).
+            let payload = crate::notify::PushPayload::simple(
+                format!("supermux test · {}", human_label(cat)),
+                format!(
+                    "Test for the '{}' category. Toggle it off in Settings to mute.",
+                    human_label(cat)
+                ),
+                "/",
+                tier_for_category(cat),
             );
-            send_push_for(&state, cat, &title, &body, "/").await
+            send_push_for(&state, cat, &payload, None).await
         }
     };
     Ok(Json(json!({ "ok": true, "data": { "delivered": delivered } })))
@@ -379,56 +393,93 @@ async fn get_attempts(
     })))
 }
 
+/// The tier a category belongs to. Only the test endpoint needs this mapping —
+/// every real trigger carries its tier on the [`crate::notify::NotifEvent`],
+/// which is the authority.
+const fn tier_for_category(cat: NotifCategory) -> crate::notify::Tier {
+    use crate::notify::Tier;
+    match cat {
+        NotifCategory::AgentWaiting => Tier::Attention,
+        NotifCategory::AgentFinished => Tier::Unread,
+        NotifCategory::AgentError | NotifCategory::AgentStopped => Tier::Error,
+        NotifCategory::ScheduleError | NotifCategory::ScheduleFinished => Tier::Schedule,
+    }
+}
+
 /// Human label for a category — used in test-notification body text and (via
 /// the API mirror) in the Settings UI.
 const fn human_label(cat: NotifCategory) -> &'static str {
     match cat {
-        NotifCategory::AgentWaiting => "Agent needs you",
-        NotifCategory::AgentFinished => "Agent finished",
+        NotifCategory::AgentWaiting => "Needs attention",
+        NotifCategory::AgentFinished => "Turn finished",
+        NotifCategory::AgentError => "Errors",
         NotifCategory::AgentStopped => "Agent stopped",
         NotifCategory::ScheduleError => "Scheduled task errored",
         NotifCategory::ScheduleFinished => "Scheduled task finished",
     }
 }
 
-/// Notification payload delivered to the service worker. The SW reads `title` /
-/// `body` for the notification and `url` for the `notificationclick` deep-link.
-#[derive(serde::Serialize)]
-struct PushPayload<'a> {
-    title: &'a str,
-    body: &'a str,
-    url: &'a str,
-}
-
-/// Send a notification gated by a category preference. The triggers ALWAYS
-/// use this — never `send_push_inner` — so the user's per-type Settings
-/// toggles are honoured at the dispatch site instead of inside each trigger.
-/// A muted category records a `PushAttempt { muted: true, attempted: 0 }` in
-/// the ring so the diagnostic surface explains the missing notification
-/// ("muted by your preference") instead of looking like a silent transport
-/// failure.
+/// Send a notification gated by BOTH mute layers. The triggers ALWAYS use this
+/// — never `send_push_inner` — so the layering rule is implemented exactly
+/// once, here, instead of once per trigger:
+///
+/// ```text
+/// effective = global_category_pref(cat) AND session_policy(session, tier)
+/// ```
+///
+/// `session` is the bot this is about, or `None` for the schedule lane. A
+/// schedule's "notify me when done" is an EXPLICIT per-schedule opt-in and
+/// therefore outranks a passive per-session mute — passing `None` is what
+/// expresses that.
+///
+/// A muted send still records a `PushAttempt { muted: true, attempted: 0 }`
+/// carrying WHICH layer muted it, so "why didn't my phone ring" stays
+/// answerable from the Settings diagnostic panel instead of a log grep.
 pub async fn send_push_for(
     state: &AppState,
     cat: NotifCategory,
-    title: &str,
-    body: &str,
-    url: &str,
+    payload: &crate::notify::PushPayload,
+    session: Option<&str>,
 ) -> usize {
-    if !db::push::pref_enabled(&state.pool, cat).await {
+    let muted_by = mute_reason(state, cat, payload.tier, session).await;
+    if let Some(reason) = muted_by {
         state.push_attempts.record(PushAttempt {
             at: chrono::Utc::now().timestamp(),
             category: cat.as_str().to_string(),
-            title: title.to_string(),
+            title: payload.title.clone(),
             attempted: 0,
             delivered: 0,
             pruned: 0,
             failed: 0,
             muted: true,
+            reason: Some(reason.clone()),
         });
-        tracing::debug!(category = cat.as_str(), "send_push_for: muted by pref");
+        tracing::debug!(category = cat.as_str(), reason = %reason, "send_push_for: muted");
         return 0;
     }
-    send_push_inner(state, cat.as_str(), title, body, url).await
+    let body = serde_json::to_vec(payload).unwrap_or_default();
+    send_encoded(state, cat.as_str(), &payload.title, &body).await
+}
+
+/// Which mute layer, if any, stops this send. `None` = it goes out.
+///
+/// Order matters only for the diagnostic string; both layers are checked
+/// against the same send.
+async fn mute_reason(
+    state: &AppState,
+    cat: NotifCategory,
+    tier: crate::notify::Tier,
+    session: Option<&str>,
+) -> Option<String> {
+    if !db::push::pref_enabled(&state.pool, cat).await {
+        return Some(format!("global:{}", cat.as_str()));
+    }
+    let name = session?;
+    let policy = db::sessions::notif_policy(&state.pool, name).await;
+    if policy.mutes(tier) {
+        return Some(format!("session:{}", policy.as_str()));
+    }
+    None
 }
 
 /// Send a notification to EVERY stored subscription. Best-effort: each device is
@@ -439,11 +490,11 @@ pub async fn send_push_for(
 /// `url` is an app-relative path (e.g. `/focus/<session>`) the SW opens on tap.
 /// No-op (no DB scan beyond a count, no network) when nobody is subscribed.
 ///
-/// This is the lower-level path — bypasses the per-category gate. Callers
-/// should prefer [`send_push_for`] so the user's mute prefs are honoured; the
-/// only legitimate direct caller is `POST /api/push/test` (a `?type` parameter
-/// is provided to route THROUGH the gate when the user wants to verify a
-/// specific category's wiring).
+/// This is the lower-level path — bypasses BOTH mute gates. Callers should
+/// prefer [`send_push_for`] so the user's prefs are honoured; the only
+/// legitimate direct caller is `POST /api/push/test` (a `?type` parameter is
+/// provided to route THROUGH the gate when the user wants to verify a specific
+/// category's wiring).
 pub async fn send_push_inner(
     state: &AppState,
     category: &str,
@@ -451,6 +502,14 @@ pub async fn send_push_inner(
     body: &str,
     url: &str,
 ) -> usize {
+    let payload = crate::notify::PushPayload::simple(title, body, url, crate::notify::Tier::Attention);
+    let encoded = serde_json::to_vec(&payload).unwrap_or_default();
+    send_encoded(state, category, title, &encoded).await
+}
+
+/// Fan an ALREADY-ENCODED payload out to every stored subscription. The one
+/// place that talks to a push service.
+async fn send_encoded(state: &AppState, category: &str, title: &str, payload: &[u8]) -> usize {
     let subs = match db::push::list(&state.pool).await {
         Ok(subs) => subs,
         Err(e) => {
@@ -465,7 +524,6 @@ pub async fn send_push_inner(
     }
 
     let total = subs.len();
-    let payload = serde_json::to_vec(&PushPayload { title, body, url }).unwrap_or_default();
     let client = reqwest::Client::new();
     let mut delivered = 0usize;
     let mut pruned = 0usize;
@@ -482,7 +540,7 @@ pub async fn send_push_inner(
             .nth(2)
             .unwrap_or("")
             .to_string();
-        match send_one(&client, &state.vapid, &sub, &payload).await {
+        match send_one(&client, &state.vapid, &sub, payload).await {
             Ok(()) => delivered += 1,
             Err(SendError::Gone) => {
                 // The device unsubscribed / uninstalled — prune the dead endpoint.
@@ -526,6 +584,7 @@ pub async fn send_push_inner(
         pruned,
         failed,
         muted: false,
+        reason: None,
     });
     delivered
 }

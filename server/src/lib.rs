@@ -19,6 +19,7 @@ pub mod hooks;
 pub mod hosts;
 pub mod http;
 pub mod log_redact;
+pub mod notify;
 pub mod prefs;
 pub mod public;
 pub mod push;

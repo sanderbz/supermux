@@ -225,14 +225,33 @@ async fn needs_input_handler(
         let session = req.session.clone();
         let question = question.to_string();
         tokio::spawn(async move {
-            let title = format!("agent {session} needs you");
-            let url = format!("/focus/{session}");
+            // The board question is a needs-attention event like any other:
+            // the title is the BOT's name, the body is the agent's own
+            // question, and it shares the session's coalescing slot so the
+            // phone never stacks two banners for one bot.
+            let display = crate::db::sessions::get(&state.pool, &session)
+                .await
+                .ok()
+                .flatten()
+                .map(|r| if r.display_name.trim().is_empty() { r.name } else { r.display_name })
+                .unwrap_or_else(|| session.clone());
+            let body = crate::sessions::chat::store::one_line_capped(
+                &question,
+                crate::notify::PUSH_BODY_MAX,
+            )
+            .unwrap_or_else(|| "The agent asked you a question.".to_string());
+            let payload = crate::notify::PushPayload::simple(
+                display,
+                body,
+                format!("/focus/{session}#pending"),
+                crate::notify::Tier::Attention,
+            )
+            .for_session(&session, crate::notify::attention_badge(&state));
             let _ = crate::push::send_push_for(
                 &state,
                 crate::db::push::NotifCategory::AgentWaiting,
-                &title,
-                &question,
-                &url,
+                &payload,
+                Some(&session),
             )
             .await;
         });
