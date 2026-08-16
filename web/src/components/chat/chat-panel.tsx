@@ -30,7 +30,12 @@ import { commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
 import { detailFor, topAttention } from './attention'
-import { restoredScrollTop, shouldLoadOlder, type ScrollMark } from './backlog'
+import {
+  jumpVisible,
+  restoredScrollTop,
+  shouldLoadOlder,
+  type ScrollMark,
+} from './backlog'
 import { ChatComposer } from './composer'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
@@ -128,6 +133,9 @@ export default function ChatPanel({
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const pinnedRef = React.useRef(true)
+  // The pill's visibility is STATE, not the pin's ref: it has to re-render.
+  // Its threshold is its own (`JUMP_AWAY_PX`) — see `backlog.ts`.
+  const [showJump, setShowJump] = React.useState(false)
 
   // ── back-pagination (QA #3) ────────────────────────────────────────────────
   // Reaching the top fetches the page below what is on screen, and the scroll
@@ -166,10 +174,23 @@ export default function ChatPanel({
     if (!el) return
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight
     pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
+    setShowJump(jumpVisible(distance))
     if (shouldLoadOlder({ scrollTop: el.scrollTop, hasOlder, loading: loadingOlder })) {
       requestOlder()
     }
   }, [hasOlder, loadingOlder, requestOlder])
+
+  const jumpToBottom = React.useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    pinnedRef.current = true
+    setShowJump(false)
+    if (typeof el.scrollTo === 'function') {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [])
 
   React.useEffect(() => {
     const el = scrollRef.current
@@ -334,12 +355,14 @@ export default function ChatPanel({
       rawUrl={filesApi.rawUrl}
       scrollRef={scrollRef}
       onScroll={onScroll}
-      // QA #3 — reaching the top loads the page below what is on screen.
+      // QA #3 / #17 — the two ends of the scroll region.
       hasOlder={backlog.hasOlder}
       loadingOlder={backlog.loadingOlder}
       olderError={backlog.olderError}
       atStart={backlog.atStart}
       onLoadOlder={requestOlder}
+      showJumpToBottom={showJump}
+      onJumpToBottom={jumpToBottom}
       pending={pending.items}
       dialog={dialog.card}
       dialogBusy={dialog.busy}

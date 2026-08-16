@@ -50,7 +50,7 @@ import { SessionHeaderPill } from './header-pill'
 import { LiveLayer } from './live-layer'
 import { deliveryLine, type PendingSend } from './pending'
 import { TranscriptItem } from './transcript-item'
-import { Bubble, MessageRow, SystemLine } from './ui'
+import { Bubble, DownIcon, MessageRow, SystemLine } from './ui'
 import type { OverlayLine } from './use-receipt-overlay'
 
 /**
@@ -237,6 +237,11 @@ export interface ChatConversationProps {
    *  absence made a truncated transcript indistinguishable from a short one. */
   atStart?: boolean
   onLoadOlder?: () => void
+
+  // ── jump to bottom (daily-driver QA #17) ─────────────────────────────────
+  /** The newest message is far enough off screen to offer a way back to it. */
+  showJumpToBottom?: boolean
+  onJumpToBottom?: () => void
 }
 
 export function ChatConversation({
@@ -281,6 +286,8 @@ export function ChatConversation({
   olderError = false,
   atStart = false,
   onLoadOlder,
+  showJumpToBottom = false,
+  onJumpToBottom,
 }: ChatConversationProps) {
   const phone = surface === 'phone'
   const nodes = React.useMemo(
@@ -359,6 +366,18 @@ export function ChatConversation({
             <ComposerShell label={label} surface={phone ? 'phone' : 'desktop'} stat={stat} />
           )}
         </div>
+      }
+      // The way back to the newest message (QA #17). It rides the SAME measured
+      // footer height the track's bottom padding does, so it sits a constant
+      // 10px above the composer's glass whether the draft is one line or six.
+      float={
+        onJumpToBottom && (
+          <JumpToBottom
+            show={showJumpToBottom}
+            bottom={trackBottom(footerH, phone, stat != null) - 16}
+            onClick={onJumpToBottom}
+          />
+        )
       }
       // The expanded card, over this pane only (see `attention-card.tsx`).
       overlay={
@@ -557,6 +576,56 @@ export function BacklogHead({
   if (!atStart) return null
   return (
     <SystemLine testId="chat-start-of-conversation">Start of the conversation</SystemLine>
+  )
+}
+
+/**
+ * The way back to the newest message (daily-driver QA #17).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * "After scrolling up mid-turn the only way back is manual scrolling — no such
+ * button exists in the DOM." A 44px disc, over the transcript and under the
+ * composer, that appears only once the newest message is properly off screen
+ * (`JUMP_AWAY_PX`, not the 48px follow threshold — see `backlog.ts`).
+ *
+ * It is rendered by the surface's `float` slot rather than inside the footer so
+ * that its appearance moves nothing: the footer's height is what the track
+ * reserves at the bottom (QA #12).
+ */
+export function JumpToBottom({
+  show,
+  bottom,
+  onClick,
+}: {
+  show: boolean
+  /** Distance from the pane's bottom edge — the MEASURED composer plus air. */
+  bottom: number
+  onClick: () => void
+}) {
+  const reduce = useReducedMotion() ?? false
+  return (
+    <div className="flex justify-center" style={{ paddingBottom: Math.max(0, bottom) }}>
+      <AnimatePresence initial={false}>
+        {show && (
+          <motion.button
+            type="button"
+            data-testid="chat-jump-bottom"
+            aria-label="Jump to the newest message"
+            onClick={onClick}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ duration: reduce ? 0 : 0.16, ease: eases.out }}
+            className={cn(
+              'pointer-events-auto flex size-11 items-center justify-center rounded-full',
+              'border-[0.5px] border-hairline bg-surface text-ink backdrop-blur-[30px] backdrop-saturate-[170%]',
+              'shadow-[var(--sm-card-shadow)] active:opacity-70',
+            )}
+          >
+            <DownIcon />
+          </motion.button>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 

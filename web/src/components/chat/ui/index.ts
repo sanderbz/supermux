@@ -46,6 +46,7 @@ export {
   BackIcon,
   ChatGlyph,
   CheckIcon,
+  DownIcon,
   FileIcon,
   MicIcon,
   PlusIcon,

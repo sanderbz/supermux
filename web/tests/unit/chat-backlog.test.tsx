@@ -1,5 +1,5 @@
 /**
- * Back-pagination into the transcript (daily-driver QA #3).
+ * Back-pagination and the jump-to-bottom pill (daily-driver QA #3, #17).
  * ─────────────────────────────────────────────────────────────────────────────
  * QA #3: on a large session, scrolling to `scrollTop = 0` six times left
  * `scrollHeight` unchanged at 4928 — the conversation simply stopped mid-air
@@ -7,19 +7,24 @@
  * unreachable, with no loader and no end-of-history marker, even though the
  * server has paged this shape for two fases (`hasMore`/`nextBefore`).
  *
+ * QA #17: after scrolling up mid-turn the only way back to the newest message
+ * was to scroll all the way down by hand — the DOM held no such button at all.
+ *
  * This file pins the ARITHMETIC (which is the part a refactor breaks silently:
- * a wrong restore is a page that visibly teleports) and the RENDERED head of the
- * track, statically. The hook that fetches is wiring over these.
+ * a wrong restore is a page that visibly teleports) and the RENDERED
+ * affordances, statically. The hook that fetches is wiring over these.
  */
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
   historyCursor,
+  jumpVisible,
   mergeOlder,
   oldestCursor,
   restoredScrollTop,
   shouldLoadOlder,
+  JUMP_AWAY_PX,
   NEAR_TOP_PX,
 } from '../../src/components/chat/backlog'
 import { ChatConversation } from '../../src/components/chat/conversation'
@@ -132,6 +137,19 @@ describe('when the top of the track asks for more', () => {
   })
 })
 
+describe('the jump-to-bottom pill’s visibility', () => {
+  // Deliberately far past the 48px follow-bottom threshold: a pill that
+  // appeared the moment the pin let go would flicker on every rubber-band.
+  test('hidden at the bottom and just above it', () => {
+    expect(jumpVisible(0)).toBe(false)
+    expect(jumpVisible(JUMP_AWAY_PX)).toBe(false)
+  })
+
+  test('shown once the newest message is properly off screen', () => {
+    expect(jumpVisible(JUMP_AWAY_PX + 1)).toBe(true)
+  })
+})
+
 // ── what the surface draws ──────────────────────────────────────────────────
 
 const session = (over: Partial<TileSession> = {}): TileSession => ({
@@ -199,5 +217,22 @@ describe('the top of the track (QA #3)', () => {
 
   test('and never while there is still a page to fetch', () => {
     expect(render({ hasOlder: true, atStart: true })).not.toContain('chat-start-of-conversation')
+  })
+})
+
+describe('the jump-to-bottom pill (QA #17)', () => {
+  test('absent while the newest message is on screen', () => {
+    expect(render({ onJumpToBottom: () => {} })).not.toContain('chat-jump-bottom')
+  })
+
+  test('present, named, and a 44px target once scrolled away', () => {
+    const html = render({ showJumpToBottom: true, onJumpToBottom: () => {} })
+    expect(html).toContain('data-testid="chat-jump-bottom"')
+    expect(html).toContain('size-11')
+    expect(html).toContain('aria-label="Jump to the newest message"')
+  })
+
+  test('no handler, no pill — the bench renders the same component', () => {
+    expect(render({ showJumpToBottom: true })).not.toContain('chat-jump-bottom')
   })
 })

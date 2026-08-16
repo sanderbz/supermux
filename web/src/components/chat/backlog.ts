@@ -42,6 +42,16 @@ export const OLDER_PAGE_LIMIT = 60
  */
 export const NEAR_TOP_PX = 320
 
+/**
+ * How far from the bottom the jump-to-bottom pill appears.
+ *
+ * Far past the 48px follow-bottom threshold on purpose: those two numbers are
+ * answering different questions ("should new content still pin?" vs. "is the
+ * newest message off screen?"), and a pill that appeared the instant the pin let
+ * go would blink on every rubber-band and every keyboard open.
+ */
+export const JUMP_AWAY_PX = 240
+
 /** What `oldestCursor` needs of an entry — the server's cursor pair. */
 export interface CursorRef {
   uuid: string
@@ -131,4 +141,9 @@ export function shouldLoadOlder(s: {
   loading: boolean
 }): boolean {
   return s.hasOlder && !s.loading && s.scrollTop < NEAR_TOP_PX
+}
+
+/** Is the newest message far enough off screen to offer a way back to it? */
+export function jumpVisible(distanceFromBottom: number): boolean {
+  return distanceFromBottom > JUMP_AWAY_PX
 }

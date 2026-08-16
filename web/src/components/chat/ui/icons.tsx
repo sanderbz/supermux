@@ -100,6 +100,22 @@ export function FileIcon({ className }: IconProps) {
   )
 }
 
+/** Jump to the newest message (daily-driver QA #17) — `BackIcon`'s chevron,
+ *  turned a quarter, at the weight a 44px disc wants. */
+export function DownIcon({ className }: IconProps) {
+  return (
+    <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden className={className}>
+      <path
+        d="M3.4 6.2L8 10.8l4.6-4.6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 /** Composer: attach / `@` / `/` — the one leading affordance. */
 export function PlusIcon({ className }: IconProps) {
   return (
