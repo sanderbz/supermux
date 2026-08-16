@@ -21,6 +21,12 @@ pub enum AppError {
     Conflict(String),
     #[error("bad request: {0}")]
     BadRequest(String),
+    /// A quota the caller can act on: it is not wrong, it has simply had
+    /// enough. Distinct from `BadRequest` because the right response is "delete
+    /// one and try again", not "fix your payload" — and an agent reads the
+    /// status before it reads the sentence.
+    #[error("too many: {0}")]
+    TooManyRequests(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -33,6 +39,7 @@ impl AppError {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

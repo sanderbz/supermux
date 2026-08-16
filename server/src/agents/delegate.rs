@@ -64,11 +64,16 @@ const SCHEDULE_TAG: &str = crate::scheduler::runner::SCHEDULE_TAG;
 /// Whether `s` contains markup that would let it forge — or break out of — one
 /// of supermux's own transcript wrappers.
 ///
+/// Public because the delegate prompt is not the only untrusted string that
+/// ends up inside a wrapper: a hook-created schedule's `title` and `prompt`
+/// (`scheduler::hook`) reach a transcript the same way, and one rule read by
+/// both callers is the only version of this that cannot drift.
+///
 /// The check is deliberately blunt: any occurrence of either tag name inside
 /// angle brackets, opening or closing, anywhere in the string. A delegated
 /// prompt has no legitimate reason to contain one, and a blunt rule is a rule a
 /// later reader can still verify by eye.
-fn wrapper_markup(s: &str) -> bool {
+pub fn wrapper_markup(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     [DELEGATION_TAG, SCHEDULE_TAG]
         .iter()
