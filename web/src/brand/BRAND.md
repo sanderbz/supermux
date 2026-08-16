@@ -360,6 +360,69 @@ entrance, ~520ms) against `tweens.overlayExit` (300ms), and
 `.sm-swap` is the one sanctioned CSS transition: a 1×1 grid whose two children
 share a cell and crossfade at 0.26s, so a state swap cannot shift layout.
 
+## 6e. The roster — one row, three densities, one fact ladder (B2)
+
+B0 drew `RosterRow` and mounted it nowhere. B2 makes it the overview's list row,
+the focus strip and every picker, because those were three separately-maintained
+rows of the same OBJECT and had already drifted into three different products.
+
+| density | geometry | where |
+|---|---|---|
+| `list` | h64 · mark 40 · preview line · right-pinned ticking time | overview list, session rows |
+| `strip` | h48 · mark 28 · meta line (tokens · branch), no preview | desktop focus strip (was a 56px `CompactTile`) |
+| `picker` | h40 · mark 24 · **static**: no timestamp, no animation | command palette, session pickers, where-picker |
+
+`picker` is a behaviour switch as well as a size: a row that ticks or blinks
+under a keyboard cursor is a row you mis-click (§12.1).
+
+**The fact ladder** (`web/src/lib/fact-ladder.ts`) is the written record of which
+facts each surface carries at which overview tier. It exists because the three
+rows had three different answers and no table, so no refactor could prove it had
+not dropped one. Four rules, all asserted in `tests/unit/fact-ladder.test.ts`:
+
+1. **Monotonic** — a fact at tier *n* is present at every tier above it. Density
+   may add, never subtract.
+2. **`mark` and `attention` on every row of every surface.** Attention has to
+   survive collapse, or the densest surface is the one where you miss the thing
+   that needed you.
+3. **A picker carries no ticking fact** (`time`, `preview`, `statusLabel`).
+4. **`tile` tier 4 equals what the app renders today**, exactly — the ladder is
+   descriptive first, so "no tier drops a fact" is an assertion, not a claim.
+
+| surface | tier 1 | adds |
+|---|---|---|
+| `tile` | taskSummary · statusLabel · tokens · branch · host badge · error badge · ⌘N · archive · preview | nothing — the tiers buy pixels, not facts |
+| `list` | name · statusLabel · branch · time · ⌘N · host badge · error badge | t2 preview · t3 tokens · t4 tags |
+| `strip` | name · tokens · branch · ⌘N | nothing — the strip's preview is the dwell popover, an interaction, not a fact |
+| `picker` | name · taskSummary | nothing |
+
+`contextPct` is deliberately **absent**: it does not exist anywhere in the app
+(the A2 statusline tap feeds the chat header only), and a ladder that promises a
+fact nobody renders is a ladder that lies.
+
+**Identity is a roster property, not a row property.** `lib/roster-marks.ts`
+assigns faces for the whole app once, in **creation order**, and
+`hooks/use-roster-marks.ts` publishes them on context (`usePin(name)`). The
+assignment is first-fit from each seed's own hash position along the engine's
+63-token cycle — *not* `assignRoster`'s count-balanced cost, which spreads a
+roster evenly but re-paints later colleagues whenever an earlier session is
+deleted. Distinctness is guaranteed either way for n ≤ 63; stability is not, and
+a face that moves is not a face.
+
+**Status → face** is one table (`lib/mark-status.ts`): `starting`/`active` →
+`working`, `idle` → `idle`, `waiting` → `waiting`, `stopped` → `stopped`,
+`error` → `failed`. Written against the **TypeScript** union (which has `error`
+and no `unknown`; Rust's `Status` has `Unknown` and no `Error` — errors ride the
+separate `error:{type,message}` delta key).
+
+**Kill switch**: `localStorage['supermux:roster-marks'] = '0'` puts the pre-B2
+`StatusDot` back in every row's footprint, no redeploy.
+`components/roster/session-face.tsx` is the one place that reads it.
+
+**Bench**: `/dev/roster` (DEV-only, lazy) — three densities × six states × three
+tiers + quiet × both themes, plus the tile at all four overview tiers. Coverage
+asserted in `tests/unit/dev-roster-cast.test.tsx`.
+
 ## 7. How the rest of the app consumes this
 
 - **Theme**: extend the `:root` brand block in `globals.css`; keep `--brand` /

@@ -1,7 +1,15 @@
 // CompactTile — desktop session-strip.
 //
-// The dense session-strip row for the desktop focus mode: 320px × 56px, status
-// dot + name + token count + branch chip (matches the cmux sidebar density).
+// The dense session-strip row for the desktop focus mode: 320px × 48px (56 →
+// 48 in fase B2), the session's FACE + name + token count + branch chip.
+//
+// After B2 this is a thin INTERACTION wrapper, like `SessionRow`: it keeps the
+// hover-dwell peek popover, the current-row spring, the ⌘N chip and the select
+// callback, and delegates everything DRAWN to `<RosterRow density="strip">`.
+// The strip, the overview list and every picker are the same object at three
+// densities; `lib/fact-ladder.ts` records which facts each one carries (strip:
+// mark · attention · name · tokens · branch · ⌘N — no preview, because the
+// strip's preview is the dwell popover, which is an interaction, not a fact).
 // The CURRENT session is highlighted via a SPRING scale 1.02 + accent border —
 // NOT a class flip. Hovering a NON-current tile for ≥300ms expands a
 // 14-line tail-preview popover (left-anchored, 380×220) sourced from that
@@ -17,10 +25,14 @@ import { GitBranch } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
-import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
+import { STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { TailPreview } from '@/components/session-tile/tail-preview'
 import { Kbd } from '@/components/ui/kbd'
 import { sessionTitle } from '@/lib/api/sessions'
+import { markStateFor } from '@/lib/mark-status'
+import { usePin } from '@/hooks/use-roster-marks'
+import { RosterRow } from '@/components/chat/ui'
+import { SessionFace } from '@/components/roster/session-face'
 import type { TileSession } from '@/components/session-tile/types'
 
 const DWELL_MS = 300 // popover arms after 300ms dwell on a NON-current tile
@@ -35,6 +47,8 @@ function formatTokens(n: number): string {
 
 export interface CompactTileProps {
   session: TileSession
+  /** This row needs you — the attention tier's `needs` (fase B2 T5). */
+  attention?: boolean
   /** This row is the focused session — highlight + suppress its peek-popover. */
   current: boolean
   /** Jump to this session (Cmd+1..9 mirrors a click). */
@@ -50,17 +64,34 @@ export interface CompactTileProps {
  *  the tail `preview_lines`, so the peek-popover never re-fetches. */
 export function CompactTile({
   session,
+  attention,
   current,
   onSelect,
   jumpIndex,
 }: CompactTileProps) {
   const reduce = useReducedMotion()
+  const pin = usePin(session.name)
   const [peeking, setPeeking] = React.useState(false)
   const dwellRef = React.useRef<number | null>(null)
 
   const title = sessionTitle(session)
   const tokens =
     typeof session.tokens === 'number' ? formatTokens(session.tokens) : null
+
+  // The strip's secondary line — the ladder's `tokens` + `branch`, unchanged
+  // from what this row has always shown.
+  const meta =
+    tokens || session.branch ? (
+      <span className="flex items-center gap-2">
+        {tokens && <span className="shrink-0">{tokens} tokens</span>}
+        {session.branch && (
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <GitBranch className="size-3 shrink-0" />
+            <span className="truncate">{session.branch}</span>
+          </span>
+        )}
+      </span>
+    ) : undefined
 
   const clearDwell = React.useCallback(() => {
     if (dwellRef.current !== null) {
@@ -84,55 +115,53 @@ export function CompactTile({
 
   return (
     <div className="relative">
-      <motion.button
-        type="button"
-        onClick={() => onSelect(session.name)}
-        onHoverStart={onEnter}
-        onHoverEnd={onLeave}
-        aria-current={current ? 'true' : undefined}
-        aria-label={`${title} — ${STATUS_LABEL[session.status]}`}
-        // Current row: spring scale 1.02 (NOT a class flip). Reduce
-        // Motion gets the same resting scale instantly, no spring.
+      <motion.div
+        // Current row: spring scale 1.02 (NOT a class flip). Reduce Motion gets
+        // the same resting scale instantly, no spring. The scale lives on the
+        // wrapper so the primitive stays a plain button.
         animate={current && !reduce ? { scale: 1.02 } : { scale: 1 }}
         transition={springs.cardExpand}
         whileTap={reduce ? undefined : { scale: current ? 0.99 : 0.98 }}
         style={{ transformOrigin: 'left center' }}
-        className={cn(
-          // 320 wide is enforced by the strip container; 56 tall here.
-          'flex h-14 w-full items-center gap-2.5 rounded-xl border px-3 text-left outline-none',
-          'focus-visible:ring-2 focus-visible:ring-ring',
-          current
-            ? 'border-primary/70 bg-card shadow-sm'
-            : 'border-border bg-card/60 hover:bg-card',
-        )}
       >
-        <StatusDot status={session.status} className="mt-px shrink-0" />
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-[13px] font-medium leading-tight">
-            {title}
-          </span>
-          <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-            {tokens && <span className="shrink-0">{tokens} tokens</span>}
-            {session.branch && (
-              <span className="flex min-w-0 items-center gap-1">
-                <GitBranch className="size-3 shrink-0" />
-                <span className="truncate">{session.branch}</span>
-              </span>
-            )}
-          </span>
-        </span>
-        {/* ⌘N / Ctrl+N hint — only for the first 9 jumpable rows. Right-aligned
-            inside the tile, muted so the row's status + name stay primary.
-            The keystroke itself is wired in `useKeyboardCapture` — the chip
-            is purely a discoverability cue. */}
-        {jumpIndex && jumpIndex <= 9 && (
-          <Kbd
-            combo={`mod+${jumpIndex}`}
-            variant="muted"
-            className="ml-1 shrink-0"
-          />
-        )}
-      </motion.button>
+        <RosterRow
+          seed={session.name}
+          pin={pin}
+          name={title}
+          density="strip"
+          // `SessionFace` owns the kill switch, so `supermux:roster-marks = '0'`
+          // puts the pre-B2 status dot back in this exact footprint.
+          leading={
+            <SessionFace
+              name={session.name}
+              status={session.status}
+              size={28}
+              className="shrink-0"
+            />
+          }
+          state={markStateFor(session.status)}
+          attention={attention}
+          selected={current}
+          meta={meta}
+          trailing={
+            /* ⌘N / Ctrl+N hint — only for the first 9 jumpable rows. The
+               keystroke itself is wired in `useKeyboardCapture`; the chip is
+               purely a discoverability cue. */
+            jumpIndex && jumpIndex <= 9 ? (
+              <Kbd combo={`mod+${jumpIndex}`} variant="muted" className="shrink-0" />
+            ) : undefined
+          }
+          ariaLabel={`${title} — ${STATUS_LABEL[session.status]}`}
+          dataVr="compact-tile"
+          onClick={() => onSelect(session.name)}
+          onMouseEnter={onEnter}
+          onMouseLeave={onLeave}
+          className={cn(
+            'border outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            current ? 'border-primary/70 bg-card shadow-sm' : 'border-border bg-card/60',
+          )}
+        />
+      </motion.div>
 
       {/* Peek-popover — left-anchored, 380×220, 14-line tail. Same
           content as the overview hover, scaled down. springs.cardExpand. */}
@@ -149,7 +178,13 @@ export function CompactTile({
             className="glass pointer-events-none absolute left-[calc(100%+8px)] top-1/2 z-30 -translate-y-1/2 overflow-hidden rounded-2xl border border-border/60 shadow-xl"
           >
             <div className="flex h-9 items-center gap-2 border-b border-border/60 px-3">
-              <StatusDot status={session.status} />
+              <SessionFace
+                name={session.name}
+                status={session.status}
+                size={18}
+                animate={false}
+                className="shrink-0"
+              />
               <span className="truncate text-[13px] font-semibold">{title}</span>
               <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
                 {STATUS_LABEL[session.status]}

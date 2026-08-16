@@ -120,14 +120,8 @@ function Pending({ task, what }: { task: string; what: string }) {
 
 /* ── the row adapter ─────────────────────────────────────────────────────── */
 
-/**
- * The bench's single row unit.
- *
- * T3-SEAM: `RosterRow` gains its `density` prop in T3. Until then the bench
- * still renders — and still *labels* — all three densities, so the matrix is on
- * the page from T1 and T3 is a diff in row geometry rather than a new section.
- * When the prop lands this adapter forwards it and nothing else changes.
- */
+/** The bench's single row unit — a thin forwarder onto the primitive, so the
+ *  bench cannot accidentally become its own implementation of a row. */
 function BenchRow({
   member,
   density,
@@ -148,8 +142,12 @@ function BenchRow({
       <RosterRow
         seed={member.name}
         pin={member.pin}
-        timestamp={density === 'picker' ? undefined : member.timestamp}
+        density={density}
+        timestamp={member.timestamp}
         preview={preview && density === 'list' ? member.preview : undefined}
+        meta={
+          density === 'strip' ? <span>21k tokens · ⎇ feat/exec-backoff</span> : undefined
+        }
         state={state}
         attention={attention}
         selected={selected}
