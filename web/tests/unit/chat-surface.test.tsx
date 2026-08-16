@@ -26,7 +26,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { ChatSurface } from '../../src/components/chat/chat-surface'
 import { serverNowMs } from '../../src/components/chat/latency'
-import { LiveLayer, commandChip, delegationTarget } from '../../src/components/chat/live-layer'
+import { LiveLayer, commandChip, pendingHandoff } from '../../src/components/chat/live-layer'
 import type { OverlayLine } from '../../src/components/chat/use-receipt-overlay'
 import type { TileSession } from '../../src/components/session-tile/types'
 
@@ -37,6 +37,12 @@ const KNOWN = new Map<string, string>([
   ['release-train', 'release-train'],
   ['patch', 'patch'],
   ['quill', 'quill'],
+])
+
+/** slug → display name, for the pill and the arrival divider. */
+const NAMES = new Map<string, string>([
+  ['release-train', 'Release Train'],
+  ['patch', 'Patch'],
 ])
 
 function session(over: Partial<TileSession> = {}): TileSession {
@@ -56,7 +62,7 @@ function render(props: Partial<Parameters<typeof LiveLayer>[0]> = {}): string {
   const s = props.session === undefined ? session() : props.session
   return renderToStaticMarkup(
     <ChatSurface name={FOCUS} session={s}>
-      <LiveLayer name={FOCUS} session={s} turnStart={null} mentions={KNOWN} {...props} />
+      <LiveLayer name={FOCUS} session={s} turnStart={null} names={NAMES} {...props} />
     </ChatSurface>,
   )
 }
@@ -294,35 +300,83 @@ describe('the hook receipts', () => {
   })
 })
 
-describe('delegation, outbound', () => {
+describe('delegation, outbound (fase B4 T5 — the pill stops guessing)', () => {
   const asking = (activity: string, over: Partial<TileSession> = {}) =>
     render({
       session: session({ status: 'active', activity, ...over }),
       turnStart: serverNowMs() - 3_000,
     })
 
-  test('an activity that names a session becomes the pill', () => {
+  test('an activity that NAMES a colleague draws no pill on its own', () => {
+    // THE REGRESSION THIS TASK EXISTS FOR (#41/#43 class). The old rule grepped
+    // the activity string for a known session name, so an agent that merely
+    // wrote "I'll ask Patch about this" drew a handoff pill for a delegation
+    // that never happened. Prose about a colleague and a message to one are the
+    // same bytes; the only fix is to stop reading the prose.
     const html = asking('⚡ asking Patch for the failing job', { activity_kind: 'task' })
-    // The name as the agent wrote it, on the recipient's own pigment.
+    expect(text(html)).not.toContain('asking Patch…')
+    expect(html).toContain('chat-working-row')
+  })
+
+  test('a real dispatch draws one, even when the activity names nobody', () => {
+    const html = render({
+      session: session({ status: 'active', activity: '⚡ dispatching a subagent' }),
+      turnStart: serverNowMs() - 3_000,
+      handoff: { to: 'patch', atMs: Date.now() },
+    })
     expect(text(html)).toContain('asking Patch…')
     expect(html).not.toContain('chat-working-row')
   })
 
-  test('a task that names nobody known falls back to the working row', () => {
-    const html = asking('⚡ dispatching a subagent', { activity_kind: 'task' })
-    expect(html).toContain('chat-working-row')
+  test('the pill outlives the turn — a hand-off is not a turn', () => {
+    // A delegation dispatched from an idle session is still in flight, and the
+    // old rule could only ever draw while `status === 'active'`.
+    const html = render({
+      session: session({ status: 'idle' }),
+      handoff: { to: 'patch', atMs: Date.now() },
+    })
+    expect(text(html)).toContain('asking Patch…')
   })
 
-  test('delegationTarget — known names only, never the focused session', () => {
-    expect(delegationTarget('asking Patch for the job', KNOWN, FOCUS)).toEqual({
-      seed: 'patch',
-      label: 'Patch',
-    })
-    // `patchwork` is a word, not a colleague (the T3 boundary rule).
-    expect(delegationTarget('reading patchwork.md', KNOWN, FOCUS)).toBeUndefined()
-    // The focused session cannot delegate to itself.
-    expect(delegationTarget('release-train is busy', KNOWN, FOCUS)).toBeUndefined()
-    expect(delegationTarget(undefined, KNOWN, FOCUS)).toBeUndefined()
+  test('pendingHandoff — nothing in flight, nothing drawn', () => {
+    expect(pendingHandoff(null, [], FOCUS)).toBeNull()
+    expect(pendingHandoff(undefined, [], FOCUS)).toBeNull()
+    expect(pendingHandoff({ to: '', atMs: Date.now() }, [], FOCUS)).toBeNull()
+  })
+
+  test('pendingHandoff — the LEDGER retires it, so it is never drawn twice', () => {
+    // The pill resolves INTO the durable `Delegated to ●Patch` line rather than
+    // sitting beside it: one delegation, one representation, at every instant.
+    const atMs = Date.now()
+    const landed = {
+      id: 9,
+      ts: Math.floor(atMs / 1000),
+      actor: 'user',
+      action: 'session.delegate',
+      target: 'patch',
+      detail: { from: FOCUS },
+    }
+    expect(pendingHandoff({ to: 'patch', atMs }, [landed], FOCUS)).toBeNull()
+    // …but only the RIGHT row retires it.
+    expect(pendingHandoff({ to: 'patch', atMs }, [{ ...landed, target: 'quill' }], FOCUS)).toBe(
+      'patch',
+    )
+    // A row for a delegation somebody ELSE sent to Patch is not this one.
+    expect(
+      pendingHandoff({ to: 'patch', atMs }, [{ ...landed, detail: { from: 'quill' } }], FOCUS),
+    ).toBe('patch')
+    // An OLD row — the same pair, delegated an hour ago — must not retire a
+    // dispatch made just now, or a repeat hand-off would never draw a pill.
+    expect(
+      pendingHandoff({ to: 'patch', atMs }, [{ ...landed, ts: landed.ts - 3600 }], FOCUS),
+    ).toBe('patch')
+  })
+
+  test('pendingHandoff — gives up rather than hanging', () => {
+    // The ledger is the only thing that resolves this pill, so a feed that is
+    // erroring or disabled would otherwise leave "handing over…" on screen for
+    // the rest of the session.
+    expect(pendingHandoff({ to: 'patch', atMs: Date.now() - 31_000 }, [], FOCUS)).toBeNull()
   })
 })
 

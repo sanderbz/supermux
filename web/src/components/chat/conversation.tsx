@@ -155,6 +155,13 @@ export interface ChatConversationProps {
   /** Open this session's Schedules sheet — the destination of a `⏱` chip
    *  (fase B4 T3/T8). Omit and the chip stays plain emphasis. */
   onOpenSchedule?: (ref: ScheduleRef) => void
+  /**
+   * A hand-off this client dispatched and the ledger has not confirmed yet
+   * (fase B4 T5) — the ONLY thing that draws the handoff pill. The pill
+   * resolves into the durable `Delegated to ●x` line the moment a matching
+   * `session.delegate` row lands in `events`; see `live-layer.tsx`.
+   */
+  handoff?: { to: string; atMs: number } | null
   /** SERVER-clock ms, bucketed by the caller — the dividers' relative clock. */
   nowMs: number
   /** SERVER-clock ms anchor for the running turn; null = no live turn. */
@@ -267,6 +274,7 @@ export function ChatConversation({
   events,
   onOpenSession,
   onOpenSchedule,
+  handoff,
   nowMs,
   turnStart,
   overlay,
@@ -488,7 +496,9 @@ export function ChatConversation({
             session={session}
             turnStart={turnStart}
             overlay={overlay}
-            mentions={mentions}
+            handoff={handoff}
+            events={events}
+            names={names}
             pinFor={pinFor}
             surface={phone ? 'phone' : 'desktop'}
             provisional={provisional}

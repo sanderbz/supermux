@@ -412,6 +412,18 @@ export interface ComposerHandle {
    * Enter would be the worst version of this feature.
    */
   handoff: { to: string; label: string } | null
+  /**
+   * A hand-off this composer DISPATCHED that has not been confirmed by the
+   * ledger yet (fase B4 T5). The optimistic half of the handoff pill: it is the
+   * only thing in the app that knows a delegation is in flight, because the
+   * ledger cannot know until it lands.
+   *
+   * Set on dispatch, cleared on failure, and deliberately LEFT SET on success —
+   * `live-layer.tsx::pendingHandoff` retires it when the matching
+   * `session.delegate` row appears, so the pill resolves INTO the durable line
+   * instead of blinking out before it.
+   */
+  handoffPending: { to: string; atMs: number } | null
   /** The `@`/`/` surface (fase A4 T9). */
   picker: ComposerPickerState
   onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
@@ -441,6 +453,10 @@ export function useComposer({
   // at 0 on purpose: a draft restored from another mount (renderer toggle) must
   // not pop a popover nobody asked for, and 0 can never be inside a token.
   const [caret, setCaret] = React.useState(0)
+  // See `ComposerHandle.handoffPending`.
+  const [handoffPending, setHandoffPending] = React.useState<{ to: string; atMs: number } | null>(
+    null,
+  )
   // What the user has already closed, so Escape (and an accepted pick) stay
   // closed while they keep typing. Keyed by the token's TEXT, not just its
   // offset: clearing the box and typing `@` again is a new question.
@@ -505,6 +521,7 @@ export function useComposer({
       void (async () => {
         sendingRef.current = true
         setSending(true)
+        setHandoffPending({ to: intent.to, atMs: Date.now() })
         const recipient = handoffLabel(intent.to, handoff.names)
         let error: string | undefined
         try {
@@ -514,6 +531,8 @@ export function useComposer({
           // decided, and where it is asserted. `''` rather than `undefined` on
           // an unworded throw: the field is optional, the outcome is not.
           error = err instanceof Error ? err.message : ''
+          // Nothing is in flight any more, and nothing will confirm it.
+          setHandoffPending(null)
         }
         try {
           const out = handoffResult(getDraft(name), raw, recipient, error)
@@ -747,6 +766,7 @@ export function useComposer({
     stop,
     insert,
     handoff: handoffState,
+    handoffPending,
     picker: {
       open: pickerOpen,
       kind: trigger?.kind ?? '@',

@@ -77,10 +77,17 @@ describe('coverage: every state the surface can be in', () => {
     expect(req?.summary).toContain('cargo publish')
   })
 
-  test('delegation has BOTH ends: an arrival in the transcript, a target in the activity', () => {
+  test('delegation has BOTH ends: an arrival in the transcript, a dispatch in flight', () => {
     const s = byId.get('delegation')!
     expect(s.entries.some((e) => e.kind === 'teammate' && e.label === 'patch')).toBe(true)
-    // The pill only draws when the activity names a session that EXISTS.
+    // The pill is drawn by a real DISPATCH now (fase B4 T5), not by grepping
+    // the activity string — so the state has to carry one, and it has to name
+    // a session that exists.
+    expect(s.handoffTo).toBe('patch')
+    expect(MENTIONS.get(s.handoffTo!)).toBe('patch')
+    // The activity is deliberately kept AND deliberately names Patch: this is
+    // the positive twin of the regression guard in `chat-surface.test.tsx`,
+    // where the same sentence with no dispatch behind it draws nothing.
     const named = mentionSegments(s.session.activity ?? '', MENTIONS, s.session.name).find(
       (seg) => 'seed' in seg,
     )

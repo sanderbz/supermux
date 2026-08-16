@@ -365,6 +365,14 @@ export interface LiveState {
   /** The tail query failed. */
   isError?: boolean
   /**
+   * A hand-off this client dispatched and the ledger has not confirmed (fase
+   * B4 T5) — the only thing that draws the pill now that the activity-string
+   * heuristic is gone. A SLUG here rather than the `{to, atMs}` the surface
+   * takes: `atMs` is a client clock, and the bench stamps it at render so the
+   * pill is never accidentally expired in a screenshot.
+   */
+  handoffTo?: string
+  /**
    * This session's harness ledger (fase B4) — the rows that become the centred
    * management-log sentences, merged into the same ts-ordered stream the
    * messages are in. The bench feeds them as WIRE rows for the same reason it
@@ -533,6 +541,12 @@ export function liveStates(nowMs: number): LiveState[] {
       }),
       entries: build(ARRIVAL_DRAFTS, nowSec),
       turnAgo: 31,
+      // The pill is drawn by a DISPATCH now, not by the activity string above
+      // (fase B4 T5). The activity is kept precisely because it names Patch:
+      // this state is the regression guard's positive twin, and the negative
+      // one — the same sentence with no dispatch behind it — lives in
+      // `chat-interactive.test.tsx`.
+      handoffTo: 'patch',
     },
     {
       id: 'harness',

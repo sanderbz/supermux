@@ -387,6 +387,10 @@ export default function ChatPanel({
       names={names}
       events={events}
       onOpenSession={openSession}
+      // The handoff pill's ONLY source (fase B4 T5): a POST this client made
+      // and the ledger has not confirmed yet. The activity-string heuristic
+      // that used to draw it is gone — see `live-layer.tsx::pendingHandoff`.
+      handoff={composer.handoffPending}
       nowMs={nowBucketMs}
       turnStart={turnStart}
       overlay={overlay}

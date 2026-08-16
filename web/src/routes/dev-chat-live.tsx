@@ -174,6 +174,10 @@ function Surface({
       nowMs={nowMs}
       turnStart={state.turnAgo != null ? nowMs - state.turnAgo * 1000 : null}
       overlay={state.overlay}
+      // The page's ONE clock (`nowMs`), not `Date.now()`: a screenshot is a
+      // single moment, and the pill has a give-up window that a per-render
+      // clock would make time-dependent.
+      handoff={state.handoffTo ? { to: state.handoffTo, atMs: nowMs } : null}
       pinFor={pinFor}
       surface={surface}
       isError={state.isError}
@@ -253,6 +257,7 @@ function BenchComposer({
       const intent = readDelegateIntent(spec.draft, MENTIONS, name)
       return intent ? { to: intent.to, label: handoffLabel(intent.to, NAMES) } : null
     })(),
+    handoffPending: null,
     picker: {
       open: spec.picker != null,
       kind: spec.picker?.kind ?? '@',

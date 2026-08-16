@@ -10,9 +10,19 @@
  *                       empty on every A1/A3 path
  *   permission          the one thing on screen that is asking (`ChoiceCard`)
  *   overlay receipts    hook-driven, last line still running
- *   working row         the P12 state ladder, or a delegation pill when the
- *                       turn is asking a colleague
+ *   working row         the P12 state ladder — or a delegation pill when this
+ *                       session has a hand-off in flight
  *   provisional text    the P13 pty tail, visibly unconfirmed
+ *
+ * THE PILL ONLY EVER DRAWS A DELEGATION THAT REALLY HAPPENED (fase B4 T5). It
+ * used to be inferred by grepping `session.activity` for a known session name,
+ * which drew a hand-off for an agent that merely *mentioned* a colleague. Now
+ * its only source is a dispatch this client made, retired by the ledger row
+ * that confirms it — see `pendingHandoff`. One consequence is worth stating
+ * out loud: a delegation performed from this session's own pty by curl draws
+ * NO pill, because the app learns about it after the fact. It gets its durable
+ * `Delegated to ●x` line from the ledger like everything else, and that is the
+ * honest rendering of "this already happened".
  *
  * Presentational, on purpose: it fetches nothing and owns no turn state, so
  * `renderToStaticMarkup` can pin the order and the wording without react-query,
@@ -31,13 +41,14 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { SessionMark, type MarkPin } from '../../brand/marks'
 import { eases } from '../../lib/springs'
 
+import type { HarnessEvent } from '../../lib/api/harness'
 import type { PermissionRequestInfo, SessionMode } from '../../lib/api/sessions'
 import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
 import type { DialogCardView } from './dialog-answer'
 import { formatElapsed, stripEmojiPrefix } from './entries'
-import { mentionSegments, toReceiptRows } from './grouping'
+import { toReceiptRows } from './grouping'
 import { serverNowMs } from './latency'
 import type { OverlayLine } from './use-receipt-overlay'
 import { WorkingRow } from './working-row'
@@ -55,7 +66,6 @@ import {
   type Receipt,
 } from './ui'
 
-const EMPTY_INDEX: ReadonlyMap<string, string> = new Map()
 
 /**
  * The three answers the modal registry maps a Claude permission dialog to
@@ -92,8 +102,18 @@ export interface LiveLayerProps {
   turnStart: number | null
   /** Hook receipts for this turn, oldest first (`useReceiptOverlay`). */
   overlay?: readonly OverlayLine[]
-  /** Lowercased name → slug, for spotting a delegation target in the activity. */
-  mentions?: ReadonlyMap<string, string>
+  /**
+   * A hand-off this app just dispatched (fase B4 T5), still unconfirmed.
+   *
+   * `atMs` is the CLIENT clock at dispatch — this is optimism about a POST this
+   * client made, not a fact about the world, so it is compared against a client
+   * stamp rather than the server's.
+   */
+  handoff?: { to: string; atMs: number } | null
+  /** This session's harness ledger — the thing that RESOLVES the pill. */
+  events?: readonly HarnessEvent[]
+  /** Slug → display name, so the pill names a colleague and not a row. */
+  names?: ReadonlyMap<string, string>
   pinFor?: (seed: string) => MarkPin | undefined
   /** Desktop or phone metrics — the overlay group is a bubble like any other. */
   surface?: 'desktop' | 'phone'
@@ -136,7 +156,9 @@ export function LiveLayer({
   session,
   turnStart,
   overlay = [],
-  mentions = EMPTY_INDEX,
+  handoff = null,
+  events,
+  names,
   pinFor,
   surface,
   provisional,
@@ -149,7 +171,7 @@ export function LiveLayer({
   // The turn is running AND anchored. The anchor is what the elapsed clause
   // counts from, so a row without one would have nothing honest to say.
   const working = session?.status === 'active' && turnStart != null
-  const target = delegationTarget(session?.activity, mentions, name)
+  const target = pendingHandoff(handoff, events, name)
 
   // THE ONE LIVE ROW (daily-driver QA #7).
   //
@@ -226,18 +248,25 @@ export function LiveLayer({
         />
       )}
 
-      {working &&
-        !liveRow &&
-        (target ? (
-          <DelegationPill
-            from={name}
-            fromPin={pinFor?.(name)}
-            to={target.seed}
-            toPin={pinFor?.(target.seed)}
-            toName={target.label}
-            ring={PAGE_RING}
-          />
-        ) : (
+      {/* THE PILL IS NOT PART OF THE TURN (fase B4 T5). It used to be — it was
+          derived from `activity`, which only exists while one is running — but
+          a hand-off dispatched from an idle session is just as in-flight, and
+          drawing it only during a turn would have hidden the commonest case:
+          typing `@colleague …` into a session that is sitting still. It still
+          outranks the working row when both apply, because it is the more
+          specific thing this session is doing. */}
+      {target ? (
+        <DelegationPill
+          from={name}
+          fromPin={pinFor?.(name)}
+          to={target}
+          toPin={pinFor?.(target)}
+          toName={names?.get(target) ?? target}
+          ring={PAGE_RING}
+        />
+      ) : (
+        working &&
+        !liveRow && (
           <WorkingRow
             // The run grammar, applied to the live band: the overlay receipts
             // directly above are the SAME speaker, so their mark is already
@@ -250,7 +279,8 @@ export function LiveLayer({
             subagents={session?.subagents}
             turnStartMs={turnStart}
           />
-        ))}
+        )
+      )}
 
       <SwapCell>{provisional}</SwapCell>
     </div>
@@ -556,30 +586,63 @@ export function OverlayReceipts({
 /* ── delegation, outbound ────────────────────────────────────────────────── */
 
 /**
- * Who this turn is asking, if anyone.
+ * Who this session is handing work to RIGHT NOW, if anyone.
  *
- * ONE signal, one guard (fase A3 T4.4): the activity must NAME a session that
- * is in the known-sessions index, or there is no pill and the working row
- * stands. `activity_kind === 'task'` is deliberately not a second trigger —
- * the pill draws a recipient, and a task that names nobody known has none, so
- * reading the kind would only ever agree with the name or invent a colleague.
- * The matcher is `mentionSegments`, the same one the transcript's chips use, so
- * "no regex over arbitrary words" holds here too and `patchwork` is a word
- * rather than a colleague.
+ * WHAT THIS USED TO BE, and why it is gone: `delegationTarget(activity,
+ * mentions, self)` grepped the session's *activity string* for a known session
+ * name. An agent that merely wrote "I'll ask deploy-fix about this" drew a
+ * handoff pill for a delegation that never happened — the #41/#43 false-positive
+ * class, and un-tunable, because prose about a colleague and a message to one
+ * are the same bytes. So it is deleted rather than tightened.
+ *
+ * TWO REAL SOURCES REPLACE IT, and the pill is the gap between them:
+ *
+ *   · the OPTIMISTIC one — a `POST /api/agents/delegate` this client just made
+ *     (`use-composer.ts`' hand-off branch). It is the only thing that knows a
+ *     delegation is in flight, because the ledger cannot know until it lands.
+ *   · the LEDGER — a `session.delegate` row whose `detail.from` is this session.
+ *     Durable, replayable, and the thing the transcript's own
+ *     `Delegated to ●x` line is drawn from.
+ *
+ * The pill therefore RESOLVES INTO the durable line rather than sitting beside
+ * it: the moment a matching ledger row appears, this returns `null` and the
+ * `HarnessLine` above is already on screen. One delegation, one representation,
+ * at every instant — the same "one live row" discipline the overlay group
+ * keeps.
+ *
+ * THE AGENT-INITIATED CASE has no pill by design (T5.4): a delegation performed
+ * from this session's own pty by curl produces no optimistic state, because the
+ * app learns about it after the fact, from the ledger. Inventing a pill from a
+ * debounced feed would draw "handing over…" for something already handed over.
  */
-export function delegationTarget(
-  activity: string | undefined,
-  mentions: ReadonlyMap<string, string>,
+export function pendingHandoff(
+  handoff: { to: string; atMs: number } | null | undefined,
+  events: readonly HarnessEvent[] | undefined,
   self: string,
-): { seed: string; label: string } | undefined {
-  if (!activity) return undefined
-  for (const segment of mentionSegments(stripEmojiPrefix(activity), mentions, self)) {
-    // The seed is the slug (one pigment per session, always); the LABEL is the
-    // name as the agent wrote it, which is what the pill says out loud.
-    if ('seed' in segment) return segment
-  }
-  return undefined
+): string | null {
+  if (!handoff?.to) return null
+  // Give up rather than hang. The ledger is the only thing that resolves this
+  // pill, so a feed that is erroring, disabled, or simply never going to
+  // mention it would otherwise leave "handing over…" on screen forever.
+  if (Date.now() - handoff.atMs > HANDOFF_MAX_MS) return null
+  const landed = (events ?? []).some(
+    (e) =>
+      e.action === 'session.delegate' &&
+      e.target === handoff.to &&
+      e.detail.from === self &&
+      // Seconds on the wire, and a whole second of slack: the row is stamped
+      // server-side while `atMs` is this client's clock, and a pill that
+      // flickered back on because of 200 ms of skew would be worse than one
+      // that resolved 200 ms early.
+      e.ts * 1000 >= handoff.atMs - 1_000,
+  )
+  return landed ? null : handoff.to
 }
+
+/** How long an unconfirmed hand-off may draw a pill. Long enough for a slow
+ *  pty wake plus the feed's 1200 ms debounce, short enough that a stuck one is
+ *  a blip rather than furniture. */
+export const HANDOFF_MAX_MS = 30_000
 
 /* ── the provisional slot ────────────────────────────────────────────────── */
 
