@@ -83,24 +83,41 @@ describe('the stack, top to bottom', () => {
     provisional: marker,
   })
 
-  test('permission → overlay receipts → working row → provisional', () => {
+  test('permission → overlay receipts → provisional', () => {
     const at = (needle: string) => {
       const i = html.indexOf(needle)
       expect(i).toBeGreaterThan(-1)
       return i
     }
     // Confirmed content is above all of this by construction (it is the
-    // surface's other child); these four are the live layer's own order.
+    // surface's other child); these are the live layer's own order.
     expect(at('chat-permission-card')).toBeLessThan(at(running))
-    expect(at(running)).toBeLessThan(at('chat-working-row'))
-    expect(at('chat-working-row')).toBeLessThan(at('p13'))
+    expect(at(running)).toBeLessThan(at('p13'))
   })
 
   test('every band is actually rendered, not just ordered', () => {
     const out = text(html)
     expect(out).toContain('cargo publish --dry-run') // the ask
     expect(out).toContain('Read') // a hook receipt
-    expect(out).toContain('cargo check · 3 subagents') // the working row
+    expect(out).toContain('cargo check') // the call that is running
+    expect(out).toContain('3 subagents · 12s') // its clock, on the same line
+  })
+
+  /**
+   * ONE LIVE REPRESENTATION PER TOOL CALL (daily-driver QA #7).
+   *
+   * The overlay group and the working row are fed by the SAME `activity`, so
+   * this frame used to draw one tool call twice — `••• cargo check 12s` in the
+   * group and `◌ cargo check · 3 subagents` on a pill directly under it (with
+   * the permission card above, the QA counted three). The group's last line is
+   * the running call; it takes the clock, and there is no second row.
+   */
+  test('the running call is ONE row, not a receipt plus a pill', () => {
+    expect(html).not.toContain('chat-working-row')
+    // Once, not twice: the label appears in the running receipt line and
+    // nowhere else in the band.
+    expect(text(html).split('cargo check').length - 1).toBe(1)
+    expect(html).toContain('chat-receipt-status')
   })
 })
 

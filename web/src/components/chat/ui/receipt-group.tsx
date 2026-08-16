@@ -30,6 +30,17 @@ export interface Receipt {
   outcome?: string
   /** `running` puts the spinner in the check slot. Default `done`. */
   state?: 'done' | 'running'
+  /**
+   * The live status of a `running` line — `8s`, `3 subagents · 8s`.
+   *
+   * This is what makes the running receipt the turn's ONE live representation
+   * (daily-driver QA #7): before it, the elapsed clock lived on a separate
+   * working pill under the group, so a single tool call was drawn twice at once
+   * — `◌ notes.md` and `••• notes.md 5s`. The clock belongs to the line that is
+   * running, and when that line stops running it resolves into a receipt in
+   * place, with the outcome landing where the clock was.
+   */
+  status?: string
 }
 
 export interface CoalescedReceipt extends Receipt {
@@ -157,6 +168,16 @@ function ReceiptLine({ line }: { line: CoalescedReceipt }) {
           </span>
           <Outcome>{line.outcome}</Outcome>
         </>
+      )}
+      {/* The running line's own clock, in the slot the outcome will take. It
+          never competes with an outcome — a line that has one has finished. */}
+      {running && line.status && line.outcome === undefined && (
+        <span
+          data-testid="chat-receipt-status"
+          className="ml-auto flex-none whitespace-nowrap tabular-nums text-[13px] text-ink-2"
+        >
+          {line.status}
+        </span>
       )}
     </div>
   )
