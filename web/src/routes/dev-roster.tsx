@@ -1,0 +1,377 @@
+// /dev/roster — the visual bench for the roster system (fase B2, T1).
+//
+// DEV-only + lazy + mounted outside <Layout> (mirrors /dev/marks, /dev/tiles),
+// so neither the route nor its fixture can reach a production chunk and the page
+// is pure design system: no nav, no header, nothing but the roster on paper.
+//
+// What it is FOR: this is the surface B2 regresses against, task by task. The
+// roster system has four independent channels — density, mark state, attention
+// tier, theme — and B2 changes all four, so all four are on ONE page. Every VR
+// sweep in this fase diffs against a shot of this route.
+//
+// Three deliberate rules, inherited from /dev/marks:
+//   · every matrix is a STILL frame. A bench you screenshot must be
+//     deterministic, and the still frame is exactly what a reduced-motion user
+//     and every screenshot keep forever — if a state is not separable here, it
+//     is not separable at all.
+//   · both themes render on ONE page via the `[data-theme]` subtree switch, so
+//     light and dark are compared side by side rather than across two shots.
+//   · the coverage is data (`dev-roster.cast.ts`) and it is asserted
+//     (`tests/unit/dev-roster-cast.test.tsx`), so the bench cannot quietly
+//     shrink when a later task finds a matrix inconvenient.
+//
+// Sections land with their tasks: T1 seats densities/states/attention/selection
+// and the tile tiers, T6 fills the rollup, T7 the pinned hairline, T10 the issue
+// list. A section that has not landed renders its own "pending" plate — visible,
+// countable, and impossible to confuse with a section that renders nothing.
+import * as React from 'react'
+
+import { PAPER } from '@/brand/tokens'
+import type { MarkState } from '@/brand/marks'
+import { RosterRow } from '@/components/chat/ui'
+import { SessionTile } from '@/components/session-tile'
+import { MOCK_TILES } from '@/components/session-tile/mock'
+import { getOverviewSizeConfig } from '@/lib/overview-size'
+
+import {
+  ATTENTION_TIERS,
+  BENCH_THEMES,
+  DENSITY_ROLES,
+  ISSUE_STATES,
+  PINNED_NAMES,
+  ROLLUP_COUNTS,
+  ROSTER_CAST,
+  ROSTER_DENSITIES,
+  ROSTER_STATES,
+  STATE_MODELS,
+  TIER_MODELS,
+  TILE_TIERS,
+  type AttentionTier,
+  type BenchTheme,
+  type RosterDensity,
+  type RosterMember,
+} from './dev-roster.cast'
+
+/* ── page furniture ──────────────────────────────────────────────────────── */
+
+function Section({
+  id,
+  title,
+  note,
+  children,
+}: {
+  id: string
+  title: string
+  note: string
+  children: React.ReactNode
+}) {
+  return (
+    <section data-bench={id} data-vr={`roster-${id}`} className="flex flex-col gap-3">
+      <header className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold tracking-tight text-ink">{title}</h2>
+        <p className="max-w-3xl text-xs leading-relaxed text-ink-2">{note}</p>
+      </header>
+      {children}
+    </section>
+  )
+}
+
+/** A titled plate — the paper a strip of rows sits on, so row chrome (hover,
+ *  selection tint, hairline) is judged against the surface it ships on. */
+function Plate({
+  label,
+  children,
+  className,
+}: {
+  label?: string
+  children: React.ReactNode
+  className?: string
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {label && <span className="text-[11px] text-ink-3">{label}</span>}
+      <div
+        className={
+          'rounded-2xl bg-paper-raised px-2 py-2 shadow-[var(--sm-bubble-shadow)] ' +
+          (className ?? '')
+        }
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A section whose surface has not landed yet. Deliberately loud: an empty
+ * section and a missing section look identical in a screenshot, and the whole
+ * value of this bench is that a channel cannot silently disappear.
+ */
+function Pending({ task, what }: { task: string; what: string }) {
+  return (
+    <div
+      data-bench-pending={task}
+      className="rounded-2xl border border-dashed border-hairline px-4 py-6 text-center text-xs text-ink-3"
+    >
+      {what} — lands in <strong className="font-medium text-ink-2">{task}</strong>
+    </div>
+  )
+}
+
+/* ── the row adapter ─────────────────────────────────────────────────────── */
+
+/**
+ * The bench's single row unit.
+ *
+ * T3-SEAM: `RosterRow` gains its `density` prop in T3. Until then the bench
+ * still renders — and still *labels* — all three densities, so the matrix is on
+ * the page from T1 and T3 is a diff in row geometry rather than a new section.
+ * When the prop lands this adapter forwards it and nothing else changes.
+ */
+function BenchRow({
+  member,
+  density,
+  state = 'idle',
+  attention,
+  selected,
+  preview = true,
+}: {
+  member: RosterMember
+  density: RosterDensity
+  state?: MarkState
+  attention?: boolean
+  selected?: boolean
+  preview?: boolean
+}) {
+  return (
+    <div data-bench-density={density} data-bench-state={state}>
+      <RosterRow
+        seed={member.name}
+        pin={member.pin}
+        timestamp={density === 'picker' ? undefined : member.timestamp}
+        preview={preview && density === 'list' ? member.preview : undefined}
+        state={state}
+        attention={attention}
+        selected={selected}
+      />
+    </div>
+  )
+}
+
+const byName = (name: string): RosterMember =>
+  ROSTER_CAST.find((m) => m.name === name) ?? ROSTER_CAST[0]
+
+/* ── panels ──────────────────────────────────────────────────────────────── */
+
+/** Three densities, same four colleagues — the geometry ladder. */
+function DensityMatrix() {
+  const sample = ROSTER_CAST.slice(0, 4)
+  return (
+    <div className="grid gap-6 md:grid-cols-3">
+      {ROSTER_DENSITIES.map((density) => (
+        <Plate key={density} label={`${density} — ${DENSITY_ROLES[density]}`}>
+          {sample.map((m, i) => (
+            <BenchRow key={m.name} member={m} density={density} selected={i === 1} />
+          ))}
+        </Plate>
+      ))}
+    </div>
+  )
+}
+
+/** Six mark states × three densities. Still frames, one model per state so a
+ *  state is never judged through a single silhouette. */
+function StateMatrix() {
+  return (
+    <div className="grid gap-6 md:grid-cols-3">
+      {ROSTER_DENSITIES.map((density) => (
+        <Plate key={density} label={density}>
+          {ROSTER_STATES.map((state) => (
+            <BenchRow
+              key={state}
+              member={byName(STATE_MODELS[state])}
+              density={density}
+              state={state}
+            />
+          ))}
+        </Plate>
+      ))}
+    </div>
+  )
+}
+
+/** The three tiers plus quiet, at every density. `quiet` draws no glyph — it is
+ *  here so the difference between "quiet" and "unread" is lookable-at. */
+function AttentionMatrix() {
+  const stateFor = (tier: AttentionTier): MarkState =>
+    tier === 'needs' ? 'waiting' : tier === 'working' ? 'working' : 'idle'
+  return (
+    <div className="grid gap-6 md:grid-cols-3">
+      {ROSTER_DENSITIES.map((density) => (
+        <Plate key={density} label={density}>
+          {ATTENTION_TIERS.map((tier) => (
+            <div key={tier} data-bench-tier={tier}>
+              <BenchRow
+                member={byName(TIER_MODELS[tier])}
+                density={density}
+                state={stateFor(tier)}
+                attention={tier === 'needs'}
+              />
+            </div>
+          ))}
+        </Plate>
+      ))}
+    </div>
+  )
+}
+
+/** Selected vs unselected, per density — `sm-accent-row` is the only tinted
+ *  chrome in the app and it is tinted with the session's OWN pigment, so it has
+ *  to be checked against more than one face. */
+function SelectionMatrix() {
+  return (
+    <div className="grid gap-6 md:grid-cols-3">
+      {ROSTER_DENSITIES.map((density) => (
+        <Plate key={density} label={density}>
+          {ROSTER_CAST.slice(0, 3).map((m, i) => (
+            <BenchRow key={m.name} member={m} density={density} selected={i === 0} />
+          ))}
+        </Plate>
+      ))}
+    </div>
+  )
+}
+
+/** The tile at all four overview tiers, in the real grid geometry. */
+function TileTiers() {
+  return (
+    <div className="flex flex-col gap-8">
+      {TILE_TIERS.map((tier) => {
+        const cfg = getOverviewSizeConfig(tier)
+        return (
+          <div key={tier} data-bench-tier={tier} className="flex flex-col gap-2">
+            <span className="text-[11px] text-ink-3">
+              tier {tier} — {cfg.label} · {cfg.gridColsLg} cols · {cfg.idleLines} preview lines
+            </span>
+            <div
+              className="grid gap-2"
+              style={{ gridTemplateColumns: `repeat(${Math.min(cfg.gridColsLg, 3)}, minmax(0, 1fr))` }}
+            >
+              {MOCK_TILES.slice(0, 3).map((t) => (
+                <SessionTile key={`${tier}-${t.name}`} session={t} sizeTier={tier} />
+              ))}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/* ── one theme's worth of bench ──────────────────────────────────────────── */
+
+function BenchPanel({ theme }: { theme: BenchTheme }) {
+  const ring = PAPER[theme].paper
+  return (
+    <div
+      data-theme={theme}
+      data-bench-theme={theme}
+      style={{ ['--sm-bench-ring' as string]: ring }}
+      // `[data-theme]` flips the B0 paper ladder, but the app's own shadcn
+      // tokens (`bg-card`, `--border`, …) hang off the `.dark` CLASS — and this
+      // bench renders BOTH kinds of surface: paper-ladder rows and the shipped
+      // SessionTile. Without the class the dark panel draws white tiles on dark
+      // paper, which is a bench bug that reads as a design bug.
+      className={theme === 'dark' ? 'dark bg-paper text-ink' : 'bg-paper text-ink'}
+    >
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-12 px-6 py-12">
+        <header className="flex flex-col gap-2">
+          <h1 className="text-xl font-semibold tracking-tight text-ink">
+            The roster — {theme}
+          </h1>
+          <p className="max-w-3xl text-xs leading-relaxed text-ink-2">
+            One presentational row at three densities, six mark states, three attention tiers, and
+            the tile at four overview tiers — the whole of what fase B2 moves. Both themes are on
+            this page; this half is the{' '}
+            <strong className="font-medium text-ink">{theme}</strong> subtree. Every matrix is a
+            still frame.
+          </p>
+        </header>
+
+        <Section
+          id="densities"
+          title="Three densities, one component"
+          note="RosterRow is the single most-repeated object in the product, and B2 makes it the only one: the overview list row, the focus strip's compact tile and every picker row become the same component at a different density. list h64/mark 40 with the preview line · strip h48/mark 28 · picker h40/mark 24 and deliberately STATIC — a timestamp that ticks under the keyboard cursor is a bug, not a feature."
+        >
+          <DensityMatrix />
+        </Section>
+
+        <Section
+          id="states"
+          title="Six states × three densities"
+          note="B0's contract C5: the silhouette is never ringed, notched or overpainted — state lives in the eyes and only in the eyes. That contract was proved at 40px on /dev/marks; here it has to survive at 24px in a picker row. Read each column top to bottom: idle open · working narrowed and slanted · waiting rounded · done squinted · stopped shut to a lid line · failed the one mirrored tilt."
+        >
+          <StateMatrix />
+        </Section>
+
+        <Section
+          id="attention"
+          title="Attention tiers"
+          note="needs · unread · working · quiet, in that precedence. The needs-you dot is the ONLY glyph seated on the silhouette (7px, on the character's own shoulder). quiet renders no glyph at all and is on the bench precisely so the difference between quiet and unread is something you can look at."
+        >
+          <AttentionMatrix />
+        </Section>
+
+        <Section
+          id="selection"
+          title="Selection"
+          note="sm-accent-row — the focused session's own pigment mixed into the paper at 9% (light) / 12% (dark). The only tinted chrome in the app, so it is checked against three different pigments, and hover is suppressed while selected."
+        >
+          <SelectionMatrix />
+        </Section>
+
+        <Section
+          id="pinned-hairline"
+          title="The pinned block"
+          note={`A 0.5px separator after the pinned rows and no "Pinned" text header — the boundary is visible, the label is not needed. Renders nothing when there are no pins and nothing when everything is pinned. Benched with ${PINNED_NAMES.length} pinned of ${ROSTER_CAST.length}.`}
+        >
+          <Pending task="T7" what="Pinned-first hairline" />
+        </Section>
+
+        <Section
+          id="tiles"
+          title="The tile at four density tiers"
+          note="The overview's other surface. B2 replaces the bare status dot with the session's mark (no ring — C5) and gates the tile's facts on the fact ladder, so all four tiers are here to prove no tier drops a fact it used to show."
+        >
+          <TileTiers />
+        </Section>
+
+        <Section
+          id="rollup"
+          title="The attention rollup"
+          note={`"needs you: N" on B0's facepile, in the overview header. N=${ROLLUP_COUNTS.join(' · N=')} — 0 must render NOTHING (no empty chrome) and 9 must collapse to three marks and a +6.`}
+        >
+          <Pending task="T6" what="Attention rollup" />
+        </Section>
+
+        <Section
+          id="issues"
+          title="The issue surface"
+          note={`Per-session and per-team issue lists in ${ISSUE_STATES.join(' / ')} — the capability that has to exist before the Board page can be deleted.`}
+        >
+          <Pending task="T10" what="Issue list + detail" />
+        </Section>
+      </div>
+    </div>
+  )
+}
+
+export default function DevRoster() {
+  return (
+    <div className="min-h-dvh bg-paper" data-vr="dev-roster">
+      {BENCH_THEMES.map((theme) => (
+        <BenchPanel key={theme} theme={theme} />
+      ))}
+    </div>
+  )
+}

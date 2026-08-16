@@ -848,7 +848,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_solo_implicit_team_is_not_a_real_team() {
         // CC >=2.1.178 writes members = [the lead, in-process] for every plain
         // session while agent-teams is on. That must never count as a team.
@@ -872,6 +871,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
     fn missing_teams_dir_yields_no_teams() {
         let base = tmp();
         assert!(scan_teams(&base).is_empty());

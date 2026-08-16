@@ -48,6 +48,11 @@ const DevTeams = import.meta.env.DEV
 const DevMarks = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-marks'))
   : null
+// Roster bench (fase B2): one row at three densities × six mark states × three
+// attention tiers, the tile at four overview tiers, both themes on one page.
+const DevRoster = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-roster'))
+  : null
 // Chat-surface primitive bench (fase B0): the approved board rebuilt out of the
 // shipped primitives, plus every variant it has no room for, in both themes.
 const DevChatUi = import.meta.env.DEV
@@ -216,6 +221,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevMarks />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevRoster && (
+                <Route
+                  path="/dev/roster"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevRoster />
                     </Suspense>
                   }
                 />
