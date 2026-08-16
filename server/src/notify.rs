@@ -296,6 +296,26 @@ impl PushPayload {
 /// discards `icon` outright), so we do not fake it.
 const DEFAULT_ICON: &str = "/icon-192.png";
 
+/// The tool whose permission dialog is NOT a push of its own: Claude raises
+/// `AskUserQuestion` as a `PreToolUse` (carrying the question) AND as a
+/// `PermissionRequest` a few ms later.
+const QUESTION_TOOL: &str = "AskUserQuestion";
+
+/// May a `PermissionRequest` for `tool` raise a push?
+///
+/// Every dialog may, except the one that is really a question the pre-tool arm
+/// has already announced with the agent's OWN words. Without this the phone
+/// buzzes twice for one block and the second banner — "Needs permission —
+/// AskUserQuestion (AskUserQuestion)", the generic-tool label — replaces the
+/// actual question in the session's coalescing slot, so the lock screen ends up
+/// showing strictly less than it knew 20 ms earlier.
+///
+/// The dialog STATE is unaffected: `set_permission_request` still runs, so the
+/// in-app pending card and the roster tier are unchanged.
+pub fn permission_raises_push(tool: &str) -> bool {
+    tool.trim() != QUESTION_TOOL
+}
+
 /// The coalescing slot for a session: one live notification, replace-in-place.
 ///
 /// Replacement is CAUSALLY correct by construction — a `Stop` push can only
@@ -508,9 +528,30 @@ pub async fn build_payload(state: &AppState, session: &str, ev: &NotifEvent) -> 
             permission: act.permission.clone(),
             tail,
             activity_label: act.activity.clone(),
-            badge: attention_badge(state),
+            badge: badge_including_self(
+                attention_badge(state),
+                ev.tier(),
+                act.permission.is_some() || act.notice.is_some() || act.error.is_some(),
+            ),
         },
     ))
+}
+
+/// The badge this payload should carry.
+///
+/// [`attention_badge`] counts the sessions whose STATE says they need the human.
+/// A needs-attention event can be raised BEFORE that state exists — the
+/// `AskUserQuestion` push is raised from the pre-tool arm, ~20 ms before the
+/// matching `PermissionRequest` records the dialog — so counting state alone
+/// would ship a badge that leaves out the very bot the banner is about (a `0`
+/// badge next to "the agent asked you a question"). Count this session too when
+/// the event blocks on the human and the snapshot has not already counted it.
+pub const fn badge_including_self(base: u32, tier: Tier, already_counted: bool) -> u32 {
+    if matches!(tier, Tier::Attention) && !already_counted {
+        base.saturating_add(1)
+    } else {
+        base
+    }
 }
 
 /// How many sessions currently NEED the human — the home-screen / dock badge.
@@ -695,6 +736,43 @@ mod tests {
     }
 
     #[test]
+    fn a_question_with_no_recoverable_text_falls_back_instead_of_inventing_one() {
+        // A payload shape that carries no question still names what happened —
+        // the agent IS blocked on an answer — without inventing content. This
+        // is reachable: the pre-tool arm raises `Question` for every
+        // `AskUserQuestion`, parsed text or not.
+        for q in ["", "   ", "\n\n"] {
+            assert_eq!(
+                compose(&NotifEvent::Question(q.to_string()), &ctx()).body,
+                "The agent asked you a question.",
+                "{q:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_question_dialog_does_not_push_a_second_time_as_a_permission() {
+        // Live on Claude Code 2.1.233: `AskUserQuestion` arrives as a
+        // PreToolUse carrying the question AND as a PermissionRequest ~20 ms
+        // later. Both used to push, and the second one — composing to the
+        // generic-tool label below — replaced the real question in the
+        // session's slot, so the banner showed strictly less than it knew.
+        let mut c = ctx();
+        c.permission = Some(ask("AskUserQuestion", "AskUserQuestion", Some("default")));
+        assert_eq!(
+            compose(&NotifEvent::PermissionAsked, &c).body,
+            "Needs permission — AskUserQuestion (AskUserQuestion)",
+            "the copy this suppression exists to keep off the lock screen",
+        );
+        assert!(!permission_raises_push("AskUserQuestion"));
+        // Every OTHER dialog still pushes — including the plan approval, which
+        // has its own copy and no pre-tool announcement.
+        for tool in ["Bash", "Edit", "ExitPlanMode", "mcp__x__y", "  Bash  "] {
+            assert!(permission_raises_push(tool), "{tool}");
+        }
+    }
+
+    #[test]
     fn a_finished_turn_carries_the_agents_actual_closing_line() {
         let mut c = ctx();
         c.tail = Some(ChatTail {
@@ -825,6 +903,23 @@ mod tests {
         let mut c = ctx();
         c.badge = 3;
         assert_eq!(compose(&NotifEvent::TurnFinished, &c).badge, 3);
+    }
+
+    #[test]
+    fn a_blocking_event_counts_its_own_session_when_the_state_lags_the_push() {
+        // The `AskUserQuestion` push is raised at PreToolUse, ~20 ms before the
+        // `PermissionRequest` records the dialog — so the activity snapshot
+        // does not yet count this bot. Shipping `attention_badge` verbatim
+        // there put a `0` badge on "the agent asked you a question".
+        assert_eq!(badge_including_self(0, Tier::Attention, false), 1);
+        assert_eq!(badge_including_self(2, Tier::Attention, false), 3);
+        // Already in the snapshot (a permission dialog recorded first): no
+        // double count.
+        assert_eq!(badge_including_self(2, Tier::Attention, true), 2);
+        // The calm and error tiers are not "needs you" — they never inflate it.
+        for tier in [Tier::Unread, Tier::Error, Tier::Schedule] {
+            assert_eq!(badge_including_self(2, tier, false), 2, "{tier:?}");
+        }
     }
 
     #[test]

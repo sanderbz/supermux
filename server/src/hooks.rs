@@ -296,17 +296,20 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "pre_tool" | "pre_tool_use" | "PreToolUse" => {
             // `AskUserQuestion` is the agent ASKING — a needs-attention event,
             // not a tool call to watch. It is raised from the pre-tool arm
-            // because that is where the question text arrives.
+            // because that is where the question text arrives (live-verified on
+            // Claude Code 2.1.233: `tool_input.questions[0].question` carries
+            // the question verbatim).
             //
-            // Deliberately lenient about the payload shape: if `tool_input`
-            // does not carry a `questions[0].question`, NOTHING is raised and
-            // Claude's own `Notification` (arm below) remains the backstop. A
-            // shape we have not verified live can therefore only cost us a
-            // push, never invent one.
+            // Lenient about the payload shape: a shape that does NOT carry a
+            // question still raises the event, and [`crate::notify::compose`]
+            // falls back to its declared generic sentence. That names what
+            // happened without inventing content — and it is the ONLY push for
+            // this tool call, because the `PermissionRequest` that Claude
+            // raises alongside it deliberately does not push (see the
+            // `permission_request` arm).
             if payload.tool_name.as_deref() == Some("AskUserQuestion") {
-                if let Some(q) = activity::first_question(payload) {
-                    notify::notify_event(state, session, NotifEvent::Question(q));
-                }
+                let q = activity::first_question(payload).unwrap_or_default();
+                notify::notify_event(state, session, NotifEvent::Question(q));
             }
             match activity::activity_label(payload) {
                 Some((label, kind)) => state.set_activity(session, label, kind),
@@ -347,12 +350,24 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "permission_request" | "PermissionRequest" => {
             match activity::permission_ask(payload) {
                 Some(ask) => {
+                    // Whether this dialog is one the pre-tool arm already
+                    // announced with the agent's own words (`AskUserQuestion`).
+                    // Decided BEFORE the ask is moved into the state.
+                    let pushes = notify::permission_raises_push(&ask.tool);
                     let changed = state.set_permission_request(session, ask);
                     // TRIGGER 1 — needs-attention. Only on a CHANGE: Claude
                     // re-fires the identical dialog payload, and the ask
                     // comparison dedupes that for free, so the phone buzzes
                     // once per dialog rather than once per re-render.
-                    if changed {
+                    //
+                    // `AskUserQuestion` is excluded: Claude raises it as a
+                    // PreToolUse (question text) AND a PermissionRequest ~20 ms
+                    // later, and the second one composes to "Needs permission —
+                    // AskUserQuestion (AskUserQuestion)" — a second buzz that
+                    // REPLACES the real question in the session's slot. The
+                    // dialog state is still recorded (the in-app pending card
+                    // needs it); only the duplicate push is dropped.
+                    if changed && pushes {
                         notify::notify_event(state, session, NotifEvent::PermissionAsked);
                     }
                     changed
