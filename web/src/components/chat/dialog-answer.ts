@@ -385,6 +385,16 @@ export interface DialogCardView {
   escape?: { label: string; actOn: boolean; reason?: string }
   /** `~/.claude/plans/plan-<slug>.md`, when the plan footer exposed it. */
   planPath?: string
+  /**
+   * The dialog's own body, verbatim — the command, the file, the diff (QA #11).
+   *
+   * Straight through from the lens (`DialogSighting.body`) and deliberately
+   * untouched on the way: the card is where a user reads what they are about to
+   * approve, and the hook's `summary` — the only other source — is a short
+   * description by design. Permission family only; a plan's body is a plan, and
+   * the card links it instead.
+   */
+  body?: readonly string[]
   /** The Claude Code versions this fingerprint was CAPTURED against — what the
    *  version-mismatch sentence quotes (`attention.ts` `versionClause`). */
   verifiedVersions?: readonly string[]
@@ -438,6 +448,7 @@ export function dialogCardView(
         actOn: false,
         reason: DIALOG_TERMINAL_NOTE,
       })),
+      body: sighting.body,
       disabled: true,
       note: DIALOG_TERMINAL_NOTE,
       attention: match.attention ?? 'dialog-unmapped',
@@ -466,6 +477,7 @@ export function dialogCardView(
       reason: entry.escape.disabledReason,
     },
     planPath: sighting.planPath,
+    body: sighting.body,
     verifiedVersions: entry.verifiedVersions,
     disabled: match.degraded,
     note: match.degraded ? DIALOG_TERMINAL_NOTE : undefined,

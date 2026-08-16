@@ -1,0 +1,16 @@
+--- ls ---
+total 12
+drwxr-xr-x 2 supermux supermux 4096 Aug 16 08:50 .
+drwxr-xr-x 3 supermux supermux 4096 Aug 16 08:50 ..
+-rw-r--r-- 1 supermux supermux   72 Aug 16 08:50 settings.local.json
+--- settings.local.json ---
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)"
+    ]
+  }
+}
+
+--- global ~/.claude/settings.json unchanged (md5) ---
+552934b5f9e4e0d1f45309c4e6f59e02  /home/supermux/.claude/settings.json

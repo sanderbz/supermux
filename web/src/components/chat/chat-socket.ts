@@ -69,6 +69,14 @@ export interface ChatSnapshot {
   seeded: boolean
   /** Bumped by every server-ordered re-seed — a different conversation. */
   resyncCount: number
+  /** The seed's own answer to "is there anything below this window" — what the
+   *  scroll-back affordance is allowed to offer (`use-chat-backlog.ts`). */
+  hasMore: boolean
+  /** The server's cursor for the page below the seed, `<conversation>:<offset>`.
+   *  The backlog recomputes its own cursor from what is on screen, but this is
+   *  where the CONVERSATION id comes from: the server stamped it, so the client
+   *  never guesses at the id its 409 is keyed on. */
+  nextBefore: string | null
 }
 
 export const EMPTY_SNAPSHOT: ChatSnapshot = {
@@ -76,6 +84,8 @@ export const EMPTY_SNAPSHOT: ChatSnapshot = {
   state: 'connecting',
   seeded: false,
   resyncCount: 0,
+  hasMore: false,
+  nextBefore: null,
 }
 
 // ── close codes (the terminal socket's table, `use-live-term.ts`) ────────────
@@ -173,6 +183,8 @@ export class ChatSocket {
       state: this.conn,
       seeded: this.wire.seeded,
       resyncCount: this.wire.resyncCount,
+      hasMore: this.wire.hasMore,
+      nextBefore: this.wire.nextBefore,
     }
   }
 

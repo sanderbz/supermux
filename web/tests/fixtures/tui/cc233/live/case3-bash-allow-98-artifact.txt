@@ -1,0 +1,6 @@
+--- artifact PRESENT ---
+-rw-r--r-- 1 supermux supermux 0 Aug 16 08:57 /home/supermux/spike-233/case3.txt
+--- mode unchanged (no session grant) ---
+────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 2 agents
+                                  ● high · /effort

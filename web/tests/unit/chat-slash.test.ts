@@ -129,6 +129,14 @@ describe('accepting a pick replaces the token (T3’s spacing rule, reused)', ()
 describe('classifySlash — what may be sent', () => {
   test('text-safe commands pass through, arguments and case included', () => {
     for (const cmd of PASS_THROUGH) expect(classifySlash(cmd)).toBe('pass')
+    // The allowlist is the LIVE-VERIFIED set and nothing else (daily-driver QA
+    // #1). `/status` and `/cost` open full-screen panels on 2.1.233; `/review`
+    // and `/pr-comments` are gone from the CLI, so the command menu answers the
+    // appended Enter with a neighbouring row. All four are refused now.
+    expect([...PASS_THROUGH]).toEqual(['/compact', '/clear'])
+    for (const cmd of ['/status', '/cost', '/review', '/pr-comments']) {
+      expect(classifySlash(cmd)).toBe('unverified')
+    }
     expect(classifySlash('/compact focus on the money parser')).toBe('pass')
     expect(classifySlash('/COMPACT')).toBe('pass')
   })
@@ -193,11 +201,11 @@ describe('classifySlash — what may be sent', () => {
 
   test('every listed family is inside that namespace (except the one that is not a built-in)', () => {
     for (const cmd of PICKER_OPENING) expect(BUILTIN_FROM_SERVER).toContain(cmd)
-    for (const cmd of PASS_THROUGH) {
-      // `/pr-comments` ships with the CLI but is not in the server's list; it
-      // is on the verified allowlist on its own evidence.
-      if (cmd !== '/pr-comments') expect(BUILTIN_FROM_SERVER).toContain(cmd)
-    }
+    // No exceptions any more: `/pr-comments` used to sit on the allowlist
+    // without being in the server's list, and re-verifying it live on 2.1.233
+    // showed why that was a hole — the CLI no longer has the command, so typing
+    // it leaves the menu on `/code-review` and the appended Enter runs THAT.
+    for (const cmd of PASS_THROUGH) expect(BUILTIN_FROM_SERVER).toContain(cmd)
   })
 
   test('prose is not a command, and a bare slash is not either', () => {

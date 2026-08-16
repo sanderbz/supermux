@@ -69,6 +69,17 @@ export interface ChatSurfaceProps {
   /** Transcript + live layer. */
   children?: React.ReactNode
   /**
+   * A layer between the scroll region and the composer — the jump-to-bottom
+   * pill (daily-driver QA #17), and nothing else so far.
+   *
+   * It is NOT part of the `footer` slot, deliberately: the footer's height is
+   * measured and paid for in the track's bottom padding (QA #12), so a pill
+   * parked in there would push every message up by 44px whenever it appeared
+   * and pull it back down when it left. Its own layer, below the composer's
+   * z-index, click-through except on the control itself.
+   */
+  float?: React.ReactNode
+  /**
    * A layer over this pane, above the header and the composer (fase A4 T5 — the
    * Attention card's expanded form). Scoped to the SURFACE, not portalled to the
    * document: a refusal belongs to the session it happened in, so the roster and
@@ -161,6 +172,7 @@ export function ChatSurface({
   headerOverlay,
   footer,
   children,
+  float,
   overlay,
   scrollRef,
   onScroll,
@@ -199,6 +211,10 @@ export function ChatSurface({
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         {children}
       </div>
+
+      {float != null && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[3]">{float}</div>
+      )}
 
       {footer != null && <div className="absolute inset-x-0 bottom-0 z-[4]">{footer}</div>}
 

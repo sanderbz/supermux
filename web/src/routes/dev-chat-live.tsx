@@ -38,6 +38,7 @@ import { atRows, slashRows } from '@/components/chat/slash'
 import type { ComposerHandle } from '@/components/chat/use-composer'
 import { entryLabels } from '@/components/chat/grouping'
 import { ProvisionalTailView } from '@/components/chat/provisional-tail'
+import { RendererSwitch } from '@/components/chat/renderer-switch'
 import { sessionAccentVarsFor } from '@/components/chat/session-accent'
 import { BackIcon, PHONE, RosterRow } from '@/components/chat/ui'
 import { useTheme } from '@/components/theme-provider'
@@ -346,8 +347,14 @@ function PhoneFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
           state={state}
           nowMs={nowMs}
           surface="phone"
-          // A5's mobile shell fills these; the bench fills them so the card's
-          // geometry can be held against `mobile-light.png`.
+          // What A5's mobile shell ACTUALLY puts in these two slots
+          // (`routes/focus/mobile.tsx`), so the card's geometry is reviewable
+          // as shipped rather than as sketched: the back button, and the
+          // renderer switch at its compact size. The board's account avatar is
+          // Track B's affordance and has no shell to come from yet — drawing it
+          // here would approve a 28px trailing slot the app fills with a 124px
+          // segmented control, which is the one measurement on this card that
+          // decides how much of the session's name survives.
           headerLeading={
             <span
               aria-hidden
@@ -357,9 +364,7 @@ function PhoneFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
             </span>
           }
           headerTrailing={
-            <span className="grid size-7 flex-none place-items-center rounded-full border-[0.5px] border-hairline-soft bg-fill-soft text-[10.5px] font-semibold tracking-[0.4px] text-ink-2">
-              SB
-            </span>
+            <RendererSwitch size="sm" labels="selected" value="chat" onChange={() => {}} />
           }
         />
       </div>

@@ -1,0 +1,21 @@
+supermux@supermux-server:~/spike-233$ source ~/.zprofile 2>/dev/null; source ~/.
+bash_profile 2>/dev/null; source ~/.profile 2>/dev/null; export EDITOR='/home/su
+permux/.supermux/bin/supermux-edit' VISUAL='/home/supermux/.supermux/bin/supermu
+x-edit'; claude --name spike-233-capture
+╭─── Claude Code v2.1.233 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                Welcome back Ada!                   │ started                 │
+│                                                    │ Ask Claude to create a… │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Added GitLab merge req… │
+│      Fable 5 with high effort · Claude Max ·       │ Added an opt-in `forwa… │
+│           operator@example.com's Organization      │ Added opt-in memory cg… │
+│                    ~/spike-233                     │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+─────────────────────────────────────────────────────────── spike-233-capture ──
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents

@@ -30,15 +30,34 @@
 
 import * as React from 'react'
 
-import type { ChatEntry } from './entries'
 import { ChatSocket, EMPTY_SNAPSHOT, type ChatConnState, type ChatSnapshot } from './chat-socket'
-import { toChatEntries } from './wire-entries'
+import type { WireEntry } from './wire'
 
 export interface ChatWireView {
-  /** Newest-first display entries — the A3/A4 contract. */
-  entries: ChatEntry[]
+  /**
+   * The socket's window, OLDEST-FIRST, in wire shape.
+   *
+   * Deliberately NOT adapted here. `use-chat-backlog` merges the pages the
+   * reader has scrolled back into under this window and adapts the RESULT
+   * (`toChatEntries`) — one adaptation over one list. Adapting here as well
+   * would run the fold twice per frame for the same conversation, and worse,
+   * would let the window and the block be built by two separate passes that a
+   * future change could make disagree.
+   */
+  wire: readonly WireEntry[]
   /** What the data plane is doing, for a surface that wants to say so. */
   state: ChatConnState
+  /** A complete seed page has landed. The backlog reads it to tell "there is
+   *  nothing below this" apart from "we do not know yet". */
+  seeded: boolean
+  /** The seed's `has_more` — is there a backlog below this window at all. */
+  hasMore: boolean
+  /** The seed's `next_before`; the conversation id the backlog's cursors and
+   *  the server's 409 are keyed on. */
+  nextBefore: string | null
+  /** Bumped by every server-ordered re-seed. A different conversation — the
+   *  paged-in block belongs to the old one and must go with it. */
+  resyncCount: number
   /** No seed on screen yet. Mirrors the query flag the renderer already
    *  reads: it suppresses "No conversation yet." until we actually know. */
   isLoading: boolean
@@ -90,14 +109,13 @@ export function useChatWs(name: string, enabled: boolean): ChatWireView {
   const store = React.useMemo(() => chatStore(name, enabled), [name, enabled])
   const snap = React.useSyncExternalStore(store.subscribe, store.get)
 
-  // The adapter is the expensive part of the render (it folds tool results and
-  // classifies every user turn), and the panel re-renders once a second while
-  // a turn runs — so it recomputes only when the wire list actually changes.
-  const entries = React.useMemo(() => toChatEntries(snap.entries), [snap.entries])
-
   return {
-    entries,
+    wire: snap.entries,
     state: snap.state,
+    seeded: snap.seeded,
+    hasMore: snap.hasMore,
+    nextBefore: snap.nextBefore,
+    resyncCount: snap.resyncCount,
     isLoading: !snap.seeded && snap.state !== 'offline',
     isError: snap.state === 'offline',
   }

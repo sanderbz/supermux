@@ -22,6 +22,7 @@ import * as React from 'react'
 import type { TileSession } from '@/components/session-tile/types'
 
 import { newestAgentTs, toDisplayList, type ChatEntry, type ChatItem } from './entries'
+import { useChatBacklog, type ChatBacklog } from './use-chat-backlog'
 import { useChatWs, type ChatWireView } from './use-chat-ws'
 import { useReceiptOverlay, type OverlayLine } from './use-receipt-overlay'
 import { serverNowMs } from './latency'
@@ -54,6 +55,9 @@ export interface ChatTurn {
   overlay: OverlayLine[]
   /** The chat WebSocket's view of the data plane (loading / error / state). */
   tail: ChatWireView
+  /** Pages BELOW the socket's window, and the affordance state for them
+   *  (daily-driver QA #3). */
+  backlog: ChatBacklog
 }
 
 export function useChatTurn(name: string, session: TileSession | null): ChatTurn {
@@ -64,9 +68,14 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
   // zero-debounce turn-end refetch that used to close that gap is gone with
   // the poll it was compensating for).
   const tail = useChatWs(name, true)
-  // Already memoised on the wire list inside the hook: a 1s live-layer tick
-  // must not recompute the display list.
-  const entries = tail.entries
+  // The socket's window is a WINDOW; this is that window plus whatever the user
+  // has paged in above it, newest-first and deduped (QA #3), adapted once.
+  // Every rule below reads the NEWEST end of the list, which back-pagination
+  // never touches — an older page cannot change the turn anchor, the supersede
+  // gate or the confirmed clock. Memoised inside the hook, so `toDisplayList`
+  // is not recomputed on the 1s live-layer tick.
+  const backlog = useChatBacklog(name, tail)
+  const entries = backlog.entries
   const items = React.useMemo(() => toDisplayList(entries), [entries])
   const lastConfirmedTs = entries.length > 0 ? entries[0].ts : 0
   const lastConfirmedMs = lastConfirmedTs * 1000
@@ -133,5 +142,5 @@ export function useChatTurn(name: string, session: TileSession | null): ChatTurn
     turnStart != null &&
     serverNowMs() - lastConfirmedMs > PROVISIONAL_LAG_MS
 
-  return { entries, items, turnStart, liveLayerUp, showProvisional, overlay, tail }
+  return { entries, items, turnStart, liveLayerUp, showProvisional, overlay, tail, backlog }
 }

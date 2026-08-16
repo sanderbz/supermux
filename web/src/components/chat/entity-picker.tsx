@@ -237,7 +237,14 @@ export function EntityPickerView({
           <li role="presentation" className="px-3.5 py-[9px] text-[12.6px] text-ink-2">
             {loading
               ? 'Looking…'
-              : `No ${kind === '@' ? 'tracked file or session' : 'command'} matches “${query}”`}
+              : query
+                ? `No ${kind === '@' ? 'tracked file or session' : 'command'} matches “${query}”`
+                : // The trigger has just been typed and there is nothing to
+                  // offer yet — a repo with no tracked files, an instance with
+                  // no other session. Quoting the empty query printed a pair of
+                  // bare quotation marks with nothing between them (mobile
+                  // proof, 21-at-picker-light.png).
+                  `Nothing to ${kind === '@' ? 'mention' : 'run'} here yet`}
           </li>
         )}
       </ul>

@@ -28,6 +28,12 @@ import { attachAndroidImeBridge, isAndroid } from '@/lib/android-ime'
 import { LINK_URL_REGEX, openExternal, findLinkAt } from '@/lib/terminal-links'
 import { createKeyboardOpenDetector } from '@/hooks/use-keyboard-viewport'
 import { isTermHistoryEnabled } from '@/lib/term-history-flag'
+import {
+  decayVelocity,
+  dragRows,
+  isFling,
+  momentumAlive,
+} from '@/lib/touch-scroll'
 
 // `stopped` is TERMINAL and distinct from `offline`: the server told us the
 // session's pty is gone (not running) — there is nothing to reconnect to, so we
@@ -917,8 +923,17 @@ export function useLiveTerm(
     // with light inertial momentum so it feels native. `touch-action: none`
     // (globals.css) blocks the browser's own gesture and delivers every touch
     // event here. Listeners are passive (touch-action already suppresses the
-    // native scroll, so no preventDefault is needed). Cleaned up via AbortSignal.
+    // native scroll, so no preventDefault is needed). Cleaned up via AbortSignal
+    // — and the momentum frame is cancelled with it (see `cancelMomentum`), which
+    // the AbortController alone does NOT do.
+    //
+    // The arithmetic (drag→rows, carry, fling threshold, decay) lives in
+    // lib/touch-scroll.ts so it is unit-testable: this handler is the ONLY thing
+    // that moves the phone's scrollback, and the QA's "no terminal scrollback on
+    // the phone" (#19) was measured on `.xterm-viewport`, which in xterm 6.0 is
+    // not the scroller at all.
     const touchAbort = new AbortController()
+    let cancelMomentum = () => {}
     {
       const sig = touchAbort.signal
       let dragging = false
@@ -927,6 +942,12 @@ export function useLiveTerm(
       let vel = 0 // px per ms (for momentum)
       let frac = 0 // sub-row px remainder carried between moves
       let momentum = 0 // rAF handle
+      cancelMomentum = () => {
+        if (momentum) {
+          cancelAnimationFrame(momentum)
+          momentum = 0
+        }
+      }
       const cellPx = () => {
         const d = (
           term as unknown as {
@@ -936,22 +957,31 @@ export function useLiveTerm(
         return d && d > 0 ? d : fontSize * 1.2
       }
       // dyPx > 0 means the finger moved UP → scroll toward the bottom (newer).
-      const scrollPx = (dyPx: number) => {
-        frac += dyPx
-        const rows = Math.trunc(frac / cellPx())
-        if (rows !== 0) {
-          frac -= rows * cellPx()
+      // Returns false when the terminal is gone, so a running fling stops instead
+      // of driving a DISPOSED terminal for another second (switching to chat or
+      // navigating away mid-momentum unmounts us — `touchAbort` drops the
+      // listeners but cannot stop a frame that is already scheduled).
+      const scrollPx = (dyPx: number): boolean => {
+        // Guard BEFORE reading the renderer: on a disposed terminal xterm's
+        // internals are already torn down, so even measuring a cell throws
+        // ("Cannot read properties of undefined (reading 'dimensions')").
+        if (disposedRef.current) return false
+        const { rows, carry } = dragRows(dyPx, cellPx(), frac)
+        frac = carry
+        if (rows === 0) return true
+        try {
           term.scrollLines(rows)
+        } catch {
+          /* disposed between the guard and the call */
+          return false
         }
+        return true
       }
       container.addEventListener(
         'touchstart',
         (e) => {
           if (e.touches.length !== 1) return
-          if (momentum) {
-            cancelAnimationFrame(momentum)
-            momentum = 0
-          }
+          cancelMomentum()
           dragging = true
           lastY = e.touches[0].clientY
           lastT = e.timeStamp
@@ -977,16 +1007,16 @@ export function useLiveTerm(
       const endDrag = () => {
         if (!dragging) return
         dragging = false
-        if (Math.abs(vel) < 0.04) return // a tap / slow release — no fling
+        if (!isFling(vel)) return // a tap / slow release — no fling
         let v = vel
         let last = 0
         const step = (now: number) => {
           if (!last) last = now
           const dt = now - last
           last = now
-          scrollPx(v * dt)
-          v *= Math.pow(0.94, dt / 16) // ~6%/frame decay at 60fps
-          momentum = Math.abs(v) > 0.02 ? requestAnimationFrame(step) : 0
+          const alive = scrollPx(v * dt)
+          v = decayVelocity(v, dt)
+          momentum = alive && momentumAlive(v) ? requestAnimationFrame(step) : 0
         }
         momentum = requestAnimationFrame(step)
       }
@@ -2281,7 +2311,8 @@ export function useLiveTerm(
     return () => {
       disposedRef.current = true
       window.cancelAnimationFrame(raf)
-      touchAbort.abort() // remove the touch-drag scroll listeners + any momentum
+      touchAbort.abort() // remove the touch-drag scroll listeners
+      cancelMomentum() // …and kill an in-flight fling (abort() does NOT)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('pageshow', onVisibility)
       window.removeEventListener('online', onVisibility)

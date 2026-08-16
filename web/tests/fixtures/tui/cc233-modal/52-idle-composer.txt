@@ -1,0 +1,30 @@
+╭─── Claude Code v2.1.233 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                Welcome back Ada!                   │ started                 │
+│                                                    │ Ask Claude to create a… │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Added GitLab merge req… │
+│      Fable 5 with high effort · Claude Max ·       │ Added an opt-in `forwa… │
+│      operator@example.com     's Organization      │ Added opt-in memory cg… │
+│             /…/scratchpad/tui-cap/work             │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ /status
+  ⎿  Settings dialog dismissed
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents           ● high · /effort
+
+
+
+
+
+
+
+
+
+

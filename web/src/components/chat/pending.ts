@@ -63,6 +63,20 @@ export interface PendingSend {
    *  written by `/send` after the paste + Enter). Transport-independent, so it
    *  survives exactly the failure the watchdog cannot see through. */
   receipted?: boolean
+  /**
+   * Was a turn ALREADY running when this send left?
+   *
+   * Captured at submit time, and it is the difference between two sentences that
+   * are not both true. "Queued behind the running turn" is a fact about a turn
+   * that was there BEFORE this message; ~200ms after a send into an idle
+   * session the status flips to active because of THIS message, and the row then
+   * announced that it was queued behind itself (daily-driver QA #10 measured the
+   * flip at 228ms, on a session that was idle when Enter was pressed).
+   *
+   * The status at render time cannot answer this — it has already moved. The
+   * status at SEND time can, and it never changes afterwards.
+   */
+  activeAtSend?: boolean
 }
 
 /**
@@ -298,11 +312,24 @@ export function applyReceipt(
  * A2-SEAM: when the chat WS emits `queued` entries, this line becomes "queued
  * behind N" and the pill grows a position; the receipt below stays as the
  * fallback for the window before the first frame arrives.
+ *
+ * ONE EXPLANATION PER STATE (daily-driver QA #10). The queue sentence is keyed
+ * off the turn that was running when the message LEFT, not off the session's
+ * status right now: the status flips ~200ms after a send into an idle session,
+ * and reading it here made the row say the message was "queued behind the
+ * running turn" when the running turn was the message itself. A line that
+ * contradicts the one printed 100ms earlier teaches the user to read neither.
+ *
+ * `ctx.active` therefore no longer decides anything. It stays in the signature
+ * as the fallback for a send made before this field existed (a row restored from
+ * the module store across a renderer toggle), and only agrees with `activeAtSend`
+ * when nothing has flipped.
  */
 export function deliveryLine(p: PendingSend, ctx: { active: boolean }): string {
   if (!p.receipted) return 'Sending…'
-  return ctx.active
-    ? 'The session has it — Claude is mid-turn, so it’s queued behind the running turn.'
+  const queued = p.activeAtSend ?? ctx.active
+  return queued
+    ? 'The session has it — Claude was mid-turn, so it’s queued behind that turn.'
     : 'The session has it — waiting for the transcript to catch up.'
 }
 

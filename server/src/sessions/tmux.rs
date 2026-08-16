@@ -1257,11 +1257,28 @@ pub(crate) fn frame_primary_seed(full_capture: &str) -> String {
 /// tmux's real position.
 ///
 /// Shape: `history` (scrollback above the visible frame) → the `visible` pane
-/// PADDED to exactly `pane_height` rows → `\x1b[<row>;<col>H`. The padding is
-/// load-bearing: a CUP in xterm is VIEWPORT-relative, so the visible body must
-/// fill the whole viewport for `cursor_y` to map onto the right row. tmux's
-/// cursor_y is 0-based; ANSI CUP is 1-based. Verified against `@xterm/headless`:
-/// the cursor lands on the input row, not the footer.
+/// PADDED to exactly `pane_height` rows → a BOTTOM-RELATIVE cursor restore
+/// (`\x1b[<k>A\x1b[<col>G`). tmux's cursor_y is 0-based; ANSI columns are 1-based.
+///
+/// **Why the restore is relative, not a `\x1b[<row>;<col>H` CUP (daily-driver QA
+/// #4).** A CUP row is VIEWPORT-relative, so an absolute restore is only correct
+/// when the client's xterm viewport has EXACTLY `pane_height` rows. Nothing
+/// guarantees that: the seed is framed from the pty's current height, while the
+/// browser's height arrives in a separate `resize` frame that the seed only waits
+/// a bounded moment for (`ws::PRESEED_RESIZE_PEEK`, 150 ms) — a slow first paint, a second
+/// viewer, or a mid-stream auto-heal resync landing between two fits all leave the
+/// two heights apart. When they differ by N the cursor lands N rows off, and from
+/// then on EVERY cursor-relative repaint the inline TUI emits (Claude Code's Ink
+/// renderer redraws its composer with CUU/EL, never absolute addressing) paints on
+/// the wrong row: the typed input appears on the divider row, the row below keeps
+/// stale text, the footer is half-erased — client-side only, the server grid stays
+/// clean, and nothing repairs it short of another resync.
+///
+/// The body's LAST row is a fixed point regardless of viewport height (it is the
+/// last thing written), so `CUU (pane_height - 1 - cursor_y)` + `CHA (cursor_x+1)`
+/// lands on the right content row whether the client's viewport is taller, shorter
+/// or equal. The padding is still load-bearing — it is what makes `cursor_y`
+/// countable from the bottom of the body.
 pub(crate) fn frame_primary_seed_with_cursor(
     history: &str,
     visible: &str,
@@ -1269,20 +1286,25 @@ pub(crate) fn frame_primary_seed_with_cursor(
     cursor_y: u32,
     pane_height: u32,
 ) -> String {
-    let row = cursor_y.saturating_add(1);
     let col = cursor_x.saturating_add(1);
     let history_body = history.trim_end_matches('\n').replace('\n', "\r\n");
-    // Pad/clamp the visible body to exactly `pane_height` rows so the viewport
-    // bottom aligns to the real pane bottom and the viewport-relative CUP is exact.
+    // Pad/clamp the visible body to exactly `pane_height` rows so the cursor row
+    // is countable from the LAST body row (`cursor_y` is an index into the pane).
     let mut rows: Vec<&str> = visible.trim_end_matches('\n').split('\n').collect();
     let h = pane_height as usize;
     rows.resize(h.max(rows.len()), "");
     rows.truncate(h.max(1));
+    let last_row = rows.len().saturating_sub(1);
     let visible_body = rows.join("\r\n");
     // history + a CRLF separator (so the visible frame starts on its own row),
     // omitted when there's no scrollback so we don't push an extra blank line.
     let sep = if history_body.is_empty() { "" } else { "\r\n" };
-    format!("\x1b[2J\x1b[3J\x1b[H{history_body}{sep}{visible_body}\x1b[{row};{col}H")
+    // Rows to walk UP from the last body row. Clamped: a cursor at/below the last
+    // row stays on it (CUU with a 0 parameter means "up 1" in ANSI, so the
+    // sequence is omitted entirely rather than emitted with a zero).
+    let up = last_row.saturating_sub(cursor_y as usize);
+    let cursor_up = if up > 0 { format!("\x1b[{up}A") } else { String::new() };
+    format!("\x1b[2J\x1b[3J\x1b[H{history_body}{sep}{visible_body}{cursor_up}\x1b[{col}G")
 }
 
 /// ALT-SCREEN-mode seed: PRIMARY scrollback (history above the visible
@@ -1375,17 +1397,18 @@ mod seed_tests {
         // The Bug-A fix: a Claude primary-screen pane where the `❯` input is on
         // row 2 (0-based) but the captured body has a footer below it. The flat
         // seed would leave the cursor on the footer; this framer pins it to the
-        // input row via a viewport-relative CUP. pane_height=4 so the visible
-        // body is padded to fill the viewport.
+        // input row. pane_height=4 so the visible body is padded to 4 rows, and
+        // the restore counts UP from the last of them (QA #4).
         let seed = frame_primary_seed_with_cursor(
             "scrollback line", // history
             "❯ type here\n──footer──", // visible (2 lines, padded to 4)
             2,  // cursor_x → col 3
-            2,  // cursor_y → row 3 (1-based)
+            2,  // cursor_y → row index 2 of 4 → one row above the last
             4,  // pane_height
         );
-        // Ends with a CUP to (row 3, col 3).
-        assert!(seed.ends_with("\x1b[3;3H"), "seed tail: {seed:?}");
+        // Ends with "up 1 row, column 3" — no absolute row anywhere.
+        assert!(seed.ends_with("\x1b[1A\x1b[3G"), "seed tail: {seed:?}");
+        assert!(!seed.contains("H\x1b["), "seed still carries a CUP: {seed:?}");
         // Clears + homes, carries the scrollback, then the visible frame.
         assert!(seed.starts_with("\x1b[2J\x1b[3J\x1b[Hscrollback line\r\n"));
         assert!(seed.contains("❯ type here\r\n──footer──"));
@@ -1396,7 +1419,46 @@ mod seed_tests {
         // No scrollback → no leading CRLF before the visible frame.
         let seed = frame_primary_seed_with_cursor("", "❯ x", 0, 0, 2);
         assert!(seed.starts_with("\x1b[2J\x1b[3J\x1b[H❯ x"));
-        assert!(seed.ends_with("\x1b[1;1H"));
+        // Body is padded to 2 rows, cursor on row 0 → up 1, column 1.
+        assert!(seed.ends_with("\x1b[1A\x1b[1G"), "seed tail: {seed:?}");
+    }
+
+    #[test]
+    fn frame_primary_seed_with_cursor_restore_is_viewport_height_independent() {
+        // QA #4 — the daily-driver blocker. The restore must not encode an
+        // absolute viewport row: the client's xterm grid is sized by ITS
+        // container and only tells us afterwards, so a seed framed at
+        // pane_height H can land in a viewport of H±N rows. A CUU/CHA pair is
+        // measured from the LAST body row, which is a fixed point in every one
+        // of those cases — so the SAME cursor position produces the SAME restore
+        // no matter what the pane height is, as long as the cursor sits the same
+        // distance above the pane bottom.
+        for h in [4u32, 24, 33, 36, 50] {
+            let cursor_y = h - 3; // always two rows above the pane bottom
+            let seed = frame_primary_seed_with_cursor("", "❯ x", 5, cursor_y, h);
+            assert!(
+                seed.ends_with("\x1b[2A\x1b[6G"),
+                "pane_height {h} changed the restore: {seed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_primary_seed_with_cursor_on_the_last_row_omits_the_cursor_up() {
+        // `\x1b[0A` means "up ONE row" in ANSI, so a zero-distance restore must
+        // omit the CUU entirely instead of emitting a zero parameter.
+        let seed = frame_primary_seed_with_cursor("", "❯ x", 3, 3, 4);
+        assert!(seed.ends_with("❯ x\r\n\r\n\r\n\x1b[4G"), "seed tail: {seed:?}");
+        assert!(!seed.contains("\x1b[0A"), "zero-parameter CUU: {seed:?}");
+    }
+
+    #[test]
+    fn frame_primary_seed_with_cursor_clamps_a_cursor_below_the_body() {
+        // A cursor_y past the pane bottom (a stale probe racing a shrink) must
+        // clamp onto the last body row rather than emit a nonsense restore.
+        let seed = frame_primary_seed_with_cursor("", "❯ x", 0, 99, 3);
+        assert!(seed.ends_with("\x1b[1G"), "seed tail: {seed:?}");
+        assert!(!seed.contains('A'), "unexpected CUU: {seed:?}");
     }
 
     #[test]

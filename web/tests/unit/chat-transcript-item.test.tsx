@@ -183,3 +183,63 @@ describe('receipts', () => {
     expect(wired).toContain('src="/api/file/raw?path=/opt/shots/release-run.png"')
   })
 })
+
+/**
+ * INTEGRATION REGRESSION (the A3 surface swap).
+ *
+ * `recall.rs` clips a message at the wire cap and says so with `truncated`;
+ * `entries.ts` carries the flag onto the item. The A1 panel printed a "…
+ * clipped" marker for it, and the A3 surface replaced that whole render tree —
+ * so the marker had to move HERE. Without it the cap is silent again and a
+ * clipped answer is indistinguishable from one that simply stopped, which is
+ * exactly the bug the flag was added for.
+ */
+describe('a clipped message says so', () => {
+  test('on the human`s bubble', () => {
+    const out = text(
+      render([
+        {
+          uuid: 'u1',
+          ts: 1_760_000_000,
+          text: 'here is the whole log',
+          kind: 'prompt',
+          truncated: true,
+        },
+      ]),
+    )
+    expect(out).toContain('here is the whole log')
+    expect(out).toContain('… clipped')
+  })
+
+  test('on the agent`s bubble', () => {
+    const out = text(
+      render([
+        { uuid: 'a1', ts: 1_760_000_001, text: 'the failure is in', kind: 'assistant', truncated: true },
+      ]),
+    )
+    expect(out).toContain('… clipped')
+  })
+
+  test('on a colleague`s bubble', () => {
+    const out = text(
+      render([
+        {
+          uuid: 't1',
+          ts: 1_760_000_001,
+          text: 'handing over the trace',
+          kind: 'teammate',
+          label: 'patch',
+          truncated: true,
+        },
+      ]),
+    )
+    expect(out).toContain('… clipped')
+  })
+
+  test('and an unclipped message stays silent', () => {
+    const out = text(
+      render([{ uuid: 'a1', ts: 1_760_000_001, text: 'all green.', kind: 'assistant' }]),
+    )
+    expect(out).not.toContain('clipped')
+  })
+})

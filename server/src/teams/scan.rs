@@ -272,6 +272,34 @@ fn is_strong_lead_entry(m: &RawMember, lead_agent_id: &str) -> bool {
         || role.eq_ignore_ascii_case("leader")
 }
 
+/// Does `team_name` name a REAL team — a roster with at least one actual
+/// teammate besides the lead? CC ≥2.1.178 writes an implicit solo "team"
+/// (members = the lead only, in-process) for EVERY session while agent-teams
+/// is enabled, and the watcher stamps `sessions.team_name` with it — so a
+/// non-NULL `team_name` means "Claude wrote a config", NOT "this is a team".
+/// Anything gating team-only behavior (e.g. chat eligibility) must ask THIS,
+/// never the column. Missing/unparseable config → not a real team: the roster
+/// is the only evidence teammates exist, and the failure mode of a stale
+/// pointer must not be "a plain session loses features".
+pub fn real_team(team_name: &str) -> bool {
+    real_team_in(&teams_dir(), team_name)
+}
+
+/// Path-parameterized core of [`real_team`] (tests hand it a fixture root, the
+/// same pattern `scan_teams` uses).
+pub fn real_team_in(teams_root: &std::path::Path, team_name: &str) -> bool {
+    let cfg = teams_root.join(team_name).join("config.json");
+    match read_config(&cfg) {
+        Some(c) => {
+            let lead_id = c.lead_agent_id.trim().to_string();
+            c.members
+                .iter()
+                .any(|m| !is_strong_lead_entry(m, &lead_id))
+        }
+        None => false,
+    }
+}
+
 /// Parse a `config.json`. Returns `None` (logged) on any read/parse failure so a
 /// malformed file skips just that team.
 fn read_config(path: &Path) -> Option<RawTeamConfig> {
@@ -820,6 +848,30 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_solo_implicit_team_is_not_a_real_team() {
+        // CC >=2.1.178 writes members = [the lead, in-process] for every plain
+        // session while agent-teams is on. That must never count as a team.
+        let root = tmp();
+        let team = root.join("session-solo");
+        fs::create_dir_all(&team).unwrap();
+        fs::write(team.join("config.json"), r#"{
+            "name":"session-solo","leadAgentId":"team-lead@session-solo",
+            "members":[{"agentId":"team-lead@session-solo","name":"team-lead","agentType":"team-lead"}]
+        }"#).unwrap();
+        assert!(!real_team_in(&root, "session-solo"), "lead-only roster is not a team");
+        assert!(!real_team_in(&root, "missing-team"), "missing config is not a team");
+        fs::write(team.join("config.json"), r#"{
+            "name":"session-solo","leadAgentId":"team-lead@session-solo",
+            "members":[
+              {"agentId":"team-lead@session-solo","name":"team-lead","agentType":"team-lead"},
+              {"agentId":"worker@session-solo","name":"worker","agentType":"claude"}
+            ]
+        }"#).unwrap();
+        assert!(real_team_in(&root, "session-solo"), "a roster with a real teammate IS a team");
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn missing_teams_dir_yields_no_teams() {
         let base = tmp();
         assert!(scan_teams(&base).is_empty());

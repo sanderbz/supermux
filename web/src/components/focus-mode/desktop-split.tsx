@@ -57,6 +57,13 @@ import { SessionInfoPanel } from './session-info-panel'
 import { useUI } from '@/stores/ui-store'
 import { RendererSwitch } from '@/components/chat/renderer-switch'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
+import {
+  chatPaneActive,
+  pickRenderer,
+  terminalPaneMounts,
+  type ChatRenderer,
+  type RendererOverride,
+} from '@/components/chat/seam'
 import { composerSessionInput } from '@/components/chat/composer-draft'
 
 // Lazy: the chat renderer is its own chunk — nothing chat-related may land in
@@ -297,10 +304,10 @@ export function DesktopSplit({
   const { gone: termGone, onTermState } = useTerminalGone(status)
   const stopped = status === 'stopped' || termGone
 
-  // Fase A1 chat renderer — desktop seam only (mobile follows in A5; the
-  // mobile seam is routes/focus/mobile.tsx:490-515). Guard: local Claude,
-  // not a team lead (Track A v1 scope), flag + kill-switch in
-  // components/chat/flag.ts.
+  // Fase A1 chat renderer — the DESKTOP seam. The mobile one landed in A5
+  // (routes/focus/mobile.tsx) and shares this file's decision verbatim, via
+  // components/chat/seam.ts. Guard: local Claude, not a team lead (Track A v1
+  // scope), flag + kill-switch in components/chat/flag.ts.
   //
   // Declared HERE rather than next to `title` (where the rest of the render
   // prep lives) because `onPaste` below closes over `chatActive` AND lists it
@@ -322,24 +329,31 @@ export function DesktopSplit({
   // late flag/eligibility resolve. Storing the default in state instead would
   // mean setState-in-effect (cascading renders; lint rule
   // react-hooks/set-state-in-effect).
-  const [override, setOverride] = React.useState<{
-    name: string
-    value: 'chat' | 'terminal'
-  } | null>(null)
-  const renderer: 'chat' | 'terminal' | null =
-    override?.name === name
-      ? override.value
-      : current == null
-        ? null
-        : chatOn
-          ? 'chat'
-          : 'terminal'
+  //
+  // The decision itself is `components/chat/seam.ts` — pure functions, shared
+  // with the MOBILE seam (fase A5, routes/focus/mobile.tsx) so the two surfaces
+  // cannot drift into two different readings of "the experiment is on", and
+  // assertable in `bun test` (tests/unit/chat-seam.test.ts).
+  const [override, setOverride] = React.useState<RendererOverride | null>(null)
+  const renderer = pickRenderer(override, name, current != null, chatOn)
   const setRenderer = React.useCallback(
-    (value: 'chat' | 'terminal') => setOverride({ name, value }),
+    (value: ChatRenderer) => setOverride({ name, value }),
     [name],
   )
-  const chatActive =
-    chatSetting && chatOn && renderer === 'chat' && status !== 'stopped'
+  // `stopped`, not `status`: the seam's "a stopped session is never chat" rule
+  // has to see the SOCKET's conclusion too (`termGone`), not only the row's, or
+  // the two disagree for exactly the window `useTerminalGone` exists to cover.
+  // The mobile seam makes the same substitution, for the same reason.
+  const chatActive = chatPaneActive(
+    chatSetting,
+    chatOn,
+    renderer,
+    stopped ? 'stopped' : status,
+  )
+  // The terminal mounts unless chat has the pane — false for exactly one frame
+  // (experiment on, row unresolved), which is what stops the doomed-terminal
+  // flash.
+  const terminalMounts = terminalPaneMounts(chatSetting, renderer, chatActive)
 
   // ── The input handle (fase A4 T1) ───────────────────────────────────────────
   // Every TEXT write surface below (snippets, attachments, the dock's slash
@@ -751,7 +765,7 @@ export function DesktopSplit({
                   onOpenTerminal={() => setRenderer('terminal')}
                 />
               </React.Suspense>
-            ) : !chatSetting || renderer != null ? (
+            ) : terminalMounts ? (
               /* LiveTerminal — reused verbatim. The keydown capture
                  deliberately does NOT preventDefault on ordinary keys, so
                  Ctrl-C / arrows / Tab / Shift+Tab / Esc / text all reach xterm's

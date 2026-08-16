@@ -36,11 +36,13 @@ import { modeChipLabel } from '../focus-mode/mode-labels'
 import type { TileSession } from '../session-tile/types'
 
 import type { DialogCardView } from './dialog-answer'
-import { stripEmojiPrefix } from './entries'
+import { formatElapsed, stripEmojiPrefix } from './entries'
 import { mentionSegments, toReceiptRows } from './grouping'
+import { serverNowMs } from './latency'
 import type { OverlayLine } from './use-receipt-overlay'
 import { WorkingRow } from './working-row'
 import {
+  CardCode,
   ChoiceCard,
   DelegationPill,
   InlineCode,
@@ -149,6 +151,30 @@ export function LiveLayer({
   const working = session?.status === 'active' && turnStart != null
   const target = delegationTarget(session?.activity, mentions, name)
 
+  // THE ONE LIVE ROW (daily-driver QA #7).
+  //
+  // The overlay group and the working row were fed by the SAME signal — the
+  // session's `activity` — so a single tool call was drawn twice at the same
+  // time: `••• notes.md 5s` in the group and `◌ notes.md` on the pill under it.
+  // (During a permission turn it was three: the card, the pill and the row.)
+  //
+  // The fix is not to hide one of them, it is to notice they were always one
+  // thing: the group's last line is the call that is running, so it takes the
+  // clock and the subagent count, and the pill is not drawn at all. When the
+  // call finishes, that same line grows its outcome — one element resolving,
+  // which is what the transcript will confirm one batch later.
+  //
+  // The label comes from `activity` rather than from the last overlay line so a
+  // delta that has not been appended yet cannot leave the row a beat behind;
+  // they are the same string on every frame where both exist.
+  const liveRow =
+    working && !target && overlay.length > 0
+      ? {
+          label: session?.activity ? stripEmojiPrefix(session.activity) : overlay[overlay.length - 1].label,
+          status: liveStatus(turnStart, session?.subagents, surface),
+        }
+      : undefined
+
   // No `gap` here, deliberately: every primitive in this stack carries its own
   // vertical rhythm (`MessageRow` 14/8px, `WorkingRow` 14px, `DelegationPill`
   // 15px), exactly as the confirmed transcript does — and a gap would also
@@ -187,10 +213,21 @@ export function LiveLayer({
           seed={name}
           pin={pinFor?.(name)}
           surface={surface}
+          // ONE LIVE REPRESENTATION PER TOOL CALL (daily-driver QA #7). While
+          // this group is on screen its last line IS the running call — same
+          // label, same source (`session.activity`) — so the working row below
+          // stands down and hands over the two things it was carrying: the
+          // elapsed clock and the subagent count.
+          live={
+            liveRow
+              ? { label: liveRow.label, status: liveRow.status }
+              : undefined
+          }
         />
       )}
 
       {working &&
+        !liveRow &&
         (target ? (
           <DelegationPill
             from={name}
@@ -290,6 +327,10 @@ export function DialogCard({
     >
       <ChoiceCard
         question={dialogQuestion(view, summary || request?.tool)}
+        // What is actually being approved, verbatim off the pty (QA #11). The
+        // question is a sentence — a truncated description, at worst — and this
+        // is the evidence under it.
+        detail={view.body?.length ? <CardCode>{view.body.join('\n')}</CardCode> : undefined}
         why={why || undefined}
         options={options}
         onChoose={
@@ -326,7 +367,7 @@ function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode
   if (command) {
     return (
       <>
-        Run <InlineCode>{command}</InlineCode>?
+        Run <InlineCode>{commandChip(command)}</InlineCode>?
       </>
     )
   }
@@ -334,6 +375,26 @@ function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode
   if (view.variant === 'write') return 'Claude wants to create a file.'
   if (view.variant === 'bash') return 'Claude wants to run a command.'
   return 'Claude is asking something in the terminal.'
+}
+
+/**
+ * The command as it goes INSIDE the question's `Run …?` frame.
+ *
+ * For a Bash tool the server's summary prefers Claude's own `description`
+ * (`activity.rs`: human, secret-free, preferred over the raw command) — and
+ * Claude writes those as imperative English, which for a shell command is
+ * almost always "Run <the command>". Framed by a question that already says
+ * "Run", the card asked **Run `Run cowsay-nonexistent --version`?** on the real
+ * app (mobile proof, 11-permission-card-light.png).
+ *
+ * So the frame wins and the duplicate goes: strictly a leading `Run `, nothing
+ * cleverer. Every other description keeps its own verb ("Check the git status")
+ * — reading a little loose inside `Run …?` is far better than a card that
+ * invents or drops words from a command a user is about to approve.
+ */
+export function commandChip(command: string): string {
+  const stripped = command.replace(/^\s*run\s+/i, '').trim()
+  return stripped || command
 }
 
 /* ── the ask ─────────────────────────────────────────────────────────────── */
@@ -375,7 +436,7 @@ export function PermissionCard({
       <ChoiceCard
         question={
           <>
-            Run <InlineCode>{command}</InlineCode>?
+            Run <InlineCode>{commandChip(command)}</InlineCode>?
           </>
         }
         why={why || undefined}
@@ -424,6 +485,26 @@ function shortDir(dir: string): string {
 
 /* ── the hook receipts ───────────────────────────────────────────────────── */
 
+/** The elapsed clause the working row used to carry, on the same two rules: it
+ *  counts from the SEND (server clock, not from mount) and it stays off screen
+ *  for the first 5s, because a fast turn that prints 1s, 2s, 3s feels slow. */
+const ELAPSED_AFTER_MS = 5_000
+
+function liveStatus(
+  turnStartMs: number | null,
+  subagents?: number,
+  surface?: 'desktop' | 'phone',
+): string | undefined {
+  // The clock shares the line with the tool label now, and on the phone that
+  // line has a 266px bubble to live in. `3 subagents` costs a third of it, and
+  // WHAT is running matters more than how many helpers it has — so the count is
+  // a desktop clause and the clock is everywhere.
+  const clause = surface !== 'phone' && subagents && subagents >= 2 ? `${subagents} subagents` : ''
+  const elapsedMs = turnStartMs == null ? 0 : serverNowMs() - turnStartMs
+  const elapsed = elapsedMs >= ELAPSED_AFTER_MS ? formatElapsed(elapsedMs) : ''
+  return [clause, elapsed].filter(Boolean).join(' · ') || undefined
+}
+
 /**
  * The ≤1s live layer, wearing the confirmed layer's clothes.
  *
@@ -440,16 +521,29 @@ export function OverlayReceipts({
   seed,
   pin,
   surface,
+  live,
 }: {
   lines: readonly OverlayLine[]
   seed: string
   pin?: MarkPin
   surface?: 'desktop' | 'phone'
+  /** What the last (running) line is doing right now — the label as of this
+   *  frame, and the clock the working row used to carry (QA #7). Absent on a
+   *  group whose turn has ended, where nothing is running any more. */
+  live?: { label: string; status?: string }
 }) {
   const rows = React.useMemo<Receipt[]>(() => {
-    const base = toReceiptRows(lines.map((line, i) => ({ uuid: `${line.at}-${i}`, label: line.label })))
-    return base.map((row, i) => (i === base.length - 1 ? { ...row, state: 'running' as const } : row))
-  }, [lines])
+    const labelled = lines.map((line, i) => ({
+      uuid: `${line.at}-${i}`,
+      label: live && i === lines.length - 1 ? live.label : line.label,
+    }))
+    const base = toReceiptRows(labelled)
+    return base.map((row, i) =>
+      i === base.length - 1
+        ? { ...row, state: 'running' as const, status: live?.status }
+        : row,
+    )
+  }, [lines, live])
   return (
     <MessageRow
       gutter={<SessionMark seed={seed} pin={pin} size={MARK_SIZE.gutter} state="working" label={null} />}

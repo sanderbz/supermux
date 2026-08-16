@@ -19,7 +19,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { ChatConversation } from '../../src/components/chat/conversation'
+import { ChatConversation, trackBottom } from '../../src/components/chat/conversation'
 import type { ChatItem } from '../../src/components/chat/entries'
 import { BUBBLE_MAX } from '../../src/components/chat/ui/metrics'
 import type { TileSession } from '../../src/components/session-tile/types'
@@ -88,7 +88,10 @@ describe('the boards’ composition', () => {
   })
 
   test('the track reserves the composer’s room rather than sitting under it', () => {
-    expect(render()).toContain('pb-[90px]')
+    // The reserve is MEASURED now (QA #12 — the composer grows with the draft to
+    // 136px and the constant did not), so what a DOM-less render asserts is the
+    // fallback: the boards' own number, unchanged.
+    expect(render()).toContain('padding-bottom:90px')
   })
 })
 
@@ -133,5 +136,85 @@ describe('what the surface says', () => {
 
   test('an empty (but loaded) tail is honest about being empty', () => {
     expect(text(render({ items: [] }))).toContain('No conversation yet.')
+  })
+
+  /** The empty line is a statement about the whole TRACK. A session's first
+   *  send puts an optimistic echo (and, seconds later, a working row and the
+   *  provisional tail) on screen well before the transcript confirms anything,
+   *  and the line used to render directly above the user's own just-sent
+   *  bubble — the surface calling itself empty while showing a message.
+   *  Reproduced on the real app: mobile proof, 05-sent-pending-light.png. */
+  describe('“No conversation yet.” speaks for the whole track', () => {
+    const blank = (over: Partial<Parameters<typeof ChatConversation>[0]>) =>
+      text(render({ items: [], ...over })).includes('No conversation yet.')
+
+    test('a pending echo is conversation', () => {
+      expect(
+        blank({
+          pending: [{ id: 'p1', text: 'ship it', state: 'unconfirmed', at: NOW }],
+        }),
+      ).toBe(false)
+    })
+
+    test('a running turn is conversation', () => {
+      expect(blank({ session: session({ status: 'active' }), turnStart: NOW - 4000 })).toBe(false)
+    })
+
+    test('a pending permission dialog is conversation', () => {
+      expect(
+        blank({
+          session: session({
+            permission_request: { tool: 'Bash', summary: 'rm -rf /', kind: 'bash' },
+          }),
+        }),
+      ).toBe(false)
+    })
+
+    test('provisional pty text is conversation', () => {
+      expect(blank({ provisional: <div>live</div> })).toBe(false)
+    })
+
+    test('an overlay receipt is conversation', () => {
+      expect(blank({ overlay: [{ label: 'Read notes.txt', kind: 'tool', at: NOW }] })).toBe(false)
+    })
+
+    test('a genuinely empty track still says so', () => {
+      expect(blank({})).toBe(true)
+    })
+  })
+})
+
+/**
+ * Daily-driver QA #12 — the composer floated OVER the newest content.
+ *
+ * The reserve was a constant (90 desktop / 92 phone) and the composer is not: it
+ * grows with the draft to 136px and again when a refusal banner appears under
+ * it, so streaming text and the last bubble slid under the glass exactly while
+ * they were being written. The reserve is the measured height plus the boards'
+ * own air.
+ */
+describe('trackBottom (QA #12)', () => {
+  test('unmeasured, it is the boards\' constant — nothing about a static render moves', () => {
+    expect(trackBottom(null, false, false)).toBe(90)
+    expect(trackBottom(null, true, false)).toBe(92)
+    // A zero height is a node that has not been laid out, not a composer with no
+    // height: same fallback, or the last bubble would sit on the floor.
+    expect(trackBottom(0, true, false)).toBe(92)
+  })
+
+  test('measured, it tracks the composer — at rest it lands on the same numbers', () => {
+    // The boards' resting composer, measured on the bench at both surfaces.
+    expect(trackBottom(76, false, false)).toBe(90)
+    expect(trackBottom(66, true, false)).toBe(92)
+  })
+
+  test('a composer that grew is followed, not ignored', () => {
+    // 136px is `use-composer`'s cap — the state measured in `33-long-draft.png`.
+    expect(trackBottom(150, true, false)).toBe(176)
+    expect(trackBottom(150, true, false)).toBeGreaterThan(trackBottom(66, true, false))
+  })
+
+  test('the stat read-out still gets its own row above the pill', () => {
+    expect(trackBottom(66, true, true) - trackBottom(66, true, false)).toBe(30)
   })
 })

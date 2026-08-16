@@ -33,7 +33,7 @@
  * reverse.
  */
 import type { ChatEntry, ChatItem, ReceiptLine } from './entries'
-import { stripEmojiPrefix } from './entries'
+import { harnessNotice, stripEmojiPrefix } from './entries'
 import type { Receipt } from './ui/receipt-group'
 
 /* ── speakers ────────────────────────────────────────────────────────────── */
@@ -59,6 +59,8 @@ function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speake
   if (item.type !== 'user') return 'agent'
   if (item.badge === 'teammate') return `teammate:${labels?.get(item.uuid) ?? ''}`
   if (item.badge && SYSTEM_BADGES.has(item.badge)) return 'system'
+  // An interruption is user-role on the wire and nobody's words on the screen.
+  if (harnessNotice(item.text)) return 'system'
   return 'me'
 }
 
@@ -272,12 +274,61 @@ export function buildTranscript(
 
 /* ── receipt rows ────────────────────────────────────────────────────────── */
 
-/** A receipt is one line. These are the two ceilings that keep it one. */
-const TOOL_MAX = 64
+/**
+ * The two ceilings on a receipt's text.
+ *
+ * `TOOL_MAX` used to be 64 — the number that kept a receipt to ONE line. It is
+ * not that number any more (daily-driver QA #2): the row wraps and expands on
+ * tap now, and what keeps the collapsed read short is `condenseReceiptLabel`,
+ * not a truncation of the label itself. So this ceiling is what an EXPANDED row
+ * may show, and it is generous on purpose — a user who taps a `Bash …` line is
+ * asking what the command was.
+ */
+const TOOL_MAX = 160
 const OUTCOME_MAX = 72
+
+/** What the phone shows before the row is tapped. Two lines of a 266px bubble. */
+const SHORT_MAX = 30
 
 function clamp(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`
+}
+
+/**
+ * One token of a label, at the length a phone can read.
+ *
+ * A path becomes its basename (`/home/supermux/spike-qa/notes.md` → `notes.md`),
+ * a directory keeps its trailing slash so it still reads as a directory, and a
+ * URL keeps its HOST — `post-12.html` names nothing, `example.com/…` names the
+ * thing the call reached.
+ */
+function shortenToken(token: string): string {
+  const url = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)(\/.*)?$/i.exec(token)
+  if (url) return url[2] && url[2] !== '/' ? `${url[1]}/…` : url[1]
+  if (!token.includes('/')) return token
+  const dir = token.endsWith('/')
+  const body = dir ? token.slice(0, -1) : token
+  const base = body.slice(body.lastIndexOf('/') + 1)
+  if (!base) return token
+  return dir ? `${base}/` : base
+}
+
+/**
+ * A receipt label, condensed for the phone (daily-driver QA #2).
+ *
+ * On the live instance a 37-character target in a 135px cell rendered as
+ * `Read /home/s…` and left the outcome column four glyphs — so the majority of a
+ * working turn said nothing at all. The fix is not a narrower ellipsis: it is
+ * showing the part that identifies the call. The BASENAME for a path, the HEAD
+ * of a command with the paths inside it shortened the same way, and a single
+ * clamp at the end for whatever is still too long.
+ *
+ * The full label is never lost — `toReceiptRows` carries it as `tool`, and the
+ * row shows it when the user taps.
+ */
+export function condenseReceiptLabel(label: string): string {
+  const tokens = label.trim().split(/\s+/)
+  return clamp(tokens.map(shortenToken).join(' '), SHORT_MAX)
 }
 
 /** First line with anything on it, whitespace collapsed. */
@@ -305,16 +356,32 @@ function firstLine(text: string | undefined): string {
 export function toReceiptRows(lines: readonly ReceiptLine[]): Receipt[] {
   return lines.map((line) => {
     const result = firstLine(line.result)
+    const room = line.ok === false ? OUTCOME_MAX - 9 : OUTCOME_MAX
+    const clamped = result.length > room
     const outcome =
       line.ok === false
         ? result
-          ? `failed · ${clamp(result, OUTCOME_MAX - 9)}`
+          ? `failed · ${clamp(result, room)}`
           : 'failed'
         : result
-          ? clamp(result, OUTCOME_MAX)
+          ? clamp(result, room)
           : undefined
-    const row: Receipt = { tool: clamp(stripEmojiPrefix(line.label), TOOL_MAX) }
+    const tool = clamp(stripEmojiPrefix(line.label), TOOL_MAX)
+    const row: Receipt = { tool }
+    // Only when it says something DIFFERENT: a label with nothing to shorten
+    // must not ship two copies of itself through every render (the transcript is
+    // memoised on prop identity — see `transcript-item.tsx`).
+    const short = condenseReceiptLabel(tool)
+    if (short !== tool) row.short = short
     if (outcome !== undefined) row.outcome = outcome
+    // What the tap is FOR: the result the outcome column clamped. Same rule —
+    // carried only when the clamp actually took something away, and it keeps the
+    // `failed · ` prefix, because that prefix is the ONLY thing on a receipt
+    // that says the call did not work (the glyph is the same check either way).
+    // The expanded row shows this INSTEAD of the outcome, so dropping it would
+    // turn a failure into something that reads like a result — on the very tap a
+    // user makes because the short line was unreadable.
+    if (clamped) row.full = line.ok === false ? `failed · ${result}` : result
     return row
   })
 }

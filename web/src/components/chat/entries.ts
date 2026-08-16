@@ -8,6 +8,15 @@
 export interface ChatEntry {
   uuid: string
   ts: number
+  /** The transcript file this entry came from.
+   *
+   *  VESTIGIAL. It was half of the A1 poll's history cursor (`encode_cursor` in
+   *  `recall.rs`, `<session_id>:<uuid>`); the surface now pages the A2 backlog,
+   *  whose cursor is `<conversation_id>:<offset>` and is computed in the WIRE
+   *  domain before this shape exists (`backlog.ts`, `use-chat-backlog.ts`).
+   *  `toChatEntries` does not populate it and nothing reads it — kept only
+   *  because the display model is the frozen A1 shape. */
+  sessionId?: string
   text: string
   reply?: string
   kind: string
@@ -107,6 +116,26 @@ export function formatElapsed(ms: number): string {
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
   return `${m}m ${String(s % 60).padStart(2, '0')}s`
+}
+
+/**
+ * Claude's own bracketed HARNESS notices, which arrive on the wire as ordinary
+ * user-role prompts.
+ *
+ * `[Request interrupted by user]` / `[Request interrupted by user for tool use]`
+ * is what Claude Code writes to the transcript when a turn or a tool call is
+ * stopped — nobody typed it, and drawn as a user bubble it reads as if the
+ * user had (mobile proof, 16-chat-after-deny-light.png: a dark right-hand
+ * bubble saying "[Request interrupted by user for tool use]" under a denied
+ * Bash call). It belongs in the surface's SYSTEM voice: a centred line.
+ *
+ * Deliberately anchored to the whole string and to this one family — the
+ * transcript is the user's own words, and a loose pattern that re-voiced a
+ * message someone actually typed would be a worse bug than the one it fixes.
+ */
+export function harnessNotice(text: string): string | null {
+  const m = /^\s*\[(Request interrupted by user[^\]]*)\]\s*$/i.exec(text)
+  return m ? m[1] : null
 }
 
 /** Strip the leading activity-taxonomy glyph (`⚡ npm test` → `npm test`) so

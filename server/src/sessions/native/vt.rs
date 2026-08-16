@@ -559,7 +559,16 @@ mod tests {
         assert_eq!(v.history_window(-3, 3).rows, window_before.rows);
         let seed = v.seed();
         assert!(!seed.contains("\x1b[?1049h"), "primary seed must not switch buffers");
-        assert!(seed.ends_with(&format!("\x1b[{};{}H", v.cursor().1 + 1, v.cursor().0 + 1)));
+        // The primary restore is BOTTOM-relative (QA #4): CUU from the last body
+        // row (the body is padded to `rows()`), then an absolute column. Never a
+        // viewport-relative CUP — the client's grid height is not ours to assume.
+        let up = (v.rows() as u32).saturating_sub(1).saturating_sub(v.cursor().1);
+        let expected = if up > 0 {
+            format!("\x1b[{up}A\x1b[{}G", v.cursor().0 + 1)
+        } else {
+            format!("\x1b[{}G", v.cursor().0 + 1)
+        };
+        assert!(seed.ends_with(&expected), "seed tail: {:?}", &seed[seed.len() - 20..]);
     }
 
     #[test]

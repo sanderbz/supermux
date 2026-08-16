@@ -1,0 +1,19 @@
+--- artifact ---
+total 12
+drwxr-xr-x  3 supermux supermux 4096 Aug 16 08:51 .
+drwxr-xr-x 39 supermux supermux 4096 Aug 16 08:52 ..
+drwxr-xr-x  2 supermux supermux 4096 Aug 16 08:50 .claude
+-rw-r--r--  1 supermux supermux    0 Aug 16 08:51 bash2.txt
+--- project settings.local.json (UNCHANGED by this answer) ---
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)"
+    ]
+  }
+}
+
+--- TUI mode line after ---
+────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle) · ← 2 a…
+                                  ● high · /effort

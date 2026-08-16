@@ -16,7 +16,7 @@
  * affordance. Virtualisation above 200 lines belongs to the renderer slice that
  * owns the data, not to this primitive.
  */
-import type { ReactNode } from 'react'
+import * as React from 'react'
 
 import { cn } from '../../../lib/utils'
 
@@ -26,10 +26,30 @@ import { Bubble } from './bubble'
 export interface Receipt {
   /** The tool's name — `cargo check`, `Read`, `tests`. */
   tool: string
+  /**
+   * The same call, at the length a phone can read — `Read notes.md` for a
+   * `Read /home/supermux/spike-qa/notes.md` (daily-driver QA #2,
+   * `grouping.ts::condenseReceiptLabel`). Absent when there was nothing to
+   * shorten, and never used on the desktop composition, which has the room.
+   */
+  short?: string
   /** `→ clean · 0 errors`. Absent while the call is still running. */
   outcome?: string
+  /** The result the outcome column clamped, for the expanded row. */
+  full?: string
   /** `running` puts the spinner in the check slot. Default `done`. */
   state?: 'done' | 'running'
+  /**
+   * The live status of a `running` line — `8s`, `3 subagents · 8s`.
+   *
+   * This is what makes the running receipt the turn's ONE live representation
+   * (daily-driver QA #7): before it, the elapsed clock lived on a separate
+   * working pill under the group, so a single tool call was drawn twice at once
+   * — `◌ notes.md` and `••• notes.md 5s`. The clock belongs to the line that is
+   * running, and when that line stops running it resolves into a receipt in
+   * place, with the outcome landing where the clock was.
+   */
+  status?: string
 }
 
 export interface CoalescedReceipt extends Receipt {
@@ -59,7 +79,13 @@ export function coalesceReceipts(rows: readonly Receipt[]): CoalescedReceipt[] {
       row.state !== 'running'
     if (mergeable) {
       prev.count += 1
-      if (prev.outcome !== row.outcome) prev.outcome = undefined
+      if (prev.outcome !== row.outcome) {
+        prev.outcome = undefined
+        // The expanded read is the outcome's full text; with no outcome to
+        // expand, keeping it would offer a tap that shows one call's result on a
+        // line that stands for twelve.
+        prev.full = undefined
+      }
       continue
     }
     out.push({ ...row, count: 1 })
@@ -104,7 +130,7 @@ export function ReceiptGroup({ rows, max, onShowAll, surface, className }: Recei
   return (
     <Bubble padding="list" surface={surface} className={cn('flex flex-col gap-[7px]', className)}>
       {shown.map((line, i) => (
-        <ReceiptLine key={`${line.tool}-${i}`} line={line} />
+        <ReceiptLine key={`${line.tool}-${i}`} line={line} phone={surface === 'phone'} />
       ))}
       {hidden > 0 && (
         <button
@@ -119,58 +145,94 @@ export function ReceiptGroup({ rows, max, onShowAll, surface, className }: Recei
   )
 }
 
-function ReceiptLine({ line }: { line: CoalescedReceipt }) {
+/**
+ * One call — condensed, WRAPPING, and expandable (daily-driver QA #2).
+ *
+ * It used to be one line, always: two cells that both truncated, the tool with
+ * `min-w-[6ch]` and the outcome with `min-w-[4ch]`. On a 390px phone that
+ * arithmetic produced `✓ Read /home/s… → 1 …` — a 135px cell holding a
+ * 37-character target, and four glyphs of result. Receipts are the majority of a
+ * working turn, so the majority of the conversation said nothing.
+ *
+ * Three changes, in the order they matter:
+ *   · the label is CONDENSED rather than ellipsed (`condenseReceiptLabel`):
+ *     the basename of a path, the head of a command. `Read notes.md` is what a
+ *     reader was trying to get out of `Read /home/s…` in the first place.
+ *   · what still does not fit WRAPS to a second line instead of ellipsing both
+ *     columns. The row is a grid — glyph column, content column — so the wrap
+ *     hangs under the text rather than under the check.
+ *   · the row EXPANDS on tap: the full label, and the full result the outcome
+ *     column clamped. Tapping a receipt did nothing before, which is the first
+ *     thing anybody tries when a line is unreadable.
+ *
+ * A row with nothing more to show is a plain `div`, not a dead button: an
+ * affordance that answers a tap with nothing is worse than no affordance.
+ */
+function ReceiptLine({ line, phone }: { line: CoalescedReceipt; phone?: boolean }) {
+  const [expanded, setExpanded] = React.useState(false)
   const running = line.state === 'running'
-  return (
-    <div
-      data-state={line.state ?? 'done'}
-      // A receipt is ONE line — that is the whole of P3's read, and it is what
-      // makes a 30-call turn scannable. `min-w-0` + the two truncating cells
-      // below are what enforce it: a `Read <120-char path>` label used to wrap
-      // to three lines and shove its outcome to the far edge of the bubble.
-      className="flex min-w-0 items-center gap-[9px] leading-[1.5]"
-    >
-      <span className="flex flex-none text-ink-2">
+  const condensed = phone && line.short !== undefined && !expanded
+  const label = condensed ? line.short! : line.tool
+  const outcome = expanded && line.full !== undefined ? line.full : line.outcome
+  const more = (phone && line.short !== undefined) || line.full !== undefined
+
+  const body = (
+    <>
+      <span className="flex flex-none pt-[3px] text-ink-2">
         {running ? <SpinnerIcon className="sm-spin" /> : <CheckIcon />}
       </span>
-      {/* Who ran, then what happened — and when the line will not hold both, the
-          OUTCOME gives way ENTIRELY before the tool gives up a glyph (its shrink
-          factor, below, is three orders of magnitude larger). The tool is the
-          noun the reader scans for.
-          Two mistakes are already paid for here, both caught on the bench:
-            · a `max-w-%` cap resolves against a width this shrink-to-fit bubble
-              is still deciding, so it truncated lines that had room to spare;
-            · a FRACTIONAL shrink factor on the tool (0.25) is worse than useless
-              — per the flexbox spec, when the sum of the shrink factors is below
-              one only that FRACTION of the overflow is distributed, so a long
-              `Read <path>` label simply overflowed the bubble on the phone. */}
-      <span className="min-w-[6ch] shrink truncate whitespace-nowrap font-semibold">
-        {line.tool}
+      {/* ONE inline flow, deliberately: the outcome follows the label the way a
+          clause follows a sentence, so a long pair wraps at a word boundary
+          instead of being cut in two places. `[overflow-wrap:anywhere]` is for
+          the case no word boundary exists — a 60-character path with no spaces
+          in it must still stay inside the bubble. */}
+      <span className="min-w-0 [overflow-wrap:anywhere]">
+        <span className="font-semibold">{label}</span>
+        {line.count > 1 && <span className="tabular-nums text-ink-2"> ×{line.count}</span>}
+        {outcome !== undefined && (
+          <>
+            <span className="mx-[7px] inline-flex translate-y-[1px] text-ink-2">
+              <ArrowIcon />
+            </span>
+            <span className="tabular-nums tracking-[-0.1px] text-ink">{outcome}</span>
+          </>
+        )}
       </span>
-      {line.count > 1 && (
-        <span className="tabular-nums text-ink-2">×{line.count}</span>
+      {/* The running line's own clock, in the slot the outcome will take. It
+          never competes with an outcome — a line that has one has finished. */}
+      {running && line.status && line.outcome === undefined && (
+        <span
+          data-testid="chat-receipt-status"
+          // `ml-auto` as it always was: the clock sits on the bubble's right
+          // edge, so a turn's running line reads as one column of elapsed times
+          // rather than a number that moves with the label's length.
+          className="ml-auto flex-none whitespace-nowrap pt-[1px] tabular-nums text-[13px] text-ink-2"
+        >
+          {line.status}
+        </span>
       )}
-      {line.outcome !== undefined && (
-        <>
-          <span className="flex flex-none text-ink-2">
-            <ArrowIcon />
-          </span>
-          <Outcome>{line.outcome}</Outcome>
-        </>
-      )}
-    </div>
+    </>
   )
-}
 
-/**
- * The outcome column. It yields first (see the tool cell above) but never all
- * the way to nothing: a `min-w` of 4 glyphs is what stops a very long tool label
- * from leaving a dangling arrow pointing at empty space.
- */
-function Outcome({ children }: { children: ReactNode }) {
+  const className = 'flex w-full min-w-0 items-start gap-[9px] text-left leading-[1.5]'
+  if (!more) {
+    return (
+      <div data-testid="chat-receipt" data-state={line.state ?? 'done'} className={className}>
+        {body}
+      </div>
+    )
+  }
   return (
-    <span className="min-w-[4ch] shrink-[999] truncate whitespace-nowrap text-[15px] tabular-nums tracking-[-0.1px] text-ink">
-      {children}
-    </span>
+    <button
+      type="button"
+      data-testid="chat-receipt"
+      data-state={line.state ?? 'done'}
+      data-expanded={expanded || undefined}
+      aria-expanded={expanded}
+      onClick={() => setExpanded((e) => !e)}
+      className={className}
+    >
+      {body}
+    </button>
   )
 }

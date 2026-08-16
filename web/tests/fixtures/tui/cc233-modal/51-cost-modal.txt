@@ -1,0 +1,30 @@
+
+  Last 24h · these are independent characteristics of your usage, not a
+  breakdown
+
+  99% of your usage came from subagent-heavy sessions
+   Each subagent runs its own requests. Be deliberate about spawning them — and
+   consider configuring a cheaper model for simpler subagents.
+
+  99% of your usage came from sessions active for 8+ hours
+   These are often background/loop sessions. Continuous usage can add up quickly
+   so make sure it is intentional.
+
+  71% of your usage was at >150k context
+   Longer sessions are more expensive even when cached. /compact mid-task,
+   /clear when switching to new tasks.
+
+  59% of your usage came from subagents under "workflow-subagent"
+   If this runs frequently, consider configuring its subagents with a cheaper
+   model or tightening their prompts.
+
+  Subagents               % of usage
+  workflow-subagent              59%
+
+  d to day · w to week
+
+  Usage credits
+  Usage credits are off · /usage-credits to turn them on
+
+  Esc to cancel
+

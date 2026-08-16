@@ -281,3 +281,114 @@ describe('readLens — the version pin is the BANNER, not any mention of a versi
     expect(readLens('▐▛███▜▌ Claude Code v2.1.231').bannerVersion).toBe('2.1.231')
   })
 })
+
+/**
+ * The FULL-SCREEN PANELS (daily-driver QA #1).
+ *
+ * `/status` sent from chat opened the CLI's Status panel; chat kept showing an
+ * idle dot and an inviting composer, and every later send was refused with "the
+ * terminal has an unsent draft `/status`" — quoting the ECHO of the command that
+ * opened the panel, 20 rows up in the scrollback. The lens now reports the panel
+ * and stops reporting that draft.
+ *
+ * Fixtures captured live on 2.1.233 in a real pty; provenance in
+ * `tests/fixtures/tui/cc233-modal/README.md`.
+ */
+describe('readLens — a panel is not a draft', () => {
+  const modal = (name: string) => readLens(readFileSync(join(DIR, 'cc233-modal', name), 'utf8'))
+
+  test('/status: the panel is sighted, and the scrollback echo is NOT a draft', () => {
+    const lens = modal('50-status-modal.txt')
+    expect(lens.modal?.hint).toBe('Esc to cancel')
+    // The bug, as an assertion: this capture contains `❯ /status` on row 8.
+    expect(lens.composerDraft).toBeNull()
+    // A panel has nothing to answer, so it is not a dialog either.
+    expect(lens.dialog).toBeNull()
+  })
+
+  test('/cost: sighted with no ❯ on screen at all', () => {
+    expect(modal('51-cost-modal.txt').modal?.hint).toBe('Esc to cancel')
+  })
+
+  test('the composer at rest is not a panel', () => {
+    const lens = modal('52-idle-composer.txt')
+    expect(lens.modal).toBeNull()
+    expect(lens.composerDraft).toBeNull()
+  })
+
+  test('a RUNNING TURN is not a panel — `esc to interrupt` is lower case, and the prompt is live', () => {
+    // The screen a naive "does the tail mention esc?" rule would wreck: it says
+    // `esc to interrupt`, and refusing every send during a turn would be an
+    // outage wearing a safety argument.
+    const lens = modal('53-running-turn.txt')
+    expect(lens.modal).toBeNull()
+    expect(lens.composerDraft).toBeNull()
+  })
+
+  test('a permission dialog stays a DIALOG — one screen, one reading', () => {
+    const lens = readLens(read('perm-bash.txt'))
+    expect(lens.dialog?.family).toBe('permission')
+    expect(lens.modal).toBeNull()
+  })
+
+  test('an empty capture is not a panel', () => {
+    expect(readLens('').modal).toBeNull()
+    expect(readLens('')).toEqual(EMPTY_LENS)
+  })
+})
+
+/**
+ * Daily-driver QA #11 — the card never showed the command being approved.
+ *
+ * It asked `Run  Download example.com homepage to /tmp pr… ?` — a truncated
+ * DESCRIPTION — while `curl -sS https://example.com/ -o /tmp/qa-perm-probe.html
+ * && echo done` appeared nowhere in chat (`46-perm-40s.png`,
+ * `47-perm-on-reload.png`), only in the terminal (`48-terminal-from-card.png`).
+ * The hook's summary is short and secret-conscious by design, so the wire cannot
+ * supply the command — but the SCREEN has it, between the variant title and the
+ * question, on every capture.
+ */
+describe('the dialog body, verbatim', () => {
+  test('a bash prompt carries its command', () => {
+    const body = readLens(read('perm-bash.txt')).dialog!.body
+    expect(body).toEqual(['touch /tmp/spike-test-file', 'Create empty file /tmp/spike-test-file'])
+  })
+
+  test('the live a4c capture reads the same way, through the scrollback', () => {
+    const body = readLens(read('a4c/case1-bash-deny-1-before.txt')).dialog!.body
+    expect(body?.[0]).toBe('touch /tmp/spike-a4c-case1.txt')
+  })
+
+  test('a write prompt carries the file and its content, without the rules', () => {
+    const body = readLens(read('a4c/case3-write-option2-1-before.txt')).dialog!.body
+    // The line number is indented one further than the filename on this capture,
+    // and it stays that way: the COMMON indent is the terminal's left margin,
+    // the relative one is the content's.
+    expect(body).toEqual(['case3.txt', ' 1 hello a4c'])
+  })
+
+  test('an edit prompt carries its diff, signs intact', () => {
+    const body = readLens(read('perm-edit.txt')).dialog!.body
+    expect(body).toEqual(['notes.txt', '1  hello', '2 +second'])
+  })
+
+  test('the question and the options are not body — they are drawn already', () => {
+    const body = readLens(read('perm-bash.txt')).dialog!.body!.join('\n')
+    expect(body).not.toContain('Do you want')
+    expect(body).not.toContain('1. Yes')
+    expect(body).not.toContain('Esc to cancel')
+  })
+
+  test('a plan dialog has none: its body is a whole plan, and the card links it', () => {
+    const dialog = readLens(read('plan-approval.txt')).dialog!
+    expect(dialog.family).toBe('plan')
+    expect(dialog.body).toBeUndefined()
+    expect(dialog.planPath).toBe('~/.claude/plans/plan-a-tiny-change-purrfect-locket.md')
+  })
+
+  test('an unfixtured modal has none — nothing above its rows is known to be its', () => {
+    const dialog = readLens(read('a4c/00b-unknown-family-auto-mode-nag.txt')).dialog
+    expect(dialog?.family).toBe('unknown')
+    expect(dialog?.body).toBeUndefined()
+  })
+})

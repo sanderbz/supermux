@@ -59,6 +59,15 @@ export interface ChoiceOption {
 export interface ChoiceCardProps {
   /** The ask. Pass `<InlineCode>` inside it for the command. */
   question: ReactNode
+  /**
+   * The thing itself, verbatim — the command, the file, the diff (QA #11).
+   *
+   * The question is a SENTENCE and therefore a paraphrase; this is the evidence
+   * under it. A `<CardCode>` block, scrollable in both directions inside its own
+   * box so a 200-column command cannot widen the card and a 40-line diff cannot
+   * push the buttons off the screen.
+   */
+  detail?: ReactNode
   /** Where it runs and what it reaches — the line the decision turns on. */
   why?: ReactNode
   options: readonly ChoiceOption[]
@@ -70,6 +79,7 @@ export interface ChoiceCardProps {
 
 export function ChoiceCard({
   question,
+  detail,
   why,
   options,
   selectedIndex,
@@ -89,6 +99,7 @@ export function ChoiceCard({
       <div className="text-[15px] font-medium leading-[1.4] tracking-[-0.15px] text-ink">
         {question}
       </div>
+      {detail}
       {why && <div className="mt-[5px] text-[13.2px] leading-[1.45] text-ink-2">{why}</div>}
       <div className="mt-[13px] flex flex-wrap gap-2">
         {options.map((option, i) => (
@@ -144,6 +155,40 @@ function ChoiceButton({
         </kbd>
       )}
     </button>
+  )
+}
+
+/**
+ * The card's evidence row: what the pty is showing, verbatim (QA #11).
+ *
+ * A `<pre>` in its own scroll box, and both axes are deliberate:
+ *   · X — a shell command is arbitrarily wide and MUST NOT wrap here. This is
+ *     the one block on the surface where a soft break could change what a reader
+ *     believes they are approving (`… && rm -rf /tmp/x` reading as two lines),
+ *     and unlike a transcript fence (QA #18) it comes with a decision attached.
+ *     So it scrolls, and the fade below says there is more.
+ *   · Y — a 40-line diff would push the buttons off a 390px screen. 132px is
+ *     about seven lines, which holds every capture the fixtures carry whole.
+ *
+ * The fade is a static overlay rather than a measured hint: it costs nothing,
+ * it is honest at rest (a short command's fade sits over blank card), and the
+ * alternative is a ResizeObserver inside a primitive.
+ */
+export function CardCode({ children }: { children: ReactNode }) {
+  return (
+    <div className="relative mt-[9px]">
+      <pre
+        data-testid="chat-dialog-body"
+        tabIndex={0}
+        className="max-h-[132px] overflow-auto overscroll-contain whitespace-pre rounded-[10px] border-[0.5px] border-hairline-soft bg-code-bg px-[11px] py-2 font-mono text-[12.4px] leading-[1.55] tracking-[-0.1px] text-ink"
+      >
+        {children}
+      </pre>
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-y-px right-px w-6 rounded-r-[10px] bg-gradient-to-l from-code-bg to-transparent"
+      />
+    </div>
   )
 }
 

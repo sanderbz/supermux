@@ -1,0 +1,16 @@
+--- file UNCHANGED (md5 6c7831c26f0d0a5f807006854aa682f4 before) ---
+6c7831c26f0d0a5f807006854aa682f4  /home/supermux/spike-233/edit1.txt
+alpha
+beta
+gamma
+--- TUI ---
+      3 -gamma                               
+      3 +GAMMA                               
+
+✻ Brewed for 5s
+
+─────────────────────────────── spike-233-capture ──
+❯ 
+────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 2 agents
+                                  ● high · /effort

@@ -86,17 +86,36 @@ export function readTrigger(draft: string, caret: number): ComposerTrigger | nul
 
 // ── 2. The slash surface ────────────────────────────────────────────────────
 
-/** Text-safe: the TUI consumes these as text and runs them, so chat may pass
- *  them straight through `POST /send` (a0-findings §3, Family 4 — none of these
- *  leaves an interactive widget behind). */
-export const PASS_THROUGH = [
-  '/compact',
-  '/clear',
-  '/cost',
-  '/status',
-  '/review',
-  '/pr-comments',
-] as const
+/**
+ * Text-safe: the TUI consumes these as text and runs them, so chat may pass them
+ * straight through `POST /send` — none of them leaves an interactive widget
+ * behind.
+ *
+ * RE-VERIFIED LIVE ON 2.1.233, one command at a time, in a throwaway pty
+ * (captures in `tests/fixtures/tui/cc233-modal/`). Four commands LEFT this list
+ * on that evidence, and every one of them was a live wedge:
+ *
+ *   · `/status` → a full-screen Status panel with an `Esc to cancel` footer and
+ *     no composer on screen (`50-status-modal.txt`). This is daily-driver QA #1:
+ *     chat sent it, the panel opened on a pty nobody was looking at, chat showed
+ *     nothing, and every later send was refused for the wrong reason.
+ *   · `/cost`   → the same shape, plus its own keys (`d to day · w to week`,
+ *     `51-cost-modal.txt`).
+ *   · `/review` → does not exist on 2.1.233. Typing it leaves CC's command menu
+ *     open with `/code-review (review)` HIGHLIGHTED, and `send_text` appends the
+ *     Enter that accepts it — a different command runs, silently.
+ *   · `/pr-comments` → same: it is gone, and the Enter picked `/code-review`,
+ *     which started a background agent. Captured while re-verifying this list.
+ *
+ * The two that stayed were driven to completion on the same pty: `/clear`
+ * cleared the transcript and returned to the composer, `/compact` printed
+ * `Not enough messages to compact.` into the transcript. Both leave the prompt
+ * where they found it.
+ *
+ * The rule this list is under: a command earns a place here by being WATCHED,
+ * and re-watched on the CLI that is shipping. Everything else refuses.
+ */
+export const PASS_THROUGH = ['/compact', '/clear'] as const
 
 /** These OPEN A PICKER in the TUI. Sending one from chat would leave an
  *  interactive widget on a pty nobody is looking at — the session then answers
@@ -138,7 +157,12 @@ export const PICKER_OPENING = [
 const TUI_BUILTINS: ReadonlySet<string> = new Set(
   ('add-dir agents batch clear color compact config context copy cost debug diff doctor effort' +
     ' export extra-usage fast feedback focus help hooks ide init login logout loop mcp memory' +
-    ' model permissions plan plugin recap release-notes remote-control rename resume review' +
+    // `pr-comments` is NOT in the server's list (the CLI dropped it), and that is
+    // exactly why it is here: typed at the prompt it leaves CC's command menu
+    // open on `/code-review (review)`, and the Enter `send_text` appends runs
+    // THAT — verified live on 2.1.233 while re-checking `PASS_THROUGH`. A name
+    // the CLI no longer has must refuse, not be pasted as text and reinterpreted.
+    ' model permissions plan plugin pr-comments recap release-notes remote-control rename resume review' +
     ' rewind sandbox schedule security-review simplify skills stats status statusline tasks' +
     ' terminal-setup theme ultraplan ultrareview usage vim voice').split(' '),
 )

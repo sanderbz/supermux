@@ -41,6 +41,33 @@
 // EVERY key path (dock send, KeyBar, joystick) — the same `useLiveTerm` the
 // desktop tile/focus use. No duplicate WS, no second xterm. The auth token is
 // never referenced here; it lives in `window._SUPERMUX_AUTH_TOKEN` (env.ts).
+//
+// ── THE RENDERER SEAM (fase A5) ─────────────────────────────────────────────
+// This route now offers the CHAT renderer too, on the same three gates the
+// desktop seam uses (`components/chat/flag.ts`): the Settings → Experimental
+// toggle, the `supermux:chat-renderer` kill-switch, and the Track A v1
+// eligibility guard (local Claude, never a team lead). Chat is the DEFAULT when
+// all three pass; the terminal is one tap away on the switch. The decision
+// itself is shared, pure and tested — `components/chat/seam.ts`.
+//
+// What changes when chat has the pane, and why (all of it is `mobileChrome`):
+//   · <FocusHeader> goes. The chat surface draws its own floating header card
+//     (`mobile-light.png`), and this route fills that card's two slots: the
+//     back button on the left, the renderer switch on the right. Two headers
+//     would cost the transcript a bar it already has.
+//   · <KeyBar> and the <Joystick> go, and the dock sheds its terminal-only
+//     controls. All three write raw key BYTES through `termRef`, which is null
+//     with no terminal mounted — hiding them beats letting them no-op silently
+//     (this route has shipped a dead accessory bar once already).
+//   · the tap-to-focus gate on the pane goes with the terminal it was written
+//     for: under chat a tap in the transcript must not summon the keyboard.
+//   · the INPUT PLANE forks. Snippets and dictation keep working, but "insert"
+//     under chat means "stage it in the composer where I can edit it", not
+//     "paste it at a `❯` nobody is looking at" — `composerSessionInput`, the
+//     same plane the desktop seam switches to.
+// The keyboard-aware layout is untouched: <MobileSheet> still sizes itself off
+// `useKeyboardViewport`, and the composer is a real textarea inside it, so the
+// surface shrinks to sit above the soft keyboard exactly as the terminal did.
 
 import * as React from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -53,7 +80,20 @@ import { StoppedSession } from '@/components/terminal/stopped-session'
 import { useTerminalGone } from '@/hooks/use-terminal-gone'
 import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
-import { useTerminalInput } from '@/lib/session-input'
+import { restSessionInput, useTerminalInput } from '@/lib/session-input'
+import { composerSessionInput } from '@/components/chat/composer-draft'
+import { RendererSwitch } from '@/components/chat/renderer-switch'
+import { useChatRenderer } from '@/components/chat/use-chat-renderer'
+import {
+  chatPaneActive,
+  mobileChrome,
+  pickRenderer,
+  terminalPaneMounts,
+  type ChatRenderer,
+  type RendererOverride,
+} from '@/components/chat/seam'
+import { BackIcon } from '@/components/chat/ui'
+import { useUI } from '@/stores/ui-store'
 import { useSessions } from '@/hooks/use-sessions'
 import { useTeams } from '@/hooks/use-teams'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
@@ -81,6 +121,16 @@ import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
 import { useEdgeGestures } from '@/components/focus-mode/use-edge-gestures'
 import { neighborSession } from '@/components/focus-mode/session-order'
 import type { TileSession } from '@/components/session-tile/types'
+
+/** The chat renderer, lazily — the terminal path must not pay for a chunk it
+ *  never mounts, and with the experiment off nobody on this route does. Same
+ *  split as the desktop seam. */
+const ChatPanel = React.lazy(() => import('@/components/chat/chat-panel'))
+
+/** The chat⇄terminal switch rail's height, in px. Named because TWO things need
+ *  it: the rail itself, and the floating <KeyBar>, which hangs off a fixed
+ *  offset below the 44px header and would otherwise cover it. */
+const SWITCH_ROW_H = 36
 
 /** Synthesize a minimal session from the route param so the terminal mounts even
  *  before the sessions query has delivered this row. */
@@ -133,14 +183,56 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
     if (name) setLastActiveSession(name)
   }, [name, setLastActiveSession])
 
-  const current =
-    sessions.find((s) => s.name === name) ?? placeholderSession(name)
+  // The REAL row, or null while the sessions query is still resolving.
+  // `current` below papers over that with a placeholder so the terminal can
+  // mount immediately — but the renderer seam may NOT read the placeholder: its
+  // empty `provider` is ineligible, so a chat session would mount the terminal
+  // for a beat and then swap. The coercion to `TileSession` is the same
+  // boundary one `use-focus-sessions.ts` applies (the wire leaves `updated_at`
+  // optional for partial deltas; the tile shape requires it).
+  const row = React.useMemo<TileSession | null>(() => {
+    const s = sessions.find((x) => x.name === name)
+    return s ? { ...s, updated_at: s.updated_at ?? '' } : null
+  }, [sessions, name])
+  const current: ApiSession = row ?? placeholderSession(name)
 
   // The terminal WS proves a dead pty (4404) before — or, when the backend
   // never flipped the row, INSTEAD of — the status delta. Without this the pane
-  // keeps a frozen terminal with no way to restart the session.
+  // keeps a frozen terminal with no way to restart the session. Declared ABOVE
+  // the seam because the seam's "a stopped session is never chat" rule has to
+  // see the socket's conclusion too, not only the row's.
   const { gone: termGone, onTermState } = useTerminalGone(current.status)
   const stopped = current.status === 'stopped' || termGone
+
+  // ── The renderer seam (fase A5) ────────────────────────────────────────────
+  // Same three gates as the desktop seam, same pure decision
+  // (`components/chat/seam.ts`), same kill-switch. Declared HERE, above the
+  // input plane and the tap gate, because both of them fork on `chatActive`.
+  const isTeamLead = React.useMemo(
+    () => teams.some((t) => t.lead_supermux_session === name),
+    [teams, name],
+  )
+  const chatSetting = useUI((s) => s.chatRenderer)
+  const chatOn = useChatRenderer(row, isTeamLead)
+  // The ONLY state is the user's manual tap, keyed by session name so it resets
+  // on navigation and cannot be stomped by a late flag/eligibility resolve.
+  const [override, setOverride] = React.useState<RendererOverride | null>(null)
+  const renderer = pickRenderer(override, name, row != null, chatOn)
+  const setRenderer = React.useCallback(
+    (value: ChatRenderer) => setOverride({ name, value }),
+    [name],
+  )
+  // `stopped`, not `current.status`: a pty the SOCKET found dead owes the user
+  // the same calm StoppedSession surface, and the chrome swap has to agree with
+  // the pane swap or the phone shows a stopped session with no header on it.
+  const chatActive = chatPaneActive(
+    chatSetting,
+    chatOn,
+    renderer,
+    stopped ? 'stopped' : current.status,
+  )
+  const terminalMounts = terminalPaneMounts(chatSetting, renderer, chatActive)
+  const chrome = mobileChrome(chatOn, chatActive)
 
   const next = React.useMemo(
     () => neighborSession(sessions, name, 1),
@@ -153,14 +245,24 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
 
   // Imperative terminal handle — the ONE surface every key path drives.
   const termRef = React.useRef<UseLiveTermResult | null>(null)
-  // The input handle (fase A4 T1). Mobile is terminal-only until A5 mounts the
-  // chat renderer here, so this is the terminal plane — but the TEXT surfaces
-  // below (snippets, attachments, the keybar's text chips, the dock's send) now
-  // speak `SessionInput`, which makes that seam a prop change rather than a
-  // rewrite. `submit` appends the same single `\r` those call sites appended
-  // themselves, so behaviour is unchanged. Built off the REF, so it is stable
-  // across terminal remounts.
-  const input = useTerminalInput(termRef)
+  // The input handle (fase A4 T1, forked at the A5 seam). Every TEXT surface on
+  // this route (snippets, dictation, the keybar's text chips, the dock's send)
+  // speaks `SessionInput`, so which PLANE it is depends only on which renderer
+  // is mounted:
+  //   · terminal → the byte path through the live handle. Built off the REF, so
+  //     it is stable across terminal remounts. `submit` appends the same single
+  //     `\r` those call sites used to append themselves — behaviour with the
+  //     experiment off is byte-identical to before A5.
+  //   · chat → `composerSessionInput`: INSERT stages the text in the React
+  //     composer (where the user can still edit it before it is sent), while
+  //     submit and keys go straight to the session on the REST plane.
+  const termInput = useTerminalInput(termRef)
+  const restInput = React.useMemo(() => restSessionInput(name), [name])
+  const chatInput = React.useMemo(
+    () => composerSessionInput(name, restInput),
+    [name, restInput],
+  )
+  const input = chatActive ? chatInput : termInput
   // Auto-focus the terminal on session entry (polish-pass #4) so keystrokes
   // (hardware keyboard, or the iOS soft keyboard once the user taps in) route
   // to xterm IMMEDIATELY — the focus pane is the terminal, not the dock
@@ -434,7 +536,8 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
           renders as a top-level sibling rather than inside the peek-tracking
           `<motion.div>` below (it must NOT slide with the left-edge drag). */}
       <KeyBar
-        open={keyBar.open}
+        // Terminal-only: every chip is a raw key byte on `termRef` (fase A5).
+        open={keyBar.open && chrome.keyBar}
         keys={keyBar.keys}
         onKeysChange={keyBar.setKeys}
         // Raw keys stay on the terminal ref: the keybar's names (`EscEsc`,
@@ -445,6 +548,10 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
         onSendText={(text) => void input.insert(text)}
         pickerOpen={keyBarPickerOpen}
         onPickerOpenChange={setKeyBarPickerOpen}
+        // The bar is `fixed` under the 44px header and cannot see the flow — so
+        // when the seam inserts the switch rail there, it has to be told
+        // (fase A5). `SWITCH_ROW_H` is that rail's height, in one place.
+        topOffset={chrome.switchRow ? SWITCH_ROW_H : 0}
       />
 
       <motion.div
@@ -463,23 +570,46 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               pill is the richer, more discoverable affordance — name + status +
               swipe). Dropping the redundant dots clears the naming confusion so
               the only "dots" left is the bottom dock's KeyBar toggle. */}
-          <FocusHeader
-            name={current.name}
-            provider={current.provider}
-            title={sessionTitle(current)}
-            status={current.status}
-            activity={current.activity}
-            subagents={current.subagents}
-            error={current.error}
-            onBack={goOverviewMorph}
-            // Manual resync — re-pull a clean screen on the live handle. Omitted
-            // for a stopped session (no live WS to resync) so the control hides.
-            onRefresh={stopped ? undefined : () => termRef.current?.resync()}
-            onTitleClick={() => setInfoOpen(true)}
-            hasLastSend={!!lastSend}
-            lastSendOpen={lastSendOpen}
-            onToggleLastSend={() => setLastSendOpen((o) => !o)}
-          />
+          {/* Terminal chrome. Under chat the surface's own floating header card
+              is the route's header (fase A5) — see `mobileChrome`. */}
+          {chrome.focusHeader && (
+            <FocusHeader
+              name={current.name}
+              provider={current.provider}
+              title={sessionTitle(current)}
+              status={current.status}
+              activity={current.activity}
+              subagents={current.subagents}
+              error={current.error}
+              onBack={goOverviewMorph}
+              // Manual resync — re-pull a clean screen on the live handle. Omitted
+              // for a stopped session (no live WS to resync) so the control hides.
+              // `stopped` (not `current.status`) so a pty the SOCKET found dead
+              // hides it too — see `useTerminalGone`.
+              onRefresh={stopped ? undefined : () => termRef.current?.resync()}
+              onTitleClick={() => setInfoOpen(true)}
+              hasLastSend={!!lastSend}
+              lastSendOpen={lastSendOpen}
+              onToggleLastSend={() => setLastSendOpen((o) => !o)}
+            />
+          )}
+
+          {/* The way BACK to chat while the terminal has the pane. A slim rail
+              under the focus header, mirroring the desktop seam's own switch
+              bar — the chat-mode switch lives in the header card instead
+              (`chrome.switchInHeader`), so there is only ever one on screen. */}
+          {chrome.switchRow && (
+            <div
+              style={{ height: SWITCH_ROW_H }}
+              className="flex shrink-0 items-center justify-center border-b border-border/60 px-3"
+            >
+              <RendererSwitch
+                size="sm"
+                value={renderer ?? 'chat'}
+                onChange={setRenderer}
+              />
+            </div>
+          )}
 
           {/* The LiveTerminal with the joystick + 2-finger gesture
               layered on top. `relative` so the joystick's absolute layer scopes
@@ -503,18 +633,75 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
             // (onTermPointerDown/Up: same pointer, <10px travel, <500ms). We use
             // pointer events (not onClick) so it fires for the actual touch even
             // if xterm's own pointer handling stops the click; harmless on mouse.
-            onPointerDown={onTermPointerDown}
-            onPointerUp={onTermPointerUp}
-            onPointerCancel={onTermPointerCancel}
+            //
+            // OFF UNDER CHAT (fase A5): the gate exists to summon the keyboard
+            // for a surface you type INTO directly. On the chat surface a tap
+            // lands on a bubble, a card or the scroll region, and raising the
+            // keyboard for it would cover the thing that was just tapped.
+            onPointerDown={chatActive ? undefined : onTermPointerDown}
+            onPointerUp={chatActive ? undefined : onTermPointerUp}
+            onPointerCancel={chatActive ? undefined : onTermPointerCancel}
           >
             {stopped ? (
               /* The session's pty is gone — render the calm stopped state
                  instead of mounting a live WS that would 101-upgrade then get
                  closed in a no-backoff loop. No joystick: nothing to drive.
                  `termGone` is the same conclusion reached from the socket, for
-                 the window (or the incident) where the row still says otherwise. */
+                 the window (or the incident) where the row still says otherwise.
+                 Reached under BOTH renderers: `chatPaneActive` excludes a
+                 stopped session for exactly this reason. */
               <StoppedSession name={name} />
-            ) : (
+            ) : chatActive ? (
+              /* The chat renderer (fase A5), in the phone composition — the
+                 boards' floating header card + track + composer, filling the
+                 sheet between the (absent) focus header and the reduced dock.
+                 `surface="phone"` is FORCED rather than left to the 480px media
+                 query: this route is chosen by the app's 768px fork, so a wide
+                 phone would otherwise get the desktop board inside the mobile
+                 sheet. */
+              <React.Suspense fallback={null}>
+                <ChatPanel
+                  name={name}
+                  session={row}
+                  surface="phone"
+                  // The RAW plane. The panel is the one place that may write to
+                  // the session under chat, and it does it through its own gates
+                  // (peek-verify, the slash gate, the pending echo + watchdog).
+                  // Everything else on this route holds `chatInput`, whose text
+                  // paths stage into the composer instead — one draft, one gated
+                  // way out of it.
+                  input={restInput}
+                  onOpenTerminal={() => setRenderer('terminal')}
+                  // The card's two shell slots (`mobile-light.png`): navigation
+                  // on the left, the renderer choice on the right. The surface
+                  // owns neither, which is why they arrive as nodes.
+                  headerLeading={
+                    <button
+                      type="button"
+                      aria-label="Back to sessions"
+                      data-testid="chat-back"
+                      onClick={goOverviewMorph}
+                      className="grid size-[34px] flex-none place-items-center rounded-full bg-fill-soft text-ink-2 active:bg-fill-soft-2"
+                    >
+                      <BackIcon />
+                    </button>
+                  }
+                  headerTrailing={
+                    chrome.switchInHeader ? (
+                      <RendererSwitch
+                        size="sm"
+                        // The header card's own width rule (QA #6): the word
+                        // that goes is the one naming the surface you are not
+                        // looking at, and the session's name gets it back.
+                        labels="selected"
+                        value={renderer ?? 'chat'}
+                        onChange={setRenderer}
+                      />
+                    ) : undefined
+                  }
+                />
+              </React.Suspense>
+            ) : terminalMounts ? (
               <>
                 {/* Pass the session's cached last-screen capture so the terminal
                     shows the CURRENT screen INSTANTLY on open (no blank, no
@@ -530,11 +717,12 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
                   previewLines={current.preview_lines}
                 />
                 <Joystick
-                  enabled={gestureOn}
+                  enabled={gestureOn && chrome.joystick}
                   sendKey={(key) => termRef.current?.sendKey(key)}
                 />
               </>
-            )}
+            ) : null /* experiment on, sessions query still resolving — render
+                        nothing for a frame rather than flash a doomed terminal */}
           </div>
 
           {/* The swipeable kbd-accessory bar (formerly mounted here) was
@@ -579,21 +767,32 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               // all bind Ctrl+G to open $EDITOR → same supermux-edit bridge /
               // `external-edit` SSE. No-op on shell — surface it for every agent
               // provider.
+              //
+              // The Ctrl+G bridge is a terminal-only path (the key is not in
+              // the server's `KEY_ALLOWLIST`), so it is absent under chat —
+              // where the composer IS the editor.
               onEdit={
-                current.provider === 'claude' ||
-                current.provider === 'codex' ||
-                current.provider === 'kimi'
+                !chatActive &&
+                (current.provider === 'claude' ||
+                  current.provider === 'codex' ||
+                  current.provider === 'kimi')
                   ? onEdit
                   : undefined
               }
               editOpen={edit.open}
               onSwitchSession={goSession}
+              // Under chat this stages into the composer (`chatInput`) instead
+              // of typing at the pty's `❯` — one draft, one way out of it.
               onSend={sendToTerm}
               onSendKey={(key) => termRef.current?.sendKey(key)}
               onFocusTerm={focusTerm}
               onBlurTerm={blurTerm}
               keyboardOpen={keyboardOpen}
               registerInsert={registerInsert}
+              // Reduced dock: the accessory key strip, the ⌨ toggle, the KeyBar
+              // toggle and the ↵ pill all drive raw bytes at a pty that isn't
+              // mounted (fase A5).
+              chat={chrome.dockChat}
             />
           </MobileBottomPanel>
         </MobileSheet>

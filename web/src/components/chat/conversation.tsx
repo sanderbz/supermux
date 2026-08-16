@@ -50,7 +50,7 @@ import { SessionHeaderPill } from './header-pill'
 import { LiveLayer } from './live-layer'
 import { deliveryLine, type PendingSend } from './pending'
 import { TranscriptItem } from './transcript-item'
-import { Bubble, MessageRow } from './ui'
+import { Bubble, DownIcon, MessageRow, SystemLine } from './ui'
 import type { OverlayLine } from './use-receipt-overlay'
 
 /**
@@ -61,6 +61,74 @@ import type { OverlayLine } from './use-receipt-overlay'
  */
 const PHONE_MAX_W = 480
 export const PHONE_QUERY = `(max-width: ${PHONE_MAX_W}px)`
+
+/**
+ * The air between the last thing said and the top of the composer's glass.
+ *
+ * This is the only part of the bottom reserve that is a DESIGN number; the rest
+ * of it is whatever the composer currently measures (`trackBottom`). Both
+ * numbers are DERIVED so that the surface at rest does not move by a pixel:
+ * `mobile-light.png` reserves 92 for a composer whose box measures 66 on the
+ * bench, `board-light.png` reserves 90 for one that measures 76.
+ */
+const TRACK_GAP = { phone: 26, desktop: 14 } as const
+
+/** The reserve before the composer has been measured — SSR, and the first paint
+ *  of a unit test with no `ResizeObserver`. The boards' own constants. */
+const TRACK_BOTTOM_FALLBACK = { phone: 92, desktop: 90 } as const
+
+/**
+ * The `hook→UI p50` read-out floats 42px ABOVE the pill (`ComposerFrame`), i.e.
+ * outside the box the measurement covers, so the track owes it its own row.
+ */
+const STAT_ROW = 30
+
+/**
+ * How much floor the track reserves for the composer — MEASURED (QA #12).
+ *
+ * It used to be a constant, and the composer is not: it grows with the draft up
+ * to 136px (`use-composer`'s cap), and it grows again when the refusal banner
+ * appears under it. With a 92px reserve under a 136px composer, streaming text
+ * and the newest bubble slid under the glass exactly while they were being
+ * written — measured on the live instance in `33-long-draft.png`,
+ * `25-reload-t3.7s.png`, `27-back-online.png`, `11-scrolled-top.png`.
+ *
+ * The fallback is the boards' constant, so a surface rendered without a DOM (the
+ * unit tests, any SSR) is byte-identical to what it was.
+ */
+export function trackBottom(footerH: number | null, phone: boolean, stat: boolean): number {
+  const key = phone ? 'phone' : 'desktop'
+  const base =
+    footerH != null && footerH > 0 ? footerH + TRACK_GAP[key] : TRACK_BOTTOM_FALLBACK[key]
+  return stat ? base + STAT_ROW : base
+}
+
+/**
+ * The height of a node, kept live.
+ *
+ * A ref CALLBACK rather than a ref + effect: the footer slot's occupant changes
+ * identity (A3's read-only shell ⇄ A4's live composer ⇄ neither), and a callback
+ * re-runs on exactly those swaps. `ResizeObserver` covers the rest — the draft
+ * growing a line, the refusal banner appearing, the keyboard changing the
+ * viewport — and there is no loop to worry about: nothing this height feeds
+ * (the track's bottom padding) can change the footer's own height.
+ */
+function useMeasuredHeight() {
+  const [height, setHeight] = React.useState<number | null>(null)
+  const observer = React.useRef<ResizeObserver | null>(null)
+  const ref = React.useCallback((node: HTMLDivElement | null) => {
+    observer.current?.disconnect()
+    observer.current = null
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const read = () => setHeight(Math.round(node.getBoundingClientRect().height))
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(node)
+    observer.current = ro
+  }, [])
+  React.useEffect(() => () => observer.current?.disconnect(), [])
+  return [ref, height] as const
+}
 
 export interface ChatConversationProps {
   /** The focused session's immutable slug — every seed on this surface. */
@@ -145,7 +213,8 @@ export interface ChatConversationProps {
   /** The tail query's two unhappy states. */
   isError?: boolean
   isLoading?: boolean
-  /** The shell's own header affordances (A5's back chevron / avatar). */
+  /** The shell's own header affordances — A5's mobile shell fills them with the
+   *  back button and the renderer switch (`routes/focus/mobile.tsx`). */
   headerLeading?: React.ReactNode
   headerTrailing?: React.ReactNode
   /** The `hook→UI p50` read-out, when the session has produced samples. */
@@ -153,6 +222,26 @@ export interface ChatConversationProps {
   scrollRef?: React.Ref<HTMLDivElement>
   onScroll?: React.UIEventHandler<HTMLDivElement>
   testId?: string
+
+  // ── back-pagination (daily-driver QA #3) ─────────────────────────────────
+  // Data + callbacks, not a slot: the whole affordance is one of four states
+  // (more to come / fetching / failed / this is the start), and the bench state
+  // that proves each of them reads correctly should be a boolean, not a hook.
+  /** The server has said there is a page below what is on screen. */
+  hasOlder?: boolean
+  /** That page is in flight. */
+  loadingOlder?: boolean
+  /** The last attempt failed — stated and retryable, never a silent hole. */
+  olderError?: boolean
+  /** Everything this conversation contains is on screen. Draws the marker whose
+   *  absence made a truncated transcript indistinguishable from a short one. */
+  atStart?: boolean
+  onLoadOlder?: () => void
+
+  // ── jump to bottom (daily-driver QA #17) ─────────────────────────────────
+  /** The newest message is far enough off screen to offer a way back to it. */
+  showJumpToBottom?: boolean
+  onJumpToBottom?: () => void
 }
 
 export function ChatConversation({
@@ -192,6 +281,13 @@ export function ChatConversation({
   scrollRef,
   onScroll,
   testId = 'chat-surface',
+  hasOlder = false,
+  loadingOlder = false,
+  olderError = false,
+  atStart = false,
+  onLoadOlder,
+  showJumpToBottom = false,
+  onJumpToBottom,
 }: ChatConversationProps) {
   const phone = surface === 'phone'
   const nodes = React.useMemo(
@@ -200,6 +296,28 @@ export function ChatConversation({
   )
   const label = session?.display_name?.trim() ? session.display_name : name
   const pin = pinFor?.(name)
+
+  // "No conversation yet." is a statement about the WHOLE track, not about the
+  // confirmed layer alone. The layers below this line — the optimistic echo of
+  // a message this client just sent, a pending permission dialog, overlay
+  // receipts, the working row, provisional text, an attention row — are all
+  // conversation, and a session's very first send puts one of them on screen
+  // seconds before the transcript confirms anything. Keyed off `items.length`
+  // alone, the empty line rendered directly above the user's own just-sent
+  // bubble (mobile proof, 05-sent-pending-light.png).
+  const isBlank =
+    items.length === 0 &&
+    (pending?.length ?? 0) === 0 &&
+    (overlay?.length ?? 0) === 0 &&
+    !provisional &&
+    !dialog &&
+    !dialogResolved &&
+    !attention &&
+    !session?.permission_request &&
+    !(session?.status === 'active' && turnStart != null)
+
+  // The room the floating composer needs, MEASURED (daily-driver QA #12).
+  const [footerRef, footerH] = useMeasuredHeight()
 
   // Inline-first (A4 T5): the row is in the band, the evidence is one tap away.
   // The expansion is presentation-local state — nothing above this component
@@ -239,8 +357,26 @@ export function ChatConversation({
         />
       }
       footer={
-        composer ?? (
-          <ComposerShell label={label} surface={phone ? 'phone' : 'desktop'} stat={stat} />
+        // The ref is on a WRAPPER, not on the composer: the footer slot holds
+        // whatever the caller put there (the live composer, its refusal banner,
+        // A3's read-only shell), and what the track has to reserve is the height
+        // of all of it. See `useMeasuredHeight` (QA #12).
+        <div ref={footerRef}>
+          {composer ?? (
+            <ComposerShell label={label} surface={phone ? 'phone' : 'desktop'} stat={stat} />
+          )}
+        </div>
+      }
+      // The way back to the newest message (QA #17). It rides the SAME measured
+      // footer height the track's bottom padding does, so it sits a constant
+      // 10px above the composer's glass whether the draft is one line or six.
+      float={
+        onJumpToBottom && (
+          <JumpToBottom
+            show={showJumpToBottom}
+            bottom={trackBottom(footerH, phone, stat != null) - 16}
+            onClick={onJumpToBottom}
+          />
         )
       }
       // The expanded card, over this pane only (see `attention-card.tsx`).
@@ -261,15 +397,16 @@ export function ChatConversation({
     >
       <div
         // The room the floating composer needs, plus (on the phone) the room the
-        // floating header card needs. Both are the boards' own numbers.
+        // floating header card needs.
         //
         // `min-h-full` belongs HERE, on the scroll region's direct child — a
         // percentage height resolved against a parent that is `auto` is a no-op,
         // which is exactly what made a three-message session hang from the top
         // of the pane with 600px of paper under it.
-        className={`flex min-h-full flex-col ${
-          phone ? 'px-[14px] pb-[92px] pt-[86px]' : 'px-6 pb-[90px] pt-[80px]'
-        }`}
+        //
+        // The BOTTOM is measured, not a constant (QA #12 — see `trackBottom`).
+        className={`flex min-h-full flex-col ${phone ? 'px-[14px] pt-[86px]' : 'px-6 pt-[80px]'}`}
+        style={{ paddingBottom: trackBottom(footerH, phone, stat != null) }}
       >
         {/* Bottom-anchored, like every board: the column sits on the floor of
             the pane and grows upward. */}
@@ -279,9 +416,20 @@ export function ChatConversation({
               Couldn’t load this conversation.
             </p>
           )}
-          {!isError && items.length === 0 && !isLoading && (
+          {!isError && !isLoading && isBlank && (
             <p className="py-8 text-center text-[13px] text-ink-2">No conversation yet.</p>
           )}
+
+          {/* Where the conversation continues upward, or where it began
+              (QA #3). Above the confirmed content because that is where the
+              user's scroll arrives. */}
+          <BacklogHead
+            hasOlder={hasOlder}
+            loading={loadingOlder}
+            error={olderError}
+            atStart={atStart && items.length > 0}
+            onLoad={onLoadOlder}
+          />
 
           {/* Confirmed content (fase A3 T3). Vertical rhythm belongs to the rows
               themselves — `MessageRow` spends 14px between speakers and 8px
@@ -350,10 +498,166 @@ export function ChatConversation({
   )
 }
 
-/** §11.6's same-cell swap, the number `live-layer.tsx` already uses. An echo
- *  reconciling is the same kind of event as a provisional block being
- *  superseded — one thing becoming another — so it is the same move. */
+/**
+ * The top of the track — the four things that can be true above the oldest
+ * message on screen (daily-driver QA #3).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The defect this replaces was not a missing fetch, it was a missing STATEMENT:
+ * a conversation that stopped mid-air under a bare "Wednesday" divider says
+ * nothing about whether that is where it started or where the seed window ran
+ * out. Each branch below is one sentence about which of those it is.
+ *
+ * The control is a real button even though the scroll handler auto-fetches at
+ * 320px: a conversation whose entire seed window fits the viewport never
+ * produces a scroll event at all, and "reachable only by a gesture that this
+ * content cannot generate" is the same wall in a nicer coat. 44px, the phone
+ * target every other control on this surface is held to.
+ */
+const BACKLOG_ROW = 'flex justify-center py-3'
+
+export function BacklogHead({
+  hasOlder = false,
+  loading = false,
+  error = false,
+  atStart = false,
+  onLoad,
+}: {
+  hasOlder?: boolean
+  loading?: boolean
+  error?: boolean
+  atStart?: boolean
+  onLoad?: () => void
+}) {
+  if (loading) {
+    return (
+      <div className={BACKLOG_ROW} role="status" aria-live="polite">
+        <span
+          data-testid="chat-load-older"
+          data-state="loading"
+          aria-disabled
+          className="inline-flex h-11 items-center rounded-full px-4 text-[13px] tracking-[-0.05px] text-ink-2"
+        >
+          Loading earlier messages…
+        </span>
+      </div>
+    )
+  }
+
+  if (hasOlder) {
+    return (
+      <div className={BACKLOG_ROW}>
+        <div className="flex flex-col items-center gap-1">
+          {/* Stated, and retryable by the same control — a page that failed
+              silently is indistinguishable from a conversation that has no
+              more history, which is the whole defect. */}
+          {error && (
+            <span data-tone="warn" className="text-[12px] text-status-error">
+              Couldn’t load earlier messages.
+            </span>
+          )}
+          <button
+            type="button"
+            data-testid="chat-load-older"
+            data-state={error ? 'error' : 'idle'}
+            onClick={onLoad}
+            className={cn(
+              'inline-flex h-11 items-center rounded-full px-4',
+              'border-[0.5px] border-hairline bg-surface text-[13px] font-medium tracking-[-0.05px] text-ink',
+              'shadow-[var(--sm-card-shadow)] active:opacity-70',
+            )}
+          >
+            {error ? 'Try again' : 'Load earlier'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!atStart) return null
+  return (
+    <SystemLine testId="chat-start-of-conversation">Start of the conversation</SystemLine>
+  )
+}
+
+/**
+ * The way back to the newest message (daily-driver QA #17).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * "After scrolling up mid-turn the only way back is manual scrolling — no such
+ * button exists in the DOM." A 44px disc, over the transcript and under the
+ * composer, that appears only once the newest message is properly off screen
+ * (`JUMP_AWAY_PX`, not the 48px follow threshold — see `backlog.ts`).
+ *
+ * It is rendered by the surface's `float` slot rather than inside the footer so
+ * that its appearance moves nothing: the footer's height is what the track
+ * reserves at the bottom (QA #12).
+ */
+export function JumpToBottom({
+  show,
+  bottom,
+  onClick,
+}: {
+  show: boolean
+  /** Distance from the pane's bottom edge — the MEASURED composer plus air. */
+  bottom: number
+  onClick: () => void
+}) {
+  const reduce = useReducedMotion() ?? false
+  return (
+    <div className="flex justify-center" style={{ paddingBottom: Math.max(0, bottom) }}>
+      <AnimatePresence initial={false}>
+        {show && (
+          <motion.button
+            type="button"
+            data-testid="chat-jump-bottom"
+            aria-label="Jump to the newest message"
+            onClick={onClick}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ duration: reduce ? 0 : 0.16, ease: eases.out }}
+            className={cn(
+              'pointer-events-auto flex size-11 items-center justify-center rounded-full',
+              'border-[0.5px] border-hairline bg-surface text-ink backdrop-blur-[30px] backdrop-saturate-[170%]',
+              'shadow-[var(--sm-card-shadow)] active:opacity-70',
+            )}
+          >
+            <DownIcon />
+          </motion.button>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+/**
+ * The echo's ARRIVAL, and only its arrival.
+ *
+ * There is deliberately no exit counterpart (daily-driver QA #10). The confirmed
+ * bubble does not land in this cell — it lands in the transcript directly above
+ * — so an exit fade here is not a crossfade at all: it is 260ms during which the
+ * user's message is on screen TWICE, one copy fading over the other, followed by
+ * the band collapsing under a live layer that then jumps (measured: two bubbles
+ * from 1372ms to 1576ms, then an 82px jump).
+ *
+ * `reconcile` already runs in RENDER (`use-pending-sends.ts`), so the frame that
+ * first draws the confirmed bubble is the frame that drops this row: with no
+ * exit to hold it mounted, the swap is atomic and there is never a frame with
+ * two copies in it. The only motion left is the arrival of something new, which
+ * is the one thing motion is for here.
+ */
 const ECHO_SWAP_S = 0.26
+
+/**
+ * The height the delivery line occupies, reserved whether or not it has anything
+ * to say.
+ *
+ * `deliveryLine` swaps one sentence for another as the receipt lands, and a
+ * sentence that wraps differently from its predecessor moves everything below
+ * it. Fixing the row's height makes every state change inside the band a
+ * REPAINT: the working row underneath does not move while the message goes from
+ * "Sending…" to "The session has it".
+ */
+const RECEIPT_ROW = 'mt-[5px] h-[17px] overflow-hidden'
 
 /** One tap target for the undelivered row's three controls. `h-[34px]` is the
  *  height `ChoiceCard`'s pill has off the approved boards — the smallest thing
@@ -413,7 +717,9 @@ export function PendingEchoes({
             data-state={p.state}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            // No `exit`: see `ECHO_SWAP_S`. The row leaves in the same commit
+            // the confirmed bubble arrives in, so the two are never both on
+            // screen.
             transition={{ duration: reduce ? 0 : ECHO_SWAP_S, ease: eases.inOut }}
           >
             <MessageRow me>
@@ -434,13 +740,21 @@ export function PendingEchoes({
                     normal reason a mid-turn send is not in the transcript yet
                     (`deliveryLine`, which also records why CC's own queue
                     receipt cannot reach this client on this branch). */}
-                {p.state === 'unconfirmed' && (
+                {/* The row is RESERVED from the moment the echo is drawn and
+                    filled when there is something to say: the POST coming back
+                    must not move the working row under it (QA #10). While the
+                    send is in flight it stays empty — the bubble's own reduced
+                    weight is the whole claim at that point. */}
+                {p.state !== 'undelivered' && (
                   <p
                     data-testid="chat-pending-receipt"
                     data-receipted={p.receipted || undefined}
-                    className="mt-[5px] text-[12px] tracking-[-0.05px] text-ink-2"
+                    className={cn(
+                      RECEIPT_ROW,
+                      'text-[12px] leading-[17px] tracking-[-0.05px] text-ink-2',
+                    )}
                   >
-                    {deliveryLine(p, { active })}
+                    {p.state === 'unconfirmed' ? deliveryLine(p, { active }) : ''}
                   </p>
                 )}
 

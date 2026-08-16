@@ -121,6 +121,7 @@ const CLEAR: PeekLens = {
   composerDraft: null,
   composerDraftVerified: true,
   dialog: null,
+  modal: null,
 }
 
 describe('the pre-send peek gate', () => {
@@ -190,6 +191,42 @@ describe('the pre-send peek gate', () => {
       dialog: { family: 'unknown', options: ['Yes', 'No'], caretIndex: 0 },
     })
     expect(gate).toEqual({ send: false, notice: { kind: 'dialog-terminal' } })
+  })
+
+  // ── the wedge (daily-driver QA #1) ────────────────────────────────────────
+  // `/status` sent from chat opened a full-screen panel on the pty. Nothing on
+  // this surface knew, and the next send was refused as "the terminal has an
+  // unsent draft" — quoting the echo of the command that opened the panel.
+  test('a full-screen PANEL blocks the send and names the terminal', () => {
+    const gate = sendGate({ ...CLEAR, modal: { hint: 'Esc to cancel' } })
+    expect(gate).toEqual({
+      send: false,
+      notice: { kind: 'dialog-terminal', detail: 'Esc to cancel' },
+    })
+  })
+
+  test('a panel is never refused as an unsent draft', () => {
+    // Belt to the lens' braces: even if a reading somehow carried both, the
+    // sentence the user gets is the true one. A draft is answerable by clearing
+    // the prompt; a panel is not.
+    const gate = sendGate({
+      ...CLEAR,
+      composerDraft: '/status',
+      modal: { hint: 'Esc to cancel' },
+    })
+    expect(gate).toMatchObject({ send: false, notice: { kind: 'dialog-terminal' } })
+  })
+
+  test('a dialog still outranks a panel — the card can answer one of them', () => {
+    const gate = sendGate(
+      {
+        ...CLEAR,
+        dialog: { family: 'permission', variant: 'bash', options: ['Yes'], caretIndex: 0 },
+        modal: { hint: 'Esc to cancel' },
+      },
+      { dialogCard: true },
+    )
+    expect(gate).toEqual({ send: false, notice: { kind: 'dialog' } })
   })
 
   test('a FAILED peek sends anyway — "I could not look" is not "you cannot type"', () => {

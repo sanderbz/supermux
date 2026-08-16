@@ -28,12 +28,16 @@ import { MARK_SIZE } from './metrics'
 export interface SystemLineProps {
   children: ReactNode
   className?: string
+  /** For the lines a test or a screenshot rig has to find by name — today the
+   *  start-of-conversation marker (daily-driver QA #3). */
+  testId?: string
 }
 
-export function SystemLine({ children, className }: SystemLineProps) {
+export function SystemLine({ children, className, testId }: SystemLineProps) {
   return (
     <div
       role="note"
+      data-testid={testId}
       className={cn(
         'my-[22px] text-center text-[13px] tracking-[-0.05px] text-ink-2',
         className,

@@ -184,6 +184,11 @@ export type SendGate =
  *   lens.dialog                       → refuse. `/send` into an open permission
  *                                       dialog was never A0-tested (a0 §5); the
  *                                       card above can answer it (T7).
+ *   lens.modal                        → refuse. A full-screen panel (`/status`,
+ *                                       `/cost`, `/config`) has taken the
+ *                                       screen; the Enter `send_text` appends
+ *                                       goes into IT. Only the terminal can
+ *                                       dismiss it, so that is what is offered.
  *   lens.composerDraft, VERIFIED      → refuse. `send_text` pastes at the TUI's
  *                                       prompt, so it would concatenate onto
  *                                       the user's half-sentence and submit the
@@ -229,6 +234,20 @@ export interface SendContext {
 export function sendGate(lens: PeekLens | null, ctx: SendContext = {}): SendGate {
   const dialogKind = ctx.dialogCard ? ('dialog' as const) : ('dialog-terminal' as const)
   if (lens?.dialog) return { send: false, notice: { kind: dialogKind } }
+  // A FULL-SCREEN PANEL (`/status`, `/cost`, `/config`) — nothing to answer, but
+  // it owns the screen and it will eat the Enter `send_text` appends. There is
+  // no card for it above the composer (no hook fires for a panel), so the
+  // refusal names the only surface that can dismiss it. Its own footer is the
+  // evidence, quoted on the banner.
+  //
+  // BEFORE the draft branch on purpose: the panel is why the draft reading is
+  // unavailable, and "the terminal has an unsent draft `/status`" — pointing at
+  // the scrollback echo of the command that OPENED the panel — is the exact lie
+  // daily-driver QA #1 caught. The lens no longer reports that draft at all;
+  // this ordering is the belt to that braces.
+  if (lens?.modal) {
+    return { send: false, notice: { kind: 'dialog-terminal', detail: lens.modal.hint } }
+  }
   // Peek down, hook says a dialog is up: refuse. The lens is the authority when
   // it can look — a hook that reads stale against a CLEAR screen does not block
   // anything — but when it cannot look, the hook is the only witness there is.

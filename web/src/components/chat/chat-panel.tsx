@@ -30,6 +30,12 @@ import { commandsApi, filesApi, sessionsApi } from '@/lib/api'
 import { restSessionInput, type SessionInput } from '@/lib/session-input'
 
 import { detailFor, topAttention } from './attention'
+import {
+  jumpVisible,
+  restoredScrollTop,
+  shouldLoadOlder,
+  type ScrollMark,
+} from './backlog'
 import { ChatComposer } from './composer'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
@@ -49,6 +55,9 @@ export default function ChatPanel({
   session,
   input,
   onOpenTerminal,
+  surface,
+  headerLeading,
+  headerTrailing,
 }: {
   name: string
   session: TileSession | null
@@ -63,10 +72,29 @@ export default function ChatPanel({
   input?: SessionInput
   /** Switch this pane to the terminal renderer — every refusal offers it. */
   onOpenTerminal?: () => void
+  /**
+   * FORCE the composition (fase A5). Omit and it follows the viewport, which is
+   * what the desktop seam wants. The MOBILE seam passes `'phone'` outright: the
+   * route fork that mounts it is the app's 768px one, so a 600px-wide phone in
+   * landscape (or a small tablet) is on the mobile route while the 480px
+   * `PHONE_QUERY` still reads false — and it would get the desktop board inside
+   * the mobile sheet, with a 744px track in a 600px pane and a header bar where
+   * the shell expects a floating card.
+   */
+  surface?: 'desktop' | 'phone'
+  /**
+   * The shell's own header affordances (fase A5), passed through to the header
+   * card. NAVIGATION and RENDERER CHOICE — neither of which this surface owns:
+   * the mobile shell fills them with its back button and the renderer switch,
+   * because on the phone the chat surface's card IS the route's header (there
+   * is no room for the focus header above it).
+   */
+  headerLeading?: React.ReactNode
+  headerTrailing?: React.ReactNode
 }) {
   // The turn state machine (anchor, supersede gate, teardown, 1s ticker)
   // lives in `use-chat-turn.ts` — this component is wiring only.
-  const { entries, items, turnStart, showProvisional, overlay, tail } = useChatTurn(
+  const { entries, items, turnStart, showProvisional, overlay, tail, backlog } = useChatTurn(
     name,
     session,
   )
@@ -96,18 +124,74 @@ export default function ChatPanel({
   const nowBucketMs = Math.floor(serverNowMs() / 30_000) * 30_000
 
   // Desktop board or phone board — the boards are two compositions, not one at
-  // two widths (see `conversation.tsx`).
-  const phone = useMediaQuery(PHONE_QUERY)
+  // two widths (see `conversation.tsx`). The viewport decides unless the mount
+  // point already knows (the mobile seam does — see `surface` above); the query
+  // still runs either way, because a hook may not be conditional.
+  const viewportPhone = useMediaQuery(PHONE_QUERY)
+  const phone = surface ? surface === 'phone' : viewportPhone
 
   // Follow-bottom pin: stick to the newest content unless the user scrolled up.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const pinnedRef = React.useRef(true)
+  // The pill's visibility is STATE, not the pin's ref: it has to re-render.
+  // Its threshold is its own (`JUMP_AWAY_PX`) — see `backlog.ts`.
+  const [showJump, setShowJump] = React.useState(false)
+
+  // ── back-pagination (QA #3) ────────────────────────────────────────────────
+  // Reaching the top fetches the page below what is on screen, and the scroll
+  // region is put back where the reader's eye was: the same distance from the
+  // top of the OLD content, i.e. the height the prepend added, added on. Without
+  // it, "load earlier" reads as the conversation teleporting.
+  const restoreRef = React.useRef<ScrollMark | null>(null)
+  const loadOlder = backlog.loadOlder
+  const requestOlder = React.useCallback(() => {
+    const el = scrollRef.current
+    // Marked BEFORE the fetch, not in the response handler: by the time the
+    // page lands the user may have scrolled on, and the mark has to describe
+    // the layout the delta will be measured against.
+    if (el) restoreRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop }
+    loadOlder()
+  }, [loadOlder])
+
+  const pagesLoaded = backlog.pagesLoaded
+  const restoredFor = React.useRef(pagesLoaded)
+  React.useLayoutEffect(() => {
+    // Layout effect, and only on the commit that prepended: the correction has
+    // to land before the browser paints, or the page visibly jumps first.
+    if (restoredFor.current === pagesLoaded) return
+    restoredFor.current = pagesLoaded
+    const el = scrollRef.current
+    const mark = restoreRef.current
+    restoreRef.current = null
+    if (!el || !mark) return
+    el.scrollTop = restoredScrollTop(mark, el.scrollHeight)
+  }, [pagesLoaded])
+
+  const hasOlder = backlog.hasOlder
+  const loadingOlder = backlog.loadingOlder
   const onScroll = React.useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    pinnedRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_THRESHOLD_PX
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    pinnedRef.current = distance < FOLLOW_THRESHOLD_PX
+    setShowJump(jumpVisible(distance))
+    if (shouldLoadOlder({ scrollTop: el.scrollTop, hasOlder, loading: loadingOlder })) {
+      requestOlder()
+    }
+  }, [hasOlder, loadingOlder, requestOlder])
+
+  const jumpToBottom = React.useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    pinnedRef.current = true
+    setShowJump(false)
+    if (typeof el.scrollTo === 'function') {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
   }, [])
+
   React.useEffect(() => {
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
@@ -264,11 +348,21 @@ export default function ChatPanel({
       turnStart={turnStart}
       overlay={overlay}
       surface={phone ? 'phone' : 'desktop'}
+      headerLeading={headerLeading}
+      headerTrailing={headerTrailing}
       isError={tail.isError}
       isLoading={tail.isLoading}
       rawUrl={filesApi.rawUrl}
       scrollRef={scrollRef}
       onScroll={onScroll}
+      // QA #3 / #17 — the two ends of the scroll region.
+      hasOlder={backlog.hasOlder}
+      loadingOlder={backlog.loadingOlder}
+      olderError={backlog.olderError}
+      atStart={backlog.atStart}
+      onLoadOlder={requestOlder}
+      showJumpToBottom={showJump}
+      onJumpToBottom={jumpToBottom}
       pending={pending.items}
       dialog={dialog.card}
       dialogBusy={dialog.busy}
@@ -300,16 +394,26 @@ export default function ChatPanel({
           // ride the shared query this component already subscribes to, the
           // same rule as `mentions`/`names`.
           pickerData={pickerData}
-          // The dogfood number, readable without devtools (re-renders on the
-          // live-layer ticker / tail refetches). It rides the composer's frame
-          // now — the read-only shell this replaced is only reached when NO
-          // composer slot is passed, and the panel always passes one.
+          // The dogfood number — DEV BUILDS ONLY (daily-driver QA #9).
+          //
+          // It shipped unconditionally and printed `hook→UI p50 9 ms (n=3)`
+          // over the last bubble of a real conversation, on the surface that is
+          // meant to BE somebody's chat client. A measurement nobody asked for
+          // is not a feature, and one that collides with the newest message is a
+          // defect twice over.
+          //
+          // The number itself is not lost: `exposeLatency()` above publishes the
+          // same ring on `window.__supermuxChatLatency` in every build, so the
+          // dogfood read is one devtools line away — and `import.meta.env.DEV`
+          // is the repo's own gate for exactly this (`use-version.ts`,
+          // `use-update-badge.ts`), which means the production bundle drops the
+          // branch entirely rather than hiding it behind a flag.
           //
           // One pass over the bounded ring per render, not three array reads
           // plus a sort (#59) — `latency` is read once at the top of the
           // component.
           stat={
-            latency.n > 0 ? (
+            import.meta.env.DEV && latency.n > 0 ? (
               <>
                 hook→UI p50 {latency.p50} ms (n={latency.n})
               </>

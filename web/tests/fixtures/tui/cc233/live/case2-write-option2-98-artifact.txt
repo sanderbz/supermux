@@ -1,0 +1,10 @@
+--- artifact ---
+-rw-r--r-- 1 supermux supermux 3 Aug 16 08:56 /home/supermux/spike-233/hello.txt
+contents: hi
+--- mode: API ---
+idle
+--- mode: TUI ---
+─────────────────────────────── spike-233-capture ──
+❯ cat hello.txt
+────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle) · ← 2 a…

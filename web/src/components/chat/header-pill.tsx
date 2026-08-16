@@ -60,6 +60,50 @@ const BAR_MIN_H = 64
 const SWAP_S = 0.26
 
 /**
+ * The floor under the session's name on the phone (daily-driver QA #6).
+ *
+ * The header truncated the name to unusable stubs: `spike-qa-daily` rendered as
+ * `spike-qa…` (95px shown against 124px needed) and a THREE-character name,
+ * `ipc`, rendered as `i…` (23px against 26px) — because the mode chip and the
+ * Chat/Terminal switch were served first and the name got the remainder. The
+ * approved board shows "Release Train" in full.
+ *
+ * The fix is mostly NOT this number. It is the two things that made the residual
+ * big enough to hold a name: the trailing controls STACK (the mode chip over the
+ * switch, so the pair costs the wider of the two rather than their sum) and the
+ * switch drops the word for the surface you are not looking at
+ * (`renderer-switch.tsx`, `labels="selected"`). Measured at 390: the name's
+ * share went 91px → 139px, i.e. ~15 characters at this type's ~9.1px, and
+ * "Release Train" (118px) now renders whole.
+ *
+ * This floor is the guard BELOW that: on a 320px screen the residual is 69px, so
+ * the name takes 112px off the top and the trailing controls shrink into what is
+ * left (they can — the rail and its cells all shrink). Px and not `ch`: `ch` is
+ * the width of `0`, which in this face is 11px against an average glyph's 9.1px,
+ * so a `14ch` floor reserves ~17 characters' worth and pushes the switch off the
+ * card at 390 — measured, not assumed.
+ */
+const NAME_MIN = 112
+
+/**
+ * The permission mode, as a chip. Extracted so the phone can STACK it over the
+ * trailing slot and the desktop can keep it in the row without two copies of the
+ * class list drifting apart.
+ */
+function ModeChip({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span
+      className={cn(
+        'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2',
+        className,
+      )}
+    >
+      {children}
+    </span>
+  )
+}
+
+/**
  * Status → the face's presence.
  *
  * The face and the status dot answer the same question at two volumes, so they
@@ -94,8 +138,9 @@ export interface SessionHeaderPillProps {
   /**
    * The shell's own affordances, either side of the cluster — the phone board's
    * back chevron and account avatar. They are NAVIGATION, which the surface does
-   * not own: A5's mobile shell fills these, and the bench fills them to prove the
-   * geometry is the board's.
+   * not own: A5's mobile shell fills them (the back button, and the renderer
+   * switch at its compact size — `routes/focus/mobile.tsx`), and the bench fills
+   * them with the same two so the geometry it approves is the shipped one.
    */
   leading?: React.ReactNode
   trailing?: React.ReactNode
@@ -162,8 +207,10 @@ export function SessionHeaderPill({
               // swap to nothing rather than swapping it for a different move.
               transition={{ duration: reduce ? 0 : SWAP_S, ease: eases.inOut }}
               className={cn(
-                'flex min-w-0 items-center gap-3',
-                phone ? 'pl-3 pr-3' : 'px-6',
+                'flex min-w-0 items-center',
+                // 10px on the phone, not 12: four gaps at this width are 8px of
+                // the name (QA #6 — every pixel in this row is the name's).
+                phone ? 'gap-2.5 pl-3 pr-3' : 'gap-3 px-6',
               )}
             >
               {leading}
@@ -180,9 +227,11 @@ export function SessionHeaderPill({
                   'min-w-0 truncate text-[16px] font-semibold tracking-[-0.2px] text-ink',
                   // On the phone the name is the elastic member: the trailing
                   // slot has to sit on the card's right edge, not next to the
-                  // name (`mobile-light.png`).
+                  // name (`mobile-light.png`). It is also the member with a
+                  // FLOOR — see `NAME_MIN` (QA #6).
                   phone && 'flex-1',
                 )}
+                style={phone ? { minWidth: `${NAME_MIN}px` } : undefined}
               >
                 {label}
               </span>
@@ -190,17 +239,36 @@ export function SessionHeaderPill({
                   busy states keep the spinner the boot window needs. It carries
                   the `--status-*` family and never the accent (contract C7). */}
               {status && <StatusDot status={status} />}
-              {mode && (
-                <span
-                  className={cn(
-                    'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2',
-                    !phone && 'ml-auto',
-                  )}
-                >
-                  {mode}
-                </span>
+              {/* THE TRAILING CLUSTER, and on the phone it STACKS.
+                  The mode chip used to sit beside the renderer switch, and the
+                  two together took 187px of a 342px row: `ipc` in bypass mode
+                  rendered as `i…` (QA #6). Stacked, the pair costs the width of
+                  the WIDER of the two instead of their sum plus a gap, and the
+                  60px card has the height for both (26 + 3 + ~20). On the
+                  desktop nothing moves: the chip keeps its `ml-auto` and the row
+                  keeps its order. */}
+              {phone ? (
+                (mode || trailing) && (
+                  // `shrink`, not `flex-none`: below ~370px the name has hit its
+                  // floor and something must give — and it is this, by design.
+                  <div className="flex min-w-0 shrink flex-col items-end gap-[3px]">
+                    {/* Tighter than the desktop chip: stacked, the pair has 60px
+                        of card to live in, and the chip is a label rather than a
+                        control — it does not owe anybody a 34px tap target. */}
+                    {mode && (
+                      <ModeChip className="px-[7px] py-0 text-[11px] leading-[17px]">
+                        {mode}
+                      </ModeChip>
+                    )}
+                    {trailing}
+                  </div>
+                )
+              ) : (
+                <>
+                  {mode && <ModeChip className="ml-auto">{mode}</ModeChip>}
+                  {trailing}
+                </>
               )}
-              {trailing}
             </motion.div>
           </AnimatePresence>
         </div>

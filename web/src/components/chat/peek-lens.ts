@@ -54,6 +54,24 @@ export interface DialogSighting {
    * different files never share it.
    */
   question?: string
+  /**
+   * The dialog's BODY, verbatim — the command, the file, the diff (QA #11).
+   *
+   * The card used to show a truncated *description*: `Run  Download example.com
+   * homepage to /tmp pr… ?`, while the thing actually being approved —
+   * `curl -sS https://example.com/ -o /tmp/qa-perm-probe.html && echo done` —
+   * appeared nowhere in chat, only in the terminal. The hook's `summary` is
+   * short and secret-conscious by design (`activity.rs` prefers Claude's own
+   * English description for a Bash call), so the wire cannot supply the command;
+   * the SCREEN can, and does. Every capture puts it between the variant title
+   * and the question line, and an edit puts its diff there.
+   *
+   * Verbatim means verbatim: no whitespace normalisation and no clamping, only
+   * the common indent removed and the blank edges trimmed. This is the one place
+   * on the surface that shows a user exactly what they are agreeing to, so a
+   * "helpful" rewrite here would be the bug.
+   */
+  body?: string[]
 }
 
 /* ── the two-phase fingerprint ────────────────────────────────────────────────
@@ -124,6 +142,29 @@ export function continuityOf(s: DialogSighting): DialogContinuity | null {
   }
 }
 
+/**
+ * A FULL-SCREEN PANEL with no numbered rows — `/status`, `/cost`, `/config`.
+ *
+ * It is not a `DialogSighting`: there is nothing to answer and nothing for the
+ * registry to map. It is still the most important thing on the screen, because
+ * it EATS THE NEXT ENTER. Live on 2.1.233 (`tests/fixtures/tui/cc233-modal/`):
+ * `/status` sent from chat drew the Status panel, the composer went off screen,
+ * and the only `❯` left in the capture was the ECHO of `/status` up in the
+ * scrollback — which the draft reader then reported as an unsent draft. The
+ * composer refused every later message with "the terminal has an unsent draft
+ * `/status`", about a terminal that had no draft at all, and the channel stayed
+ * wedged until somebody pressed Esc in the pty (daily-driver QA #1).
+ *
+ * So the lens reports the panel, the draft read stands down (a scrollback echo
+ * is not a draft), and the composer's refusal names the surface that can
+ * actually dismiss it.
+ */
+export interface ModalSighting {
+  /** The panel's own dismissal footer, verbatim — `Esc to cancel`. It is the
+   *  evidence, and it is what makes this a sighting rather than a guess. */
+  hint: string
+}
+
 export interface PeekLens {
   /** `╭─── Claude Code v2.1.231 ───╮` → `2.1.231`. Null when the banner has
    *  scrolled off the window — which is why `use-peek-lens.ts` reads it ONCE
@@ -150,6 +191,10 @@ export interface PeekLens {
    */
   composerDraftVerified: boolean
   dialog: DialogSighting | null
+  /** A full-screen panel is covering the composer (see `ModalSighting`). Never
+   *  set at the same time as `dialog`: a dialog is the more specific reading of
+   *  the same fact, and one screen may only be one thing. */
+  modal: ModalSighting | null
 }
 
 /** U+276F — the glyph a0 proved is NEVER a fingerprint on its own: the composer
@@ -273,6 +318,9 @@ function readFamily(
 /** The permission families' question line. Bounded so a `?` far down the
  *  scrollback cannot be dragged into one. */
 const PERMISSION_QUESTION_RE = /Do you want[^?]{0,200}\?/g
+/** The same token, per LINE — where the body stops (`readBody`). Unflagged: a
+ *  `g` regex carries `lastIndex` between calls and would skip every other hit. */
+const PERMISSION_QUESTION_LINE_RE = /Do you want[^?]{0,200}\?/
 /** The plan dialog's, which is fixed prose rather than a per-target sentence. */
 const PLAN_QUESTION = 'Would you like to proceed?'
 /** The rule CC draws above a dialog's body. Part of the continuity check: the
@@ -310,6 +358,78 @@ function continues(
   // registry believes in — so a frame whose title stopped saying `Create file`
   // is not this dialog, whatever else still matches.
   return readVariant(block) === prior.variant
+}
+
+/**
+ * The dialog's own body, VERBATIM (daily-driver QA #11).
+ *
+ * Bounded at BOTH ends by things the dialog drew itself, because the capture is
+ * scrollback plus viewport and everything above the dialog is somebody else's
+ * text:
+ *
+ *   top     the section rule CC draws above a dialog box, or — on a capture with
+ *           no rule (this repo's A1 fixtures) — the variant title. NEITHER of
+ *           them present means the body is not identifiable, and then there is
+ *           none: showing 24 lines of scrollback under `Run …?` would be worse
+ *           than showing nothing.
+ *   bottom  the question line, which is drawn by the card already.
+ *
+ * PERMISSION ONLY. A plan dialog's body is a whole written plan between dashed
+ * rules — the card links it instead (`planPath`), and an `unknown` modal has no
+ * verified shape at all, so nothing above its rows is known to belong to it.
+ *
+ * What is dropped is furniture and nothing else: the variant title (the card's
+ * `why` line already names the tool), CC's dashed rules, the blank edges, and
+ * the common indent. Every remaining glyph is the pty's.
+ */
+const VARIANT_TITLES = ['Bash command', 'Edit file', 'Create file']
+/** A line that is only box-drawing — CC's own framing, at terminal width. */
+const RULE_ONLY_RE = /^[\s─━╌┄┈╍-]+$/
+
+function readBody(
+  lines: readonly string[],
+  from: number,
+  optionLine: number,
+  family: DialogSighting['family'],
+): string[] | undefined {
+  if (family !== 'permission') return undefined
+  let start = -1
+  for (let i = optionLine - 1; i >= from; i--) {
+    if (SECTION_RULE_RE.test(lines[i])) {
+      start = i + 1
+      break
+    }
+  }
+  if (start < 0) {
+    for (let i = optionLine - 1; i >= from; i--) {
+      if (VARIANT_TITLES.includes(lines[i].trim())) {
+        start = i
+        break
+      }
+    }
+  }
+  if (start < 0) return undefined
+
+  let end = optionLine
+  for (let i = optionLine - 1; i >= start; i--) {
+    if (PERMISSION_QUESTION_LINE_RE.test(lines[i])) {
+      end = i
+      break
+    }
+  }
+
+  const kept = lines
+    .slice(start, end)
+    .filter((l) => !VARIANT_TITLES.includes(l.trim()) && !RULE_ONLY_RE.test(l))
+  while (kept.length && !kept[0].trim()) kept.shift()
+  while (kept.length && !kept[kept.length - 1].trim()) kept.pop()
+  if (!kept.length) return undefined
+  // The common indent is the terminal's left margin, not the author's — but the
+  // RELATIVE indent is the diff's, so only the shared part goes.
+  const indent = Math.min(
+    ...kept.filter((l) => l.trim()).map((l) => l.length - l.trimStart().length),
+  )
+  return kept.map((l) => l.slice(indent).trimEnd())
 }
 
 /** Bash vs Edit/Write. Title beats footer: `ctrl+e to explain` is bash-only
@@ -405,6 +525,9 @@ function readDialog(
   if (family === 'permission') {
     const variant = readVariant(block)
     if (variant) sighting.variant = variant
+    // What the user is actually agreeing to (QA #11).
+    const body = readBody(lines, from, rows[0].line, family)
+    if (body) sighting.body = body
   } else if (family === 'plan') {
     // The footer's plan path, when it is on screen. `[^\s]` and not `.` so a
     // footer that shares its line with `ctrl+g to edit in …` cannot swallow it.
@@ -459,6 +582,56 @@ function composerLineIndex(lines: readonly string[]): number {
   if (preferred >= 0) return preferred
   if (boxed >= 0) return boxed
   return fallback
+}
+
+/**
+ * How far above the bottom of the capture the TUI's composer may sit and still
+ * be the LIVE one.
+ *
+ * `/peek` returns scrollback followed by the viewport, so the composer is always
+ * within a couple of rows of the last printed line — 2 on every idle and every
+ * mid-turn capture in `cc233-modal/`. 14 is slack for a multi-line draft. What
+ * it EXCLUDES is the echoed `❯ /status` 20 rows up in the scrollback, which is
+ * what a full-screen panel leaves behind as the only caret on screen.
+ */
+const COMPOSER_TAIL_SLACK = 14
+
+/**
+ * The footer every full-screen Claude Code panel prints — `Esc to cancel`
+ * (`/status`, `/cost`), `Esc to close` / `Esc to clear` (`/config`).
+ *
+ * CAPITAL `Esc`, and that is load-bearing: the status line CC draws WHILE A TURN
+ * RUNS says `esc to interrupt` in lower case (`53-running-turn.txt`), and
+ * refusing every send during a running turn would be an outage wearing a safety
+ * argument. The composer test below is the second half of the discriminator —
+ * that line sits UNDER a live composer, a panel replaces it.
+ */
+const MODAL_FOOTER_RE = /\bEsc to [a-z]+(?: [a-z]+)?/
+
+/**
+ * Is a full-screen panel covering the composer?
+ *
+ * Two facts, both read off the live viewport rather than off the scrollback:
+ *   1. the TUI's composer is NOT in the last `COMPOSER_TAIL_SLACK` rows — the
+ *      panel has taken the screen (an echoed `❯` up in the history is not a
+ *      prompt, which is exactly the misreading this fixes);
+ *   2. something down there says how to dismiss itself.
+ *
+ * Both are required. (1) alone would call a session that has not drawn its
+ * composer yet a modal; (2) alone would fire on a permission dialog's own footer
+ * — which is `readDialog`'s to report, and it is asked first.
+ */
+function readModal(lines: readonly string[]): ModalSighting | null {
+  const tail = lastContentLine(lines)
+  if (tail < 0) return null
+  const from = Math.max(0, tail - COMPOSER_TAIL_SLACK + 1)
+  const composer = composerLineIndex(lines)
+  if (composer >= from) return null
+  for (let i = tail; i >= from; i--) {
+    const m = MODAL_FOOTER_RE.exec(lines[i])
+    if (m) return { hint: m[0] }
+  }
+  return null
 }
 
 /** The draft text on one composer line, by whichever of the two shapes it is. */
@@ -545,16 +718,24 @@ export function readLens(
   const raw = capture ? capture.split('\n') : []
   const lines = raw.map(plain)
   const dialog = readDialog(lines, continuing ?? null)
-  // A dialog's caret row is not a draft, so the draft read is gated on there
-  // being no dialog — unchanged.
-  const draft: DraftRead = dialog
-    ? { text: null, verified: true }
-    : readComposerDraft(lines, raw, hasAnsi(capture))
+  // A dialog is the more specific reading of "something is covering the prompt",
+  // so it is asked first and a screen is never both.
+  const modal = dialog ? null : readModal(lines)
+  // A dialog's caret row is not a draft — and neither is the scrollback echo a
+  // full-screen panel leaves as the only `❯` on screen. Both gate the read for
+  // the same reason: what is at the prompt is unknowable while something else
+  // owns the screen, and "unknowable" must not be reported as "the user left
+  // half a sentence there" (daily-driver QA #1).
+  const draft: DraftRead =
+    dialog || modal
+      ? { text: null, verified: true }
+      : readComposerDraft(lines, raw, hasAnsi(capture))
   return {
     bannerVersion: readBannerVersion(lines),
     composerDraft: draft.text,
     composerDraftVerified: draft.verified,
     dialog,
+    modal,
   }
 }
 
@@ -568,6 +749,7 @@ export const EMPTY_LENS: PeekLens = {
   // absent draft is not a ghost", and no gate consults it with a null draft.
   composerDraftVerified: true,
   dialog: null,
+  modal: null,
 }
 
 /** Live turn, or a dialog on screen: the caret can move under us, and the whole
