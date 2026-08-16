@@ -378,7 +378,9 @@ describe('Facepile', () => {
     expect(plain).not.toContain('Ledger<')
 
     const morphed = html(<Facepile members={members} variant="row" activeIndex={1} />)
-    expect(morphed).toContain('transition-[padding]')
+    // A6/T6.2 — the padding morph is now the `sm-t-pad` token class (0.4s),
+    // not a hand-typed `transition-[padding] duration-[400ms]`.
+    expect(morphed).toContain('sm-t-pad')
     expect(morphed).toContain('Ledger')
   })
 })

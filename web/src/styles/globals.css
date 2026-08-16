@@ -957,3 +957,126 @@
     container-type: size;
   }
 }
+
+/* ══ FASE A6 T6.2/T6.5/T6.6 — the motion speed layer (APPENDED) ══════════════
+   `lib/springs.ts` owns every framer-motion transition. It structurally CANNOT
+   own a CSS transition, and before A6 that half of the system was ~128 Tailwind
+   `transition-*` classes with hand-typed arbitrary durations — `duration-[120ms]`
+   ×7 in the chat primitives, `[220ms]`, `[400ms]`, `duration-200` — none of them
+   traceable to a rule and none of them reduced-motion aware.
+
+   These three classes are the CSS half of springs.ts's rule 3 (three speeds,
+   and only three). They carry the same numbers as the tween bank, and
+   `tests/unit/motion-tokens.test.ts` asserts that both halves agree AND that no
+   raw `duration-[Nms]` literal comes back to the chat, roster or shell surfaces.
+
+     .sm-t-hover — .12s, hover/press feedback on BOTH background-color and
+                   color (the pair the three-speed rule names explicitly).
+     .sm-t-morph — .26s in-place morph, on the settling expo-out curve
+                   `cubic-bezier(.22,1,.36,1)`. Same number as `.sm-swap` and
+                   `tweens.swap`: an in-place change is an in-place change.
+     .sm-t-pad   — .4s. The ONE documented exception, and it is an exception on
+                   purpose: the facepile's avatar-row morph animates `padding`,
+                   which the extracted Grok numbers put at .4s.
+
+   Unlayered (after `@import "tailwindcss"`, outside every `@layer`) so they beat
+   the utility classes they replace, exactly like the rest of this file's tail. */
+.sm-t-hover {
+  transition-property: background-color, color, border-color, text-decoration-color, opacity;
+  transition-duration: 0.12s;
+  transition-timing-function: ease-out;
+}
+.sm-t-morph {
+  transition-property: background-color, color, border-color, box-shadow;
+  transition-duration: 0.26s;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sm-t-pad {
+  transition-property: padding;
+  transition-duration: 0.4s;
+  transition-timing-function: ease-out;
+}
+
+/* ── A6 T6.5 — the reduced-motion BLANKET ────────────────────────────────────
+   THE SYSTEMIC DECISION, written down because the plan asked for it explicitly.
+
+   Before A6 reduced-motion coverage was five colocated CSS blocks plus ~60
+   components branching on `useReducedMotion()`, and NO blanket. So every one of
+   the ~128 Tailwind `transition-*` classes ran unconditionally: all 11 sites in
+   claude-tools-sheet.tsx, all 8 named chat primitives, team-card.tsx:145 — none
+   of them reachable from JS at all.
+
+   The chosen model is: **a CSS blanket for CSS + per-component
+   `useReducedMotion()` branches for framer-motion**, and deliberately NOT
+   `<MotionConfig reducedMotion="user">` at the app root. Three reasons:
+
+     1. The measured gap is overwhelmingly CSS. `MotionConfig` cannot touch a
+        single Tailwind `transition-colors`, so on its own it would have been a
+        placebo for ~90% of the sites the audit found.
+     2. A root `MotionConfig` makes every unbranched framer site pass silently.
+        That is precisely how springs.ts's ownership claim rotted: an assertion
+        with nothing checking it. With per-component branches the remaining set
+        is small, enumerable, and enumerated — by
+        `tests/unit/motion-tokens.test.ts`, which fails when a new one appears.
+     3. `reducedMotion="user"` would also, as a side effect, disable the 63
+        `whileTap` press-scales. That is a real product decision (a tap scale is
+        not vestibular) and it should be made in the open, not fall out of a
+        one-line provider.
+
+   Scope: TRANSITIONS ONLY. A transition is by definition a change that has
+   already been decided — under reduce the end state is simply adopted. This
+   rule deliberately does NOT blanket `animation`, because that is where the
+   functional/decorative distinction lives and a `*`-scoped animation reset
+   would kill `.sm-status-spinner` (see its block above: a frozen spinner reads
+   as "stuck/broken", so — like Apple's own activity indicators — it keeps
+   spinning under Reduce Motion). Decorative loops are stopped by name instead.
+
+   0.01ms rather than `none`: a zero-duration transition still FIRES its
+   `transitionend`, so any code waiting on one (the group body's
+   `bodyAnimating` latch, Vaul's detent settle) still completes. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+  /* Decorative loops, by name. `animate-spin` is NOT here: every one of its 30
+     sites is a loading indicator, i.e. functional feedback. */
+  .animate-pulse {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+  /* Grok's standard, and the reason it is right: the typing row keeps its
+     STATIC base opacities so it still reads as three dots mid-wave rather than
+     three identical dots. Before A6 all three flattened to 0.6 and the row lost
+     its shape. */
+  .sm-dots i:nth-child(1) {
+    opacity: 0.25;
+  }
+  .sm-dots i:nth-child(2) {
+    opacity: 0.45;
+  }
+  .sm-dots i:nth-child(3) {
+    opacity: 0.7;
+  }
+}
+
+/* ── A6 T6.6 — offscreen surfaces pause ──────────────────────────────────────
+   Grok's `[data-demo-offscreen]` idiom. An ambient loop nobody can see is pure
+   battery: `.sm-breathe` (one per roster face), `.sm-blip` (the typing wave) and
+   `.sm-spin` (2.4s per running receipt) all run on the compositor forever
+   otherwise.
+
+   `animation-play-state: paused` rather than `animation: none` — a paused
+   animation resumes at its current frame, so a surface that scrolls back into
+   view (or a renderer toggled back to) does not restart every loop in unison.
+
+   Consumers: `renderer-shell.tsx` marks the HIDDEN renderer (chat and terminal
+   stay mounted across the toggle, so one of them is always offscreen), and
+   `<SessionMark>` already unregisters from the rAF loop and drops `data-live`
+   via `brand/marks/use-on-screen.ts` — this rule is the CSS belt to that
+   braces, and it covers the loops the mark hook does not own. */
+[data-offscreen],
+[data-offscreen] * {
+  animation-play-state: paused !important;
+}

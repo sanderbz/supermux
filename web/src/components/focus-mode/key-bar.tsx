@@ -53,7 +53,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { springs, tweens } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { MobileActionSheet } from '@/components/focus-mode/mobile-action-sheet'
 import { CONTROL_ENTRIES, type QuickEntry } from '@/components/focus-mode/quick-keys'
@@ -504,7 +504,7 @@ function KeyBarButton({
       initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
-        ...(reduceMotion ? { duration: 0.12 } : springs.snappy),
+        ...(reduceMotion ? tweens.hover : springs.snappy),
         delay: staggerDelay(index, reduceMotion),
       }}
       // whileTap carries its OWN spring so press-feedback never inherits the
@@ -562,7 +562,7 @@ function EditChip({
       initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
-        ...(reduceMotion ? { duration: 0.12 } : springs.snappy),
+        ...(reduceMotion ? tweens.hover : springs.snappy),
         delay: staggerDelay(index, reduceMotion),
       }}
       whileTap={{ scale: 0.9, transition: springs.buttonPress }}

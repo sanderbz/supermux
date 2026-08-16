@@ -244,7 +244,9 @@ describe('a chip costs the same layout whether or not it is clickable', () => {
   })
 
   test('the hover transition is the 120ms speed, and only on the live variant', () => {
-    expect(boxClasses(<MentionChip seed="x" onClick={() => {}} />)).toContain('duration-[120ms]')
-    expect(boxClasses(<MentionChip seed="x" />)).not.toContain('duration-[120ms]')
+    // A6/T6.2 — `sm-t-hover` IS the 120ms speed; the literal it replaced is now
+    // in globals.css, where `tests/unit/motion-tokens.test.ts` pins the number.
+    expect(boxClasses(<MentionChip seed="x" onClick={() => {}} />)).toContain('sm-t-hover')
+    expect(boxClasses(<MentionChip seed="x" />)).not.toContain('sm-t-hover')
   })
 })

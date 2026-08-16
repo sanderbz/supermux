@@ -76,7 +76,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 // Relative, not `@/`: this module is rendered by `bun test`
 // (`tests/unit/chat-renderer-shell.test.tsx`), whose resolver reads the root
 // tsconfig.json — which carries no `paths`. Same reason as `chat-surface.tsx`.
-import { eases } from '../../lib/springs'
+import { motionOff, tweens } from '../../lib/springs'
 
 import { retain, type Retention } from './retention'
 
@@ -84,7 +84,10 @@ import { retain, type Retention } from './retention'
  *  from `lib/springs.ts` — the same source and the same idiom the other
  *  same-cell swaps in this folder use (`live-layer.tsx`'s `SwapCell`,
  *  `composer.tsx`, `header-pill.tsx`). No literal `cubic-bezier(` anywhere. */
-const FADE_S = 0.18
+// A6/T6.2 — was a private `FADE_S = 0.18`. The renderer crossfade is the
+// same-cell swap the whole folder already performs, so it now takes the
+// shared 0.26s `tweens.swap`. The 80ms it gains buys the two renderers one
+// motion language instead of two that nearly match.
 
 export interface RendererShellProps {
   /** The session. Also the `key` the call sites pass — invariant 8. */
@@ -253,7 +256,7 @@ function Pane({
               transitionEnd: { visibility: 'hidden' },
             }
       }
-      transition={{ duration: reduce ? 0 : FADE_S, ease: eases.inOut }}
+      transition={reduce ? motionOff : tweens.swap}
     >
       {children}
     </motion.div>

@@ -263,7 +263,7 @@ export function chatComponents(ctx: ChatMarkdownContext): Components {
           className={cn(
             linkInk.className,
             'underline decoration-transparent underline-offset-2',
-            'transition-[text-decoration-color] duration-[120ms] hover:decoration-current',
+            'sm-t-hover hover:decoration-current',
             className,
           )}
         >

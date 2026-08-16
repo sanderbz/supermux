@@ -142,7 +142,7 @@ function ChoiceButton({
       }
       className={cn(
         'inline-flex h-[34px] items-center gap-2 rounded-full border-[0.5px] border-hairline px-[15px]',
-        'text-[13.4px] tracking-[-0.05px] text-ink transition-colors duration-200',
+        'text-[13.4px] tracking-[-0.05px] text-ink sm-t-morph',
         option.primary ? 'bg-fill-soft-2 font-semibold' : 'bg-transparent font-medium hover:bg-fill-soft',
         // Readable, obviously not pressable, and no hover promise.
         option.disabled && 'cursor-default opacity-45 hover:bg-transparent',

@@ -30,7 +30,7 @@
 import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
-import { eases, springs } from '../../lib/springs'
+import { motionOff, springs, tweens } from '../../lib/springs'
 import { SessionMark } from '../../brand/marks'
 import { cn } from '../../lib/utils'
 
@@ -49,7 +49,7 @@ const EntityPicker = React.lazy(() => import('./entity-picker'))
 /** The same 260ms opacity crossfade `live-layer.tsx`'s `SwapCell` uses for P13.
  *  Send→Stop is the same kind of event — one cell, two occupants — so it is the
  *  same move, not a new one. */
-const SWAP_S = 0.26
+// A6/T6.2 — see header-pill.tsx: the three SWAP_S copies are now `tweens.swap`.
 
 export interface ChatComposerProps {
   /** The session's slug — the draft's key, and the insert seam's address. */
@@ -227,7 +227,7 @@ export function ChatComposer({
                 exit={{ opacity: 0 }}
                 // Opacity only, in one cell: nothing reflows when the status
                 // flips mid-sentence.
-                transition={{ duration: reduce ? 0 : SWAP_S, ease: eases.inOut }}
+                transition={reduce ? motionOff : tweens.swap}
               >
                 {/* THE BUTTON DOES WHAT THE BOX SAYS (A4 review). The plan drew
                     Stop as the trailing control "while Active" full stop; with

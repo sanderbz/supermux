@@ -101,7 +101,7 @@ export function Facepile({
               zIndex: active ? members.length + 1 : i + 1,
             }}
             className={cn(
-              'relative inline-flex items-center gap-1.5 rounded-full transition-[padding] duration-[400ms] ease-out',
+              'relative inline-flex items-center gap-1.5 rounded-full sm-t-pad',
               active && 'bg-fill-soft py-0.5 pl-0.5 pr-2.5',
             )}
           >

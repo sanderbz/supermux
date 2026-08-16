@@ -157,7 +157,7 @@ export function RosterRow({
         'flex w-full items-center rounded-[12px] px-2 text-left',
         d.row,
         d.gap,
-        'transition-colors duration-[120ms]',
+        'sm-t-hover',
         selected ? 'sm-accent-row' : 'hover:bg-fill-soft',
         className,
       )}

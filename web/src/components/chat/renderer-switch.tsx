@@ -169,7 +169,7 @@ export function RendererSwitch({
             className={cn(
               'relative h-full min-w-0 rounded-full font-medium tracking-[-0.05px]',
               glyph ? 'grid flex-none place-items-center px-2' : SIZE[size].cell,
-              'transition-colors duration-[120ms]',
+              'sm-t-hover',
               selected ? 'text-ink' : 'text-ink-3 hover:text-ink-2',
             )}
           >

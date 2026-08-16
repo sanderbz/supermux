@@ -118,7 +118,7 @@ function CaptionRow({ caption, onOpen }: { caption: string; onOpen?: () => void 
     <button
       type="button"
       onClick={onOpen}
-      className={cn(shared, 'transition-colors duration-[120ms] hover:text-ink')}
+      className={cn(shared, 'sm-t-hover hover:text-ink')}
     >
       {content}
     </button>

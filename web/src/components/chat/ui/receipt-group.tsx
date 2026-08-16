@@ -136,7 +136,7 @@ export function ReceiptGroup({ rows, max, onShowAll, surface, className }: Recei
         <button
           type="button"
           onClick={onShowAll}
-          className="mt-0.5 self-start text-[13px] font-medium text-ink-2 transition-colors duration-[120ms] hover:text-ink"
+          className="mt-0.5 self-start text-[13px] font-medium text-ink-2 sm-t-hover hover:text-ink"
         >
           Show all {lines.length}
         </button>

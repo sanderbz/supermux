@@ -75,7 +75,7 @@ export function SystemEntity({ children, onClick, className }: SystemEntityProps
         shared,
         // Negative margins cancel the padding: the pill costs zero layout.
         'my-[-1px] ml-[-3px] mr-[-5px] inline-flex items-center rounded-md py-px pl-[3px] pr-[5px]',
-        'transition-[background-color,color] duration-[120ms] hover:bg-fill-soft hover:text-ink',
+        'sm-t-hover hover:bg-fill-soft hover:text-ink',
         className,
       )}
     >
@@ -144,7 +144,7 @@ export function MentionChip({ seed, pin, name, size = MARK_SIZE.chip, onClick, c
       className={cn(
         ACCENT_INK_CLASS,
         CHIP_BOX,
-        'transition-[background-color] duration-[120ms] hover:bg-fill-soft',
+        'sm-t-hover hover:bg-fill-soft',
         className,
       )}
     >

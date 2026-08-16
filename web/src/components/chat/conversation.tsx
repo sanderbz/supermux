@@ -36,7 +36,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import type { MarkPin } from '../../brand/marks'
 import type { HarnessEvent } from '../../lib/api/harness'
-import { eases } from '../../lib/springs'
+import { motionOff, tweens } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 import type { TileSession } from '../session-tile/types'
 
@@ -646,7 +646,10 @@ export function JumpToBottom({
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 6 }}
-            transition={{ duration: reduce ? 0 : 0.16, ease: eases.out }}
+            // A6/T6.2 — was a bare `0.16`. The jump-to-bottom button is small,
+            // floating and attached to the scroller: popover-shaped by every
+            // measure, so it takes the popover speed.
+            transition={reduce ? motionOff : tweens.popoverIn}
             className={cn(
               'pointer-events-auto flex size-11 items-center justify-center rounded-full',
               'border-[0.5px] border-hairline bg-surface text-ink backdrop-blur-[30px] backdrop-saturate-[170%]',
@@ -677,7 +680,8 @@ export function JumpToBottom({
  * two copies in it. The only motion left is the arrival of something new, which
  * is the one thing motion is for here.
  */
-const ECHO_SWAP_S = 0.26
+// A6/T6.2 — the echo swap IS the same-cell crossfade, so it is the same
+// token (`tweens.swap`) rather than a fourth private copy of 0.26.
 
 /**
  * The height the delivery line occupies, reserved whether or not it has anything
@@ -752,7 +756,7 @@ export function PendingEchoes({
             // No `exit`: see `ECHO_SWAP_S`. The row leaves in the same commit
             // the confirmed bubble arrives in, so the two are never both on
             // screen.
-            transition={{ duration: reduce ? 0 : ECHO_SWAP_S, ease: eases.inOut }}
+            transition={reduce ? motionOff : tweens.swap}
           >
             <MessageRow me>
               <div className="flex min-w-0 flex-col items-end">

@@ -41,7 +41,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { SessionMark, type MarkPin, type MarkState } from '../../brand/marks'
 import type { SessionStatus } from '../../lib/api'
-import { eases } from '../../lib/springs'
+import { motionOff, tweens } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 import { modeChipLabel } from '../focus-mode/mode-labels'
 import { StatusDot } from '../session-tile/status-dot'
@@ -57,7 +57,9 @@ import { MARK_SIZE, PHONE } from './ui'
 const BAR_MIN_H = 64
 
 /** §11.6's same-cell swap: 260ms of opacity, and nothing else moves. */
-const SWAP_S = 0.26
+// A6/T6.2 — was a per-file `const SWAP_S = 0.26`, one of three identical
+// copies (composer.tsx, live-layer.tsx). The same-cell crossfade is now one
+// token: `tweens.swap`, which also carries the `.sm-swap` CSS twin's number.
 
 /**
  * The floor under the session's name on the phone (daily-driver QA #6).
@@ -205,7 +207,7 @@ export function SessionHeaderPill({
               exit={{ opacity: 0 }}
               // Opacity only, in both branches — reduced motion shortens the
               // swap to nothing rather than swapping it for a different move.
-              transition={{ duration: reduce ? 0 : SWAP_S, ease: eases.inOut }}
+              transition={reduce ? motionOff : tweens.swap}
               className={cn(
                 'flex min-w-0 items-center',
                 // 10px on the phone, not 12: four gaps at this width are 8px of
