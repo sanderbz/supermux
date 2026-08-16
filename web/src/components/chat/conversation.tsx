@@ -35,6 +35,7 @@ import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import type { MarkPin } from '../../brand/marks'
+import type { HarnessEvent } from '../../lib/api/harness'
 import { eases } from '../../lib/springs'
 import { cn } from '../../lib/utils'
 import type { TileSession } from '../session-tile/types'
@@ -142,6 +143,15 @@ export interface ChatConversationProps {
   mentions?: ReadonlyMap<string, string>
   /** Slug → display name, for the arrival divider (see `transcript-item.tsx`). */
   names?: ReadonlyMap<string, string>
+  /**
+   * This session's harness ledger (`harnessApi.events`) — what it delegated,
+   * what it scheduled, what fired. Merged into the same ts-ordered stream the
+   * messages are in, so the transcript reads as the management log it is.
+   * Data, not a slot: `grouping.ts` decides which rows become lines, purely.
+   */
+  events?: readonly HarnessEvent[]
+  /** Go to another session — the destination of a harness line's chip. */
+  onOpenSession?: (slug: string) => void
   /** SERVER-clock ms, bucketed by the caller — the dividers' relative clock. */
   nowMs: number
   /** SERVER-clock ms anchor for the running turn; null = no live turn. */
@@ -251,6 +261,8 @@ export function ChatConversation({
   labels,
   mentions,
   names,
+  events,
+  onOpenSession,
   nowMs,
   turnStart,
   overlay,
@@ -291,8 +303,8 @@ export function ChatConversation({
 }: ChatConversationProps) {
   const phone = surface === 'phone'
   const nodes = React.useMemo(
-    () => buildTranscript(items, { nowMs, labels }),
-    [items, labels, nowMs],
+    () => buildTranscript(items, { nowMs, labels, events, self: name }),
+    [items, labels, nowMs, events, name],
   )
   const label = session?.display_name?.trim() ? session.display_name : name
   const pin = pinFor?.(name)
@@ -445,6 +457,7 @@ export function ChatConversation({
               names={names}
               rawUrl={rawUrl}
               pinFor={pinFor}
+              onOpenSession={onOpenSession}
             />
           ))}
 

@@ -61,6 +61,11 @@ export type SseEventType =
   // payload `{ key, enabled }`, routed by `use-settings.ts`.
   | 'settings'
   | 'teams'
+  // A surfaced audit row (delegate / rename / schedule create+run) — payload
+  // `{ sessions: [slug…], entry }`. An INVALIDATION TICK only: the transcript's
+  // system lines are read from `/api/sessions/{name}/events`, the durable
+  // ledger, so they survive a reload. `use-harness-events.ts` subscribes.
+  | 'harness'
   | 'external-edit'
   | 'ping'
 

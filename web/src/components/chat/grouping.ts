@@ -22,6 +22,12 @@
  *     session that actually exists. There is no regex over arbitrary words: the
  *     pattern is built FROM the known names, so an unknown noun can never be
  *     turned into a colleague.
+ *   · THE MANAGEMENT LOG (§13.2/13.3) — the harness's own ledger rows (this
+ *     session delegated, renamed itself, made or ran a schedule) are merged
+ *     into the SAME ts-ordered stream as the messages, so what the session set
+ *     in motion reads where it happened. Which rows qualify is decided here
+ *     (`shownHarnessEvents`) and nowhere else; what they SAY is
+ *     `transcript-item.tsx`.
  *
  * Also here, for want of a better home, are the two small mappings that turn a
  * frozen A1 shape into a B0 primitive's props (`toReceiptRows`, `entryLabels`).
@@ -32,6 +38,8 @@
  * and `components/chat/*` may import from `components/chat/ui`, never the
  * reverse.
  */
+import type { HarnessEvent } from '../../lib/api/harness'
+
 import type { ChatEntry, ChatItem, ReceiptLine } from './entries'
 import { harnessNotice, stripEmojiPrefix } from './entries'
 import type { Receipt } from './ui/receipt-group'
@@ -218,6 +226,7 @@ export const SESSION_GAP_S = 30 * 60
 export type TranscriptNode =
   | ({ kind: 'item'; key: string } & GroupedItem)
   | { kind: 'divider'; key: string; ts: number; label: string }
+  | { kind: 'harness'; key: string; ts: number; ev: HarnessEvent }
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -249,40 +258,138 @@ export function dividerLabel(tsSeconds: number, nowMs: number): string {
  * two-hour gap would be a lie told in whitespace.
  */
 export function dayDividers(rows: readonly GroupedItem[], nowMs: number): TranscriptNode[] {
+  return withDividers(
+    rows.map((row) => ({ kind: 'item' as const, ts: row.item.ts, row })),
+    nowMs,
+  )
+}
+
+/** One position in the merged pre-divider stream: a message row, or an event. */
+type StreamRow =
+  | { kind: 'item'; ts: number; row: GroupedItem }
+  | { kind: 'harness'; ts: number; ev: HarnessEvent }
+
+/**
+ * The divider pass, over the MERGED stream.
+ *
+ * A harness line is centred and bubble-less, exactly like a system row, so it
+ * breaks the run around it for the same reason a divider does: two assistant
+ * turns separated by "Delegated to ●deploy-fix" are not one run, and stacking
+ * them at 8px with no second mark would draw them as one.
+ */
+function withDividers(stream: readonly StreamRow[], nowMs: number): TranscriptNode[] {
   const out: TranscriptNode[] = []
   let previousTs: number | null = null
-  for (const row of rows) {
-    const ts = row.item.ts
+  // The previous node was a centred line, so whatever comes next opens a run.
+  let cutByLine = false
+  for (const entry of stream) {
+    const ts = entry.ts
     const blockStart = previousTs === null || ts - previousTs > SESSION_GAP_S
     if (blockStart) {
       out.push({
         kind: 'divider',
-        key: `div-${row.item.uuid}`,
+        key: `div-${entry.kind === 'item' ? entry.row.item.uuid : `hx-${entry.ev.id}`}`,
         ts,
         label: dividerLabel(ts, nowMs),
       })
     }
-    const broken = blockStart && row.grouped
+    if (entry.kind === 'harness') {
+      out.push({ kind: 'harness', key: `hx-${entry.ev.id}`, ts, ev: entry.ev })
+      previousTs = ts
+      cutByLine = true
+      continue
+    }
+    const row = entry.row
+    const cut = blockStart || cutByLine
+    const broken = cut && row.grouped
     out.push({
       kind: 'item',
       key: row.item.uuid,
       ...row,
-      grouped: blockStart ? false : row.grouped,
+      grouped: cut ? false : row.grouped,
       showGutter: broken
         ? row.speaker === 'agent' || row.speaker.startsWith('teammate:')
         : row.showGutter,
     })
     previousTs = ts
+    cutByLine = false
   }
   return out
+}
+
+/* ── harness events ──────────────────────────────────────────────────────── */
+
+/**
+ * The actions the renderer has a sentence for. The server already filters the
+ * feed to this set; the client keeps its own copy because a line it cannot word
+ * must not reach the page as an empty one — and because a future server action
+ * should ship dark until somebody writes its copy, not blank.
+ */
+const HARNESS_ACTIONS: ReadonlySet<string> = new Set([
+  'session.delegate',
+  'session.rename',
+  'schedule.create',
+  'schedule.run',
+])
+
+/**
+ * Which ledger rows become lines in THIS session's transcript.
+ *
+ * Two suppressions, both because the transcript already says it better:
+ *
+ *   · an INBOUND delegate (`target === self`) is rendered by the arrival
+ *     divider over the message it delivered (Task 3). A system line as well
+ *     would say the same thing twice, three pixels apart.
+ *   · a rename the OWNER performed is ceremony — they typed it in this app two
+ *     seconds ago. Only a session renaming ITSELF (`actor` is `agent:…`) is
+ *     news, which is why the rule is an allow-list on the agent actor rather
+ *     than a deny-list on `"user"`: a rename by any future non-agent actor is
+ *     still not this session's news.
+ *
+ * Pure and total — the caller passes the raw feed, this decides what is shown.
+ */
+export function shownHarnessEvents(
+  events: readonly HarnessEvent[],
+  self?: string,
+): HarnessEvent[] {
+  return events.filter((ev) => {
+    if (!HARNESS_ACTIONS.has(ev.action)) return false
+    if (ev.action === 'session.delegate') return !(self && ev.target === self)
+    if (ev.action === 'session.rename') return ev.actor.startsWith('agent:')
+    return true
+  })
 }
 
 /** Display items → the nodes the transcript renders, in order. */
 export function buildTranscript(
   items: readonly ChatItem[],
-  opts: { nowMs: number; labels?: ReadonlyMap<string, string> },
+  opts: {
+    nowMs: number
+    labels?: ReadonlyMap<string, string>
+    /** The session's harness feed (`harnessApi.events`), ascending by id. */
+    events?: readonly HarnessEvent[]
+    /** The focused session's slug — what "inbound" means. */
+    self?: string
+  },
 ): TranscriptNode[] {
-  return dayDividers(groupItems(receiptsFirst(items), opts.labels), opts.nowMs)
+  const rows = groupItems(receiptsFirst(items), opts.labels)
+  const shown = shownHarnessEvents(opts.events ?? [], opts.self)
+  // No events → the stream is exactly what it was before this existed. Worth
+  // the branch: it keeps the common path off the sort entirely.
+  if (shown.length === 0) return dayDividers(rows, opts.nowMs)
+
+  const stream: StreamRow[] = rows.map((row) => ({
+    kind: 'item' as const,
+    ts: row.item.ts,
+    row,
+  }))
+  for (const ev of shown) stream.push({ kind: 'harness', ts: ev.ts, ev })
+  // Sort by ts ALONE, and lean on stability: the items were pushed first and in
+  // the order `receiptsFirst` decided, so an event sharing a second with a turn
+  // lands after it and the receipts-first ordering inside that second is
+  // untouched. A tie-break on kind would undo one of those two properties.
+  stream.sort((a, b) => a.ts - b.ts)
+  return withDividers(stream, opts.nowMs)
 }
 
 /* ── receipt rows ────────────────────────────────────────────────────────── */

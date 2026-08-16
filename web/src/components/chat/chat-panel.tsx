@@ -22,6 +22,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import * as React from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import type { TileSession } from '@/components/session-tile/types'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -40,6 +41,7 @@ import { ChatComposer } from './composer'
 import { focusComposer } from './composer-draft'
 import { ChatConversation, PHONE_QUERY } from './conversation'
 import { useComposer } from './use-composer'
+import { useHarnessEvents } from './use-harness-events'
 import { useDialogAnswer } from './use-dialog-answer'
 import { usePeekLens } from './use-peek-lens'
 import { usePendingSends } from './use-pending-sends'
@@ -112,6 +114,20 @@ export default function ChatPanel({
   // slug → what that session is CALLED. The arrival divider names a colleague,
   // and the wire's teammate envelope carries only the slug.
   const names = React.useMemo(() => displayNames(sessions), [sessions])
+  // The other half of the transcript: what the HARNESS did — this session's
+  // delegations, renames and schedule fires, read from the durable audit ledger
+  // (SSE is only its invalidation tick). Rendered as centred system lines in
+  // the same ts-ordered stream the messages are in.
+  const harness = useHarnessEvents(name, true)
+  const events = harness.data
+  // A harness chip is a destination (master plan §13.1): tapping the colleague
+  // this session delegated to opens that session. Focus is a route, so the
+  // panel — the data plane — is where the router is allowed to be reached.
+  const navigate = useNavigate()
+  const openSession = React.useCallback(
+    (slug: string) => navigate(`/focus/${encodeURIComponent(slug)}`),
+    [navigate],
+  )
   // The wire labels `ChatItem` deliberately does not carry: the slash name of a
   // command, the teammate id of an arrival, the subject of a system event.
   const labels = React.useMemo(() => entryLabels(entries), [entries])
@@ -344,6 +360,8 @@ export default function ChatPanel({
       labels={labels}
       mentions={mentions}
       names={names}
+      events={events}
+      onOpenSession={openSession}
       nowMs={nowBucketMs}
       turnStart={turnStart}
       overlay={overlay}
