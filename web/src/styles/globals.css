@@ -172,6 +172,12 @@
   --sm-bubble-shadow: 0 1px 2px rgba(60, 40, 20, 0.05);
   --sm-card-shadow: 0 10px 30px -14px rgba(60, 40, 20, 0.22), 0 1px 2px rgba(60, 40, 20, 0.05);
   --sm-elev: 0 46px 90px -34px rgba(52, 34, 20, 0.3), 0 6px 18px -6px rgba(52, 34, 20, 0.07), 0 0 0 0.5px rgba(35, 25, 15, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  /* Popover lift — the ONE shadow every floating list wears (fase B3 T2.5).
+     Warm-black, not the cool grey §14 specified: a neutral #000 shadow reads
+     blue against this paper and fights the whole B0 ladder. Was duplicated as
+     a raw literal in three places, one of them inside a `focus-within:`
+     compound where a hand-edit would have missed it. */
+  --sm-popover-shadow: 0 12px 34px -18px rgba(30, 18, 10, 0.35);
   /* Selected-row accent mix — lighter paper needs less accent than dark. */
   --sm-accent-row-mix: 9%;
 }
@@ -195,6 +201,9 @@
   --sm-bubble-shadow: none;
   --sm-card-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.6);
   --sm-elev: 0 46px 100px -30px rgba(0, 0, 0, 0.62), 0 8px 24px -10px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 246, 235, 0.07), inset 0 1px 0 rgba(255, 246, 235, 0.06);
+  /* Dark needs a deeper, less-spread lift: the popover sits on a surface only
+     a few percent lighter than the paper, so a soft warm shadow disappears. */
+  --sm-popover-shadow: 0 14px 38px -18px rgba(0, 0, 0, 0.66);
   --sm-accent-row-mix: 12%;
 }
 

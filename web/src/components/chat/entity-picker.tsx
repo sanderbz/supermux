@@ -1,6 +1,6 @@
 /**
- * The `@`/`/` picker (fase A4 T9) — LAZY, and the only place chat reaches for a
- * list of things to talk about.
+ * The `@`/`/` picker (fase A4 T9) — chat's CONNECTED wrapper around the shared
+ * `<EntityPickerView>` (fase B3 T2/T3).
  * ─────────────────────────────────────────────────────────────────────────────
  * §5.6's anti-lookalike rule: the chat surface must not be less capable than
  * the terminal at the app's actual job. `@`-ing a path into a sentence and
@@ -19,21 +19,26 @@
  *      (hiding them would be a lie about the session's abilities) but marked as
  *      terminal-only, and the composer's slash gate refuses to send them.
  *
- * IT FETCHES NOTHING. `tracked-files` and `/api/slash-commands` are queried by
- * `chat-panel.tsx` — the A3/A4 contract that the panel owns the data plane, and
- * also the reason this module reaches for neither `lib/api` nor react-query:
- * a lazy chunk that imported the API client made the bundler hoist that client
- * into a THIRD chunk (measured: +0.5 KB gz for zero new behaviour).
+ * WHY THE VIEW MOVED AND THIS DID NOT. §14 called for moving the whole file to
+ * `components/ui/`. Only the presentational half went. This half knows
+ * `atRows`/`slashRows` — chat's DATA — and `components/ui/` importing them
+ * would put chat's row builders on the import path of every other consumer,
+ * starting with the ⌘K palette, which is EAGERLY MOUNTED in the root layout.
+ * With 0.21 KB of app-JS headroom at the time this landed, "the shared
+ * primitive drags chat's data into the hero path" was not a stylistic
+ * objection. So the seam is: the view is shared, the wiring is per-surface —
+ * which is also what makes the two anchors provable rather than a prop nobody
+ * exercises.
  *
- * NO NEW DEPS: the list is plain DOM with the app's own tokens, not a combobox
- * library, and the filter is `slash.ts`'s ~20-line ranker. `React.lazy` at the
- * call site keeps all of it out of the hero path (T12's budget).
+ * IT FETCHES NOTHING. `tracked-files` and `/api/slash-commands` are queried by
+ * `chat-panel.tsx` — the A3/A4 contract that the panel owns the data plane.
  */
 import * as React from 'react'
 
-import { cn } from '../../lib/utils'
+import { EntityPickerView } from '../ui/entity-picker'
 
 import { acceptRow, atRows, pickerOptionId, PICKER_LISTBOX_ID, slashRows } from './slash'
+import { jumpTarget } from './composer-keys'
 import type { EntityPickerData, EntityRow } from './slash'
 import type { ComposerPickerApi } from './use-composer'
 
@@ -66,8 +71,6 @@ export interface EntityPickerProps extends EntityPickerData {
   onActive?: (index: number) => void
 }
 
-/* ── the connected picker ────────────────────────────────────────────────── */
-
 export default function EntityPicker({
   name,
   kind,
@@ -92,8 +95,13 @@ export default function EntityPicker({
   // The highlight is keyed by the QUERY, so it resets to the best match on
   // every keystroke (Spotlight's rule, and the palette's) without an effect
   // that the React rules would flag.
+  //
+  // `viaKey` rides along because the view scrolls the active row into view for
+  // KEYBOARD moves only: a hover that scrolled would move the list out from
+  // under the cursor, which would then hover a different row, which would
+  // scroll again.
   const key = `${kind}:${query}`
-  const [sel, setSel] = React.useState({ key, index: 0 })
+  const [sel, setSel] = React.useState({ key, index: 0, viaKey: false })
   const activeIndex = sel.key === key ? Math.min(sel.index, Math.max(rows.length - 1, 0)) : 0
 
   // The key handler runs on the TEXTAREA's events, one tick out of this
@@ -116,7 +124,16 @@ export default function EntityPicker({
         const now = live.current
         if (now.rows.length === 0) return
         const next = (now.activeIndex + delta + now.rows.length) % now.rows.length
-        setSel({ key: now.key, index: next })
+        setSel({ key: now.key, index: next, viaKey: true })
+      },
+      jump: (to) => {
+        const now = live.current
+        if (now.rows.length === 0) return
+        setSel({
+          key: now.key,
+          index: jumpTarget(to, now.activeIndex, now.rows.length),
+          viaKey: true,
+        })
       },
       accept: () => {
         // `false` means "nothing to accept" and the keystroke keeps its normal
@@ -133,137 +150,35 @@ export default function EntityPicker({
 
   return (
     <EntityPickerView
+      anchor="token"
       rows={rows}
       activeIndex={activeIndex}
-      kind={kind}
-      query={query}
+      emptyLabel={emptyCopy(kind, query)}
       loading={loading}
       surface={surface}
-      onHover={(i) => setSel({ key, index: i })}
+      listboxId={PICKER_LISTBOX_ID}
+      optionId={pickerOptionId}
+      scrollOnActive={sel.viaKey}
+      onHover={(i) => setSel({ key, index: i, viaKey: false })}
       onPick={onPick}
     />
   )
 }
 
-/* ── the view ────────────────────────────────────────────────────────────── */
-
-export interface EntityPickerViewProps {
-  rows: readonly EntityRow[]
-  activeIndex: number
-  kind: '@' | '/'
-  query: string
-  loading?: boolean
-  surface?: 'desktop' | 'phone'
-  onHover: (index: number) => void
-  onPick: (row: EntityRow) => void
-}
-
 /**
- * Presentational, prop-fed, network-free — the same contract `conversation.tsx`
- * keeps, and the reason `/dev/chat-live` can screenshot this popover with no
- * server behind it.
- *
- * It floats ABOVE the pill it belongs to and borrows the pill's own glass and
- * shadow, so the two read as one object rather than as a menu that happened to
- * land nearby.
+ * What the popover says when it has nothing to offer — CHAT's sentence, not the
+ * primitive's (fase B3 T2). It is the only one of the three consumers whose
+ * empty state depends on which trigger opened it, and the blank-query branch
+ * exists because quoting an empty query printed a pair of bare quotation marks
+ * with nothing between them (mobile proof, 21-at-picker-light.png).
  */
-export function EntityPickerView({
-  rows,
-  activeIndex,
-  kind,
-  query,
-  loading,
-  surface = 'desktop',
-  onHover,
-  onPick,
-}: EntityPickerViewProps) {
-  const phone = surface === 'phone'
-  return (
-    <div
-      data-testid="chat-entity-picker"
-      // The pill's own glass and shadow (B0 `ui/composer.tsx`), so the popover
-      // and the composer read as one object rather than as a menu that happened
-      // to land nearby.
-      className={
-        'absolute inset-x-0 bottom-full z-20 mb-2 overflow-hidden rounded-[22px]' +
-        ' border-[0.5px] border-hairline bg-surface backdrop-blur-[60px] backdrop-saturate-[180%]' +
-        ' shadow-[0_12px_34px_-18px_rgba(30,18,10,0.35)]'
-      }
-    >
-      <ul
-        role="listbox"
-        id={PICKER_LISTBOX_ID}
-        aria-label="Suggestions"
-        className="max-h-[264px] overflow-y-auto overscroll-contain py-1.5"
-      >
-        {rows.map((row, i) => (
-          // `presentation`: a listbox owns OPTIONS, and an `li` between the
-          // two breaks that ownership for a screen reader.
-          <li key={row.id} role="presentation">
-            <button
-              type="button"
-              role="option"
-              id={pickerOptionId(i)}
-              aria-selected={i === activeIndex}
-              data-testid="chat-entity-row"
-              data-active={i === activeIndex ? '' : undefined}
-              // `onMouseDown` + preventDefault: a click must not blur the
-              // textarea, or the caret the pick is about to replace is gone.
-              onMouseDown={(e) => {
-                e.preventDefault()
-                onPick(row)
-              }}
-              onMouseEnter={() => onHover(i)}
-              className={cn(
-                'flex w-full items-center gap-2.5 px-3.5 text-left',
-                // 44pt of tappable row on the phone, the boards' 30px on the
-                // desktop where a pointer is doing the aiming.
-                phone ? 'py-[13px]' : 'py-[7px]',
-                i === activeIndex && 'bg-fill-soft-2',
-              )}
-            >
-              <span
-                className={cn(
-                  'min-w-0 flex-none truncate tracking-[-0.1px] text-ink',
-                  phone ? 'text-[14px]' : 'text-[13.5px]',
-                  row.kind === 'command' && 'font-mono',
-                )}
-              >
-                {row.label}
-              </span>
-              {row.meta && (
-                <span
-                  className={cn(
-                    'min-w-0 flex-1 truncate text-[11.5px] text-ink-3',
-                    row.kind === 'file' && 'font-mono',
-                  )}
-                >
-                  {row.meta}
-                </span>
-              )}
-              {row.warn && (
-                <span className="ml-auto flex-none rounded-full bg-fill-soft px-2 py-[1px] text-[10.5px] tracking-[0.2px] text-ink-2">
-                  {row.warn}
-                </span>
-              )}
-            </button>
-          </li>
-        ))}
-        {rows.length === 0 && (
-          <li role="presentation" className="px-3.5 py-[9px] text-[12.6px] text-ink-2">
-            {loading
-              ? 'Looking…'
-              : query
-                ? `No ${kind === '@' ? 'tracked file or session' : 'command'} matches “${query}”`
-                : // The trigger has just been typed and there is nothing to
-                  // offer yet — a repo with no tracked files, an instance with
-                  // no other session. Quoting the empty query printed a pair of
-                  // bare quotation marks with nothing between them (mobile
-                  // proof, 21-at-picker-light.png).
-                  `Nothing to ${kind === '@' ? 'mention' : 'run'} here yet`}
-          </li>
-        )}
-      </ul>
-    </div>
-  )
+export function emptyCopy(kind: '@' | '/', query: string): string {
+  if (!query) return `Nothing to ${kind === '@' ? 'mention' : 'run'} here yet`
+  return `No ${kind === '@' ? 'tracked file or session' : 'command'} matches “${query}”`
 }
+
+// The presentational half now lives in `components/ui/entity-picker.tsx` and is
+// re-exported here so A4's tests and `/dev/chat-live` keep their import path —
+// the promotion is a move, not a rename of chat's public surface.
+export { EntityPickerView } from '../ui/entity-picker'
+export type { EntityPickerViewProps } from '../ui/entity-picker'

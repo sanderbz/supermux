@@ -43,7 +43,13 @@ const BUDGET_ENTRY_JS = 160 * KB
 // issue and display surfaces. 205.46 KB is the honest floor today, so the
 // ceiling is that plus ~2% headroom. Raising a ceiling silently is still not
 // allowed; lowering it with the measurement attached is the point.
-const BUDGET_APP_JS = 210 * KB
+// 211 as of B3 (#75): measured 210.23 + margin. Policy (orchestrator,
+// 2026-08-17): the ENTRY gate above is the designed hard limit protecting the
+// hero path; this total is a floating awareness ceiling at measured+2%, and
+// every PR that moves it must justify its bytes in the PR body. B3's +0.44 KB
+// is §14 capability (EntityPicker/palette); its consolidation itself measured
+// byte-neutral.
+const BUDGET_APP_JS = 211 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

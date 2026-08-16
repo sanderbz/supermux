@@ -130,7 +130,14 @@ export function ChatComposer({
     // The picker hands over the ROW; the composer's insert seam wants the text
     // that lands in the draft. Collapsing here rather than in the picker keeps
     // the row's identity available to any future caller (`entity-picker.tsx`).
-    onPick: (row) => handle.picker.pick(row.value),
+    //
+    // `?? ''` rather than `!`: since fase B3 the row union has three arms —
+    // insert, run and navigate — and only the first carries `value`. Chat's
+    // `@`/`/` builders produce nothing but insert rows (`slash.ts`), so this
+    // is unreachable; making it a no-op rather than an assertion means a future
+    // surface that hands chat a verb row inserts nothing instead of putting the
+    // string "undefined" into somebody's message.
+    onPick: (row) => handle.picker.pick(row.value ?? ''),
     bind: handle.picker.bind,
     onActive: setActiveOption,
   }

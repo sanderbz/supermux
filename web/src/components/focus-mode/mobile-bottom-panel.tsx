@@ -469,7 +469,16 @@ export function MobileBottomPanel({
           inert={state === 'closed'}
         >
           <div
-            role="listbox"
+            // NOT a listbox (fase B3 T7.4). It carried `role="listbox"` while
+            // its pills carried no `role="option"` — a listbox with no options,
+            // which is a container a screen reader announces and then finds
+            // empty. This rail is a horizontally scroll-snapping strip of
+            // buttons, not a vertical list of choices: it has no highlight, no
+            // arrow-key navigation and no selection model, so `tablist`/`tab`
+            // (with the current session as the selected tab) describes what it
+            // actually is. It is deliberately NOT converted to an EntityPicker —
+            // a scroll-snap rail is not a result list.
+            role="tablist"
             aria-label="Switch session"
             // pt-2 = the PILLS_GAP breathing above the pill row (between dock
             // buttons and pills). pb-2 = PILLS_PB inner breathing below the row,
@@ -536,13 +545,14 @@ function SessionPill({
   return (
     <motion.button
       type="button"
-      // THE LISTBOX HAD NO OPTIONS (§0.1 #36, pulled forward from B3). The row
-      // above claims `role="listbox"`, which makes every child that is not an
-      // `option` invisible to the mapping: VoiceOver announced "list box, 0
-      // items" over a row of six sessions. `aria-selected` replaces the
-      // `aria-current` that was here — inside a listbox, selection is the
-      // vocabulary, and `aria-current` on an option is ignored.
-      role="option"
+      // §0.1 #36 — the listbox that had no options. A6 pulled the defect
+      // forward and fixed it as `role="option"`; B3 landed first and fixed the
+      // SAME defect from the other end, by making the parent a `tablist`
+      // (see `:472-481`). B3's is the better shape — these pills switch a
+      // view, which is what a tab is — so its resolution wins wholesale and
+      // A6's is dropped: an `option` inside a `tablist` is invalid, and two
+      // half-fixes would have been worse than either whole one.
+      role="tab"
       aria-selected={isCurrent}
       data-vr-session-name={session.name}
       data-vr-current={isCurrent || undefined}

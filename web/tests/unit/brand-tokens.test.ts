@@ -152,6 +152,7 @@ describe('B0 warm paper/ink/hairline ladder', () => {
     codeBg: '--sm-code-bg',
     bubbleShadow: '--sm-bubble-shadow',
     cardShadow: '--sm-card-shadow',
+    popoverShadow: '--sm-popover-shadow',
     elev: '--sm-elev',
     accentRowMix: '--sm-accent-row-mix',
   }
@@ -203,6 +204,7 @@ describe('B0 warm paper/ink/hairline ladder', () => {
     const NOT_COLOURS = new Set<keyof PaperLadder>([
       'bubbleShadow',
       'cardShadow',
+      'popoverShadow',
       'elev',
       'accentRowMix',
     ])

@@ -34,7 +34,7 @@ import {
   insertIntoComposer,
   setDraft,
 } from '../../src/components/chat/composer-draft'
-import { EntityPickerView } from '../../src/components/chat/entity-picker'
+import { emptyCopy, EntityPickerView } from '../../src/components/chat/entity-picker'
 import { TranscriptItem } from '../../src/components/chat/transcript-item'
 import {
   atRows,
@@ -44,12 +44,12 @@ import {
   type EntityRow,
 } from '../../src/components/chat/slash'
 import {
-  composerKeyIntent,
   draftAfterSend,
   sendGate,
   stopGate,
   type ComposerHandle,
 } from '../../src/components/chat/use-composer'
+import { composerKeyIntent } from '../../src/components/chat/composer-keys'
 import type { TileSession } from '../../src/components/session-tile/types'
 
 const NAME = 'release-train'
@@ -641,7 +641,7 @@ describe('the popover, rendered', () => {
     const html = view()
     expect(html).toContain('data-testid="chat-entity-picker"')
     expect((html.match(/data-testid="chat-entity-row"/g) ?? []).length).toBe(3)
-    expect((html.match(/data-active/g) ?? []).length).toBe(1)
+    expect((html.match(/data-highlighted/g) ?? []).length).toBe(1)
     expect(text(html)).toContain('main.rs')
     expect(text(html)).toContain('server/src')
   })
@@ -655,7 +655,11 @@ describe('the popover, rendered', () => {
   })
 
   test('an empty result says what it looked for instead of showing nothing', () => {
-    expect(text(view({ rows: [] }))).toContain('No tracked file or session matches')
+    // The COPY is chat's (`emptyCopy` in `chat/entity-picker.tsx`) since fase
+    // B3 — the primitive knows how many rows it has and nothing else, and the
+    // three consumers need three different sentences.
+    expect(text(view({ rows: [], emptyLabel: 'No tracked file or session matches “mai”' })))
+      .toContain('No tracked file or session matches')
     expect(text(view({ rows: [], loading: true }))).toContain('Looking…')
   })
 
@@ -906,6 +910,13 @@ describe('the picker is reachable by assistive tech', () => {
         activeIndex={1}
         kind="@"
         query="main"
+        // The ids are chat's, and since fase B3 the VIEW is shared — so they
+        // arrive as props instead of being baked in. `chat/entity-picker.tsx`
+        // passes exactly these two; the field's `aria-controls` /
+        // `aria-activedescendant` still have to resolve to them, which is what
+        // this asserts.
+        listboxId={PICKER_LISTBOX_ID}
+        optionId={pickerOptionId}
         onHover={() => {}}
         onPick={() => {}}
       />,
@@ -945,5 +956,119 @@ describe('the choice card stops calling a live surface read-only', () => {
     )
     expect(text(html)).toContain('Answer in the terminal')
     expect(text(html)).not.toContain('read-only')
+  })
+})
+
+/**
+ * THE PROMOTION CONTRACT (fase B3 T1.1).
+ *
+ * B3 lifts this popover out of `components/chat/` into a shared primitive with
+ * a second anchor, a widened row union and an icon slot. A refactor of that
+ * size is only safe if "unchanged" is something a test can say, so this block
+ * pins the popover's DOM as it stands the moment before the move — every
+ * structural fact a screen reader or a Playwright selector depends on.
+ *
+ * IT IS ALLOWED TO CHANGE IN EXACTLY ONE WAY: `data-active` becomes
+ * `data-highlighted` (the attribute is chat-private and §14 names the new one).
+ * Any other edit to the assertions below means the promotion dropped something,
+ * and the diff is the evidence.
+ */
+describe('the popover DOM, pinned before the promotion', () => {
+  const kinds: EntityRow[] = [
+    { id: 'f1', kind: 'file', value: '@server/src/main.rs', label: 'main.rs', meta: 'server/src' },
+    { id: 's1', kind: 'session', value: '@patch', label: 'Patch', meta: 'patch' },
+    { id: 'c1', kind: 'command', value: '/model', label: '/model', meta: 'switch model', warn: 'opens in terminal' },
+  ]
+
+  const view = (over: Partial<React.ComponentProps<typeof EntityPickerView>> = {}) =>
+    renderToStaticMarkup(
+      <EntityPickerView
+        rows={kinds}
+        activeIndex={1}
+        kind="@"
+        query="pa"
+        listboxId={PICKER_LISTBOX_ID}
+        optionId={pickerOptionId}
+        onHover={() => {}}
+        onPick={() => {}}
+        {...over}
+      />,
+    )
+
+  test('all three row kinds render, and each carries its own text', () => {
+    const html = view()
+    expect((html.match(/data-testid="chat-entity-row"/g) ?? []).length).toBe(3)
+    const t = text(html)
+    // file: label + directory, session: label + slug, command: label + desc + warn
+    expect(t).toContain('main.rs')
+    expect(t).toContain('server/src')
+    expect(t).toContain('Patch')
+    expect(t).toContain('/model')
+    expect(t).toContain('switch model')
+    expect(t).toContain('opens in terminal')
+  })
+
+  test('exactly one row is highlighted, and it is the one the index names', () => {
+    const html = view()
+    // The highlight is ONE atom. Two highlighted rows means keyboard and
+    // pointer disagree about which row Enter would take.
+    expect((html.match(/data-highlighted/g) ?? []).length).toBe(1)
+    expect((html.match(/aria-selected="true"/g) ?? []).length).toBe(1)
+    // ...and it is row 1 (Patch), not row 0.
+    const upTo = html.slice(0, html.indexOf('data-highlighted'))
+    expect(upTo).toContain('main.rs')
+    expect(upTo).not.toContain('Patch')
+  })
+
+  test('the roles nest listbox > presentation > option, with no li in between', () => {
+    const html = view()
+    expect(html).toContain('role="listbox"')
+    // A listbox owns OPTIONS. The `li` is `presentation` precisely so it does
+    // not break that ownership for a screen reader.
+    expect((html.match(/role="presentation"/g) ?? []).length).toBe(3)
+    expect((html.match(/role="option"/g) ?? []).length).toBe(3)
+    expect(html).not.toMatch(/<li(?![^>]*role="presentation")/)
+  })
+
+  test('the listbox id and the option ids are the ones the FIELD points at', () => {
+    // The textarea carries aria-controls={PICKER_LISTBOX_ID} and
+    // aria-activedescendant={pickerOptionId(i)}. If either id moves, the field
+    // points at nothing and the popover becomes invisible to a screen reader
+    // while looking perfectly fine.
+    const html = view()
+    expect(html).toContain(`id="${PICKER_LISTBOX_ID}"`)
+    expect(html).toContain(`id="${pickerOptionId(0)}"`)
+    expect(html).toContain(`id="${pickerOptionId(2)}"`)
+    expect(html).toContain('aria-label="Suggestions"')
+  })
+
+  test('the empty state says what was looked for, per trigger and per state', () => {
+    // Chat's four sentences, asserted at their SOURCE — `emptyCopy` — because
+    // fase B3 moved the copy out of the shared primitive and into the consumer
+    // that knows which trigger opened the list.
+    expect(text(view({ rows: [], loading: true }))).toContain('Looking…')
+    expect(emptyCopy('@', 'mai')).toContain('No tracked file or session matches')
+    expect(emptyCopy('/', 'mo')).toContain('No command matches')
+    // A blank query must not print a bare pair of quotation marks (the mobile
+    // proof that produced this copy, 21-at-picker-light.png).
+    expect(emptyCopy('@', '')).toBe('Nothing to mention here yet')
+    expect(emptyCopy('@', '')).not.toContain('““')
+    expect(emptyCopy('/', '')).toBe('Nothing to run here yet')
+  })
+
+  test('the phone surface is a 44pt row and the desktop one is not', () => {
+    // The height difference is the whole reason `surface` exists; B3 keeps the
+    // phone exception and documents it rather than flattening it to the
+    // desktop number.
+    expect(view({ surface: 'phone' })).toContain('py-[13px]')
+    expect(view()).toContain('py-[7px]')
+  })
+
+  test('nothing in the popover can send', () => {
+    // It INSERTS. A submit control in here would make a suggestion list into a
+    // way to send a message by accident.
+    const html = view()
+    expect(html).not.toContain('data-testid="chat-send"')
+    expect(html).not.toContain('type="submit"')
   })
 })

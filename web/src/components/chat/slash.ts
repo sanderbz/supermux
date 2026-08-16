@@ -13,8 +13,11 @@
 //                       pty nobody is looking at?
 //   3. `fuzzyScore` / `rankEntities` — the client-side filter the popover uses.
 //
-// No imports on purpose (the chat modules' resolution rule: relative-only, and
-// nothing that reaches `window`).
+// One TYPE-ONLY import and nothing else (the chat modules' resolution rule:
+// relative-only, and nothing that reaches `window`). `EntityRow` moved to
+// `lib/entity.ts` in fase B3 so four surfaces could agree on it; the import is
+// fully erased, so this file still has no runtime dependency at all.
+import type { EntityRow } from '../../lib/entity'
 
 // ── 1. The trigger ──────────────────────────────────────────────────────────
 
@@ -218,60 +221,11 @@ export function classifySlash(text: string): SlashClass {
 // ── 3. The filter ───────────────────────────────────────────────────────────
 
 /** A match that starts right after one of these reads as a whole segment. */
-const BOUNDARY = '/-_. :'
-
-/**
- * How well `text` matches `query`. -1 is "not at all"; higher is better.
- *
- * Substring beats subsequence, earlier beats later, and a match that starts at
- * a SEGMENT BOUNDARY beats one in the middle of a word — which is the rule that
- * makes `main` find `server/src/main.rs` before `web/src/lib/domain.ts`.
- * Deliberately not a scoring library: this is ~20 lines against a list that is
- * already in memory, and A4 ships no new dependency.
- */
-export function fuzzyScore(text: string, query: string): number {
-  if (query.length === 0) return 0
-  const t = text.toLowerCase()
-  const q = query.toLowerCase()
-
-  const idx = t.indexOf(q)
-  if (idx >= 0) {
-    const boundary = idx === 0 || BOUNDARY.includes(t[idx - 1]!)
-    return 1_000 - Math.min(idx, 200) + (idx === 0 ? 300 : 0) + (boundary ? 150 : 0)
-  }
-
-  // Subsequence: every query character in order, anywhere.
-  let ti = 0
-  let first = -1
-  let last = -1
-  for (const ch of q) {
-    const at = t.indexOf(ch, ti)
-    if (at < 0) return -1
-    if (first < 0) first = at
-    last = at
-    ti = at + 1
-  }
-  const spread = last - first - (q.length - 1)
-  return 400 - Math.min(spread, 200) + (first === 0 ? 60 : 0)
-}
-
-/** Rank `items` by their `textOf` against `query`, best first, dropping the
- *  misses. Stable: equal scores keep the source order (the server's own
- *  ordering — git status order for files, list order for commands). */
-export function rankEntities<T>(
-  items: readonly T[],
-  query: string,
-  textOf: (item: T) => string,
-  limit = 20,
-): T[] {
-  const scored: { item: T; score: number; at: number }[] = []
-  for (let i = 0; i < items.length; i += 1) {
-    const score = fuzzyScore(textOf(items[i]!), query)
-    if (score >= 0) scored.push({ item: items[i]!, score, at: i })
-  }
-  scored.sort((a, b) => b.score - a.score || a.at - b.at)
-  return scored.slice(0, limit).map((s) => s.item)
-}
+// The ranker lives in `lib/rank.ts` since fase B3, so the scheduler can share
+// it without inheriting this file's command table. NOT re-exported: a barrel
+// here would keep this module (and its built-in command table) alive on every
+// chunk that only wanted the 30-line matcher.
+import { rankEntities } from '../../lib/rank'
 
 // ── 4. The rows ─────────────────────────────────────────────────────────────
 //
@@ -284,19 +238,20 @@ export function rankEntities<T>(
  *  that it never covers the transcript it is being written about. */
 const LIMIT = 12
 
-/** One offer. `value` is what lands in the draft — everything else is display. */
-export interface EntityRow {
-  id: string
-  kind: 'file' | 'session' | 'command'
-  /** The text inserted into the composer (`@src/main.rs`, `/compact`). */
-  value: string
-  label: string
-  /** Secondary text: the directory, the command's description, the slug. */
-  meta?: string
-  /** Rendered as a calm badge; the row stays pickable, because the refusal
-   *  belongs to the SEND, not to the typing. */
-  warn?: string
-}
+/**
+ * One offer.
+ *
+ * THE SHAPE IS NOW THE APP'S, NOT CHAT'S (fase B3 T3.1). `lib/entity.ts` owns
+ * the union — nine kinds, and a row that inserts / runs / navigates — because
+ * by B3 four surfaces were offering rows and two of them were offering the
+ * same slash commands. Chat still builds its own rows here (that is its DATA,
+ * and the picker fetches nothing); it just stopped owning the type they are.
+ *
+ * Everything this file produces is the INSERT arm: the `@`/`/` popover puts
+ * text in a draft and does nothing else, which is the rule the A4 header
+ * comment states three different ways.
+ */
+export type { EntityRow }
 
 /**
  * The row a picker `accept` would take, or `null` for "nothing to accept".
@@ -320,6 +275,10 @@ export function acceptRow(
   if (activeIndex < 0 || activeIndex >= rows.length) return null
   return rows[activeIndex] ?? null
 }
+
+// `PICKER_PAGE` / `PickerJump` / `jumpTarget` live in `composer-keys.ts` since
+// fase B3 — they are the keyboard contract's arithmetic, not the slash
+// tokenizer's. Imported from there directly by everything that needs them.
 
 /** The two fields a mention needs — structural on purpose, so this ranks the
  *  shared `useSessions()` rows AND the bench's fixture cast without either of

@@ -69,6 +69,11 @@ const DevShell = import.meta.env.DEV
 const DevChatLive = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-chat-live'))
   : null
+// The picker bench (fase B3 T2.8): both anchors × nine kinds × empty/loading/
+// overflow, in both themes, with no server behind it.
+const DevPickers = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-pickers'))
+  : null
 // The toggle-thrash bench (fase A5 T6): the REAL RendererShell + LiveTerminal,
 // toggled 100× against a firehosing `shell` pty by
 // `tests/e2e/smoke/chat-toggle-thrash.spec.ts`. Not a product surface.
@@ -266,6 +271,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevChatLive />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevPickers && (
+                <Route
+                  path="/dev/pickers"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevPickers />
                     </Suspense>
                   }
                 />

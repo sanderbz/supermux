@@ -76,6 +76,10 @@ export interface PaperLadder {
   bubbleShadow: string
   /** Card elevation. */
   cardShadow: string
+  /** The lift every floating list wears — the `@`/`/` popover, the composer
+   *  pill, the ⌘K results (fase B3 T2.5). Warm-black rather than §14's cool
+   *  grey, which reads blue against this paper. */
+  popoverShadow: string
   /** The window itself: shadow + hairline ring + inner top highlight. */
   elev: string
   /** Accent share of the selected-row mix, as a CSS percentage. */
@@ -102,6 +106,7 @@ export const PAPER: { readonly light: PaperLadder; readonly dark: PaperLadder } 
     bubbleShadow: '0 1px 2px rgba(60, 40, 20, 0.05)',
     cardShadow:
       '0 10px 30px -14px rgba(60, 40, 20, 0.22), 0 1px 2px rgba(60, 40, 20, 0.05)',
+    popoverShadow: '0 12px 34px -18px rgba(30, 18, 10, 0.35)',
     elev: '0 46px 90px -34px rgba(52, 34, 20, 0.3), 0 6px 18px -6px rgba(52, 34, 20, 0.07), 0 0 0 0.5px rgba(35, 25, 15, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.55)',
     accentRowMix: '9%',
   },
@@ -122,6 +127,7 @@ export const PAPER: { readonly light: PaperLadder; readonly dark: PaperLadder } 
     codeBg: 'rgba(0, 0, 0, 0.3)',
     bubbleShadow: 'none',
     cardShadow: '0 14px 34px -16px rgba(0, 0, 0, 0.6)',
+    popoverShadow: '0 14px 38px -18px rgba(0, 0, 0, 0.66)',
     elev: '0 46px 100px -30px rgba(0, 0, 0, 0.62), 0 8px 24px -10px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 246, 235, 0.07), inset 0 1px 0 rgba(255, 246, 235, 0.06)',
     accentRowMix: '12%',
   },

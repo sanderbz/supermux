@@ -22,108 +22,17 @@ import {
 import { handoffLabel, readDelegateIntent, type DelegateIntent } from './delegate-intent'
 import type { PeekLens } from './peek-lens'
 import { classifySlash, readTrigger, slashName } from './slash'
+import type { PickerJump } from './composer-keys'
 
 /** How much of the terminal's own draft the block banner quotes back. Enough to
  *  recognise the sentence, short enough that the banner stays one line. */
 export const DRAFT_PREVIEW_CHARS = 60
 
-// ── The key contract ────────────────────────────────────────────────────────
-
-/** What a keystroke MEANS in the composer. Extracted from the component so the
- *  IME matrix can be asserted without a DOM (`chat-interactive.test.tsx`).
- *
- *  The four `picker-*` intents exist only while the `@`/`/` popover is open
- *  (fase A4 T9) — they are what keeps ONE ESCAPE, ONE MEANING true once a
- *  second thing on this surface can be closed. */
-export type ComposerIntent =
-  | 'submit'
-  | 'newline'
-  | 'stop'
-  | 'clear'
-  | 'pass'
-  | 'picker-up'
-  | 'picker-down'
-  | 'picker-accept'
-  | 'picker-close'
-
-/** The shape a React keydown event and a plain object both satisfy. */
-export interface ComposerKeyEvent {
-  key: string
-  shiftKey?: boolean
-  metaKey?: boolean
-  ctrlKey?: boolean
-  altKey?: boolean
-  keyCode?: number
-  nativeEvent?: { isComposing?: boolean; keyCode?: number }
-  isComposing?: boolean
-}
-
-function composing(e: ComposerKeyEvent): boolean {
-  // `isComposing` is the standard; keyCode 229 is the Android/GBoard fallback
-  // the repo already relies on in two places (`hooks/use-live-term.ts:1349`,
-  // `lib/android-ime.ts`) because soft keyboards deliver nearly everything as
-  // composition and some of them never set `isComposing` on the keydown that
-  // commits. Enter during composition is the IME's own "accept this candidate",
-  // NOT a submit — treating it as one is how a chat box sends half a word in
-  // Japanese, and every keystroke in Korean.
-  return (
-    e.isComposing === true ||
-    e.nativeEvent?.isComposing === true ||
-    e.keyCode === 229 ||
-    e.nativeEvent?.keyCode === 229
-  )
-}
-
-/**
- * The whole keyboard contract, as data.
- *
- *   Enter                 → submit (unless composing — then the IME owns it)
- *   Shift+Enter           → newline
- *   Escape, draft present → clear the draft
- *   Escape, draft empty   → stop the turn, when there is one
- *
- * ONE ESCAPE, ONE MEANING: with text in the box Escape clears the box; with an
- * empty box it interrupts the agent. Doing both on one press would make "I
- * changed my mind about this sentence" occasionally kill a running turn.
- */
-export function composerKeyIntent(
-  e: ComposerKeyEvent,
-  ctx: { draft: string; active: boolean; picker?: boolean },
-): ComposerIntent {
-  // A COMPOSITION OWNS EVERY KEY IT IS GIVEN, not just Enter. Escape during an
-  // IME composition means "cancel this conversion" — swallowing it to clear the
-  // draft would throw away the whole message on the keystroke a CJK typist uses
-  // dozens of times a paragraph, and `preventDefault` would leave the candidate
-  // window stranded. Same reason keyCode 229 is honoured: on Android nearly
-  // everything arrives as composition.
-  if (composing(e)) return 'pass'
-  // THE POPOVER OWNS ITS OWN KEYS while it is open (fase A4 T9). Escape is the
-  // one that matters: with a picker up, Escape closes the PICKER — it does not
-  // also clear the draft and it certainly does not stop the turn. One escape,
-  // one meaning, even when there are two things to escape from.
-  if (ctx.picker) {
-    if (e.key === 'ArrowUp') return 'picker-up'
-    if (e.key === 'ArrowDown') return 'picker-down'
-    if (e.key === 'Escape') return 'picker-close'
-    if (e.key === 'Tab' && !e.shiftKey) return 'picker-accept'
-    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      // Falls back to `submit` in the hook when the list has nothing to accept
-      // (a query that matches nothing must not swallow the message).
-      return 'picker-accept'
-    }
-  }
-  if (e.key === 'Enter') {
-    if (e.shiftKey) return 'newline'
-    // A modified Enter is somebody else's shortcut (⌘Enter is not ours yet).
-    if (e.metaKey || e.ctrlKey || e.altKey) return 'pass'
-    return 'submit'
-  }
-  if (e.key === 'Escape') {
-    if (ctx.draft.length > 0) return 'clear'
-    return ctx.active ? 'stop' : 'pass'
-  }
-  return 'pass'
-}
+// The key contract lives in `composer-keys.ts` since fase B3, so the
+// scheduler's PromptField and the ⌘K palette can share it without pulling this
+// hook — and React, and delegate-intent, and the session-input plumbing — into
+// their chunks. NOT re-exported: a barrel here would undo exactly that.
+import { composerKeyIntent } from './composer-keys'
 
 // ── The hook ────────────────────────────────────────────────────────────────
 
@@ -373,6 +282,8 @@ export interface UseComposerOptions {
 export interface ComposerPickerApi {
   /** Move the highlight; wraps at both ends. */
   move: (delta: number) => void
+  /** Coarse, clamped movement (Home/End/PageUp/PageDown). */
+  jump: (to: PickerJump) => void
   /** Accept the highlighted row. `false` = there was nothing to accept, and the
    *  keystroke falls through to its normal meaning (Enter still SENDS). */
   accept: () => boolean
@@ -740,6 +651,10 @@ export function useComposer({
       } else if (intent === 'stop') stop()
       else if (intent === 'picker-up') pickerApi.current?.move(-1)
       else if (intent === 'picker-down') pickerApi.current?.move(1)
+      else if (intent === 'picker-page-up') pickerApi.current?.jump('page-up')
+      else if (intent === 'picker-page-down') pickerApi.current?.jump('page-down')
+      else if (intent === 'picker-first') pickerApi.current?.jump('first')
+      else if (intent === 'picker-last') pickerApi.current?.jump('last')
       else if (intent === 'picker-close') closePicker()
     },
     [active, closePicker, name, pickerOpen, set, stop, submit],

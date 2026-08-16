@@ -23,9 +23,16 @@ import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Sparkles, Terminal, ServerCog } from 'lucide-react'
 
-import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import type { RecipeCommand } from '@/lib/api'
+import type { EntityRow } from '@/lib/entity'
+import { EntityPickerView } from '@/components/ui/entity-picker'
+// The two shared PURE modules, reached directly rather than through
+// `use-composer.ts` / `slash.ts`: those re-export them for chat's own callers,
+// but importing through them would drag chat's hook and command table into the
+// scheduler's chunk for the sake of two functions (fase B3 T3.3/T3.4).
+import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
+import { rankEntities } from '@/lib/rank'
 
 /** A command token plus its trailing space → `/cso ` style insertion. */
 function insertion(cmd: string): string {
@@ -73,11 +80,19 @@ export function mergeCommandAndPrompt(
   return p ? `${slash} ${p}` : slash
 }
 
-const SOURCE_ICON: Record<RecipeCommand['source'], React.ReactNode> = {
-  skill: <Sparkles className="size-3.5" aria-hidden />,
-  command: <Terminal className="size-3.5" aria-hidden />,
-  mcp: <ServerCog className="size-3.5" aria-hidden />,
+// Icon COMPONENTS, not elements: the shared picker takes `row.icon` as a
+// component so it can size and colour the glyph itself, which is what keeps
+// every list in the app agreeing about what a 14px muted icon looks like.
+const SOURCE_ICON: Record<RecipeCommand['source'], EntityRow['icon']> = {
+  skill: Sparkles,
+  command: Terminal,
+  mcp: ServerCog,
 }
+
+/** How many rows this box shows. A per-surface number: chat's popover shows 12
+ *  because it floats over a transcript; this one sits inside a form and 8 is
+ *  what fits without pushing the fields below it out of reach. */
+const LIST_CAP = 8
 
 const SOURCE_LABEL: Record<RecipeCommand['source'], string> = {
   skill: 'Skill',
@@ -136,7 +151,10 @@ export function PromptField({
   const reduce = useReducedMotion()
   const ref = React.useRef<HTMLTextAreaElement>(null)
   const [caret, setCaret] = React.useState(0)
-  const [active, setActive] = React.useState(0)
+  // `viaKey` rides with the index because the picker scrolls the active row
+  // into view for KEYBOARD moves only — a hover that scrolled would move the
+  // list out from under the cursor, which would then hover a different row.
+  const [active, setActive] = React.useState({ i: 0, viaKey: false })
   // Suppress the menu while the user is editing somewhere that doesn't qualify
   // (e.g. the value is empty so the placeholder shows, or they explicitly
   // dismissed with Escape). The slash query alone is the open-signal.
@@ -145,22 +163,46 @@ export function PromptField({
   const slashQuery = detectSlashQuery(value, caret)
   const open = slashQuery !== null && !escDismissed
 
+  // ONE RANKER FOR BOTH TYPE-AHEADS (fase B3 T3.4). This field and the chat
+  // `@`/`/` popover filter the SAME corpus of installed slash commands, in
+  // opposite directions, and until B3 they did it with two different matchers:
+  // this one was `includes()`, chat's is `fuzzyScore`'s subsequence match with
+  // score ordering. Adopting chat's here is a DELIBERATE BEHAVIOUR CHANGE for
+  // the scheduler — `/dcr` now finds `/daily-code-review` — and it is called
+  // out in the PR body rather than slipped in as a refactor.
+  //
+  // The CAP stays per-surface (8 here, 12 in chat): how many rows fit is a
+  // property of the box the list is in, not of the ranking.
   const matches = React.useMemo(() => {
     if (slashQuery === null) return [] as RecipeCommand[]
-    const q = slashQuery
-    if (!q) return commands.slice(0, 8)
-    return commands
-      .filter((c) => {
-        const n = bareName(c.cmd)
-        if (n.includes(q)) return true
-        if (c.desc.toLowerCase().includes(q)) return true
-        return false
-      })
-      .slice(0, 8)
+    return rankEntities(
+      commands,
+      slashQuery,
+      // Rank on the bare name AND the description, which is what the old
+      // predicate looked at — the matcher changed, the corpus did not.
+      (c) => `${bareName(c.cmd)} ${c.desc}`,
+      LIST_CAP,
+    )
   }, [commands, slashQuery])
 
+  // The picker's rows. Built here because they are the SCHEDULER's data — the
+  // primitive fetches nothing and knows no command shapes.
+  const pickerRows = React.useMemo<EntityRow[]>(
+    () =>
+      matches.map((c) => ({
+        id: `${c.source}:${c.cmd}`,
+        kind: 'command',
+        value: c.cmd,
+        label: c.cmd,
+        meta: c.desc,
+        warn: SOURCE_LABEL[c.source],
+        icon: SOURCE_ICON[c.source],
+      })),
+    [matches],
+  )
+
   // Clamp the highlight whenever the match list shrinks.
-  const clamped = matches.length === 0 ? 0 : Math.min(active, matches.length - 1)
+  const clamped = matches.length === 0 ? 0 : Math.min(active.i, matches.length - 1)
 
   const updateCaret = React.useCallback(() => {
     const el = ref.current
@@ -199,39 +241,71 @@ export function PromptField({
     [value, onChange],
   )
 
+  // ONE KEYBOARD ENGINE (fase B3 T3.3). This was the app's SECOND hand-rolled
+  // `(i+1) % len` wrap with its own `scrollIntoView` beside it — a copy of the
+  // palette's, which is a copy of the composer's, one of which had already lost
+  // the scroll call. What a key MEANS is now `composerKeyIntent`'s decision and
+  // where a coarse jump lands is `jumpTarget`'s, both pure and both truth-tabled
+  // in `tests/unit/entity-picker-keys.test.ts`; the scroll lives in the picker.
+  //
+  // `caret: false` — this textarea is in SLASH MODE, and while the list is up
+  // Home/End address it rather than the line. The moment the list closes the
+  // reducer is not consulted at all and the textarea gets its keys back.
+  //
+  // WHAT DID NOT MOVE: every piece of scheduler text plumbing.
+  // `detectSlashQuery`, `splitCommandAndPrompt`, `mergeCommandAndPrompt`,
+  // `insertion` and `bareName` are this form's semantics, not the picker's, and
+  // the field/token split is exactly the seam that lets them stay put.
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!open || matches.length === 0) {
+    if (!open || pickerRows.length === 0) {
       if (e.key === 'Escape') {
         // Even with no matches, a leading Escape should bail out of slash mode.
         setEscDismissed(true)
       }
       return
     }
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setActive((i) => (i + 1) % matches.length)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setActive((i) => (i - 1 + matches.length) % matches.length)
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault()
-      const pick = matches[clamped]
-      if (pick) pickCommand(pick)
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      setEscDismissed(true)
+    const intent = composerKeyIntent(e, {
+      draft: value,
+      active: false,
+      picker: true,
+      caret: false,
+    })
+    if (intent === 'pass' || intent === 'newline') return
+    switch (intent) {
+      case 'picker-down':
+        e.preventDefault()
+        setActive((i) => ({ i: (i.i + 1) % pickerRows.length, viaKey: true }))
+        break
+      case 'picker-up':
+        e.preventDefault()
+        setActive((i) => ({ i: (i.i - 1 + pickerRows.length) % pickerRows.length, viaKey: true }))
+        break
+      case 'picker-first':
+      case 'picker-last':
+      case 'picker-page-up':
+      case 'picker-page-down':
+        e.preventDefault()
+        setActive((i) => ({
+          i: jumpTarget(
+            intent.replace('picker-', '') as 'first' | 'last' | 'page-up' | 'page-down',
+            i.i,
+            pickerRows.length,
+          ),
+          viaKey: true,
+        }))
+        break
+      case 'picker-accept': {
+        e.preventDefault()
+        const pick = matches[clamped]
+        if (pick) pickCommand(pick)
+        break
+      }
+      case 'picker-close':
+        e.preventDefault()
+        setEscDismissed(true)
+        break
     }
   }
-
-  // Auto-scroll the highlighted row into view as arrows walk the menu.
-  const listRef = React.useRef<HTMLDivElement>(null)
-  React.useEffect(() => {
-    if (!open) return
-    const el = listRef.current?.querySelector<HTMLElement>(
-      `[data-prompt-row="${clamped}"]`,
-    )
-    el?.scrollIntoView({ block: 'nearest' })
-  }, [open, clamped])
 
   return (
     <div className="relative">
@@ -240,7 +314,7 @@ export function PromptField({
         value={value}
         onChange={(e) => {
           onChange(e.target.value)
-          setActive(0)
+          setActive({ i: 0, viaKey: false })
           // Re-arm the menu when the user keeps typing — Escape only suppresses
           // the CURRENT slash token; the next edit gets a fresh autocomplete.
           setEscDismissed(false)
@@ -258,62 +332,45 @@ export function PromptField({
       />
       <AnimatePresence>
         {open && (
+          // THE DOWN ANCHOR. The parent owns the box — its position, its border
+          // and its entry animation — and the picker renders a bare list inside
+          // it. That is the whole of `anchor="field"`: not a positioning
+          // engine, just "somebody else already drew the container". The chat
+          // popover's `anchor="token"` draws its own, because it floats free
+          // over a transcript with nothing behind it.
+          //
+          // Keeping the wrapper here also keeps this surface's framer entry
+          // (and `springs.cardExpand`) out of the shared primitive, which the
+          // chat popover must stay free of — it is lazy, and framer is a
+          // separate vendor chunk.
           <motion.div
-            ref={listRef}
-            role="listbox"
-            aria-label="Slash commands"
             initial={reduce ? false : { opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={reduce ? undefined : { opacity: 0, y: -4 }}
             transition={springs.cardExpand}
-            className="absolute left-0 right-0 top-full z-30 mt-1.5 max-h-64 overflow-auto rounded-lg border border-border bg-popover p-1 shadow-lg"
+            className="absolute left-0 right-0 top-full z-30 mt-1.5 overflow-hidden rounded-lg border border-border bg-popover shadow-[var(--sm-popover-shadow)]"
           >
-            {loading && !matches.length ? (
-              <p className="px-2 py-2 text-xs text-muted-foreground">
-                Loading installed commands…
-              </p>
-            ) : matches.length === 0 ? (
-              <p className="px-2 py-2 text-xs text-muted-foreground">
-                {commands.length
+            <EntityPickerView
+              anchor="field"
+              rows={pickerRows}
+              activeIndex={clamped}
+              loading={loading && pickerRows.length === 0}
+              maxHeight="max-h-64"
+              ariaLabel="Slash commands"
+              testId="prompt-field-picker"
+              rowTestId="prompt-field-row"
+              emptyLabel={
+                commands.length
                   ? 'No matching command — keep typing to send as-is.'
-                  : 'No installed skills or commands yet.'}
-              </p>
-            ) : (
-              matches.map((c, i) => (
-                <button
-                  key={`${c.source}:${c.cmd}`}
-                  type="button"
-                  role="option"
-                  data-prompt-row={i}
-                  aria-selected={i === clamped}
-                  onMouseEnter={() => setActive(i)}
-                  onClick={() => pickCommand(c)}
-                  className={cn(
-                    'flex min-h-11 w-full items-start gap-2 rounded-md px-2 py-1.5 text-left',
-                    i === clamped ? 'bg-accent' : 'hover:bg-accent/60',
-                  )}
-                >
-                  <span className="mt-0.5 shrink-0 text-muted-foreground">
-                    {SOURCE_ICON[c.source]}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="font-mono text-xs text-foreground">
-                        {c.cmd}
-                      </span>
-                      <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {SOURCE_LABEL[c.source]}
-                      </span>
-                    </span>
-                    {c.desc && (
-                      <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                        {c.desc}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              ))
-            )}
+                  : 'No installed skills or commands yet.'
+              }
+              scrollOnActive={active.viaKey}
+              onHover={(i) => setActive({ i, viaKey: false })}
+              onPick={(row) => {
+                const pick = matches.find((c) => `${c.source}:${c.cmd}` === row.id)
+                if (pick) pickCommand(pick)
+              }}
+            />
           </motion.div>
         )}
       </AnimatePresence>

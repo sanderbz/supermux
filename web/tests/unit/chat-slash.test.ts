@@ -20,15 +20,14 @@ import { readFileSync } from 'node:fs'
 
 import {
   classifySlash,
-  fuzzyScore,
   isBuiltin,
   PASS_THROUGH,
   PICKER_OPENING,
-  rankEntities,
   readTrigger,
   slashName,
   slashRows,
 } from '../../src/components/chat/slash'
+import { fuzzyScore, rankEntities } from '../../src/lib/rank'
 import { insertAtCaret } from '../../src/components/chat/composer-insert'
 
 /**
