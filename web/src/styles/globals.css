@@ -881,9 +881,16 @@
   background: var(--sm-paper-raised);
 }
 /* Side panes — the 6% accent wash (`sm-accent-wash`, B0). Reused, not forked,
-   so a per-session accent write on the shell re-skins the pane for free. */
+   so a per-session accent write on the shell re-skins the pane for free.
+
+   NOTE — no `position` here, unlike the rail and the tab bar. These rules are
+   UNLAYERED and therefore beat every Tailwind utility, so a `position:
+   relative` here would silently override a pane that positions ITSELF: it cost
+   an hour when `<ShellOverlay variant="pane">` (an `absolute inset-y-0
+   right-0` element) collapsed to a static, content-height box in the top-left
+   corner. A pane owns its own positioning; it just has to BE positioned, or
+   the `::after` hairline below escapes to the nearest positioned ancestor. */
 [data-substrate] [data-shell-pane] {
-  position: relative;
   background-color: color-mix(
     in oklab,
     var(--sm-accent) var(--sm-accent-wash-mix),
@@ -928,4 +935,25 @@
 ::view-transition-group(sm-nav-active) {
   animation-duration: 0.26s;
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── FASE B1 T6 — the shell-overlay host's container ─────────────────────────
+   `<ShellOverlay variant="frame">` sizes itself in container-query units against
+   the content column (components/shell/shell-overlay-frame.ts), so the column
+   has to be a size container. It is NOT one unconditionally, and the scoping is
+   a safety property rather than tidiness:
+
+   `container-type: size` implies LAYOUT containment, and a layout-contained
+   element is the containing block for every `position: fixed` descendant —
+   the same hazard as `backdrop-filter`. The content column hosts the mobile
+   focus sheet, the KeyBar and the joystick, all of them `fixed`. Gating the
+   containment on (desktop width) AND (an overlay actually open) means it can
+   never be active while any of that mobile chrome is mounted: the desktop
+   overlay only renders at `≥md and (pointer: fine)`, and the attribute is set
+   by the overlay itself only while open.
+   Guarded end-to-end by tests/e2e/smoke/shell-containing-block.spec.ts. */
+@media (min-width: 768px) {
+  [data-shell-content][data-overlay-open] {
+    container-type: size;
+  }
 }

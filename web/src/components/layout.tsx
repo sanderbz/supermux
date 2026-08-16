@@ -13,6 +13,10 @@ import {
 import { cn } from '@/lib/utils'
 import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
 import {
+  ShellOverlayProvider,
+  useShellOverlayProvider,
+} from '@/components/shell/use-shell-overlay'
+import {
   MorphNavLink,
   NAV_ACTIVE_VT_NAME,
 } from '@/components/view-transitions/morph'
@@ -271,7 +275,12 @@ export function Layout() {
   const setArchivedOpen = useArchivedSheet((s) => s.setOpen)
   // Kill switch, read ONCE at mount (see the attribute below).
   const [substrate] = React.useState(isShellSubstrateEnabled)
+  // The shell-overlay host: the content column, published on context so any
+  // route can raise a <ShellOverlay> without prop-drilling and without a
+  // body-level portal (which could not be bounded by the column).
+  const [attachOverlayHost, overlayHostValue] = useShellOverlayProvider()
   return (
+    <ShellOverlayProvider value={overlayHostValue}>
     <div
       className="flex h-full w-full"
       data-standalone={standalone ? '' : undefined}
@@ -289,7 +298,11 @@ export function Layout() {
         {/* The content column. `data-shell-content` raises it one step off the
             paper under the substrate; it is also the host `<ShellOverlay>`
             mounts into (see components/shell/use-shell-overlay.ts). */}
-        <main data-shell-content="" className={cn('min-h-0 flex-1 overflow-auto')}>
+        <main
+          ref={attachOverlayHost}
+          data-shell-content=""
+          className={cn('min-h-0 flex-1 overflow-auto')}
+        >
           <Outlet />
         </main>
         {!isFocus && <BottomNav />}
@@ -306,5 +319,6 @@ export function Layout() {
        *  (it's only in the DOM as an overlay while open). */}
       <ArchivedSheet open={archivedOpen} onOpenChange={setArchivedOpen} />
     </div>
+    </ShellOverlayProvider>
   )
 }

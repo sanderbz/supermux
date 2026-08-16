@@ -48,6 +48,12 @@ const DevMarks = import.meta.env.DEV
 const DevChatUi = import.meta.env.DEV
   ? lazy(() => import('@/routes/dev-chat-ui'))
   : null
+// Shell bench (fase B1): the painted substrate's three columns, the chrome
+// floors and <ShellOverlay> in both variants at the real container-query size —
+// the page every B1 VR shot comes from. URL-driven so a rig can request a state.
+const DevShell = import.meta.env.DEV
+  ? lazy(() => import('@/routes/dev-shell'))
+  : null
 // Chat RENDERER bench (fase A3): the real conversation component, fed the wire
 // shapes the server sends, in every state the surface can be in — the page the
 // A3 screenshots are taken from.
@@ -172,6 +178,16 @@ export default function App() {
                   element={
                     <Suspense fallback={null}>
                       <DevChatUi />
+                    </Suspense>
+                  }
+                />
+              )}
+              {DevShell && (
+                <Route
+                  path="/dev/shell"
+                  element={
+                    <Suspense fallback={null}>
+                      <DevShell />
                     </Suspense>
                   }
                 />
