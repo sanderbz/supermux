@@ -71,7 +71,7 @@ import {
   type SkillEntry,
   type SlashCommand,
 } from '@/lib/api'
-import { StatusDot } from '@/components/session-tile/status-dot'
+import { SessionFace } from '@/components/roster/session-face'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useNewGroupAction } from '@/stores/new-group-store'
 import { useAgentToolsSheet } from '@/stores/claude-tools-store'
@@ -969,7 +969,16 @@ function PaletteRowView({
     >
       {row.kind === 'session' ? (
         <>
-          <StatusDot status={row.session.status} />
+          {/* The session's own face (fase B2 T2). 24px is the picker rung, and
+              the row is deliberately STATIC: a mark that blinks under the
+              keyboard cursor is motion the user did not ask for. */}
+          <SessionFace
+            name={row.session.name}
+            status={row.session.status}
+            size={24}
+            animate={false}
+            className="shrink-0"
+          />
           <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
             {row.session.name}
           </span>

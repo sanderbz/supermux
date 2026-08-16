@@ -104,6 +104,38 @@ describe('ticker', () => {
     expect(heights.size).toBeGreaterThan(10)
   })
 
+  test('ROSTER SCALE — 40 marks share ONE loop, and the loop dies with the last', () => {
+    // Fase B2 puts a face on every row of the overview, the focus strip and
+    // every picker. Forty is a plausible roster on this box, and the claim the
+    // whole design rests on is that forty faces cost ONE scheduling slot, not
+    // forty. Asserted rather than believed, because "shared" is a statement
+    // about code and a phone battery is a fact about the world.
+    const stops = Array.from({ length: 40 }, (_, i) =>
+      registerMark({
+        ch: characterFromSeed(`roster-${i}`),
+        state: i % 3 === 0 ? 'working' : i % 3 === 1 ? 'waiting' : 'idle',
+        left: fakeEye(),
+        right: fakeEye(),
+      }),
+    )
+    expect(liveMarkCount()).toBe(40)
+    expect(queued.length).toBe(1) // ONE rAF, not forty
+
+    frameAt(0)
+    expect(queued.length).toBe(1) // still one after a frame
+
+    // Scrolling half the roster off screen unregisters half the marks
+    // (use-on-screen.ts) — the loop keeps running for the visible half and its
+    // cost drops with the count.
+    for (const stop of stops.slice(0, 20)) stop()
+    expect(liveMarkCount()).toBe(20)
+    expect(cancelled).toBe(0)
+
+    for (const stop of stops.slice(20)) stop()
+    expect(liveMarkCount()).toBe(0)
+    expect(cancelled).toBe(1)
+  })
+
   test('the loop stops when the last mark leaves and restarts for the next', () => {
     const stop1 = registerMark({ ch, state: 'idle', left: fakeEye(), right: fakeEye() })
     const stop2 = registerMark({ ch, state: 'working', left: fakeEye(), right: fakeEye() })

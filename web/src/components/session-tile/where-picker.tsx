@@ -23,7 +23,8 @@ import {
 import { useSessions } from '@/hooks/use-sessions'
 import { homeDir, projectsDir } from '@/env'
 import { createProjectFolder } from '@/lib/create-project-folder'
-import { StatusDot, STATUS_LABEL } from './status-dot'
+import { STATUS_LABEL } from './status-dot'
+import { SessionFace } from '@/components/roster/session-face'
 
 // ── Where picker ─────────────────────────────────────────────────────────────
 // The "Where" picker (replaces the old "Directory" field) handles the three
@@ -421,7 +422,16 @@ function SessionRow({
         disabled && 'cursor-not-allowed opacity-50',
       )}
     >
-      <StatusDot status={session.status} />
+      {/* The session's own face (fase B2 T2) — the same identity the overview
+          and the strip show, at the 24px picker rung. Static: this is a list
+          under a keyboard cursor. */}
+      <SessionFace
+        name={session.name}
+        status={session.status}
+        size={24}
+        animate={false}
+        className="shrink-0"
+      />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-1.5">
           <span className="truncate text-sm font-medium">{displayLabel(session)}</span>

@@ -24,7 +24,8 @@ import { Check, ChevronDown, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import { displayLabel } from '@/lib/api/sessions'
+import { displayLabel, type SessionStatus } from '@/lib/api/sessions'
+import { SessionFace } from '@/components/roster/session-face'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -100,7 +101,9 @@ export function SessionPicker({
   //   • the live sessions in order.
   const options = useMemo(() => {
     const seen = new Set<string>()
-    const out: { name: string; label: string }[] = []
+    // `status` rides along so each row can draw the session's FACE in its
+    // current eye-state (fase B2 T2) rather than a generic terminal glyph.
+    const out: { name: string; label: string; status?: string }[] = []
     if (allowEmpty) out.push({ name: '', label: emptyLabel })
     if (value && !sessions.some((s) => s.name === value)) {
       out.push({ name: value, label: value })
@@ -108,7 +111,7 @@ export function SessionPicker({
     }
     for (const s of sessions) {
       if (seen.has(s.name)) continue
-      out.push({ name: s.name, label: displayLabel(s) })
+      out.push({ name: s.name, label: displayLabel(s), status: s.status })
     }
     return out
   }, [allowEmpty, emptyLabel, sessions, value])
@@ -192,12 +195,18 @@ export function SessionPicker({
               )}
               <DropdownMenuRadioItem value={o.name} className="gap-2 py-2">
                 {o.name ? (
-                  <TerminalSquare
-                    className="size-4 shrink-0 text-muted-foreground"
-                    aria-hidden
+                  // The session's own face (fase B2 T2) — the same identity the
+                  // overview shows, so picking a session is recognising one
+                  // rather than reading a slug. Static: this is a menu.
+                  <SessionFace
+                    name={o.name}
+                    status={o.status as SessionStatus | undefined}
+                    size={20}
+                    animate={false}
+                    className="shrink-0"
                   />
                 ) : (
-                  <span className="size-4 shrink-0" aria-hidden />
+                  <span className="size-5 shrink-0" aria-hidden />
                 )}
                 <span
                   className={cn(
@@ -228,7 +237,7 @@ function SessionPickerSheet({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  options: { name: string; label: string }[]
+  options: { name: string; label: string; status?: string }[]
   selected: string
   title: string
   onPick: (name: string) => void
@@ -265,12 +274,15 @@ function SessionPickerSheet({
                   )}
                 >
                   {o.name ? (
-                    <TerminalSquare
-                      className="size-4 shrink-0 text-muted-foreground"
-                      aria-hidden
+                    <SessionFace
+                      name={o.name}
+                      status={o.status as SessionStatus | undefined}
+                      size={24}
+                      animate={false}
+                      className="shrink-0"
                     />
                   ) : (
-                    <span className="size-4 shrink-0" aria-hidden />
+                    <span className="size-6 shrink-0" aria-hidden />
                   )}
                   <span
                     className={cn(

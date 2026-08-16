@@ -156,6 +156,13 @@ export interface ApiSession {
   tags?: string[]
   /** Pin + activity drive the sort. */
   pinned?: boolean
+  /** The session's FROZEN identity mark, `"<silhouette>:<hue>"` — written only
+   *  when the user rerolls a face (fase B2 T8, migration `mark_pin`). Absent for
+   *  every session that has never been rerolled, which is almost all of them:
+   *  assignment stays derived (`lib/roster-marks.ts`), and this column exists
+   *  only so an explicit choice outlives a reload. Unparseable values decode to
+   *  `undefined` and the derived face is used. */
+  mark_pin?: string | null
   /** tmux session alive AND a child process exists. */
   running?: boolean
   /** Epoch seconds — last send / last started. */

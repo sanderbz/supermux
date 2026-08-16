@@ -30,6 +30,10 @@ import { useStandaloneMode } from '@/hooks/use-standalone-mode'
 import { useSseStatus } from '@/hooks/use-sse'
 import { useSseConnectionLink } from '@/hooks/use-connection-link'
 import { useUpdateBadge, type UpdateBadgeState } from '@/hooks/use-update-badge'
+import {
+  RosterMarksProvider,
+  useRosterMarksProvider,
+} from '@/hooks/use-roster-marks'
 
 interface NavItem {
   to: string
@@ -287,7 +291,13 @@ export function Layout() {
   // route can raise a <ShellOverlay> without prop-drilling and without a
   // body-level portal (which could not be bounded by the column).
   const [attachOverlayHost, overlayHostValue] = useShellOverlayProvider()
+  // The roster's faces, assigned ONCE for the whole app (fase B2 T2). Dedupe is
+  // a property of the roster, not of a row, so it cannot live in the row — and
+  // it is mounted here, above every route, because the palette, the pickers and
+  // the focus strip all draw marks outside the overview's tree.
+  const rosterMarks = useRosterMarksProvider()
   return (
+    <RosterMarksProvider value={rosterMarks}>
     <ShellOverlayProvider value={overlayHostValue}>
     <div
       className="flex h-full w-full"
@@ -328,5 +338,6 @@ export function Layout() {
       <ArchivedSheet open={archivedOpen} onOpenChange={setArchivedOpen} />
     </div>
     </ShellOverlayProvider>
+    </RosterMarksProvider>
   )
 }
