@@ -77,6 +77,15 @@ async fn main() -> anyhow::Result<()> {
     // sessions) leaves stale `active`/`idle` rows that would render dead
     // sessions as healthy. Forcing tmux-less sessions to `stopped` here makes
     // the overview correct from the first paint.
+    // POST-UPDATE ATTACH AUDIT — snapshot FIRST. Every update restarts this
+    // daemon while its `setsid`-detached holders keep running, and the promise
+    // is that each one is picked back up. `reconcile_on_boot` below rewrites
+    // `last_status` to `stopped` for everything it finds dead, which destroys
+    // the evidence of what was running at shutdown — so the audit's target list
+    // has to be taken before it, and judged (once, ~20s in) after the pumps
+    // have had time to attach.
+    let audit_targets = sessions::auto_actions::snapshot_for_audit(&state).await;
+
     sessions::auto_actions::reconcile_on_boot(&state).await;
 
     // Background tasks. The scheduler tick runs here.
@@ -85,6 +94,11 @@ async fn main() -> anyhow::Result<()> {
     sessions::auto_actions::spawn_all(&state).await;
     // Resume per-session steering delivery on boot.
     sessions::steering::deliver_loop::spawn_all(&state).await;
+    // One-shot audit: ~20s from now, prove every session that was running at
+    // shutdown is attached again — auto-healing (and always logging a summary
+    // line) for the ones that are not. Runs after `spawn_all` so the detector
+    // loops and their pumps are already dialling.
+    sessions::auto_actions::spawn_post_update_audit(&state, audit_targets);
     // File-driven Agent-Teams detector. Watches `~/.claude/teams`
     // (+ slow safety poll), re-validates teammate `%id`s each tick, broadcasts
     // the team snapshot over SSE. Cheap no-op while no team files exist.

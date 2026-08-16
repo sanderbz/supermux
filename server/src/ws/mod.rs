@@ -401,16 +401,26 @@ async fn handle_socket(mut socket: WebSocket, name: String, state: AppState, ori
     //    runtime is the same local `has-session` probe `Tmux::new(&name)` did.
     //    An unresolvable runtime reads as "not running" — the same 4404 the
     //    client already knows how to handle.
-    let alive = match state.runtime_for(&name).await {
-        Ok(rt) => rt.alive().await,
+    //    The gate asks the runtime TWICE on purpose. `alive()` is the historical
+    //    check; `death()` is the backend's PROOF that the terminal is gone, and
+    //    it is what closes the hole this endpoint had for the native runtime: a
+    //    daemon whose pump could not attach (holder crashed) still held a
+    //    perfectly coherent — and perfectly EMPTY — grid, so the attach seeded a
+    //    blank screen and told the client everything was fine. A proven death
+    //    must close 4404, which is the client's terminal "stopped" signal (it
+    //    stops reconnecting and renders the Resume UI). A holder that is merely
+    //    mid-reconnect proves nothing, so that path is untouched: the ready gate
+    //    plus the attach-generation reseed already make it invisible.
+    let verdict = match state.runtime_for(&name).await {
+        Ok(rt) => attach_verdict(rt.alive().await, rt.death().await),
         Err(e) => {
             tracing::debug!(session = %name, error = %e, "ws closed: runtime unavailable");
-            false
+            Err("session not running".to_string())
         }
     };
-    if !alive {
-        tracing::debug!(session = %name, "ws closed: session not running");
-        close(&mut socket, CLOSE_NOT_RUNNING, "session not running").await;
+    if let Err(reason) = verdict {
+        tracing::debug!(session = %name, reason = %reason, "ws closed: session not running");
+        close_owned(&mut socket, CLOSE_NOT_RUNNING, reason).await;
         return;
     }
 
@@ -1414,6 +1424,53 @@ fn matches_bind_host(state: &AppState, host: &str) -> bool {
 }
 
 /// Send a close frame, swallowing transport errors (we're tearing down anyway).
+/// May this attach proceed? `Err(reason)` means close [`CLOSE_NOT_RUNNING`].
+///
+/// Pure so the rule is testable without a live socket — and the rule is the one
+/// that failed in production: a native session whose holder had crashed still
+/// answered every capture (from an EMPTY grid the pump never got to fill), so
+/// the attach seeded a blank screen, sent `replay_done`, and left the user
+/// looking at a coherent-looking dead terminal with no way back. A backend that
+/// can PROVE its terminal is gone must close 4404, which is the client's
+/// terminal signal: stop reconnecting, render the stopped/Resume screen.
+///
+/// A holder that is merely between two connections proves nothing ([`death`]
+/// answers `None` there), so an ordinary reconnect still attaches and is healed
+/// by the ready gate + the attach-generation reseed.
+///
+/// [`death`]: crate::sessions::runtime::SessionRuntime::death
+fn attach_verdict(
+    alive: bool,
+    death: Option<crate::sessions::runtime::TerminalDeath>,
+) -> Result<(), String> {
+    match death {
+        Some(d) => Err(d.reason),
+        None if !alive => Err("session not running".to_string()),
+        None => Ok(()),
+    }
+}
+
+/// [`close`] with a reason built at runtime. Clients switch on the CODE — the
+/// reason is for the human reading devtools or a server log — so it is clamped
+/// to the 123 BYTES a close frame allows (a longer one is protocol-invalid and
+/// would cost the client the code it actually needs).
+async fn close_owned(socket: &mut WebSocket, code: u16, mut reason: String) {
+    const MAX_CLOSE_REASON: usize = 123;
+    if reason.len() > MAX_CLOSE_REASON {
+        let mut end = MAX_CLOSE_REASON;
+        while end > 0 && !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        reason.truncate(end);
+    }
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code,
+            reason: Utf8Bytes::from(reason),
+        })))
+        .await;
+}
+
 async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
     let _ = socket
         .send(Message::Close(Some(CloseFrame {
@@ -1754,6 +1811,74 @@ mod reattach_reseed_tests {
                 && body[body.find("_ = resync_tick =>").unwrap()..]
                     .contains("send_seed_then_done"),
             "the resync tick must re-push the authoritative seed",
+        );
+    }
+}
+
+#[cfg(test)]
+mod dead_holder_gate_tests {
+    //! The attach gate for a session whose terminal is PROVABLY gone.
+    //!
+    //! Production shape of the bug: the busiest session's holder died, the
+    //! daemon's pump could not reattach, and every capture answered from the
+    //! empty grid a fresh `NativeSession` starts with. The gate asked
+    //! `alive()` — which, detached and with a stale-but-live pid, said yes — so
+    //! the socket seeded a blank screen and told the client all was well. The
+    //! user got a black terminal and 500s on input for half an hour.
+    //!
+    //! The decision is factored into [`attach_verdict`] so it can be pinned
+    //! without a browser, a holder and a pty; the structural half of the test
+    //! pins that `handle_socket` still routes it to a 4404 close.
+
+    use super::*;
+    use crate::sessions::runtime::TerminalDeath;
+
+    const SRC: &str = include_str!("mod.rs");
+
+    #[test]
+    fn a_proven_death_closes_the_attach_even_when_liveness_says_otherwise() {
+        // The exact production shape: the liveness probe still says "alive"
+        // (stale pid, no exit marker) but the backend can prove the holder is
+        // gone. The proof must win — this is the branch that was missing.
+        let death = TerminalDeath {
+            reason: "holder is gone (pid 4242 left no exit marker — it crashed or was killed)"
+                .to_string(),
+            unexpected: true,
+        };
+        let verdict = attach_verdict(true, Some(death.clone()));
+        assert_eq!(
+            verdict,
+            Err(death.reason),
+            "a proven death must refuse the attach, and say why",
+        );
+
+        // A clean child exit refuses too (the ordinary stopped session).
+        assert!(attach_verdict(false, Some(TerminalDeath::exited(0))).is_err());
+        // Not alive with no proof (tmux's `has-session` = false) — unchanged.
+        assert_eq!(
+            attach_verdict(false, None),
+            Err("session not running".to_string()),
+        );
+        // A live session with no death proof attaches, exactly as before. This
+        // is also the mid-reconnect case: a detached pump whose holder is up
+        // proves nothing, and the ready gate + attach-generation reseed heal it.
+        assert_eq!(attach_verdict(true, None), Ok(()));
+    }
+
+    #[test]
+    fn the_gate_is_wired_to_a_4404_close() {
+        assert_eq!(CLOSE_NOT_RUNNING, 4404, "the client treats 4404 as terminal");
+        let start = SRC.find("async fn handle_socket(").expect("handle_socket exists");
+        let body = &SRC[start..start + 6000.min(SRC.len() - start)];
+        let gate = body.find("attach_verdict(").expect("the gate must use attach_verdict");
+        let tail = &body[gate..gate + 800.min(body.len() - gate)];
+        assert!(
+            tail.contains("rt.death().await"),
+            "the gate must consult the runtime's death proof, not liveness alone",
+        );
+        assert!(
+            tail.contains("CLOSE_NOT_RUNNING"),
+            "a refused attach must close 4404 so the client renders the stopped UI",
         );
     }
 }

@@ -1634,14 +1634,18 @@ mod tests {
         let sdir = native::spool::session_dir(dir, name);
         std::fs::create_dir_all(&sdir).unwrap();
         std::fs::write(native::spool::spool_path(&sdir), b"scrollback").unwrap();
+        let pid = std::process::id();
         native::spool::write_meta(
             &sdir,
             &native::spool::Meta {
                 session: name.into(),
-                pid: if running { std::process::id() } else { 0 },
+                pid: if running { pid } else { 0 },
                 cols: 80,
                 rows: 24,
-                started_at: 0,
+                // When that pid REALLY started. The liveness probe checks this:
+                // a live pid alone stopped being proof of identity once pid
+                // reuse could keep a dead session looking alive.
+                started_at: native::runtime::proc_start_unix(pid).unwrap_or(0),
                 command: "claude".into(),
             },
         )

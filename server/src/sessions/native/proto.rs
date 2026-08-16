@@ -25,6 +25,7 @@
 //! | 0x02 | `RESIZE` | `u16 cols BE` + `u16 rows BE` → `TIOCSWINSZ`   |
 //! | 0x03 | `SIGNAL` | `i32 signum BE`, sent to the child's process group |
 //! | 0x04 | `QUERY`  | *(empty)* → holder answers with `INFO`         |
+//! | 0x05 | `ATTACH_FROM` | `u64 BE` absolute spool offset already received |
 //!
 //! Holder → daemon (`0x8_`):
 //!
@@ -49,6 +50,38 @@
 //!
 //! Exactly ONE daemon connection is served at a time: a new connection
 //! replaces the old one (the old queue is dropped, which closes it).
+//!
+//! ## `ATTACH_FROM` — delta replay (why a reconnect is not an 8 MiB event)
+//!
+//! The daemon sends ONE frame before anything else on every connection:
+//!
+//! ```text
+//!   0x05  len=8  <u64 BE absolute spool offset>
+//! ```
+//!
+//! The offset is "I have already received spool bytes `[0, offset)`" — the
+//! daemon derives it from the previous connection's `HELLO`
+//! (`replay_from + every OUTPUT byte counted since`). `0` means "I have
+//! nothing, send the full tail".
+//!
+//! The holder waits up to ~200 ms for that frame (an older daemon simply never
+//! sends one, which reads as `0`), and only THEN takes the attach lock and
+//! snapshots. When `offset` still sits inside the retained spool it snapshots
+//! exactly `[offset, total)` and reports `delta: true` + `replay_from: offset`
+//! in [`Hello`]; otherwise it falls back to the full [`REPLAY_TAIL`] tail with
+//! `delta: false`, and the daemon rebuilds its grid from scratch as before.
+//!
+//! Why it matters: a lag-drop used to cost `attach → 8 MiB replay → the daemon
+//! falls behind parsing it → lag-drop → attach → 8 MiB …` at ~4 Hz, which is
+//! how a busy session's holder gets hammered into the ground. With a delta the
+//! reconnect costs the handful of kilobytes that actually flowed during the gap.
+//!
+//! Both directions of the version skew are supported, which matters because a
+//! deploy is exactly when a NEW daemon meets OLD holders: unknown frame kinds
+//! are ignored by both sides, and the new [`Hello`] fields are `#[serde(default)]`
+//! so an old holder's JSON still parses (`delta: false` → full replay).
+//!
+//! [`REPLAY_TAIL`]: crate::sessions::native::spool::REPLAY_TAIL
 
 use std::io;
 
@@ -64,6 +97,10 @@ pub const RESIZE: u8 = 0x02;
 pub const SIGNAL: u8 = 0x03;
 /// Empty → the holder replies with [`INFO`].
 pub const QUERY: u8 = 0x04;
+/// `u64` big-endian: the absolute spool offset the daemon has already received.
+/// Sent as the FIRST frame on every connection (`0` = "send the full tail").
+/// See the module docs for the delta-replay handshake.
+pub const ATTACH_FROM: u8 = 0x05;
 
 // ── holder → daemon ─────────────────────────────────────────────────────────
 
@@ -99,8 +136,30 @@ pub struct Hello {
     /// How many bytes of spool tail follow as `OUTPUT` frames before live
     /// output begins.
     pub replay_bytes: u64,
-    /// Total bytes ever appended to the spool (pre-rotation). Diagnostics only.
+    /// Total bytes ever appended to the spool (pre-rotation) — also the
+    /// absolute offset the LIVE stream starts at, since the snapshot and this
+    /// number are taken under the same lock.
     pub spool_total: u64,
+    /// Absolute spool offset of the first replay byte (`spool_total -
+    /// replay_bytes` in the normal case). Sent explicitly rather than derived so
+    /// the daemon's offset bookkeeping does not depend on arithmetic that a
+    /// degraded spool could invalidate.
+    #[serde(default)]
+    pub replay_from: u64,
+    /// `true` when the replay is the DELTA the daemon asked for with
+    /// [`ATTACH_FROM`] — it continues exactly where the daemon left off, so the
+    /// daemon keeps its grid instead of rebuilding it. `false` (also the default
+    /// for a pre-delta holder) means "full tail, rebuild from scratch".
+    #[serde(default)]
+    pub delta: bool,
+    /// `true` when the holder's spool is not recording (disk error). The replay
+    /// may have a hole in it and delta replay is off for the rest of this
+    /// holder's life; the child is unaffected.
+    #[serde(default)]
+    pub spool_degraded: bool,
+    /// Bytes the child wrote that never reached the spool (0 in the normal case).
+    #[serde(default)]
+    pub spool_dropped: u64,
 }
 
 /// Answer to [`QUERY`] — the liveness/pid probe.
@@ -181,6 +240,17 @@ pub fn parse_resize(payload: &[u8]) -> Option<(u16, u16)> {
     ))
 }
 
+/// Encode an [`ATTACH_FROM`] payload (`u64` big-endian).
+pub fn attach_from_payload(offset: u64) -> [u8; 8] {
+    offset.to_be_bytes()
+}
+
+/// Decode an [`ATTACH_FROM`] payload; `None` if it isn't exactly 8 bytes.
+pub fn parse_u64(payload: &[u8]) -> Option<u64> {
+    let bytes: [u8; 8] = payload.try_into().ok()?;
+    Some(u64::from_be_bytes(bytes))
+}
+
 /// Decode a `SIGNAL` / `EXIT` payload (`i32` big-endian).
 pub fn parse_i32(payload: &[u8]) -> Option<i32> {
     if payload.len() != 4 {
@@ -222,6 +292,37 @@ mod tests {
         let mut cur = std::io::Cursor::new(bytes);
         let err = read_frame(&mut cur).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// The position frame is the whole delta-replay handshake: 8 big-endian
+    /// bytes, and anything else is refused rather than silently read as 0 (a 0
+    /// would cost the holder a full 8 MiB tail).
+    #[tokio::test]
+    async fn attach_from_carries_a_u64_offset() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_frame(&mut buf, ATTACH_FROM, &attach_from_payload(8_388_608)).await.unwrap();
+        let mut cur = std::io::Cursor::new(buf);
+        let (k, p) = read_frame(&mut cur).await.unwrap().unwrap();
+        assert_eq!(k, ATTACH_FROM);
+        assert_eq!(parse_u64(&p), Some(8_388_608));
+        assert_eq!(parse_u64(&[0; 4]), None, "a short payload is not an offset");
+        assert_eq!(parse_u64(&[0; 9]), None, "an over-long payload is not an offset");
+        assert_eq!(parse_u64(&u64::MAX.to_be_bytes()), Some(u64::MAX));
+    }
+
+    /// A `HELLO` from a PRE-delta holder has none of the new fields. It must
+    /// still parse — that is the mixed-version deploy this whole change happens
+    /// during — and read as "full tail, healthy spool".
+    #[test]
+    fn an_old_holders_hello_still_parses_as_a_full_replay() {
+        let old = br#"{"session":"s","pid":42,"cols":80,"rows":24,"started_at":7,
+                       "replay_bytes":100,"spool_total":500}"#;
+        let hello: Hello = serde_json::from_slice(old).unwrap();
+        assert_eq!((hello.replay_bytes, hello.spool_total), (100, 500));
+        assert!(!hello.delta, "an old holder never sends a delta");
+        assert_eq!(hello.replay_from, 0);
+        assert!(!hello.spool_degraded);
+        assert_eq!(hello.spool_dropped, 0);
     }
 
     #[tokio::test]

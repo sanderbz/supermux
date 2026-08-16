@@ -832,6 +832,42 @@ pub async fn start(
     let dir = PathBuf::from(&s.dir);
     let shell = user_shell();
 
+    // ORPHAN REAPING (native, local only). A holder that died while its CHILD
+    // survived leaves the child reparented to `init` with `meta.json` still
+    // naming its live pid and no `exit` marker — the exact state
+    // `Spool::create` REFUSES to run over. That refusal fires inside the holder
+    // we are about to spawn, so without this the spawn below would sit out its
+    // full timeout and this Resume would fail with "holder did not come up in
+    // time" on a session that is perfectly recoverable.
+    //
+    // `reap_orphan` is a no-op (returns `None`, reads nothing, moves nothing)
+    // for a session that probes ALIVE, for one that never had a holder, and for
+    // the ordinary stop → start cycle where the recorded pid is simply gone — so
+    // the historical start path is untouched. tmux and remote rows never reach
+    // it at all.
+    //
+    // A reap that REFUSES (a live pid whose identity cannot be proven) fails the
+    // start on the spot: proceeding would clear a sidecar that may still belong
+    // to a running agent, and two agents on one session dir is a far worse
+    // outcome than an error the user can see and act on.
+    if s.runtime == crate::sessions::runtime::RUNTIME_NATIVE && s.host_id.is_none() {
+        match crate::sessions::native::reap_orphan(name, &state.config.data_dir).await {
+            Ok(Some(reaped)) => tracing::warn!(
+                name = %name,
+                pid = reaped.pid,
+                signalled = reaped.signalled,
+                sigkill = reaped.killed,
+                evidence = ?reaped.evidence,
+                "start: reaped an orphaned child left by a dead holder before respawning",
+            ),
+            Ok(None) => {}
+            Err(refused) => {
+                tracing::error!(name = %name, error = %refused, "start: refusing to reap");
+                return Err(AppError::Conflict(refused.to_string()));
+            }
+        }
+    }
+
     let freshly_spawned = !rt.alive().await;
     if freshly_spawned {
         // A genuinely new pane/pty is about to exist for this name. Drop any

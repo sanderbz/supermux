@@ -53,6 +53,62 @@ fn start_holder(
     })
 }
 
+/// A child that keeps printing `L<n>.` tokens for a while, paced so output is
+/// still flowing when a test disconnects and reconnects — the whole point of
+/// the delta-replay tests. ~4000 tokens ≈ 32 KiB, comfortably inside the spool's
+/// retained range, so nothing under test is at the mercy of a rotation.
+const PACED_TOKENS: &str =
+    "i=1; while [ $i -le 4000 ]; do echo \"L$i.\"; i=$((i+1)); \
+     if [ $((i % 100)) -eq 0 ]; then sleep 0.03; fi; done; sleep 30";
+
+/// Connect to `sock` as a daemon would: send the `ATTACH_FROM` position frame,
+/// then read the `HELLO` that answers it.
+async fn attach_from(
+    sock: &std::path::Path,
+    from: u64,
+) -> (tokio::net::UnixStream, proto::Hello) {
+    let mut stream = tokio::net::UnixStream::connect(sock)
+        .await
+        .expect("connect to the holder");
+    proto::write_frame(&mut stream, proto::ATTACH_FROM, &proto::attach_from_payload(from))
+        .await
+        .expect("send ATTACH_FROM");
+    let (kind, payload) = proto::read_frame(&mut stream).await.unwrap().unwrap();
+    assert_eq!(kind, proto::HELLO, "HELLO must be the first frame");
+    (stream, serde_json::from_slice(&payload).unwrap())
+}
+
+/// Collect `OUTPUT` payloads for up to `dur`, returning how many bytes arrived.
+///
+/// Cancellation happens on `readable()` (which IS cancel-safe) and never inside
+/// `read_frame`, so a timing-out drain can not lose half a frame — the byte
+/// accounting these tests do would be meaningless if it could.
+async fn drain_for(
+    stream: &mut tokio::net::UnixStream,
+    dur: Duration,
+    out: &mut Vec<u8>,
+) -> u64 {
+    let deadline = Instant::now() + dur;
+    let mut got = 0u64;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return got;
+        }
+        if tokio::time::timeout(left, stream.readable()).await.is_err() {
+            return got;
+        }
+        match tokio::time::timeout(Duration::from_secs(5), proto::read_frame(stream)).await {
+            Ok(Ok(Some((proto::OUTPUT, p)))) => {
+                got += p.len() as u64;
+                out.extend_from_slice(&p);
+            }
+            Ok(Ok(Some(_))) => continue,
+            _ => return got,
+        }
+    }
+}
+
 /// Poll `$cond` until it is true or `$timeout` elapses. A macro rather than a
 /// function taking a closure: the conditions here `.await` on borrowed state,
 /// which an `FnMut` returning an async block cannot express.
@@ -547,6 +603,285 @@ async fn capture_plain_strips_sgr_and_capture_ansi_keeps_it() {
     assert_eq!(stripped.trim_end(), plain.trim_end(), "same rows, colour aside");
 
     session.kill().await.unwrap();
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── holder resilience (the production incident) ─────────────────────────────
+//
+// A busy session's holder DIED and left no trace anywhere: holders run
+// detached with stderr on /dev/null, so a panic printed into the void, the
+// spool simply stopped growing, and the journal had nothing. The four tests
+// below pin the four halves of the fix: a death is always recorded, a spool
+// failure is survivable, a reconnect costs a delta instead of 8 MiB, and a
+// storm of reconnects stays bounded.
+
+/// (a) A holder that dies of a bug says so — in `holder.log` AND in the `exit`
+/// marker, which is the only evidence that outlives the process.
+#[tokio::test]
+async fn a_panicking_holder_records_the_panic_and_a_reasoned_exit_marker() {
+    let dir = data_dir("panichook");
+    let sdir = spool::session_dir(&dir, "panichook");
+    // The pty pump is the task whose silent death is fatal: without it nothing
+    // reads the master, so the child blocks in `write()` forever.
+    holder::test_hooks::arm("panichook", holder::test_hooks::PANIC_PTY_PUMP);
+    let h = start_holder(&dir, "panichook", 80, 24, "echo hi; sleep 30");
+
+    // Supervision retries it a few times, then gives up and records why.
+    assert!(
+        wait_until!(Duration::from_secs(10), spool::read_exit(&sdir).is_some()),
+        "a holder that keeps panicking must write an exit marker",
+    );
+    let reason = spool::read_exit_reason(&sdir).expect("the marker must carry a reason");
+    assert!(
+        reason.starts_with("panic:"),
+        "the marker must name the panic, got {reason:?}",
+    );
+    assert!(
+        reason.contains("injected pty-pump panic"),
+        "the marker must carry the panic MESSAGE, got {reason:?}",
+    );
+    assert_eq!(
+        spool::read_exit(&sdir),
+        Some(-1),
+        "a holder that died on a bug never reaped a child status",
+    );
+
+    let log = std::fs::read_to_string(sdir.join("holder.log")).expect("holder.log must exist");
+    assert!(
+        log.contains("injected pty-pump panic"),
+        "the panic must be in holder.log:\n{log}",
+    );
+    assert!(
+        log.contains("FATAL pty-pump"),
+        "holder.log must say the holder gave up:\n{log}",
+    );
+    assert!(
+        log.contains("restarting pty-pump"),
+        "a fatal task is retried before the holder gives up:\n{log}",
+    );
+
+    holder::test_hooks::disarm("panichook", holder::test_hooks::PANIC_PTY_PUMP);
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (b) A spool that can not be written DEGRADES — it never kills the holder.
+/// A disk hiccup must cost durability, not a live agent.
+#[tokio::test]
+async fn a_failing_spool_degrades_and_the_holder_keeps_serving_the_pty() {
+    let dir = data_dir("degrade");
+    let sdir = spool::session_dir(&dir, "degrade");
+    let sock = spool::socket_path(&dir, "degrade");
+    // `cat` echoes what it is fed, so a byte that comes back proves the whole
+    // pty round trip is still alive.
+    let h = start_holder(&dir, "degrade", 80, 24, "cat");
+    assert!(wait_until!(Duration::from_secs(10), sock.exists()));
+
+    let (mut s, hello) = attach_from(&sock, 0).await;
+    assert!(!hello.spool_degraded, "the spool starts healthy");
+
+    proto::write_frame(&mut s, proto::INPUT, b"before-degrade\n").await.unwrap();
+    let mut seen = Vec::new();
+    drain_for(&mut s, Duration::from_secs(5), &mut seen).await;
+    assert!(
+        String::from_utf8_lossy(&seen).contains("before-degrade"),
+        "precondition: the pty round trip works",
+    );
+
+    // Now every spool write fails.
+    holder::test_hooks::arm("degrade", holder::test_hooks::SPOOL_FAIL);
+    proto::write_frame(&mut s, proto::INPUT, b"after-degrade\n").await.unwrap();
+    let mut after = Vec::new();
+    drain_for(&mut s, Duration::from_secs(5), &mut after).await;
+    assert!(
+        String::from_utf8_lossy(&after).contains("after-degrade"),
+        "the holder must keep pumping the pty with a broken spool, got {:?}",
+        String::from_utf8_lossy(&after),
+    );
+
+    // …and it says so: in holder.log, and to the next daemon that attaches.
+    let log = std::fs::read_to_string(sdir.join("holder.log")).unwrap();
+    assert!(log.contains("spool DEGRADED"), "the degrade must be logged:\n{log}");
+    drop(s);
+    let (s2, hello2) = attach_from(&sock, 0).await;
+    assert!(hello2.spool_degraded, "HELLO must warn that the replay is incomplete");
+    assert!(hello2.spool_dropped > 0, "dropped bytes must be counted");
+    drop(s2);
+
+    // The child is untouched by all of it.
+    assert!(spool::read_exit(&sdir).is_none(), "a spool failure is not a death");
+    holder::test_hooks::disarm("degrade", holder::test_hooks::SPOOL_FAIL);
+
+    let session = NativeSession::new("degrade", &dir);
+    let _ = session.kill().await;
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (c) DELTA REPLAY: a reconnecting daemon that says where it stopped gets
+/// exactly the bytes it missed — no repeat of the 8 MiB tail, and no gap or
+/// duplicate at the seam (same integrity proof as the mid-stream attach test).
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_reconnect_with_a_position_replays_only_the_gap() {
+    let dir = data_dir("delta");
+    let sock = spool::socket_path(&dir, "delta");
+    let h = start_holder(&dir, "delta", 200, 50, PACED_TOKENS);
+    assert!(wait_until!(Duration::from_secs(10), sock.exists()));
+
+    // First attach: no position, so the holder sends the tail it always did.
+    let (mut a, hello_a) = attach_from(&sock, 0).await;
+    assert!(!hello_a.delta, "a daemon with no position gets a full tail");
+    let mut seen: Vec<u8> = Vec::new();
+    let mut offset = hello_a.replay_from;
+    offset += drain_for(&mut a, Duration::from_millis(700), &mut seen).await;
+    assert!(!seen.is_empty(), "the child produced nothing to attach to");
+    drop(a);
+
+    // Output keeps flowing while nobody is attached — that is the gap.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let (mut b, hello_b) = attach_from(&sock, offset).await;
+    assert!(hello_b.delta, "the holder must honour ATTACH_FROM: {hello_b:?}");
+    assert_eq!(hello_b.replay_from, offset, "the delta must start where we stopped");
+    assert!(hello_b.replay_bytes > 0, "bytes flowed during the gap");
+    assert_eq!(
+        hello_b.replay_bytes,
+        hello_b.spool_total - offset,
+        "a delta is exactly [offset, total)",
+    );
+    assert!(
+        hello_b.replay_bytes < offset,
+        "the delta ({}) must be far smaller than the tail we would otherwise \
+         have re-received ({offset})",
+        hello_b.replay_bytes,
+    );
+    drain_for(&mut b, Duration::from_millis(700), &mut seen).await;
+    drop(b);
+
+    // The proof: the child prints each token exactly once, so the concatenation
+    // of both connections must be strictly consecutive. A gap means the delta
+    // lost bytes; a repeat means it replayed bytes we already had.
+    let toks = tokens(&seen);
+    assert!(toks.len() > 200, "only {} tokens — too short to be meaningful", toks.len());
+    for w in toks.windows(2) {
+        assert!(
+            w[1] == w[0] + 1,
+            "delta seam broken at L{}→L{}: {}",
+            w[0],
+            w[1],
+            if w[1] <= w[0] { "DUPLICATED bytes" } else { "LOST bytes" },
+        );
+    }
+
+    let session = NativeSession::new("delta", &dir);
+    let _ = session.kill().await;
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (d) THE STORM. The incident's signature was six attaches in 1.6 s, each
+/// paying a full 8 MiB replay. With a position handshake the same five rapid
+/// reconnects cost the gap and nothing more, so the loop can not feed itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_reconnect_storm_replays_a_bounded_number_of_bytes() {
+    let dir = data_dir("storm");
+    let sock = spool::socket_path(&dir, "storm");
+    let h = start_holder(&dir, "storm", 200, 50, PACED_TOKENS);
+    assert!(wait_until!(Duration::from_secs(10), sock.exists()));
+
+    // Build up a tail worth re-replaying, then take a position.
+    let (mut first, hello) = attach_from(&sock, 0).await;
+    let mut seen = Vec::new();
+    let mut offset = hello.replay_from + drain_for(&mut first, Duration::from_millis(700), &mut seen).await;
+    drop(first);
+    assert!(offset > 4_000, "not enough output to make a re-replay expensive");
+
+    // Five reconnects as fast as they can be made.
+    let mut replayed = 0u64;
+    for i in 0..5 {
+        let (mut s, hello) = attach_from(&sock, offset).await;
+        assert!(hello.delta, "reconnect {i} fell back to a full tail: {hello:?}");
+        replayed += hello.replay_bytes;
+        offset = hello.replay_from + drain_for(&mut s, Duration::from_millis(120), &mut seen).await;
+        drop(s);
+    }
+    // Without the handshake this would have been 5 × the whole tail.
+    assert!(
+        replayed < offset,
+        "five reconnects replayed {replayed} bytes — more than the {offset} \
+         bytes of stream that exist, i.e. the storm is still re-sending history",
+    );
+    assert!(
+        replayed < 64 * 1024,
+        "a storm of reconnects must stay bounded, replayed {replayed} bytes",
+    );
+
+    // And the stream is still exact across all six connections.
+    let toks = tokens(&seen);
+    for w in toks.windows(2) {
+        assert!(w[1] == w[0] + 1, "storm seam broken at L{}→L{}", w[0], w[1]);
+    }
+
+    let session = NativeSession::new("storm", &dir);
+    let _ = session.kill().await;
+    h.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (e) THE SPILL, end to end. A daemon that is slow to drain — the shape the
+/// storm was made of: it attaches, the holder starts pushing an 8 MiB replay,
+/// and the daemon is busy feeding that into its VT instead of reading the live
+/// queue — must NOT be disconnected for it. The holder's own burst used to be
+/// counted as the daemon lagging, so the link was dropped, which produced
+/// another attach, another replay, and so on at ~4 Hz.
+///
+/// The other half of the property is ORDER: the frames that spilled have to
+/// come back out ahead of everything queued after them, or the daemon's grid is
+/// silently corrupt. The child prints each `L<n>.` token exactly once, so a
+/// strictly consecutive sequence across the stall is that proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_daemon_that_stalls_while_the_child_streams_is_not_dropped() {
+    let dir = data_dir("stall");
+    let sock = spool::socket_path(&dir, "stall");
+    let h = start_holder(&dir, "stall", 200, 50, PACED_TOKENS);
+    assert!(wait_until!(Duration::from_secs(10), sock.exists()));
+
+    // Build up a stream, and a position to come back with.
+    let (mut a, hello_a) = attach_from(&sock, 0).await;
+    let mut seen: Vec<u8> = Vec::new();
+    let offset = hello_a.replay_from + drain_for(&mut a, Duration::from_millis(700), &mut seen).await;
+    assert!(!seen.is_empty(), "the child produced nothing to attach to");
+    drop(a);
+
+    // Reattach and then read NOTHING for a second while the child keeps
+    // printing. Everything the holder wants to send has to wait in the socket
+    // buffer, the queue and (past it) the spill.
+    let (mut b, hello_b) = attach_from(&sock, offset).await;
+    assert_eq!(hello_b.replay_from, offset);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // The connection must still be there, and still exact.
+    let got = drain_for(&mut b, Duration::from_secs(3), &mut seen).await;
+    assert!(
+        got > 0,
+        "the holder dropped a daemon that was merely slow to drain its replay",
+    );
+    let toks = tokens(&seen);
+    assert!(toks.len() > 200, "only {} tokens — too short to be meaningful", toks.len());
+    for w in toks.windows(2) {
+        assert!(
+            w[1] == w[0] + 1,
+            "the stall broke the byte stream at L{}→L{}: {}",
+            w[0],
+            w[1],
+            if w[1] <= w[0] { "DUPLICATED bytes" } else { "LOST bytes" },
+        );
+    }
+    drop(b);
+
+    let session = NativeSession::new("stall", &dir);
+    let _ = session.kill().await;
     h.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
