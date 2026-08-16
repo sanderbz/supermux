@@ -291,7 +291,7 @@ decoration. One rule governs all of them:
 | **board issue** | `SystemEntity` | ❌ | B2's issue surface |
 | **host** | `SystemEntity` | ❌ | no surface yet |
 | **PR** | `SystemEntity` | ❌ | no surface yet |
-| **subagent** | `SystemEntity` | ❌ | no surface yet |
+| **subagent** | `SystemEntity` | ❌ | **deliberately none** — a subagent voice is a new primitive and the vocabulary is closed. The surface SAYS the work shows in the terminal, and fetch-full resolves subagent uuids so the data path is not the blocker. See §6f *Subagents* |
 
 - **The mechanic is unchanged in both states**: `−1/−5/−1/−3` margins cancelling
   `1/5/1/3` padding. That is what makes the sentence hold still when a chip
@@ -618,10 +618,58 @@ token and the scan's assertion in the same commit.
 
 ### Connection vocabulary (T2.6)
 
-<!-- PLACEHOLDER — owned by the T2 chat-socket honesty pass, not by T6.
-     Do not invent this section. Expected contents: the four words
-     `live` / `reconnecting` / `stale` / `offline`, identical in the code, in
-     `brand/copy.ts` and here, with no surface inventing a fifth. -->
+**Four words. No surface may invent a fifth.** They are the type
+`ChatPresentation` in `components/chat/connection.ts`, the keys of
+`CHAT_CONNECTION` in `brand/copy.ts`, and this table — one vocabulary in three
+places, so a drift is a type error rather than a taste argument.
+
+| word | what is true | what the surface shows |
+|---|---|---|
+| `live` | the tailer is reading the right file and said so inside the ceiling | **nothing.** The healthy state is silence |
+| `reconnecting` | the socket or the tailer is between states | the transcript **stays on screen** under a chip that says it is not current |
+| `stale` | the socket believes it is live, but nothing authoritative has arrived inside the ceiling | the same presentation as `reconnecting`. A different cause, worth telling apart in a bug report |
+| `offline` | terminal — no chat data plane, or the socket gave up | the chip, and it is **tappable to redial** |
+
+Three rules that are easy to get wrong and expensive to get wrong:
+
+1. **The transcript never blanks.** The server's contract is explicit
+   (`tailer.rs:153`): *"`Reconnecting` is deliberately not an error: the
+   transcript we already showed stays on screen, but the client must not
+   present it as a complete, current conversation."* The chrome carries the
+   doubt; the content does not move.
+2. **`live` says nothing.** A chip that reads "Live" on every screen is
+   wallpaper within a day, and then the day it says something else, nobody
+   reads it.
+3. **The ceiling is a measurement, not a taste.** `STALENESS_CEILING_MS` is
+   90 s because A0 measured a text-only transcript entry at p50 31.4 s and max
+   32.8 s, and a ceiling that fires during a healthy prose turn teaches the
+   user that the honesty mechanism lies — strictly worse than no ceiling. The
+   A0 numbers are unit-test fixtures (`tests/unit/chat-connection.test.ts`), so
+   shortening the ceiling fails a test that says why.
+
+**The global banner sees `reconnecting` and `offline`, and NOT `stale`**
+(`linkStateFor`). A quiet session is not an app-wide alarm.
+
+### Subagents (T4.1)
+
+The chat surface **does not render subagent turns**, and that is a decision.
+A subagent voice would be a new chat primitive, and the vocabulary is closed at
+A4's set plus B4's system lines. The `subagent` row in §5's entity table stays
+`❌` deliberately, not for want of anyone getting to it.
+
+What is **not** acceptable, and what A6 fixed:
+
+- A count is not a statement. `· N subagents` with no explanation of where the
+  content went reads as a bug. The working row says the work shows in the
+  terminal (`copy.ts::SUBAGENTS`).
+- Fetch-full was a **structural 404** for subagent uuids —
+  `find_full_entry` opened one path while the wire carried entries from
+  `<conv>/subagents/`. It now sweeps both (`find_full_entry_anywhere`), so a
+  404 from that route means "no such entry" and nothing else, and the day a
+  surface does want them the data path already works.
+- The client's drop is a named, tested rule (`isSubagent`), not a `continue` in
+  two loops. In particular a fan-out must not consume the auto-fetch window, or
+  it pushes real clipped messages out of it and makes them unrecoverable.
 
 ## 7. How the rest of the app consumes this
 
