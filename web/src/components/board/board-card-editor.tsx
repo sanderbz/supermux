@@ -1,28 +1,25 @@
-import { useCallback, useMemo, useState } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { useState } from 'react'
 import {
-  Check,
-  ChevronDown,
-  ChevronUp,
   GitCommit,
   GitPullRequest,
   Link2,
   Play,
-  Plus,
   Trash2,
   X,
 } from 'lucide-react'
 
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
+// Extracted in fase B2 T10 so the issue surface can use it without dragging
+// this 600-line page-only host along. Re-exported below for the page's own
+// import sites during the removal.
+import { AcceptanceChecklist } from '@/components/issues/acceptance-checklist'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
 import { useSessions } from '@/hooks/use-sessions'
 import {
   boardApi,
   displayLabel,
-  type AcceptanceItem,
   type BoardIssue,
   type BoardIssuePatch,
   type IssueLink,
@@ -256,186 +253,6 @@ function EditorForm({
   )
 }
 
-// ── Acceptance checklist (human edits/reorders; agent ticks live over SSE) ────
-
-export function AcceptanceChecklist({
-  issueId,
-  items,
-}: {
-  issueId: string
-  items: AcceptanceItem[]
-}) {
-  const [adding, setAdding] = useState('')
-  const [editingId, setEditingId] = useState<number | null>(null)
-  const [editBody, setEditBody] = useState('')
-  const [pendingId, setPendingId] = useState<number | null>(null)
-  const reduce = useReducedMotion()
-
-  const sorted = useMemo(() => [...items].sort((a, b) => a.pos - b.pos), [items])
-  const doneCount = sorted.filter((i) => i.done).length
-  const total = sorted.length
-
-  const run = useCallback(
-    async (id: number | null, fn: () => Promise<unknown>) => {
-      setPendingId(id)
-      try {
-        await fn()
-      } catch {
-        /* SSE reconciles */
-      } finally {
-        setPendingId(null)
-      }
-    },
-    [],
-  )
-
-  const toggle = (item: AcceptanceItem) =>
-    void run(item.id, () =>
-      boardApi.patchAcceptance(issueId, item.id, { done: !item.done }),
-    )
-  const removeItem = (id: number) =>
-    void run(id, () => boardApi.removeAcceptance(issueId, id))
-  const addItem = () => {
-    const body = adding.trim()
-    if (!body) return
-    setAdding('')
-    void run(null, () => boardApi.addAcceptance(issueId, body))
-  }
-  const saveEdit = (id: number) => {
-    const body = editBody.trim()
-    setEditingId(null)
-    if (!body) return
-    void run(id, () => boardApi.patchAcceptance(issueId, id, { body }))
-  }
-  const move = (index: number, dir: -1 | 1) => {
-    const next = index + dir
-    if (next < 0 || next >= sorted.length) return
-    const order = sorted.map((i) => i.id)
-    ;[order[index], order[next]] = [order[next], order[index]]
-    void run(sorted[index].id, () => boardApi.reorderAcceptance(issueId, order))
-  }
-
-  return (
-    <Section
-      label="Acceptance"
-      trailing={
-        total > 0 ? (
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium tabular-nums text-muted-foreground">
-            <span className="text-foreground">{doneCount}</span>/{total}
-          </span>
-        ) : null
-      }
-    >
-      <div className="flex flex-col gap-1.5">
-        {total > 0 && (
-          <div className="h-1 overflow-hidden rounded-full bg-muted">
-            <motion.div
-              className="h-full rounded-full bg-status-ready"
-              initial={false}
-              animate={{ width: `${(doneCount / total) * 100}%` }}
-              transition={reduce ? { duration: 0 } : springs.smooth}
-            />
-          </div>
-        )}
-        <AnimatePresence initial={false}>
-          {sorted.map((item, index) => (
-            <motion.div
-              key={item.id}
-              layout
-              initial={reduce ? false : { opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
-              transition={springs.snappy}
-              className="group flex items-center gap-2"
-            >
-              <button
-                type="button"
-                role="checkbox"
-                aria-checked={Boolean(item.done)}
-                aria-label={`Mark "${item.body}" ${item.done ? 'incomplete' : 'complete'}`}
-                disabled={pendingId === item.id}
-                onClick={() => toggle(item)}
-                className={cn(
-                  'grid size-5 shrink-0 place-items-center rounded-[5px] border transition-colors',
-                  item.done
-                    ? 'border-status-ready bg-status-ready text-background'
-                    : 'border-input hover:border-foreground/40',
-                )}
-              >
-                {item.done && <Check className="size-3.5" strokeWidth={3} />}
-              </button>
-              {editingId === item.id ? (
-                <Input
-                  autoFocus
-                  value={editBody}
-                  onChange={(e) => setEditBody(e.target.value)}
-                  onBlur={() => saveEdit(item.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      saveEdit(item.id)
-                    } else if (e.key === 'Escape') {
-                      setEditingId(null)
-                    }
-                  }}
-                  className="h-8 flex-1"
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingId(item.id)
-                    setEditBody(item.body)
-                  }}
-                  className={cn(
-                    'flex-1 truncate text-left text-sm',
-                    item.done
-                      ? 'text-muted-foreground line-through'
-                      : 'text-foreground',
-                  )}
-                >
-                  {item.body}
-                </button>
-              )}
-              <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                <IconBtn label="Move up" disabled={index === 0} onClick={() => move(index, -1)}>
-                  <ChevronUp className="size-3.5" />
-                </IconBtn>
-                <IconBtn
-                  label="Move down"
-                  disabled={index === sorted.length - 1}
-                  onClick={() => move(index, 1)}
-                >
-                  <ChevronDown className="size-3.5" />
-                </IconBtn>
-                <IconBtn label="Remove item" onClick={() => removeItem(item.id)}>
-                  <X className="size-3.5" />
-                </IconBtn>
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-        <div className="flex items-center gap-2">
-          <Plus className="size-4 shrink-0 text-muted-foreground" />
-          <Input
-            value={adding}
-            placeholder="Add an acceptance item"
-            aria-label="Add an acceptance item"
-            onChange={(e) => setAdding(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                addItem()
-              }
-            }}
-            onBlur={addItem}
-            className="h-8 flex-1"
-          />
-        </div>
-      </div>
-    </Section>
-  )
-}
 
 // ── Links (PR/commit) ─────────────────────────────────────────────────────────
 
@@ -600,3 +417,5 @@ function prettyRef(l: IssueLink): string {
   if (l.kind === 'commit' && !isUrl(l.ref)) return l.ref.slice(0, 10)
   return l.ref
 }
+
+export { AcceptanceChecklist }

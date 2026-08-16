@@ -39,9 +39,13 @@ export const EMPTY = {
     body: 'Start one to put an agent to work. It runs in tmux and survives restarts.',
     cta: 'New session',
   },
-  board: {
-    title: 'No issues on the board',
-    body: 'Add a task and start an agent on it.',
+  /** Renamed from `EMPTY.board` in fase B2 T10: the issues are no longer "on a
+   *  board", they are on a session and on a team. The copy was dead code before
+   *  (nothing rendered it); it is adopted by `components/issues/issue-list.tsx`
+   *  rather than deleted. */
+  issues: {
+    title: 'No issues yet',
+    body: 'Issues linked to this session show up here — an agent reports onto them with /supermux-task.',
     cta: 'New issue',
   },
   files: {

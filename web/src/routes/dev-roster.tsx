@@ -20,16 +20,19 @@
 //     (`tests/unit/dev-roster-cast.test.tsx`), so the bench cannot quietly
 //     shrink when a later task finds a matrix inconvenient.
 //
-// Sections land with their tasks: T1 seats densities/states/attention/selection
-// and the tile tiers, T6 fills the rollup, T7 the pinned hairline, T10 the issue
-// list. A section that has not landed renders its own "pending" plate — visible,
-// countable, and impossible to confuse with a section that renders nothing.
+// Sections landed with their tasks: T1 seated densities/states/attention/
+// selection and the tile tiers, T6 filled the rollup, T7 the pinned hairline,
+// T10 the issue pieces. While a section was unlanded it rendered a loud
+// "pending" plate — an empty section and a missing section look identical in a
+// screenshot. There are none left, and `dev-roster-cast.test.tsx` asserts that.
 import * as React from 'react'
 
 import { PAPER } from '@/brand/tokens'
 import type { MarkState } from '@/brand/marks'
 import { RosterRow } from '@/components/chat/ui'
 import { AttentionRollup } from '@/components/roster/attention-rollup'
+import { AcceptanceChecklist } from '@/components/issues/acceptance-checklist'
+import { ReplyComposer } from '@/components/issues/reply-composer'
 import { SessionTile } from '@/components/session-tile'
 import { MOCK_TILES } from '@/components/session-tile/mock'
 import { getOverviewSizeConfig } from '@/lib/overview-size'
@@ -99,22 +102,6 @@ function Plate({
       >
         {children}
       </div>
-    </div>
-  )
-}
-
-/**
- * A section whose surface has not landed yet. Deliberately loud: an empty
- * section and a missing section look identical in a screenshot, and the whole
- * value of this bench is that a channel cannot silently disappear.
- */
-function Pending({ task, what }: { task: string; what: string }) {
-  return (
-    <div
-      data-bench-pending={task}
-      className="rounded-2xl border border-dashed border-hairline px-4 py-6 text-center text-xs text-ink-3"
-    >
-      {what} — lands in <strong className="font-medium text-ink-2">{task}</strong>
     </div>
   )
 }
@@ -391,7 +378,42 @@ function BenchPanel({ theme }: { theme: BenchTheme }) {
           title="The issue surface"
           note={`Per-session and per-team issue lists in ${ISSUE_STATES.join(' / ')} — the capability that has to exist before the Board page can be deleted.`}
         >
-          <Pending task="T10" what="Issue list + detail" />
+          {/* The LIST is server-backed (`useBoard`), so the bench shows the two
+              pure pieces it is made of instead of faking a query: the acceptance
+              checklist the agent ticks over SSE, and the composer that turns
+              into a durable comment when the session is gone. The list's own
+              states are covered by `issue-surface.spec.ts` against a real
+              server. */}
+          <Plate label="acceptance — the agent ticks these live">
+            <div className="px-2 pb-2">
+              <AcceptanceChecklist
+                issueId="T-42"
+                items={[
+                  { id: 1, issue_id: 'T-42', body: 'unit suite green', done: 1, pos: 0 },
+                  { id: 2, issue_id: 'T-42', body: 'VR in both themes', done: 1, pos: 1 },
+                  {
+                    id: 3,
+                    issue_id: 'T-42',
+                    body: 'perf budget under the ratchet',
+                    done: 0,
+                    pos: 2,
+                  },
+                ]}
+              />
+            </div>
+          </Plate>
+          <Plate label="reply — a comment when the session is gone">
+            <div className="px-2 pb-2">
+              <ReplyComposer
+                issue={{ id: 'T-42', session: null } as never}
+                expanded
+                emphasized={false}
+                onRequestOpen={() => {}}
+                onReply={async () => {}}
+                placeholder="Leave a comment for the record…"
+              />
+            </div>
+          </Plate>
         </Section>
       </div>
     </div>

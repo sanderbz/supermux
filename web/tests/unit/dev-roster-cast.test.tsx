@@ -142,9 +142,19 @@ describe('dev-roster route — the bench cannot quietly shrink', () => {
     expect(ROUTE).toContain('TILE_TIERS.map')
   })
 
-  test('a section that has not landed says so loudly', () => {
-    // An empty section and a missing section look identical in a screenshot.
-    expect(ROUTE).toContain('data-bench-pending')
+  test('EVERY section has landed — no pending plates left', () => {
+    // The bench grew task by task, and an unlanded section rendered a loud
+    // `data-bench-pending` plate (an empty section and a missing section look
+    // identical in a screenshot). By the end of B2 there are none, and this
+    // assertion is what stops one from creeping back in as a permanent excuse.
+    expect(ROUTE).not.toContain('data-bench-pending')
+  })
+
+  test('the rollup and the issue surface render real components, not placeholders', () => {
+    expect(ROUTE).toContain('<AttentionRollup')
+    expect(ROUTE).toContain('<AcceptanceChecklist')
+    expect(ROUTE).toContain('<ReplyComposer')
+    expect(ROUTE).toContain('data-vr="pinned-hairline"')
   })
 })
 

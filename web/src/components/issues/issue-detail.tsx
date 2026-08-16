@@ -1,3 +1,21 @@
+/**
+ * `<IssueDetail>` — one issue, read and replied to, wherever it is shown.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * MOVED from `components/board/board-detail-pane.tsx` (fase B2 T10), behaviour
+ * unchanged; only its imports and its name moved. It was the Board page's
+ * desktop master–detail pane, and it is the one piece of that page worth
+ * keeping: it is a complete issue surface — heading, live status, description,
+ * the acceptance checklist the agent ticks over SSE, the linked session's
+ * terminal tail, the comment stream and a reply composer.
+ *
+ * The two sub-components it needs (`AcceptanceChecklist`, `ReplyComposer`) were
+ * extracted out of their 600–780-line page-only hosts FIRST, so this file's
+ * dependencies survive T11's deletion of `components/board/`.
+ *
+ * `BoardDetailPane` remains exported as an alias at the bottom of the file for
+ * the duration of the removal, so the page and the new surface can both compile
+ * while T11's gate is being proved.
+ */
 import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { Maximize2, Pencil, X } from 'lucide-react'
@@ -9,10 +27,10 @@ import { displayLabel } from '@/lib/api/sessions'
 import { useLiveSession } from '@/hooks/use-board'
 import { StatusDot, STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { TailPreview } from '@/components/session-tile/tail-preview'
-import { AcceptanceChecklist } from '@/components/board/board-card-editor'
-import { ReplyComposer } from '@/components/board/board-card'
+import { AcceptanceChecklist } from '@/components/issues/acceptance-checklist'
+import { ReplyComposer } from '@/components/issues/reply-composer'
 
-export interface BoardDetailPaneProps {
+export interface IssueDetailProps {
   className?: string
   /** The card open in the pane — `null` shows the calm empty state. Re-derived
    *  from the board cache so live SSE deltas (acceptance ticks, comments, status)
@@ -47,7 +65,7 @@ export interface BoardDetailPaneProps {
  * iOS-native finish: 10px radii, springs from springs.ts, sentence-case copy,
  * ≥44pt targets, reduced-motion safe.
  */
-export function BoardDetailPane({
+export function IssueDetail({
   className,
   issue,
   onClose,
@@ -55,7 +73,7 @@ export function BoardDetailPane({
   onFocus,
   onReply,
   onDiscard,
-}: BoardDetailPaneProps) {
+}: IssueDetailProps) {
   return (
     <aside
       className={cn(
@@ -378,3 +396,8 @@ function PaneIconButton({
     </button>
   )
 }
+
+/** Transitional alias — the Board page still imports this name until T11 deletes
+ *  it. Same component, no second copy. */
+export const BoardDetailPane = IssueDetail
+export type BoardDetailPaneProps = IssueDetailProps

@@ -46,6 +46,8 @@ import { useToast } from '@/components/ui/use-toast'
 import { useSession, useSessionGit } from '@/hooks/use-sessions'
 import { useSchedules } from '@/hooks/use-scheduler'
 import { useSessionConfig } from '@/hooks/use-session-config'
+import { IssueList } from '@/components/issues/issue-list'
+import { IssueSurface } from '@/components/issues/issue-surface'
 import {
   describeSchedule,
   formatRunTime,
@@ -163,6 +165,7 @@ function PanelBody({
 }) {
   const { session } = useSession(name)
   const clone = useCloneSession()
+  const [issuesOpen, setIssuesOpen] = React.useState(false)
   const { toast } = useToast()
 
   const dir = session?.dir?.trim() || ''
@@ -238,6 +241,39 @@ function PanelBody({
       <PaneSection label="Settings">
         <SettingsRows session={session} name={name} />
       </PaneSection>
+
+      {/* Issues (fase B2 T10) — the section that did not exist. Before B2 a user
+          in focus mode could not tell that a card was linked to their session at
+          all, even though the agent had been reporting onto it with
+          `/supermux-task` the whole time. The list is inline (the common case is
+          one or two rows); the full read surface — detail, comments, reply —
+          opens in the shell overlay. */}
+      <PaneSection label="Issues">
+        <div className="flex flex-col gap-2">
+          <IssueList
+            session={name}
+            onOpen={() => setIssuesOpen(true)}
+          />
+          <button
+            type="button"
+            onClick={() => setIssuesOpen(true)}
+            data-vr="open-issue-surface"
+            className="self-start rounded-md px-1 py-1 text-xs text-primary hover:underline"
+          >
+            Open issues →
+          </button>
+        </div>
+      </PaneSection>
+      <IssueSurface
+        open={issuesOpen}
+        onOpenChange={setIssuesOpen}
+        session={name}
+        title={displayLabel(session ?? { name })}
+        onFocusSession={(target) => {
+          setIssuesOpen(false)
+          onNavigate(target)
+        }}
+      />
 
       {/* Schedules */}
       <PaneSection label="Schedules">

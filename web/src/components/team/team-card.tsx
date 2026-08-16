@@ -39,6 +39,8 @@ import {
 } from '@/stores/team-width-store'
 import { SessionTile } from '@/components/session-tile'
 import { Facepile, type FacepileMember } from '@/components/chat/ui'
+import { IssueSurface } from '@/components/issues/issue-surface'
+import { useBoards } from '@/hooks/use-board'
 import type { TileSession } from '@/components/session-tile'
 import type { OverviewSize } from '@/lib/overview-size'
 import { type Team, type TeamMember, teamsApi } from '@/lib/api/teams'
@@ -60,6 +62,14 @@ export interface TeamCardProps {
 }
 
 export function TeamCard({ team, sizeTier }: TeamCardProps) {
+  const [issuesOpen, setIssuesOpen] = React.useState(false)
+  // The team's own board row, when `board_sync` has registered one. `undefined`
+  // ⇒ no entry point at all rather than a button that opens an empty pane.
+  const { boards } = useBoards()
+  const teamBoardId = React.useMemo(
+    () => boards.find((b) => b.kind === 'team' && b.team_name === team.team_name)?.id,
+    [boards, team.team_name],
+  )
   const [density, setDensity] = useTeamDensity(team.team_name)
   // Per-team desktop width tier. The store defaults to `'full'`
   // so the overview reads identically to today until the user opts in. The
@@ -134,8 +144,20 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
       style={widthStyle}
       className="flex w-full flex-col gap-2.5 rounded-xl border border-border bg-card p-2.5 transition-[max-width,flex-basis] duration-200 sm:p-3"
     >
+      {/* The team's issues (fase B2 T10) — the `kind='team'` board that
+          `teams/board_sync.rs` mirrors from ~/.claude/tasks/<team>/NN.json.
+          Teams are outside Track A's guard: a transcript line can never replace
+          this, which is why the board API stays and why the team card is one of
+          the two entry points the removal is gated on. */}
+      <IssueSurface
+        open={issuesOpen}
+        onOpenChange={setIssuesOpen}
+        boardId={teamBoardId ?? ''}
+        title={team.team_name}
+      />
       <TeamRollup
         team={team}
+        onOpenIssues={teamBoardId ? () => setIssuesOpen(true) : undefined}
         density={density}
         onDensityChange={setDensity}
         width={width}
@@ -258,12 +280,15 @@ function TeamRollup({
   onDensityChange,
   width,
   onWidthChange,
+  onOpenIssues,
 }: {
   team: Team
   density: TeamDensity
   onDensityChange: (d: TeamDensity) => void
   width: TeamWidth
   onWidthChange: (w: TeamWidth) => void
+  /** Undefined when the team has no board row yet — no dead entry point. */
+  onOpenIssues?: () => void
 }) {
   // At the Compact (360px) tier the header chrome (4-segment width toggle +
   // 2-segment density toggle + needs-you pill + "Lead" tag + muted secondary)
@@ -302,6 +327,18 @@ function TeamRollup({
           `hideSecondary` is gated on CARD width (not viewport) — at Compact the
           card itself is too narrow regardless of the screen size. */}
       <TeamRollupBadges team={team} density="card" hideSecondary={isCompact} />
+
+      {onOpenIssues && !isCompact && (
+        <button
+          type="button"
+          onClick={onOpenIssues}
+          data-vr="team-open-issues"
+          aria-label={`Issues for ${team.team_name}`}
+          className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+        >
+          Issues
+        </button>
+      )}
 
       {/* Width toggle — per-team TEAM CARD width. Desktop-only
           (the component itself is `hidden sm:flex`); the narrow screen always
