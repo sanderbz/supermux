@@ -1,6 +1,13 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, test } from 'bun:test'
 
 import { extractProvisionalTail } from '../../src/components/chat/provisional'
+
+/** The live TUI captures the lens is fixtured on — provenance in
+ *  `tests/fixtures/tui/README.md`. */
+const FIXTURES = join(import.meta.dir, '../fixtures/tui')
 
 describe('extractProvisionalTail', () => {
   test('drops the composer box and status noise, keeps prose', () => {
@@ -197,17 +204,129 @@ describe('extractProvisionalTail — prose, or nothing', () => {
     ])
   })
 
-  test('a row that FILLS the pane and opens the window is a continuation, and is dropped', () => {
+  test('a row that FILLS the pane and opens the window takes its continuation with it', () => {
     // A pty hard-wraps at the pane width: a first row that reaches the edge ran
-    // off the end of a row above the window, so it starts mid-word. Rows that
-    // stop short ended because their own line ended.
+    // off the end of a row above the window, so it starts mid-word — and so does
+    // THE ROW UNDER IT, which is the rest of that same wrapped line. Dropping
+    // only the first one just moves the fragment down a row; the block resumes
+    // at the first row that begins a line, and here there is none.
     const wide = 'x'.repeat(60)
     const capture = [wide, 'a whole line of prose', '╭──╮', '│ ❯│'].join('\n')
-    expect(extractProvisionalTail(capture)).toEqual(['a whole line of prose'])
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('…and it resumes at the first row that begins a line', () => {
+    // The row above `here the turn resumes` stops short of the edge, so it is a
+    // line that ENDED — what follows it starts where something started.
+    const capture = [
+      'x'.repeat(60),
+      'the rest of that wrapped line, which stops short',
+      'here the turn resumes',
+      '╭──╮',
+      '│ ❯│',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['here the turn resumes'])
   })
 
   test('…and a first row that stops short of the edge is kept', () => {
     const capture = ['a whole line of prose', 'x'.repeat(60), '╭──╮', '│ ❯│'].join('\n')
     expect(extractProvisionalTail(capture)).toEqual(['a whole line of prose', 'x'.repeat(60)])
+  })
+
+  /**
+   * The cut the block makes ITSELF (daily-driver QA #8).
+   *
+   * `slice(-max)` used to pick the twelfth-from-last row with no regard for what
+   * it was, so an ordinary streaming paragraph on an 80-column pane opened the
+   * "Live terminal · unconfirmed" card mid-word:
+   *   `l comma and an American decimal point bo`
+   * — the same defect the rule above exists to prevent, one row further down.
+   */
+  test('the max cut lands on a row that begins a line, never mid-word', () => {
+    const W = 80
+    const para =
+      'Normalising the locale separator before the money column means a European decimal comma and an American decimal point both land on the same integer path, so the rounding step never guesses which convention the export was written under. Adding the Dutch regression case now, then rerunning the whole suite once more to be sure nothing else moved. '.repeat(
+        3,
+      )
+    const rows: string[] = []
+    for (let i = 0; i < para.length; i += W) rows.push(para.slice(i, i + W))
+    const capture = [...rows, '╭' + '─'.repeat(W - 2) + '╮', '│ ❯' + ' '.repeat(W - 4) + '│'].join('\n')
+    const got = extractProvisionalTail(capture)
+    // Nothing in this capture ever stops short of the edge until the paragraph
+    // itself ends, so there is no honest place to start: the block renders
+    // nothing rather than opening on `l comma and an American decimal point bo`.
+    expect(got).toEqual([])
+  })
+
+  /**
+   * The PLAN dialog (daily-driver QA #8, second leak).
+   *
+   * The footer-token list was written off the PERMISSION dialog, and the plan
+   * dialog ends `shift+tab to approve` / `ctrl+g to edit in …` instead — so it
+   * walked past, and eight of this repo's own live captures rendered the plan's
+   * own option rows as prose under "Live terminal · unconfirmed", beside a
+   * choice card drawn from the same bytes. The lens is the reader that can parse
+   * these; when it sights a dialog, this block stands down.
+   */
+  test('a plan-approval screen is the CARD’s, not the tail’s', () => {
+    const capture = readFileSync(join(FIXTURES, 'plan-approval.txt'), 'utf8')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('a permission screen is too, whatever its footer says', () => {
+    expect(extractProvisionalTail(readFileSync(join(FIXTURES, 'perm-bash.txt'), 'utf8'))).toEqual([])
+  })
+
+  /**
+   * `source` is a SHELL WORD here, not an English one.
+   *
+   * `\bsource\s` condemned the whole block on "reading the source files" and
+   * "the source of truth" — a coding agent's most ordinary vocabulary — which
+   * blanked the tail on prose that was never shell at all. That is the same
+   * defect as the leak it was written for, pointed the other way.
+   */
+  test('prose that says “source” still renders', () => {
+    const capture = [
+      '╰────────────────────────────────────────────────────────╯',
+      'I am reading the source files under server/src to find the parser.',
+      'The registry is the source of truth for every fingerprint.',
+      '╭──╮',
+      '│ ❯│',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([
+      'I am reading the source files under server/src to find the parser.',
+      'The registry is the source of truth for every fingerprint.',
+    ])
+  })
+
+  test('…and a real profile source still condemns the block', () => {
+    const capture = ['source /etc/profile.d/tools.sh', 'claude', '╭──╮', '│ ❯│'].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  /** A bare horizontal rule and the status line's model/effort chip are
+   *  furniture, not prose — and between them they were the card's ENTIRE
+   *  content on nineteen of this repo's live captures. */
+  test('a divider rule and the effort chip are not a provisional tail', () => {
+    const capture = [
+      '╰────────────────────────────────────────────────────────╯',
+      '──────────────────────────────────────────────────────────',
+      '                                  ● high · /effort',
+      '╭──╮',
+      '│ ❯│',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([])
+  })
+
+  test('…but Claude’s own ● lines are prose and stay', () => {
+    const capture = [
+      '╰────────────────────────────────────────────────────────╯',
+      '● Done. The migration is reverted and the suite is green.',
+      '╭──╮',
+      '│ ❯│',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([
+      '● Done. The migration is reverted and the suite is green.',
+    ])
   })
 })

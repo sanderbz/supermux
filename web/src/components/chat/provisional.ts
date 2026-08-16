@@ -9,10 +9,21 @@
 // RELATIVE import so `bun test` runs without alias config; `lib/ansi`'s React
 // dependency is type-only (erased at runtime).
 import { parseAnsiLine } from '../../lib/ansi'
+import { readLens } from './peek-lens'
 
-/** Status-bar / hint noise the tail must never show. */
+/** Status-bar / hint noise the tail must never show.
+ *
+ *  The trailing alternative is a bare HORIZONTAL RULE — `────────`, `╌╌╌╌╌╌` —
+ *  the divider Claude Code draws above a plan or a status block. It is
+ *  furniture, never prose, and it was the entire content of the "Live terminal ·
+ *  unconfirmed" card on eleven of this repo's own live captures.
+ *
+ *  The last alternative is the status line's MODEL/EFFORT chip — `● high ·
+ *  /effort`, `● opus · /model` — which sits below the composer and is the only
+ *  row left standing on eight more of them. Claude's own `●` lines are prose
+ *  (`● Done.`, `● Bash(…)`); none of them is one word followed by ` · /command`. */
 const NOISE =
-  /esc to interrupt|shift\+tab|\? for shortcuts|^[⏵⏸✻✽·╰│]|^\s*❯/i
+  /esc to interrupt|shift\+tab|\? for shortcuts|^[⏵⏸✻✽·╰│]|^\s*❯|^[─╌—]{3,}$|^●\s\S+\s·\s\/\w+$/i
 
 /**
  * A shell prompt head — `user@host:/path` — anchored to the start of a line.
@@ -47,9 +58,15 @@ const SHELL_PROMPT_HEAD = /^[\w.-]+@[\w.-]+:[~/]/
  * path, or the CLI being invoked with a flag. One hit condemns the WHOLE block —
  * a capture that contains shell is a capture that never reached the agent's
  * output, and half of a launch command is not more honest than all of it.
+ *
+ * `source` is SHELL-SHAPED here, not a word: it has to open the line (or follow
+ * a `;`/`&&`/`|`) and take a path-ish argument. A bare `\bsource\s` also matched
+ * "reading the source files" and "the source of truth" — a coding agent's most
+ * ordinary vocabulary — and blanked the whole tail on prose that was never shell
+ * at all, which is the same defect as the leak, pointed the other way.
  */
 const LAUNCH_FRAGMENT =
-  /2>\s*\/dev\/null|\bsource\s|\.bash_profile|\bexport\s+[A-Z_]+=|\.supermux\/bin\/|\b(?:VISUAL|EDITOR)=|\bclaude\s+--/
+  /2>\s*\/dev\/null|(?:^|[;&|]\s*)(?:source|\.)\s+[~/$'"]|\.bash_profile|\bexport\s+[A-Z_]+=|\.supermux\/bin\/|\b(?:VISUAL|EDITOR)=|\bclaude\s+--/
 
 /**
  * A TUI DIALOG's own furniture — numbered options and the footer under them.
@@ -99,6 +116,25 @@ function plain(line: string): string {
  */
 export function extractProvisionalTail(capture: string, max = 12): string[] {
   if (!capture) return []
+  // THE DIALOG SCREEN BELONGS TO THE CARD, AND A PANEL BELONGS TO NOBODY.
+  //
+  // `DIALOG_FRAGMENT` below is a token list, and a token list only knows the
+  // dialogs somebody thought of: it was written off the PERMISSION footer, so
+  // the PLAN dialog — which ends `shift+tab to approve` / `ctrl+g to edit in …`
+  // and is not drawn in a `╭` box either — walked straight past it. Eight of
+  // this repo's own live captures (`cc233/40-42`, `cc233/live/case4-*`,
+  // `a4c/case4-*`, `plan-approval.txt`) rendered `2. Yes, manually approve
+  // edits` / `3. Tell Claude what to change` as prose under "Live terminal ·
+  // unconfirmed", beside a choice card drawn from the same capture — which is
+  // daily-driver QA #8's second leak, unfixed.
+  //
+  // So ask the reader that can actually parse the screen. `peek-lens` sights
+  // every dialog family (and the unknown modal shape, and the full-screen
+  // panels of QA #1) off the same bytes, under its own fixtures and tests; when
+  // it sights one, this block has nothing left to be. Prose is what the agent is
+  // typing NOW, and a screen that is asking a question is not that.
+  const lens = readLens(capture)
+  if (lens.dialog || lens.modal) return []
   const lines = capture.split('\n')
   const stripped = lines.map(plain)
   let cut = lines.length
@@ -148,29 +184,55 @@ export function extractProvisionalTail(capture: string, max = 12): string[] {
     if (LAUNCH_FRAGMENT.test(t)) return []
     if (DIALOG_FRAGMENT.test(stripped[i])) return []
   }
-  const out: string[] = []
+  // Kept WITH their capture index: the wrap test below needs the row that was
+  // physically above this one on the screen, and that is not `out[n - 1]` —
+  // blanks and status noise were dropped in between, and a blank row is the end
+  // of a line, not the middle of one.
+  const kept: { row: number; text: string }[] = []
   for (let i = start; i < cut; i++) {
     const t = stripped[i].trim()
     if (!t) continue
     if (NOISE.test(t)) continue
-    out.push(lines[i])
+    kept.push({ row: i, text: lines[i] })
   }
-  // NO MID-WORD FRAGMENTS (daily-driver QA #8). With no anchor above it
-  // (`start === 0` — neither a closed box nor a prompt echo was in the window)
-  // the first surviving row begins wherever the 30-line capture happened to
-  // start, and on a hard-wrapped line that is the middle of a word:
-  // `ermux/.supermux/bin/supermux--edit'`. Anchored blocks keep every row —
-  // their first line starts where the turn does.
+  // NO MID-WORD FRAGMENTS (daily-driver QA #8) — including the one the `max`
+  // cut makes itself.
   //
   // The tell is STRUCTURAL, not a guess about the words: a pty hard-wraps at the
-  // pane width, so a row that FILLS the pane is a row the text ran off the end
-  // of — and when that row is the first one in the window, what it ran off the
-  // end of is above the window. Everything shorter than the widest line ended
-  // because its own line ended, so it starts where something started.
-  const cols = Math.max(...stripped.map((l) => l.length), 0)
-  const body =
-    start === 0 && out.length > 0 && cols >= MIN_PANE_COLS && plain(out[0]).length >= cols
-      ? out.slice(1)
-      : out
-  return body.slice(-max)
+  // pane width, so a row that RUNS TO THE EDGE is a row whose text carried on
+  // into the row below it. The row below therefore starts wherever that word
+  // happened to break. Rows that stop short ended because their own line ended,
+  // so whatever follows them starts where something started.
+  //
+  // Two places that bites, and the first fix only covered one:
+  //   · the top of an UNANCHORED window (`start === 0` — neither a closed box
+  //     nor a prompt echo was in the capture), where the first row is the tail
+  //     of something above the window: `ermux/.supermux/bin/supermux--edit'`;
+  //   · the `slice(-max)` cut, which picks a row 12 up from the end with no
+  //     regard for what it is. Measured on an 80-column pane of ordinary
+  //     streaming prose, that cut opened the card with
+  //     `l comma and an American decimal point bo` — the same defect, one row
+  //     further down.
+  // So the block starts at the first kept row that BEGINS a line, and if there
+  // is no such row it renders nothing, which is this module's standing verdict
+  // on a capture it cannot parse.
+  //
+  // Width ignores trailing spaces: the TUI pads its own rows out to the pane,
+  // and a padded row ends where its text ends. Only a row whose CHARACTERS reach
+  // the edge wrapped.
+  const width = (s: string): number => s.replace(/\s+$/, '').length
+  let cols = 0
+  for (const s of stripped) cols = Math.max(cols, width(s))
+  const measured = cols >= MIN_PANE_COLS
+  const startsLine = (row: number): boolean => {
+    if (!measured) return true
+    // The first row of the block: anchored means the thing above it is a box
+    // bottom or a prompt echo, i.e. a line that ended. Unanchored, it has to
+    // vouch for itself.
+    if (row <= start) return start > 0 || width(stripped[row]) < cols
+    return width(stripped[row - 1]) < cols
+  }
+  let from = Math.max(0, kept.length - max)
+  while (from < kept.length && !startsLine(kept[from].row)) from++
+  return kept.slice(from).map((k) => k.text)
 }
