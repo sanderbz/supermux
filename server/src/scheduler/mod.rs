@@ -408,7 +408,36 @@ async fn create_handler(
         return Ok((StatusCode::OK, ok(json!(result))));
     }
     let sched = create(&state, input).await?;
+    audit_schedule_create(&state, &sched, "user").await;
     Ok((StatusCode::CREATED, ok(json!(sched))))
+}
+
+/// Ledger row + `harness` tick for a schedule that was just created for real.
+///
+/// Deliberately NOT inside [`create`]: `test_fire` also goes through `create`,
+/// and a schedule that is deleted three seconds later must not leave "Created
+/// schedule" standing in someone's transcript. Callers that persist a live
+/// schedule (the create handler, and the hook-token path) call this.
+///
+/// `session` + `title` are in the detail from birth because the row's `target`
+/// is the SCHEDULE id — the detail is the only thing that ties a schedule event
+/// to the session whose feed should show it.
+pub async fn audit_schedule_create(state: &AppState, sched: &Schedule, actor: &str) {
+    if sched.session.trim().is_empty() {
+        // A shell/boot schedule has no session feed to appear in. The ledger row
+        // would be unreachable by every arm of the query; skip it rather than
+        // write a row nothing can ever read.
+        return;
+    }
+    let _ = crate::sessions::audit_harness(
+        state,
+        actor,
+        "schedule.create",
+        &sched.id,
+        json!({ "session": sched.session, "title": sched.title, "kind": sched.kind }),
+        &[sched.session.as_str()],
+    )
+    .await;
 }
 
 /// Result of a test-fire: the run's terminal `status` + `note`.

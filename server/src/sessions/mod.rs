@@ -39,7 +39,7 @@ pub use transport::{HostId, Transport, LOCAL as LOCAL_TRANSPORT};
 use std::collections::HashMap;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 // Routing constructors are fully-qualified (`axum::routing::get`) to avoid a name
@@ -82,6 +82,11 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/paste", post(paste_handler))
         .route("/api/sessions/{name}/peek", get(peek_handler))
         .route("/api/sessions/{name}/recall", get(recall::handler))
+        // ── the per-session harness-event feed ──
+        // Replayable provenance for everything the harness did TO or FROM this
+        // session (delegations, renames, schedule fires). SSE only says "look
+        // again"; this is what survives a reload.
+        .route("/api/sessions/{name}/events", get(events_handler))
         // ── chat data plane backlog (fase A2) ──
         // The live path is the WS (`/ws/sessions/{name}/chat`, registered in
         // `ws::router_for`); these two are the bearer-protected reads it cannot
@@ -470,6 +475,83 @@ async fn ensure_session(state: &AppState, name: &str) -> Result<(), AppError> {
     } else {
         Err(AppError::NotFound(format!("session '{name}'")))
     }
+}
+
+// ── the harness-event feed ───────────────────────────────────────────────────
+
+/// Hard ceiling on one `GET /api/sessions/{name}/events` page.
+const EVENTS_LIMIT_MAX: i64 = 200;
+/// What a client gets when it names no `limit`.
+const EVENTS_LIMIT_DEFAULT: i64 = 100;
+
+fn events_limit_default() -> i64 {
+    EVENTS_LIMIT_DEFAULT
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EventsQuery {
+    /// EXCLUSIVE cursor: return rows with a strictly greater id. `0` (the
+    /// default) means "from the beginning".
+    #[serde(default)]
+    pub since_id: i64,
+    #[serde(default = "events_limit_default")]
+    pub limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventsResponse {
+    /// Ascending by id — the client appends, it never re-sorts.
+    pub events: Vec<crate::db::runtime_state::AuditEntry>,
+}
+
+/// `GET /api/sessions/{name}/events?since_id=&limit=` — the session's harness
+/// events, oldest first.
+///
+/// The transcript's system lines are rendered from THIS, not from SSE: SSE has
+/// no replay, so anything that only existed as a live frame would vanish on
+/// reload. `detail` is passed through as the JSON *string* the ledger stores;
+/// the client parses it once.
+async fn events_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(q): Query<EventsQuery>,
+) -> Result<Json<Envelope<EventsResponse>>, AppError> {
+    ensure_session(&state, &name).await?;
+    let limit = q.limit.clamp(1, EVENTS_LIMIT_MAX);
+    let events =
+        db::audit::events_for_session(&state.pool, &name, q.since_id.max(0), limit).await?;
+    Ok(ok(EventsResponse { events }))
+}
+
+/// Fire the `harness` SSE tick for a surfaced audit entry.
+///
+/// `sessions` lists every session whose feed this entry belongs to — a
+/// delegation is news to both ends, a rename only to the renamed one. Clients
+/// use it purely to decide whether to refetch; the entry rides along so a
+/// listener that is already up to date needs no round-trip.
+pub fn emit_harness(state: &AppState, sessions: &[&str], entry: &crate::db::runtime_state::AuditEntry) {
+    let _ = state.sse_tx.send(crate::state::SseEvent {
+        event: "harness".into(),
+        payload: json!({ "sessions": sessions, "entry": entry }),
+    });
+}
+
+/// Write a surfaced audit row and fire its `harness` tick in one step.
+///
+/// Every action in [`db::audit::SURFACED_ACTIONS`] should go through here:
+/// splitting the ledger write from the echo is how a feed silently stops
+/// updating live while still being correct after a reload.
+pub async fn audit_harness(
+    state: &AppState,
+    actor: &str,
+    action: &str,
+    target: &str,
+    detail: serde_json::Value,
+    sessions: &[&str],
+) -> sqlx::Result<()> {
+    let entry = db::audit::log_entry(&state.pool, actor, action, target, detail).await?;
+    emit_harness(state, sessions, &entry);
+    Ok(())
 }
 
 // ── public API (reused by the lifecycle module) ──────────────────────────────
@@ -928,7 +1010,31 @@ pub async fn config_patch(
         // the label to the slug (so the UI never shows a blank title).
         let label = v.trim();
         let value = if label.is_empty() { current.as_str() } else { label };
+        // Read the label we are replacing BEFORE the write, so the audit row can
+        // say what it was. An empty stored label means "the slug" (see `view`),
+        // so normalise both sides before comparing — otherwise clearing an
+        // already-empty label would audit as a rename that changed nothing.
+        let previous = db::sessions::get(&state.pool, &current)
+            .await?
+            .map(|s| s.display_name)
+            .unwrap_or_default();
+        let previous = if previous.is_empty() { current.clone() } else { previous };
         db::sessions::set_display_name(&state.pool, &current, value).await?;
+        if previous != value {
+            // Ledger row + `harness` tick: the transcript renders a rename only
+            // when an AGENT did it (a line telling the owner what they typed two
+            // seconds ago is ceremony), but the row is written either way so the
+            // feed stays a complete history.
+            let _ = audit_harness(
+                state,
+                "user",
+                "session.rename",
+                &current,
+                json!({ "from": previous, "to": value }),
+                &[current.as_str()],
+            )
+            .await;
+        }
         changed = true;
     }
     if let Some(v) = patch.desc {

@@ -89,14 +89,30 @@ pub async fn run(state: AppState, sched: Schedule, trigger: Trigger) {
         Trigger::Tick { .. } => "scheduler",
         Trigger::Manual => "user",
     };
-    let _ = db::audit::log(
-        &state.pool,
-        actor,
-        "schedule.run",
-        &sched.id,
-        json!({ "kind": sched.kind, "status": outcome.status, "manual": matches!(trigger, Trigger::Manual) }),
-    )
-    .await;
+    // `session` + `title` are new keys on an existing action: the row's target
+    // is the SCHEDULE id, so without them the per-session events feed can never
+    // find this fire. Rows written before this change simply stay invisible to
+    // the feed — no backfill, no rewriting of history.
+    let detail = json!({
+        "kind": sched.kind,
+        "status": outcome.status,
+        "manual": matches!(trigger, Trigger::Manual),
+        "session": sched.session,
+        "title": sched.title,
+    });
+    if sched.session.trim().is_empty() {
+        let _ = db::audit::log(&state.pool, actor, "schedule.run", &sched.id, detail).await;
+    } else {
+        let _ = crate::sessions::audit_harness(
+            &state,
+            actor,
+            "schedule.run",
+            &sched.id,
+            detail,
+            &[sched.session.as_str()],
+        )
+        .await;
+    }
 
     // Surface the run to clients (anti-vision: push, never poll).
     let _ = state.sse_tx.send(SseEvent {
