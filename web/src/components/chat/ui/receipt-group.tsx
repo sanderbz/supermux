@@ -203,7 +203,10 @@ function ReceiptLine({ line, phone }: { line: CoalescedReceipt; phone?: boolean 
       {running && line.status && line.outcome === undefined && (
         <span
           data-testid="chat-receipt-status"
-          className="flex-none whitespace-nowrap pt-[1px] tabular-nums text-[13px] text-ink-2"
+          // `ml-auto` as it always was: the clock sits on the bubble's right
+          // edge, so a turn's running line reads as one column of elapsed times
+          // rather than a number that moves with the label's length.
+          className="ml-auto flex-none whitespace-nowrap pt-[1px] tabular-nums text-[13px] text-ink-2"
         >
           {line.status}
         </span>
