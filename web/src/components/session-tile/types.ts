@@ -1,5 +1,5 @@
 import type { SessionSummary } from '@/lib/api'
-import type { PermissionRequestInfo } from '@/lib/api/sessions'
+import type { ChatTail, PermissionRequestInfo } from '@/lib/api/sessions'
 
 /** Display fields the hero tile layers on top of the canonical `SessionSummary`.
  *  All optional, so a plain `SessionSummary` from
@@ -40,4 +40,10 @@ export interface TileSession extends SessionSummary {
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor. */
   activity_at?: number
+  /** Chat one-liner pair (last prompt + last assistant line) from the session's
+   *  chat ring — fase A2, carried on the `sessions` SSE delta. Absent means
+   *  UNCHANGED, never "empty": a delta without the key must leave whatever the
+   *  tile already shows in place. Its `ts` is Claude's own entry clock, so it
+   *  must not be compared with `activity_at`. */
+  chat_tail?: ChatTail
 }

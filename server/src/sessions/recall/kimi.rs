@@ -308,6 +308,7 @@ fn read_wire(candidate: &Candidate) -> Vec<RecallEntry> {
                     },
                     label: slash,
                     ok: None,
+                    truncated: None,
                 });
                 pending = Some(entries.len() - 1);
             }

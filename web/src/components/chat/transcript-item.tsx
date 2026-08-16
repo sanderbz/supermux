@@ -166,6 +166,7 @@ function UserRow({
           </span>
         )}
         {text && <span className="whitespace-pre-wrap break-words">{text}</span>}
+        {item.truncated && <ClippedMarker />}
       </Bubble>
     </MessageRow>
   )
@@ -207,8 +208,36 @@ function AgentRow({
           surface={rest.surface}
           rawUrl={rest.rawUrl}
         />
+        {item.truncated && <ClippedMarker />}
       </Bubble>
     </MessageRow>
+  )
+}
+
+/**
+ * The server clipped this message at the wire cap (`ASSISTANT_MAX_CHARS` /
+ * `PROMPT_MAX_CHARS`, #59). Say so — a clipped message that just stops reads as
+ * an answer that ended mid-sentence, and the reader has no way to tell the
+ * difference.
+ *
+ * No colour of its own: this marker renders inside BOTH bubble variants, and
+ * the user bubble flips light-on-dark in dark mode, so it borrows the bubble's
+ * own ink and steps back with opacity instead (the A3 rule — the surface
+ * hard-codes no colours).
+ *
+ * A3 note: the marker is the whole of the degradation. The client does not yet
+ * re-fetch the full text when the flag is set (that endpoint is fase A4's) —
+ * the message renders complete up to the cap, flagged, and the terminal view
+ * remains the escape hatch the tooltip points at.
+ */
+function ClippedMarker() {
+  return (
+    <span
+      className="ml-1 select-none align-baseline text-[12px] opacity-60"
+      title="This message was clipped for transport — open the Terminal view for the full text."
+    >
+      … clipped
+    </span>
   )
 }
 
@@ -257,6 +286,7 @@ function TeammateRow({
             surface={rest.surface}
             rawUrl={rest.rawUrl}
           />
+          {item.truncated && <ClippedMarker />}
         </Bubble>
       </MessageRow>
     </>

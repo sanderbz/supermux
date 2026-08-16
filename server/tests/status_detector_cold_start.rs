@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use supermux_server::config::{Config, ProviderDefaults, TlsConfig, WsConfig};
 use supermux_server::sessions::auto_actions;
+use supermux_server::sessions::chat;
 use supermux_server::sessions::status::{StatusDetector, TurnState};
 use supermux_server::state::AppState;
 use supermux_server::{db, sessions};
@@ -40,6 +41,7 @@ async fn test_state() -> (AppState, std::path::PathBuf) {
         remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
     };
     let pool = db::init(&config).await.expect("db init");
     (AppState::new(pool, config), dir)
@@ -95,7 +97,17 @@ async fn tick_on_unstarted_session_leaves_status_unknown() {
     // time that bounds the capture-skip optimization.
     let mut tail = None;
     let mut last_capture_at = Instant::now();
-    auto_actions::tick(&state, "ghost", &mut detector, &mut tail, &mut last_capture_at)
+    // A2: the tick also carries the per-session chat-tail gate (change + 1s
+    // debounce) for the `chat_tail` key on the same SSE delta.
+    let mut chat_tail = auto_actions::ChatTailGate::new();
+    auto_actions::tick(
+        &state,
+        "ghost",
+        &mut detector,
+        &mut tail,
+        &mut last_capture_at,
+        &mut chat_tail,
+    )
         .await
         .unwrap();
 
@@ -136,11 +148,19 @@ async fn detector_tick_writes_last_capture() {
     // the same way).
     let mut last_capture_at = Instant::now()
         - supermux_server::sessions::status::MAX_PREVIEW_STALENESS;
+    let mut chat_tail = auto_actions::ChatTailGate::new();
     let mut captured = String::new();
     for _ in 0..24 {
-        auto_actions::tick(&state, &name, &mut detector, &mut tail, &mut last_capture_at)
-            .await
-            .unwrap();
+        auto_actions::tick(
+            &state,
+            &name,
+            &mut detector,
+            &mut tail,
+            &mut last_capture_at,
+            &mut chat_tail,
+        )
+        .await
+        .unwrap();
         let rt = db::sessions::runtime(&state.pool, &name).await.unwrap().unwrap();
         captured = rt.last_capture;
         if captured.contains(marker) {
@@ -160,6 +180,154 @@ async fn detector_tick_writes_last_capture() {
         "preview_lines should reflect last_capture; got: {:?}",
         view.preview_lines
     );
+
+    // Teardown.
+    let _ = sessions::delete(&state, &name).await;
+    let _ = std::process::Command::new("tmux")
+        .args(["kill-session", "-t", &format!("supermux-{name}")])
+        .output();
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A2 Task 5 — the `chat_tail` WIRING, end to end through a real `tick`.
+///
+/// `ChatTailGate`'s own unit tests pin the policy (change gate + debounce) as a
+/// pure function; this pins the two things they structurally cannot see: that
+/// `tick` reads the session's ring at all, and that what the gate returns is
+/// actually inserted into the `sessions` SSE delta item (and triggers one).
+/// Without this, gating the key behind `tail_changed`, dropping the insert, or
+/// sampling the wrong store would leave every unit test green.
+///
+/// The ring is seeded through the PUBLIC parser rather than a hand-built entry,
+/// so the shape the tailer really publishes is what the tile summary is built
+/// from.
+#[tokio::test]
+async fn detector_tick_puts_the_chat_tail_on_the_sessions_delta() {
+    if !tmux_available() {
+        eprintln!("skipping detector_tick_puts_the_chat_tail_on_the_sessions_delta: no tmux");
+        return;
+    }
+    let (state, dir) = test_state().await;
+    let name = format!("ct{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    db::sessions::insert_minimal(&state.pool, &name, "/tmp", "shell")
+        .await
+        .unwrap();
+    db::sessions::ensure_runtime(&state.pool, &name, "tok").await.unwrap();
+    sessions::lifecycle::start(&state, &name, None).await.unwrap();
+
+    // Seed the in-memory ring exactly as the tailer would.
+    let lines = [
+        r#"{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","sessionId":"s1","message":{"role":"user","content":[{"type":"text","text":"run the tests"}]}}"#,
+        r#"{"type":"assistant","uuid":"a1","timestamp":"2026-01-01T00:00:01Z","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"running them now"}]}}"#,
+    ];
+    let mut entries = Vec::new();
+    for l in lines {
+        match chat::parser::parse_line(l, 0) {
+            chat::parser::ParsedLine::Entry(e) => entries.extend(e),
+            other => panic!("fixture line did not parse: {other:?}"),
+        }
+    }
+    state.chat_store_for(&name).publish(entries);
+
+    let mut rx = state.sse_tx.subscribe();
+    let mut detector = StatusDetector::new();
+    let mut tail = None;
+    let mut last_capture_at =
+        Instant::now() - supermux_server::sessions::status::MAX_PREVIEW_STALENESS;
+    let mut chat_tail = auto_actions::ChatTailGate::new();
+
+    auto_actions::tick(
+        &state,
+        &name,
+        &mut detector,
+        &mut tail,
+        &mut last_capture_at,
+        &mut chat_tail,
+    )
+    .await
+    .unwrap();
+
+    // Drain everything this tick broadcast and pick our session's rows out.
+    fn drain_chat_tails(
+        rx: &mut tokio::sync::broadcast::Receiver<supermux_server::state::SseEvent>,
+        name: &str,
+    ) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if ev.event != "sessions" {
+                continue;
+            }
+            let Some(rows) = ev.payload.get("delta").and_then(|d| d.as_array()) else {
+                continue;
+            };
+            for row in rows {
+                if row.get("name").and_then(|n| n.as_str()) == Some(name) {
+                    if let Some(t) = row.get("chat_tail") {
+                        out.push(t.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    let first = drain_chat_tails(&mut rx, &name);
+    assert_eq!(
+        first.len(),
+        1,
+        "the tick must put chat_tail on the sessions delta exactly once; got {first:?}"
+    );
+    assert_eq!(first[0]["user"], serde_json::json!("run the tests"));
+    assert_eq!(first[0]["agent"], serde_json::json!("running them now"));
+
+    // Unchanged ring, and well past the 1s debounce so the CHANGE gate is the
+    // only thing that can suppress it: the key must be absent, not re-sent —
+    // absent means "unchanged", and the tile keeps what it has.
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    last_capture_at = Instant::now() - supermux_server::sessions::status::MAX_PREVIEW_STALENESS;
+    auto_actions::tick(
+        &state,
+        &name,
+        &mut detector,
+        &mut tail,
+        &mut last_capture_at,
+        &mut chat_tail,
+    )
+    .await
+    .unwrap();
+    assert!(
+        drain_chat_tails(&mut rx, &name).is_empty(),
+        "an unchanged chat tail must not be re-broadcast"
+    );
+
+    // A NEW transcript entry with the status already settled and the pane quiet:
+    // the chat tail must be able to trigger the delta ON ITS OWN. The transcript
+    // lands in batches tens of seconds after the pane goes quiet, so a chat_tail
+    // that only rides an existing status/pane-tail change would strand the last
+    // turn's summary until the next keystroke.
+    let later = r#"{"type":"assistant","uuid":"a2","timestamp":"2026-01-01T00:01:00Z","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"3 failed"}]}}"#;
+    let chat::parser::ParsedLine::Entry(e) = chat::parser::parse_line(later, 0) else {
+        panic!("fixture line did not parse")
+    };
+    state.chat_store_for(&name).publish(e);
+    last_capture_at = Instant::now() - supermux_server::sessions::status::MAX_PREVIEW_STALENESS;
+    auto_actions::tick(
+        &state,
+        &name,
+        &mut detector,
+        &mut tail,
+        &mut last_capture_at,
+        &mut chat_tail,
+    )
+    .await
+    .unwrap();
+    let third = drain_chat_tails(&mut rx, &name);
+    assert_eq!(
+        third.len(),
+        1,
+        "a changed chat tail must reach the delta even when nothing else changed; got {third:?}"
+    );
+    assert_eq!(third[0]["agent"], serde_json::json!("3 failed"));
 
     // Teardown.
     let _ = sessions::delete(&state, &name).await;

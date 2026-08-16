@@ -3,8 +3,10 @@ import { describe, expect, test } from 'bun:test'
 import {
   formatElapsed,
   newestAgentTs,
+  pruneSuperseded,
   RECEIPT_CAP,
   stripEmojiPrefix,
+  supersededCutoffMs,
   toDisplayList,
   type ChatEntry,
 } from '../../src/components/chat/entries'
@@ -18,6 +20,23 @@ const e = (over: Partial<ChatEntry>): ChatEntry => ({
 })
 
 describe('toDisplayList', () => {
+  test('carries the server truncation flag through to the display item', () => {
+    // A clipped message must be MARKABLE in the UI. Without the flag reaching
+    // the display item, a message the server cut at the wire cap renders as
+    // one that simply ended mid-sentence and the reader cannot tell.
+    const items = toDisplayList([
+      e({ kind: 'assistant', text: 'long answer', ts: 2, truncated: true }),
+      e({ kind: 'prompt', text: 'long prompt', ts: 1, truncated: true }),
+    ])
+    expect(items.map((i) => i.type)).toEqual(['user', 'assistant'])
+    expect(items.every((i) => i.type !== 'receipts' && i.truncated === true)).toBe(true)
+  })
+
+  test('an untruncated entry carries no flag', () => {
+    const [item] = toDisplayList([e({ kind: 'assistant', text: 'short', ts: 1 })])
+    expect(item.type === 'assistant' && item.truncated).toBeUndefined()
+  })
+
   test('reverses newest-first wire order to oldest-first display order', () => {
     const items = toDisplayList([
       e({ kind: 'assistant', text: 'reply', ts: 2 }),
@@ -116,5 +135,24 @@ describe('newestAgentTs (the supersede gate probe)', () => {
   test('0 on an empty / user-only tail', () => {
     expect(newestAgentTs([])).toBe(0)
     expect(newestAgentTs([e({ kind: 'command', text: '/clear', ts: 9 })])).toBe(0)
+  })
+})
+
+describe('pruneSuperseded (live overlay vs. confirmed transcript)', () => {
+  test('a line inside the confirmed entry\u2019s own second is superseded', () => {
+    // Wire ts is floored to seconds; the overlay stamps ms. A receipt confirmed
+    // at 10.400s arrives as ts=10, so a `ts * 1000` cutoff left its overlay twin
+    // on screen — a duplicate row for the rest of the turn.
+    const lines = [{ at: 10_400 }, { at: 10_999 }, { at: 11_001 }]
+    expect(pruneSuperseded(lines, 10)).toEqual([{ at: 11_001 }])
+  })
+
+  test('cutoff is the END of the confirmed second', () => {
+    expect(supersededCutoffMs(10)).toBe(11_000)
+  })
+
+  test('returns the SAME array when nothing was superseded', () => {
+    const lines = [{ at: 99_000 }]
+    expect(pruneSuperseded(lines, 10)).toBe(lines)
   })
 })

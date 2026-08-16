@@ -75,6 +75,30 @@ export interface PermissionRequestInfo {
   mode?: string
 }
 
+/** One-line-per-side summary of a session's chat, for the tile (fase A2).
+ *
+ *  Rides the `sessions` SSE delta — there is NO extra request and no extra
+ *  socket per tile — and is built server-side from the in-memory chat ring, so
+ *  it exists only while that session's transcript tailer is running.
+ *
+ *  Change-gated and debounced to at most one per second per session: an absent
+ *  key means "unchanged", NEVER "the chat is empty". Never clear a tile's tail
+ *  because a delta omitted it.
+ *
+ *  `ts` is Claude Code's own entry clock (ms), not arrival time — it can trail
+ *  the server clock by tens of seconds, so it must not be compared against
+ *  `activity_at` / `serverNowMs()` or used for liveness. */
+export interface ChatTail {
+  /** Last user prompt, collapsed to one line, ≤200 chars. `''` when the ring
+   *  holds no prompt yet (e.g. a resumed conversation seeded mid-turn). */
+  user: string
+  /** Last assistant line, collapsed to one line, ≤200 chars. `''` when the
+   *  agent has not spoken since the ring was seeded. */
+  agent: string
+  /** CC-clock ms of the newer of the two entries. */
+  ts: number
+}
+
 /** The fields the SSE `sessions` delta / the `GET /api/sessions` list carry for
  *  a tile. A superset of `SessionSummary` with the optional hero display fields
  *  the detector populates when it has them. Mirrors `TileSession` but
@@ -100,6 +124,11 @@ export interface ApiSession {
    *  capture. Arrives on both the `GET /api/sessions` list and the `sessions`
    *  SSE delta (the ⋯ mode menu live-checks the matching radio). */
   mode?: SessionMode
+  /** Chat one-liner pair for the tile (fase A2). SSE `sessions` delta ONLY —
+   *  the `GET /api/sessions` list does not carry it (it is memory-resident,
+   *  present only while a chat tailer runs for that session). Absent =
+   *  unchanged. */
+  chat_tail?: ChatTail
   updated_at?: string
   /** Claude Code chat title / auto-summary (falls back to `name` in the UI). */
   task_summary?: string

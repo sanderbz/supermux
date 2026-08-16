@@ -317,6 +317,7 @@ mod tests {
             remote_callback_url: None,
             push_sub: None,
             github_token: None,
+            statusline_tap: false,
             extra_origins: Vec::new(),
         };
         let pool = db::init(&config).await.expect("init pool");

@@ -40,7 +40,7 @@ import { usePendingSends } from './use-pending-sends'
 import { displayNames, entryLabels, mentionIndex } from './grouping'
 import { useChatTurn } from './use-chat-turn'
 import { ProvisionalTail } from './provisional-tail'
-import { exposeLatency, latencySamples, p50, serverNowMs } from './latency'
+import { exposeLatency, latencySummary, serverNowMs } from './latency'
 
 const FOLLOW_THRESHOLD_PX = 48
 
@@ -72,6 +72,8 @@ export default function ChatPanel({
   )
 
   React.useEffect(() => exposeLatency(), [])
+  // One pass over the ring per render (the ticker re-renders us every second).
+  const latency = latencySummary()
 
   // A name in prose becomes a mention chip only when it names a session that
   // actually exists (fase A3 T3 — no regex over arbitrary words). The list comes
@@ -110,8 +112,6 @@ export default function ChatPanel({
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
   })
-
-  const samples = latencySamples()
 
   // ── The input plane (fase A4 T3) ───────────────────────────────────────────
   // ONE peek poller for the whole surface (T2): the composer's pre-send draft
@@ -304,10 +304,14 @@ export default function ChatPanel({
           // live-layer ticker / tail refetches). It rides the composer's frame
           // now — the read-only shell this replaced is only reached when NO
           // composer slot is passed, and the panel always passes one.
+          //
+          // One pass over the bounded ring per render, not three array reads
+          // plus a sort (#59) — `latency` is read once at the top of the
+          // component.
           stat={
-            samples.length > 0 ? (
+            latency.n > 0 ? (
               <>
-                hook→UI p50 {p50(samples)} ms (n={samples.length})
+                hook→UI p50 {latency.p50} ms (n={latency.n})
               </>
             ) : null
           }
