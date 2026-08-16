@@ -78,9 +78,9 @@ export function Composer({
       className={cn(
         'sm-composer flex items-center rounded-full border-[0.5px] border-hairline bg-surface',
         'backdrop-blur-[60px] backdrop-saturate-[180%]',
-        'shadow-[0_12px_34px_-18px_rgba(30,18,10,0.35)]',
+        'shadow-[var(--sm-popover-shadow)]',
         'transition-shadow duration-[220ms] ease-[cubic-bezier(.22,1,.36,1)]',
-        'focus-within:shadow-[0_0_0_1px_color-mix(in_oklab,var(--sm-accent)_22%,transparent),0_12px_34px_-18px_rgba(30,18,10,0.35)]',
+        'focus-within:shadow-[0_0_0_1px_color-mix(in_oklab,var(--sm-accent)_22%,transparent),var(--sm-popover-shadow)]',
         mobile ? 'min-h-[52px] gap-3 pl-3 pr-[7px]' : 'min-h-[58px] gap-3 pl-3.5 pr-[9px]',
         className,
       )}

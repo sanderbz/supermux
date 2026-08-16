@@ -641,7 +641,7 @@ describe('the popover, rendered', () => {
     const html = view()
     expect(html).toContain('data-testid="chat-entity-picker"')
     expect((html.match(/data-testid="chat-entity-row"/g) ?? []).length).toBe(3)
-    expect((html.match(/data-active/g) ?? []).length).toBe(1)
+    expect((html.match(/data-highlighted/g) ?? []).length).toBe(1)
     expect(text(html)).toContain('main.rs')
     expect(text(html)).toContain('server/src')
   })
@@ -906,6 +906,13 @@ describe('the picker is reachable by assistive tech', () => {
         activeIndex={1}
         kind="@"
         query="main"
+        // The ids are chat's, and since fase B3 the VIEW is shared — so they
+        // arrive as props instead of being baked in. `chat/entity-picker.tsx`
+        // passes exactly these two; the field's `aria-controls` /
+        // `aria-activedescendant` still have to resolve to them, which is what
+        // this asserts.
+        listboxId={PICKER_LISTBOX_ID}
+        optionId={pickerOptionId}
         onHover={() => {}}
         onPick={() => {}}
       />,
@@ -976,6 +983,8 @@ describe('the popover DOM, pinned before the promotion', () => {
         activeIndex={1}
         kind="@"
         query="pa"
+        listboxId={PICKER_LISTBOX_ID}
+        optionId={pickerOptionId}
         onHover={() => {}}
         onPick={() => {}}
         {...over}
@@ -999,10 +1008,10 @@ describe('the popover DOM, pinned before the promotion', () => {
     const html = view()
     // The highlight is ONE atom. Two highlighted rows means keyboard and
     // pointer disagree about which row Enter would take.
-    expect((html.match(/data-active/g) ?? []).length).toBe(1)
+    expect((html.match(/data-highlighted/g) ?? []).length).toBe(1)
     expect((html.match(/aria-selected="true"/g) ?? []).length).toBe(1)
     // ...and it is row 1 (Patch), not row 0.
-    const upTo = html.slice(0, html.indexOf('data-active'))
+    const upTo = html.slice(0, html.indexOf('data-highlighted'))
     expect(upTo).toContain('main.rs')
     expect(upTo).not.toContain('Patch')
   })

@@ -404,37 +404,37 @@ Nine build tasks + an integration gate. Each is one commit; T1 lands first and s
 
 ### T2 — Promote `<EntityPicker>` to a shared primitive
 
-- [ ] **T2.1** Create `web/src/lib/entity.ts`: `EntityKind = 'session'|'file'|'issue'|'schedule'|
+- [x] **T2.1** Create `web/src/lib/entity.ts`: `EntityKind = 'session'|'file'|'issue'|'schedule'|
       'snippet'|'skill'|'host'|'command'|'action'`; `EntityRow { id, kind, label, meta?, warn?,
       value?, run?, icon? }` (`value` = the string a token anchor inserts; `run` = what a field
       anchor invokes; **exactly one of the two is required**, enforced by a discriminated union so
       `tsc` refuses an unactionable row). Plus `resolveEntityTarget(row): { to: string } | { run:
       () => void }` — the single navigation indirection (§0.1, board-issue row).
-- [ ] **T2.2** Move `components/chat/entity-picker.tsx` → `components/ui/entity-picker.tsx`, keeping
+- [x] **T2.2** Move `components/chat/entity-picker.tsx` → `components/ui/entity-picker.tsx`, keeping
       **both** exports and the `default` (so `React.lazy` at `chat/composer.tsx:46` keeps working and
       the chunk stays out of the hero path). Widen `onPick` to `(row: EntityRow) => void`; chat's
       call site becomes `onPick={(row) => handle.picker.pick(row.value!)}`.
-- [ ] **T2.3** Add the **field anchor**. `anchor?: 'token' | 'field'` (default `'token'`) selects the
+- [x] **T2.3** Add the **field anchor**. `anchor?: 'token' | 'field'` (default `'token'`) selects the
       wrapper class only — `token` keeps today's `absolute inset-x-0 bottom-full z-20 mb-2`; `field`
       renders the list with no positioning at all, for a parent that already owns a box (the ⌘K
       dialog, a sheet). **No portal, no floating-ui, no flip logic** — a portal breaks the composer's
       never-take-focus rule and adds a dependency the size budget has no room for.
-- [ ] **T2.4** Retrofit the §14 numbers: rows get `px-2` + `rounded-lg` with the highlight fill inset
+- [x] **T2.4** Retrofit the §14 numbers: rows get `px-2` + `rounded-lg` with the highlight fill inset
       (list keeps `px-1.5` so the fill floats); `py-[7px]` desktop stays; **`py-[13px]` phone stays
       and is documented as a deliberate HIG exception**. `maxHeight` prop, defaulting to
       `min(280px,46vh)` for `token` and `min(420px,60vh)` for `field`.
-- [ ] **T2.5** Rename `data-active` → **`data-highlighted`**; add `--sm-popover-shadow` to
+- [x] **T2.5** Rename `data-active` → **`data-highlighted`**; add `--sm-popover-shadow` to
       `globals.css` (warm family, both themes) and point `entity-picker.tsx`, `chat/composer.tsx:322`
       and `chat/ui/composer.tsx:79` at it.
-- [ ] **T2.6** **Fix the scroll defect**: on every highlight change from the *keyboard* path, call
+- [x] **T2.6** **Fix the scroll defect**: on every highlight change from the *keyboard* path, call
       `scrollIntoView({ block: 'nearest' })` on the active row — the palette's existing mechanism
       (`command-palette.tsx:771-774`), moved into the primitive. Pointer-driven changes must **not**
       scroll (hover moving the list under the cursor is a well-known bug).
-- [ ] **T2.7** Icon slot: `row.icon?: LucideIcon` rendered at 14 px in `text-ink-3`. Chat rows pass
+- [x] **T2.7** Icon slot: `row.icon?: LucideIcon` rendered at 14 px in `text-ink-3`. Chat rows pass
       none (preserving today's look); palette rows pass the icons `PaletteRowView:970-1041` uses.
-- [ ] **T2.8** `/dev/pickers` route (DEV-only, lazy, `App.tsx` alongside the others): both anchors ×
+- [x] **T2.8** `/dev/pickers` route (DEV-only, lazy, `App.tsx` alongside the others): both anchors ×
       all nine kinds × `{desktop, phone}`, plus empty/loading/overflow-of-40-rows states.
-- [ ] **T2.9** BRAND.md §6c gains an `EntityPicker` row with the load-bearing numbers, and the three
+- [x] **T2.9** BRAND.md §6c gains an `EntityPicker` row with the load-bearing numbers, and the three
       deviations from §14 (max-height split, warm shadow, phone row height) recorded with reasons.
 
 **Verify:** T1.1's assertions pass with **only** the `data-active`→`data-highlighted` edit;
@@ -449,21 +449,21 @@ The chat popover and the scheduler's `PromptField` filter **the same slash-comma
 opposite directions with zero shared code (§0.2 finding 1). Merging them here — before the palette —
 is what proves the two-anchor API is real rather than a prop nobody exercises.
 
-- [ ] **T3.1** Point `chat/composer.tsx:46` at the new module; delete the moved file; keep
+- [x] **T3.1** Point `chat/composer.tsx:46` at the new module; delete the moved file; keep
       `slash.ts`'s `atRows`/`slashRows`/`fuzzyScore`/`rankEntities` where they are (they are chat's
       *data*, not the picker's) but re-type their output as `EntityRow` from `lib/entity.ts`.
-- [ ] **T3.2** Keep every A4 invariant intact and re-assert it: the picker still inserts and never
+- [x] **T3.2** Keep every A4 invariant intact and re-assert it: the picker still inserts and never
       sends; still never takes focus (`onMouseDown` + `preventDefault`, `:196`); the field still owns
       `role=combobox` / `aria-expanded` / `aria-controls` / `aria-activedescendant`
       (`composer.tsx:172-180`); `/model`-class commands still list-with-`warn` and still refuse to
       send (`classifySlash`, `slash.ts:207`).
-- [ ] **T3.3** Rebuild `scheduler/prompt-field.tsx`'s list (`:263-290`) on
+- [x] **T3.3** Rebuild `scheduler/prompt-field.tsx`'s list (`:263-290`) on
       `<EntityPickerView anchor="field">`, deleting its private keyboard engine (`:202-234`) in favour
       of T1.2's reducer and T2.6's scroll. **Keep its own text plumbing untouched** — `detectSlashQuery`
       (`:109`), `splitCommandAndPrompt` (`:43`), `mergeCommandAndPrompt` (`:64`), `insertion` (`:31`),
       `bareName` (`:102`) are scheduler semantics, not picker semantics, and the field/token split is
       exactly the seam that lets them stay put.
-- [ ] **T3.4** Reconcile the two rankers: `PromptField` caps at 8 with its own filter (`:148-160`),
+- [x] **T3.4** Reconcile the two rankers: `PromptField` caps at 8 with its own filter (`:148-160`),
       chat ranks with `fuzzyScore`/`rankEntities` and caps at 12. Adopt the chat ranker in both, keep
       each surface's own limit as a prop. This is a **deliberate behaviour change for the scheduler**
       (it gains subsequence matching) and it is called out in the PR body.
@@ -794,3 +794,5 @@ Base `a7cc52c` (`main`). Budget at branch point: **entry 144.94 / 160 · app 209
 |---|---|---|---|
 | addendum | done | 209.79 (base) | re-audit vs real `main`; §A1 budget finding |
 | T1 regression net | done | **209.99** (+0.20) | 1424 unit pass; pill spec + palette-keys spec green; found & fixed the ⌘K stale-query defect; VR pre in `~/b3-vr/pre` (14 shots). **0.01 KB headroom left — no additive task may run until T3/T4 delete.** |
+| T2 promote the primitive | done | 210.25 (**over**) | `ui/entity-picker.tsx` + `lib/entity.ts`; scrollIntoView defect fixed; `data-highlighted`; `--sm-popover-shadow`; `/dev/pickers`; BRAND §6c.1. A move that adds capability cannot pay for itself — T4 is the payer. |
+| T3 both type-ahead popovers | done | **210.84** (over) | scheduler rides `anchor="field"`, its keyboard engine and its `includes()` ranker deleted. Forced two extractions: `lib/rank.ts` and `chat/composer-keys.ts`, so the scheduler chunk stops inheriting chat's command table and 800-line hook. VR: chat popover delta confined to the row inset/radius. |

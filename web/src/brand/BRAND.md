@@ -274,7 +274,73 @@ renderer slices in `components/chat/` keep the data plane.
   literal, deliberately outside the `--status-*` family (it must survive at 7px
   on all seven pigments). Flagged in `metrics.ts` for owner review.
 
-### 6c.1 Entity-chip navigation vocabulary (B4)
+### 6c.1 The EntityPicker — one list of things to find (B3)
+
+`components/ui/entity-picker.tsx`. Every searchable "find a thing and act on
+it" list in the app is this component; there is no second one. It was promoted
+out of `components/chat/` because by fase B3 the app had **four** hand-rolled
+type-ahead lists, each with its own `(i+1) % len` wrap and its own
+`scrollIntoView` — and the newest of them had lost the `scrollIntoView` in the
+copy, so arrowing past the fold moved a highlight nobody could see.
+
+**The load-bearing numbers.**
+
+| | value | why |
+|---|---|---|
+| row gap | `10px` (`gap-2.5`) | |
+| row padding | `px-2`, `py-[7px]` desktop | The `px-2` is an INSET: the list keeps `px-1.5`, so the highlight fill floats inside the box instead of running edge to edge. Before B3 it ran edge to edge with no radius. |
+| row padding, phone | `py-[13px]` | ≈44pt. **Deviation from §14's single number, deliberate** — HIG's touch target beats a design doc's desktop figure, and a pointer is not doing the aiming on a phone. |
+| row radius | `8px` (`rounded-lg`) | |
+| icon | `14px` (`size-3.5`), `text-ink-3` | Optional. Chat's rows pass none, which is what preserves the A4 look exactly. |
+| max-height, `token` | `min(280px, 46vh)` | It must not cover the transcript it is being written about. |
+| max-height, `field` | `min(420px, 60vh)` | **Deviation from §14, deliberate** — §14 gave one number for both anchors, and 280px is right for a composer popover and wrong for a ⌘K spotlight, where six rows would be a regression from what the palette already did. |
+| shadow | `--sm-popover-shadow` | **Deviation from §14, deliberate** — §14 specified a cool grey (`#0000000f` / `#00000047`), which reads blue against this paper and fights the whole warm ladder. The token is warm-black in light and a deeper, tighter black in dark, where the popover sits on a surface only a few percent lighter than the paper. It replaced a raw literal duplicated across three call sites, one of them inside a `focus-within:` compound. |
+
+**The two anchors, and the one thing that separates them.**
+
+- `token` — up from an `@`/`/` token in a composer. Draws its own glass and
+  shadow, because it floats free over a transcript with nothing behind it.
+  **It never takes focus**: the textarea keeps it and carries
+  `aria-activedescendant`, because a popover that grabbed focus dismisses the
+  soft keyboard on every phone, one character into the query.
+- `field` — the parent already drew the box (the ⌘K dialog, a Vaul sheet, the
+  scheduler's positioned `motion.div`). Renders a bare list: no positioning, no
+  border, no shadow. A second box inside the parent's reads as a menu inside a
+  menu.
+
+`anchor` selects a **wrapper class and nothing else**. It is not a positioning
+engine and must not become one — there is no portal and no floating-ui, both
+because a portal breaks the composer's never-take-focus rule and because the
+app-JS budget had 0.21 KB of headroom when this landed.
+
+**The three rules a reviewer should check first.**
+
+1. **One highlight atom.** `[data-highlighted]` is set by render, never by an
+   event handler, so keyboard and pointer cannot disagree about which row Enter
+   takes. Keyboard moves scroll the row into view; **pointer moves must not** —
+   a hover that scrolled would move the list out from under the cursor, which
+   would then hover a different row.
+2. **It fetches nothing.** Rows arrive as props from whichever surface owns the
+   data plane. A lazy chunk that imported the API client made the bundler hoist
+   that client into a third chunk, +0.5 KB gz for zero behaviour.
+3. **A row cannot be unactionable.** `lib/entity.ts`'s union has three arms —
+   insert (`value`), run (`run`), navigate (`slug`) — and a row with none of
+   them fails to typecheck. A dead row renders and highlights exactly like a
+   live one, so the compiler is the only place to catch it.
+
+**Where a row goes** is `resolveEntityTarget`'s decision, in one function, for
+every consumer. Three of its answers are not obvious: an **issue** has no route
+(B2 put issues inside session detail and the team card, so it navigates to the
+session that owns it), and **schedules** and **hosts** are Settings anchors
+because B1 folded both routes away.
+
+**Bench**: `/dev/pickers` (DEV-only, lazy) — both anchors × all nine kinds ×
+`{desktop, phone}` × empty/loading/40-row-overflow, in both themes. Contracts
+asserted in `tests/unit/entity-picker.test.tsx`; the keyboard truth table in
+`tests/unit/entity-picker-keys.test.ts`; the lossless-promotion pin in
+`tests/unit/chat-interactive.test.tsx`.
+
+### 6c.2 Entity-chip navigation vocabulary (B4)
 
 The transcript is a management log, so the named things in it are places, not
 decoration. One rule governs all of them:
