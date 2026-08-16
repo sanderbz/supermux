@@ -56,6 +56,7 @@ import { MobileComposeSheet } from './mobile-compose-sheet'
 import { SessionInfoPanel } from './session-info-panel'
 import { useUI } from '@/stores/ui-store'
 import { RendererSwitch } from '@/components/chat/renderer-switch'
+import { RendererShell } from '@/components/chat/renderer-shell'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import {
   chatPaneActive,
@@ -449,9 +450,20 @@ export function DesktopSplit({
   // INSIDE the mount-time effect: a stopped session has no pty to focus, but
   // a later transition to stopped doesn't need to re-run anything (the user
   // can re-enter the route to retry).
+  //
+  // FASE A5 T3, invariant 4 — gated on the RESOLVED renderer. Before retention
+  // this fired unconditionally on mount, which was harmless because the
+  // terminal was the only thing that could be there. With a retained terminal
+  // sitting hidden behind chat, an unconditional `term.focus()` is exactly the
+  // silent keystroke sink Risk 1 describes: the user types into the composer
+  // and the bytes go to an invisible pty.
   const wantFocusRef = React.useRef(false)
   React.useEffect(() => {
     if (current?.status === 'stopped' || current?.status === 'error') {
+      wantFocusRef.current = false
+      return
+    }
+    if (chatActive) {
       wantFocusRef.current = false
       return
     }
@@ -463,8 +475,11 @@ export function DesktopSplit({
       }
     })
     return () => window.cancelAnimationFrame(raf)
+    // `chatActive` joins `name`: entering a session under chat must not arm the
+    // focus, and revealing the terminal later must. Status is still excluded —
+    // see above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name])
+  }, [name, chatActive])
 
   const handleTermReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t
@@ -752,44 +767,59 @@ export function DesktopSplit({
                 session was running. */}
             {stopped ? (
               <StoppedSession name={name} />
-            ) : chatActive ? (
-              /* Fase A1: read-only chat renderer. The chat client NEVER sends
-                 resize or input; toggling to Terminal remounts LiveTerminal
-                 (full handshake — mounted-but-hidden retention is A5 §6.2).
-                 KNOWN A1 COST (accepted, documented in the dogfood handoff):
-                 while chat is primary the pty keeps whatever size it last had
-                 (native holders boot 80×24; only the terminal WS resizes), so
-                 P13's capture is wrapped at that width and the first Terminal
-                 tap reflows. Mitigation for the week: tap Terminal once early
-                 per session (also needed to answer permission dialogs) — the
-                 WS handshake resizes the pty to real geometry. A5's retention
-                 owns the real fix. */
-              <React.Suspense fallback={null}>
-                <ChatPanel
-                  name={name}
-                  session={current}
-                  // The RAW plane. The panel is the one place that may write to
-                  // the pty under chat, and it does it through its own gates
-                  // (peek-verify, the slash gate, the pending echo + watchdog).
-                  // Everything else in this pane holds `chatInput`, whose text
-                  // paths stage into the composer instead — one draft, one
-                  // gated way out of it (fase A4 T3, A4 review).
-                  input={restInput}
-                  onOpenTerminal={() => setRenderer('terminal')}
-                />
-              </React.Suspense>
-            ) : terminalMounts ? (
-              /* LiveTerminal — reused verbatim. The keydown capture
-                 deliberately does NOT preventDefault on ordinary keys, so
-                 Ctrl-C / arrows / Tab / Shift+Tab / Esc / text all reach xterm's
-                 onData → the pty WS. */
-              <LiveTerminal
+            ) : (
+              /* FASE A5 T3 — mounted-but-hidden retention.
+                 Until A5 this was a component SWAP (`chatActive ? <ChatPanel/>
+                 : <LiveTerminal/>`), so every toggle cost a full unmount →
+                 `useLiveTerm` dispose → new WS → auth → resize → seed, and the
+                 same again for the chat socket in the other direction. The
+                 shell puts BOTH panes in one grid cell and hides the one you
+                 are not looking at, so a toggle is a 180 ms crossfade over two
+                 live connections — and the terminal escape hatch is exercised
+                 on every toggle instead of rotting.
+
+                 `key={name}` is invariant 8: a retained terminal from session A
+                 must never be revealed under session B. `stopped` never reaches
+                 here (the branch above owns it), which is invariant 9. */
+              <RendererShell
+                key={name}
                 name={name}
-                onReady={handleTermReady}
-                onStateChange={onTermState}
+                chatActive={chatActive}
+                terminalMounts={terminalMounts}
+                onTerminalHidden={() => termRef.current?.blur()}
+                chat={
+                  <React.Suspense fallback={null}>
+                    <ChatPanel
+                      name={name}
+                      session={current}
+                      // The RAW plane. The panel is the one place that may write
+                      // to the pty under chat, and it does it through its own
+                      // gates (peek-verify, the slash gate, the pending echo +
+                      // watchdog). Everything else in this pane holds
+                      // `chatInput`, whose text paths stage into the composer
+                      // instead — one draft, one gated way out of it (A4 T3).
+                      input={restInput}
+                      // A5: the escape hatch writes a PIN, not a `useState` —
+                      // "I had to escape to the terminal" is a preference, and
+                      // it should still be true after a reload.
+                      onOpenTerminal={() => setRenderer('terminal')}
+                    />
+                  </React.Suspense>
+                }
+                terminal={
+                  /* LiveTerminal — reused verbatim, and deliberately told
+                     NOTHING about being hidden (invariant 3). The keydown
+                     capture still does not preventDefault on ordinary keys, so
+                     Ctrl-C / arrows / Tab / Esc / text all reach xterm's
+                     onData → the pty WS. */
+                  <LiveTerminal
+                    name={name}
+                    onReady={handleTermReady}
+                    onStateChange={onTermState}
+                  />
+                }
               />
-            ) : null /* experiment on, sessions query still resolving — render
-                        nothing for a frame rather than flash a doomed terminal */}
+            )}
           </Dropzone>
           {/* Subtle "Capturing input" pill — only visible while xterm holds DOM
               focus. Click outside (header / dock / strip) releases. Esc is NOT
