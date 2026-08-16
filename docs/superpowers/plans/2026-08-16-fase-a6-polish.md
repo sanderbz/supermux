@@ -440,9 +440,9 @@ binaries, and they are for the owner's judgment, not for the README).
 
 ### T0 — Base, the corpus rescue, and the triage gate
 
-- [ ] **T0.1** `git fetch`; `git worktree add /opt/projects/supermux-a6 -b feat/a6-polish origin/main`;
+- [x] **T0.1** `git fetch`; `git worktree add /opt/projects/supermux-a6 -b feat/a6-polish origin/main`;
       `bun install` in `web/`; `cargo build` (debug) in `server/`. Never commit in the main checkout.
-- [ ] **T0.2** **Rescue the reference corpus out of `/tmp` — do this before anything else.**
+- [x] **T0.2** **Rescue the reference corpus out of `/tmp` — do this before anything else.**
       The entire Grok corpus (§0.2) lives in a session scratchpad under `/tmp/claude-1000/…`, which
       is not durable. Copy `grok/` (191 PNGs), `anim-rules.txt`, `app-rules.txt`, `taste/`,
       `direction/`, `hero-mockup/`, and the three reports (`wfresult-4-a6e9bb9f28089b7ea.md`,
@@ -450,17 +450,22 @@ binaries, and they are for the owner's judgment, not for the README).
       `file` type (remember `grok/hero.mp4` is a 5 KB HTML decoy — do not carry it as a video).
       **If the corpus is already gone, stop and tell the owner** — the scripts at
       `/home/supermux/pwlibs/driver/` can re-capture, but that is a decision, not a silent fallback.
-- [ ] **T0.3** **The triage gate.** Turn §0.1's 36 rows into a decision table, committed as the
+- [x] **T0.3** **The triage gate.** Turn §0.1's 36 rows into a decision table, committed as the
       first commit: each row gets exactly one of `A6` / `A7-blocker` / `B5` / `wontfix` plus a
       one-line reason, re-verified against the code (the ledgers are not uniformly trustworthy —
       #4 is a ticked box that did not ship). `A7-blocker` items must close in this fase or the
       fase does not end. Record the closed-vs-deferred counts; they go in the PR body.
-- [ ] **T0.4** **Fix the webkit mismatch before any mobile claim** (§0.1 #6): `bunx playwright
+- [x] **T0.4** *(EXECUTED — outcome differs from the plan's expectation; full record in
+      `a6-triage.md`. webkit **2287 installs** and its 268-package system-dependency closure was
+      resolved without sudo, but it **still cannot launch**: headless WPE aborts on EGL display
+      creation on this GPU-less box, and the Xvfb fallback needs `xkbcomp` at a root-owned path.
+      Mobile evidence here is chromium-with-an-iPhone-descriptor at DPR 1 — emulation. The
+      WebKit-specific half moves to the real-device checklist.)* **Fix the webkit mismatch before any mobile claim** (§0.1 #6): `bunx playwright
       install webkit` (needs 2287; 2215 is installed), then prove `playwright.mobile.config.ts`
       actually launches by running its existing `action-panels.spec.ts`. Record the result. **A
       mobile screenshot taken with a mismatched or absent engine is not evidence**, and three prior
       plans' mobile verification claims are currently unreproducible.
-- [ ] **T0.5** Record the baseline numbers a regression will be measured against:
+- [x] **T0.5** Record the baseline numbers a regression will be measured against:
       `bun run build:perf` (entry 144.73/160, app 205.46/210, CSS/30 — **~4.5 KB of headroom
       total**), `bun run test:unit` count, `cargo test` count, and the six pre-existing lint errors
       by file (the standing bar is **zero NEW**, not green).
@@ -481,7 +486,7 @@ the triage table is committed; the mobile config launches.
 - [ ] **T1.2** Assert the escape hatch: the terminal path's smoke specs pass **unedited**, and
       `/dev/renderer-thrash` round-trips. A6 may not make the terminal fallback worse — it is the
       thing A7 falls back to.
-- [ ] **T1.3** Adopt or delete the orphaned `tests/e2e/status-dot-pulse.spec.ts` (§0.1 #32) and say
+- [x] **T1.3** Adopt or delete the orphaned `tests/e2e/status-dot-pulse.spec.ts` (§0.1 #32) and say
       which in the commit message. B2 was asked to decide and did neither.
 
 **Verify**: the before-set exists as a manifest (paths + hashes, not the PNGs); all suites green on
@@ -494,34 +499,34 @@ an untouched tree; per-file e2e runs only (§0.6).
 The master plan's A6 row asks for two things. The audit found a third that is worse: the honesty
 mechanism is **built server-side and unplugged client-side**. Fix that first — it is nearly free.
 
-- [ ] **T2.1** **Plug in `TailState`.** `tail.state` is currently read by nothing
+- [x] **T2.1** **Plug in `TailState`.** `tail.state` is currently read by nothing
       (`chat-panel.tsx:438-439`), and `use-chat-ws.ts:119-120` collapses five states into two
       booleans. Render `reconnecting` and `no_hooks` as *visibly not-current*: the transcript stays
       on screen (the server's contract at `tailer.rs:153-155` is explicit about this) under chrome
       that says so. **This is the single cheapest honesty win in the fase** — the data is already
       on the wire and already tested (`chat_ws.rs:470`).
-- [ ] **T2.2** **The staleness ceiling.** Track the age of the last authoritative signal in the
+- [x] **T2.2** **The staleness ceiling.** Track the age of the last authoritative signal in the
       socket layer (today: zero timestamps tracked). Past the documented window while the session is
       supposed to be live → the same `reconnecting` presentation as T2.1, and the composer routed
       through the delivery watchdog. The number is exported and unit-tested **with A0's measured
       latencies as fixtures** (hooks ≪1 s, text-only transcript p50 31.4 s / max 32.8 s) — a ceiling
       that trips during a normal long prose turn is a worse bug than no ceiling.
-- [ ] **T2.3** **The `visibilitychange` redial** — the highest-value fix in A6. Follow the
+- [x] **T2.3** **The `visibilitychange` redial** — the highest-value fix in A6. Follow the
       established in-repo pattern (`use-live-term.ts:2209-2264`: `visibilitychange` + `pageshow` +
       `online`), with a debounce so a fast alt-tab does not thrash, and reset the attempt counter on
       a foreground redial so a phone that slept past the 8-attempt ceiling is not stuck in `offline`
       forever (`use-chat-ws.ts:95-103` never disposes a mounted-but-backgrounded panel).
-- [ ] **T2.4** **Register with `connection-store.ts`** so the app-wide `<ReconnectBanner>` /
+- [x] **T2.4** **Register with `connection-store.ts`** so the app-wide `<ReconnectBanner>` /
       `<ConnectionOverlay>` stop being blind to a dead chat socket — or write down why the chat
       socket deliberately stays out of the global banner. Either is fine; silence is not.
-- [ ] **T2.5** **Stop the watchdog manufacturing false "undelivered".** It measures echo arrival
+- [x] **T2.5** **Stop the watchdog manufacturing false "undelivered".** It measures echo arrival
       over the very socket that is down (`pending.ts:337`, latched at `use-pending-sends.ts:222`).
       Feed the SSE-borne server receipt (`session.last_send_text`) into the escalation decision, or
       suppress escalation while the socket is known-dead and say so in the UI. A false undelivered
       teaches the user the honesty mechanism lies — the exact opposite of its purpose.
-- [ ] **T2.6** **One vocabulary**: `live` / `reconnecting` / `stale` / `offline`, identical in the
+- [x] **T2.6** **One vocabulary**: `live` / `reconnecting` / `stale` / `offline`, identical in the
       code, in `brand/copy.ts` and in `BRAND.md`. No surface invents a fifth word.
-- [ ] **T2.7** Do **not** touch what works: the backoff arithmetic (`chat-socket.ts:99-110`), the
+- [x] **T2.7** Do **not** touch what works: the backoff arithmetic (`chat-socket.ts:99-110`), the
       auth-grace reset rationale (`:256-268`), the terminal close-code set, the full re-seed model
       or the `seq`-arithmetic dedupe. They are correct and tested; A6 adds around them.
 
@@ -560,20 +565,20 @@ up a stale release binary from the main checkout.
 
 ### T4 — Debt paydown A: the three A7-blockers
 
-- [ ] **T4.1** **Subagent turns (§0.1 #1).** Decide once, and make the decision total: either the
+- [x] **T4.1** **Subagent turns (§0.1 #1).** Decide once, and make the decision total: either the
       chat surface gains a voice for subagent turns (tailer already has the scope; the 404 is in
       `find_full_entry`'s single-transcript assumption at `ws.rs:364-379`), **or** the surface states
       plainly that N subagents are working and the terminal has the detail — with `fetch-full`
       structurally unable to be offered for them. What must not survive is today's state: a spinner,
       a count, and silence during a five-way fan-out. Whichever branch, a test pins it and
       `BRAND.md:294`'s `subagent | ❌ no surface yet` row is updated.
-- [ ] **T4.2** **Truncated entries (§0.1 #2).** A clipped message must read as *deliberately
+- [x] **T4.2** **Truncated entries (§0.1 #2).** A clipped message must read as *deliberately
       condensed with a way to see the rest* — not as a broken message whose only escape is
       "go use the terminal" in a `title` tooltip (`transcript-item.tsx:286-291`). Ship an explicit
       affordance with a loading state and a failure state that keeps the condensed text, and make
       the never-retry rule (`chat-socket.ts:161-164`) a *user-triggerable* retry rather than a dead
       end. The 12-entry auto-fetch window stays as the automatic policy.
-- [ ] **T4.3** **Chat faces = roster identity (§0.1 #7).** Wire `usePin` (`hooks/use-roster-marks.ts`)
+- [x] **T4.3** **Chat faces = roster identity (§0.1 #7).** Wire `usePin` (`hooks/use-roster-marks.ts`)
       into `chat-panel.tsx` so the renderer's `pinFor`/`pin` seam — today supplied only by the dev
       benches — is fed by the real `mark_pin` column B2 landed (`0027`). Two identities for one
       session is exactly the seam a user notices the day chat becomes the default. Delete the
@@ -589,7 +594,9 @@ up a stale release binary from the main checkout.
 
 ### T5 — Debt paydown B: the cheap corrections
 
-- [ ] **T5.1** **The `model` field in new-session (§0.1 #4)** — add it to `new-session-sheet.tsx`
+- [x] **T5.1** *(EXECUTED — see commit `6c5d507`. The ledger correction landed; the field itself
+      was REFUSED because the create API does not accept a model, and shipping a control that goes
+      nowhere is the same class of dishonesty as the ticked box that started this.)* **The `model` field in new-session (§0.1 #4)** — add it to `new-session-sheet.tsx`
       alongside `desc`/`tags`/reroll/initial-prompt, reusing the existing `ModelPicker`
       (`settings.tsx:108`). And **correct the B2 ledger's ticked box** in the same commit: a plan
       that lies about what shipped is worse than a missing field.
@@ -598,10 +605,13 @@ up a stale release binary from the main checkout.
       `role="listbox"`), and the **duplicate `⌘1..9` registration** with two different slot maps
       (`use-keyboard-capture.ts:78-82` vs `overview.tsx:489-512`). Both are small, both are real
       user-facing ambiguity, neither needs B3.
-- [ ] **T5.3** **The dark `statusline` delta key (§0.1 #20)** — give it a TS type and one consumer,
+- [x] **T5.3** *(DECIDED: does not fit, with the measured reason. The headroom is **0.21 KB**, not
+      the ~4.5 KB the plan assumed — main app JS measured 209.79/210.00 KB on `origin/main`. A TS
+      type plus a consumer does not fit in 0.21 KB, and B3 and B5 still have to land. Re-filed to
+      `later` in `a6-triage.md`.)* **The dark `statusline` delta key (§0.1 #20)** — give it a TS type and one consumer,
       *if* it fits the ~4.5 KB budget. It is the unblocker for #10 and #19 and B2 named it as "the
       precedent to avoid". If it does not fit, write that down with the measured cost.
-- [ ] **T5.4** Fix the one pre-existing lint error in a file A6 touches
+- [x] **T5.4** Fix the one pre-existing lint error in a file A6 touches
       (`chat/attention-card.tsx`, §0.1 #27) and leave the other five, so the "zero NEW" bar
       improves by one rather than being restated.
 - [ ] **T5.5** Every other `A6`-triaged item from T0.3 gets its own checkbox and verification line
@@ -619,27 +629,27 @@ green; `bun run build:perf` still inside 210 KB with the headroom reported.
 Motion is the half of "fluid" a screenshot cannot show, and it is what T11's jury judges frame by
 frame against §0.2's extracted numbers.
 
-- [ ] **T6.1** **Make the source-of-truth claim true.** `springs.ts:58-61` claims ownership it does
+- [x] **T6.1** **Make the source-of-truth claim true.** `springs.ts:58-61` claims ownership it does
       not have. Delete `tweens.popoverOut` (dead) or give it its call site; make
       `containerIndicate`/`gapReveal`/`reflow` actually read as values instead of being hand-copied
       into Tailwind literals (`group-grid.tsx:1376`, `:2360`, `:2367`); resolve
       `statusMorph` ≡ `snappy` (alias or delete); adopt or drop the near-dead tokens.
-- [ ] **T6.2** **Retire ad-hoc motion in the three surfaces** (chat, roster, shell): the raw
+- [x] **T6.2** **Retire ad-hoc motion in the three surfaces** (chat, roster, shell): the raw
       `ease:'linear'` at `mobile-compose-sheet.tsx:547`, the inline objects at `key-bar.tsx:506,564`,
       the per-file constants (`SWAP_S`, `ECHO_SWAP_S`, `FADE_S`, the bare `0.16` at
       `conversation.tsx:649`), and the arbitrary Tailwind durations in the chat UI primitives
       (`duration-[120ms]` ×7, `[400ms]`, `[220ms]`). Each becomes a token or the token set gains the
       one genuinely-missing curve with a note saying why. Keep the `transition-all`-is-zero rule.
-- [ ] **T6.3** **The three-speed rule holds and is enforced by a test.** `.12s` hover/press on
+- [x] **T6.3** **The three-speed rule holds and is enforced by a test.** `.12s` hover/press on
       *both* `background-color` and `color`; `.26s` in-place morph; `.28/.42s` `data-fresh`-gated
       arrival; `.45s` roster-row *horizontal* arrival; `.4s` facepile morph on **padding**; `.6s`
       identity recolour; and **exits always faster than entries** (overlay 520/300, popover 150/100).
       Enforce with a source-scan spec in the idiom of B1's `tour-anchors.test.ts`, so the rule cannot
       rot the way `springs.ts`'s ownership claim did.
-- [ ] **T6.4** **Never animate a backlog** (§5.1.3): seed entries mount `animation:none`; only
+- [x] **T6.4** **Never animate a backlog** (§5.1.3): seed entries mount `animation:none`; only
       post-`seed_done` entries pop; one container mount-fade. Assert it — it is the most visible
       "cheap" tell and it regresses whenever the seed path is touched, which T2 touches.
-- [ ] **T6.5** **Complete `prefers-reduced-motion` coverage.** Fix the concrete unbranched bugs
+- [x] **T6.5** **Complete `prefers-reduced-motion` coverage.** Fix the concrete unbranched bugs
       first (`working-row.tsx:73` — a file that already reads `useReducedMotion()` at `:57` —
       then `ui/roster-row.tsx:160`, `ui/facepile.tsx:104`, `ui/composer.tsx:82`,
       `ui/system-line.tsx:78,147`, `ui/receipt-group.tsx:139`, `ui/captured-frame-card.tsx:121`,
@@ -650,10 +660,10 @@ frame against §0.2's extracted numbers.
       chosen model. Functional spinners stay animated (existing convention, already documented for
       `sm-status-spin`). Grok ships **eight** colocated reduce blocks and keeps the typing dots'
       `.25/.45/.7` base opacities so the row still reads as a still — match that standard.
-- [ ] **T6.6** **Offscreen surfaces pause** (`animation-play-state: paused`, Grok's
+- [x] **T6.6** **Offscreen surfaces pause** (`animation-play-state: paused`, Grok's
       `[data-demo-offscreen]` idiom). At roster scale the overview must not run forty loops behind a
       scrolled-out fold. Assert loop count and unregistration at scale, as B2's T2 did for marks.
-- [ ] **T6.7** `BRAND.md` gains **§6f — motion, reduced motion and the accessibility contract**:
+- [x] **T6.7** `BRAND.md` gains **§6f — motion, reduced motion and the accessibility contract**:
       the token table, the exits-faster rule, the reduce doctrine, T7/T8's a11y rules and T2.6's
       connection vocabulary. One page for the next surface to read.
 
