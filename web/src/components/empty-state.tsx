@@ -2,7 +2,7 @@ import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 
 export interface EmptyStateCta {
@@ -41,7 +41,7 @@ export function EmptyStatePlaceholder({
     <motion.div
       initial={reduce ? false : { opacity: 0, scale: 0.96 }}
       animate={{ opacity: 1, scale: 1 }}
-      transition={springs.cardExpand}
+      transition={reduce ? motionOff : springs.cardExpand}
       className={cn(
         'flex flex-col items-center justify-center gap-4 px-6 py-16 text-center',
         className,

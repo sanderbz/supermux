@@ -22,7 +22,7 @@ import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 
 import type { MarkPin } from '../../brand/marks'
-import { springs } from '../../lib/springs'
+import { motionOff, springs } from '../../lib/springs'
 
 import { formatElapsed, stripEmojiPrefix } from './entries'
 import { serverNowMs } from './latency'
@@ -70,7 +70,7 @@ export function WorkingRow({
       // second. Reduced motion drops the 4px rise and keeps the fade.
       initial={reduce ? { opacity: 0 } : { opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={springs.cardExpand}
+      transition={reduce ? motionOff : springs.cardExpand}
     >
       <WorkingRowUi
         seed={name}

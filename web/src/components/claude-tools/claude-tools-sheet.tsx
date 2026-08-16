@@ -65,7 +65,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { settingsRequest } from '@/lib/api/client'
 import { CONFIRM } from '@/brand/copy'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
@@ -640,7 +640,7 @@ function EmptyState({
     <motion.div
       initial={reduce ? false : { opacity: 0, scale: 0.96 }}
       animate={{ opacity: 1, scale: 1 }}
-      transition={springs.cardExpand}
+      transition={reduce ? motionOff : springs.cardExpand}
       className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center"
     >
       <div className="flex size-14 items-center justify-center rounded-full bg-muted text-muted-foreground [&_svg]:size-6">
@@ -956,7 +956,7 @@ function McpRow({
         </span>
         <motion.span
           animate={{ rotate: expanded ? 180 : 0 }}
-          transition={springs.toggleSnap}
+          transition={reduce ? motionOff : springs.toggleSnap}
           className="shrink-0 text-muted-foreground"
         >
           <ChevronDown className="size-4" aria-hidden />
@@ -969,7 +969,7 @@ function McpRow({
             initial={reduce ? false : { height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={reduce ? { opacity: 0 } : { height: 0, opacity: 0 }}
-            transition={springs.smooth}
+            transition={reduce ? motionOff : springs.smooth}
             className="overflow-hidden border-t border-border"
           >
             <div className="flex flex-col gap-3 px-3 py-3">

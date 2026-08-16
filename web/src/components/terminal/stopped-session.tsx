@@ -27,7 +27,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Archive, History, PlayCircle, PowerOff, Users } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { EMPTY } from '@/brand/copy'
 import {
@@ -291,7 +291,7 @@ export function StoppedSessionActions({
             initial={reduce ? false : { opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={reduce ? undefined : { opacity: 0, scale: 0.96 }}
-            transition={springs.cardExpand}
+            transition={reduce ? motionOff : springs.cardExpand}
             className="flex items-center gap-1.5"
           >
             <Button
@@ -318,7 +318,7 @@ export function StoppedSessionActions({
             initial={reduce ? false : { opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={reduce ? undefined : { opacity: 0, scale: 0.96 }}
-            transition={springs.cardExpand}
+            transition={reduce ? motionOff : springs.cardExpand}
           >
             <Button
               variant="ghost"
@@ -403,7 +403,7 @@ export function StoppedSession({ name, className }: StoppedSessionProps) {
       <motion.div
         initial={reduce ? false : { opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={springs.cardExpand}
+        transition={reduce ? motionOff : springs.cardExpand}
         className="flex flex-col items-center gap-4 text-center"
       >
         <div className="flex size-16 items-center justify-center rounded-full bg-muted text-muted-foreground [&_svg]:size-7">

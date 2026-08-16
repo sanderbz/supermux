@@ -28,7 +28,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { useSession } from '@/hooks/use-sessions'
 import { TEAMS_KEY } from '@/hooks/use-teams'
 import { useTeamDensity, type TeamDensity } from '@/stores/team-density-store'
@@ -212,7 +212,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
                 initial={reduce ? false : { opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
-                transition={springs.smooth}
+                transition={reduce ? motionOff : springs.smooth}
                 className="overflow-hidden"
               >
                 <TeammateCard
@@ -234,7 +234,7 @@ export function TeamCard({ team, sizeTier }: TeamCardProps) {
                 initial={reduce ? false : { opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
-                transition={springs.smooth}
+                transition={reduce ? motionOff : springs.smooth}
                 className="overflow-hidden"
               >
                 <TeammateChip
