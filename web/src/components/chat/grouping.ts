@@ -375,8 +375,13 @@ export function toReceiptRows(lines: readonly ReceiptLine[]): Receipt[] {
     if (short !== tool) row.short = short
     if (outcome !== undefined) row.outcome = outcome
     // What the tap is FOR: the result the outcome column clamped. Same rule —
-    // carried only when the clamp actually took something away.
-    if (clamped) row.full = result
+    // carried only when the clamp actually took something away, and it keeps the
+    // `failed · ` prefix, because that prefix is the ONLY thing on a receipt
+    // that says the call did not work (the glyph is the same check either way).
+    // The expanded row shows this INSTEAD of the outcome, so dropping it would
+    // turn a failure into something that reads like a result — on the very tap a
+    // user makes because the short line was unreadable.
+    if (clamped) row.full = line.ok === false ? `failed · ${result}` : result
     return row
   })
 }

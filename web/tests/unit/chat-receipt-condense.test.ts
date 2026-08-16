@@ -75,4 +75,22 @@ describe('toReceiptRows', () => {
     const [row] = toReceiptRows([{ uuid: 'a', label: 'Bash echo', result: 'done' }])
     expect(row.full).toBeUndefined()
   })
+
+  /**
+   * A FAILED call must still read as failed once the row is expanded.
+   *
+   * `failed · ` is the only thing on a receipt that says a call did not work —
+   * the glyph is the same check as a success (`data-state` carries `done` for
+   * both). The expanded row swaps `outcome` for `full`, so a `full` without the
+   * prefix turns "failed · No such file or directory …" into a line that reads
+   * like a result, on the tap a user makes precisely because they could not read
+   * the short one.
+   */
+  test('the expanded read of a failed call still says it failed', () => {
+    const long = 'No such file or directory: '.repeat(6)
+    const [row] = toReceiptRows([{ uuid: 'a', label: 'Bash cat missing.txt', result: long, ok: false }])
+    expect(row.outcome?.startsWith('failed · ')).toBe(true)
+    expect(row.full?.startsWith('failed · ')).toBe(true)
+    expect(row.full).toContain(long.trim())
+  })
 })
