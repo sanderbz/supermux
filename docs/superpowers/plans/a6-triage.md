@@ -374,3 +374,36 @@ descriptor at DPR 1 — emulation, which proves layout, touch geometry, `visualV
 safe-area behaviour, and proves nothing WebKit-specific. The `backdrop-filter`-captures-
 `position:fixed` hazard (§0.1 #29) therefore **remains unguarded**, which matters because the
 refactor it guards was deliberately deferred.
+
+## Two pre-existing test-hygiene findings, neither caused by A6
+
+Found while running the full suites as gates. Both are reported rather than fixed — neither is in
+A6's scope and both need an owner's call.
+
+### 1. `tests/teams_start.rs::start_team_route_is_distinct_from_list` is not hermetic
+
+It asserts *"no teams yet → empty array"* against `GET /api/teams`, but that route reads the real
+**`~/.claude/teams`** (`src/teams/mod.rs:5`) rather than the test's own `data_dir`. On this box it
+returned a live team whose members were **the six subagents executing this very fase**:
+
+```
+left: Array [Object {"team_name": "session-5aee9a68", "members": [ {"name":"vr-rig"…}, {"name":"motion"…}, … ]}]
+```
+
+So the test fails on **any machine running a Claude Code session with subagents** — which is every
+machine this project is developed on. It is a genuine isolation bug (the handler should honour the
+injected data dir, or the test should point `HOME` at its tmpdir), not a flake to retry.
+
+**Everything else is green: 1010 passed, 1 failed — and that one.**
+
+### 2. `tests/static_assets.rs` (4 tests) cannot pass from a plain `cargo build`
+
+They 500 unless `server/static/` is populated, and only `scripts/build.sh` populates it (from
+`web/dist`, for the `rust-embed` step). `server/static` is gitignored, so a fresh worktree that has
+only ever run `cargo build` — which is what this project's own CLAUDE.md instructs, since release
+builds OOM small hosts — fails all four with no hint as to why.
+
+Verified environmental: copying `web/dist/.` into `server/static/` turns all four green with no
+code change. Worth either a skip-with-reason when the dir is empty, or a line in the contributing
+notes, because "4 failing tests on a clean checkout" is a bad first impression that costs everyone
+the same twenty minutes.
