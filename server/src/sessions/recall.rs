@@ -24,6 +24,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::agents::delegate::DELEGATION_TAG;
 use crate::db;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -142,6 +143,9 @@ pub enum Kind {
     /// `<task-notification>…</task-notification>` background subagent
     /// completion event.
     Notification,
+    /// supermux delegate delivery — `<supermux-delegation from>` wrapper.
+    /// `label` is the sending session's slug.
+    Delegation,
     /// Harness reminders, command caveats, compact restores, `isMeta=true`
     /// auxiliary content. Also a catch-all for unrecognised leading
     /// `<wrapper-tag>` content so new Claude Code wrappers degrade
@@ -161,11 +165,20 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Whether this kind is shown in the default "Your prompts" view.
-    /// Prompts + commands + teammate routing are user-initiated; the rest
-    /// are surfaced only when the "Show system events" toggle is on.
+    /// Whether this kind is shown in the default "Your prompts" view — and,
+    /// since the chat tail reads the same list, whether it reaches the chat
+    /// transcript. Prompts, commands, teammate routing and delegated prompts
+    /// are somebody's deliberate request; the rest are surfaced only when the
+    /// "Show system events" toggle is on.
+    ///
+    /// This is the ONE site: the chat-tail path used to carry a copy-pasted
+    /// `matches!` list, which meant every new kind had to be added twice or it
+    /// half-landed.
     fn is_user_initiated(self) -> bool {
-        matches!(self, Kind::Prompt | Kind::Command | Kind::Teammate)
+        matches!(
+            self,
+            Kind::Prompt | Kind::Command | Kind::Teammate | Kind::Delegation
+        )
     }
 }
 
@@ -669,7 +682,7 @@ fn read_chat_turns(path: &Path) -> Vec<RecallEntry> {
                 let Some(c) = classify_user(&v) else { continue };
                 // Chat tail shows only user-initiated turns — system noise
                 // (reminders, notifications, caveats) stays out of the calm view.
-                if !matches!(c.kind, Kind::Prompt | Kind::Command | Kind::Teammate) {
+                if !c.kind.is_user_initiated() {
                     continue;
                 }
                 entries.push(RecallEntry {
@@ -1065,6 +1078,18 @@ fn classify_user(v: &serde_json::Value) -> Option<ClassifiedUser> {
     //    the use case that prompted this whole feature) and we must NOT
     //    swallow that into the system bucket.
     if prompt_source == "typed" {
+        // …with one carve-out: wrappers supermux itself authors on delivery
+        // ride the pty like a keystroke, so Claude Code stamps them "typed"
+        // too (verified against a real delegation's JSONL row). Without this
+        // the wrapper would be dead on arrival and a delegated prompt would
+        // render as the owner's own bubble. Scoped to the `supermux-`
+        // namespace, so a human pasting a quoted `<task-notification>` — the
+        // case the hard override exists for — is untouched.
+        if is_supermux_wrapper(trimmed) {
+            if let Some(c) = classify_by_wrapper(trimmed) {
+                return Some(c);
+            }
+        }
         return Some(ClassifiedUser {
             kind: Kind::Prompt,
             text: sanitise_text(trimmed),
@@ -1120,6 +1145,12 @@ fn classify_user(v: &serde_json::Value) -> Option<ClassifiedUser> {
     })
 }
 
+/// Whether `body` opens with a wrapper supermux authored itself (as opposed to
+/// one Claude Code injects). Only these outrank `promptSource: "typed"`.
+fn is_supermux_wrapper(body: &str) -> bool {
+    matches!(leading_tag(body), Some(DELEGATION_TAG))
+}
+
 /// Inspect the leading tag (if any) and produce a classified entry for the
 /// known harness wrappers. Returns `None` when the string doesn't start with
 /// a tag we want to special-case.
@@ -1167,6 +1198,28 @@ fn classify_by_wrapper(body: &str) -> Option<ClassifiedUser> {
                 text: sanitise_text(cleaned),
                 label: teammate_id,
             })
+        }
+        DELEGATION_TAG => {
+            // `<supermux-delegation from="X">…</supermux-delegation>` — a
+            // prompt another session handed to this one (`agents/delegate.rs`
+            // writes it). Same parse shape as the teammate envelope above.
+            let from = attr_value(body, "from").filter(|f| !f.trim().is_empty());
+            let inner = tag_inner(body, DELEGATION_TAG).unwrap_or_default();
+            let cleaned = inner.trim();
+            match from {
+                // No sender means no provenance, and an unattributed body must
+                // never leak into the transcript as somebody's bare prompt.
+                None => Some(ClassifiedUser {
+                    kind: Kind::System,
+                    text: short_summary(cleaned),
+                    label: Some(DELEGATION_TAG.to_string()),
+                }),
+                Some(from) => Some(ClassifiedUser {
+                    kind: Kind::Delegation,
+                    text: sanitise_text(cleaned),
+                    label: Some(from),
+                }),
+            }
         }
         "system-reminder" => {
             let inner = tag_inner(body, "system-reminder").unwrap_or_default();
@@ -1744,6 +1797,64 @@ please prepare the next stacked branch
         assert_eq!(c.kind, Kind::Teammate);
         assert_eq!(c.text, "please prepare the next stacked branch");
         assert_eq!(c.label.as_deref(), Some("git-stacker"));
+    }
+
+    #[test]
+    fn delegation_wrapper_classifies_with_sender_label() {
+        let body = "<supermux-delegation from=\"git-stacker\">\nPlease rebase the stack.\n</supermux-delegation>";
+        let c = classify_str(body);
+        assert_eq!(c.kind, Kind::Delegation);
+        assert_eq!(c.label.as_deref(), Some("git-stacker"));
+        assert_eq!(c.text, "Please rebase the stack.");
+    }
+
+    #[test]
+    fn delegation_kind_passes_the_chat_allowlist() {
+        assert!(Kind::Delegation.is_user_initiated());
+    }
+
+    #[test]
+    fn delegation_wrapper_survives_the_typed_prompt_source() {
+        // Live-verified: a delegated prompt rides the pty like a keystroke, so
+        // Claude Code stamps it `promptSource: "typed"`. Without the
+        // supermux-namespaced escape the typed hard-override would classify it
+        // as the owner's own bubble and the wrapper would be dead on arrival.
+        let v = serde_json::json!({
+            "type": "user",
+            "promptSource": "typed",
+            "message": {
+                "role": "user",
+                "content": "<supermux-delegation from=\"deploy-fix\">\nship it\n</supermux-delegation>",
+            },
+        });
+        let c = classify_user(&v).unwrap();
+        assert_eq!(c.kind, Kind::Delegation);
+        assert_eq!(c.label.as_deref(), Some("deploy-fix"));
+        assert_eq!(c.text, "ship it");
+    }
+
+    #[test]
+    fn typed_override_still_protects_a_pasted_harness_tag() {
+        // The escape is scoped to the `supermux-` namespace: a human pasting a
+        // quoted `<task-notification>` stays a prompt (the original reason the
+        // typed override is a hard override).
+        let v = serde_json::json!({
+            "type": "user",
+            "promptSource": "typed",
+            "message": {
+                "role": "user",
+                "content": "<task-notification><summary>look at this</summary></task-notification>",
+            },
+        });
+        let c = classify_user(&v).unwrap();
+        assert_eq!(c.kind, Kind::Prompt);
+    }
+
+    #[test]
+    fn delegation_without_a_sender_degrades_to_system() {
+        // Never let a malformed wrapper leak as a bare prompt.
+        let c = classify_str("<supermux-delegation>\nno sender here\n</supermux-delegation>");
+        assert_eq!(c.kind, Kind::System);
     }
 
     #[test]

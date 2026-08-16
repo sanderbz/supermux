@@ -37,6 +37,26 @@ pub struct DelegateInput {
     pub actor: Option<String>,
 }
 
+/// The wrapper tag supermux writes around a delegated prompt and `recall.rs`
+/// reads back. One const, two readers — the format is a contract, not a string
+/// literal repeated in two crates' worth of files.
+pub const DELEGATION_TAG: &str = "supermux-delegation";
+
+/// What a delegated prompt looks like on the receiver's pty/JSONL. The tag is
+/// deliberately visible to the receiving agent: provenance is for it too — it
+/// currently cannot tell a colleague's request from its owner's.
+pub fn wrap_delegation(from: &str, prompt: &str) -> String {
+    format!("<{DELEGATION_TAG} from=\"{from}\">\n{prompt}\n</{DELEGATION_TAG}>")
+}
+
+/// Whether a target session's provider gets the wrapper. Only `claude`:
+/// `recall.rs`'s JSONL classification and the chat renderer are Claude-only, so
+/// for `codex`/`kimi` the tag would be literal XML noise in their TUI with no
+/// transcript to redeem it.
+pub fn wraps_for_provider(provider: &str) -> bool {
+    provider == "claude"
+}
+
 /// Audit-log actor string for a delegation. `"human"` is the composer path.
 pub(crate) fn audit_actor(actor: Option<&str>, from: &str) -> String {
     match actor {
@@ -67,8 +87,21 @@ pub async fn delegate(
         return Err(AppError::NotFound(format!("session '{to}'")));
     }
 
-    // Deliver the prompt (auto-wakes a stopped target).
-    lifecycle::send_text(&state, to, &input.prompt).await?;
+    // Deliver the prompt (auto-wakes a stopped target). Claude targets get the
+    // `<supermux-delegation>` wrapper so their transcript knows the sender;
+    // other providers get the raw prompt. Either way the *preview* stored in
+    // `last_send_text` is the unwrapped prompt — the wrapper is machinery, not
+    // something the owner should read back in the roster.
+    let target_provider = db::sessions::get(&state.pool, to)
+        .await?
+        .map(|s| s.provider)
+        .unwrap_or_default();
+    if wraps_for_provider(&target_provider) {
+        let wrapped = wrap_delegation(from, &input.prompt);
+        lifecycle::send_text_with_preview(&state, to, &wrapped, Some(&input.prompt)).await?;
+    } else {
+        lifecycle::send_text(&state, to, &input.prompt).await?;
+    }
 
     // Record the edge for the graph view (indices idx_delegations_from/to).
     let id = db::audit::record_delegation(&state.pool, from, to, &input.prompt).await?;
@@ -136,5 +169,22 @@ mod tests {
     fn unknown_actor_falls_back_to_agent_from() {
         // Forward-compat: an unrecognised actor string never impersonates the user.
         assert_eq!(audit_actor(Some("robot"), "x"), "agent:x");
+    }
+
+    #[test]
+    fn wrap_delegation_is_the_shape_recall_parses() {
+        assert_eq!(
+            wrap_delegation("git-stacker", "Please rebase the stack."),
+            "<supermux-delegation from=\"git-stacker\">\nPlease rebase the stack.\n</supermux-delegation>"
+        );
+    }
+
+    #[test]
+    fn only_claude_targets_get_the_wrapper() {
+        // Literal XML in a codex/kimi TUI is pure noise: their transcripts are
+        // not parsed by `recall.rs`, so the tag would buy provenance nowhere.
+        assert!(wraps_for_provider("claude"));
+        assert!(!wraps_for_provider("codex"));
+        assert!(!wraps_for_provider("kimi"));
     }
 }
