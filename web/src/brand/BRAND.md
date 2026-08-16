@@ -391,8 +391,10 @@ the attribute every pre-B1 class still applies, so the revert needs no redeploy.
 Sourced from `lib/springs.ts` only. The shell adds `springs.settle` (overlay
 entrance, ~520ms) against `tweens.overlayExit` (300ms), and
 `tweens.popoverIn` (150ms) against `tweens.popoverOut` (100ms).
-`.sm-swap` is the one sanctioned CSS transition: a 1×1 grid whose two children
-share a cell and crossfade at 0.26s, so a state swap cannot shift layout.
+`.sm-swap` is the one sanctioned CSS transition *of the shell*: a 1×1 grid whose
+two children share a cell and crossfade at 0.26s, so a state swap cannot shift
+layout. **The full motion contract — both banks, the three speeds, the reduced-
+motion doctrine and the offscreen rule — is §6f.**
 
 ## 6e. The roster — one row, three densities, one fact ladder (B2)
 
@@ -485,6 +487,141 @@ Everything else in B2 is additive and flag-free.
 **Bench**: `/dev/roster` (DEV-only, lazy) — three densities × six states × three
 tiers + quiet × both themes, plus the tile at all four overview tiers. Coverage
 asserted in `tests/unit/dev-roster-cast.test.tsx`.
+
+## 6f. Motion, reduced motion, and the accessibility contract (A6)
+
+One page, so the next surface does not have to reconstruct it. Everything here
+is enforced by `tests/unit/motion-tokens.test.ts` (a source scan) and
+`tests/unit/shell-chrome-tokens.test.ts` (a CSS parse) — because the previous
+version of this contract was prose in a header comment, and by the time A6
+audited it, it was false for three of seven tweens.
+
+### The two banks
+
+Motion has two homes and neither can hold the other's half:
+
+| bank | owns | file |
+|---|---|---|
+| `springs` / `tweens` / `eases` | every framer-motion `transition` | `lib/springs.ts` |
+| `.sm-t-*` speed classes | every CSS transition | `styles/globals.css` (tail) |
+
+They carry the **same numbers**, and the scan asserts they agree. A duration
+written anywhere else — a `duration-[220ms]` literal, a private
+`const SWAP_S = 0.26`, a bare `0.16` — is a number with no owner, and the scan
+fails on it in `components/{chat,session-tile,shell,focus-mode}/`.
+
+### Three speeds, and only three
+
+| speed | what it is | token | CSS twin |
+|---|---|---|---|
+| **.12s** | hover / press feedback, on **both** `background-color` and `color` | `tweens.hover` (= `tweens.gapReveal`) | `.sm-t-hover` |
+| **.26s** | in-place morph, same-cell crossfade, status swap | `tweens.swap`, `springs.statusMorph` (≡ `snappy`) | `.sm-t-morph`, `.sm-swap` |
+| **.28s** | arrival — **.42s** when `data-fresh` | *not yet built* — see gaps below | — |
+
+Two exceptions exist, and both are exceptions **on purpose**, which is why the
+scan asserts their *property* and not just their duration:
+
+- **.45s** roster-row arrival — on a **horizontal** axis (`translateX(−10px)`),
+  a different axis from the transcript's vertical pops. *Not yet built.*
+- **.4s** facepile avatar-row morph — on **`padding`**, not transform.
+  `.sm-t-pad`.
+
+Plus two whole-surface numbers: **.52s in / .3s out** for the shell overlay, and
+**.6s** for the identity recolour (`fill`) — the slowest transition in the
+product, and *not yet built*.
+
+### Exits are always faster than entries
+
+An entrance is the interface arriving and can afford to settle. An exit is the
+user having already decided, and every millisecond spent animating it away is a
+millisecond they are waiting.
+
+| pair | in | out |
+|---|---|---|
+| shell overlay | `springs.settle` ≈ 520ms | `tweens.overlayExit` 300ms |
+| popover / scrim | `tweens.popoverIn` 150ms | `tweens.popoverOut` 100ms |
+
+The popover pair is the worked example, and A6 had to *make it true*: the shell
+overlay's scrim declared no `exit` transition at all, so it silently inherited
+its 150ms entry on the way out — the rule inverted on the exact surface this
+document points at, while `popoverOut` sat in the bank with zero consumers.
+
+### Never animate a backlog
+
+A seeded transcript does **not** stagger in. Two mechanisms hold it and the scan
+asserts both: transcript items carry no framer-motion whatsoever, and every
+`<AnimatePresence>` in the chat surface sets `initial={false}` so children
+present at first mount skip their `initial` state. Only post-`seed_done`
+arrivals pop.
+
+### Offscreen surfaces pause
+
+`[data-offscreen]` sets `animation-play-state: paused` on the element and its
+subtree. **`paused`, never `animation: none`** — a surface that comes back
+resumes where it left instead of restarting every loop in unison.
+
+Consumers: the hidden renderer (both stay mounted across the toggle), and
+`<SessionMark>`, which additionally *unregisters from the shared rAF ticker*
+when it scrolls out — so a 40-session roster costs zero frames offscreen, not
+merely zero pixels.
+
+### Reduced motion — the doctrine
+
+**A CSS blanket for CSS, per-component `useReducedMotion()` branches for
+framer-motion.** Deliberately **not** `<MotionConfig reducedMotion="user">` at
+the app root, and the reasons are the contract:
+
+1. The gap is overwhelmingly CSS — plain Tailwind `transition-*` classes that
+   `MotionConfig` structurally cannot reach. On its own it would be a placebo.
+2. A root provider makes every unbranched site pass **silently**. That is
+   exactly how the old ownership claim rotted. Per-component branches keep the
+   remaining set small, enumerable, and enumerated — by a test that fails when a
+   new one appears.
+3. It would disable the press-scales as a side effect. That is a real decision
+   and it belongs in the open (below), not in a one-line provider.
+
+What the blanket does and does not do:
+
+- **Transitions: all of them, everywhere**, at `0.01ms` rather than `none` — a
+  zero-duration transition still fires `transitionend`, so latches waiting on
+  one still complete.
+- **Animations: by name, never by `*`.** A `*`-scoped animation reset would
+  freeze `.sm-status-spinner`, and a frozen spinner reads as *broken*.
+- **Functional indicators keep moving.** All 30 `animate-spin` sites are loading
+  feedback and are exempt, as are `.sm-status-spinner` and its kin. Decorative
+  loops (`.animate-pulse`, `.sm-breathe`, `.sm-blip`, `.sm-spin`) stop.
+- **A still must still read as the thing.** The typing dots keep their static
+  `.25 / .45 / .7` base opacities under reduce, so the row reads as three dots
+  mid-wave rather than as three identical dots — a different component.
+- **The one documented exemption: `springs.buttonPress` on `whileTap`.** A
+  press-scale is bound to a finger already on the glass; it is direct
+  manipulation feedback, not vestibular motion, and it stays. 63 sites.
+
+### Named gaps (so they are not mistaken for coverage)
+
+The `.28/.42s` `data-fresh` arrival, the `.45s` roster-row horizontal arrival
+and the `.6s` identity recolour are **extracted reference numbers for
+animations that have not been built**. They are recorded above as the target and
+deliberately have **no token**, because a token with no consumer is the exact
+failure this section exists to prevent. Whoever builds the arrival adds the
+token and the scan's assertion in the same commit.
+
+### Accessibility contract (T7/T8)
+
+<!-- PLACEHOLDER — owned by the T7/T8 accessibility pass, not by T6.
+     Do not invent this section: it must be written from what actually ships.
+     Expected contents: the G1–G14 resolutions, the streaming region's
+     announcement policy (announcement COUNT over a scripted turn, not merely
+     "an aria-live exists"), choice-card ARIA state, focus-after-send, the
+     Esc/trap collision matrix, and the roster's list + roving-tabindex
+     semantics. -->
+
+### Connection vocabulary (T2.6)
+
+<!-- PLACEHOLDER — owned by the T2 chat-socket honesty pass, not by T6.
+     Do not invent this section. Expected contents: the four words
+     `live` / `reconnecting` / `stale` / `offline`, identical in the code, in
+     `brand/copy.ts` and here, with no surface inventing a fifth. -->
 
 ## 7. How the rest of the app consumes this
 
