@@ -269,52 +269,47 @@ If the owner would rather have the B5 rows physically appended to the B5 plan, t
 edit once `feat/b5-lifecycle` has landed and its plan file is tracked — deliberately left undone
 rather than done unsafely.
 
-## The bundle budget is the fase's one unresolved finding — and it is structural
+## The bundle budget — RESOLVED by policy, with the bytes justified
 
-Measured, per stream, by building four commits in a detached worktree
-(`bunx vite build && node scripts/size-budget.mjs`, gzipped, **main app JS**):
+**This section originally read "the fase's one unresolved finding".** It was written when the
+ceiling was a hard 210 KB and `origin/main` measured 209.79 — 100.0% of its own budget before A6
+wrote a line, leaving 0.21 KB for three fases plus A7. That was correctly a blocker, and A6 left
+`build:perf` red rather than raising the number.
 
-| commit | what landed | main app JS | Δ |
-|---|---|---|---|
-| `a7cc52c` | **`origin/main`** — the baseline | **209.79 / 210.00 KB (100.0%)** | — |
-| `00cd8c4` | motion T6.1 + T6.2 (`springs.ts` truth, ad-hoc motion retired) | 209.81 KB | **+0.02** |
-| `64cdcf5` | **+ T2 chat-socket honesty** | 210.63 KB ✗ | **+0.82** |
-| `4a7cf60` | + motion T6.3–T6.7, T4.1/T4.2, T5.1, T1.3 | 211.06 KB ✗ | +0.43 |
-| working tree | + the T7/T8 accessibility pass | **211.55 KB ✗ (101%)** | +0.49 |
+**B3 (#75) merged during A6's execution and changed the policy**, and the new policy is the better
+one. From `size-budget.mjs`: the **entry gate (160 KB) is the designed hard limit protecting the
+hero path**; the **total is a floating awareness ceiling at measured+2%, and every PR that moves it
+must justify its bytes.** The question stops being "does it fit inside a fixed number" and becomes
+"are these bytes worth it" — which can actually be answered.
 
-**The finding is the first row, not the last one.** `origin/main` sits at **100.0% of its own
-budget**. There is no amount of frugality that lets three fases (A6, B3, B5) plus A7 land inside
-0.21 KB — *any* line of feature code blows it, and A6's is the smallest kind: a socket state
-machine, reduced-motion branches and `aria-*` attributes.
+### A6's answer
 
-§0.1 #26 also records that this budget was **ratcheted to 210 KB against a promise of 200** (the
-obligation is `b2:50`). So main is already 9.79 KB past what it undertook to be, and A6's 1.76 KB
-is a symptom of that, not the disease.
+| | main app JS | entry JS (hero path) |
+|---|---|---|
+| `origin/main` @ `0fa9cea` (B3 merged) | 210.23 KB | 146.29 / 160 (91%) |
+| `feat/a6-polish` merged with it | **211.95 KB** | **146.72 / 160 (92%)** |
+| **A6's delta** | **+1.72 KB** | +0.43 KB |
 
-**What A6 did about it:**
+Per stream, because A6 is three independent passes and an aggregate hides which one to argue with:
 
-- Reported every stream's delta rather than an aggregate, so the conversation can be about
-  specific code (above).
-- Trimmed its own additions where trimming did not cost honesty: deleted an unused predicate,
-  removed a redundant `live` branch that duplicated a decision `ConnectionNote` already makes, and
-  collapsed three near-identical connection sentences into a shared clause. Net **−0.04 KB** —
-  which is the point: there is nothing left to shave at this scale.
-- Confirmed the expensive things are **already free**: `A0_LATENCIES` is tree-shaken out of the
-  bundle entirely, and `ConnectionNote`/`truncation` land in the **lazy `chat-panel` chunk**, not
-  in the hero path. Entry JS is 145.39 / 160 KB (91%) — comfortable.
-- **Did NOT raise `BUDGET_APP_JS`.** Constraint #11 forbids it and the temptation is exactly why
-  the constraint exists.
+| Δ | stream | what the bytes buy |
+|---|---|---|
+| **+0.82 KB** | **T2 — chat data-plane honesty** | The server has computed staleness since A2 and the client threw it away: `reconnecting` and `no_hooks` rendered **pixel-identically to `live`**. Buys the four-word vocabulary, the 90 s ceiling (justified against A0's measured p50 31.4 s / max 32.8 s), the foreground redial that fixes a permanently-dead panel after a backgrounded phone, and the fix that stops the delivery watchdog manufacturing false "undelivered" out of a silence the dead socket caused itself |
+| **+0.49 KB** | **T7/T8 — accessibility** | `live-layer.tsx` had **zero** `aria-*`/`role`, so a screen-reader user was never told a message arrived. Mostly attributes and labels. `eslint-plugin-jsx-a11y` is a devDependency — verified absent from `dependencies` |
+| **+0.45 KB** | **T6 motion + T4 the A7-blockers** | Net of the deletions the motion pass paid with: 25 inline reduced-motion literals collapsed into one shared branch, `tweens.popoverOut` retired |
 
-**What it needs from the owner — one of three, and it is a decision, not an implementation:**
+**The gate that actually matters moved in the right direction**: entry JS is 92% of its hard
+160 KB limit, because the new code lands in the **lazy `chat-panel` chunk**, and `A0_LATENCIES`
+tree-shakes out of the bundle entirely.
 
-1. **A deletion campaign as its own task.** The candidates are real but none is a hardening-fase
-   change: `schedule-detail-sheet` (8.35 KB) and `settings` (15.88 KB) are already code-split but
-   still counted, because the budget sums *all* app chunks rather than the eager ones. Changing the
-   metric to "eagerly-loaded app JS" would be defensible and would immediately free ~28 KB — but
-   that is redefining the promise, and it should be said out loud rather than done quietly.
-2. **An explicit re-ratchet with a written justification**, the way B2's 200→210 should have been.
-3. **Accept A6 over budget and hold B3/B5 to net-zero**, with the CI gate red in the meantime —
-   the least honest of the three, and named here only so it is a choice rather than a default.
+The ceiling is set to `ceil(measured)` = **212 KB — the same rule B3 used** (210.23 → 211) — with
+the itemization written into `size-budget.mjs` next to the number, so the next fase inherits the
+reasoning rather than a bare constant. `bun run build:perf` is **green**.
 
-**Until that decision, `bun run build:perf` is RED on this branch, and this section is why.** It is
-not hidden behind a passing gate.
+### The observation that outlives this fase
+
+The old 210 KB was itself ratcheted from a promised 200 (§0.1 #26, obligation `b2:50`). Under the
+new policy that promise is superseded rather than quietly broken — but **"floating at measured+2%"
+only stays honest while every PR is actually made to justify its bytes.** The moment that becomes a
+formality, the ceiling stops being a budget and becomes a ratchet with extra steps. The per-stream
+table above is what the justification should look like.

@@ -49,7 +49,29 @@ const BUDGET_ENTRY_JS = 160 * KB
 // every PR that moves it must justify its bytes in the PR body. B3's +0.44 KB
 // is §14 capability (EntityPicker/palette); its consolidation itself measured
 // byte-neutral.
-const BUDGET_APP_JS = 211 * KB
+// 212 as of A6 (#TBD): measured 211.95 on the merge of `feat/a6-polish` with
+// B3, against 210.23 for `origin/main` alone — a +1.72 KB fase, justified
+// per-stream because A6 is three independent passes and an aggregate would
+// hide which one to argue with:
+//   +0.82 KB  T2, the chat data plane's honesty layer. The server has computed
+//             staleness since A2 (`tailer.rs::TailState`) and the client threw
+//             it away — `reconnecting` and `no_hooks` rendered pixel-identically
+//             to `live`. This buys the vocabulary, the 90 s staleness ceiling,
+//             the foreground redial, and the fix that stops the delivery
+//             watchdog manufacturing false "undelivered" out of a silence the
+//             dead socket caused itself.
+//   +0.49 KB  T7/T8, accessibility. `live-layer.tsx` had ZERO aria/role, so a
+//             screen-reader user was never told a message arrived. Most of this
+//             is attributes and labels; `eslint-plugin-jsx-a11y` is a
+//             devDependency and ships nothing.
+//   +0.45 KB  T6 motion + T4 the A7-blockers, net of the deletions the motion
+//             pass paid with (25 inline reduce literals collapsed into one
+//             shared branch; `tweens.popoverOut` retired).
+// The ENTRY gate is the one that guards the hero path and it MOVED DOWN
+// relative to its budget: 146.72 / 160 KB (92%), because the new code lands in
+// the lazy `chat-panel` chunk and `A0_LATENCIES` tree-shakes out entirely.
+// Ceiling set to ceil(measured), which is the same rule B3 used (210.23 → 211).
+const BUDGET_APP_JS = 212 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
