@@ -21,6 +21,7 @@
  * clicks (`renderer-chat` / `renderer-terminal`, `role="tablist"`).
  */
 import { describe, expect, test } from 'bun:test'
+import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { SessionHeaderPill } from '../../src/components/chat/header-pill'
@@ -166,5 +167,62 @@ describe('the renderer switch', () => {
     expect(out).toContain('border-hairline')
     expect(out).toContain('text-[13.4px]')
     expect(text(out)).toBe('Chat Terminal')
+  })
+})
+
+/**
+ * Daily-driver QA #6 — the header truncated the session's name to stubs.
+ *
+ * Measured on the live instance: `spike-qa-daily` rendered as `spike-qa…` (95px
+ * shown, 124px needed) and a three-character name, `ipc`, rendered as `i…`,
+ * because the mode chip and the Chat/Terminal switch were served first. The
+ * trailing controls are the ones that give way now — the switch drops one word,
+ * the chip stops sitting BESIDE it — and the name carries a floor.
+ */
+describe('the phone header gives its width to the name (QA #6)', () => {
+  const phone = (s: TileSession, trailing?: ReactNode) =>
+    renderToStaticMarkup(
+      <SessionHeaderPill
+        name={FOCUS}
+        session={s}
+        surface="phone"
+        trailing={trailing ?? <RendererSwitch size="sm" labels="selected" value="chat" onChange={() => undefined} />}
+      />,
+    )
+
+  test('the name carries a floor on the phone, and none on the desktop', () => {
+    expect(phone(session({ display_name: 'Release Train' }))).toContain('min-width:112px')
+    expect(pill(session({ display_name: 'Release Train' }))).not.toContain('min-width')
+  })
+
+  test('the mode chip stacks over the trailing slot instead of beside it', () => {
+    // `ipc` in bypass mode was the worst case: chip + switch took 187px of a
+    // 342px row. Stacked, the pair costs the WIDER of the two, not their sum.
+    const out = phone(session({ display_name: 'ipc', mode: 'bypass' }))
+    expect(out).toContain('flex-col')
+    expect(text(out)).toContain('ipc')
+    expect(text(out)).toContain('Bypass')
+    // …and the cluster can still give way when even that is not enough.
+    expect(out).toContain('shrink')
+  })
+
+  test('a header with neither a mode nor a trailing slot grows no empty cell', () => {
+    const out = renderToStaticMarkup(
+      <SessionHeaderPill name={FOCUS} session={session()} surface="phone" />,
+    )
+    expect(out).not.toContain('flex-col')
+  })
+
+  test('labels="selected" drops the unselected WORD, never its name', () => {
+    const out = renderToStaticMarkup(
+      <RendererSwitch size="sm" labels="selected" value="chat" onChange={() => undefined} />,
+    )
+    expect(text(out)).toBe('Chat')
+    expect(out).toContain('aria-label="Terminal"')
+    expect(out).toContain('data-testid="renderer-terminal"')
+    // The default is untouched — the desktop seam still reads both words.
+    expect(text(renderToStaticMarkup(<RendererSwitch value="chat" onChange={() => undefined} />))).toBe(
+      'Chat Terminal',
+    )
   })
 })

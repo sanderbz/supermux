@@ -690,6 +690,10 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
                     chrome.switchInHeader ? (
                       <RendererSwitch
                         size="sm"
+                        // The header card's own width rule (QA #6): the word
+                        // that goes is the one naming the surface you are not
+                        // looking at, and the session's name gets it back.
+                        labels="selected"
                         value={renderer ?? 'chat'}
                         onChange={setRenderer}
                       />

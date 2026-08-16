@@ -124,6 +124,42 @@ export function BackIcon({ className }: IconProps) {
   )
 }
 
+/**
+ * Renderer switch: the chat surface, at the size where a word will not fit.
+ *
+ * The phone header card is 366px and has to hold a back button, a face, the
+ * session's NAME, a status dot and this control (daily-driver QA #6 — a
+ * three-character name rendered as `i…`). The unselected side of the switch
+ * gives up its word first; these two glyphs are what it gives it up for.
+ */
+export function ChatGlyph({ className }: IconProps) {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className={className}>
+      <path
+        d="M13.4 8.1c0 2.6-2.4 4.7-5.4 4.7-.6 0-1.2-.1-1.7-.2l-3 1.1.9-2.5C3.3 10.3 2.6 9.3 2.6 8.1c0-2.6 2.4-4.7 5.4-4.7s5.4 2.1 5.4 4.7Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** Renderer switch: the terminal, same reason. */
+export function TerminalGlyph({ className }: IconProps) {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className={className}>
+      <path
+        d="M3.4 5.1 6 7.9l-2.6 2.8M7.7 11h4.9"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 /** Composer: dictation. */
 export function MicIcon({ className }: IconProps) {
   return (

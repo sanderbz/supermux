@@ -35,7 +35,17 @@ export {
   type FacepileProps,
   type FaceNameProps,
 } from './facepile'
-export { ArrowIcon, BackIcon, CheckIcon, FileIcon, MicIcon, PlusIcon, SpinnerIcon } from './icons'
+export {
+  ArrowIcon,
+  BackIcon,
+  ChatGlyph,
+  CheckIcon,
+  FileIcon,
+  MicIcon,
+  PlusIcon,
+  SpinnerIcon,
+  TerminalGlyph,
+} from './icons'
 export {
   ATTENTION_DOT,
   attentionDotSeat,
