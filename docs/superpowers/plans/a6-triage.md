@@ -116,3 +116,51 @@ directories of five **dead** worktrees (`deploy-39fea22`, `feat-last-prompt`, `t
 `a2-hardening`, `a2` — all merged or abandoned fases, none touched since 14 Aug). Nothing was
 removed from the main checkout or from the two worktrees executing concurrently (`b3`, `b5`).
 Cargo target dirs are regenerable; the reclaim costs those branches a rebuild and nothing else.
+
+## T5.1 — the STOP (row #4, and where the ledger correction actually lives)
+
+Row #4 is closed as **verified-and-refused**, not as shipped. Two separate findings.
+
+**1. The B2 ledger did lie, and it is corrected.** `2026-08-16-fase-b2-roster.md:483-486` ticked a
+box claiming the create sheet "gains: mark preview + reroll, desc, tags, **model**, initial
+prompt". Re-verified at execution time: `grep -n model web/src/components/session-tile/new-session-sheet.tsx`
+returns **zero hits** across all 528 lines. Everything else on that line shipped; `model` did not.
+The box is un-ticked in place with a correction note.
+
+> **Where that correction physically is:** `docs/superpowers/plans/2026-08-16-fase-b2-roster.md` is
+> **untracked** — it has never been committed on any branch (`git log --all -- '*b2-roster*'` is
+> empty; `git ls-tree origin/main docs/superpowers/plans/` lists only the B4 plan, the B4 checklist
+> and the A0 research). It exists solely as a working file in the main checkout. The correction was
+> written there, in place; it **cannot** be part of an A6 commit without importing a 72 KB
+> uncommitted document owned by another executor into this branch. This section is the committable
+> half of that correction, so the next executor inherits the finding from git rather than from a
+> file that may never land.
+
+**2. The field itself is refused, with the API evidence.** A6 T5.1 asked for the `model` field
+"reusing the existing `ModelPicker`". The create path cannot carry one:
+
+| claim | evidence |
+|---|---|
+| `NewSession` has no `model` | `web/src/lib/api/sessions.ts:410-425` |
+| …and says so on purpose | `sessions.ts:156-157` — "Provider launch flags, verbatim (e.g. `--model opus`). **The model lives here — there is no separate `model` field**" |
+| the server's `CreateInput` has only `flags` | `server/src/sessions/mod.rs:662` |
+| …which the web is forbidden to send | `mod.rs:775-777` — "the web sends a typed `bypass_permissions` boolean (**never raw flags** — `flags` is interpolated unquoted into the launch line)" |
+| no per-session model route exists | the sessions router exposes `mode`, `config`, `start`, `send`, `resume`, `clone`, `duplicate`, … and **no** `/model`. `mod.rs:915`'s comment that "`model` … live[s] with the lifecycle handlers below" is itself stale — there is no such handler |
+| the only model control is **global** | `PATCH /api/settings/default-model` → `CC_DEFAULT_FLAGS` (`web/src/lib/api/settings.ts:81-89`) — exactly what `ModelPicker` (`settings.tsx:108`) drives, via `useUI.defaultModel` + `usePatchDefaultModel` |
+
+So the literal instruction — reuse `ModelPicker` in the create sheet — would ship a control that
+looks per-session and is actually **global**: picking "Haiku" for one new agent would rewrite
+`CC_DEFAULT_FLAGS` for every session created afterwards. That is a worse failure than the missing
+field, and it is the failure mode T5.1's own framing ("a field that goes nowhere") exists to
+prevent. Refused rather than faked.
+
+There is a second, cheaper reason to be glad: `ModelPicker` and its `MODELS` list live inside the
+**lazily-loaded** settings route (`d9eca32`, "lazy settings route"). Lifting them into a shared
+module the create sheet imports pulls those bytes out of the lazy chunk and into the main app JS —
+a chunk that is **already over budget** in this worktree (see below). The correct shape costs
+bytes; the cheap shape is a lie.
+
+**What landing it actually needs** (a future fase, server-side): a typed `model: Option<String>` on
+`CreateInput`, validated against an allow-list and turned into `--model <id>` by the server the way
+`BYPASS_FLAG` already is, plus `model?: string` on `NewSession` and the picker rebuilt as a
+controlled component (value + `onChange`) instead of one wired straight to the global pref.
