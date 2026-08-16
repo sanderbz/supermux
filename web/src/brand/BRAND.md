@@ -291,9 +291,29 @@ an additive `padding-top: env(safe-area-inset-top)`**, packaged as one utility:
 | route headers — overview, files, settings | 56px | `--sm-toolbar-min-h` | `safe-header` |
 | in-pane headers — focus, side pane, shell overlay | 44px | `--sm-toolbar-min-h-compact` | `safe-header-compact` |
 
-Body-padding routes fold the same inset into their top padding with
-`calc(env(safe-area-inset-top) + …)`. The guard against regressions is
-`tests/e2e/smoke/ios-pwa-chrome.spec.ts`.
+The guard against regressions is `tests/e2e/smoke/ios-pwa-chrome.spec.ts`.
+
+### The route-header grammar — one shape for every route
+
+Overview, Files and Settings now share it, and any new route inherits it:
+
+- a **sticky `glass safe-header` bar** at the top of the route's own scroller,
+  carrying the route title at **17px / 600**, fading IN over 8→44px of scroll;
+- the **large title (34px / 700) in the scrolling body**, fading OUT over
+  0→52px — so exactly one title is legible at any scroll position;
+- the bar **owns the safe-area inset**. A route must not ALSO pad its body with
+  `env(safe-area-inset-top)`, or the two stack into a dead band on a notched
+  phone;
+- **crossfading inners go in `.sm-swap`.** A control that appears in one state
+  and not another (the overview's density chip, which is tile-view only) would
+  otherwise shunt every control beside it sideways. `.sm-swap` puts both states
+  in one grid cell, so the swap is an opacity change that cannot move layout.
+
+A route with a sticky header must be **its own scroller**
+(`h-full overflow-y-auto`), not rely on the shell's `<main>`: `position: sticky`
+resolves against the nearest scrolling ancestor, and a route root sized `h-full`
+gives a sticky child a containing block one viewport tall — the bar unsticks
+mid-scroll.
 
 ### The z-ladder — names over the shipped numbers
 

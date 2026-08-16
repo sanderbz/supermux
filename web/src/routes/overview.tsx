@@ -1,7 +1,13 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { LayoutGroup, motion, useReducedMotion } from 'framer-motion'
+import {
+  LayoutGroup,
+  motion,
+  useReducedMotion,
+  useScroll,
+  useTransform,
+} from 'framer-motion'
 import {
   Archive,
   EyeOff,
@@ -512,13 +518,51 @@ export function Overview() {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [jumpIndexBySession, navigate])
 
+  // Scroll-driven header crossfade — the same two ramps settings.tsx uses, so
+  // the two routes fade at identical rates: the compact bar title fades in over
+  // 8→44px of scroll, the large title fades out over 0→52px.
+  const scrollRef = React.useRef<HTMLDivElement>(null)
+  const { scrollY } = useScroll({ container: scrollRef })
+  const navOpacity = useTransform(scrollY, [8, 44], [0, 1])
+  const titleOpacity = useTransform(scrollY, [0, 52], [1, 0])
+
   return (
     <JumpIndexProvider value={jumpIndexBySession}>
-    <div
-      className={`mx-auto flex h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 py-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-5 sm:py-6 sm:pt-6`}
-    >
+    {/* B1 T7.2 — the shared route-header grammar, the same one Settings uses:
+        a sticky `glass safe-header` bar carrying the 17px/600 title that fades
+        IN on scroll, over a large title that lives in the scrolling body and
+        fades OUT. The bar owns the safe-area inset (`safe-header` = 56px floor
+        + additive `pt-safe`), which is why the body's old
+        `pt-[calc(env(safe-area-inset-top)+1rem)]` is gone — two insets would
+        stack into a dead band on the notch.
+
+        The route became its OWN scroller (`h-full overflow-y-auto`, exactly as
+        settings.tsx is built) because `position: sticky` cannot work otherwise:
+        the old root was `h-full`, so a sticky child's containing block ended
+        one viewport down and the bar would have unstuck mid-scroll. The shell's
+        <main> still has `overflow-auto`; it simply never engages now.
+
+        ROW CONTENT IS UNTOUCHED — the roster rebuild is B2. This changes the
+        header shell only. */}
+    <div ref={scrollRef} className="relative h-full overflow-y-auto">
+      <motion.header
+        style={{ opacity: navOpacity }}
+        className="glass safe-header pointer-events-none sticky top-0 z-30 flex items-center justify-center border-b border-hairline sm:pt-0"
+      >
+        <span className="text-[17px] font-semibold tracking-tight">Overview</span>
+      </motion.header>
+
+      <div
+        className={`mx-auto flex min-h-full w-full max-w-6xl ${containerMaxClass[overviewSize]} flex-col px-3 pb-4 pt-2 sm:px-5 sm:pb-6`}
+      >
+        <motion.h1
+          style={{ opacity: titleOpacity }}
+          className="px-1 pb-2 pt-1 text-[34px] font-bold leading-tight tracking-tight"
+        >
+          Overview
+        </motion.h1>
+
       <header className="mb-4 flex flex-wrap items-center gap-2 sm:gap-3">
-        <h1 className="mr-1 text-2xl font-semibold tracking-tight">Overview</h1>
 
         <div className="relative order-last w-full sm:order-none sm:w-auto sm:flex-1 sm:max-w-sm">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -562,13 +606,22 @@ export function Overview() {
 
             <SortControl value={layout.mode} onChange={setMode} />
 
-            {viewMode === 'tile' && (
-              <OverviewSizeControl
-                value={overviewSize}
-                onChange={setOverviewSize}
-                max={sizeMax}
-              />
-            )}
+            {/* The density control only applies to the TILE view, so switching
+                to list used to REMOVE it and shunt every control to its right
+                a whole chip-width sideways. `.sm-swap` (B1 T2.3) puts both
+                states in one grid cell: the control is always in the box, and
+                the swap is an opacity change that cannot move a pixel of
+                layout. `data-hidden` also drops pointer events, so the
+                invisible state is not clickable. */}
+            <div className="sm-swap">
+              <div data-hidden={viewMode === 'tile' ? undefined : ''}>
+                <OverviewSizeControl
+                  value={overviewSize}
+                  onChange={setOverviewSize}
+                  max={sizeMax}
+                />
+              </div>
+            </div>
 
             <HideStoppedChip value={hideStopped} onChange={setHideStopped} />
           </>
@@ -628,7 +681,7 @@ export function Overview() {
             ))}
           </div>
         ) : isError && !hasAnyAgent ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="flex min-h-[55vh] items-center justify-center">
             <EmptyStatePlaceholder
               icon={<TerminalSquare />}
               message="Can’t reach supermux-server. Retrying…"
@@ -636,7 +689,7 @@ export function Overview() {
             />
           </div>
         ) : !hasAnyAgent ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="flex min-h-[55vh] items-center justify-center">
             <EmptyStatePlaceholder
               icon={<TerminalSquare />}
               message="No agents yet. Boot your first one."
@@ -644,7 +697,7 @@ export function Overview() {
             />
           </div>
         ) : noMatch ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="flex min-h-[55vh] items-center justify-center">
             {query.trim() ? (
               <EmptyStatePlaceholder
                 icon={<Search />}
@@ -750,6 +803,7 @@ export function Overview() {
         onOpenChange={setSheetOpen}
         onCreated={onCreated}
       />
+      </div>
     </div>
     </JumpIndexProvider>
   )
