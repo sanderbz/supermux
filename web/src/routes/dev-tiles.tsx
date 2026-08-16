@@ -7,6 +7,14 @@
 // override of the OS media query) and persisted in the URL (?reduce=1).
 // Skeleton and error toggles are URL-backed too, so a
 // reviewer can deep-link any state.
+//
+// `?chat=1` seeds the fase-A5 experiment ON (the SAME store the Settings toggle
+// writes — no dev-only fork of the decision), so the chat-tail preview is
+// screenshot-able offline. It is worth one frame precisely because the guard is
+// visible in it: `web-app` is eligible AND has a `chat_tail`, so it shows the
+// conversation; `api-server` is eligible with NO tail, and `codex-app` /
+// `kimi-app` are ineligible — all three keep the ANSI screen. With the param
+// absent (the shipped default) every tile is byte-identical to before A5.
 
 import * as React from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -17,6 +25,7 @@ import { Toggle } from '@/components/ui/toggle'
 import { SessionTile } from '@/components/session-tile'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
 import { MOCK_TILES } from '@/components/session-tile/mock'
+import { useUI } from '@/stores/ui-store'
 import type { TileSession } from '@/components/session-tile'
 
 const GRID =
@@ -27,6 +36,13 @@ export default function DevTiles() {
   const reduce = params.get('reduce') === '1'
   const skeleton = params.get('skeleton') === '1'
   const error = params.get('error') === '1'
+  // Written during render on purpose: the tiles below read `useUI` in the SAME
+  // pass, so an effect would paint one ANSI frame into every screenshot.
+  // `setState` outside React is zustand's documented API, and this is a DEV-only
+  // route (mirrors `/dev/focus-mobile?chat=1`).
+  if (params.get('chat') === '1' && !useUI.getState().chatRenderer) {
+    useUI.setState({ chatRenderer: true })
+  }
 
   // Live tail demo: append a line to the first tile every 1.6s to exercise the
   // layout slide-up + "no scroll jump / no flicker on update" acceptance bullet.

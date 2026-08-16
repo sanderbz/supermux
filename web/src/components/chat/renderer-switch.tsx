@@ -140,7 +140,13 @@ export function RendererSwitch({
     >
       {OPTIONS.map((o) => {
         const selected = value === o.value
-        const glyph = labels === 'selected' && !selected
+        // In the compact rail the `auto` cell is ALWAYS the bare `A`, even when
+        // it is the selected one. Measured on the phone header card (390px):
+        // with the word it truncated to `A…`, which is the QA #6 regression the
+        // third cell would otherwise reintroduce — and "Auto" spelled out buys
+        // nothing the underline on the resolved cell does not already say.
+        const glyph =
+          labels === 'selected' && (!selected || o.value === 'auto')
         // The resolved marker is meaningful only under `auto`: with an explicit
         // pin the thumb already sits on the mounted renderer, and a second
         // marker on the same cell would be noise.

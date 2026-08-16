@@ -122,6 +122,16 @@ export const MOCK_TILES: TileSession[] = [
     subagents: 3,
     preview_lines: claudeBoot('Implementing the delta-merge updater'),
     preview_ansi: claudeBootAnsi('Implementing the delta-merge updater'),
+    // FASE A5 — a chat-eligible session WITH a tail. With the experiment on
+    // this tile shows the conversation instead of the ANSI screen; with it off
+    // (the shipped default) it is byte-identical to before. The guard is
+    // visible in one frame on /dev/tiles because `codex-app` and `kimi-app`
+    // above are ineligible and `api-server` below is eligible with NO tail.
+    chat_tail: {
+      user: 'merge the delta key-by-key, absent means unchanged',
+      agent: 'Done — `applyDelta` now merges per key and never clears a tile.',
+      ts: Date.now(),
+    },
     updated_at: new Date().toISOString(),
   },
   {

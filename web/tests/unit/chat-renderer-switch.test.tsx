@@ -67,6 +67,24 @@ describe('three cells', () => {
   })
 })
 
+describe('the compact rail never spells Auto', () => {
+  test('the auto cell is the bare A even when SELECTED', () => {
+    // Measured on the 390px phone header card: with the word, "Auto" truncated
+    // to "A…" and the session's name lost the difference — the QA #6 rule the
+    // third cell would otherwise undo.
+    const out = html('auto', 'chat', { size: 'sm', labels: 'selected' })
+    expect(text(out)).toBe('A')
+    expect(out).not.toContain('>Auto<')
+    // …and the thumb still sits on it, so the choice is still legible.
+    expect(out).toMatch(/aria-selected="true"[^>]*data-testid="renderer-auto"/)
+    expect(out).toMatch(/renderer-auto[\s\S]*?bg-fill-soft-2/)
+  })
+
+  test('the FULL rail still spells all three', () => {
+    expect(text(html('auto'))).toBe('Auto Chat Terminal')
+  })
+})
+
 describe('aria-selected is on the PREF cell, never the resolved one', () => {
   test('at auto, `auto` is selected even though chat is mounted', () => {
     const out = html('auto', 'chat')
