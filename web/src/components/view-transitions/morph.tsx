@@ -23,7 +23,13 @@
 
 import * as React from 'react'
 import { flushSync } from 'react-dom'
-import { useNavigate, type NavigateOptions, type To } from 'react-router-dom'
+import {
+  NavLink,
+  useNavigate,
+  type NavigateOptions,
+  type NavLinkProps,
+  type To,
+} from 'react-router-dom'
 
 /** Feature-detect the View Transitions API once (it never changes at runtime). */
 export const supportsViewTransitions =
@@ -127,5 +133,77 @@ export const MorphLink = React.forwardRef<HTMLAnchorElement, MorphLinkProps>(
         {children}
       </a>
     )
+  },
+)
+
+/** The one `view-transition-name` the active primary-nav pill carries.
+ *
+ *  WHY IT IS A VIEW-TRANSITION NAME AND NOT A FRAMER `layoutId` (B1 T4):
+ *  the pill used to animate with framer's shared-layout engine
+ *  (`layoutId="nav-active-desktop"` / `"nav-active-mobile"`). Once nav clicks
+ *  route through `startViewTransition` (T5, below), the two animation systems
+ *  collide: the browser snapshots the OLD DOM *mid-spring*, then cross-fades
+ *  that frozen frame against the new one while framer is still springing the
+ *  live element — a ghost pill sliding under a real one. One navigation, two
+ *  animations.
+ *
+ *  The resolution that shipped: delete both `layoutId` pills and hand the morph
+ *  to the browser. Only ONE NavLink is active per snapshot, so a single stable
+ *  name is legal (names must be unique per snapshot), and the UA tweens the
+ *  pill's position + size between the old and new DOM for free. Reduced motion
+ *  and non-VT browsers (Firefox, older Safari) get a hard cut — which is the
+ *  app's already-documented, already-shipped view-transition degradation
+ *  (`globals.css` disables `::view-transition-*` wholesale under
+ *  `prefers-reduced-motion`), not a new failure mode.
+ *
+ *  The documented fallback, if the browser morph ever reads badly on the 4px
+ *  mobile bar: keep `layoutId` and EXCLUDE the nav from the transition by
+ *  giving each nav a stable name plus `::view-transition-group(sm-nav){
+ *  animation: none }`. It was not needed — the browser morph reads correctly in
+ *  both forms — so the simpler resolution is the one in the tree.
+ *
+ *  Desktop and mobile nav are mutually exclusive in the layout (`hidden md:flex`
+ *  vs `md:hidden`), so a `display: none` nav is never captured and the name
+ *  stays unique.
+ */
+export const NAV_ACTIVE_VT_NAME = 'sm-nav-active'
+
+export interface MorphNavLinkProps extends NavLinkProps {
+  to: To
+}
+
+/**
+ * `<MorphNavLink>` — react-router's `NavLink` that navigates inside a View
+ * Transition.
+ *
+ * Everything `NavLink` gives you is preserved: the `isActive` render-prop and
+ * className function, `aria-current="page"`, `end`. The only change is the
+ * click handler, which mirrors `<MorphLink>`'s: modified clicks and non-primary
+ * buttons fall through to the browser (middle-click, ⌘-click and "open in new
+ * tab" must keep working, and they do because this renders a real `<a href>`),
+ * while a plain left-click is intercepted and routed through
+ * `useNavigateMorph()`.
+ */
+export const MorphNavLink = React.forwardRef<HTMLAnchorElement, MorphNavLinkProps>(
+  function MorphNavLink({ to, replace, onClick, ...rest }, ref) {
+    const morph = useNavigateMorph()
+
+    const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+      onClick?.(e)
+      if (
+        e.defaultPrevented ||
+        e.button !== 0 ||
+        e.metaKey ||
+        e.ctrlKey ||
+        e.shiftKey ||
+        e.altKey
+      ) {
+        return
+      }
+      e.preventDefault()
+      morph(to, { replace })
+    }
+
+    return <NavLink ref={ref} to={to} onClick={handleClick} {...rest} />
   },
 )

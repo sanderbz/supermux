@@ -1,6 +1,5 @@
 import * as React from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { Outlet, useLocation } from 'react-router-dom'
 import {
   CalendarClock,
   FolderClosed,
@@ -12,8 +11,11 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
 import { isShellSubstrateEnabled } from '@/lib/shell-substrate-flag'
+import {
+  MorphNavLink,
+  NAV_ACTIVE_VT_NAME,
+} from '@/components/view-transitions/morph'
 import { Logo } from '@/components/logo'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -107,7 +109,7 @@ function SideNav() {
           return (
             <Tooltip key={item.to}>
               <TooltipTrigger asChild>
-                <NavLink
+                <MorphNavLink
                   to={item.to}
                   end={item.end}
                   aria-label={
@@ -119,9 +121,14 @@ function SideNav() {
                   {({ isActive }) => (
                     <>
                       {isActive && (
-                        <motion.span
-                          layoutId="nav-active-desktop"
-                          transition={springs.snappy}
+                        <span
+                          data-nav-active=""
+                          // B1 T4 — the pill is a VIEW-TRANSITION-named element,
+                          // not a framer `layoutId`. See NAV_ACTIVE_VT_NAME for
+                          // why: with nav clicks running inside
+                          // startViewTransition, layoutId double-animates (a
+                          // frozen snapshot sliding under a live spring).
+                          style={{ viewTransitionName: NAV_ACTIVE_VT_NAME }}
                           className="absolute inset-0 rounded-xl bg-primary"
                         />
                       )}
@@ -134,7 +141,7 @@ function SideNav() {
                       </span>
                     </>
                   )}
-                </NavLink>
+                </MorphNavLink>
               </TooltipTrigger>
               <TooltipContent side="right">{item.label}</TooltipContent>
             </Tooltip>
@@ -181,7 +188,7 @@ function BottomNav() {
       {NAV.filter((item) => !item.desktopOnly).map((item) => {
         const badge = item.badgeKind === 'updates' ? updateBadge : 'none'
         return (
-          <NavLink
+          <MorphNavLink
             key={item.to}
             to={item.to}
             end={item.end}
@@ -194,9 +201,13 @@ function BottomNav() {
             {({ isActive }) => (
               <>
                 {isActive && (
-                  <motion.span
-                    layoutId="nav-active-mobile"
-                    transition={springs.snappy}
+                  <span
+                    data-nav-active=""
+                    // Same contract as the desktop pill — one VT name per
+                    // snapshot. Desktop and mobile nav are mutually exclusive
+                    // (`hidden md:flex` vs `md:hidden`), so a `display: none`
+                    // nav is never captured and the name stays unique.
+                    style={{ viewTransitionName: NAV_ACTIVE_VT_NAME }}
                     className="absolute left-1/2 top-1.5 h-1 w-8 -translate-x-1/2 rounded-full bg-primary"
                   />
                 )}
@@ -213,7 +224,7 @@ function BottomNav() {
                 </span>
               </>
             )}
-          </NavLink>
+          </MorphNavLink>
         )
       })}
     </nav>

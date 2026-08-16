@@ -1,10 +1,9 @@
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
-import { flushSync } from 'react-dom'
 import { motion, useReducedMotion } from 'framer-motion'
 import { GitBranch } from 'lucide-react'
 
 import { springs } from '@/lib/springs'
+import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { MISC } from '@/brand/copy'
 import { StatusDot, STATUS_LABEL } from './status-dot'
 import { HostBadge } from './host-badge'
@@ -12,26 +11,6 @@ import { Kbd } from '@/components/ui/kbd'
 import { useJumpIndex } from './jump-index-context'
 import type { TileSession } from './types'
 import { sessionTitle } from '@/lib/api'
-
-/** View Transition navigate (mirrors the tile's, kept local so this row is
- *  self-contained until the canonical `<MorphLink>` ships). Morphs into the
- *  focus header on Chromium; plain navigate elsewhere. */
-function useNavigateMorph() {
-  const navigate = useNavigate()
-  return React.useCallback(
-    (to: string) => {
-      const doc = document as Document & {
-        startViewTransition?: (cb: () => void) => void
-      }
-      if (doc.startViewTransition) {
-        doc.startViewTransition(() => flushSync(() => navigate(to)))
-      } else {
-        navigate(to)
-      }
-    },
-    [navigate],
-  )
-}
 
 function relativeTime(updatedAt?: string): string {
   if (!updatedAt) return ''

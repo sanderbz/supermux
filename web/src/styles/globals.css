@@ -915,3 +915,17 @@
   inset: 0 auto 0 0;
   width: var(--sm-hairline-w);
 }
+
+/* ── FASE B1 T4 — the nav pill's view-transition group ───────────────────────
+   The active primary-nav pill morphs as a NAMED view-transition element
+   (`sm-nav-active`, see components/view-transitions/morph.tsx) rather than a
+   framer `layoutId`. Give it the nav's own in-place-morph speed so it is not
+   governed by the root cross-fade's timing: the pill slides between two nav
+   slots, which is a short, local motion, while the root fade is the whole page
+   changing. `::view-transition-group(*)` above would otherwise apply 0.28s to
+   it as a fallthrough. Reduce Motion still kills it wholesale (the blanket
+   `::view-transition-*` rule above). */
+::view-transition-group(sm-nav-active) {
+  animation-duration: 0.26s;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
