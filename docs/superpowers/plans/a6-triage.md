@@ -268,3 +268,53 @@ So the inheritance lives here instead, and this file is committed:
 If the owner would rather have the B5 rows physically appended to the B5 plan, that is a one-line
 edit once `feat/b5-lifecycle` has landed and its plan file is tracked — deliberately left undone
 rather than done unsafely.
+
+## The bundle budget is the fase's one unresolved finding — and it is structural
+
+Measured, per stream, by building four commits in a detached worktree
+(`bunx vite build && node scripts/size-budget.mjs`, gzipped, **main app JS**):
+
+| commit | what landed | main app JS | Δ |
+|---|---|---|---|
+| `a7cc52c` | **`origin/main`** — the baseline | **209.79 / 210.00 KB (100.0%)** | — |
+| `00cd8c4` | motion T6.1 + T6.2 (`springs.ts` truth, ad-hoc motion retired) | 209.81 KB | **+0.02** |
+| `64cdcf5` | **+ T2 chat-socket honesty** | 210.63 KB ✗ | **+0.82** |
+| `4a7cf60` | + motion T6.3–T6.7, T4.1/T4.2, T5.1, T1.3 | 211.06 KB ✗ | +0.43 |
+| working tree | + the T7/T8 accessibility pass | **211.55 KB ✗ (101%)** | +0.49 |
+
+**The finding is the first row, not the last one.** `origin/main` sits at **100.0% of its own
+budget**. There is no amount of frugality that lets three fases (A6, B3, B5) plus A7 land inside
+0.21 KB — *any* line of feature code blows it, and A6's is the smallest kind: a socket state
+machine, reduced-motion branches and `aria-*` attributes.
+
+§0.1 #26 also records that this budget was **ratcheted to 210 KB against a promise of 200** (the
+obligation is `b2:50`). So main is already 9.79 KB past what it undertook to be, and A6's 1.76 KB
+is a symptom of that, not the disease.
+
+**What A6 did about it:**
+
+- Reported every stream's delta rather than an aggregate, so the conversation can be about
+  specific code (above).
+- Trimmed its own additions where trimming did not cost honesty: deleted an unused predicate,
+  removed a redundant `live` branch that duplicated a decision `ConnectionNote` already makes, and
+  collapsed three near-identical connection sentences into a shared clause. Net **−0.04 KB** —
+  which is the point: there is nothing left to shave at this scale.
+- Confirmed the expensive things are **already free**: `A0_LATENCIES` is tree-shaken out of the
+  bundle entirely, and `ConnectionNote`/`truncation` land in the **lazy `chat-panel` chunk**, not
+  in the hero path. Entry JS is 145.39 / 160 KB (91%) — comfortable.
+- **Did NOT raise `BUDGET_APP_JS`.** Constraint #11 forbids it and the temptation is exactly why
+  the constraint exists.
+
+**What it needs from the owner — one of three, and it is a decision, not an implementation:**
+
+1. **A deletion campaign as its own task.** The candidates are real but none is a hardening-fase
+   change: `schedule-detail-sheet` (8.35 KB) and `settings` (15.88 KB) are already code-split but
+   still counted, because the budget sums *all* app chunks rather than the eager ones. Changing the
+   metric to "eagerly-loaded app JS" would be defensible and would immediately free ~28 KB — but
+   that is redefining the promise, and it should be said out loud rather than done quietly.
+2. **An explicit re-ratchet with a written justification**, the way B2's 200→210 should have been.
+3. **Accept A6 over budget and hold B3/B5 to net-zero**, with the CI gate red in the meantime —
+   the least honest of the three, and named here only so it is a choice rather than a default.
+
+**Until that decision, `bun run build:perf` is RED on this branch, and this section is why.** It is
+not hidden behind a passing gate.

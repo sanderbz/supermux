@@ -473,14 +473,10 @@ export default function ChatPanel({
       // The honesty chip rides in the header's own trailing slot rather than
       // over the transcript: nothing is broken, so nothing should move.
       headerTrailing={
-        connection === 'live' ? (
-          headerTrailing
-        ) : (
-          <>
-            <ConnectionNote state={connection} onRetry={tail.redial} />
-            {headerTrailing}
-          </>
-        )
+        <>
+          <ConnectionNote state={connection} onRetry={tail.redial} />
+          {headerTrailing}
+        </>
       }
       pinFor={pinFor}
       isError={tail.isError}

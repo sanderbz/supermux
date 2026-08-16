@@ -108,13 +108,6 @@ export function chatPresentation(input: {
   }
 }
 
-/** True when the surface must not present the transcript as current. The
- *  transcript itself STAYS ON SCREEN in every one of these — that is the
- *  server's contract, not a client choice. */
-export function isNotCurrent(p: ChatPresentation): boolean {
-  return p !== 'live'
-}
-
 /** True when the live plane is known-dead, so anything that infers a failure
  *  from the ABSENCE of a frame over this socket is inferring it from a silence
  *  it caused itself (A6 T2.5 — the delivery watchdog). */

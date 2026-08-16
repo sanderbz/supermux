@@ -15,7 +15,7 @@
  * fixed header slot never moves.
  */
 
-import { CHAT_CONNECTION } from '../../brand/copy'
+import { CHAT_CONNECTION, CHAT_CONNECTION_STAYS } from '../../brand/copy'
 
 import type { ChatPresentation } from './connection'
 
@@ -32,6 +32,7 @@ export interface ConnectionNoteProps {
 export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
   if (state === 'live') return null
   const copy = CHAT_CONNECTION[state]
+  const detail = copy.why + CHAT_CONNECTION_STAYS
   const retryable = state === 'offline' && onRetry
   const className =
     'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2'
@@ -46,7 +47,7 @@ export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
   )
 
   return (
-    <span role="status" aria-live="polite" aria-label={copy.detail}>
+    <span role="status" aria-live="polite" aria-label={detail}>
       {retryable ? (
         <button type="button" onClick={onRetry} className={className} data-vr="chat-connection">
           {copy.label}

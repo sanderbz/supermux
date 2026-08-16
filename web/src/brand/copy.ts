@@ -205,19 +205,16 @@ export const SUBAGENTS = {
  * says something else nobody reads it.
  */
 export const CHAT_CONNECTION = {
-  reconnecting: {
-    label: 'Reconnecting…',
-    detail: 'Reconnecting. What is on screen stays, but it is not up to date.',
-  },
-  stale: {
-    label: 'Not up to date',
-    detail: 'No update has arrived for a while. What is on screen stays, but it may be behind.',
-  },
-  offline: {
-    label: 'Offline',
-    detail: 'The live connection gave up. Tap to try again.',
-  },
+  reconnecting: { label: 'Reconnecting…', why: 'Reconnecting' },
+  stale: { label: 'Not up to date', why: 'No update for a while' },
+  offline: { label: 'Offline', why: 'The live connection gave up — tap to try again' },
 } as const
+
+/** The half of the sentence that is the same in all three, said once. It is
+ *  also the half that matters most: the server's contract is that the
+ *  transcript STAYS, and a user who is not told that reads a stale transcript
+ *  as a current one. */
+export const CHAT_CONNECTION_STAYS = '. What is on screen stays, but it is not up to date.'
 
 // ── Toast presets (short, neutral confirmations) ──────────────────────────────
 
