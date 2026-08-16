@@ -8,6 +8,7 @@ import { ToastProvider } from '@/components/ui/toast'
 import { Layout } from '@/components/layout'
 import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
+import { useRendererPrefsSync } from '@/hooks/use-renderer-prefs-sync'
 import { ConnectionOverlay } from '@/components/connection/connection-overlay'
 import { Overview } from '@/routes/overview'
 import { Focus, FocusEntry } from '@/routes/focus'
@@ -76,6 +77,13 @@ const queryClient = new QueryClient({
   },
 })
 
+/** The renderer-preference sync, as a null component — a hook needs a mount
+ *  point and `App` itself sits OUTSIDE `QueryClientProvider`. */
+function RendererPrefsSync() {
+  useRendererPrefsSync()
+  return null
+}
+
 export default function App() {
   return (
     // basename uses BASE_URL so the Capacitor `capacitor://localhost` origin
@@ -96,6 +104,12 @@ export default function App() {
                 (step 4 = Agent Teams explainer) for migrated v2 users;
                 self-gates to the first launch only. */}
             <OnboardingHost />
+            {/* Fase A5 — cross-device sync for the renderer preference. Renders
+                nothing; it mirrors the UI store to /api/prefs/session_renderer
+                and back, so a pin made on the phone lands on the desktop within
+                one SSE tick. Mounted here (inside QueryClientProvider, outside
+                the routes) so exactly one instance exists per app. */}
+            <RendererPrefsSync />
             <Routes>
               <Route element={<Layout />}>
                 <Route path="/" element={<Overview />} />

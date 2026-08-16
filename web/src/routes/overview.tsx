@@ -123,6 +123,16 @@ export function Overview() {
     [allSessions, teams],
   )
   const { layout, setMode, setLayout } = useOverviewLayout()
+  // Fase A5 — prune the renderer pin map against the FULL sessions list
+  // (`allSessions`, deliberately not `sessions`/`filtered`: a team lead, a
+  // stopped row or a hide-stopped-hidden row is still alive and must keep its
+  // pin). Runs whenever the list settles; a no-op returns the same object, so
+  // this cannot loop through the store→server sync.
+  const pruneRendererOverrides = useUI((s) => s.pruneRendererOverrides)
+  React.useEffect(() => {
+    if (!allSessions.length) return
+    pruneRendererOverrides(allSessions.map((s) => s.name))
+  }, [allSessions, pruneRendererOverrides])
   const viewMode = useUI((s) => s.viewMode)
   const setViewMode = useUI((s) => s.setViewMode)
   const hideStopped = useUI((s) => s.hideStopped)

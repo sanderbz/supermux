@@ -65,10 +65,42 @@ fn is_known_pref_key(key: &str) -> bool {
     // restarting a session whose terminal died unexpectedly (default ON; see
     // [`db::prefs::auto_heal_enabled`]). Allowlisted here so the toggle is
     // reachable without a bespoke endpoint or a hand-edited SQLite row.
+    // `session_renderer` — the fase-A5 chat/terminal renderer preference: a
+    // global default plus a per-session pin map, serialized by the client
+    // (`web/src/components/chat/renderer-pref.ts`). Its OWN key rather than a
+    // field inside `overview_layout`: both are whole-value PUTs, and folding
+    // them together would make a renderer tap on the phone clobber the sort and
+    // groups set on the desktop (and vice-versa).
     matches!(
         key,
-        "overview_layout" | "quick_keys" | db::prefs::AUTO_HEAL_PREF_KEY
+        "overview_layout" | "quick_keys" | "session_renderer" | db::prefs::AUTO_HEAL_PREF_KEY
     )
+}
+
+#[cfg(test)]
+mod known_key_tests {
+    use super::is_known_pref_key;
+
+    #[test]
+    fn the_allowlist_accepts_exactly_the_keys_the_client_writes() {
+        for key in [
+            "overview_layout",
+            "quick_keys",
+            "session_renderer",
+            crate::db::prefs::AUTO_HEAL_PREF_KEY,
+        ] {
+            assert!(is_known_pref_key(key), "{key} must be allowlisted");
+        }
+    }
+
+    #[test]
+    fn an_unknown_key_is_still_refused() {
+        // The 404 the handler returns for these is what keeps a typo or a
+        // hostile client from filling the kv table with junk.
+        for key in ["session_render", "sessionRenderer", "", "../../etc/passwd"] {
+            assert!(!is_known_pref_key(key), "{key} must NOT be allowlisted");
+        }
+    }
 }
 
 /// Maximum bytes accepted for a single pref value. Generous (50 KB) — enough
