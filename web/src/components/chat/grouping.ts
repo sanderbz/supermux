@@ -65,7 +65,11 @@ const SYSTEM_BADGES: ReadonlySet<string> = new Set(['notification', 'system', 't
 
 function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speaker {
   if (item.type !== 'user') return 'agent'
-  if (item.badge === 'teammate') return `teammate:${labels?.get(item.uuid) ?? ''}`
+  // A delegated prompt is a colleague's request wearing the same face: the
+  // teammate envelope and `<supermux-delegation from>` differ in transport, not
+  // in who is speaking, so they share one voice and one arrival divider.
+  if (item.badge === 'teammate' || item.badge === 'delegation')
+    return `teammate:${labels?.get(item.uuid) ?? ''}`
   if (item.badge === 'schedule') return `schedule:${labels?.get(item.uuid) ?? ''}`
   if (item.badge && SYSTEM_BADGES.has(item.badge)) return 'system'
   // An interruption is user-role on the wire and nobody's words on the screen.

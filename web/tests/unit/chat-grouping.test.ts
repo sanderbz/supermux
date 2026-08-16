@@ -169,6 +169,29 @@ describe('groupItems', () => {
     expect(out[1].sender).toBe('patch')
   })
 
+  test('a delegation speaks as its sender and opens with an arrival divider', () => {
+    // `agents/delegate.rs` wraps the delivery in `<supermux-delegation from>`,
+    // so a colleague's request arrives here as its own voice. Rendered as the
+    // owner's bubble it would read as "you asked for this" — the same
+    // impersonation the teammate voice above exists to end.
+    const labels = entryLabels([
+      { uuid: 'd1', ts: 1_001, text: 'Please rebase the stack.', kind: 'delegation', label: 'git-stacker' },
+    ])
+    const nodes = buildTranscript([user('u1', 1_000), user('d1', 1_001, 'delegation')], {
+      nowMs: 2_000_000,
+      labels,
+    })
+    const row = nodes.find((n) => n.kind === 'item' && n.item.uuid === 'd1')
+    expect(row).toBeDefined()
+    if (row?.kind !== 'item') throw new Error('unreachable')
+    expect(row.speaker).toBe('teammate:git-stacker')
+    // `grouped: false` IS the run-start flag `TeammateRow` reads to draw the
+    // `ArrivalDivider`; `sender` is what names the face on it.
+    expect(row.grouped).toBe(false)
+    expect(row.showGutter).toBe(true)
+    expect(row.sender).toBe('git-stacker')
+  })
+
   test('a scheduled fire is the SCHEDULE speaking, not the owner', () => {
     // A schedule's prompt is user-role on the wire and lands at 03:00 with
     // nobody at the keyboard. Grouping it into the human's last run says "you
