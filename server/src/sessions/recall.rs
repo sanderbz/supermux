@@ -1814,6 +1814,26 @@ please prepare the next stacked branch
     }
 
     #[test]
+    fn kind_wire_strings_are_the_contract_the_client_mirrors() {
+        // `RecallEntryKind` in `web/src/lib/api/sessions.ts` is a hand-written
+        // mirror of this enum, and the two ship independently. Pin every wire
+        // string here so a `rename_all` change or a variant rename fails HERE,
+        // loudly, instead of silently reaching a client that has no chip for it
+        // (`components/focus-mode/recall-kind-meta.ts` is the other half).
+        let wire = |k: Kind| serde_json::to_value(k).unwrap().as_str().unwrap().to_string();
+        assert_eq!(wire(Kind::Prompt), "prompt");
+        assert_eq!(wire(Kind::Command), "command");
+        assert_eq!(wire(Kind::Teammate), "teammate");
+        assert_eq!(wire(Kind::Delegation), "delegation");
+        assert_eq!(wire(Kind::Notification), "notification");
+        assert_eq!(wire(Kind::System), "system");
+        assert_eq!(wire(Kind::Tool), "tool");
+        assert_eq!(wire(Kind::Image), "image");
+        assert_eq!(wire(Kind::Assistant), "assistant");
+        assert_eq!(wire(Kind::ToolUse), "tool_use");
+    }
+
+    #[test]
     fn delegation_wrapper_survives_the_typed_prompt_source() {
         // Live-verified: a delegated prompt rides the pty like a keystroke, so
         // Claude Code stamps it `promptSource: "typed"`. Without the

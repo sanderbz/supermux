@@ -33,17 +33,13 @@ import {
   ChevronRight,
   Clipboard,
   History,
-  Image as ImageIcon,
-  Info,
   Loader2,
   MessageSquareText,
   Search,
-  TerminalSquare,
-  Users,
-  Wrench,
   X,
 } from 'lucide-react'
 
+import { kindBadgeMeta, kindSpeaker } from './recall-kind-meta'
 import { cn } from '@/lib/utils'
 import { springs } from '@/lib/springs'
 import {
@@ -463,28 +459,10 @@ function groupBySession(entries: RecallEntry[]): RecallGroup[] {
  *  here — drift would surface immediately (hint never / always shows). */
 const RECALL_PROMPT_MAX_CHARS = 8000
 
-/** Display metadata per entry kind: badge text, icon, optional tint. `prompt`
- *  renders WITHOUT a badge (it's the unmarked default — the user's own typing
- *  shouldn't need a label). Everything else gets a small chip so the reader
- *  knows at a glance what they're looking at. */
-const KIND_BADGE: Record<
-  Exclude<RecallEntryKind, 'prompt'>,
-  { label: string; Icon: typeof Bell }
-> = {
-  command: { label: 'slash', Icon: TerminalSquare },
-  teammate: { label: 'teammate', Icon: Users },
-  notification: { label: 'agent done', Icon: Bell },
-  system: { label: 'system', Icon: Info },
-  tool: { label: 'tool', Icon: Wrench },
-  image: { label: 'image', Icon: ImageIcon },
-  // Chat-view kinds (fase A1): only ever returned for `?chat=true`, which this
-  // popover never requests. Listed so the map stays total over the union.
-  assistant: { label: 'assistant', Icon: Info },
-  tool_use: { label: 'tool', Icon: Wrench },
-}
-
 /** Small chip rendered after the timestamp on every non-prompt row. Prompts
- *  (the user's typing) don't get a chip — they're the default and quiet. */
+ *  (the user's typing) don't get a chip — they're the default and quiet. The
+ *  kind→chip map lives in `recall-kind-meta` so it can be unit-tested without a
+ *  DOM, and so an unknown kind degrades instead of throwing. */
 function KindBadge({
   kind,
   label,
@@ -492,8 +470,8 @@ function KindBadge({
   kind: RecallEntryKind
   label?: string
 }) {
-  if (kind === 'prompt') return null
-  const meta = KIND_BADGE[kind]
+  const meta = kindBadgeMeta(kind)
+  if (!meta) return null
   const display = kind === 'command' && label ? label : meta.label
   return (
     <span
@@ -594,11 +572,7 @@ const RecallRow = React.memo(function RecallRow({
           <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <span className="font-medium text-foreground/90">
-                {entry.kind === 'prompt' || entry.kind === 'command'
-                  ? 'You'
-                  : entry.kind === 'teammate'
-                    ? entry.label || 'Teammate'
-                    : 'System'}
+                {kindSpeaker(entry.kind, entry.label)}
               </span>
               <span>·</span>
               <span>{formatRecallTime(new Date(entry.ts * 1000))}</span>
