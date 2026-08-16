@@ -87,11 +87,10 @@ import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import {
   chatPaneActive,
   mobileChrome,
-  pickRenderer,
   terminalPaneMounts,
   type ChatRenderer,
-  type RendererOverride,
 } from '@/components/chat/seam'
+import { useRenderer } from '@/components/chat/use-renderer-pref'
 import { BackIcon } from '@/components/chat/ui'
 import { useUI } from '@/stores/ui-store'
 import { useSessions } from '@/hooks/use-sessions'
@@ -216,11 +215,18 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
   const chatOn = useChatRenderer(row, isTeamLead)
   // The ONLY state is the user's manual tap, keyed by session name so it resets
   // on navigation and cannot be stomped by a late flag/eligibility resolve.
-  const [override, setOverride] = React.useState<RendererOverride | null>(null)
-  const renderer = pickRenderer(override, name, row != null, chatOn)
+  // Fase A5 T1/T2: a PERSISTED pin, not `React.useState`. `row != null` (not
+  // `current`) stays the resolved signal — this route synthesizes a placeholder
+  // row so its terminal can mount before the query lands, and only it knows the
+  // difference.
+  const {
+    resolved: renderer,
+    pref: rendererPref,
+    setPref: setRendererPref,
+  } = useRenderer(name, chatOn, row != null)
   const setRenderer = React.useCallback(
-    (value: ChatRenderer) => setOverride({ name, value }),
-    [name],
+    (value: ChatRenderer) => setRendererPref(value),
+    [setRendererPref],
   )
   // `stopped`, not `current.status`: a pty the SOCKET found dead owes the user
   // the same calm StoppedSession surface, and the chrome swap has to agree with
@@ -605,8 +611,11 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
             >
               <RendererSwitch
                 size="sm"
-                value={renderer ?? 'chat'}
-                onChange={setRenderer}
+                // The rail has the full row's width, so all three words fit —
+                // this is the one place the switch does NOT have to shrink.
+                value={rendererPref}
+                resolved={renderer ?? 'terminal'}
+                onChange={setRendererPref}
               />
             </div>
           )}
@@ -694,8 +703,9 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
                         // that goes is the one naming the surface you are not
                         // looking at, and the session's name gets it back.
                         labels="selected"
-                        value={renderer ?? 'chat'}
-                        onChange={setRenderer}
+                        value={rendererPref}
+                        resolved={renderer ?? 'chat'}
+                        onChange={setRendererPref}
                       />
                     ) : undefined
                   }

@@ -59,11 +59,10 @@ import { RendererSwitch } from '@/components/chat/renderer-switch'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import {
   chatPaneActive,
-  pickRenderer,
   terminalPaneMounts,
   type ChatRenderer,
-  type RendererOverride,
 } from '@/components/chat/seam'
+import { useRenderer } from '@/components/chat/use-renderer-pref'
 import { composerSessionInput } from '@/components/chat/composer-draft'
 
 // Lazy: the chat renderer is its own chunk — nothing chat-related may land in
@@ -334,11 +333,21 @@ export function DesktopSplit({
   // with the MOBILE seam (fase A5, routes/focus/mobile.tsx) so the two surfaces
   // cannot drift into two different readings of "the experiment is on", and
   // assertable in `bun test` (tests/unit/chat-seam.test.ts).
-  const [override, setOverride] = React.useState<RendererOverride | null>(null)
-  const renderer = pickRenderer(override, name, current != null, chatOn)
+  //
+  // Fase A5 T1/T2: the tap is no longer `React.useState` — it is a PERSISTED
+  // pin (`components/chat/renderer-pref.ts`), so it survives navigation, a
+  // reload and the trip to another device. `resolveRenderer` still delegates
+  // its base ladder to `seam.ts`'s `pickRenderer`, so the undecided frame and
+  // the eligibility rule are byte-identical to A1's; only the source of the
+  // choice changed.
+  const {
+    resolved: renderer,
+    pref: rendererPref,
+    setPref: setRendererPref,
+  } = useRenderer(name, chatOn, current != null)
   const setRenderer = React.useCallback(
-    (value: ChatRenderer) => setOverride({ name, value }),
-    [name],
+    (value: ChatRenderer) => setRendererPref(value),
+    [setRendererPref],
   )
   // `stopped`, not `status`: the seam's "a stopped session is never chat" rule
   // has to see the SOCKET's conclusion too (`termGone`), not only the row's, or
@@ -710,7 +719,11 @@ export function DesktopSplit({
             and hands dropped files to the same upload+inject engine. */}
         {chatOn && (
           <div className="flex h-8 shrink-0 items-center justify-end border-b border-border/60 px-3">
-            <RendererSwitch value={renderer ?? 'chat'} onChange={setRenderer} />
+            <RendererSwitch
+              value={rendererPref}
+              resolved={renderer ?? 'chat'}
+              onChange={setRendererPref}
+            />
           </div>
         )}
 

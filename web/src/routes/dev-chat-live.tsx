@@ -364,7 +364,7 @@ function PhoneFrame({ state, nowMs }: { state: LiveState; nowMs: number }) {
             </span>
           }
           headerTrailing={
-            <RendererSwitch size="sm" labels="selected" value="chat" onChange={() => {}} />
+            <RendererSwitch size="sm" labels="selected" value="auto" resolved="chat" onChange={() => {}} />
           }
         />
       </div>

@@ -142,8 +142,14 @@ describe('C7 — status is status, accent is accent', () => {
 })
 
 describe('the renderer switch', () => {
+  // Fase A5 T2 added the third cell (`auto`) and the `resolved` prop; these
+  // A3 assertions are re-pointed at it rather than rewritten, so the metrics
+  // and the e2e hooks stay pinned. The tri-specific behaviour has its own file
+  // (`chat-renderer-switch.test.tsx`).
   const html = (value: 'chat' | 'terminal') =>
-    renderToStaticMarkup(<RendererSwitch value={value} onChange={() => undefined} />)
+    renderToStaticMarkup(
+      <RendererSwitch value={value} resolved={value} onChange={() => undefined} />,
+    )
 
   test('keeps the hooks the e2e suite clicks', () => {
     const out = html('chat')
@@ -166,7 +172,7 @@ describe('the renderer switch', () => {
     expect(out).toContain('h-[30px]')
     expect(out).toContain('border-hairline')
     expect(out).toContain('text-[13.4px]')
-    expect(text(out)).toBe('Chat Terminal')
+    expect(text(out)).toBe('Auto Chat Terminal')
   })
 })
 
@@ -186,7 +192,17 @@ describe('the phone header gives its width to the name (QA #6)', () => {
         name={FOCUS}
         session={s}
         surface="phone"
-        trailing={trailing ?? <RendererSwitch size="sm" labels="selected" value="chat" onChange={() => undefined} />}
+        trailing={
+          trailing ?? (
+            <RendererSwitch
+              size="sm"
+              labels="selected"
+              value="chat"
+              resolved="chat"
+              onChange={() => undefined}
+            />
+          )
+        }
       />,
     )
 
@@ -215,14 +231,26 @@ describe('the phone header gives its width to the name (QA #6)', () => {
 
   test('labels="selected" drops the unselected WORD, never its name', () => {
     const out = renderToStaticMarkup(
-      <RendererSwitch size="sm" labels="selected" value="chat" onChange={() => undefined} />,
+      <RendererSwitch
+        size="sm"
+        labels="selected"
+        value="chat"
+        resolved="chat"
+        onChange={() => undefined}
+      />,
     )
-    expect(text(out)).toBe('Chat')
+    // The `A` is the auto cell's glyph — the one word-cell rule applies to the
+    // two renderer names, which is what the phone header's width budget needs.
+    expect(text(out)).toBe('A Chat')
     expect(out).toContain('aria-label="Terminal"')
     expect(out).toContain('data-testid="renderer-terminal"')
     // The default is untouched — the desktop seam still reads both words.
-    expect(text(renderToStaticMarkup(<RendererSwitch value="chat" onChange={() => undefined} />))).toBe(
-      'Chat Terminal',
-    )
+    expect(
+      text(
+        renderToStaticMarkup(
+          <RendererSwitch value="chat" resolved="chat" onChange={() => undefined} />,
+        ),
+      ),
+    ).toBe('Auto Chat Terminal')
   })
 })
