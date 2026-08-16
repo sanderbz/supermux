@@ -271,9 +271,12 @@ export interface RecallEntry {
   ok?: boolean
 }
 
-/** Mirrored from `Kind` in `server/src/sessions/recall.rs`. `'prompt'`,
- *  `'command'`, and `'teammate'` are user-initiated and shown by default;
- *  the rest are harness/tool events surfaced only when the "Show system
+/** Mirrored from `Kind` in `server/src/sessions/recall.rs`. The user-initiated
+ *  kinds — shown by default and the only ones that reach the chat transcript —
+ *  are `'prompt'`, `'command'`, `'teammate'`, `'delegation'` and `'schedule'`:
+ *  somebody deliberately asked for each of them (a schedule is the owner's own
+ *  request, made earlier). Keep this list in step with `Kind::is_user_initiated`
+ *  — the rest are harness/tool events surfaced only when the "Show system
  *  events" toggle is on. */
 export type RecallEntryKind =
   | 'prompt'
