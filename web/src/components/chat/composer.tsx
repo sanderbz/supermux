@@ -76,6 +76,22 @@ export interface ChatComposerProps {
   renderPicker?: (props: EntityPickerProps) => React.ReactNode
   /** What the popover offers — the panel's three lists (fase A4 T9). */
   pickerData?: EntityPickerData
+  /**
+   * Schedule this instead of sending it now (fase B4 T9) — opens the session's
+   * Schedules sheet in create mode, with the current draft carried over as the
+   * prompt.
+   *
+   * A SECOND LEADING CONTROL rather than a menu behind the `+`: `+` types a
+   * trigger into the draft and this opens a sheet, which are different enough
+   * that folding them into one control would make the common one (mention a
+   * file) cost a menu. Both live in the composer, which is present on the phone
+   * too — §5.2's rule that non-terminal actions belong to the dock, not to a
+   * hover.
+   *
+   * Omit and the control is not drawn at all: the bench and the tests render a
+   * composer with no sheet behind it, and an inert clock would be a promise.
+   */
+  onSchedule?: (draft: string) => void
   className?: string
 }
 
@@ -89,6 +105,7 @@ export function ChatComposer({
   onOpenTerminal,
   renderPicker,
   pickerData,
+  onSchedule,
   className,
 }: ChatComposerProps) {
   const phone = surface === 'phone'
@@ -139,6 +156,7 @@ export function ChatComposer({
         size={phone ? 'mobile' : 'desktop'}
         placeholder={`Message ${label}`}
         leading={
+          <>
           <button
             type="button"
             data-testid="chat-composer-at"
@@ -153,6 +171,22 @@ export function ChatComposer({
           >
             <PlusIcon />
           </button>
+          {onSchedule && (
+            <button
+              type="button"
+              data-testid="chat-composer-schedule"
+              aria-label="Schedule this instead of sending now"
+              title="Schedule this instead of sending now"
+              // The draft is COPIED, not moved (T9.2): the sheet gets a prompt
+              // to start from and the composer keeps every character, so
+              // cancelling leaves the box exactly as it was.
+              onClick={() => onSchedule(handle.draft)}
+              className="grid size-[26px] flex-none place-items-center rounded-full text-ink-2"
+            >
+              <ClockIcon />
+            </button>
+          )}
+          </>
         }
         field={{
           ref: handle.ref,
@@ -442,6 +476,24 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // The draft is still in the box, and saying so is the point — the user's
   // instinct after a failed send is to check whether they lost the sentence.
   'handoff-failed': 'That hand-off didn’t go through — your message is still here.',
+}
+
+/** Schedule — a clock face, matching the `⏱` the transcript's schedule lines
+ *  and the scheduler's own chips carry. Monochrome `currentColor` like every
+ *  other glyph on this surface; the emoji taxonomy is terminal/tile-only. */
+function ClockIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
+      <circle cx="9" cy="9" r="6.4" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M9 5.6V9l2.4 1.6"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
 }
 
 /** Send — an upward arrow, the one glyph every messenger agrees on. */

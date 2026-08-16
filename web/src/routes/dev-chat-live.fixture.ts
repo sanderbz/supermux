@@ -397,6 +397,9 @@ export interface LiveState {
     picker?: { kind: '@' | '/'; query: string }
     /** The refusal banner, pre-raised. */
     notice?: ComposerNotice
+    /** Draw the schedule affordance (fase B4 T9). Off by default so every
+     *  pre-B4 state screenshots the composer it was approved against. */
+    schedulable?: boolean
   }
   /** P10 echoes, in their three states (fase A4 T4). */
   pending?: readonly PendingSend[]
@@ -830,6 +833,25 @@ export function liveStates(nowMs: number): LiveState[] {
       },
     },
     {
+      id: 'schedule-draft',
+      title: 'Schedule — the composer offers to run this later instead of now',
+      board: 'master plan §13.3 (the trivial human path)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: release,
+      composer: {
+        // The clock beside `+`. A draft is present because the affordance's
+        // whole point is that it carries one over — and the draft STAYS after
+        // the sheet opens (T9.2), which is why this state screenshots the
+        // composer rather than the sheet.
+        draft: 'check whether the nightly release job went green',
+        schedulable: true,
+      },
+    },
+    {
       id: 'panel',
       title: 'Panel — a full-screen TUI screen is up, so the send is refused and named',
       board: 'daily-driver QA #1',
@@ -996,6 +1018,7 @@ export const STATE_IDS = [
   'handoff',
   'handoff-sent',
   'handoff-failed',
+  'schedule-draft',
   'panel',
   'dialog-live',
   'answering',

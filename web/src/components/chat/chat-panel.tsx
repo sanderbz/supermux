@@ -162,6 +162,14 @@ export default function ChatPanel({
     [],
   )
   const closeScheduleSheet = React.useCallback(() => setScheduleSheet(null), [])
+  // The human path (fase B4 T9): the composer's clock opens the SAME sheet in
+  // create mode with the draft carried over as the prompt. §13.3 calls this
+  // "the trivial human path" and it stays trivial — no new form, no new
+  // endpoint, and the draft is COPIED so cancelling costs nothing.
+  const scheduleDraft = React.useCallback(
+    (draft: string) => setScheduleSheet({ scheduleId: null, create: true, draft: draft.trim() }),
+    [],
+  )
   // The wire labels `ChatItem` deliberately does not carry: the slash name of a
   // command, the teammate id of an arrival, the subject of a system event.
   const labels = React.useMemo(() => entryLabels(entries), [entries])
@@ -471,6 +479,7 @@ export default function ChatPanel({
           // ride the shared query this component already subscribes to, the
           // same rule as `mentions`/`names`.
           pickerData={pickerData}
+          onSchedule={scheduleDraft}
           // The dogfood number — DEV BUILDS ONLY (daily-driver QA #9).
           //
           // It shipped unconditionally and printed `hook→UI p50 9 ms (n=3)`

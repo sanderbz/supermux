@@ -279,6 +279,7 @@ function BenchComposer({
       surface={surface}
       active={state.session.status === 'active'}
       onOpenTerminal={noop}
+      onSchedule={spec.schedulable ? noop : undefined}
       pickerData={{
         files: TRACKED_FILES,
         commands: BENCH_COMMANDS,

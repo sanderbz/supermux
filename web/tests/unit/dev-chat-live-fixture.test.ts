@@ -194,6 +194,26 @@ describe('coverage: every state the surface can be in', () => {
     expect(failed.notice?.detail?.length).toBeGreaterThan(0)
   })
 
+  test('the schedule affordance carries a draft, and the draft SURVIVES it', () => {
+    // T9.1/T9.2: the clock's whole job is to hand the current draft over as the
+    // prompt, and to leave the composer exactly as it was. A state with an
+    // empty draft would screenshot the affordance doing nothing, and one whose
+    // draft vanished would screenshot the bug.
+    const c = byId.get('schedule-draft')!.composer!
+    expect(c.schedulable).toBe(true)
+    expect(c.draft.trim().length).toBeGreaterThan(0)
+    expect(c.notice).toBeUndefined()
+    // It is a MESSAGE, not a hand-off and not a command: the clock must not be
+    // reviewed on top of a relabelled send button or a refusal banner.
+    expect(readDelegateIntent(c.draft, MENTIONS, 'release-train')).toBeNull()
+    expect(classifySlash(c.draft)).toBe('pass')
+    // No other state draws it, so every pre-B4 board still screenshots the
+    // composer it was approved against.
+    expect(states.filter((s) => s.composer?.schedulable).map((s) => s.id)).toEqual([
+      'schedule-draft',
+    ])
+  })
+
   test('slash shows a refusal the classifier actually makes', () => {
     const c = byId.get('slash')!.composer!
     expect(classifySlash(c.draft)).toBe('picker')
@@ -238,6 +258,7 @@ describe('coverage: every state the surface can be in', () => {
       'handoff',
       'handoff-sent',
       'handoff-failed',
+      'schedule-draft',
       'panel',
     ])
   })
