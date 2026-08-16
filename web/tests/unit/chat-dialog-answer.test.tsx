@@ -289,12 +289,15 @@ describe('answering, when it must refuse', () => {
   })
 
   test('bash option 2 can never be pressed, even if a caller asks', async () => {
-    // a0 left its persistence unverified. The card disables it; this is the
-    // second lock, on the logic, so removing an attribute cannot open it.
+    // a0 left its persistence unverified; 2.1.233 answered it and the answer is
+    // WORSE than unknown — one row, two grants, one of them a rule written to
+    // disk (`registry/claude.ts`, `tests/fixtures/tui/cc233/README.md`). The card
+    // disables it; this is the second lock, on the logic, so removing an
+    // attribute cannot open it.
     const r = rig([PERM])
     const out = await answerDialog(r.deps, req(1))
     expect(out.failure).toBe('not-actionable')
-    expect(out.detail).toMatch(/unverified/i)
+    expect(out.detail).toMatch(/settings\.local\.json/i)
     expect(r.sent).toEqual([])
   })
 
@@ -363,7 +366,7 @@ describe('the card the surface draws', () => {
     expect(view.escape?.actOn).toBe(false)
     expect(view.note).toBe(DIALOG_TERMINAL_NOTE)
     expect(view.attention).toBe('registry-version-mismatch')
-    expect(view.verifiedVersions).toEqual(['2.1.227', '2.1.231', '2.1.232'])
+    expect(view.verifiedVersions).toEqual(['2.1.227', '2.1.231', '2.1.232', '2.1.233'])
   })
 
   test('no dialog, no card', () => {
@@ -507,7 +510,7 @@ describe('the card, rendered', () => {
     // The inert one carries `disabled` and its reason, and it is still readable.
     expect(html).toContain('Yes, and always allow access to tmp/ from this project')
     expect(html).toContain('data-disabled="true"')
-    expect(html).toMatch(/unverified/i)
+    expect(html).toMatch(/settings\.local\.json/i)
   })
 
   test('mid-sequence the whole card is inert and names what it is doing', () => {

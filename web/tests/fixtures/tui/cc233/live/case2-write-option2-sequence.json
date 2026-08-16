@@ -1,0 +1,171 @@
+{
+  "case": "case2-write-option2",
+  "session": "spike-233-capture",
+  "at": "2026-08-16T06:56:31.830Z",
+  "looks": [
+    {
+      "tag": "case2-write-option2-01-strict",
+      "anchor": null,
+      "strict": {
+        "family": "permission",
+        "variant": "write",
+        "caret": 0,
+        "key": "permission/write/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "write",
+        "caret": 0,
+        "key": "permission/write/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "footerHasTabToAmend": true
+    },
+    {
+      "tag": "case2-write-option2-02-strict",
+      "anchor": null,
+      "strict": {
+        "family": "permission",
+        "variant": "write",
+        "caret": 0,
+        "key": "permission/write/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "write",
+        "caret": 0,
+        "key": "permission/write/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "footerHasTabToAmend": true
+    },
+    {
+      "tag": "case2-write-option2-03-continuity",
+      "anchor": {
+        "question": "Do you want to create hello.txt?",
+        "options": [
+          "Yes",
+          "Yes, allow all edits during this session (shift+tab)",
+          "No"
+        ]
+      },
+      "strict": {
+        "family": "unknown",
+        "caret": 1,
+        "key": "unknown/-/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "write",
+        "caret": 1,
+        "key": "permission/write/Yes|Yes, allow all edits during this session (shift+tab)|No"
+      },
+      "footerHasTabToAmend": false
+    },
+    {
+      "tag": "case2-write-option2-04-continuity",
+      "anchor": {
+        "question": "Do you want to create hello.txt?",
+        "options": [
+          "Yes",
+          "Yes, allow all edits during this session (shift+tab)",
+          "No"
+        ]
+      },
+      "strict": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "returned": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "footerHasTabToAmend": false
+    }
+  ],
+  "sent": [
+    "Down",
+    "Enter"
+  ],
+  "livePin": "2.1.233",
+  "pinUsed": "2.1.233",
+  "pinOverridden": false,
+  "sighting": {
+    "family": "permission",
+    "variant": "write",
+    "caret": 0,
+    "question": "Do you want to create hello.txt?",
+    "options": [
+      "Yes",
+      "Yes, allow all edits during this session (shift+tab)",
+      "No"
+    ],
+    "key": "permission/write/Yes|Yes, allow all edits during this session (shift+tab)|No"
+  },
+  "continuityAnchor": {
+    "family": "permission",
+    "variant": "write",
+    "question": "Do you want to create hello.txt?",
+    "options": [
+      "Yes",
+      "Yes, allow all edits during this session (shift+tab)",
+      "No"
+    ]
+  },
+  "registry": {
+    "entry": "permission.write",
+    "degraded": false,
+    "attention": null
+  },
+  "card": {
+    "id": "permission.write",
+    "family": "permission",
+    "variant": "write",
+    "key": "permission/write/Yes|Yes, allow all edits during this session (shift+tab)|No",
+    "options": [
+      {
+        "label": "Allow once",
+        "kbd": "1",
+        "actOn": true,
+        "primary": true
+      },
+      {
+        "label": "Yes, allow all edits during this session",
+        "kbd": "2",
+        "actOn": true,
+        "primary": false
+      },
+      {
+        "label": "Not now",
+        "kbd": "3",
+        "actOn": true,
+        "primary": false
+      }
+    ],
+    "escape": {
+      "label": "Say something instead",
+      "actOn": true
+    },
+    "verifiedVersions": [
+      "2.1.227",
+      "2.1.232",
+      "2.1.233"
+    ],
+    "disabled": false,
+    "attention": null
+  },
+  "target": 1,
+  "plan": [
+    "Down",
+    "Enter"
+  ],
+  "outcome": {
+    "ok": true,
+    "sent": [
+      "Down",
+      "Enter"
+    ],
+    "committed": true,
+    "effect": "accept-session"
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "case": "case4-plan-manual",
+  "session": "spike-233-capture",
+  "at": "2026-08-16T06:56:14.622Z",
+  "looks": [
+    {
+      "tag": "case4-plan-manual-01-strict",
+      "anchor": null,
+      "strict": {
+        "family": "plan",
+        "caret": 2,
+        "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+      },
+      "returned": {
+        "family": "plan",
+        "caret": 2,
+        "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+      },
+      "footerHasTabToAmend": false
+    },
+    {
+      "tag": "case4-plan-manual-02-strict",
+      "anchor": null,
+      "strict": {
+        "family": "plan",
+        "caret": 2,
+        "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+      },
+      "returned": {
+        "family": "plan",
+        "caret": 2,
+        "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+      },
+      "footerHasTabToAmend": false
+    },
+    {
+      "tag": "case4-plan-manual-03-continuity",
+      "anchor": {
+        "question": "Would you like to proceed?",
+        "options": [
+          "Yes, and use auto mode",
+          "Yes, manually approve edits",
+          "Tell Claude what to change shift+tab to approve with this feedback"
+        ]
+      },
+      "strict": {
+        "family": "plan",
+        "caret": 1,
+        "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+      },
+      "returned": {
+        "family": "plan",
+        "caret": 1,
+        "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+      },
+      "footerHasTabToAmend": false
+    },
+    {
+      "tag": "case4-plan-manual-04-continuity",
+      "anchor": {
+        "question": "Would you like to proceed?",
+        "options": [
+          "Yes, and use auto mode",
+          "Yes, manually approve edits",
+          "Tell Claude what to change shift+tab to approve with this feedback"
+        ]
+      },
+      "strict": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "returned": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "footerHasTabToAmend": false
+    }
+  ],
+  "sent": [
+    "Up",
+    "Enter"
+  ],
+  "livePin": "2.1.233",
+  "pinUsed": "2.1.233",
+  "pinOverridden": false,
+  "sighting": {
+    "family": "plan",
+    "caret": 2,
+    "question": "Would you like to proceed?",
+    "options": [
+      "Yes, and use auto mode",
+      "Yes, manually approve edits",
+      "Tell Claude what to change shift+tab to approve with this feedback"
+    ],
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback"
+  },
+  "continuityAnchor": {
+    "family": "plan",
+    "question": "Would you like to proceed?",
+    "options": [
+      "Yes, and use auto mode",
+      "Yes, manually approve edits",
+      "Tell Claude what to change shift+tab to approve with this feedback"
+    ]
+  },
+  "registry": {
+    "entry": "plan.approval",
+    "degraded": false,
+    "attention": null
+  },
+  "card": {
+    "id": "plan.approval",
+    "family": "plan",
+    "key": "plan/-/Yes, and use auto mode|Yes, manually approve edits|Tell Claude what to change shift+tab to approve with this feedback",
+    "options": [
+      {
+        "label": "Yes, and use auto mode",
+        "kbd": "1",
+        "actOn": true,
+        "primary": true
+      },
+      {
+        "label": "Yes, manually approve edits",
+        "kbd": "2",
+        "actOn": true,
+        "primary": false
+      },
+      {
+        "label": "Tell Claude what to change",
+        "kbd": "3",
+        "actOn": true,
+        "primary": false
+      }
+    ],
+    "escape": {
+      "label": "Say something instead",
+      "actOn": false,
+      "reason": "Esc has never been captured on a plan dialog, so what it does here is a guess. “Tell Claude what to change” is the verified way to send feedback."
+    },
+    "planPath": "~/.claude/plans/cuddly-brewing-eagle.md",
+    "verifiedVersions": [
+      "2.1.231",
+      "2.1.232",
+      "2.1.233"
+    ],
+    "disabled": false,
+    "attention": null
+  },
+  "target": 1,
+  "plan": [
+    "Up",
+    "Enter"
+  ],
+  "outcome": {
+    "ok": true,
+    "sent": [
+      "Up",
+      "Enter"
+    ],
+    "committed": true,
+    "effect": "accept"
+  }
+}

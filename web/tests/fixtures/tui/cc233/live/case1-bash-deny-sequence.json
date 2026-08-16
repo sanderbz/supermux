@@ -1,0 +1,200 @@
+{
+  "case": "case1-bash-deny",
+  "session": "spike-233-capture",
+  "at": "2026-08-16T06:57:02.494Z",
+  "looks": [
+    {
+      "tag": "case1-bash-deny-01-strict",
+      "anchor": null,
+      "strict": {
+        "family": "permission",
+        "variant": "bash",
+        "caret": 0,
+        "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "bash",
+        "caret": 0,
+        "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "footerHasTabToAmend": true
+    },
+    {
+      "tag": "case1-bash-deny-02-strict",
+      "anchor": null,
+      "strict": {
+        "family": "permission",
+        "variant": "bash",
+        "caret": 0,
+        "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "bash",
+        "caret": 0,
+        "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "footerHasTabToAmend": true
+    },
+    {
+      "tag": "case1-bash-deny-03-continuity",
+      "anchor": {
+        "question": "Do you want to proceed?",
+        "options": [
+          "Yes",
+          "Yes, and always allow access to spike-233/ from this project",
+          "No"
+        ]
+      },
+      "strict": {
+        "family": "unknown",
+        "caret": 1,
+        "key": "unknown/-/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "bash",
+        "caret": 1,
+        "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "footerHasTabToAmend": false
+    },
+    {
+      "tag": "case1-bash-deny-04-continuity",
+      "anchor": {
+        "question": "Do you want to proceed?",
+        "options": [
+          "Yes",
+          "Yes, and always allow access to spike-233/ from this project",
+          "No"
+        ]
+      },
+      "strict": {
+        "family": "permission",
+        "variant": "bash",
+        "caret": 2,
+        "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "returned": {
+        "family": "permission",
+        "variant": "bash",
+        "caret": 2,
+        "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+      },
+      "footerHasTabToAmend": true
+    },
+    {
+      "tag": "case1-bash-deny-05-continuity",
+      "anchor": {
+        "question": "Do you want to proceed?",
+        "options": [
+          "Yes",
+          "Yes, and always allow access to spike-233/ from this project",
+          "No"
+        ]
+      },
+      "strict": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "returned": {
+        "family": null,
+        "caret": null,
+        "key": null
+      },
+      "footerHasTabToAmend": false
+    }
+  ],
+  "sent": [
+    "Down",
+    "Down",
+    "Enter"
+  ],
+  "livePin": "2.1.233",
+  "pinUsed": "2.1.233",
+  "pinOverridden": false,
+  "sighting": {
+    "family": "permission",
+    "variant": "bash",
+    "caret": 0,
+    "question": "Do you want to proceed?",
+    "options": [
+      "Yes",
+      "Yes, and always allow access to spike-233/ from this project",
+      "No"
+    ],
+    "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No"
+  },
+  "continuityAnchor": {
+    "family": "permission",
+    "variant": "bash",
+    "question": "Do you want to proceed?",
+    "options": [
+      "Yes",
+      "Yes, and always allow access to spike-233/ from this project",
+      "No"
+    ]
+  },
+  "registry": {
+    "entry": "permission.bash",
+    "degraded": false,
+    "attention": null
+  },
+  "card": {
+    "id": "permission.bash",
+    "family": "permission",
+    "variant": "bash",
+    "key": "permission/bash/Yes|Yes, and always allow access to spike-233/ from this project|No",
+    "options": [
+      {
+        "label": "Allow once",
+        "kbd": "1",
+        "actOn": true,
+        "primary": true
+      },
+      {
+        "label": "Yes, and always allow access to spike-233/ from this project",
+        "kbd": "2",
+        "actOn": false,
+        "reason": "This row grants more than one thing on 2.1.233 — for a command pattern it writes a permanent rule into this project’s .claude/settings.local.json, for a directory it switches the whole session to auto-accept. Chat has no honest way to say which, so choose it in the terminal if you mean it.",
+        "primary": false
+      },
+      {
+        "label": "Not now",
+        "kbd": "3",
+        "actOn": true,
+        "primary": false
+      }
+    ],
+    "escape": {
+      "label": "Say something instead",
+      "actOn": true
+    },
+    "verifiedVersions": [
+      "2.1.227",
+      "2.1.231",
+      "2.1.232",
+      "2.1.233"
+    ],
+    "disabled": false,
+    "attention": null
+  },
+  "target": 2,
+  "plan": [
+    "Down",
+    "Down",
+    "Enter"
+  ],
+  "outcome": {
+    "ok": true,
+    "sent": [
+      "Down",
+      "Down",
+      "Enter"
+    ],
+    "committed": true,
+    "effect": "deny"
+  }
+}
