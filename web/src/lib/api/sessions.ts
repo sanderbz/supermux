@@ -194,6 +194,14 @@ export interface ApiSession {
    *  mergeRow passes null through, so always optional-chain). Fase A1
    *  renders the "Waiting for permission" row from it. */
   permission_request?: PermissionRequestInfo | null
+  /** Claude's own `Notification` sentence, verbatim ("Claude is waiting for
+   *  your input", …) — the in-conversation counterpart of the notice push, so
+   *  the lock screen and the app show the SAME string. In-memory server-side;
+   *  rides the `sessions` SSE delta and clears (`null`) with the dialog. */
+  notice?: string | null
+  /** This bot's own notification setting: `inherit` (follow the global category
+   *  toggles — the default) | `all` | `attention` | `off`. Always present. */
+  notif?: NotifPolicy
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor and the client's clock-skew sample. */
   activity_at?: number
@@ -348,7 +356,15 @@ export interface SessionConfigPatch {
   tags?: string[]
   toggle_pin?: boolean
   toggle_auto_continue?: boolean
+  /** This bot's own notification setting (migration 0025). The per-BOT half of
+   *  the mute rule — it ANDs with the global category toggles in Settings. An
+   *  unknown value is a 400, so a typo can never look like it saved. */
+  notif?: NotifPolicy
 }
+
+/** The four states of a bot's own notification setting.
+ *  `inherit` follows the global category toggles and is the default. */
+export type NotifPolicy = 'inherit' | 'all' | 'attention' | 'off'
 
 /** Result of `POST /api/sessions/{name}/mode` (mode-shift). `mode` is the mode
  *  ACTUALLY in effect after the op (the UI reflects truth, never an optimistic

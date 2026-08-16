@@ -424,45 +424,59 @@ function ClaudeToolsSection() {
   )
 }
 
-/** A single per-event notification toggle (the user-facing category list).
- *  `label` is what the user sees; `key` is the wire format that the server's
- *  `NotifCategory` enum matches. `hint` answers "when does this fire?" in one
- *  line so the user never has to guess what they're toggling. */
+/** One switch in Settings → Notifications.
+ *
+ *  The switches are grouped by TIER — what the notification means to the user —
+ *  rather than by the internal event that produced it. `keys` is therefore a
+ *  LIST: "Errors" is one decision covering two server categories, because
+ *  "a turn failed" and "the session died" are the same thought to a person and
+ *  splitting them only makes two switches to get wrong. The storage keys are
+ *  unchanged, so nobody's existing preference moves.
+ *
+ *  `hint` answers "when does this fire?" in one line — after the redesign the
+ *  honest answer is short, because each of these now has exactly one hook
+ *  anchor behind it rather than a status heuristic. */
 interface NotifTypeSpec {
-  key: NotifCategory
+  keys: NotifCategory[]
   label: string
   hint: string
+  /** Which key the per-type test button exercises. */
+  test: NotifCategory
 }
 
-/** The categories, in display order. Kept short on purpose — every extra
- *  toggle is another decision the user has to make AND another row in the
- *  Recent activity diagnostic. Each one maps 1:1 to a distinct
- *  `send_push_for(NotifCategory::*)` call site on the server. */
+/** The tiers, in display order: what blocks you first, what merely happened
+ *  last. Kept short on purpose — every extra switch is another decision the
+ *  user has to make AND another row in the Recent activity diagnostic. */
 const NOTIF_TYPES: NotifTypeSpec[] = [
   {
-    key: 'agent_waiting',
-    label: 'Agent needs you',
-    hint: 'When an agent goes idle waiting on your input or asks a board question.',
+    keys: ['agent_waiting'],
+    test: 'agent_waiting',
+    label: 'Needs attention',
+    hint: 'A bot is blocked on you: a permission dialog, a plan to approve, a question.',
   },
   {
-    key: 'agent_finished',
-    label: 'Agent finished',
-    hint: 'When an agent finishes its turn — ready for your review.',
+    keys: ['agent_finished'],
+    test: 'agent_finished',
+    label: 'Turn finished',
+    hint: 'A bot finished its turn. Off by default — the roster already shows it, and it is not blocking anyone.',
   },
   {
-    key: 'agent_stopped',
-    label: 'Agent stopped',
-    hint: 'When a session ends unexpectedly (the tmux pane goes away).',
+    keys: ['agent_error', 'agent_stopped'],
+    test: 'agent_error',
+    label: 'Errors',
+    hint: 'A turn failed (rate limit, billing, overload) or a session died on its own. Your own /clear or /exit never counts.',
   },
   {
-    key: 'schedule_error',
+    keys: ['schedule_error'],
+    test: 'schedule_error',
     label: 'Scheduled task errored',
     hint: 'When a scheduled task fails. Successful runs are silent on purpose.',
   },
   {
-    key: 'schedule_finished',
+    keys: ['schedule_finished'],
+    test: 'schedule_finished',
     label: 'Scheduled task finished',
-    hint: 'When a schedule you marked "notify me when done" completes.',
+    hint: 'When a schedule you marked "notify me when done" completes. An explicit opt-in, so it is sent even for a muted bot.',
   },
 ]
 
@@ -470,7 +484,7 @@ const NOTIF_TYPES: NotifTypeSpec[] = [
  *  `human_label` so a test notification labelled "Agent finished" maps to the
  *  same row in the activity panel. `test` is the generic transport probe. */
 function categoryLabel(slug: string): string {
-  const known = NOTIF_TYPES.find((t) => t.key === slug)
+  const known = NOTIF_TYPES.find((t) => t.keys.includes(slug as NotifCategory))
   if (known) return known.label
   if (slug === 'test') return 'Transport test'
   return slug
@@ -487,12 +501,29 @@ function formatAgo(unixSec: number): string {
   return `${Math.floor(delta / 86400)}d ago`
 }
 
+/** Why a muted row was muted, in the user's own vocabulary. The server says
+ *  `global:agent_finished` or `session:off`; the panel has to answer "so what
+ *  do I change?" without making anyone read an enum. */
+function mutedDetail(reason: string | undefined): string {
+  if (!reason) return 'muted by your preference'
+  if (reason.startsWith('session:')) {
+    const policy = reason.slice('session:'.length)
+    return policy === 'attention'
+      ? "muted — this bot is set to \u201cneeds you\u201d only"
+      : 'muted — notifications are off for this bot'
+  }
+  if (reason.startsWith('global:')) {
+    return `muted — ${categoryLabel(reason.slice('global:'.length)).toLowerCase()} is switched off`
+  }
+  return 'muted by your preference'
+}
+
 /** One row in the Recent activity panel. The terse "delivered N · failed N"
  *  summary is the entire point: when the user says "I never got a notification",
  *  the answer is here, not in a log. */
 function ActivityRow({ a }: { a: PushAttempt }) {
   const detail = a.muted
-    ? 'muted by your preference'
+    ? mutedDetail(a.reason)
     : a.attempted === 0
       ? 'no devices subscribed'
       : `${a.delivered}/${a.attempted} delivered${
@@ -556,14 +587,17 @@ function NotificationsSection() {
     }
   }, [enabled])
 
-  function togglePref(key: NotifCategory, next: boolean) {
+  /** Flip one SWITCH, which may write more than one storage key (see
+   *  `NotifTypeSpec.keys` — "Errors" is one decision over two categories). */
+  function togglePref(keys: NotifCategory[], next: boolean) {
     if (!prefs) return
     // Optimistic — the switch animation must feel instant. Rollback on a server
     // failure (the only legit one is offline / 5xx).
     const prev = prefs
-    setPrefs({ ...prefs, [key]: next })
+    const patch = Object.fromEntries(keys.map((k) => [k, next]))
+    setPrefs({ ...prefs, ...patch })
     setPrefError(null)
-    void pushApi.putPrefs({ [key]: next }).catch((e) => {
+    void pushApi.putPrefs(patch).catch((e) => {
       setPrefs(prev)
       setPrefError(e instanceof Error ? e.message : 'Could not save preference.')
     })
@@ -688,14 +722,17 @@ function NotificationsSection() {
           </Row>
           {NOTIF_TYPES.map((t) => (
             <Row
-              key={t.key}
+              key={t.keys.join('+')}
               label={t.label}
               hint={t.hint}
               control={
                 <Switch
-                  ariaLabel={`Notify me when ${t.label.toLowerCase()}`}
-                  checked={prefs?.[t.key] ?? true}
-                  onCheckedChange={(next) => togglePref(t.key, next)}
+                  ariaLabel={`Notify me: ${t.label.toLowerCase()}`}
+                  // A grouped switch reads ON when ANY of its keys is on, so a
+                  // half-written pair (a failed PUT, a hand-edited DB) shows as
+                  // enabled rather than silently claiming you are muted.
+                  checked={t.keys.some((k) => prefs?.[k] ?? false)}
+                  onCheckedChange={(next) => togglePref(t.keys, next)}
                   disabled={!prefs}
                 />
               }

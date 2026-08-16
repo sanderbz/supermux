@@ -51,6 +51,7 @@ import {
 } from '@/components/scheduler/helpers'
 import { displayLabel } from '@/lib/api'
 import type { ApiSession, SessionMode, ScheduleRow } from '@/lib/api'
+import { NotifPolicyControl } from './notif-policy-control'
 import { useCloneSession } from './use-clone-session'
 import { useRenameSession, cleanDisplayName } from './use-rename-session'
 
@@ -209,6 +210,13 @@ function PanelBody({
       {/* Settings */}
       <PaneSection label="Settings">
         <SettingsRows session={session} name={name} />
+      </PaneSection>
+
+      {/* Notifications — the per-BOT opt-in. It lives on the bot, next to the
+          bot's other settings, because that is where a user looks for "stop
+          buzzing me about THIS one". */}
+      <PaneSection label="Notifications">
+        <NotifPolicyControl name={name} value={session?.notif} />
       </PaneSection>
 
       {/* Schedules */}

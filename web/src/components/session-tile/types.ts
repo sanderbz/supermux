@@ -37,6 +37,9 @@ export interface TileSession extends SessionSummary {
   /** Live, undecided permission dialog for the current tool call. Rides the
    *  `sessions` SSE delta; `null` clears it (always optional-chain). */
   permission_request?: PermissionRequestInfo | null
+  /** Claude's own `Notification` sentence, verbatim — the agent said it is
+   *  blocked on you. Rides the `sessions` SSE delta; `null` clears it. */
+  notice?: string | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor. */
   activity_at?: number

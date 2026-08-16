@@ -7,6 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { ToastProvider } from '@/components/ui/toast'
 import { Layout } from '@/components/layout'
 import { A2HSInstructionsSheet } from '@/components/pwa/a2hs-sheet'
+import { PushBridge } from '@/components/pwa/push-bridge'
 import { OnboardingHost } from '@/components/onboarding/onboarding-host'
 import { ConnectionOverlay } from '@/components/connection/connection-overlay'
 import { Overview } from '@/routes/overview'
@@ -79,6 +80,11 @@ export default function App() {
                 provider. Routes that previously self-wrapped (scheduler) no
                 longer need their own. */}
             <ToastProvider>
+            {/* The in-app half of the notification pipeline: toasts a blocking
+                push that arrived while the app is open, keeps the home-screen
+                badge honest, and tells the SW when a banner has been answered.
+                Inside ToastProvider + Router because it needs both. */}
+            <PushBridge />
             {/* "Add to Home Screen" coaching sheet — self-gates to the
                 first iOS-Safari (non-standalone) load, then remembers dismiss. */}
             <A2HSInstructionsSheet />

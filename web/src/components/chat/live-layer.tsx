@@ -177,8 +177,15 @@ export function LiveLayer({
           dir={session.dir}
           mode={session.permission_request.mode ?? session.mode}
         />
+      ) : dialogResolved ? (
+        <SystemLine>{dialogResolved}</SystemLine>
       ) : (
-        dialogResolved && <SystemLine>{dialogResolved}</SystemLine>
+        // Claude's OWN `Notification` sentence, verbatim. This is the
+        // in-conversation counterpart of the notice push: the lock screen and
+        // the conversation show the same words because it is literally the
+        // same string, carried on the sessions delta. It clears with the
+        // dialog, so it can never outlive the block it describes.
+        session?.notice && <SystemLine>{session.notice}</SystemLine>
       )}
 
       {overlay.length > 0 && (

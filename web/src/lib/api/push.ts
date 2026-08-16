@@ -21,12 +21,14 @@ export interface PushSubscriptionJSON {
   keys: { p256dh: string; auth: string }
 }
 
-/** The four per-event toggles a user can flip independently. Mirrors the
- *  `NotifCategory` enum on the server — these strings are both the API field
- *  names AND the prefs storage key suffix, so renaming one is renaming both. */
+/** The per-event categories. Mirrors the `NotifCategory` enum on the server —
+ *  these strings are both the API field names AND the prefs storage key suffix,
+ *  so renaming one is renaming both. The Settings UI groups them by TIER (see
+ *  `NOTIF_TYPES`); the storage keys deliberately did not move when it did. */
 export type NotifCategory =
   | 'agent_waiting'
   | 'agent_finished'
+  | 'agent_error'
   | 'agent_stopped'
   | 'schedule_error'
   | 'schedule_finished'
@@ -49,6 +51,11 @@ export interface PushAttempt {
   pruned: number
   failed: number
   muted: boolean
+  /** Present only on a muted row: WHICH gate stopped it —
+   *  `global:<category>` (a Settings switch) or `session:<policy>` (the bot's
+   *  own setting). The difference between "my phone is broken" and "I turned
+   *  this off", which is the whole question this panel answers. */
+  reason?: string
 }
 
 export const pushApi = {
