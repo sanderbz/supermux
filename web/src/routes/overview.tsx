@@ -12,9 +12,6 @@ import {
   Archive,
   EyeOff,
   FolderPlus,
-  LayoutGrid,
-  List,
-  Minus,
   Plus,
   Search,
   TerminalSquare,
@@ -29,7 +26,7 @@ import { TeamCard } from '@/components/team'
 import { useArchivedSessions } from '@/hooks/use-archived-sessions'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useOverviewLayout } from '@/hooks/use-overview-layout'
-import { useUI, type ViewMode } from '@/stores/ui-store'
+import { useUI } from '@/stores/ui-store'
 import { type ApiSession } from '@/lib/api'
 import { SessionTile } from '@/components/session-tile'
 import { SessionRow } from '@/components/session-tile/session-row'
@@ -39,10 +36,8 @@ import {
 } from '@/components/session-tile/jump-index-context'
 import { TileSkeleton } from '@/components/session-tile/tile-skeleton'
 import { NewSessionSheet } from '@/components/session-tile/new-session-sheet'
-import { SortControl } from '@/components/session-tile/sort-control'
 import {
   OverviewDisplayMenu,
-  HideStoppedChip,
 } from '@/components/session-tile/overview-display-menu'
 import { GroupGrid } from '@/components/session-tile/group-grid'
 import { useNewGroupAction } from '@/stores/new-group-store'
@@ -57,10 +52,12 @@ import {
 } from '@/lib/overview-size'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useAttentionContext } from '@/hooks/use-attention'
+import { DisplayControls } from '@/components/roster/display-controls'
 import { AttentionRollup } from '@/components/roster/attention-rollup'
 import {
   hasImplicitUngrouped,
   newGroupId,
+  bucketSessionsByPreset,
   reconcileCustomLayout,
   smartSort,
   nameSort,
@@ -124,7 +121,7 @@ export function Overview() {
     () => splitTeamLeads(allSessions, teams).nonLeadSessions,
     [allSessions, teams],
   )
-  const { layout, setMode, setLayout } = useOverviewLayout()
+  const { layout, setMode, setLayout, setGroupBy } = useOverviewLayout()
   // Fase A5 — prune the renderer pin map against the FULL sessions list
   // (`allSessions`, deliberately not `sessions`/`filtered`: a team lead, a
   // stopped row or a hide-stopped-hidden row is still alive and must keep its
@@ -213,13 +210,34 @@ export function Overview() {
     return () => window.removeEventListener('keydown', onKey)
   }, [overviewSize, setOverviewSize, sizeMax])
 
-  // Filter once.
+  // The tag filter (fase B2 T9). Deliberately NOT persisted: a filter that
+  // survives a reload hides sessions and reads as data loss. It is a lens you
+  // pick up, not a preference.
+  const [activeTags, setActiveTags] = React.useState<string[]>([])
+  const toggleTag = React.useCallback((tag: string) => {
+    setActiveTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    )
+  }, [])
+  // Every tag on the roster, sorted — the filter's option list. Empty ⇒ the
+  // control is not rendered at all.
+  const allTags = React.useMemo(() => {
+    const set = new Set<string>()
+    for (const s of sessions) for (const t of s.tags ?? []) set.add(t)
+    return [...set].sort()
+  }, [sessions])
+
+  // Filter once. Tags are ANDed with the search, ORed among themselves: picking
+  // two tags shows sessions carrying EITHER, which is what a chip row reads as.
   const filtered = React.useMemo(
     () =>
       sessions.filter(
-        (s) => matches(s, query) && (!hideStopped || s.status !== 'stopped'),
+        (s) =>
+          matches(s, query) &&
+          (!hideStopped || s.status !== 'stopped') &&
+          (activeTags.length === 0 || (s.tags ?? []).some((t) => activeTags.includes(t))),
       ),
-    [sessions, query, hideStopped],
+    [sessions, query, hideStopped, activeTags],
   )
 
   // Reconcile the persisted custom order with the LIVE session names.
@@ -452,6 +470,23 @@ export function Overview() {
     return filtered
   }, [filtered, layout.mode])
 
+  // The DERIVED group-by preset (fase B2 T9). One section (the historical flat
+  // render) when `groupBy === 'none'`; otherwise one per bucket, each sorted by
+  // the SAME global sort mode — a preset decides the split, never the order.
+  const presetSections = React.useMemo(() => {
+    const buckets = bucketSessionsByPreset(layout.groupBy, flatSorted)
+    if (layout.groupBy === 'none') return buckets
+    return buckets.map((b) => ({
+      ...b,
+      sessions:
+        layout.mode === 'smart'
+          ? smartSort(b.sessions)
+          : layout.mode === 'alpha'
+            ? nameSort(b.sessions)
+            : b.sessions,
+    }))
+  }, [flatSorted, layout.groupBy, layout.mode])
+
   // The body shows a placeholder (skeleton / unreachable / empty / no-match)
   // rather than a real grid in these cases. `showGrid` drives the bottom
   // "New group" affordance so it only appears under an actual grid — never
@@ -622,30 +657,30 @@ export function Overview() {
             onHideStopped={setHideStopped}
           />
         ) : (
-          <>
-            <ViewToggle value={viewMode} onChange={setViewMode} />
-
-            <SortControl value={layout.mode} onChange={setMode} />
-
-            {/* The density control only applies to the TILE view, so switching
-                to list used to REMOVE it and shunt every control to its right
-                a whole chip-width sideways. `.sm-swap` (B1 T2.3) puts both
-                states in one grid cell: the control is always in the box, and
-                the swap is an opacity change that cannot move a pixel of
-                layout. `data-hidden` also drops pointer events, so the
-                invisible state is not clickable. */}
-            <div className="sm-swap">
-              <div data-hidden={viewMode === 'tile' ? undefined : ''}>
-                <OverviewSizeControl
-                  value={overviewSize}
-                  onChange={setOverviewSize}
-                  max={sizeMax}
-                />
-              </div>
-            </div>
-
-            <HideStoppedChip value={hideStopped} onChange={setHideStopped} />
-          </>
+          /* ONE canonical display surface (fase B2 T9). The desktop half used
+             to be four separate chips (view · sort · size · hide-stopped) that
+             could not reach the group-by preset, the tag filter or A5's
+             renderer default — so the two halves had already drifted. Both are
+             now renderings of the same option model (`lib/sort-modes.ts`); the
+             mobile sheet keeps its own container because a bottom sheet is the
+             right shape on a phone. */
+          <DisplayControls
+            viewMode={viewMode}
+            onViewMode={setViewMode}
+            sortMode={layout.mode}
+            onSortMode={setMode}
+            groupBy={layout.groupBy}
+            onGroupBy={setGroupBy}
+            size={overviewSize}
+            onSize={setOverviewSize}
+            sizeMax={sizeMax}
+            sizeApplies={viewMode === 'tile'}
+            hideStopped={hideStopped}
+            onHideStopped={setHideStopped}
+            tags={allTags}
+            activeTags={activeTags}
+            onToggleTag={toggleTag}
+          />
         )}
 
         <Button
@@ -762,35 +797,48 @@ export function Overview() {
             addingGroupAt={addingGroup?.at ?? null}
             renderInlineAddGroupInput={renderInlineAddGroupInput}
           />
-        ) : viewMode === 'tile' ? (
-          <LayoutGroup>
-            <div className={tileGridClass}>
-              {flatSorted.map((s, i) => (
-                <motion.div
-                  key={s.name}
-                  data-tour={i === 0 ? 'tile' : undefined}
-                  layout={!reduce}
-                  layoutId={`session-${s.name}`}
-                  transition={springs.smooth}
-                >
-                  <SessionTile session={toTileSession(s)} sizeTier={overviewSize} />
-                </motion.div>
-              ))}
-            </div>
-          </LayoutGroup>
         ) : (
+          /* The flat body, optionally split by a DERIVED group-by preset (fase
+             B2 T9). `presetSections` is one section when `groupBy === 'none'`,
+             which is the historical render — so the preset is additive and the
+             default path is unchanged. A preset never writes `custom`: it is a
+             read over the sessions' own fields, so switching to one and back
+             cannot destroy a hand-dragged order. */
           <LayoutGroup>
-            <div className="flex flex-col gap-1.5">
-              {flatSorted.map((s, i) => (
-                <motion.div
-                  key={s.name}
-                  data-tour={i === 0 ? 'tile' : undefined}
-                  layout={!reduce}
-                  layoutId={`session-${s.name}`}
-                  transition={springs.smooth}
-                >
-                  <SessionRow session={toTileSession(s)} sizeTier={overviewSize} />
-                </motion.div>
+            <div className="flex flex-col gap-5">
+              {presetSections.map((section) => (
+                <div key={section.groupId || '__all__'} className="flex flex-col gap-2">
+                  {!section.isImplicit && (
+                    <div
+                      data-vr="preset-group-header"
+                      className="flex items-baseline gap-2 px-1"
+                    >
+                      <h2 className="text-sm font-semibold tracking-tight">
+                        {section.groupName}
+                      </h2>
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        {section.sessions.length}
+                      </span>
+                    </div>
+                  )}
+                  <div className={viewMode === 'tile' ? tileGridClass : 'flex flex-col gap-1.5'}>
+                    {section.sessions.map((s, i) => (
+                      <motion.div
+                        key={s.name}
+                        data-tour={section === presetSections[0] && i === 0 ? 'tile' : undefined}
+                        layout={!reduce}
+                        layoutId={`session-${s.name}`}
+                        transition={springs.smooth}
+                      >
+                        {viewMode === 'tile' ? (
+                          <SessionTile session={toTileSession(s)} sizeTier={overviewSize} />
+                        ) : (
+                          <SessionRow session={toTileSession(s)} sizeTier={overviewSize} />
+                        )}
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </LayoutGroup>
@@ -929,100 +977,4 @@ function useDevMockSeed() {
   }, [qc])
 }
 
-function OverviewSizeControl({
-  value,
-  onChange,
-  max = MAX_OVERVIEW_SIZE,
-}: {
-  value: OverviewSize
-  onChange: (s: OverviewSize) => void
-  max?: OverviewSize
-}) {
-  const cfg = getOverviewSizeConfig(value)
-  const atMin = value <= MIN_OVERVIEW_SIZE
-  const atMax = value >= max
-  const dec = () => {
-    if (!atMin) onChange((value - 1) as OverviewSize)
-  }
-  const inc = () => {
-    if (!atMax) onChange((value + 1) as OverviewSize)
-  }
-  return (
-    <div
-      role="group"
-      aria-label="Overview density"
-      className="flex h-9 items-center gap-1 rounded-lg bg-muted p-1"
-    >
-      <button
-        type="button"
-        aria-label="Smaller"
-        title="Smaller"
-        onClick={dec}
-        disabled={atMin}
-        className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted-foreground"
-      >
-        <Minus className="relative size-4" />
-      </button>
-      <span
-        aria-hidden
-        className="select-none px-1 text-[11px] font-medium tabular-nums text-muted-foreground"
-        title={`Density: ${cfg.label}`}
-      >
-        {value}
-      </span>
-      <button
-        type="button"
-        aria-label="Larger"
-        title="Larger"
-        onClick={inc}
-        disabled={atMax}
-        className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted-foreground"
-      >
-        <Plus className="relative size-4" />
-      </button>
-    </div>
-  )
-}
 
-function ViewToggle({
-  value,
-  onChange,
-}: {
-  value: ViewMode
-  onChange: (v: ViewMode) => void
-}) {
-  const items: { mode: ViewMode; icon: typeof LayoutGrid; label: string }[] = [
-    { mode: 'tile', icon: LayoutGrid, label: 'Tile view' },
-    { mode: 'list', icon: List, label: 'List view' },
-  ]
-  return (
-    <div
-      role="group"
-      aria-label="View mode"
-      className="flex h-9 items-center gap-1 rounded-lg bg-muted p-1"
-    >
-      {items.map(({ mode, icon: Icon, label }) => {
-        const active = value === mode
-        return (
-          <button
-            key={mode}
-            type="button"
-            aria-label={label}
-            aria-pressed={active}
-            onClick={() => onChange(mode)}
-            className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground aria-pressed:text-foreground"
-          >
-            {active && (
-              <motion.span
-                layoutId="view-toggle-active"
-                transition={springs.snappy}
-                className="absolute inset-0 rounded-md bg-card shadow-sm"
-              />
-            )}
-            <Icon className="relative size-4" />
-          </button>
-        )
-      })}
-    </div>
-  )
-}

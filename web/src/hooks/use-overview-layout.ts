@@ -22,9 +22,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { settingsApi } from '@/lib/api'
 import {
   DEFAULT_LAYOUT,
+  migrateLegacyGroupSort,
   OVERVIEW_LAYOUT_PREF_KEY,
   parseLayout,
   serializeLayout,
+  withGroupSortMode,
+  withoutGroupSortMode,
+  type GroupBy,
+  type GroupSortMode,
   type OverviewLayout,
   type SortMode,
 } from '@/lib/overview-layout'
@@ -36,6 +41,12 @@ export interface UseOverviewLayoutResult {
   isLoading: boolean
   setMode: (mode: SortMode) => void
   setLayout: (next: OverviewLayout) => void
+  /** Per-group sort (fase B2 T9 — this used to be localStorage). */
+  setGroupSort: (groupId: string, mode: GroupSortMode) => void
+  /** Drop a deleted group's sort mode so the blob does not grow forever. */
+  clearGroupSort: (groupId: string) => void
+  /** The derived grouping preset. */
+  setGroupBy: (groupBy: GroupBy) => void
 }
 
 export function useOverviewLayout(): UseOverviewLayoutResult {
@@ -89,10 +100,48 @@ export function useOverviewLayout(): UseOverviewLayoutResult {
     [mutate],
   )
 
+  const setGroupSort = React.useCallback(
+    (groupId: string, mode: GroupSortMode) => {
+      mutate.mutate(withGroupSortMode(layout, groupId, mode))
+    },
+    [layout, mutate],
+  )
+
+  const clearGroupSort = React.useCallback(
+    (groupId: string) => {
+      const next = withoutGroupSortMode(layout, groupId)
+      if (next !== layout) mutate.mutate(next)
+    },
+    [layout, mutate],
+  )
+
+  const setGroupBy = React.useCallback(
+    (groupBy: GroupBy) => {
+      mutate.mutate({ ...layout, groupBy })
+    },
+    [layout, mutate],
+  )
+
+  // ONE-TIME localStorage → blob migration (fase B2 T9). Runs once the pref has
+  // actually loaded, so a slow first fetch cannot fold values into DEFAULT_LAYOUT
+  // and PUT a blob that discards the user's real one. `migrateLegacyGroupSort`
+  // returns null when there is nothing to move, so a user who never set a
+  // per-group sort never triggers a write.
+  const migrated = React.useRef(false)
+  React.useEffect(() => {
+    if (migrated.current || query.isLoading || !query.data) return
+    migrated.current = true
+    const next = migrateLegacyGroupSort(query.data)
+    if (next) mutate.mutate(next)
+  }, [query.isLoading, query.data, mutate])
+
   return {
     layout,
     isLoading: query.isLoading,
     setMode,
     setLayout,
+    setGroupSort,
+    clearGroupSort,
+    setGroupBy,
   }
 }

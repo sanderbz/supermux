@@ -22,8 +22,7 @@ import * as React from 'react'
 import { useOverviewLayout } from '@/hooks/use-overview-layout'
 import {
   reconcileCustomLayout,
-  writeGroupSortMode as writeOverviewGroupSortMode,
-  readGroupSortMode as readOverviewGroupSortMode,
+  groupSortMode,
   type GroupSortMode,
   type LayoutItem,
 } from '@/lib/overview-layout'
@@ -64,9 +63,10 @@ export function useGroupedStrip(
   sessions: ReadonlyArray<TileSession>,
   teams: ReadonlyArray<Team>,
 ): UseGroupedStripResult {
-  // The OVERVIEW's layout is the GROUP MEMBERSHIP + GROUP ORDER source.
-  // We never write to it from the strip; we only read.
-  const { layout } = useOverviewLayout()
+  // The OVERVIEW's layout is the GROUP MEMBERSHIP + GROUP ORDER source — and,
+  // since fase B2 T9, the per-group SORT source too (it moved off localStorage
+  // into this blob). The strip still owns no persistence of its own.
+  const { layout, setGroupSort } = useOverviewLayout()
 
   const reconciledLayout = React.useMemo<ReadonlyArray<LayoutItem>>(
     () =>
@@ -94,28 +94,18 @@ export function useGroupedStrip(
   const hideStopped = useUI((s) => s.hideStopped)
   const setHideStopped = useUI((s) => s.setHideStopped)
 
-  // ── Per-group sort writes (as-overview only) ───────────────────────────
-  // A tick that bumps each time we write a per-group sort row, so the
-  // useMemo below re-resolves the affected group's mode from the overview's
-  // localStorage on the next render. Cheaper than subscribing to the
-  // storage event and works fine for the single-tab case.
-  const [resolveTick, setResolveTick] = React.useState(0)
-  const setGroupSortMode = React.useCallback(
-    (groupId: string, mode: GroupSortMode) => {
-      writeOverviewGroupSortMode(groupId, mode)
-      setResolveTick((n) => n + 1)
-    },
-    [],
-  )
+  // ── Per-group sort — the OVERVIEW's store, which is now the server blob ──
+  // (fase B2 T9). The strip has never had its own persistence: its 4-mode chip
+  // writes into the overview's namespace so a group sorted here is sorted there.
+  // That namespace moved from localStorage to `overview_layout.groupSort`, so
+  // this hook moved with it — and the write/read tick that existed only to
+  // force a re-read of localStorage is gone: the blob is TanStack state, so a
+  // write re-renders every consumer by itself.
+  const setGroupSortMode = setGroupSort
 
-  // Resolve a group's sort mode straight from the overview's persistence
-  // (no strip-side override; the chip writes to the overview's namespace).
   const resolveSortMode = React.useCallback(
-    (groupId: string): GroupSortMode => readOverviewGroupSortMode(groupId),
-    // resolveTick keeps a stable closure but forces the useMemo below to
-    // re-run after a write (this callback otherwise reads ls at call time).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    (groupId: string): GroupSortMode => groupSortMode(layout, groupId),
+    [layout],
   )
 
   // ── Per-group collapse ─────────────────────────────────────────────────
@@ -166,9 +156,9 @@ export function useGroupedStrip(
         viewMode,
         hideStopped,
       }),
-    // resolveTick is part of the dep set so a per-group chip flip re-runs
-    // the build (its kernel inputs don't otherwise change — only ls did).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // The tick this dep set used to carry is gone (fase B2 T9): the per-group
+    // sort lives in the pref blob now, so `resolveSortMode` changes identity
+    // when the blob does and the memo re-runs on its own.
     [
       sessions,
       teams,
@@ -176,7 +166,6 @@ export function useGroupedStrip(
       resolveSortMode,
       viewMode,
       hideStopped,
-      resolveTick,
     ],
   )
 

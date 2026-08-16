@@ -22,15 +22,33 @@
 //   discoverable instead of disappearing into a group at the bottom. Sessions
 //   in `custom` but missing from the live list are dropped on read.
 //
-// PER-GROUP SORT (localStorage, NOT server). Each user-created group has its
-// own sort mode (Smart, Custom, Name, Status, Recent, Age). The default for a
-// fresh user-created group is `custom` (the user-positioned order they just
-// dragged into); a "system" group like the implicit Ungrouped bucket defaults
-// to `smart`. Persisted in localStorage under
-// `supermux:overview:group-sort:<groupId>` so toggling between groups feels
-// instant and per-device — revisit only if the user explicitly asks for
-// cross-device sync (most M&A research consistently flags cross-device group
-// sort as low-value).
+// PER-GROUP SORT (server-persisted, in THIS blob — fase B2 T9). Each
+// user-created group has its own sort mode (Smart, Custom, Name, Status,
+// Recent, Age). The default for a fresh user-created group is `custom` (the
+// user-positioned order they just dragged into); a "system" group like the
+// implicit Ungrouped bucket defaults to `smart`.
+//
+// THIS WAS localStorage, DELIBERATELY, AND THE REVERSAL IS DELIBERATE TOO.
+// The original note here argued that cross-device group sort is low-value and
+// said "revisit only if the user explicitly asks". The user asked (master plan
+// §12.6b). Leaving the old paragraph in place would make this change read as an
+// accident, so it is rewritten rather than deleted.
+//
+// It rides `overview_layout` — the blob that already exists, is already
+// allowlisted server-side, and already has an SSE reconcile path — rather than a
+// new pref key. A new key would need FOUR edits (the server allowlist, a key
+// constant + parse/serialize, a hook cloned from `use-overview-layout.ts`, and a
+// dispatch branch in `use-sessions.ts` so peer tabs reconcile) and would add a
+// second write race against the same UI. `server/src/prefs.rs` is UNCHANGED.
+//
+// Existing `supermux:overview:group-sort:<groupId>` values are FOLDED IN on
+// first read and the keys removed (`migrateLegacyGroupSort`) — migrated, never
+// dropped, so nobody loses a setting they made yesterday.
+//
+// GROUP-BY PRESETS (`groupBy`, also on the blob). `none` (the historical
+// behaviour) plus four DERIVED groupings: dir, provider, host, status. Derived
+// means exactly that: a preset never writes `custom`, so switching to a preset
+// and back cannot destroy a hand-dragged order.
 //
 // The single source of truth for global state is the server pref — the hook
 // reads it ONCE via TanStack Query, and the SSE `prefs` event invalidates the
@@ -71,15 +89,39 @@ export type LayoutItem =
   | { type: 'group'; id: string; name: string }
   | { type: 'session'; name: string }
 
+/** The derived group-by presets. `none` = the historical behaviour (groups
+ *  exist only in `custom` mode, from the user's own drag). The other four bucket
+ *  sessions by a field they already carry — and NEVER write `custom`. */
+export type GroupBy = 'none' | 'dir' | 'provider' | 'host' | 'status'
+
+export const GROUP_BY_MODES: GroupBy[] = ['none', 'dir', 'provider', 'host', 'status']
+
+export const DEFAULT_GROUP_BY: GroupBy = 'none'
+
+export const GROUP_BY_LABEL: Record<GroupBy, string> = {
+  none: 'No grouping',
+  dir: 'Folder',
+  provider: 'Provider',
+  host: 'Host',
+  status: 'Status',
+}
+
 export interface OverviewLayout {
   mode: SortMode
   /** Ordered flat list — see module doc. Empty until the user enters custom mode. */
   custom: LayoutItem[]
+  /** Per-group sort, keyed by group id (fase B2 T9 — was localStorage). Absent
+   *  keys fall back to `defaultGroupSortMode(groupId)`. */
+  groupSort: Record<string, GroupSortMode>
+  /** The derived grouping preset (fase B2 T9). */
+  groupBy: GroupBy
 }
 
 export const DEFAULT_LAYOUT: OverviewLayout = {
   mode: DEFAULT_SORT_MODE,
   custom: [],
+  groupSort: {},
+  groupBy: DEFAULT_GROUP_BY,
 }
 
 /** Pref key in the server's `prefs` table (allowlisted server-side). */
@@ -117,7 +159,23 @@ export function parseLayout(raw: string | null | undefined): OverviewLayout {
       custom.push({ type: 'session', name: it.name })
     }
   }
-  return { mode, custom }
+  // Per-group sort: an object of known modes only. A key with a junk value is
+  // dropped rather than defaulting the whole blob — one bad group must not cost
+  // the user their other groups' settings.
+  const groupSort: Record<string, GroupSortMode> = {}
+  const gs = o.groupSort
+  if (gs && typeof gs === 'object' && !Array.isArray(gs)) {
+    for (const [id, v] of Object.entries(gs as Record<string, unknown>)) {
+      if (typeof v === 'string' && (GROUP_SORT_MODES as string[]).includes(v)) {
+        groupSort[id] = v as GroupSortMode
+      }
+    }
+  }
+  const groupBy: GroupBy = GROUP_BY_MODES.includes(o.groupBy as GroupBy)
+    ? (o.groupBy as GroupBy)
+    : DEFAULT_GROUP_BY
+
+  return { mode, custom, groupSort, groupBy }
 }
 
 export function serializeLayout(layout: OverviewLayout): string {
@@ -177,6 +235,80 @@ export function reconcileCustomLayout(
     if (!seen.has(name)) missing.push({ type: 'session', name })
   }
   return [...missing, ...filtered]
+}
+
+/**
+ * The DERIVED groupings (fase B2 T9).
+ *
+ * `bucketSessionsByPreset` buckets sessions by a field they already carry. It
+ * is a pure read: it produces sections, it never touches `custom`, and it has no
+ * write path at all — which is the property that makes "switch to a preset and
+ * back" safe. A hand-dragged order cannot be destroyed by something that cannot
+ * write.
+ *
+ * Group ids are `preset:<groupBy>:<value>` — stable across renders (so per-group
+ * sort and collapse state stick to a preset bucket the way they stick to a real
+ * group) and impossible to collide with `newGroupId()`'s `g_…` ids.
+ */
+export function presetGroupId(groupBy: GroupBy, value: string): string {
+  return `preset:${groupBy}:${value}`
+}
+
+/** The bucket a session falls in under a preset, plus its display name. */
+function presetKeyFor(
+  groupBy: GroupBy,
+  s: { dir?: string; provider?: string; host_id?: number | null; status?: string },
+): { key: string; label: string } {
+  switch (groupBy) {
+    case 'dir': {
+      const dir = (s.dir ?? '').replace(/\/+$/, '')
+      // The LAST path segment: a column of absolute paths is unreadable, and the
+      // folder name is what the user calls the project.
+      const leaf = dir.split('/').filter(Boolean).pop() ?? ''
+      return { key: dir || '(no folder)', label: leaf || '(no folder)' }
+    }
+    case 'provider': {
+      const p = (s.provider ?? '').trim()
+      return { key: p || 'unknown', label: p || 'Unknown' }
+    }
+    case 'host': {
+      // `null`/absent = LOCAL, the historical default for the whole fleet.
+      const id = s.host_id ?? null
+      return id === null
+        ? { key: 'local', label: 'Local' }
+        : { key: `host:${id}`, label: `Host ${id}` }
+    }
+    case 'status': {
+      const st = (s.status ?? '').trim()
+      return { key: st || 'unknown', label: st ? st[0].toUpperCase() + st.slice(1) : 'Unknown' }
+    }
+    default:
+      return { key: '', label: '' }
+  }
+}
+
+export function bucketSessionsByPreset<
+  S extends { name: string; dir?: string; provider?: string; host_id?: number | null; status?: string },
+>(groupBy: GroupBy, sessions: readonly S[]): SessionBucket<S>[] {
+  if (groupBy === 'none') {
+    return [{ groupId: '', groupName: '', isImplicit: true, sessions: [...sessions] }]
+  }
+  const buckets = new Map<string, SessionBucket<S>>()
+  for (const s of sessions) {
+    const { key, label } = presetKeyFor(groupBy, s)
+    const groupId = presetGroupId(groupBy, key)
+    let bucket = buckets.get(groupId)
+    if (!bucket) {
+      bucket = { groupId, groupName: label, isImplicit: false, sessions: [] }
+      buckets.set(groupId, bucket)
+    }
+    bucket.sessions.push(s)
+  }
+  // Alphabetical by label so the section order is stable between renders and
+  // does not jump when a session changes status.
+  return [...buckets.values()].sort((a, b) =>
+    a.groupName < b.groupName ? -1 : a.groupName > b.groupName ? 1 : 0,
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +498,103 @@ export function sortSessionsByMode(
   }
 }
 
-/** localStorage key for a group's per-group sort mode. */
+/* ── per-group sort ───────────────────────────────────────────────────────
+ *
+ * The blob is the source of truth (fase B2 T9). The three localStorage helpers
+ * below survive as the LEGACY side of the one-time migration and nothing else:
+ * `migrateLegacyGroupSort` reads them once, folds them into the blob, and
+ * removes the keys.
+ */
+
+/** Read a group's sort mode out of the blob. */
+export function groupSortMode(layout: OverviewLayout, groupId: string): GroupSortMode {
+  return layout.groupSort[groupId] ?? defaultGroupSortMode(groupId)
+}
+
+/** The blob with one group's sort mode set — pure, so the caller owns the write. */
+export function withGroupSortMode(
+  layout: OverviewLayout,
+  groupId: string,
+  mode: GroupSortMode,
+): OverviewLayout {
+  return { ...layout, groupSort: { ...layout.groupSort, [groupId]: mode } }
+}
+
+/** The blob with a deleted group's sort mode dropped. Group ids are random per
+ *  creation, so without this a heavy user accumulates one dead key per deleted
+ *  group — forever, and now on the SERVER rather than in their own browser. */
+export function withoutGroupSortMode(
+  layout: OverviewLayout,
+  groupId: string,
+): OverviewLayout {
+  if (!(groupId in layout.groupSort)) return layout
+  const groupSort = { ...layout.groupSort }
+  delete groupSort[groupId]
+  return { ...layout, groupSort }
+}
+
+/** A minimal storage shape, so the migration is testable without a DOM. */
+export interface KeyValueStore {
+  length: number
+  key(i: number): string | null
+  getItem(k: string): string | null
+  removeItem(k: string): void
+}
+
+/**
+ * ONE-TIME migration: fold every `supermux:overview:group-sort:<groupId>` value
+ * into the blob and delete the keys.
+ *
+ * Returns the migrated layout, or `null` when there was nothing to migrate — so
+ * the caller writes the pref only when something actually moved, and a user who
+ * never set a per-group sort never triggers a PUT.
+ *
+ * A value already present in the blob WINS: the blob is the newer, shared truth,
+ * and a stale localStorage row from another tab must not overwrite it. The keys
+ * are removed either way — leaving them would re-run this on every mount.
+ */
+export function migrateLegacyGroupSort(
+  layout: OverviewLayout,
+  store: KeyValueStore | undefined = typeof window === 'undefined'
+    ? undefined
+    : window.localStorage,
+): OverviewLayout | null {
+  if (!store) return null
+  const prefix = groupSortKey('')
+  const found: [string, GroupSortMode][] = []
+  const keys: string[] = []
+  try {
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i)
+      if (!key || !key.startsWith(prefix)) continue
+      keys.push(key)
+      const value = store.getItem(key)
+      if (value && (GROUP_SORT_MODES as string[]).includes(value)) {
+        found.push([key.slice(prefix.length), value as GroupSortMode])
+      }
+    }
+  } catch {
+    return null // private mode / disabled storage — nothing to migrate
+  }
+  if (keys.length === 0) return null
+
+  const groupSort = { ...layout.groupSort }
+  let changed = false
+  for (const [groupId, mode] of found) {
+    if (groupId in groupSort) continue // the blob already knows better
+    groupSort[groupId] = mode
+    changed = true
+  }
+  try {
+    for (const key of keys) store.removeItem(key)
+  } catch {
+    /* best effort — a key left behind only costs one more no-op pass */
+  }
+  return changed ? { ...layout, groupSort } : null
+}
+
+/** localStorage key for a group's per-group sort mode. LEGACY — read once by
+ *  `migrateLegacyGroupSort`, then gone. */
 export function groupSortKey(groupId: string): string {
   return `supermux:overview:group-sort:${groupId}`
 }

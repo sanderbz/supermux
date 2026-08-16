@@ -92,17 +92,16 @@ import {
   useCollapsibleGroups,
 } from '@/lib/collapsible-group'
 import { useSessionActions } from '@/hooks/use-session-actions'
+import { useOverviewLayout } from '@/hooks/use-overview-layout'
 import { SessionInfoPanel } from '@/components/focus-mode/session-info-panel'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
 import {
   bucketSessionsByLayout,
   defaultGroupSortMode,
   hasImplicitUngrouped,
-  readGroupSortMode,
-  removeGroupSortMode,
+  groupSortMode,
   sortSessionsByMode,
   UNGROUPED_GROUP_ID,
-  writeGroupSortMode,
   type GroupSortMode,
   type LayoutItem,
 } from '@/lib/overview-layout'
@@ -272,60 +271,29 @@ function layoutFromSections(sections: ReadonlyArray<Section>): LayoutItem[] {
 }
 
 // ── Per-group sort modes — local hook that hydrates from localStorage and
-//    persists writes. Stored under `supermux:overview:group-sort:<id>`. ──
-
+/**
+ * Per-group sort, from the SERVER pref blob (fase B2 T9).
+ *
+ * This used to read and write `supermux:overview:group-sort:<groupId>` in
+ * localStorage. It now reads `overview_layout.groupSort` — the blob that already
+ * exists, is already allowlisted, and already reconciles across tabs through the
+ * SSE `prefs` event. `server/src/prefs.rs` is unchanged, and so is
+ * `use-sessions.ts`'s dispatch: no new key, no new race.
+ *
+ * The one-time migration of existing localStorage values lives in
+ * `useOverviewLayout` (`migrateLegacyGroupSort`), so a user's settings move with
+ * them instead of being silently reset.
+ */
 function useGroupSortModes(
   groupIds: ReadonlyArray<string>,
 ): [ReadonlyMap<string, GroupSortMode>, (id: string, mode: GroupSortMode) => void] {
-  // The state shape is a Map<groupId, GroupSortMode> so we can lookup O(1)
-  // while rendering. Lazy initial state: read all known ids once on mount.
-  const [modes, setModes] = React.useState<Map<string, GroupSortMode>>(() => {
+  const { layout, setGroupSort } = useOverviewLayout()
+  const modes = React.useMemo(() => {
     const m = new Map<string, GroupSortMode>()
-    for (const id of groupIds) m.set(id, readGroupSortMode(id))
+    for (const id of groupIds) m.set(id, groupSortMode(layout, id))
     return m
-  })
-
-  // When the set of group ids changes (group added / removed), pull the modes
-  // for the new ids from localStorage. Run as an effect (not in render) so we
-  // don't violate React state rules; the lookup is cheap. The setModes call
-  // here is conditional (only fires when ids actually changed → returns same
-  // ref otherwise) so it can't loop; the strict rule's blanket warning is a
-  // false positive for prop-reconciling effects.
-  React.useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setModes((prev) => {
-      let changed = false
-      const next = new Map(prev)
-      for (const id of groupIds) {
-        if (!next.has(id)) {
-          next.set(id, readGroupSortMode(id))
-          changed = true
-        }
-      }
-      // Drop modes for groups that no longer exist so the map doesn't grow.
-      const live = new Set(groupIds)
-      for (const id of next.keys()) {
-        if (!live.has(id)) {
-          next.delete(id)
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-  }, [groupIds])
-
-  const set = React.useCallback((id: string, mode: GroupSortMode) => {
-    setModes((prev) => {
-      const next = new Map(prev)
-      next.set(id, mode)
-      return next
-    })
-    // Persist via the shared helper — consolidate localStorage keying so
-    // every key flows through `groupSortKey()`.
-    writeGroupSortMode(id, mode)
-  }, [])
-
-  return [modes, set]
+  }, [groupIds, layout])
+  return [modes, setGroupSort]
 }
 
 // ── Live-region announcements (a11y mandate) ──────────────────────────────────
@@ -513,6 +481,10 @@ export function GroupGrid({
   }, [layoutItems, filteredSessions])
 
   const [groupSortModes, setGroupSortMode] = useGroupSortModes(groupIds)
+  // Deleting a group has to drop its sort mode too — the key now lives in the
+  // SERVER blob, so leaving dead entries there is worse than leaving them in
+  // one browser's localStorage was.
+  const { clearGroupSort } = useOverviewLayout()
 
   // ── Per-group COLLAPSE state ─────────────────────────────────────────────
   // Mirrors the focus-mode strip's collapse contract (chevron left of title,
@@ -1113,10 +1085,10 @@ export function GroupGrid({
                       onDelete={() => {
                         // Remove the group header; sessions inside it survive
                         // (the reconciler floats them into Ungrouped). Also
-                        // drop the per-group sort-mode + collapsed
-                        // localStorage rows so dead keys don't accumulate
-                        // (hygiene + the matching collapse-row cleanup).
-                        removeGroupSortMode(section.groupId)
+                        // drop the per-group sort mode (now a key in the SERVER
+                        // blob — fase B2 T9, so the hygiene matters more, not
+                        // less) and the collapsed localStorage row.
+                        clearGroupSort(section.groupId)
                         removeCollapsed('overview', section.groupId)
                         const next = layoutItems.filter(
                           (it) =>
