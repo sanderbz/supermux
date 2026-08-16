@@ -68,6 +68,10 @@ export interface ChatMarkdownContext {
   /** Absolute path → fetchable URL, injected exactly as `TranscriptItem` does
    *  it (the API client reaches `@/env`, which the unit runner cannot resolve). */
   rawUrl?: (path: string) => string
+  /** Go to a mentioned session (fase B4 T3.3). Injected, never a route: this
+   *  module renders inside a lazy chunk and must not learn about the router.
+   *  Absent → the chip is a `<span>`, exactly as in the non-markdown path. */
+  onOpenSession?: (slug: string) => void
 }
 
 const EMPTY_INDEX: ReadonlyMap<string, string> = new Map()
@@ -98,6 +102,9 @@ function withMentions(children: React.ReactNode, ctx: ChatMarkdownContext): Reac
           seed={segment.seed}
           pin={ctx.pinFor?.(segment.seed)}
           name={segment.label}
+          onClick={
+            ctx.onOpenSession ? () => ctx.onOpenSession?.(segment.seed) : undefined
+          }
         />
       ),
     )

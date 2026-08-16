@@ -274,6 +274,40 @@ renderer slices in `components/chat/` keep the data plane.
   literal, deliberately outside the `--status-*` family (it must survive at 7px
   on all seven pigments). Flagged in `metrics.ts` for owner review.
 
+### 6c.1 Entity-chip navigation vocabulary (B4)
+
+The transcript is a management log, so the named things in it are places, not
+decoration. One rule governs all of them:
+
+> **A chip with no destination is not a chip.** It renders as emphasis — a
+> `<span>` or a `<b>` — with the SAME geometry and no hover, no focus ring, no
+> tab stop. An affordance that promises a click and does nothing is worse than
+> no affordance, and on a long transcript it is also dozens of dead tab stops.
+
+| Entity | Chip form | Navigable today | Destination |
+|---|---|---|---|
+| **session** | `MentionChip` — the session's mark + its name in **its** pigment | ✅ | the focus route for that session; a no-op when it names the session you are already in |
+| **schedule** | `SystemEntity` with the `⏱` glyph | ✅ | the per-session **Schedules sheet**, scrolled to the row when the ledger knows its id, otherwise the list |
+| **board issue** | `SystemEntity` | ❌ | B2's issue surface |
+| **host** | `SystemEntity` | ❌ | no surface yet |
+| **PR** | `SystemEntity` | ❌ | no surface yet |
+| **subagent** | `SystemEntity` | ❌ | no surface yet |
+
+- **The mechanic is unchanged in both states**: `−1/−5/−1/−3` margins cancelling
+  `1/5/1/3` padding. That is what makes the sentence hold still when a chip
+  gains or loses a destination — asserted in
+  `tests/unit/chat-chip-navigation.test.tsx`, both variants, both primitives.
+- **What counts as a mention is not a navigation question.** `mentionSegments`
+  decides, from the known-sessions index — never a regex over arbitrary words,
+  so `patchwork` stays a word and a session never chips its own name inside its
+  own bubble. Navigation only decides what a click *does*.
+- **Destinations are injected, never routed for.** `onOpenSession` /
+  `onOpenSchedule` arrive as props from `chat-panel.tsx`, the one layer allowed
+  to reach the router. A primitive that imported `useNavigate` could not be
+  screenshot on the bench, and the lazy markdown chunk would grow a router.
+- **`⏱` is the one sanctioned glyph in UI copy** (a schedule has no identity
+  mark to hang), matching the scheduler's own chips.
+
 ## 6d. The shell — chrome, z-ladder, overlay vocabulary (B1)
 
 B0 gave the app a palette; B1 gives it a body. Three vocabularies, all declared

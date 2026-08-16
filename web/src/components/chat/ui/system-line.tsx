@@ -91,27 +91,64 @@ export interface MentionChipProps {
   /** Display name, when it differs from the seed. */
   name?: string
   size?: number
+  /** Omit and the chip is a `<span>`: same pixels, no affordance (fase B4 T3). */
   onClick?: () => void
   className?: string
 }
 
+/**
+ * The chip's own geometry, shared by both variants.
+ *
+ * ZERO LAYOUT COST is the whole mechanic (§14): the negative margins exactly
+ * cancel the padding, so the hover pill occupies no space and a sentence does
+ * not reflow when a chip gains a destination. That only holds if the
+ * interactive and non-interactive variants carry the SAME pair — hence one
+ * constant, and `chat-chip-navigation.test.tsx` asserting the two renders match.
+ */
+const CHIP_BOX =
+  'inline-flex items-center gap-[5px] align-[-3px] font-medium tracking-[-0.1px] whitespace-nowrap' +
+  ' my-[-1px] ml-[-3px] mr-[-5px] rounded-md py-px pl-[3px] pr-[5px]'
+
+/**
+ * A colleague, named in prose or in a system line.
+ *
+ * A CHIP WITH NO DESTINATION IS NOT A BUTTON (fase B4 T3.1). Before B4 this
+ * always rendered a `<button>`, which promised a click that did nothing and
+ * put a tab stop on every mention in a long transcript. Now the affordance
+ * follows the capability: `onClick` present → a real button with the 120 ms
+ * hover pill; absent → a `<span>` with identical metrics and no hover, which is
+ * what a bench render, a static test render, and a surface that has nowhere to
+ * navigate to all get.
+ */
 export function MentionChip({ seed, pin, name, size = MARK_SIZE.chip, onClick, className }: MentionChipProps) {
   const label = name ?? seed
+  const inner = (
+    <>
+      <SessionMark seed={seed} pin={pin} size={size} animate={false} label={null} />
+      {label}
+    </>
+  )
+  const style = accentInkVarsForSeed(seed, pin)
+  if (!onClick) {
+    return (
+      <span style={style} className={cn(ACCENT_INK_CLASS, CHIP_BOX, className)}>
+        {inner}
+      </span>
+    )
+  }
   return (
     <button
       type="button"
       onClick={onClick}
-      style={accentInkVarsForSeed(seed, pin)}
+      style={style}
       className={cn(
         ACCENT_INK_CLASS,
-        'inline-flex items-center gap-[5px] align-[-3px] font-medium tracking-[-0.1px] whitespace-nowrap',
-        'my-[-1px] ml-[-3px] mr-[-5px] rounded-md py-px pl-[3px] pr-[5px]',
+        CHIP_BOX,
         'transition-[background-color] duration-[120ms] hover:bg-fill-soft',
         className,
       )}
     >
-      <SessionMark seed={seed} pin={pin} size={size} animate={false} label={null} />
-      {label}
+      {inner}
     </button>
   )
 }

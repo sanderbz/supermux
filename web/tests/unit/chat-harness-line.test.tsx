@@ -6,13 +6,16 @@
  * a screenshot could never prove: that the entity in the sentence is wired to
  * somewhere.
  *
- * Why the tree is walked instead of clicked: `MentionChip` renders a `<button>`
- * unconditionally, so asserting the tag proves nothing at all — a chip with no
- * handler renders exactly the same markup as one that navigates. There is no
- * DOM in this runner (every unit test here is `renderToStaticMarkup`), so the
- * proof is the `onClick` prop React itself would call: found on the element,
- * invoked, and the callback observed. Adding a DOM library to click a button
- * would buy less certainty for a dependency.
+ * Why the tree is walked instead of clicked: there is no DOM in this runner
+ * (every unit test here is `renderToStaticMarkup`), so the proof is the
+ * `onClick` prop React itself would call — found on the element, invoked, and
+ * the callback observed. Adding a DOM library to click a button would buy less
+ * certainty for a dependency.
+ *
+ * B4 T3 gave the chip a second, cheaper tell: with no handler it renders a
+ * `<span>` rather than a `<button>`, so the affordance follows the capability.
+ * That half lives in `chat-chip-navigation.test.tsx` along with the schedule
+ * chip's destination and the zero-layout-cost invariant.
  */
 import { describe, expect, test } from 'bun:test'
 import type { ReactElement, ReactNode } from 'react'

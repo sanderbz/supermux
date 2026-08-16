@@ -86,6 +86,35 @@ describe('coverage: every state the surface can be in', () => {
     expect(named).toBeDefined()
   })
 
+  test('harness carries one ledger row for EVERY sentence HarnessLine can say', () => {
+    // Four surfaced actions, four sentences — and the failed fire, which is the
+    // only one with a tone of its own. A bench state missing one of them is a
+    // screenshot that cannot review the thing it is named after.
+    const s = byId.get('harness')!
+    const actions = (s.events ?? []).map((e) => e.action)
+    expect(actions).toEqual([
+      'session.delegate',
+      'session.rename',
+      'schedule.create',
+      'schedule.run',
+    ])
+    expect((s.events ?? []).some((e) => e.detail.status === 'error')).toBe(true)
+    // Every chip in those sentences has to be able to NAME something: a
+    // delegation with no target, or a schedule with no title, renders a
+    // sentence with nothing in it.
+    for (const e of s.events ?? []) {
+      if (e.action === 'session.delegate') expect(e.target.length).toBeGreaterThan(0)
+      if (e.action.startsWith('schedule.')) {
+        expect(String(e.detail.title ?? '').length).toBeGreaterThan(0)
+        expect(e.target).toMatch(/^SCHED-/)
+      }
+    }
+    // The rows have to be INSIDE the transcript's window, or the log renders
+    // above the conversation instead of inside it.
+    const oldest = Math.min(...s.entries.map((e) => e.ts))
+    for (const e of s.events ?? []) expect(e.ts).toBeGreaterThan(oldest)
+  })
+
   test('error is a failed run said calmly — the failure is in the outcome', () => {
     const s = byId.get('error')!
     expect(s.session.status).toBe('error')

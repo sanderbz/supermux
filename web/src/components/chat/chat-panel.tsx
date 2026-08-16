@@ -125,8 +125,14 @@ export default function ChatPanel({
   // panel — the data plane — is where the router is allowed to be reached.
   const navigate = useNavigate()
   const openSession = React.useCallback(
-    (slug: string) => navigate(`/focus/${encodeURIComponent(slug)}`),
-    [navigate],
+    (slug: string) => {
+      // Navigating to where you already are is a route morph that redraws the
+      // whole surface and loses the scroll position — for a click whose only
+      // honest answer is "you are looking at it" (fase B4 T3.2).
+      if (!slug || slug === name) return
+      navigate(`/focus/${encodeURIComponent(slug)}`)
+    },
+    [name, navigate],
   )
   // The wire labels `ChatItem` deliberately does not carry: the slash name of a
   // command, the teammate id of an arrival, the subject of a system event.

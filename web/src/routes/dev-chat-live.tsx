@@ -126,6 +126,11 @@ export default function DevChatLive() {
  * poll. No `rawUrl` on purpose: there is no server behind this page, so the
  * captured frame renders B0's honest warm placeholder instead of a broken image.
  */
+/** A destination that exists but goes nowhere — see the `onOpen*` props below.
+ *  Module-level so it is referentially stable and cannot break the transcript's
+ *  memo boundary (`transcript-item.tsx`'s doc). */
+const NOOP = () => {}
+
 function Surface({
   state,
   nowMs,
@@ -158,6 +163,13 @@ function Surface({
       labels={labels}
       mentions={MENTIONS}
       names={NAMES}
+      events={state.events}
+      // The chips are LIVE on the bench (fase B4 T3.6): a screenshot of an
+      // inert chip proves nothing about the interactive variant, and the two
+      // render different elements. The handlers go nowhere — this page has no
+      // router — but the affordance is the thing under review.
+      onOpenSession={NOOP}
+      onOpenSchedule={NOOP}
       nowMs={nowMs}
       turnStart={state.turnAgo != null ? nowMs - state.turnAgo * 1000 : null}
       overlay={state.overlay}

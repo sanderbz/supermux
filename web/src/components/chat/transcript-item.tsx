@@ -94,6 +94,25 @@ export interface TranscriptItemProps {
    * it and the chip is inert, which is what the bench and the tests render.
    */
   onOpenSession?: (slug: string) => void
+  /**
+   * Open the Schedules sheet for this session (fase B4 T8), scrolled to one
+   * schedule when the ledger row knows its id.
+   *
+   * A REF RATHER THAN A STRING because the two things the chip can know are not
+   * interchangeable: `target` is the schedule id on every row written since the
+   * spine, but rows written before it carry only a title, and a sheet handed a
+   * title cannot scroll to a row it has no id for. Passing both lets the
+   * receiver degrade to "open the list" instead of guessing which one it got.
+   * Omit and the schedule entity is plain emphasis, never a dead affordance.
+   */
+  onOpenSchedule?: (ref: ScheduleRef) => void
+}
+
+/** What a `⏱` chip knows about the schedule it names. Both fields optional —
+ *  see `TranscriptItemProps.onOpenSchedule`. */
+export interface ScheduleRef {
+  id?: string
+  title?: string
 }
 
 const EMPTY_INDEX: ReadonlyMap<string, string> = new Map()
@@ -137,6 +156,7 @@ export const TranscriptItem = React.memo(function TranscriptItem(
         names={props.names}
         pinFor={props.pinFor}
         onOpenSession={props.onOpenSession}
+        onOpenSchedule={props.onOpenSchedule}
       />
     )
   }
@@ -239,6 +259,7 @@ function AgentRow({
           pinFor={rest.pinFor}
           surface={rest.surface}
           rawUrl={rest.rawUrl}
+          onOpenSession={rest.onOpenSession}
         />
         {item.truncated && <ClippedMarker />}
       </Bubble>
@@ -317,6 +338,7 @@ function TeammateRow({
             pinFor={rest.pinFor}
             surface={rest.surface}
             rawUrl={rest.rawUrl}
+            onOpenSession={rest.onOpenSession}
           />
           {item.truncated && <ClippedMarker />}
         </Bubble>
@@ -374,6 +396,7 @@ function ScheduleRow({
             pinFor={rest.pinFor}
             surface={rest.surface}
             rawUrl={rest.rawUrl}
+            onOpenSession={rest.onOpenSession}
           />
           {item.truncated && <ClippedMarker />}
         </Bubble>
@@ -424,6 +447,7 @@ export interface HarnessLineProps {
   names?: ReadonlyMap<string, string>
   pinFor?: (seed: string) => MarkPin | undefined
   onOpenSession?: (slug: string) => void
+  onOpenSchedule?: (ref: ScheduleRef) => void
 }
 
 /**
@@ -440,7 +464,7 @@ export interface HarnessLineProps {
  * JSON. `⏱` is the one sanctioned glyph in UI copy, and it is here for the same
  * reason the scheduler's own chips carry it — a schedule has no identity mark.
  */
-export function HarnessLine({ ev, names, pinFor, onOpenSession }: HarnessLineProps) {
+export function HarnessLine({ ev, names, pinFor, onOpenSession, onOpenSchedule }: HarnessLineProps) {
   if (ev.action === 'session.delegate') {
     // `target` is the session this went TO; the seed is always the slug, so
     // this chip and that session's face are the same pigment.
@@ -479,10 +503,20 @@ export function HarnessLine({ ev, names, pinFor, onOpenSession }: HarnessLinePro
       {title && (
         <>
           <SystemSep />
-          {/* No `onClick` yet — the Schedules sheet that would receive it is a
-              later slice, and `SystemEntity` degrades to plain emphasis by
-              design rather than offering a dead affordance. */}
-          <SystemEntity>
+          {/* The chip's destination is T8's per-session Schedules sheet. It is
+              a PROP rather than a route so this file stays route-free — and so
+              a surface with nowhere to send it (the bench, a static render)
+              degrades to plain emphasis rather than offering a dead
+              affordance. `ev.target` is the schedule id on every row the spine
+              wrote; older rows have only the title, and the receiver opens the
+              list for those. */}
+          <SystemEntity
+            onClick={
+              onOpenSchedule
+                ? () => onOpenSchedule({ id: ev.target || undefined, title })
+                : undefined
+            }
+          >
             <span aria-hidden="true">⏱ </span>
             {title}
           </SystemEntity>
@@ -522,6 +556,10 @@ interface ProseProps {
   pinFor?: (seed: string) => MarkPin | undefined
   surface?: 'desktop' | 'phone'
   rawUrl?: (path: string) => string
+  /** A mention in prose is a destination too (fase B4 T3.3). What counts as a
+   *  mention is still `mentionSegments`' decision — the index, never a regex
+   *  over arbitrary words; this only decides what a click does. */
+  onOpenSession?: (slug: string) => void
 }
 
 /**
@@ -544,6 +582,7 @@ function Prose(props: ProseProps) {
         pinFor={props.pinFor}
         surface={props.surface}
         rawUrl={props.rawUrl}
+        onOpenSession={props.onOpenSession}
       />
     </React.Suspense>
   )
@@ -555,7 +594,7 @@ function Prose(props: ProseProps) {
  * run here too: a colleague's name is a fact about the message, not a styling of
  * it, so it must not appear only once a chunk has loaded.
  */
-export function ProseText({ text, mentions, self, pinFor }: ProseProps) {
+export function ProseText({ text, mentions, self, pinFor, onOpenSession }: ProseProps) {
   const segments = React.useMemo(
     () => mentionSegments(text, mentions ?? EMPTY_INDEX, self),
     [text, mentions, self],
@@ -571,6 +610,10 @@ export function ProseText({ text, mentions, self, pinFor }: ProseProps) {
             seed={segment.seed}
             pin={pinFor?.(segment.seed)}
             name={segment.label}
+            // Every segment that is not `text` already RESOLVED in the index —
+            // that is what made it a chip — so there is no second liveness test
+            // to make here. Without a handler it renders as a span.
+            onClick={onOpenSession ? () => onOpenSession(segment.seed) : undefined}
           />
         ),
       )}

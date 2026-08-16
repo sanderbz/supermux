@@ -31,6 +31,7 @@ import type { AttentionCause } from '../components/chat/attention'
 import { applyLatch, dialogCardView, type DialogCardView } from '../components/chat/dialog-answer'
 import { readLens } from '../components/chat/peek-lens'
 import type { ChatEntry } from '../components/chat/entries'
+import type { HarnessEvent } from '../lib/api/harness'
 import type { PendingSend } from '../components/chat/pending'
 import type { MentionableSession } from '../components/chat/slash'
 import type { ComposerNotice } from '../components/chat/use-composer'
@@ -226,6 +227,52 @@ const ARRIVAL_DRAFTS: readonly Draft[] = [
 ]
 
 /**
+ * The four harness sentences, as ledger rows (fase B4 T3.6).
+ *
+ * One of each surfaced action, in the order a real afternoon produces them, so
+ * a single screenshot shows every sentence `HarnessLine` can say — including
+ * the failed fire, which is the one that has a tone of its own. `ts` is seconds
+ * (the ledger's unit), interleaved with the transcript rather than stacked at
+ * the end, because "the log lives where it happened" is the whole claim.
+ */
+function harnessEvents(nowSec: number): readonly HarnessEvent[] {
+  return [
+    {
+      id: 101,
+      ts: nowSec - 520,
+      actor: 'user',
+      action: 'session.delegate',
+      target: 'patch',
+      detail: { from: RELEASE_TRAIN },
+    },
+    {
+      id: 102,
+      ts: nowSec - 430,
+      actor: `agent:${RELEASE_TRAIN}`,
+      action: 'session.rename',
+      target: RELEASE_TRAIN,
+      detail: { from: 'Release', to: 'Release Train' },
+    },
+    {
+      id: 103,
+      ts: nowSec - 300,
+      actor: `agent:${RELEASE_TRAIN}`,
+      action: 'schedule.create',
+      target: 'SCHED-1a2b3c4d',
+      detail: { session: RELEASE_TRAIN, title: 'Nightly release watch', kind: 'tmux' },
+    },
+    {
+      id: 104,
+      ts: nowSec - 150,
+      actor: 'scheduler',
+      action: 'schedule.run',
+      target: 'SCHED-1a2b3c4d',
+      detail: { session: RELEASE_TRAIN, title: 'Nightly release watch', status: 'error' },
+    },
+  ]
+}
+
+/**
  * The evidence the Attention card shows — the a0 Bash-permission frame, ANSI
  * intact, so the bench's mini-view and the lens' fixtures are the same bytes
  * (T10's rule). Truecolour on purpose: the mini-view's whole claim is that it
@@ -317,6 +364,14 @@ export interface LiveState {
   provisional?: readonly string[]
   /** The tail query failed. */
   isError?: boolean
+  /**
+   * This session's harness ledger (fase B4) — the rows that become the centred
+   * management-log sentences, merged into the same ts-ordered stream the
+   * messages are in. The bench feeds them as WIRE rows for the same reason it
+   * feeds `ChatEntry`: `grouping.ts` decides which ones become lines, and a
+   * bench that hand-built the lines would skip that decision.
+   */
+  events?: readonly HarnessEvent[]
   /**
    * The LIVE composer, in a fixed state (fase A4 T9).
    *
@@ -478,6 +533,18 @@ export function liveStates(nowMs: number): LiveState[] {
       }),
       entries: build(ARRIVAL_DRAFTS, nowSec),
       turnAgo: 31,
+    },
+    {
+      id: 'harness',
+      title: 'Harness log — the four ledger sentences, every chip live',
+      board: 'master plan §13.1 (the transcript as a management log)',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'idle',
+      }),
+      entries: build(RELEASE_DRAFTS, nowSec),
+      events: harnessEvents(nowSec),
     },
     {
       id: 'error',
@@ -842,6 +909,7 @@ export const STATE_IDS = [
   'provisional',
   'permission',
   'delegation',
+  'harness',
   'error',
   'offline',
   'patch',
