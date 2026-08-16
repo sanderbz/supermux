@@ -244,18 +244,35 @@ impl ChatStore {
 
 /// `body.text` collapsed to a single whitespace-separated line and capped at
 /// [`TAIL_MAX_CHARS`] **chars** (never bytes — the tail is user text).
-/// The char count is tracked incrementally and an over-budget word is copied
-/// only as far as it fits: re-counting after every push was quadratic in the
-/// output, and a body with no whitespace at all (a base64 blob, a minified
-/// payload) is ONE word — up to `MAX_ENTRY_BYTES` of it copied, then counted,
-/// then thrown away. This runs under the store mutex on every detector tick.
 fn one_line(w: &WireEntry) -> Option<String> {
     let text = w.body().get("text").and_then(|v| v.as_str())?;
+    one_line_capped(text, TAIL_MAX_CHARS)
+}
+
+/// THE truncation algorithm — one implementation, asserted once.
+///
+/// Collapses `text` to a single whitespace-separated line and caps it at `max`
+/// **chars** (never bytes — this is user text and a byte cut would split a
+/// multi-byte scalar). Words are kept whole where they fit; a single word wider
+/// than the whole budget is cut at the budget rather than dropped, so a
+/// no-whitespace body (a base64 blob, a minified payload) still yields
+/// something. Returns `None` when nothing survived (empty / whitespace-only).
+///
+/// The char count is tracked incrementally and an over-budget word is copied
+/// only as far as it fits: re-counting after every push was quadratic in the
+/// output, and a body with no whitespace at all is ONE word — up to
+/// `MAX_ENTRY_BYTES` of it copied, then counted, then thrown away. This runs
+/// under the store mutex on every detector tick.
+///
+/// Shared with [`crate::notify`], which composes push bodies at a smaller
+/// budget: the lock screen and the tile must show the *same* string, so they
+/// must go through the *same* function.
+pub fn one_line_capped(text: &str, max: usize) -> Option<String> {
     let mut out = String::new();
     let mut chars = 0usize;
     for word in text.split_whitespace() {
         let sep = usize::from(chars > 0);
-        let room = TAIL_MAX_CHARS.saturating_sub(chars + sep);
+        let room = max.saturating_sub(chars + sep);
         if room == 0 {
             break;
         }
@@ -594,5 +611,58 @@ mod tests {
         let t = store.tail_summary().unwrap();
         assert_eq!(t.user.chars().count(), TAIL_MAX_CHARS);
         assert!(t.agent.is_empty(), "no assistant entry yet → empty, not a lie");
+    }
+
+    // ── one_line_capped: THE truncation algorithm, asserted once ─────────────
+    //
+    // The tile tail and the push body both go through this function at
+    // different budgets. If it ever splits a scalar or overruns `max`, the lock
+    // screen and the tile disagree — or worse, a push body is invalid UTF-8.
+
+    #[test]
+    fn one_line_capped_never_exceeds_max_chars_and_never_splits_a_scalar() {
+        // Multi-byte scalars, no whitespace at all → the single-word cut path.
+        for max in [1usize, 2, 7, 40, 180, 200] {
+            let out = one_line_capped(&"é".repeat(500), max).unwrap();
+            assert_eq!(out.chars().count(), max, "cut at exactly {max} CHARS");
+            // Round-tripping proves no scalar was split (a byte cut of "é"
+            // would not be valid UTF-8 and could not have been built at all).
+            assert!(out.chars().all(|c| c == 'é'));
+        }
+        // Emoji (4-byte scalars) at an odd budget.
+        let out = one_line_capped(&"🙂".repeat(50), 7).unwrap();
+        assert_eq!(out.chars().count(), 7);
+    }
+
+    #[test]
+    fn one_line_capped_collapses_whitespace_and_keeps_words_whole() {
+        assert_eq!(
+            one_line_capped("  Done —\n all\t34 tests   pass.  ", 180).unwrap(),
+            "Done — all 34 tests pass.",
+        );
+        // A word that does not fit is not force-split when earlier words fit:
+        // the budget stops the copy at the boundary it can reach.
+        let out = one_line_capped("aaa bbbbbbbbbb", 5).unwrap();
+        assert!(out.chars().count() <= 5, "{out:?} within budget");
+        assert!(out.starts_with("aaa"));
+    }
+
+    #[test]
+    fn one_line_capped_is_idempotent_on_short_input_and_none_on_empty() {
+        let s = "Turn finished.";
+        let once = one_line_capped(s, 180).unwrap();
+        assert_eq!(once, s);
+        assert_eq!(one_line_capped(&once, 180).unwrap(), once, "idempotent");
+        assert_eq!(one_line_capped("", 180), None);
+        assert_eq!(one_line_capped("   \n\t ", 180), None);
+        assert_eq!(one_line_capped("anything", 0), None, "a zero budget yields nothing");
+    }
+
+    #[test]
+    fn one_line_capped_leaves_markdown_glyphs_intact() {
+        // The push body IS the tile string — polish-stripping would make the
+        // lock screen and the conversation disagree.
+        let s = "**Done** — `cargo test` passes, PR #61 is up.";
+        assert_eq!(one_line_capped(s, 180).unwrap(), s);
     }
 }
