@@ -283,6 +283,11 @@ export type RecallEntryKind =
   // delivery in `<supermux-delegation from="…">` and `recall.rs` classifies it.
   // `label` carries the sending session's name.
   | 'delegation'
+  // A prompt one of this session's own schedules fired: `scheduler/runner.rs`
+  // wraps the delivery in `<supermux-schedule id="…" title="…">`. `label` carries
+  // the schedule's title, and the schedule is its own SPEAKER in the transcript —
+  // a 03:00 fire is not the owner typing at 03:00.
+  | 'schedule'
   | 'notification'
   | 'system'
   | 'tool'

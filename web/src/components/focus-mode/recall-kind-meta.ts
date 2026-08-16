@@ -13,6 +13,7 @@
  *  renders without a chip. */
 import {
   Bell,
+  Clock,
   Image as ImageIcon,
   Info,
   TerminalSquare,
@@ -34,6 +35,8 @@ const KIND_BADGE: Record<Exclude<RecallEntryKind, 'prompt'>, KindBadgeMeta> = {
   // A prompt another session handed to this one (`<supermux-delegation from>`).
   // Same face as a teammate turn: somebody else asked for this.
   delegation: { label: 'delegated', Icon: Users },
+  // A prompt one of this session's schedules fired (`<supermux-schedule …>`).
+  schedule: { label: 'scheduled', Icon: Clock },
   notification: { label: 'agent done', Icon: Bell },
   system: { label: 'system', Icon: Info },
   tool: { label: 'tool', Icon: Wrench },
@@ -58,5 +61,6 @@ export function kindSpeaker(kind: RecallEntryKind, label?: string): string {
   if (kind === 'prompt' || kind === 'command') return 'You'
   if (kind === 'teammate') return label || 'Teammate'
   if (kind === 'delegation') return label || 'Another session'
+  if (kind === 'schedule') return label || 'Schedule'
   return 'System'
 }

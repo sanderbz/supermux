@@ -225,24 +225,23 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
     } else {
         None
     };
-    // Agent-confirmed finish: append the completion-call footer to the LAST
-    // delivered line so it lands in the SAME submission as the task prompt — the
-    // agent reads "do X, and when fully done, curl Y" as one instruction and so
-    // never fires the signal before the work is done. (A bare `/command`-only
-    // job carries the footer as trailing context, which skills ignore.)
-    let mut lines: Vec<String> = delivery_lines(sched).into_iter().map(str::to_string).collect();
-    if sched.confirm_finish == 1 {
-        let footer = confirm_footer(&sched.id);
-        match lines.last_mut() {
-            Some(last) => {
-                last.push_str("\n\n");
-                last.push_str(&footer);
-            }
-            None => lines.push(footer),
-        }
-    }
-    for line in &lines {
-        if let Err(e) = sessions::lifecycle::send_text(state, &sched.session, line).await {
+    // Only a Claude target gets the `<supermux-schedule>` wrapper — the same
+    // provider gate delegation delivery uses (§0.2): `recall.rs`'s JSONL
+    // classification and the chat renderer are Claude-only, so on a codex/kimi
+    // pane the tag is literal XML noise with no transcript to redeem it. A
+    // lookup that fails degrades to the unwrapped bytes this has always sent.
+    let wrap = db::sessions::get(&state.pool, &sched.session)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| crate::agents::delegate::wraps_for_provider(&s.provider))
+        .unwrap_or(false);
+
+    for (sent, preview) in deliveries(sched, wrap) {
+        if let Err(e) =
+            sessions::lifecycle::send_text_with_preview(state, &sched.session, &sent, Some(&preview))
+                .await
+        {
             return JobOutcome {
                 status: "error",
                 note: truncate(&format!("send failed: {e}")),
@@ -257,6 +256,60 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
     }
 }
 
+/// The wrapper tag supermux writes around a scheduled prompt and `recall.rs`
+/// reads back. One const, two readers — the format is a contract, not a string
+/// literal repeated across modules (same shape as `DELEGATION_TAG`).
+pub const SCHEDULE_TAG: &str = "supermux-schedule";
+
+/// The line that opens the agent-confirm footer. Machine-generated and matched
+/// EXACTLY (`recall.rs` strips from this line onward for display) — the const is
+/// the contract, so this is a shared sentinel rather than a byte heuristic over
+/// the delivered prompt.
+pub const CONFIRM_FOOTER_SENTINEL: &str = "— — —";
+
+/// Wrap the free-text prompt line of a scheduled delivery so the receiving
+/// session's transcript knows which schedule fired it — a 03:00 prompt is not
+/// the owner typing at 03:00.
+///
+/// Only the prompt is ever wrapped (§0.3): a schedule's `/command` line has to
+/// stay its own bare submission or Claude stops executing it as a slash command.
+pub fn wrap_schedule(id: &str, title: &str, prompt: &str) -> String {
+    format!(
+        "<{SCHEDULE_TAG} id=\"{}\" title=\"{}\">\n{prompt}\n</{SCHEDULE_TAG}>",
+        escape_attr(id),
+        escape_attr(title),
+    )
+}
+
+/// XML-escape an attribute value. A schedule title is free text the owner typed,
+/// and `recall.rs`'s tag reader takes the first `>` as the end of the opening tag
+/// and the first quote as the end of the attribute — so an unescaped `>` or `"`
+/// in a title would mangle the delivered prompt on the way back out.
+pub fn escape_attr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The inverse of [`escape_attr`], for the reader side (`recall.rs`). Handles
+/// exactly the four entities the writer produces — this is a private contract
+/// between two functions, not an XML parser.
+pub fn unescape_attr(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        // `&amp;` last: an escaped `&amp;lt;` must come back as `&lt;`, not `<`.
+        .replace("&amp;", "&")
+}
+
 /// The agent-confirmed-finish footer: a copy-pasteable curl the agent runs when
 /// the scheduled task is genuinely complete, so completion is agent-declared
 /// (the reliable signal) rather than inferred from idle. Uses the per-session
@@ -264,7 +317,7 @@ async fn execute_tmux(state: &AppState, sched: &Schedule) -> JobOutcome {
 /// `board::dispatch`). Idle detection remains the fallback if the agent forgets.
 fn confirm_footer(schedule_id: &str) -> String {
     format!(
-        "— — —\n\
+        "{CONFIRM_FOOTER_SENTINEL}\n\
          When this scheduled task is FULLY complete (not before), signal completion \
          so I'm notified — run exactly:\n\
          curl -fsS -H \"X-Supermux-Hook-Token: $SUPERMUX_HOOK_TOKEN\" \\\n\
@@ -288,6 +341,50 @@ fn delivery_lines(sched: &Schedule) -> Vec<&str> {
         lines.push(prompt);
     }
     lines
+}
+
+/// What a `tmux` job actually sends, as `(pty text, send preview)` pairs in
+/// delivery order.
+///
+/// Three rules live here, which is why it is pure and tested rather than inlined
+/// in [`execute_tmux`]:
+///
+///   · **Confirm footer** — appended to the LAST delivered line so it lands in
+///     the SAME submission as the task prompt; the agent reads "do X, and when
+///     fully done, curl Y" as one instruction and so never fires the signal
+///     before the work is done. (A `/command`-only job carries it as trailing
+///     context, which skills ignore.)
+///   · **Wrapper** — the free-text prompt (never the `/command`, §0.3) is
+///     wrapped, footer and all, so the receiving transcript can attribute the
+///     turn to its schedule and strip the machine-generated footer for display.
+///   · **Preview** — `last_send_text` is user-visible (`last-send-recall.tsx`)
+///     and is what `receiptClaims` matches against, so the preview is the plain
+///     line: never the wrapper, never the footer.
+fn deliveries(sched: &Schedule, wrap: bool) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = delivery_lines(sched)
+        .into_iter()
+        .map(|line| (line.to_string(), line.to_string()))
+        .collect();
+    if sched.confirm_finish == 1 {
+        let footer = confirm_footer(&sched.id);
+        match out.last_mut() {
+            Some(last) => {
+                last.0.push_str("\n\n");
+                last.0.push_str(&footer);
+            }
+            // Unreachable in practice (the create handler guarantees one of the
+            // two fields is set); kept so a footer-only job still says something.
+            None => out.push((footer.clone(), footer)),
+        }
+    }
+    // `delivery_lines` puts the prompt last when there is one, so the wrapper
+    // goes around the last pair — and only then.
+    if wrap && !sched.prompt.trim().is_empty() {
+        if let Some(last) = out.last_mut() {
+            last.0 = wrap_schedule(&sched.id, &sched.title, &last.0);
+        }
+    }
+    out
 }
 
 /// `kind='boot'` — spawn a NEW session in `boot_dir` and send `command` as its
@@ -478,6 +575,62 @@ mod tests {
         let s = sched_with("  ", "  do it  ");
         // whitespace-only command is dropped; prompt is trimmed.
         assert_eq!(delivery_lines(&s), vec!["do it"]);
+    }
+
+    #[test]
+    fn wrap_schedule_escapes_the_title_attribute() {
+        // A title is free text the owner typed. An unescaped `"` would close the
+        // attribute and an unescaped `>` would end the opening tag early — which
+        // is exactly where `tag_inner` starts reading the body, so the receiving
+        // transcript would show a mangled prompt.
+        let out = wrap_schedule("s1", "Ship \"it\" <now> & later", "do the thing");
+        assert_eq!(
+            out,
+            "<supermux-schedule id=\"s1\" title=\"Ship &quot;it&quot; &lt;now&gt; &amp; later\">\n\
+             do the thing\n\
+             </supermux-schedule>"
+        );
+    }
+
+    #[test]
+    fn deliveries_wrap_the_prompt_and_leave_the_command_alone() {
+        // §0.3: the `/command` line must stay its own bare submission or Claude
+        // stops running it as a slash command; only the free-text prompt is
+        // wrapped.
+        let s = sched_with("/supermux-task", "summarise the board");
+        let out = deliveries(&s, true);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "/supermux-task");
+        assert_eq!(out[1].0, "<supermux-schedule id=\"SCHED-test\" title=\"t\">\nsummarise the board\n</supermux-schedule>");
+    }
+
+    #[test]
+    fn deliveries_keep_the_preview_free_of_wrapper_and_footer() {
+        // `last_send_text` is user-visible (`last-send-recall.tsx`) and is what
+        // `receiptClaims` matches against — it must read like the prompt, not
+        // like the machinery around it.
+        let mut s = sched_with("", "check the deploy");
+        s.confirm_finish = 1;
+        let out = deliveries(&s, true);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "check the deploy");
+        assert!(out[0].0.starts_with("<supermux-schedule "));
+        // The footer lands INSIDE the wrapper (§0.3) so the agent reads the task
+        // and its completion call as one instruction.
+        assert!(out[0].0.contains(CONFIRM_FOOTER_SENTINEL));
+        assert!(out[0].0.ends_with("</supermux-schedule>"));
+    }
+
+    #[test]
+    fn deliveries_without_the_wrapper_are_todays_bytes() {
+        // A codex/kimi target gets the raw prompt: no transcript there can parse
+        // the tag, so it would be literal XML noise in the TUI.
+        let mut s = sched_with("/cso", "look at it");
+        s.confirm_finish = 1;
+        let out = deliveries(&s, false);
+        assert_eq!(out[0].0, "/cso");
+        assert!(out[1].0.starts_with("look at it\n\n— — —\n"));
+        assert_eq!(out[1].1, "look at it");
     }
 
     #[test]

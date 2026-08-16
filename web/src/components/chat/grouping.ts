@@ -39,18 +39,26 @@ import type { Receipt } from './ui/receipt-group'
 /* ── speakers ────────────────────────────────────────────────────────────── */
 
 /**
- * The run key. Three fixed voices plus one per colleague:
+ * The run key. Three fixed voices plus one per colleague and one per schedule:
  *
  *   `agent`         this session — assistant prose and its receipts
  *   `me`            the human — typed prompts and slash commands
  *   `teammate:<id>` another session, routed in through the teammate envelope
+ *                   or handed over by `agents/delegate.rs`
+ *   `schedule:<t>`  one of this session's schedules, firing its prompt
  *   `system`        harness events; a centred line, not a bubble
  *
  * A colleague is its OWN voice on purpose. On the wire a teammate message is
  * user-role, so a naive two-voice grammar would stack `●Patch`'s message into
  * the human's run and hang the human's silence on it.
+ *
+ * A schedule is a voice for the same reason, and it is the honest third option:
+ * a scheduled prompt is neither a system event (it is a real request, and it
+ * gets a real answer) nor the owner's own bubble (nobody was at the keyboard at
+ * 03:00). Its identity is the schedule's title, so two fires of one schedule
+ * stack into one run and two different schedules never do.
  */
-export type Speaker = 'agent' | 'me' | 'system' | `teammate:${string}`
+export type Speaker = 'agent' | 'me' | 'system' | `teammate:${string}` | `schedule:${string}`
 
 /** Wire kinds that are harness events rather than anybody speaking. */
 const SYSTEM_BADGES: ReadonlySet<string> = new Set(['notification', 'system', 'tool', 'image'])
@@ -58,6 +66,7 @@ const SYSTEM_BADGES: ReadonlySet<string> = new Set(['notification', 'system', 't
 function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speaker {
   if (item.type !== 'user') return 'agent'
   if (item.badge === 'teammate') return `teammate:${labels?.get(item.uuid) ?? ''}`
+  if (item.badge === 'schedule') return `schedule:${labels?.get(item.uuid) ?? ''}`
   if (item.badge && SYSTEM_BADGES.has(item.badge)) return 'system'
   // An interruption is user-role on the wire and nobody's words on the screen.
   if (harnessNotice(item.text)) return 'system'

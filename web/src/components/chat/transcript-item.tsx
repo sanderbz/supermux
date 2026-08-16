@@ -126,6 +126,16 @@ export const TranscriptItem = React.memo(function TranscriptItem(
   if (sender !== undefined || speaker.startsWith('teammate:')) {
     return <TeammateRow {...props} item={item} grouped={grouped} sender={sender ?? ''} />
   }
+  if (speaker.startsWith('schedule:')) {
+    return (
+      <ScheduleRow
+        {...props}
+        item={item}
+        grouped={grouped}
+        title={speaker.slice('schedule:'.length)}
+      />
+    )
+  }
   return (
     <AgentRow
       {...props}
@@ -276,6 +286,63 @@ function TeammateRow({
           <Prose
             text={item.text}
             self={sender}
+            mentions={rest.mentions}
+            pinFor={rest.pinFor}
+            surface={rest.surface}
+            rawUrl={rest.rawUrl}
+          />
+          {item.truncated && <ClippedMarker />}
+        </Bubble>
+      </MessageRow>
+    </>
+  )
+}
+
+/* ── a schedule ──────────────────────────────────────────────────────────── */
+
+/**
+ * A schedule fired this (master plan §13.3): which schedule, said once above the
+ * prompt, in the same arrival grammar a colleague gets.
+ *
+ * The schedule is the SPEAKER, not a hat on the owner's bubble — a 03:00 prompt
+ * with the owner's face on it is the transcript telling a lie about who was
+ * awake. There is no mark in the gutter because a schedule has no identity mark
+ * to hang: `⏱` (the one sanctioned glyph, matching the scheduler's own chips)
+ * plus the title carries it, and the divider is where that belongs anyway.
+ *
+ * The prompt text arrives already stripped of the machine-generated confirm
+ * footer (`recall.rs::strip_confirm_footer`), so the multi-line curl block that
+ * used to land in chat is gone before it ever reaches this component.
+ */
+function ScheduleRow({
+  item,
+  grouped,
+  title,
+  ...rest
+}: TranscriptItemProps & { item: ChatItem; grouped: boolean; title: string }) {
+  if (item.type !== 'user') return null
+  return (
+    <>
+      {!grouped && (
+        <ArrivalDivider>
+          {title ? (
+            <>
+              <span>Sent by schedule</span>
+              <span className="font-medium text-ink">
+                <span aria-hidden="true">⏱ </span>
+                {title}
+              </span>
+            </>
+          ) : (
+            <span>Sent by a schedule</span>
+          )}
+        </ArrivalDivider>
+      )}
+      <MessageRow grouped={grouped}>
+        <Bubble surface={rest.surface}>
+          <Prose
+            text={item.text}
+            self={rest.name}
             mentions={rest.mentions}
             pinFor={rest.pinFor}
             surface={rest.surface}

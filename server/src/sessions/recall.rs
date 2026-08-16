@@ -25,6 +25,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::agents::delegate::DELEGATION_TAG;
+use crate::scheduler::runner::{unescape_attr, CONFIRM_FOOTER_SENTINEL, SCHEDULE_TAG};
 use crate::db;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -146,6 +147,10 @@ pub enum Kind {
     /// supermux delegate delivery — `<supermux-delegation from>` wrapper.
     /// `label` is the sending session's slug.
     Delegation,
+    /// supermux scheduled delivery — `<supermux-schedule id title>` wrapper.
+    /// `label` is the schedule's title. The schedule is its own speaker in the
+    /// transcript: a 03:00 fire is not the owner typing at 03:00.
+    Schedule,
     /// Harness reminders, command caveats, compact restores, `isMeta=true`
     /// auxiliary content. Also a catch-all for unrecognised leading
     /// `<wrapper-tag>` content so new Claude Code wrappers degrade
@@ -167,8 +172,9 @@ pub enum Kind {
 impl Kind {
     /// Whether this kind is shown in the default "Your prompts" view — and,
     /// since the chat tail reads the same list, whether it reaches the chat
-    /// transcript. Prompts, commands, teammate routing and delegated prompts
-    /// are somebody's deliberate request; the rest are surfaced only when the
+    /// transcript. Prompts, commands, teammate routing, delegated prompts and
+    /// scheduled ones are somebody's deliberate request (a schedule is the
+    /// owner's own request, made earlier); the rest are surfaced only when the
     /// "Show system events" toggle is on.
     ///
     /// This is the ONE site: the chat-tail path used to carry a copy-pasted
@@ -177,7 +183,7 @@ impl Kind {
     fn is_user_initiated(self) -> bool {
         matches!(
             self,
-            Kind::Prompt | Kind::Command | Kind::Teammate | Kind::Delegation
+            Kind::Prompt | Kind::Command | Kind::Teammate | Kind::Delegation | Kind::Schedule
         )
     }
 }
@@ -1148,7 +1154,7 @@ fn classify_user(v: &serde_json::Value) -> Option<ClassifiedUser> {
 /// Whether `body` opens with a wrapper supermux authored itself (as opposed to
 /// one Claude Code injects). Only these outrank `promptSource: "typed"`.
 fn is_supermux_wrapper(body: &str) -> bool {
-    matches!(leading_tag(body), Some(DELEGATION_TAG))
+    matches!(leading_tag(body), Some(DELEGATION_TAG) | Some(SCHEDULE_TAG))
 }
 
 /// Inspect the leading tag (if any) and produce a classified entry for the
@@ -1221,6 +1227,25 @@ fn classify_by_wrapper(body: &str) -> Option<ClassifiedUser> {
                 }),
             }
         }
+        SCHEDULE_TAG => {
+            // `<supermux-schedule id="…" title="…">…</supermux-schedule>` — a
+            // prompt one of this session's own schedules fired
+            // (`scheduler/runner.rs` writes it). Unlike a delegation — whose
+            // whole provenance IS the `from` attribute — the tag itself already
+            // says a schedule sent this, so a title-less schedule stays a
+            // schedule turn (unnamed) instead of degrading into a system line
+            // that would hide the prompt from the transcript.
+            let title = attr_value(body, "title")
+                .map(|t| unescape_attr(&t))
+                .filter(|t| !t.trim().is_empty());
+            let inner = tag_inner(body, SCHEDULE_TAG).unwrap_or_default();
+            let cleaned = strip_confirm_footer(inner.trim());
+            Some(ClassifiedUser {
+                kind: Kind::Schedule,
+                text: sanitise_text(&cleaned),
+                label: title,
+            })
+        }
         "system-reminder" => {
             let inner = tag_inner(body, "system-reminder").unwrap_or_default();
             Some(ClassifiedUser {
@@ -1243,6 +1268,24 @@ fn classify_by_wrapper(body: &str) -> Option<ClassifiedUser> {
             label: Some(other.to_string()),
         }),
     }
+}
+
+/// Drop the agent-confirm footer from a scheduled delivery's body.
+///
+/// The footer is machine-generated and opens with [`CONFIRM_FOOTER_SENTINEL`] on
+/// a line of its own, so this cuts on an EXACT line match — the const is the
+/// contract between the writer and this reader, never a guess about what a
+/// prompt's tail looks like. Bodies without the sentinel come back whole.
+fn strip_confirm_footer(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        if line.trim() == CONFIRM_FOOTER_SENTINEL {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_string()
 }
 
 /// If `s` starts with `<tag>` or `<tag attr=…>`, return `tag`. Conservative
@@ -1814,6 +1857,70 @@ please prepare the next stacked branch
     }
 
     #[test]
+    fn schedule_wrapper_classifies_and_strips_the_confirm_footer() {
+        let body = "<supermux-schedule id=\"s1\" title=\"Nightly release watch\">\ncheck the release\n\n— — —\nWhen this scheduled task is FULLY complete… curl…\n</supermux-schedule>";
+        let c = classify_str(body);
+        assert_eq!(c.kind, Kind::Schedule);
+        assert_eq!(c.label.as_deref(), Some("Nightly release watch"));
+        assert_eq!(c.text, "check the release");
+    }
+
+    #[test]
+    fn schedule_title_round_trips_through_attribute_escaping() {
+        // `wrap_schedule` escapes the title (a schedule title is free text the
+        // owner typed); recall decodes it, so the divider names the schedule the
+        // way it is named in the scheduler, not `Ship &quot;it&quot;`.
+        let body = crate::scheduler::runner::wrap_schedule(
+            "s2",
+            "Ship \"it\" <now> & later",
+            "do the thing",
+        );
+        let c = classify_str(&body);
+        assert_eq!(c.kind, Kind::Schedule);
+        assert_eq!(c.label.as_deref(), Some("Ship \"it\" <now> & later"));
+        assert_eq!(c.text, "do the thing");
+    }
+
+    #[test]
+    fn schedule_without_a_title_still_shows_its_prompt() {
+        // Unlike a delegation — whose whole provenance IS the `from` attribute —
+        // the schedule tag itself proves who sent this, so a title-less schedule
+        // stays a schedule turn (unnamed) rather than degrading into a system
+        // line that hides the prompt from the transcript.
+        let body = "<supermux-schedule id=\"s3\" title=\"\">\nrun the sweep\n</supermux-schedule>";
+        let c = classify_str(body);
+        assert_eq!(c.kind, Kind::Schedule);
+        assert!(c.label.is_none());
+        assert_eq!(c.text, "run the sweep");
+    }
+
+    #[test]
+    fn schedule_kind_passes_the_chat_allowlist() {
+        assert!(Kind::Schedule.is_user_initiated());
+    }
+
+    #[test]
+    fn schedule_wrapper_survives_the_typed_prompt_source() {
+        // Same live-verified property as the delegation wrapper: a scheduled
+        // prompt rides the pty like a keystroke, so Claude Code stamps it
+        // `promptSource: "typed"`. Without the supermux-namespaced escape the
+        // typed hard-override would print it as the owner's own bubble — the
+        // impersonation this task exists to end.
+        let v = serde_json::json!({
+            "type": "user",
+            "promptSource": "typed",
+            "message": {
+                "role": "user",
+                "content": "<supermux-schedule id=\"s1\" title=\"Nightly\">\ncheck the release\n</supermux-schedule>",
+            },
+        });
+        let c = classify_user(&v).unwrap();
+        assert_eq!(c.kind, Kind::Schedule);
+        assert_eq!(c.label.as_deref(), Some("Nightly"));
+        assert_eq!(c.text, "check the release");
+    }
+
+    #[test]
     fn kind_wire_strings_are_the_contract_the_client_mirrors() {
         // `RecallEntryKind` in `web/src/lib/api/sessions.ts` is a hand-written
         // mirror of this enum, and the two ship independently. Pin every wire
@@ -1825,6 +1932,7 @@ please prepare the next stacked branch
         assert_eq!(wire(Kind::Command), "command");
         assert_eq!(wire(Kind::Teammate), "teammate");
         assert_eq!(wire(Kind::Delegation), "delegation");
+        assert_eq!(wire(Kind::Schedule), "schedule");
         assert_eq!(wire(Kind::Notification), "notification");
         assert_eq!(wire(Kind::System), "system");
         assert_eq!(wire(Kind::Tool), "tool");
