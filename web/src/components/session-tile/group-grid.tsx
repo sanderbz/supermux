@@ -84,7 +84,7 @@ import {
   PencilLine,
 } from 'lucide-react'
 
-import { springs, tweens } from '@/lib/springs'
+import { motionOff, springs, tweens } from '@/lib/springs'
 import { useAttentionContext } from '@/hooks/use-attention'
 import { useSessionConfig, pinnedBoundary } from '@/hooks/use-session-config'
 import {
@@ -1463,7 +1463,7 @@ function GroupSection({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={reduce ? { duration: 0 } : springs.smooth}
+            transition={reduce ? motionOff : springs.smooth}
             // PEEK-FIX: overflow toggles between `hidden` (during the
             // collapse/expand height tween, so the tile grid doesn't paint
             // outside the collapsing container) and `visible` (at rest, so a
@@ -2311,7 +2311,7 @@ function FullGridDropLine({ reduce }: { reduce: boolean }) {
       <motion.div
         initial={reduce ? false : { scaleX: 0.6, opacity: 0 }}
         animate={{ scaleX: 1, opacity: 1 }}
-        transition={reduce ? { duration: 0 } : springs.snappy}
+        transition={reduce ? motionOff : springs.snappy}
         style={{ transformOrigin: 'left center' }}
         className="absolute inset-x-0 top-0 h-0.5 rounded-full bg-primary"
       />

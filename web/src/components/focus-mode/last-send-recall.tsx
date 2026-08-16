@@ -41,7 +41,7 @@ import {
 
 import { kindBadgeMeta, kindSpeaker } from './recall-kind-meta'
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import {
   displayLabel,
   sessionsApi,
@@ -531,7 +531,7 @@ const RecallRow = React.memo(function RecallRow({
   const initial = reduceMotion ? false : { opacity: 0, y: 4 }
   const animate = { opacity: 1, y: 0 }
   const transition = reduceMotion
-    ? { duration: 0 }
+    ? motionOff
     : { ...springs.smooth, delay }
 
   // Two real, sibling buttons (toggle + copy) inside a non-interactive row
@@ -554,7 +554,7 @@ const RecallRow = React.memo(function RecallRow({
         >
           <motion.span
             animate={{ rotate: expanded ? 90 : 0 }}
-            transition={reduceMotion ? { duration: 0 } : springs.buttonPress}
+            transition={reduceMotion ? motionOff : springs.buttonPress}
             aria-hidden
             className="inline-flex"
           >

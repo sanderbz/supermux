@@ -2,7 +2,7 @@ import * as React from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { parseAnsiLine } from '@/lib/ansi'
 
 const LINE_H = 14 // px — matches leading-[14px]
@@ -86,7 +86,7 @@ export function TailPreview({
       aria-hidden
       className={cn('relative overflow-hidden px-3', fill && 'h-full', className)}
       animate={fill ? undefined : { height: visibleLines * LINE_H + PAD_Y }}
-      transition={reduce ? { duration: 0 } : springs.cardExpand}
+      transition={reduce ? motionOff : springs.cardExpand}
       style={{
         WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 24px)',
         maskImage: 'linear-gradient(to bottom, transparent 0, black 24px)',

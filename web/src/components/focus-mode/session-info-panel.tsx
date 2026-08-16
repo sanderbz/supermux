@@ -34,7 +34,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   Popover,
@@ -650,7 +650,7 @@ function SchedulesList({ name }: { name: string }) {
             key={s.id}
             initial={reduce ? false : { opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={reduce ? { duration: 0 } : { ...springs.snappy, delay: i * 0.02 }}
+            transition={reduce ? motionOff : { ...springs.snappy, delay: i * 0.02 }}
           >
             <button
               type="button"

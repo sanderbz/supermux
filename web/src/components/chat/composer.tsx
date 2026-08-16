@@ -385,7 +385,7 @@ function ComposerBanner({
           initial={{ opacity: 0, y: reduce ? 0 : 6 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: reduce ? 0 : 6 }}
-          transition={reduce ? { duration: 0 } : springs.cardExpand}
+          transition={reduce ? motionOff : springs.cardExpand}
           className={cn(
             'mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border-[0.5px] border-hairline',
             'bg-surface px-3.5 py-2 text-[12.6px] tracking-[-0.05px] text-ink-2',

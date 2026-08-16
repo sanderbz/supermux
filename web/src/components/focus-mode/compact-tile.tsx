@@ -24,7 +24,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { GitBranch } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { STATUS_LABEL } from '@/components/session-tile/status-dot'
 import { TailPreview } from '@/components/session-tile/tail-preview'
 import { Kbd } from '@/components/ui/kbd'
@@ -175,7 +175,7 @@ export function CompactTile({
             initial={{ opacity: 0, x: -8, scale: 0.98 }}
             animate={{ opacity: 1, x: 0, scale: 1 }}
             exit={{ opacity: 0, x: -8, scale: 0.98 }}
-            transition={reduce ? { duration: 0 } : springs.cardExpand}
+            transition={reduce ? motionOff : springs.cardExpand}
             style={{ width: POPOVER_W, height: POPOVER_H, transformOrigin: 'left center' }}
             // Left-anchored: sits just right of the 320px strip.
             className="glass pointer-events-none absolute left-[calc(100%+8px)] top-1/2 z-30 -translate-y-1/2 overflow-hidden rounded-2xl border border-border/60 shadow-xl"

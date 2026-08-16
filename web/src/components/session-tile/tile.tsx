@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useQueryClient } from '@tanstack/react-query'
 import { Archive, GitBranch, X } from 'lucide-react'
 
-import { springs, eases } from '@/lib/springs'
+import { eases, motionOff, springs } from '@/lib/springs'
 import { MISC } from '@/brand/copy'
 import { displayLabel, sessionsApi, sessionTitle, type ApiSession } from '@/lib/api'
 import { SESSIONS_KEY } from '@/hooks/use-sessions'
@@ -157,7 +157,7 @@ function StatusBorder({
       }
       transition={
         isStatic
-          ? { duration: 0 }
+          ? motionOff
           : { repeat: Infinity, duration, ease: eases.inOut }
       }
     />
@@ -670,7 +670,7 @@ export function SessionTile({
       <motion.div
         className="relative"
         animate={{ height: IDLE_H }}
-        transition={reduce ? { duration: 0 } : springs.cardExpand}
+        transition={reduce ? motionOff : springs.cardExpand}
         initial={false}
       >
         <TileError
@@ -747,7 +747,7 @@ export function SessionTile({
           : { height: IDLE_H, opacity: 1, scale: 1 }
       }
       style={{ transformOrigin: 'top center' }}
-      transition={reduce ? { duration: 0 } : springs.cardExpand}
+      transition={reduce ? motionOff : springs.cardExpand}
       onAnimationComplete={() => {
         if (archiving) removeFromCache()
       }}
@@ -842,7 +842,7 @@ export function SessionTile({
               <motion.span
                 aria-hidden={false}
                 animate={hovered ? { opacity: 0, x: -8 } : { opacity: 1, x: 0 }}
-                transition={reduce ? { duration: 0 } : springs.cardExpand}
+                transition={reduce ? motionOff : springs.cardExpand}
                 // No `self-center` — the parent flex is `items-start`, and
                 // every sibling pill on this row (host badge, stopped pill,
                 // needs-input) top-aligns to the title's cap height. Center-
@@ -893,7 +893,7 @@ export function SessionTile({
                 animate={
                   hovered ? { x: -36, opacity: 0 } : { x: 0, opacity: 1 }
                 }
-                transition={reduce ? { duration: 0 } : springs.cardExpand}
+                transition={reduce ? motionOff : springs.cardExpand}
                 className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground"
               >
                 {STATUS_LABEL.stopped}
@@ -914,7 +914,7 @@ export function SessionTile({
                     initial={reduce ? false : { opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={reduce ? undefined : { opacity: 0, scale: 0.9 }}
-                    transition={reduce ? { duration: 0 } : springs.snappy}
+                    transition={reduce ? motionOff : springs.snappy}
                     className="-mr-1 -mt-1 flex shrink-0 items-center gap-0.5"
                   >
                     <button
@@ -953,7 +953,7 @@ export function SessionTile({
                     initial={reduce ? false : { opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={reduce ? undefined : { opacity: 0, scale: 0.9 }}
-                    transition={reduce ? { duration: 0 } : springs.snappy}
+                    transition={reduce ? motionOff : springs.snappy}
                     className="-mr-1 -mt-1 grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4"
                   >
                     <Archive aria-hidden />
@@ -1024,7 +1024,7 @@ export function SessionTile({
         <motion.div
           className="relative mt-1 overflow-hidden"
           animate={{ height: previewH }}
-          transition={reduce ? { duration: 0 } : springs.cardExpand}
+          transition={reduce ? motionOff : springs.cardExpand}
         >
           {/* FASE A5 T5 — what the preview SAYS, not what the row is.
               `chatPreview` is true only when the session actually has a chat
@@ -1072,7 +1072,7 @@ export function SessionTile({
                 initial={reduce ? false : { opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={reduce ? undefined : { opacity: 0 }}
-                transition={reduce ? { duration: 0 } : springs.snappy}
+                transition={reduce ? motionOff : springs.snappy}
                 className="absolute inset-0 z-10 flex items-center justify-center bg-card/85 backdrop-blur-sm"
               >
                 <StoppedSessionActions
@@ -1096,7 +1096,7 @@ export function SessionTile({
                 initial={reduce ? false : { opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={reduce ? undefined : { opacity: 0, y: 4 }}
-                transition={reduce ? { duration: 0 } : springs.snappy}
+                transition={reduce ? motionOff : springs.snappy}
                 className="pointer-events-none absolute bottom-1.5 right-1.5 z-20 flex h-6 items-center gap-1.5 rounded-full bg-black/55 px-2 text-[10px] font-medium leading-none text-white/90 shadow-sm backdrop-blur-sm"
               >
                 <span
@@ -1192,7 +1192,7 @@ function LivePeekLayer({
       // soft crossfade, not a switch-flick. Reduced-motion → instant (duration
       // 0), unchanged. Only the VISUAL reveal is eased — the live WS still
       // connects + streams immediately underneath, so there is no added delay.
-      transition={reduce ? { duration: 0 } : { duration: 0.18, ease: eases.out }}
+      transition={reduce ? motionOff : { duration: 0.18, ease: eases.out }}
       className="absolute inset-x-0 bottom-0"
       style={{ height }}
     >

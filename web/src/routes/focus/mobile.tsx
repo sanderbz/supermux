@@ -101,7 +101,7 @@ import { useLastActiveSession } from '@/stores/board-create-session-store'
 import type { Team, TeamMember } from '@/lib/api/teams'
 import { TeammateFocus } from '@/components/team'
 import { displayLabel, sessionTitle, type ApiSession, type SessionStatus } from '@/lib/api'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { StatusDot } from '@/components/session-tile/status-dot'
 
 import { MobileSheet } from '@/components/focus-mode/mobile-sheet'
@@ -588,7 +588,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
         // The whole focus surface tracks the left-edge drag so the peek-of-next
         // reads as "the next session sliding in behind."
         style={{ x: edge.peekX }}
-        transition={reduceMotion ? { duration: 0 } : springs.sheetDetent}
+        transition={reduceMotion ? motionOff : springs.sheetDetent}
         className="h-full w-full"
       >
         <MobileSheet

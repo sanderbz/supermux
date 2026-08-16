@@ -37,7 +37,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { displayLabel, type ApiSession } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useDictation } from '@/components/focus-mode/use-dictation'
@@ -985,7 +985,7 @@ function ComposeField({
         dragConstraints={{ left: 0, right: 0 }}
         style={{ x }}
         whileTap={{ scale: 0.97 }}
-        transition={reduceMotion ? { duration: 0 } : springs.sheetDetent}
+        transition={reduceMotion ? motionOff : springs.sheetDetent}
         onDragStart={() => {
           draggedRef.current = true
         }}

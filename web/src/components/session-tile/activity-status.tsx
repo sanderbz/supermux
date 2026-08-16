@@ -18,7 +18,7 @@
 
 import { motion, useReducedMotion } from 'framer-motion'
 
-import { springs } from '@/lib/springs'
+import { motionOff, springs } from '@/lib/springs'
 import { cn } from '@/lib/utils'
 
 /** Map a machine `error.type` to a short, friendly, sentence-case label. Unknown
@@ -89,7 +89,7 @@ export function ActivityLine({ activity, subagents, className }: ActivityLinePro
           key={n}
           initial={reduce ? false : { opacity: 0, y: 2 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={reduce ? { duration: 0 } : springs.statusMorph}
+          transition={reduce ? motionOff : springs.statusMorph}
           // Muted /70 + tabular so the count is calm and non-jittering.
           className="ml-1 inline-block align-baseline whitespace-nowrap tabular-nums text-muted-foreground/70"
         >
