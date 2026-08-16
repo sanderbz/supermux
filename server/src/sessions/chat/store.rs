@@ -70,6 +70,32 @@ pub struct ChatTail {
     /// Claude Code's own clock (ms) for the newer of the two entries. Not
     /// arrival time — never compare it against `activity_at`/`serverNowMs()`.
     pub ts: i64,
+    /// Entries this store has published, in the **seq domain** (`Inner.next_seq`).
+    ///
+    /// THE DOMAIN IS THE DECISION (fase B2 T5), so it is written here once:
+    ///
+    /// * It is `next_seq`, **not** `ring.len()`. The ring saturates at
+    ///   [`RING_CAP`] = 500, so its length is a WINDOW, not a total, and a
+    ///   client comparing two windows would report "no new messages" for a busy
+    ///   session forever.
+    /// * `reset()` deliberately keeps `next_seq` monotonic across `/clear` and
+    ///   `--resume` (see its doc), which is exactly what a seen-cursor wants: a
+    ///   resync must not rewind the count and re-mark a conversation unread.
+    /// * It is safe across store drops ONLY together with [`ChatTail::epoch`] —
+    ///   a store is created and dropped many times a day per session and
+    ///   `next_seq` restarts at 0 each time. A client compares counts only when
+    ///   the epoch matches; otherwise it degrades to a dot rather than showing
+    ///   a wrong number.
+    pub entry_count: u64,
+    /// The newest ring entry's timestamp — **Claude Code's clock**, for DISPLAY
+    /// only. Never the unread comparison: CC's stamp can trail arrival by tens
+    /// of seconds, and the client's cursor arithmetic runs on the server clock
+    /// (`activity_at`). Same domain as [`ChatTail::ts`], one field wider.
+    pub last_entry_ts: i64,
+    /// This store's creation stamp (server clock, ms). Changes iff the store was
+    /// dropped and rebuilt — which is what makes [`ChatTail::entry_count`]'s seq
+    /// domain safe to compare across a client's lifetime.
+    pub epoch: i64,
 }
 
 /// What a new subscriber receives: everything already published (`ring`), the
@@ -94,10 +120,23 @@ struct Inner {
     cap: usize,
 }
 
+/// Server-clock milliseconds. The domain every cursor comparison happens in —
+/// deliberately not Claude Code's clock (see [`ChatTail`]).
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Per-session chat ring. One per session, held in `AppState::chat_stores`.
 pub struct ChatStore {
     inner: Mutex<Inner>,
     tx: broadcast::Sender<WireEntry>,
+    /// When this store was built (server clock, ms). Published as
+    /// [`ChatTail::epoch`]; the thing that makes a seq-domain counter comparable
+    /// across the store's many lifetimes.
+    epoch: i64,
 }
 
 impl Default for ChatStore {
@@ -126,6 +165,7 @@ impl ChatStore {
                 cap: ring_cap.max(1),
             }),
             tx,
+            epoch: now_ms(),
         }
     }
 
@@ -227,10 +267,17 @@ impl ChatStore {
             .chain(agent.as_ref().map(|(w, _)| w.ts_ms()))
             .max()
             .unwrap_or(0);
+        // Computed inside the same critical section that already walks the
+        // ring — no second lock, no second pass.
+        let entry_count = g.next_seq;
+        let last_entry_ts = g.ring.back().map(|w| w.ts_ms()).unwrap_or(ts);
         Some(ChatTail {
             user: user.map(|(_, s)| s).unwrap_or_default(),
             agent: agent.map(|(_, s)| s).unwrap_or_default(),
             ts,
+            entry_count,
+            last_entry_ts,
+            epoch: self.epoch,
         })
     }
 
@@ -583,6 +630,114 @@ mod tests {
         assert_eq!(t.user, "second prompt line", "newlines collapse to one line");
         assert_eq!(t.agent, "an answer");
         assert_eq!(t.ts, 30, "the tail stamp is the NEWEST of the two");
+    }
+
+    /* ── fase B2 T5: the unread counter's domain ──────────────────────────── */
+
+    #[test]
+    fn entry_count_is_the_seq_domain_and_is_monotone_within_an_epoch() {
+        // The DECISION, pinned: `entry_count` is `next_seq`, not `ring.len()`.
+        // A ring-length count saturates at RING_CAP and would report "nothing
+        // new" forever on a busy session.
+        let store = ChatStore::with_capacity(4);
+        for i in 0..10 {
+            store.publish(vec![entry(i)]);
+        }
+        let t = store.tail_summary().unwrap();
+        assert_eq!(t.entry_count, 10, "seq domain — not the 4-entry ring window");
+
+        store.publish(vec![entry(10)]);
+        let t2 = store.tail_summary().unwrap();
+        assert!(t2.entry_count > t.entry_count, "monotone within an epoch");
+        assert_eq!(t2.epoch, t.epoch, "the same store keeps its epoch");
+    }
+
+    #[test]
+    fn reset_does_not_rewind_the_count() {
+        // `/clear` and `--resume` call `reset()`, which deliberately keeps
+        // `next_seq` monotonic. A seen-cursor wants exactly that: a resync must
+        // not rewind the counter and re-mark a whole conversation unread.
+        let store = ChatStore::new();
+        for i in 0..5 {
+            store.publish(vec![entry(i)]);
+        }
+        let before = store.tail_summary().unwrap();
+        assert!(store.reset());
+        assert!(
+            store.tail_summary().is_none(),
+            "an emptied ring publishes no tail at all"
+        );
+        store.publish(vec![entry(99)]);
+        let after = store.tail_summary().unwrap();
+        assert!(
+            after.entry_count > before.entry_count,
+            "reset cleared the ring but not the counter ({} → {})",
+            before.entry_count,
+            after.entry_count
+        );
+        assert_eq!(after.epoch, before.epoch, "reset is not a new store");
+    }
+
+    #[test]
+    fn a_dropped_and_recreated_store_gets_a_new_epoch_and_a_reset_count() {
+        // Stores are created and dropped many times a day per session (the
+        // store lives only while a chat client is attached, plus the tailer's
+        // grace period). The epoch is what makes the seq-domain count safe
+        // across that: a client that sees a different epoch degrades to a dot
+        // instead of subtracting two unrelated counters.
+        let first = ChatStore::new();
+        for i in 0..7 {
+            first.publish(vec![entry(i)]);
+        }
+        let a = first.tail_summary().unwrap();
+        assert_eq!(a.entry_count, 7);
+        drop(first);
+
+        // A fresh store for the same session — `next_seq` restarts at 0.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = ChatStore::new();
+        second.publish(vec![entry(0)]);
+        let b = second.tail_summary().unwrap();
+        assert_eq!(b.entry_count, 1, "a new store counts from zero");
+        assert!(
+            b.epoch >= a.epoch,
+            "the epoch is a server-clock stamp, so it never goes backwards"
+        );
+        assert_ne!(
+            b.epoch, a.epoch,
+            "a rebuilt store MUST be distinguishable, or the count is compared \
+             against a counter that no longer exists"
+        );
+    }
+
+    #[test]
+    fn last_entry_ts_is_the_newest_ring_entry_on_ccs_clock() {
+        // Display only. The unread comparison runs on the SERVER clock
+        // (`activity_at`); CC's stamp can trail arrival by tens of seconds.
+        let store = ChatStore::new();
+        let mut p = ChatEntry::test_text("p1", "prompt");
+        p.kind = Kind::Prompt;
+        p.ts_ms = 10;
+        let mut a = ChatEntry::test_text("a1", "answer");
+        a.ts_ms = 20;
+        // A later entry that is NEITHER a prompt nor an assistant line: `ts` (the
+        // one-liner pair's stamp) ignores it, `last_entry_ts` does not.
+        let mut later = ChatEntry::test_text("t1", "tool output");
+        later.kind = Kind::ToolResult;
+        later.ts_ms = 55;
+        store.publish(vec![p, a, later]);
+        let t = store.tail_summary().unwrap();
+        assert_eq!(t.ts, 20, "the one-liner pair's stamp is unchanged");
+        assert_eq!(t.last_entry_ts, 55, "the ring's newest entry");
+    }
+
+    #[test]
+    fn a_session_with_no_store_still_has_no_chat_tail() {
+        // The whole reason the attention ladder is provider-neutral: the SSE
+        // producer uses the non-creating accessor, so a session nobody is
+        // watching has no store and therefore no tail — and must still get a
+        // tier from `activity_at`.
+        assert!(ChatStore::new().tail_summary().is_none());
     }
 
     #[test]

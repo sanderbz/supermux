@@ -40,6 +40,7 @@ import { SESSIONS_KEY } from '@/hooks/use-sessions'
 import { DesktopSplit } from '@/components/focus-mode/desktop-split'
 import { StartTeamSheet } from '@/components/session-tile/start-team-sheet'
 import { useFocusSessions } from '@/components/focus-mode/use-focus-sessions'
+import { useAttentionContext } from '@/hooks/use-attention'
 import { useTeams } from '@/hooks/use-teams'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
 import { useToast } from '@/components/ui/use-toast'
@@ -70,6 +71,15 @@ export function DesktopFocus({ mockSessions, mockTeams }: DesktopFocusProps = {}
   React.useEffect(() => {
     if (name) setLastActiveSession(name)
   }, [name, setLastActiveSession])
+  // Opening a session marks it read (fase B2 T5). Keyed on the NAME, not the
+  // session object: the object changes identity on every SSE delta, and
+  // re-recording the cursor on every tail line would silently mark a session
+  // read while you were looking at a different tab.
+  const { markRead } = useAttentionContext()
+  React.useEffect(() => {
+    if (current) markRead(current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name])
   // Detected Agent Teams — the SAME shared `['teams']` cache the overview TEAM
   // CARD reads (GET on mount, then SSE-live). Mock injection bypasses the hook's
   // network so the /dev/focus harness can eyeball team states offline.

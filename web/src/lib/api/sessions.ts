@@ -97,6 +97,23 @@ export interface ChatTail {
   agent: string
   /** CC-clock ms of the newer of the two entries. */
   ts: number
+  /** Entries this store has published, in the SEQ domain (`Inner.next_seq`
+   *  server-side) — not `ring.len()`, which saturates at RING_CAP = 500 and is
+   *  a window rather than a total. `reset()` keeps it monotonic across `/clear`
+   *  and `--resume`, which is exactly what a seen-cursor wants.
+   *
+   *  ONLY comparable against a cursor recorded under the same `epoch`. Absent on
+   *  a pre-B2 server. */
+  entry_count?: number
+  /** Newest ring entry's timestamp — Claude Code's clock, DISPLAY ONLY. The
+   *  unread comparison runs on the server clock (`activity_at`); CC's stamp can
+   *  trail arrival by tens of seconds. */
+  last_entry_ts?: number
+  /** The chat store's creation stamp (server clock, ms). A store is created and
+   *  dropped many times a day per session and `entry_count` restarts at 0 each
+   *  time — so a changed epoch means "the count is a new counter", and the row
+   *  degrades to a dot rather than showing a wrong number. */
+  epoch?: number
 }
 
 /** The fields the SSE `sessions` delta / the `GET /api/sessions` list carry for

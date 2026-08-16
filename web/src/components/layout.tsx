@@ -34,6 +34,7 @@ import {
   RosterMarksProvider,
   useRosterMarksProvider,
 } from '@/hooks/use-roster-marks'
+import { AttentionProvider, useAttentionProvider } from '@/hooks/use-attention'
 
 interface NavItem {
   to: string
@@ -296,8 +297,13 @@ export function Layout() {
   // it is mounted here, above every route, because the palette, the pickers and
   // the focus strip all draw marks outside the overview's tree.
   const rosterMarks = useRosterMarksProvider()
+  // The attention tiers (fase B2 T5), for the same reason: the rows that draw a
+  // tier sit five layers under the surface that owns the roster, and the header
+  // rollup needs the same answer the rows got.
+  const attention = useAttentionProvider()
   return (
     <RosterMarksProvider value={rosterMarks}>
+    <AttentionProvider value={attention}>
     <ShellOverlayProvider value={overlayHostValue}>
     <div
       className="flex h-full w-full"
@@ -338,6 +344,7 @@ export function Layout() {
       <ArchivedSheet open={archivedOpen} onOpenChange={setArchivedOpen} />
     </div>
     </ShellOverlayProvider>
+    </AttentionProvider>
     </RosterMarksProvider>
   )
 }

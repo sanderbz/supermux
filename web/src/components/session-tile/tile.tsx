@@ -33,6 +33,7 @@ import {
 } from '@/components/view-transitions/morph'
 import { STATUS_LABEL } from './status-dot'
 import { SessionFace } from '@/components/roster/session-face'
+import { useRowAttention } from '@/hooks/use-attention'
 import { ATTENTION_DOT } from '@/components/chat/ui/metrics'
 import { ActivityLine, ErrorBadge } from './activity-status'
 import { TailPreview } from './tail-preview'
@@ -218,6 +219,12 @@ export function SessionTile({
   // through six layers. Surfaces with no provider (archived sheet, settings)
   // get `undefined` and the chip is omitted.
   const ctxJumpIndex = useJumpIndex(session.name)
+  // The attention tier (fase B2 T5), from the app-wide provider — the tile is
+  // rendered several layers below whoever owns the roster, and the header
+  // rollup must agree with the tile it points at. An explicit `attention` prop
+  // (benches, fixtures) still wins.
+  const rowAttention = useRowAttention(session)
+  const showAttention = attention ?? rowAttention.dot
   const resolvedJumpIndex = jumpIndex ?? ctxJumpIndex
   const {
     idleLines: IDLE_LINES,
@@ -973,7 +980,7 @@ export function SessionTile({
                     size={28}
                     className="mt-0.5"
                   />
-                  {attention && (
+                  {showAttention && (
                     <span
                       aria-hidden
                       className="absolute -right-0.5 top-0 size-[7px] rounded-full ring-2 ring-card"

@@ -95,6 +95,7 @@ import { useRenderer } from '@/components/chat/use-renderer-pref'
 import { BackIcon } from '@/components/chat/ui'
 import { useUI } from '@/stores/ui-store'
 import { useSessions } from '@/hooks/use-sessions'
+import { useAttentionContext } from '@/hooks/use-attention'
 import { useTeams } from '@/hooks/use-teams'
 import { useLastActiveSession } from '@/stores/board-create-session-store'
 import type { Team, TeamMember } from '@/lib/api/teams'
@@ -195,6 +196,15 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
     return s ? { ...s, updated_at: s.updated_at ?? '' } : null
   }, [sessions, name])
   const current: ApiSession = row ?? placeholderSession(name)
+
+  // Opening a session marks it read (fase B2 T5). Keyed on the NAME, and gated
+  // on the REAL row — recording a cursor against the placeholder would stamp a
+  // session we have not actually loaded yet.
+  const { markRead } = useAttentionContext()
+  React.useEffect(() => {
+    if (row) markRead(row)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, row !== null])
 
   // The terminal WS proves a dead pty (4404) before — or, when the backend
   // never flipped the row, INSTEAD of — the status delta. Without this the pane

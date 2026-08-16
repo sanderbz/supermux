@@ -31,6 +31,7 @@ import { MISC } from '@/brand/copy'
 import { markStateFor } from '@/lib/mark-status'
 import { hasFact, type Tier } from '@/lib/fact-ladder'
 import { usePin } from '@/hooks/use-roster-marks'
+import { useRowAttention } from '@/hooks/use-attention'
 import { RosterRow } from '@/components/chat/ui'
 import { SessionFace } from '@/components/roster/session-face'
 import { STATUS_LABEL } from './status-dot'
@@ -75,6 +76,8 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
   const when = relativeTime(session.updated_at)
   const jumpIndex = useJumpIndex(session.name)
   const pin = usePin(session.name)
+  const rowAttention = useRowAttention(session)
+  const showAttention = attention ?? rowAttention.dot
 
   const goFocus = React.useCallback(
     () => navigateMorph(`/focus/${session.name}`),
@@ -152,7 +155,7 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
           <SessionFace name={session.name} status={session.status} size={40} className="shrink-0" />
         }
         state={markStateFor(session.status)}
-        attention={attention}
+        attention={showAttention}
         meta={meta}
         trailing={trailing}
         timestamp={when || undefined}

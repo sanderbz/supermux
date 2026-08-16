@@ -79,9 +79,11 @@ import {
   ChevronRight,
   Check,
   MessageSquare,
+  Mail,
 } from 'lucide-react'
 
 import { springs, tweens } from '@/lib/springs'
+import { useAttentionContext } from '@/hooks/use-attention'
 import {
   removeCollapsed,
   useCollapsibleGroups,
@@ -2050,6 +2052,9 @@ function TileMoveToKebab({
   const setRendererPref = useUI((st) => st.setRendererPref)
   const showRenderer = chatExperiment && rendererEligible
 
+  // Attention (fase B2 T5) — the kebab is where "Mark unread" lives.
+  const { markUnread, enabled: attentionEnabled } = useAttentionContext()
+
   // Session info — the SAME panel the focus-page title-click opens,
   // hosted here for overview parity. Desktop = anchored Popover (we pass
   // `infoAnchorRef` as the trigger), mobile = bottom Sheet (the panel forks
@@ -2122,6 +2127,21 @@ function TileMoveToKebab({
             <Info className="size-4" aria-hidden />
             <span>Info</span>
           </DropdownMenuItem>
+          {/* Mark unread (fase B2 T5) — drops the seen-cursor so the row lights
+              up again. The counterpart of "opening a session marks it read", and
+              the only way to UN-read something: without it the tier model is a
+              one-way street and a session you glanced at is silenced forever.
+              Hidden when the tiers are killed off — an item that does nothing is
+              worse than an absent one. */}
+          {attentionEnabled && (
+            <DropdownMenuItem
+              data-vr="tile-mark-unread"
+              onSelect={() => markUnread(sessionName)}
+            >
+              <Mail className="size-4" aria-hidden />
+              <span>Mark unread</span>
+            </DropdownMenuItem>
+          )}
           {canStop && (
             <DropdownMenuItem
               data-vr="tile-stop"

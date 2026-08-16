@@ -2188,7 +2188,17 @@ mod chat_tail_tests {
     use crate::sessions::chat::store::ChatTail;
 
     fn tail(user: &str, agent: &str, ts: i64) -> ChatTail {
-        ChatTail { user: user.into(), agent: agent.into(), ts }
+        // The B2 counter fields are fixed here: this module's tests are about
+        // the GATE (change detection + debounce), and a moving epoch would make
+        // every tail "changed".
+        ChatTail {
+            user: user.into(),
+            agent: agent.into(),
+            ts,
+            entry_count: 0,
+            last_entry_ts: ts,
+            epoch: 0,
+        }
     }
 
     #[test]
@@ -2226,10 +2236,21 @@ mod chat_tail_tests {
         // the field is omitted, and the client keeps the last value it has.
         assert_eq!(gate.poll_at(t0 + Duration::from_secs(60), None), None);
 
-        // Wire shape pin — the tile reads these three keys.
+        // Wire shape pin — the tile reads `user`/`agent`/`ts`; fase B2 T5 added
+        // the three unread-cursor fields (`entry_count` seq-domain,
+        // `last_entry_ts` on CC's clock for display, `epoch` so the count is
+        // only ever compared against itself). All six are asserted, so a field
+        // cannot be added to the wire without a decision being recorded here.
         assert_eq!(
             serde_json::to_value(&next).unwrap(),
-            json!({ "user": "run the tests", "agent": "3 failed", "ts": 20 })
+            json!({
+                "user": "run the tests",
+                "agent": "3 failed",
+                "ts": 20,
+                "entry_count": 0,
+                "last_entry_ts": 20,
+                "epoch": 0
+            })
         );
     }
 

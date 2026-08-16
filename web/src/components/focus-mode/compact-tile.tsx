@@ -31,6 +31,7 @@ import { Kbd } from '@/components/ui/kbd'
 import { sessionTitle } from '@/lib/api/sessions'
 import { markStateFor } from '@/lib/mark-status'
 import { usePin } from '@/hooks/use-roster-marks'
+import { useRowAttention } from '@/hooks/use-attention'
 import { RosterRow } from '@/components/chat/ui'
 import { SessionFace } from '@/components/roster/session-face'
 import type { TileSession } from '@/components/session-tile/types'
@@ -71,6 +72,8 @@ export function CompactTile({
 }: CompactTileProps) {
   const reduce = useReducedMotion()
   const pin = usePin(session.name)
+  const rowAttention = useRowAttention(session)
+  const showAttention = attention ?? rowAttention.dot
   const [peeking, setPeeking] = React.useState(false)
   const dwellRef = React.useRef<number | null>(null)
 
@@ -140,7 +143,7 @@ export function CompactTile({
             />
           }
           state={markStateFor(session.status)}
-          attention={attention}
+          attention={showAttention}
           selected={current}
           meta={meta}
           trailing={
