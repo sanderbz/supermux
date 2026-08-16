@@ -43,7 +43,28 @@ describe('what an unconfirmed send says', () => {
   })
 
   test('mid-turn, it names the turn the message is queued behind', () => {
-    expect(deliveryLine(send({ receipted: true }), { active: true })).toMatch(/queued behind/i)
+    // A turn that was ALREADY running when Enter was pressed — the only case in
+    // which "queued behind that turn" is a true sentence.
+    expect(
+      deliveryLine(send({ receipted: true, activeAtSend: true }), { active: true }),
+    ).toMatch(/queued behind/i)
+  })
+
+  /**
+   * THE SELF-ATTRIBUTION (daily-driver QA #10).
+   *
+   * Sent into an IDLE session, the row read "waiting for the transcript to catch
+   * up" at 109ms and flipped to "Claude is mid-turn, so it's queued behind the
+   * running turn" at 228ms — because the status had gone active in between, and
+   * the turn it now claimed to be queued behind was itself. Two sentences, one
+   * state, and the second one false.
+   */
+  test('a send into an IDLE session is never queued behind itself', () => {
+    const p = send({ receipted: true, activeAtSend: false })
+    // The status has flipped by the time this renders: that is the whole bug.
+    expect(deliveryLine(p, { active: true })).toMatch(/waiting for the transcript/i)
+    // And it does not change again once the turn is under way.
+    expect(deliveryLine(p, { active: true })).toBe(deliveryLine(p, { active: false }))
   })
 
   test('the surface renders the receipt, not a bare spinner', () => {
@@ -54,7 +75,7 @@ describe('what an unconfirmed send says', () => {
         items={[]}
         nowMs={0}
         turnStart={null}
-        pending={[send({ receipted: true })]}
+        pending={[send({ receipted: true, activeAtSend: true })]}
       />,
     )
     expect(html).toContain('data-receipted="true"')

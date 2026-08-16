@@ -384,10 +384,35 @@ export function ChatConversation({
   )
 }
 
-/** §11.6's same-cell swap, the number `live-layer.tsx` already uses. An echo
- *  reconciling is the same kind of event as a provisional block being
- *  superseded — one thing becoming another — so it is the same move. */
+/**
+ * The echo's ARRIVAL, and only its arrival.
+ *
+ * There is deliberately no exit counterpart (daily-driver QA #10). The confirmed
+ * bubble does not land in this cell — it lands in the transcript directly above
+ * — so an exit fade here is not a crossfade at all: it is 260ms during which the
+ * user's message is on screen TWICE, one copy fading over the other, followed by
+ * the band collapsing under a live layer that then jumps (measured: two bubbles
+ * from 1372ms to 1576ms, then an 82px jump).
+ *
+ * `reconcile` already runs in RENDER (`use-pending-sends.ts`), so the frame that
+ * first draws the confirmed bubble is the frame that drops this row: with no
+ * exit to hold it mounted, the swap is atomic and there is never a frame with
+ * two copies in it. The only motion left is the arrival of something new, which
+ * is the one thing motion is for here.
+ */
 const ECHO_SWAP_S = 0.26
+
+/**
+ * The height the delivery line occupies, reserved whether or not it has anything
+ * to say.
+ *
+ * `deliveryLine` swaps one sentence for another as the receipt lands, and a
+ * sentence that wraps differently from its predecessor moves everything below
+ * it. Fixing the row's height makes every state change inside the band a
+ * REPAINT: the working row underneath does not move while the message goes from
+ * "Sending…" to "The session has it".
+ */
+const RECEIPT_ROW = 'mt-[5px] h-[17px] overflow-hidden'
 
 /** One tap target for the undelivered row's three controls. `h-[34px]` is the
  *  height `ChoiceCard`'s pill has off the approved boards — the smallest thing
@@ -447,7 +472,9 @@ export function PendingEchoes({
             data-state={p.state}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            // No `exit`: see `ECHO_SWAP_S`. The row leaves in the same commit
+            // the confirmed bubble arrives in, so the two are never both on
+            // screen.
             transition={{ duration: reduce ? 0 : ECHO_SWAP_S, ease: eases.inOut }}
           >
             <MessageRow me>
@@ -468,13 +495,21 @@ export function PendingEchoes({
                     normal reason a mid-turn send is not in the transcript yet
                     (`deliveryLine`, which also records why CC's own queue
                     receipt cannot reach this client on this branch). */}
-                {p.state === 'unconfirmed' && (
+                {/* The row is RESERVED from the moment the echo is drawn and
+                    filled when there is something to say: the POST coming back
+                    must not move the working row under it (QA #10). While the
+                    send is in flight it stays empty — the bubble's own reduced
+                    weight is the whole claim at that point. */}
+                {p.state !== 'undelivered' && (
                   <p
                     data-testid="chat-pending-receipt"
                     data-receipted={p.receipted || undefined}
-                    className="mt-[5px] text-[12px] tracking-[-0.05px] text-ink-2"
+                    className={cn(
+                      RECEIPT_ROW,
+                      'text-[12px] leading-[17px] tracking-[-0.05px] text-ink-2',
+                    )}
                   >
-                    {deliveryLine(p, { active })}
+                    {p.state === 'unconfirmed' ? deliveryLine(p, { active }) : ''}
                   </p>
                 )}
 

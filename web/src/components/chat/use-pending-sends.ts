@@ -205,6 +205,15 @@ export function usePendingSends({
     entriesRef.current = entries
   }, [entries])
 
+  // The session's status, for the same reason and by the same means: `submit`
+  // reads it at the moment Enter is pressed, and a dependency on it would
+  // rebuild the tracked input handle (and the composer's callbacks) on every
+  // turn boundary.
+  const activeRef = React.useRef(active)
+  React.useEffect(() => {
+    activeRef.current = active
+  }, [active])
+
   const items = live.map((p) => ({
     ...p,
     state: watchdogState(p, { nowMs, sawActiveSince }),
@@ -263,12 +272,16 @@ export function usePendingSends({
           ? new Set(entriesRef.current.map((e) => e.uuid))
           : null
       const receiptAt = receiptRef.current?.atS ?? 0
+      // WAS A TURN ALREADY RUNNING? Read here and never again: ~200ms from now
+      // the status flips because of THIS message, and a row that read the live
+      // status would then say it was queued behind itself (`deliveryLine`).
+      const wasActive = activeRef.current
       // Drawn BEFORE the POST resolves: the echo is the acknowledgement that
       // the user's Enter was received by this app, and it claims nothing more
       // than that until the state below says otherwise.
       update(name, (cur) => [
         ...cur,
-        { id, text, atMs, state: 'sending', seen, receiptAtS: receiptAt },
+        { id, text, atMs, state: 'sending', seen, receiptAtS: receiptAt, activeAtSend: wasActive },
       ])
       try {
         await input.submit(text)
@@ -310,8 +323,10 @@ export function usePendingSends({
         atMs: serverNowMs(),
         note: undefined,
         // A retry is a new delivery: it needs its own receipt baseline, or the
-        // receipt for the FIRST attempt would confirm it instantly.
+        // receipt for the FIRST attempt would confirm it instantly — and its own
+        // reading of whether a turn was already running, for the same reason.
         receiptAtS: receiptRef.current?.atS ?? 0,
+        activeAtSend: activeRef.current,
       })
       void (async () => {
         try {
