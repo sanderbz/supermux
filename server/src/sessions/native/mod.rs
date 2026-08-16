@@ -136,7 +136,17 @@ pub fn attached(name: &str) -> bool {
 /// marker. Pure filesystem read — never dials the socket, never creates a
 /// session handle, so it is safe to call from a boot-time audit.
 pub fn death_reason(name: &str, data_dir: &Path) -> Option<String> {
-    runtime::exit_marker(&spool::session_dir(data_dir, name)).map(|d| d.reason)
+    death_marker(name, data_dir).map(|d| d.reason)
+}
+
+/// The full exit-marker verdict (reason + whether the death was unexpected),
+/// for callers that must distinguish a crash from a clean stop — e.g. the boot
+/// reconcile only badges UNEXPECTED deaths.
+pub fn death_marker(
+    name: &str,
+    data_dir: &Path,
+) -> Option<crate::sessions::runtime::TerminalDeath> {
+    runtime::exit_marker(&spool::session_dir(data_dir, name))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

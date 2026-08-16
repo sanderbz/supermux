@@ -139,6 +139,28 @@ pub async fn reconcile_on_boot(state: &AppState) {
             continue;
         }
         tracing::info!(name = %s.name, runtime = %s.runtime, "status reconcile: terminal gone → stopped");
+        // Consume the death-badge EDGE for native rows found dead at boot: the
+        // detector's auto-heal fires on `set_error`'s first-set edge, and
+        // without this a daemon restart would "discover" every long-dead
+        // session anew and try to heal it. Pre-setting the badge here (with
+        // the real reason when the exit marker has one) both explains the
+        // stop in the UI and makes the detector's later set_error a no-op.
+        // Sessions that were RUNNING at shutdown are healed deliberately by
+        // the post-update audit, which snapshots before this pass.
+        if s.runtime == RUNTIME_NATIVE {
+            DEATH_SEEN.insert(s.name.clone(), ());
+            if let Some(d) =
+                crate::sessions::native::death_marker(&s.name, &state.config.data_dir)
+            {
+                if d.unexpected {
+                    state.set_error(
+                        &s.name,
+                        HOLDER_DIED.to_string(),
+                        format!("terminal died: {}", d.reason),
+                    );
+                }
+            }
+        }
     }
 
     // ── REMOTE pass — per-host `tmux ls` with a 5s timeout each ──────────────
@@ -924,6 +946,19 @@ async fn force_stopped_on_death(
                 "error": { "type": HOLDER_DIED, "message": message },
             }] }));
         }
+        // AUTO-HEAL triggers on the DEATH_SEEN edge, not the persisted-status
+        // edge: the native reader's stream-death path (pty.rs) persists
+        // `stopped` within ~100ms of a holder dying — long before this tick —
+        // so `persisted == Stopped` below is the NORMAL case for a fresh death
+        // and a bottom-of-function spawn never ran (caught live in E2E: badge
+        // appeared, heal never fired). Nor is the badge-change edge safe: a
+        // boot-time badge with a slightly different message would re-trigger
+        // `set_error`. DEATH_SEEN is explicit: first observer of this death
+        // (detector here, or `reconcile_on_boot` pre-inserting at boot) claims
+        // the edge; the entry clears on the next alive tick.
+        if DEATH_SEEN.insert(name.to_string(), ()).is_none() {
+            spawn_auto_heal(state, name, &death.reason);
+        }
     }
 
     if persisted == Some(Status::Stopped) {
@@ -956,16 +991,9 @@ async fn force_stopped_on_death(
     }
     maybe_push_on_transition(state, name, Status::Stopped);
 
-    // AUTO-HEAL. An UNEXPECTED death is a fault, not an ending: the holder
-    // crashed, was OOM-killed or vanished, and the agent inside it did not get
-    // to finish. Try exactly one restart, off the tick (a `start` can take
-    // seconds, and the detector loop must keep ticking for every other session).
-    // Reached only on the stopped EDGE — the `persisted == Stopped` early return
-    // above means a session that is already stopped never re-triggers, so the
-    // repeat ticks a permanently-dead session produces cost nothing.
-    if death.unexpected {
-        spawn_auto_heal(state, name, &death.reason);
-    }
+    // (The auto-heal spawn lives on the badge edge near the top of this
+    // function — see the comment there for why the persisted-status edge is
+    // the wrong trigger.)
     Ok(Status::Stopped)
 }
 
@@ -985,6 +1013,15 @@ pub const AUTO_HEAL_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 /// exists to stop a flap within one daemon's lifetime, and a daemon restart is
 /// itself a legitimate reason to try again (that is what the post-update audit
 /// does).
+/// Death events the daemon has already SEEN (and, if eligible, healed) — the
+/// auto-heal edge. Inserted by the detector on a fresh death and PRE-inserted
+/// by `reconcile_on_boot` for sessions found dead at boot, so a daemon restart
+/// can never re-discover a long-dead session and heal it. Cleared on the next
+/// alive tick (same place the death badge clears), so a future death of the
+/// same session is a new edge.
+static DEATH_SEEN: once_cell::sync::Lazy<dashmap::DashMap<String, ()>> =
+    once_cell::sync::Lazy::new(dashmap::DashMap::new);
+
 static LAST_HEAL: once_cell::sync::Lazy<dashmap::DashMap<String, Instant>> =
     once_cell::sync::Lazy::new(dashmap::DashMap::new);
 
@@ -1198,6 +1235,14 @@ static HEAL_ATTEMPTS: once_cell::sync::Lazy<dashmap::DashMap<String, u32>> =
 
 /// Test-only: suppress the real `start` inside [`run_heal_start`]. See there.
 #[cfg(test)]
+/// Dry-run gate for the heal's restart. In PRODUCTION this must be false —
+/// a true default here shipped a no-op auto-heal (caught live in E2E: the
+/// death badge appeared but the session never restarted). Tests default it ON
+/// so unrelated tests can't spawn real sessions; the one end-to-end heal test
+/// flips it off explicitly.
+#[cfg(not(test))]
+static HEAL_DRY_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
 static HEAL_DRY_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Test-only: forget `name`'s cooldown stamp and attempt count.
@@ -1383,6 +1428,9 @@ async fn is_mid_start(state: &AppState, name: &str) -> bool {
 /// Only ever clears OUR badge: an agent error from a `StopFailure` hook is a
 /// different fact with a different lifecycle (cleared by the next prompt).
 fn clear_holder_death_badge(state: &AppState, name: &str) {
+    // The terminal is alive again: the death is history — release the
+    // DEATH_SEEN edge so a FUTURE death of this session is a fresh heal edge.
+    DEATH_SEEN.remove(name);
     let ours = state
         .session_activity(name)
         .and_then(|a| a.error)
@@ -2648,6 +2696,55 @@ mod recovery_tests {
     /// ONE heal per death, then a cooldown. The second death inside the window
     /// must leave the session stopped (badge and all) rather than start a
     /// restart loop against something that is systematically broken.
+    /// The E2E-caught race: the native reader persists `stopped` ~100ms after a
+    /// holder dies, so by the detector's tick `persisted == Stopped` already —
+    /// the heal must fire anyway (DEATH_SEEN edge), exactly once; and a boot
+    /// that pre-inserted the edge (long-dead session) must suppress it.
+    #[tokio::test]
+    async fn the_heal_edge_survives_a_racing_stopped_write_and_respects_boot_preseed() {
+        let _serial = crate::sessions::native::test_serial().await;
+        let (state, dir) = test_state().await;
+        native_row(&state, "racer", "shell", "stopped").await;
+        reset_heal_state("racer");
+        DEATH_SEEN.remove("racer");
+        let death = || crate::sessions::runtime::TerminalDeath {
+            reason: "holder is gone (test)".into(),
+            unexpected: true,
+        };
+        let mut det = StatusDetector::new();
+        // First observation with the status ALREADY persisted as Stopped (the
+        // race): the heal must still be spawned once.
+        force_stopped_on_death(&state, "racer", &mut det, Some(Status::Stopped), death())
+            .await
+            .unwrap();
+        // The spawn is fire-and-forget; give it a beat.
+        for _ in 0..50 {
+            if heal_attempts("racer") == 1 { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(heal_attempts("racer"), 1, "heal must fire despite persisted==Stopped");
+        // Repeat ticks: edge already claimed → no second heal.
+        force_stopped_on_death(&state, "racer", &mut det, Some(Status::Stopped), death())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert_eq!(heal_attempts("racer"), 1, "repeat ticks must not re-heal");
+
+        // Boot pre-seed: a session found dead AT BOOT must never heal via the
+        // detector edge.
+        native_row(&state, "longdead", "shell", "stopped").await;
+        reset_heal_state("longdead");
+        DEATH_SEEN.insert("longdead".to_string(), ());
+        force_stopped_on_death(&state, "longdead", &mut det, Some(Status::Stopped), death())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert_eq!(heal_attempts("longdead"), 0, "boot-preseeded edge must suppress the heal");
+        DEATH_SEEN.remove("racer");
+        DEATH_SEEN.remove("longdead");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn auto_heal_fires_once_then_holds_off_for_the_cooldown() {
         let _serial = crate::sessions::native::test_serial().await;
