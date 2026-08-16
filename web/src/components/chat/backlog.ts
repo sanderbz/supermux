@@ -52,6 +52,14 @@ export const NEAR_TOP_PX = 320
  */
 export const JUMP_AWAY_PX = 240
 
+/**
+ * How many fill pages the seam repair may spend before it gives up and keeps
+ * the newer half only. 5 × 60 = 300 entries of drift between two tail polls —
+ * far past anything a live turn produces in 1.2 s, and a hard stop so a cursor
+ * that can no longer be found (a cleared or compacted transcript) cannot spin.
+ */
+export const BRIDGE_MAX_PAGES = 5
+
 /** What `oldestCursor` needs of an entry — the server's cursor pair. */
 export interface CursorRef {
   uuid: string
@@ -112,6 +120,66 @@ export function mergeOlder(
     out.push(e)
   }
   return out
+}
+
+/**
+ * THE SEAM — is the accumulated block still joined to the tail?
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The block hangs under an ANCHOR: the entry that was the tail's oldest when
+ * the block's first page was fetched. While that entry is still inside the
+ * 30-entry window, the window covers everything above the block and the merged
+ * list is one contiguous run.
+ *
+ * The window SLIDES, though, and the block does not. One new entry pushes the
+ * window's bottom one entry up, and the entry it drops is then in neither list
+ * — measured against the live server on a 600-entry transcript: one entry
+ * landing after the user has paged back loses exactly one message out of the
+ * MIDDLE of the conversation, twenty lose twenty, and nothing on the surface
+ * says so. That is QA #3's own defect ("everything above the window is
+ * unreachable") one window further down, so this is the check that catches it:
+ * anchor gone from the tail ⇒ the seam is open and must be refilled before the
+ * hole can be drawn.
+ */
+export function seamOpen(
+  tail: readonly CursorRef[],
+  block: { anchor: string | null; count: number },
+): boolean {
+  if (block.count === 0 || block.anchor == null) return false
+  return !tail.some((e) => e.uuid === block.anchor)
+}
+
+/**
+ * Does this fill page reach the anchor — i.e. do the two halves now join?
+ *
+ * The fill is fetched downward from the window's NEW bottom, so it covers the
+ * dropped entries first; once it contains the anchor it also reaches the entry
+ * directly above the block, and `mergeOlder` dedupes the overlap away.
+ */
+export function bridges(fill: readonly CursorRef[], anchor: string | null): boolean {
+  if (anchor == null) return false
+  return fill.some((e) => e.uuid === anchor)
+}
+
+/**
+ * The block a repair leaves behind, or `null` for "keep what you had".
+ *
+ *  · bridged — the fill goes on top and the overlap dedupes away.
+ *  · not bridged (a cursor the server can no longer find: a cleared or
+ *    compacted transcript) — the fill REPLACES the block. What the reader had
+ *    paged in cannot be joined to what is on screen any more, and one shorter
+ *    honest conversation they can page back into beats a longer one with a
+ *    hole in the middle of it.
+ *  · nothing came back at all — change nothing, so a momentarily empty answer
+ *    can never delete history the reader has already paged in. The anchor stays
+ *    stale, so the next tail tick tries again.
+ */
+export function healedBlock(
+  fill: readonly ChatEntry[],
+  block: readonly ChatEntry[],
+  bridged: boolean,
+): ChatEntry[] | null {
+  if (fill.length === 0) return null
+  return bridged ? mergeOlder(fill, block) : (fill as ChatEntry[])
 }
 
 /** The scroll region as it was the instant the older page was asked for. */

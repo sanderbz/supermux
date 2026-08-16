@@ -18,11 +18,14 @@ import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
+  bridges,
+  healedBlock,
   historyCursor,
   jumpVisible,
   mergeOlder,
   oldestCursor,
   restoredScrollTop,
+  seamOpen,
   shouldLoadOlder,
   JUMP_AWAY_PX,
   NEAR_TOP_PX,
@@ -92,6 +95,72 @@ describe('merging an older page into the tail', () => {
   test('with no older pages the tail array is returned unchanged', () => {
     const tail = [entry('n1')]
     expect(mergeOlder(tail, [])).toBe(tail)
+  })
+})
+
+/**
+ * THE SEAM. The tail is the newest 30 entries and it SLIDES; the accumulated
+ * block below it does not. One entry landing after the user has paged back
+ * therefore drops one entry out of BOTH lists — measured against the live
+ * server on `ipc` (600 entries): slide 1 → 1 message gone from the middle of
+ * the transcript, slide 20 → 20 gone, with the surface showing no hole at all.
+ * Silently losing messages out of the middle is the same defect QA #3 is
+ * about, one window further down.
+ */
+describe('the seam between the tail and the block below it', () => {
+  const block = (anchor: string | null, count: number) => ({ anchor, count })
+
+  test('intact while the tail still holds the entry the block hangs under', () => {
+    const tail = [entry('n1'), entry('n2'), entry('a')]
+    expect(seamOpen(tail, block('a', 60))).toBe(false)
+  })
+
+  // The case that loses messages: the anchor has slid out of the 30-entry
+  // window, so everything between the window's new bottom and the block's top
+  // belongs to neither list.
+  test('open once the window has slid past that entry', () => {
+    const tail = [entry('n0'), entry('n1'), entry('n2')]
+    expect(seamOpen(tail, block('a', 60))).toBe(true)
+  })
+
+  test('nothing paged in → there is no seam to keep', () => {
+    expect(seamOpen([entry('n0')], block(null, 0))).toBe(false)
+    expect(seamOpen([entry('n0')], block('a', 0))).toBe(false)
+  })
+
+  // The heal fetches downward from the window's new bottom until it reaches
+  // the anchor; only then do the two halves join without a hole.
+  test('a fill page that reaches the anchor bridges the seam', () => {
+    expect(bridges([entry('x'), entry('a')], 'a')).toBe(true)
+  })
+
+  test('a fill page that does not reach it must keep fetching', () => {
+    expect(bridges([entry('x'), entry('y')], 'a')).toBe(false)
+    expect(bridges([entry('x')], null)).toBe(false)
+  })
+
+  // What the healed state must look like: the fill goes ON TOP of the block,
+  // the overlap is deduped, and the result is one contiguous newest-first run.
+  test('fill + block is contiguous, deduped, and in transcript order', () => {
+    const tailNow = [entry('n0'), entry('n1'), entry('n2')]
+    const fill = [entry('n3'), entry('a'), entry('o1')] // reaches the anchor
+    const paged = [entry('o1'), entry('o2')]
+    const healed = mergeOlder(tailNow, healedBlock(fill, paged, true)!)
+    expect(healed.map((e) => e.uuid)).toEqual(['n0', 'n1', 'n2', 'n3', 'a', 'o1', 'o2'])
+  })
+
+  // A fill that never reached the anchor cannot be joined to what the reader
+  // paged in; the shorter honest run wins over a longer one with a hole.
+  test('a fill that never bridged replaces the block instead of holing it', () => {
+    const fill = [entry('n3'), entry('n4')]
+    expect(healedBlock(fill, [entry('o1')], false)!.map((e) => e.uuid)).toEqual(['n3', 'n4'])
+  })
+
+  // …but an empty answer must never be mistaken for "there was nothing there":
+  // that would delete history the reader has already paged in.
+  test('an empty fill changes nothing at all', () => {
+    expect(healedBlock([], [entry('o1')], false)).toBeNull()
+    expect(healedBlock([], [entry('o1')], true)).toBeNull()
   })
 })
 
