@@ -668,10 +668,10 @@ for the PR body.
 
 - [x] **T12.1** `bun run lint`, `bun run test:unit`, `bun run build:perf` (the chat chunk must not regress — the new
       API module and pure helpers are tiny, but assert it), `cargo test` (debug), `cargo clippy`.
-- [ ] **T12.2** PR body: G1's answer, the nine inherited commits named as inherited (so the reviewer knows what is new
+- [x] **T12.2** PR body: G1's answer, the nine inherited commits named as inherited (so the reviewer knows what is new
       in this PR and what is being re-proposed), the §0.2 design deviation stated plainly (ledger, not SSE payload),
       the §0.3 hazard and its fix, T10's checklist link, T11's screenshots, and the known limitation from T10.2.
-- [ ] **T12.3** Open the PR and **hand off**. Never auto-merge, never deploy, never restart :8824.
+- [x] **T12.3** Open the PR and **hand off**. Never auto-merge, never deploy, never restart :8824.
 
 ---
 
