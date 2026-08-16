@@ -240,3 +240,31 @@ into `1ea8b99 feat(chat): T4.1/T4.2 — the last two A7-blockers`. The content i
 branch; only its commit message is somebody else's. Recorded rather than repaired: un-mixing it
 means a rebase, and this branch is shared. **A shared worktree needs `git add <paths>` AND
 `git commit -- <paths>`** — the first alone is not enough, as this demonstrates.
+
+## T5.5 — where the re-filed items live
+
+The task says everything triaged `B5` / `later` / `wontfix` goes into the PR body **and** into the
+relevant plan's out-of-scope section, "so the next executor inherits a ledger rather than an
+archaeology problem".
+
+**Half of that is not safely executable from here, and this is the honest substitute.** The B3 and
+B5 plans are *untracked files in the main checkout* (`/opt/projects/supermux/docs/superpowers/
+plans/2026-08-16-fase-b3-pickers.md`, `…-b5-lifecycle.md`) and both fases are **executing right
+now on their own branches**. Editing a file another agent is mid-execution against would either be
+lost or would corrupt their ledger — and the standing rule is never to commit, branch or stash in
+the main checkout.
+
+So the inheritance lives here instead, and this file is committed:
+
+- **The table above is the ledger.** Every one of the 36 rows carries a verdict and a named owner.
+  A B5 executor reading `docs/superpowers/plans/a6-triage.md` gets rows #8, #16, #22 and #24 with
+  their reasons; a `later` executor gets the other eighteen.
+- **The PR body repeats the counts and the four B5 rows by number**, so the hand-off is visible
+  without opening the repo.
+- **Three rows are closed for good** and should not be re-raised: #13 (bash "always allow" —
+  a 2.1.233-verified decision), #23 (tailers never warm for unattached sessions — an architectural
+  decision, re-decide only on evidence), #33 (the `RosterRow` rename — declined, alias documented).
+
+If the owner would rather have the B5 rows physically appended to the B5 plan, that is a one-line
+edit once `feat/b5-lifecycle` has landed and its plan file is tracked — deliberately left undone
+rather than done unsafely.
