@@ -213,3 +213,30 @@ in-flight A6 work has spent the 0.21 KB and **0.68 KB more**. This is not a T5.1
 and T1.3 add zero JS bytes — one untracked-doc edit, one markdown append, one test file moved), but
 it is the fase's problem and the budget is a gate, not a guideline. Whoever closes A6 has to pay
 0.68 KB back with a deletion. **Do not raise the number in `web/perf/` or `scripts/size-budget.mjs`.**
+
+### The measurement, closed out
+
+| | entry JS | main app JS |
+|---|---|---|
+| T0.5 baseline (`origin/main` @ `a7cc52c`) | 144.94 / 160.00 KB | **209.79 / 210.00 KB** (0.21 KB left) |
+| `feat/a6-polish` before T5.1/T1.3 | 145.16 / 160.00 KB | **210.68 / 210.00 KB — ✗ over by 0.68** |
+| `feat/a6-polish` after T5.1/T1.3 | 145.33 / 160.00 KB | **211.50 / 210.00 KB — ✗ over by 1.50** |
+
+Neither delta is T5.1's or T1.3's: this task shipped **one markdown append and one file moved under
+`web/tests/`**, and nothing under `web/src/` — no path that reaches a bundle. The +0.82 KB between
+the two runs is the `T4.1/T4.2` commit (`1ea8b99`) landing in the same worktree in between. The
+number is reported here rather than in a per-task line precisely because **`build:perf` already
+exits 1 on this branch** and every subsequent A6 measurement will inherit that: the gate is red, it
+went redder, and it has to be paid back with a deletion before the fase can claim green. The plan's
+"~4.5 KB" was stale before A6 started; the budget in `web/perf/` and `scripts/size-budget.mjs` was
+not touched.
+
+### One process note, since this fase is about ledgers being true
+
+T1.3's diff is **not** in a T1.3 commit. It was staged in this shared worktree
+(`/opt/projects/supermux-a6`, four agents concurrently) when another executor ran a
+non-path-scoped `git commit`, which swept the staged spec move and the T1.3 section of this document
+into `1ea8b99 feat(chat): T4.1/T4.2 — the last two A7-blockers`. The content is correct and on the
+branch; only its commit message is somebody else's. Recorded rather than repaired: un-mixing it
+means a rebase, and this branch is shared. **A shared worktree needs `git add <paths>` AND
+`git commit -- <paths>`** — the first alone is not enough, as this demonstrates.
