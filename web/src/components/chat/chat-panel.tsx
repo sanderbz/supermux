@@ -327,16 +327,26 @@ export default function ChatPanel({
           // ride the shared query this component already subscribes to, the
           // same rule as `mentions`/`names`.
           pickerData={pickerData}
-          // The dogfood number, readable without devtools (re-renders on the
-          // live-layer ticker / tail refetches). It rides the composer's frame
-          // now — the read-only shell this replaced is only reached when NO
-          // composer slot is passed, and the panel always passes one.
+          // The dogfood number — DEV BUILDS ONLY (daily-driver QA #9).
+          //
+          // It shipped unconditionally and printed `hook→UI p50 9 ms (n=3)`
+          // over the last bubble of a real conversation, on the surface that is
+          // meant to BE somebody's chat client. A measurement nobody asked for
+          // is not a feature, and one that collides with the newest message is a
+          // defect twice over.
+          //
+          // The number itself is not lost: `exposeLatency()` above publishes the
+          // same ring on `window.__supermuxChatLatency` in every build, so the
+          // dogfood read is one devtools line away — and `import.meta.env.DEV`
+          // is the repo's own gate for exactly this (`use-version.ts`,
+          // `use-update-badge.ts`), which means the production bundle drops the
+          // branch entirely rather than hiding it behind a flag.
           //
           // One pass over the bounded ring per render, not three array reads
           // plus a sort (#59) — `latency` is read once at the top of the
           // component.
           stat={
-            latency.n > 0 ? (
+            import.meta.env.DEV && latency.n > 0 ? (
               <>
                 hook→UI p50 {latency.p50} ms (n={latency.n})
               </>
