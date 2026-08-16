@@ -239,6 +239,15 @@ function Pane({
       // behaviour is newer than some of the screen readers this app runs under.
       inert={!visible}
       aria-hidden={!visible}
+      // A6/T6.6 — offscreen surfaces pause. Both renderers stay MOUNTED across
+      // the toggle (that is the whole point of the retention model), so exactly
+      // one of them is always invisible and, before A6, still running every
+      // ambient CSS loop it owns: `.sm-blip` (the typing wave), `.sm-spin` (2.4s
+      // per running receipt line) and one `.sm-breathe` per face in the gutter.
+      // `[data-offscreen]` in globals.css sets `animation-play-state: paused`
+      // for the whole subtree — paused, not `none`, so a toggle back resumes at
+      // the frame it left rather than restarting every loop in unison.
+      data-offscreen={visible ? undefined : ''}
       // Both panes occupy the SAME cell, so the box neither moves nor resizes
       // when the occupant changes. `minHeight: 0` keeps a flex/grid child from
       // refusing to shrink, which is what would silently change the terminal's
