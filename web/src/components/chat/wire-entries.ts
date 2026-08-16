@@ -81,10 +81,47 @@ function tagInner(body: string, tag: string): string | null {
   return m ? m[1].trim() : null
 }
 
-/** `attr="value"` anywhere in the leading tag. */
+/** `attr="value"` (or `attr='value'`) anywhere in the leading tag. Both quote
+ *  styles, because `recall.rs::attr_value` accepts both and this file's whole
+ *  job is to agree with it. */
 function attrValue(body: string, attr: string): string | undefined {
-  const m = new RegExp(`${attr}\\s*=\\s*"([^"]*)"`).exec(body)
-  return m && m[1] ? m[1] : undefined
+  const m = new RegExp(`${attr}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(body)
+  if (!m) return undefined
+  const v = m[1] ?? m[2]
+  return v ? v : undefined
+}
+
+/** supermux's own wrapper tags — the two this app writes itself, as opposed to
+ *  the ones Claude Code injects. Kept as consts because `recall.rs` does the
+ *  same (`DELEGATION_TAG`, `SCHEDULE_TAG`): the format is a contract. */
+const DELEGATION_TAG = 'supermux-delegation'
+const SCHEDULE_TAG = 'supermux-schedule'
+
+/** `scheduler/runner.rs::CONFIRM_FOOTER_SENTINEL` — the line that opens the
+ *  machine-written "run this curl when you're done" footer. */
+const CONFIRM_FOOTER_SENTINEL = '— — —'
+
+/** Drop the agent-confirm footer from a scheduled delivery's body. A sentinel
+ *  match, never a guess about what a prompt's tail looks like: bodies without
+ *  it come back whole (`recall.rs::strip_confirm_footer`). */
+function stripConfirmFooter(text: string): string {
+  const out: string[] = []
+  for (const line of text.split('\n')) {
+    if (line.trim() === CONFIRM_FOOTER_SENTINEL) break
+    out.push(line)
+  }
+  return out.join('\n').replace(/\s+$/, '')
+}
+
+/** Inverse of `runner.rs::escape_attr`, for exactly the four entities the
+ *  writer produces — a private contract between two functions, not an XML
+ *  parser. `&amp;` last, so an escaped `&amp;lt;` returns as `&lt;`. */
+function unescapeAttr(s: string): string {
+  return s
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&amp;', '&')
 }
 
 function stripTags(s: string): string {
@@ -108,9 +145,19 @@ function shortSummary(s: string): string {
   return '(system event)'
 }
 
-/** The A1 display kinds a user-role line can become. */
+/** The A1 display kinds a user-role line can become. Mirrors `recall.rs`'s
+ *  `Kind` in its snake_case wire spelling — the vocabulary the shared parity
+ *  corpus is written in. */
 export interface ClassifiedPrompt {
-  kind: 'prompt' | 'command' | 'teammate' | 'notification' | 'system' | 'image'
+  kind:
+    | 'prompt'
+    | 'command'
+    | 'teammate'
+    | 'delegation'
+    | 'schedule'
+    | 'notification'
+    | 'system'
+    | 'image'
   text: string
   label?: string
 }
@@ -125,6 +172,20 @@ export interface ClassifiedPrompt {
  * "typed"` exists to prevent: a human who pastes XML must not be swallowed
  * into the system bucket.
  */
+/**
+ * The chat renderer's calm-view filter — the exact twin of
+ * `recall.rs::Kind::is_user_initiated`, and the second half of the reason the
+ * fabric spine was invisible here: even once `classifyPrompt` names a
+ * delegation, a filter that does not list it drops the row on the floor.
+ */
+export const SURVIVING_KINDS: ReadonlySet<ClassifiedPrompt['kind']> = new Set([
+  'prompt',
+  'command',
+  'teammate',
+  'delegation',
+  'schedule',
+] as const)
+
 export function classifyPrompt(raw: string): ClassifiedPrompt {
   const trimmed = raw.trim()
   const tag = leadingTag(trimmed)
@@ -158,12 +219,45 @@ export function classifyPrompt(raw: string): ClassifiedPrompt {
         text: sanitiseText(tagInner(trimmed, 'teammate-message') ?? ''),
         label: attrValue(trimmed, 'teammate_id'),
       }
+    case DELEGATION_TAG: {
+      // `<supermux-delegation from="X">…</supermux-delegation>` — a prompt
+      // another session handed to this one (`agents/delegate.rs` writes it).
+      // Same parse shape as the teammate envelope above; the sender's slug is
+      // the label the arrival divider names.
+      const from = attrValue(trimmed, 'from')?.trim()
+      const inner = sanitiseText(tagInner(trimmed, DELEGATION_TAG) ?? '')
+      // No sender means no provenance, and an unattributed body must never
+      // leak into the transcript as somebody's bare prompt.
+      if (!from) {
+        return { kind: 'system', text: shortSummary(inner), label: DELEGATION_TAG }
+      }
+      return { kind: 'delegation', text: inner, label: from }
+    }
+    case SCHEDULE_TAG: {
+      // `<supermux-schedule id="…" title="…">…</supermux-schedule>` — a prompt
+      // one of this session's own schedules fired (`scheduler/runner.rs`).
+      // Unlike a delegation — whose whole provenance IS the `from` attribute —
+      // the tag itself already says a schedule sent this, so a title-less
+      // schedule stays a schedule turn (unnamed) rather than degrading into a
+      // system line that would hide the prompt from the transcript.
+      const rawTitle = attrValue(trimmed, 'title')
+      const title = rawTitle ? unescapeAttr(rawTitle) : undefined
+      const inner = stripConfirmFooter((tagInner(trimmed, SCHEDULE_TAG) ?? '').trim())
+      return {
+        kind: 'schedule',
+        text: sanitiseText(inner),
+        label: title && title.trim() ? title : undefined,
+      }
+    }
     case 'system-reminder':
       return {
         kind: 'system',
         text: shortSummary(tagInner(trimmed, 'system-reminder') ?? ''),
         label: 'reminder',
       }
+    // `local-command-caveat` / `local-command-stdout` need no arm of their own:
+    // `recall.rs` gives them one, but it produces exactly what the default arm
+    // below produces (system, tag as label, one-line summary).
     default:
       // An unknown wrapper degrades into the system bucket carrying its tag as
       // the badge — a brand-new Claude Code wrapper never leaks as a fake
@@ -305,12 +399,19 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       const raw = textOf(w.body)
       if (!raw.trim()) continue
       const c = classifyPrompt(raw)
-      // The calm view: only the three user-initiated kinds, the same rule
-      // `read_chat_turns` applied. Everything else the harness writes as a
-      // user-role line stays out.
-      if (c.kind !== 'prompt' && c.kind !== 'command' && c.kind !== 'teammate') {
-        continue
-      }
+      // The calm view: only the user-initiated kinds, the same rule
+      // `recall.rs::Kind::is_user_initiated` applies. Everything else the
+      // harness writes as a user-role line stays out.
+      //
+      // A delegated and a scheduled prompt belong here for the same reason a
+      // typed one does: somebody deliberately asked for it — a colleague in the
+      // first case, this session's owner (earlier) in the second. They were
+      // omitted while this filter predated the wrappers, which made every
+      // handoff invisible in the renderer that ships. `SURVIVING_KINDS` is
+      // pinned to the Rust allowlist by the shared corpus in
+      // `tests/unit/chat-wrapper-parity.test.ts` — neither language's switch is
+      // exhaustive, so nothing else can catch the two drifting apart.
+      if (!SURVIVING_KINDS.has(c.kind)) continue
       out.push({
         uuid: w.uuid,
         ts: toSeconds(w.ts_ms),

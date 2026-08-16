@@ -180,11 +180,67 @@ impl Kind {
     /// This is the ONE site: the chat-tail path used to carry a copy-pasted
     /// `matches!` list, which meant every new kind had to be added twice or it
     /// half-landed.
-    fn is_user_initiated(self) -> bool {
+    pub fn is_user_initiated(self) -> bool {
         matches!(
             self,
             Kind::Prompt | Kind::Command | Kind::Teammate | Kind::Delegation | Kind::Schedule
         )
+    }
+}
+
+/// The result of classifying a user-role BODY — the half of [`classify_user`]
+/// that depends on nothing but the text itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapperClass {
+    pub kind: Kind,
+    pub text: String,
+    pub label: Option<String>,
+}
+
+/// **The classification parity seam.**
+///
+/// There are two independent user-line classifiers in this codebase. This one
+/// serves the recall plane (`GET /recall?chat=true`); the other is
+/// `web/src/components/chat/wire-entries.ts::classifyPrompt`, which the chat
+/// WebSocket renderer rides. The chat wire carries the body and *none* of the
+/// record's flags (`promptSource`, `isMeta`), so the TS side could only port
+/// this half — steps 6, 7 and 9 of [`classify_user`], which is exactly what
+/// this function is, called from there so the two can never be separate code.
+///
+/// It is `pub` for one reason: `server/tests/wrapper_parity.rs` and
+/// `web/tests/unit/chat-wrapper-parity.test.ts` hold both planes against ONE
+/// corpus, `server/tests/fixtures/chat/supermux-wrappers.jsonl`. **Neither
+/// language's `match` on its kind enum is exhaustive** — every one has a `_`
+/// arm — so adding a wrapper to one plane and forgetting the other produces no
+/// compiler error in Rust *or* TypeScript. That corpus is the only thing that
+/// can catch the drift, and a delegated prompt that only one plane understands
+/// is a delegated prompt that is invisible in the app that ships.
+pub fn classify_prompt_body(body: &str) -> WrapperClass {
+    let trimmed = body.trim();
+
+    // 6) A known leading wrapper wins outright.
+    if let Some(c) = classify_by_wrapper(trimmed) {
+        return WrapperClass {
+            kind: c.kind,
+            text: c.text,
+            label: c.label,
+        };
+    }
+
+    // 7) `[Image: …]` placeholder — no leading XML tag.
+    if trimmed.starts_with("[Image: ") {
+        return WrapperClass {
+            kind: Kind::Image,
+            text: trimmed.lines().next().unwrap_or(trimmed).to_string(),
+            label: None,
+        };
+    }
+
+    // 9) Everything else is a real user prompt.
+    WrapperClass {
+        kind: Kind::Prompt,
+        text: sanitise_text(trimmed),
+        label: None,
     }
 }
 
@@ -1113,22 +1169,16 @@ fn classify_user(v: &serde_json::Value) -> Option<ClassifiedUser> {
         }));
     }
 
-    // 6) Leading-wrapper detection. We do this BEFORE the `isMeta` fallback
-    //    so a known wrapper gets its specific kind even when isMeta is set.
-    if let Some(c) = classify_by_wrapper(trimmed) {
-        return Some(c);
-    }
-
-    // 7) `[Image: …]` placeholder (isMeta=true; no leading XML tag).
-    if trimmed.starts_with("[Image: ") {
+    // 6/7/9) Wrapper → image → plain prompt. Delegated to the parity seam so
+    //    the chat-WS plane's TypeScript port has exactly one thing to mirror
+    //    (see [`classify_prompt_body`]). `isMeta` (step 8) is checked between
+    //    7 and 9 below, because the seam cannot see it.
+    let body = classify_prompt_body(trimmed);
+    if body.kind != Kind::Prompt {
         return Some(ClassifiedUser {
-            kind: Kind::Image,
-            text: trimmed
-                .lines()
-                .next()
-                .unwrap_or(trimmed)
-                .to_string(),
-            label: None,
+            kind: body.kind,
+            text: body.text,
+            label: body.label,
         });
     }
 
@@ -1145,9 +1195,9 @@ fn classify_user(v: &serde_json::Value) -> Option<ClassifiedUser> {
     // 9) Everything else is a real user prompt — older transcripts that
     //    predate `promptSource` end up here.
     Some(ClassifiedUser {
-        kind: Kind::Prompt,
-        text: sanitise_text(trimmed),
-        label: None,
+        kind: body.kind,
+        text: body.text,
+        label: body.label,
     })
 }
 
