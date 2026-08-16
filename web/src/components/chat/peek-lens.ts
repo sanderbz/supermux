@@ -54,6 +54,24 @@ export interface DialogSighting {
    * different files never share it.
    */
   question?: string
+  /**
+   * The dialog's BODY, verbatim — the command, the file, the diff (QA #11).
+   *
+   * The card used to show a truncated *description*: `Run  Download example.com
+   * homepage to /tmp pr… ?`, while the thing actually being approved —
+   * `curl -sS https://example.com/ -o /tmp/qa-perm-probe.html && echo done` —
+   * appeared nowhere in chat, only in the terminal. The hook's `summary` is
+   * short and secret-conscious by design (`activity.rs` prefers Claude's own
+   * English description for a Bash call), so the wire cannot supply the command;
+   * the SCREEN can, and does. Every capture puts it between the variant title
+   * and the question line, and an edit puts its diff there.
+   *
+   * Verbatim means verbatim: no whitespace normalisation and no clamping, only
+   * the common indent removed and the blank edges trimmed. This is the one place
+   * on the surface that shows a user exactly what they are agreeing to, so a
+   * "helpful" rewrite here would be the bug.
+   */
+  body?: string[]
 }
 
 /* ── the two-phase fingerprint ────────────────────────────────────────────────
@@ -300,6 +318,9 @@ function readFamily(
 /** The permission families' question line. Bounded so a `?` far down the
  *  scrollback cannot be dragged into one. */
 const PERMISSION_QUESTION_RE = /Do you want[^?]{0,200}\?/g
+/** The same token, per LINE — where the body stops (`readBody`). Unflagged: a
+ *  `g` regex carries `lastIndex` between calls and would skip every other hit. */
+const PERMISSION_QUESTION_LINE_RE = /Do you want[^?]{0,200}\?/
 /** The plan dialog's, which is fixed prose rather than a per-target sentence. */
 const PLAN_QUESTION = 'Would you like to proceed?'
 /** The rule CC draws above a dialog's body. Part of the continuity check: the
@@ -337,6 +358,78 @@ function continues(
   // registry believes in — so a frame whose title stopped saying `Create file`
   // is not this dialog, whatever else still matches.
   return readVariant(block) === prior.variant
+}
+
+/**
+ * The dialog's own body, VERBATIM (daily-driver QA #11).
+ *
+ * Bounded at BOTH ends by things the dialog drew itself, because the capture is
+ * scrollback plus viewport and everything above the dialog is somebody else's
+ * text:
+ *
+ *   top     the section rule CC draws above a dialog box, or — on a capture with
+ *           no rule (this repo's A1 fixtures) — the variant title. NEITHER of
+ *           them present means the body is not identifiable, and then there is
+ *           none: showing 24 lines of scrollback under `Run …?` would be worse
+ *           than showing nothing.
+ *   bottom  the question line, which is drawn by the card already.
+ *
+ * PERMISSION ONLY. A plan dialog's body is a whole written plan between dashed
+ * rules — the card links it instead (`planPath`), and an `unknown` modal has no
+ * verified shape at all, so nothing above its rows is known to belong to it.
+ *
+ * What is dropped is furniture and nothing else: the variant title (the card's
+ * `why` line already names the tool), CC's dashed rules, the blank edges, and
+ * the common indent. Every remaining glyph is the pty's.
+ */
+const VARIANT_TITLES = ['Bash command', 'Edit file', 'Create file']
+/** A line that is only box-drawing — CC's own framing, at terminal width. */
+const RULE_ONLY_RE = /^[\s─━╌┄┈╍-]+$/
+
+function readBody(
+  lines: readonly string[],
+  from: number,
+  optionLine: number,
+  family: DialogSighting['family'],
+): string[] | undefined {
+  if (family !== 'permission') return undefined
+  let start = -1
+  for (let i = optionLine - 1; i >= from; i--) {
+    if (SECTION_RULE_RE.test(lines[i])) {
+      start = i + 1
+      break
+    }
+  }
+  if (start < 0) {
+    for (let i = optionLine - 1; i >= from; i--) {
+      if (VARIANT_TITLES.includes(lines[i].trim())) {
+        start = i
+        break
+      }
+    }
+  }
+  if (start < 0) return undefined
+
+  let end = optionLine
+  for (let i = optionLine - 1; i >= start; i--) {
+    if (PERMISSION_QUESTION_LINE_RE.test(lines[i])) {
+      end = i
+      break
+    }
+  }
+
+  const kept = lines
+    .slice(start, end)
+    .filter((l) => !VARIANT_TITLES.includes(l.trim()) && !RULE_ONLY_RE.test(l))
+  while (kept.length && !kept[0].trim()) kept.shift()
+  while (kept.length && !kept[kept.length - 1].trim()) kept.pop()
+  if (!kept.length) return undefined
+  // The common indent is the terminal's left margin, not the author's — but the
+  // RELATIVE indent is the diff's, so only the shared part goes.
+  const indent = Math.min(
+    ...kept.filter((l) => l.trim()).map((l) => l.length - l.trimStart().length),
+  )
+  return kept.map((l) => l.slice(indent).trimEnd())
 }
 
 /** Bash vs Edit/Write. Title beats footer: `ctrl+e to explain` is bash-only
@@ -432,6 +525,9 @@ function readDialog(
   if (family === 'permission') {
     const variant = readVariant(block)
     if (variant) sighting.variant = variant
+    // What the user is actually agreeing to (QA #11).
+    const body = readBody(lines, from, rows[0].line, family)
+    if (body) sighting.body = body
   } else if (family === 'plan') {
     // The footer's plan path, when it is on screen. `[^\s]` and not `.` so a
     // footer that shares its line with `ctrl+g to edit in …` cannot swallow it.

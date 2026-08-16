@@ -42,6 +42,7 @@ import { serverNowMs } from './latency'
 import type { OverlayLine } from './use-receipt-overlay'
 import { WorkingRow } from './working-row'
 import {
+  CardCode,
   ChoiceCard,
   DelegationPill,
   InlineCode,
@@ -326,6 +327,10 @@ export function DialogCard({
     >
       <ChoiceCard
         question={dialogQuestion(view, summary || request?.tool)}
+        // What is actually being approved, verbatim off the pty (QA #11). The
+        // question is a sentence — a truncated description, at worst — and this
+        // is the evidence under it.
+        detail={view.body?.length ? <CardCode>{view.body.join('\n')}</CardCode> : undefined}
         why={why || undefined}
         options={options}
         onChoose={

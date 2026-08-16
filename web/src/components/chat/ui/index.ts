@@ -23,7 +23,13 @@ export {
   type MessageRowProps,
 } from './bubble'
 export { CapturedFrameCard, type CapturedFrameCardProps } from './captured-frame-card'
-export { ChoiceCard, InlineCode, type ChoiceCardProps, type ChoiceOption } from './choice-card'
+export {
+  CardCode,
+  ChoiceCard,
+  InlineCode,
+  type ChoiceCardProps,
+  type ChoiceOption,
+} from './choice-card'
 export { Composer, type ComposerProps } from './composer'
 export { DelegationPill, type DelegationPillProps } from './delegation-pill'
 export { Dots } from './dots'

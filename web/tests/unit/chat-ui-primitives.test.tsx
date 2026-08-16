@@ -22,7 +22,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { characterFromSeed, VIEWBOX } from '../../src/brand/marks'
 import { Bubble, BubbleCode, MessageRow } from '../../src/components/chat/ui/bubble'
 import { CapturedFrameCard } from '../../src/components/chat/ui/captured-frame-card'
-import { ChoiceCard, InlineCode } from '../../src/components/chat/ui/choice-card'
+import { CardCode, ChoiceCard, InlineCode } from '../../src/components/chat/ui/choice-card'
 import { Composer } from '../../src/components/chat/ui/composer'
 import { DelegationPill } from '../../src/components/chat/ui/delegation-pill'
 import { Facepile } from '../../src/components/chat/ui/facepile'
@@ -220,6 +220,36 @@ describe('ReceiptGroup at phone width (daily-driver QA #2)', () => {
     expect(html(<ReceiptGroup rows={[{ ...long, full: 'the whole result' }]} />)).toContain(
       'aria-expanded',
     )
+  })
+})
+
+describe('the choice card\'s evidence row (daily-driver QA #11)', () => {
+  test('the verbatim body sits between the question and the why line', () => {
+    const out = html(
+      <ChoiceCard
+        question="Run it?"
+        detail={<CardCode>{'curl -sS https://example.com/ -o /tmp/x.html && echo done'}</CardCode>}
+        why="Bash · in supermux/spike-qa"
+        options={[{ label: 'Allow once' }]}
+      />,
+    )
+    expect(out).toContain('curl -sS https://example.com/ -o /tmp/x.html &amp;&amp; echo done')
+    expect(out.indexOf('Run it?')).toBeLessThan(out.indexOf('curl -sS'))
+    expect(out.indexOf('curl -sS')).toBeLessThan(out.indexOf('Bash ·'))
+  })
+
+  test('it scrolls rather than wrapping — a soft break would change the command', () => {
+    const out = html(<CardCode>{'a && b'}</CardCode>)
+    expect(out).toContain('whitespace-pre')
+    expect(out).not.toContain('whitespace-pre-wrap')
+    expect(out).toContain('overflow-auto')
+    // …and it cannot push the buttons off a 390px screen.
+    expect(out).toContain('max-h-[132px]')
+  })
+
+  test('a card without one is byte-identical to the card that shipped', () => {
+    const plain = html(<ChoiceCard question="Run it?" options={[{ label: 'Allow once' }]} />)
+    expect(plain).not.toContain('chat-dialog-body')
   })
 })
 

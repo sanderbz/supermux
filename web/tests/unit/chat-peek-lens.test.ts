@@ -336,3 +336,59 @@ describe('readLens — a panel is not a draft', () => {
     expect(readLens('')).toEqual(EMPTY_LENS)
   })
 })
+
+/**
+ * Daily-driver QA #11 — the card never showed the command being approved.
+ *
+ * It asked `Run  Download example.com homepage to /tmp pr… ?` — a truncated
+ * DESCRIPTION — while `curl -sS https://example.com/ -o /tmp/qa-perm-probe.html
+ * && echo done` appeared nowhere in chat (`46-perm-40s.png`,
+ * `47-perm-on-reload.png`), only in the terminal (`48-terminal-from-card.png`).
+ * The hook's summary is short and secret-conscious by design, so the wire cannot
+ * supply the command — but the SCREEN has it, between the variant title and the
+ * question, on every capture.
+ */
+describe('the dialog body, verbatim', () => {
+  test('a bash prompt carries its command', () => {
+    const body = readLens(read('perm-bash.txt')).dialog!.body
+    expect(body).toEqual(['touch /tmp/spike-test-file', 'Create empty file /tmp/spike-test-file'])
+  })
+
+  test('the live a4c capture reads the same way, through the scrollback', () => {
+    const body = readLens(read('a4c/case1-bash-deny-1-before.txt')).dialog!.body
+    expect(body?.[0]).toBe('touch /tmp/spike-a4c-case1.txt')
+  })
+
+  test('a write prompt carries the file and its content, without the rules', () => {
+    const body = readLens(read('a4c/case3-write-option2-1-before.txt')).dialog!.body
+    // The line number is indented one further than the filename on this capture,
+    // and it stays that way: the COMMON indent is the terminal's left margin,
+    // the relative one is the content's.
+    expect(body).toEqual(['case3.txt', ' 1 hello a4c'])
+  })
+
+  test('an edit prompt carries its diff, signs intact', () => {
+    const body = readLens(read('perm-edit.txt')).dialog!.body
+    expect(body).toEqual(['notes.txt', '1  hello', '2 +second'])
+  })
+
+  test('the question and the options are not body — they are drawn already', () => {
+    const body = readLens(read('perm-bash.txt')).dialog!.body!.join('\n')
+    expect(body).not.toContain('Do you want')
+    expect(body).not.toContain('1. Yes')
+    expect(body).not.toContain('Esc to cancel')
+  })
+
+  test('a plan dialog has none: its body is a whole plan, and the card links it', () => {
+    const dialog = readLens(read('plan-approval.txt')).dialog!
+    expect(dialog.family).toBe('plan')
+    expect(dialog.body).toBeUndefined()
+    expect(dialog.planPath).toBe('~/.claude/plans/plan-a-tiny-change-purrfect-locket.md')
+  })
+
+  test('an unfixtured modal has none — nothing above its rows is known to be its', () => {
+    const dialog = readLens(read('a4c/00b-unknown-family-auto-mode-nag.txt')).dialog
+    expect(dialog?.family).toBe('unknown')
+    expect(dialog?.body).toBeUndefined()
+  })
+})
