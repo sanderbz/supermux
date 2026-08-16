@@ -54,7 +54,24 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'Error',
 }
 
-/** Decorative status indicator. The "attention" pulse lives on the CARD
+/** SCOPE, after fase B2 (T4): this dot is for MARK-LESS surfaces and for the
+ *  kill switch. The overview tile, the list row and the focus strip now draw the
+ *  session's MARK, whose eyes ARE the status channel (B0 contract C5: the
+ *  silhouette is never ringed, notched or overpainted) — they reach the dot only
+ *  through `components/roster/session-face.tsx`, which falls back to it when
+ *  `localStorage['supermux:roster-marks'] = '0'`.
+ *
+ *  The component is deliberately NOT deleted: `STATUS_LABEL` and `STATUS_COLOR`
+ *  are consumed app-wide through the barrel, several surfaces have no room for a
+ *  face, and the fallback has to be the exact pre-B2 pixels or the kill switch
+ *  is not a kill switch. `tests/unit/mark-status.test.ts` asserts that the three
+ *  roster surfaces do not import `StatusDot` directly, so the two channels
+ *  cannot silently re-diverge.
+ *
+ *  (`team/member-status-dot.tsx` merges into the mark vocabulary in B5 §16.3,
+ *  not here.)
+ *
+ *  Decorative status indicator. The "attention" pulse lives on the CARD
  *  (`<StatusBorder>`), NOT here — the dot is a static colour indicator. The one
  *  exception is the LOADING states (`starting` + `active`), where a tiny spinner
  *  replaces the disc because that IS the loading/working affordance (the

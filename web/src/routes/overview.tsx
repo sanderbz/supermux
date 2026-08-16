@@ -778,7 +778,7 @@ export function Overview() {
                   layoutId={`session-${s.name}`}
                   transition={springs.smooth}
                 >
-                  <SessionRow session={toTileSession(s)} />
+                  <SessionRow session={toTileSession(s)} sizeTier={overviewSize} />
                 </motion.div>
               ))}
             </div>

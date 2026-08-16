@@ -31,7 +31,9 @@ import {
   vtSessionName,
   supportsViewTransitions,
 } from '@/components/view-transitions/morph'
-import { StatusDot, STATUS_LABEL } from './status-dot'
+import { STATUS_LABEL } from './status-dot'
+import { SessionFace } from '@/components/roster/session-face'
+import { ATTENTION_DOT } from '@/components/chat/ui/metrics'
 import { ActivityLine, ErrorBadge } from './activity-status'
 import { TailPreview } from './tail-preview'
 import { ChatTailPreview } from './chat-tail-preview'
@@ -184,6 +186,10 @@ export interface SessionTileProps {
    *  subscription per tile is a lot of listeners for one boolean. Feeds the
    *  eligibility gate (`flag.ts`: a team lead never gets the chat renderer). */
   isTeamLead?: boolean
+  /** This session needs you — the attention tier's `needs` (fase B2 T5). Draws
+   *  the 7px dot on the mark's shoulder; the ONLY glyph allowed on top of a
+   *  silhouette (B0 contract C5). */
+  attention?: boolean
 }
 
 /** The hero surface. One tile = one agent: title (Claude chat summary),
@@ -202,6 +208,7 @@ export function SessionTile({
   sizeTier = MIN_OVERVIEW_SIZE,
   jumpIndex,
   isTeamLead = false,
+  attention,
 }: SessionTileProps) {
   const reduce = useReducedMotion()
   // Fall back to the surface-wide JumpIndexContext when the caller didn't
@@ -950,9 +957,29 @@ export function SessionTile({
                   key="status-dot"
                   initial={false}
                   animate={{ opacity: 1 }}
-                  className="shrink-0"
+                  className="relative shrink-0"
                 >
-                  <StatusDot status={session.status} className="mt-1" />
+                  {/* The session's FACE, not a coloured disc (fase B2 T4). The
+                      eyes ARE the status channel — B0 contract C5: the
+                      silhouette is never ringed, notched or overpainted, so
+                      there is no status ring here and never will be. The one
+                      glyph allowed on top is the 7px attention dot below.
+                      `SessionFace` owns the kill switch, so
+                      `localStorage['supermux:roster-marks'] = '0'` puts the
+                      exact pre-B2 StatusDot back in this slot. */}
+                  <SessionFace
+                    name={session.name}
+                    status={session.status}
+                    size={28}
+                    className="mt-0.5"
+                  />
+                  {attention && (
+                    <span
+                      aria-hidden
+                      className="absolute -right-0.5 top-0 size-[7px] rounded-full ring-2 ring-card"
+                      style={{ background: ATTENTION_DOT.color }}
+                    />
+                  )}
                 </motion.span>
               )}
             </AnimatePresence>

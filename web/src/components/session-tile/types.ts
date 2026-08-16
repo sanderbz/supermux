@@ -14,6 +14,13 @@ export interface TileSession extends SessionSummary {
   tokens?: number
   /** Git branch / worktree shown in the meta row. */
   branch?: string
+  /** Searchable tags (`SessionView.tags`). On the wire since forever with
+   *  nothing rendering them; the fact ladder puts them on the list row at
+   *  tier 4 and fase B2 T7 gives them an editor. */
+  tags?: string[]
+  /** Pinned-first ordering (`SessionView.pinned`). Read by `smartSort` and, in
+   *  fase B2, by the pinned-block hairline. */
+  pinned?: boolean
   /** True when the underlying tmux session is gone → render `<TileError>`. */
   missing?: boolean
   /** Live "what the agent is doing now" label from the latest PreToolUse hook

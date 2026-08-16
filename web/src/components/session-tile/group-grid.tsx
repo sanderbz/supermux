@@ -1564,6 +1564,7 @@ function GroupSection({
               <SortableRow
                 key={sess.name}
                 session={sess}
+                sizeTier={sizeTier}
                 groupSortMode={section.sortMode}
                 isDragging={isDragging}
                 draggingKind={draggingKind}
@@ -1723,6 +1724,7 @@ function SortableTileSlot({
 
 function SortableRow({
   session,
+  sizeTier,
   groupSortMode,
   isDragging,
   draggingKind,
@@ -1735,6 +1737,9 @@ function SortableRow({
   onMoveToGroup,
 }: {
   session: ApiSession
+  /** The overview density tier — drives the row's FACT LADDER (preview at 2,
+   *  tokens at 3, tag chips at 4), not its geometry. */
+  sizeTier: OverviewSize
   groupSortMode: GroupSortMode
   isDragging: boolean
   draggingKind: 'group' | 'session' | null
@@ -1824,7 +1829,7 @@ function SortableRow({
         </svg>
       </button>
       <div className="min-w-0 flex-1">
-        <SessionRow session={toTileSession(session)} />
+        <SessionRow session={toTileSession(session)} sizeTier={sizeTier} />
       </div>
       {/* Gap 2 — the "Move to ▸" kebab is the a11y alt path for the row
           view too. Tiny hover-revealed button (≥44pt via padding) so the

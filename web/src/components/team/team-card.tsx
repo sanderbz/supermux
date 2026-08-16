@@ -38,6 +38,7 @@ import {
   type TeamWidth,
 } from '@/stores/team-width-store'
 import { SessionTile } from '@/components/session-tile'
+import { Facepile, type FacepileMember } from '@/components/chat/ui'
 import type { TileSession } from '@/components/session-tile'
 import type { OverviewSize } from '@/lib/overview-size'
 import { type Team, type TeamMember, teamsApi } from '@/lib/api/teams'
@@ -270,8 +271,18 @@ function TeamRollup({
   // muted secondary AT Compact so the loud needs-you/done pill + toggles stay
   // legible and the team name keeps its identity (see also h2 min-w below).
   const isCompact = width === 'compact'
+  // The crew cluster (fase B2 T4) — a team is a colleague too, so it gets a face
+  // in the same 40px footprint a single mark occupies (B0's `Facepile
+  // variant="cluster"`). Seeded by the LEAD session and the teammates' agent
+  // ids, which are the stable identities the rest of the app routes on. Purely
+  // decorative: the team name right beside it is the accessible label.
+  const crew: FacepileMember[] = [
+    ...(team.lead_supermux_session ? [{ seed: team.lead_supermux_session }] : []),
+    ...team.members.map((m) => ({ seed: m.agent_id, name: m.name })),
+  ].slice(0, 3)
   return (
     <header className="flex items-center gap-2 px-0.5">
+      {crew.length > 0 && <Facepile members={crew} variant="cluster" className="shrink-0" />}
       {/* Team name — the stable identity. min-w keeps a few characters always
           visible so the name never collapses to 0 even when chrome is dense. */}
       <h2 className="min-w-[5ch] shrink truncate text-sm font-semibold tracking-tight">

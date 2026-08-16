@@ -29,7 +29,7 @@ import { springs } from '@/lib/springs'
 import { useNavigateMorph } from '@/components/view-transitions/morph'
 import { MISC } from '@/brand/copy'
 import { markStateFor } from '@/lib/mark-status'
-import { hasFact } from '@/lib/fact-ladder'
+import { hasFact, type Tier } from '@/lib/fact-ladder'
 import { usePin } from '@/hooks/use-roster-marks'
 import { RosterRow } from '@/components/chat/ui'
 import { SessionFace } from '@/components/roster/session-face'
@@ -58,13 +58,17 @@ export interface SessionRowProps {
   session: TileSession
   /** This row needs you — the attention tier's `needs` (fase B2 T5). */
   attention?: boolean
+  /** The overview's density tier. Drives the FACT LADDER, not the geometry:
+   *  tier 2 adds the preview line, tier 3 tokens, tier 4 tag chips. Defaults to
+   *  1 so a picker/sheet call site is unchanged. */
+  sizeTier?: Tier
 }
 
 /** Compact list row. The list-view counterpart of the hero tile; shares the same
  *  `TileSession` data source (single source of truth) — no per-row polling. The
  *  overview wraps it in `<motion.div layout layoutId>` so the tile↔row view
  *  toggle morphs each session smoothly. */
-export function SessionRow({ session, attention }: SessionRowProps) {
+export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps) {
   const reduce = useReducedMotion()
   const navigateMorph = useNavigateMorph()
   const title = sessionTitle(session)
@@ -81,15 +85,30 @@ export function SessionRow({ session, attention }: SessionRowProps) {
   // this row has always shown under the title. The ladder keeps both.
   const meta = (
     <span className="flex items-center gap-2">
-      {hasFact('list', 1, 'statusLabel') && (
+      {hasFact('list', sizeTier, 'statusLabel') && (
         <span className="shrink-0">{STATUS_LABEL[session.status]}</span>
       )}
-      {hasFact('list', 1, 'branch') && session.branch && (
+      {hasFact('list', sizeTier, 'branch') && session.branch && (
         <span className="inline-flex min-w-0 items-center gap-1">
           <GitBranch className="size-3 shrink-0" />
           <span className="truncate">{session.branch}</span>
         </span>
       )}
+      {/* Tokens at tier 3, tag chips at tier 4 — the ladder's own rungs. The
+          `tags` column has been on the wire since forever with nothing
+          rendering it (fase B2 T7 gives it an editor). */}
+      {hasFact('list', sizeTier, 'tokens') && typeof session.tokens === 'number' && (
+        <span className="shrink-0 tabular-nums">{session.tokens} tokens</span>
+      )}
+      {hasFact('list', sizeTier, 'tags') &&
+        session.tags?.slice(0, 3).map((tag) => (
+          <span
+            key={tag}
+            className="shrink-0 rounded-full bg-fill-soft px-1.5 py-0.5 text-[10px] leading-none text-ink-2"
+          >
+            {tag}
+          </span>
+        ))}
     </span>
   )
 
