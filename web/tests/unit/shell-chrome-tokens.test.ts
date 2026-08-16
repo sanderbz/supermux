@@ -26,6 +26,8 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, test } from 'bun:test'
 
+import { springs, tweens } from '../../src/lib/springs'
+
 const CSS_PATH = fileURLToPath(
   new URL('../../src/styles/globals.css', import.meta.url),
 )
@@ -77,6 +79,10 @@ const decls = walk(css)
 /** Declarations only (drop at-rule statements like `@import x;`). */
 const properties = decls.filter((d) => /^[-a-zA-Z]+\s*:/.test(d.text))
 
+function declared(prop: string): Decl[] {
+  return properties.filter((d) => d.text.split(':')[0].trim() === prop)
+}
+
 describe('backdrop-filter is confined to `glass` (containing-block invariant)', () => {
   const blurs = properties.filter((d) =>
     /^-?(webkit-)?backdrop-filter\s*:/.test(d.text),
@@ -119,5 +125,124 @@ describe('backdrop-filter is confined to `glass` (containing-block invariant)', 
       .filter((d) => d.path.some((p) => /\[data-substrate\]/.test(p)))
       .map((d) => `${d.path.join(' > ')} { ${d.text} }`)
     expect(offenders).toEqual([])
+  })
+})
+
+describe('chrome tokens (T2)', () => {
+  const once = [
+    '--sm-toolbar-min-h',
+    '--sm-toolbar-min-h-compact',
+    '--sm-z-content',
+    '--sm-z-pane',
+    '--sm-z-header',
+    '--sm-z-overlay',
+    '--sm-z-sheet',
+    '--sm-z-compose',
+    '--sm-z-actionsheet',
+    '--sm-z-tour',
+    '--sm-z-tip',
+    '--sm-scrim',
+  ]
+
+  for (const token of once) {
+    test(`${token} is declared exactly once`, () => {
+      expect(declared(token).length).toBe(1)
+    })
+  }
+
+  test('the z-ladder keeps the SHIPPED numbers (B1 renumbers nothing)', () => {
+    const expected: Record<string, string> = {
+      '--sm-z-content': '10',
+      '--sm-z-pane': '20',
+      '--sm-z-header': '30',
+      '--sm-z-overlay': '50',
+      '--sm-z-sheet': '60',
+      '--sm-z-compose': '65',
+      '--sm-z-actionsheet': '70',
+      '--sm-z-tour': '78',
+      '--sm-z-tip': '80',
+    }
+    for (const [token, value] of Object.entries(expected)) {
+      const decl = declared(token)[0]
+      expect(decl?.text.split(':')[1]?.trim()).toBe(value)
+    }
+  })
+
+  test('safe-header resolves THROUGH the token, not a literal', () => {
+    const minHeights = declared('min-height').filter((d) =>
+      d.path.some((p) => p === '@utility safe-header'),
+    )
+    expect(minHeights.length).toBe(1)
+    expect(minHeights[0].text).toContain('var(--sm-toolbar-min-h)')
+    expect(minHeights[0].text).not.toMatch(/\d/)
+  })
+
+  test('safe-header keeps its additive safe-area padding', () => {
+    const pads = declared('padding-top').filter((d) =>
+      d.path.some((p) => p === '@utility safe-header'),
+    )
+    expect(pads.length).toBe(1)
+    expect(pads[0].text).toContain('env(safe-area-inset-top)')
+  })
+
+  test('safe-header-compact exists and uses the 44px twin', () => {
+    const compact = properties.filter((d) =>
+      d.path.some((p) => p === '@utility safe-header-compact'),
+    )
+    expect(compact.length).toBeGreaterThan(0)
+    expect(
+      compact.some((d) => d.text.includes('var(--sm-toolbar-min-h-compact)')),
+    ).toBe(true)
+  })
+
+  test('the two toolbar floors are 56px and 44px', () => {
+    expect(declared('--sm-toolbar-min-h')[0].text).toContain('3.5rem')
+    expect(declared('--sm-toolbar-min-h-compact')[0].text).toContain('2.75rem')
+  })
+})
+
+describe('.sm-swap — same-cell crossfade with zero layout shift', () => {
+  const swapDecls = properties.filter((d) =>
+    d.path.some((p) => p.includes('sm-swap')),
+  )
+
+  test('it is a 1x1 grid, not absolute positioning', () => {
+    expect(swapDecls.some((d) => d.text === 'display: grid')).toBe(true)
+    expect(swapDecls.some((d) => /grid-area: 1 ?\/ ?1/.test(d.text))).toBe(true)
+    // The old idiom (position:absolute on the outgoing child) re-typesets the
+    // content and shifts the row — the whole point of `.sm-swap` is that it
+    // cannot.
+    expect(swapDecls.some((d) => /^position: absolute/.test(d.text))).toBe(false)
+  })
+
+  test('hidden children fade out and stop taking clicks', () => {
+    expect(
+      swapDecls.some((d) => /^transition: opacity/.test(d.text)),
+    ).toBe(true)
+    expect(swapDecls.some((d) => d.text === 'opacity: 0')).toBe(true)
+    expect(swapDecls.some((d) => d.text === 'pointer-events: none')).toBe(true)
+  })
+
+  test('reduced motion drops the transition', () => {
+    const reduced = swapDecls.filter((d) =>
+      d.path.some((p) => p.includes('prefers-reduced-motion')),
+    )
+    expect(reduced.some((d) => /^transition:\s*none/.test(d.text))).toBe(true)
+  })
+})
+
+describe('motion bank — exits are always faster than entries', () => {
+  test('the overlay exit is shorter than the settle entry (~0.52s)', () => {
+    expect(tweens.overlayExit.duration).toBeLessThan(0.52)
+  })
+
+  test('popoverOut is faster than popoverIn', () => {
+    expect(tweens.popoverOut.duration).toBeLessThan(tweens.popoverIn.duration)
+  })
+
+  test('`settle` is a spring, tuned for an overlay entrance', () => {
+    expect(springs.settle.type).toBe('spring')
+    expect(springs.settle.stiffness).toBe(210)
+    expect(springs.settle.damping).toBe(30)
   })
 })

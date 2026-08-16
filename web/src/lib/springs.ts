@@ -12,6 +12,13 @@
 // the springs with framer-motion `transition` for the rest of the app and
 // the tween bank for dnd-kit interactions keeps every visible motion sourced
 // from THIS file.
+//
+// THE RULE, stated once so it can be pointed at in review: **exits are always
+// faster than entries.** An entrance is the interface arriving and can afford
+// to settle; an exit is the user having already decided, and any time spent
+// animating it away is time they are waiting. Every enter/exit pair below
+// obeys it, and `tests/unit/shell-chrome-tokens.test.ts` asserts it
+// numerically so a future tuning pass cannot quietly invert it.
 
 export const springs = {
   // Tap-press / release — snappy, low mass (native button feel).
@@ -34,6 +41,12 @@ export const springs = {
   // 0.35, dampingFraction: 0.85)`). Converted to framer-motion: stiffness ≈
   // (2π/0.35)² ≈ 322; damping ≈ 2·0.85·√322 ≈ 30.5.
   snippetSlide: { type: 'spring', stiffness: 322, damping: 30.5 },
+  // B1 — the shell overlay's ENTRANCE. A raised surface should look like it
+  // came to rest, not like it snapped into place, so this is the softest
+  // spring in the bank: response ≈ 0.43s, dampingFraction ≈ 1.03 (just past
+  // critical, so it never overshoots a full-bleed frame), settling ≈ 520ms.
+  // Its exit is `tweens.overlayExit` at 300ms — see the rule in the header.
+  settle: { type: 'spring', stiffness: 210, damping: 30 },
 } as const
 
 // Easing curves for the few duration-based (non-spring) transitions allowed.
@@ -61,6 +74,15 @@ export const tweens = {
   dropFlash: { duration: 0.7, ease: 'easeOut' as const },
   gapReveal: { duration: 0.12, ease: 'easeOut' as const },
   reflow: { duration: 0.1, ease: 'easeOut' as const },
+  // ── B1 shell chrome: every one of these is an EXIT or a popover ───────────
+  //   overlayExit — 300ms ease-in for the shell overlay's dismissal. Paired
+  //                 with `springs.settle` (~520ms) on the way in.
+  //   popoverIn   — 150ms ease-out. Popovers are small and attached to their
+  //                 trigger; a spring on something this size reads as jitter.
+  //   popoverOut  — 100ms ease-in. Faster than its entry, per the header rule.
+  overlayExit: { duration: 0.3, ease: 'easeIn' as const },
+  popoverIn: { duration: 0.15, ease: 'easeOut' as const },
+  popoverOut: { duration: 0.1, ease: 'easeIn' as const },
 } as const
 
 export type SpringName = keyof typeof springs

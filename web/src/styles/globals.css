@@ -354,9 +354,21 @@
    env()=0 so it renders as a plain 56px bar; pair with `sm:pt-0` only if the
    route also resets other mobile-only padding. Apply to the route's glass
    header bar; body-padding routes (overview/board) fold the same inset into
-   their top padding via calc(env(safe-area-inset-top)+…) instead. */
+   their top padding via calc(env(safe-area-inset-top)+…) instead.
+
+   B1 — the per-column decision, so nobody has to re-derive it: ROUTE headers
+   (overview / files / settings) sit on the 56px floor (`safe-header`);
+   IN-PANE headers (focus, side pane, shell overlay) sit on the 44px floor
+   (`safe-header-compact` — the focus header's proven `min-h-11`). Never a
+   fixed height, always floor + additive `pt-safe`. Both floors are now the
+   tokens `--sm-toolbar-min-h` / `--sm-toolbar-min-h-compact` (declared in the
+   fase-B1 block at the file tail) so a future density pass is one edit. */
 @utility safe-header {
-  min-height: 3.5rem; /* 56px — matches the legacy h-14 bar; ≥44pt floor */
+  min-height: var(--sm-toolbar-min-h); /* 56px — legacy h-14 bar; ≥44pt floor */
+  padding-top: env(safe-area-inset-top);
+}
+@utility safe-header-compact {
+  min-height: var(--sm-toolbar-min-h-compact); /* 44px — in-pane headers */
   padding-top: env(safe-area-inset-top);
 }
 
@@ -757,5 +769,69 @@
   }
   .sm-dots i {
     opacity: 0.6;
+  }
+}
+
+/* ══ FASE B1 — the shell: chrome tokens, z-ladder, same-cell swap (APPENDED) ══
+   One fenced block at the file tail, deliberately: A2/A3/A4 are in flight on
+   other branches and also edit globals.css, so every B1 addition lives here
+   and conflict resolution stays mechanical. Nothing in this block is consumed
+   by T2 itself — T2 is a PURE ADDITION with a zero-pixel-diff DoD.
+   Contracts asserted by `tests/unit/shell-chrome-tokens.test.ts`. */
+:root {
+  /* ── Chrome heights (B0 didn't ship these; B1 inherits the layer) ─────────
+     The contract itself is old and proven — `@utility safe-header` above, and
+     the long comment beside it, are the source of truth for WHY it is a floor
+     plus an additive inset rather than a fixed height. These are just the two
+     values behind it, named so they can be reasoned about in one place:
+       · route headers  (overview / files / settings)   → 56px
+       · in-pane headers (focus, side pane, overlay)    → 44px */
+  --sm-toolbar-min-h: 3.5rem;
+  --sm-toolbar-min-h-compact: 2.75rem;
+
+  /* ── The z-ladder: NAMES OVER THE SHIPPED NUMBERS ────────────────────────
+     These are NOT a renumbering. The app already has a stacking order — 14
+     call sites sit at `z-[60]` alone — and moving them would be a ~50-file
+     diff with no user-visible payoff. So B1 writes the existing ladder down
+     as tokens and uses them for NEW code only; B2+ can converge the literals
+     onto the names one file at a time. The full "who lives where" table is in
+     `src/brand/BRAND.md`. */
+  --sm-z-content: 10;      /* in-flow content, sticky route bodies            */
+  --sm-z-pane: 20;         /* side panes, split columns                       */
+  --sm-z-header: 30;       /* sticky route headers over their own scroller    */
+  --sm-z-overlay: 50;      /* Radix popover/dropdown/tooltip/dialog + the B1
+                              shell overlay's scrim + frame                   */
+  --sm-z-sheet: 60;        /* Vaul sheets, ResponsiveSheet, KeyBar, conn.     */
+  --sm-z-compose: 65;      /* the board/chat compose panel                    */
+  --sm-z-actionsheet: 70;  /* action sheets, a2hs, snippet editor             */
+  --sm-z-tour: 78;         /* onboarding tour scrim                           */
+  --sm-z-tip: 80;          /* the tour's floating tip — always the top layer  */
+
+  /* Overlay scrim. Fixed alpha over an unknown backdrop is the ONE place a
+     translucent black is right: it must dim whatever the route happens to be
+     painting. 0x61 ≈ 38% — the approved value from the master plan. */
+  --sm-scrim: #00000061;
+}
+
+/* ── `.sm-swap` — the same-cell crossfade (§11.6) ────────────────────────────
+   Two states occupying ONE grid cell so swapping them cannot shift a single
+   pixel of layout. The old idiom (absolutely position the outgoing child)
+   re-typesets the row and the header jumps; a 1×1 grid keeps both children in
+   the same track and lets the container size to the larger of the two. Used by
+   crossfading header inners (view toggle ↔ search state). */
+.sm-swap {
+  display: grid;
+}
+.sm-swap > * {
+  grid-area: 1 / 1;
+  transition: opacity 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.sm-swap > [data-hidden] {
+  opacity: 0;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sm-swap > * {
+    transition: none;
   }
 }
