@@ -62,6 +62,74 @@ import type { OverlayLine } from './use-receipt-overlay'
 const PHONE_MAX_W = 480
 export const PHONE_QUERY = `(max-width: ${PHONE_MAX_W}px)`
 
+/**
+ * The air between the last thing said and the top of the composer's glass.
+ *
+ * This is the only part of the bottom reserve that is a DESIGN number; the rest
+ * of it is whatever the composer currently measures (`trackBottom`). Both
+ * numbers are DERIVED so that the surface at rest does not move by a pixel:
+ * `mobile-light.png` reserves 92 for a composer whose box measures 66 on the
+ * bench, `board-light.png` reserves 90 for one that measures 76.
+ */
+const TRACK_GAP = { phone: 26, desktop: 14 } as const
+
+/** The reserve before the composer has been measured — SSR, and the first paint
+ *  of a unit test with no `ResizeObserver`. The boards' own constants. */
+const TRACK_BOTTOM_FALLBACK = { phone: 92, desktop: 90 } as const
+
+/**
+ * The `hook→UI p50` read-out floats 42px ABOVE the pill (`ComposerFrame`), i.e.
+ * outside the box the measurement covers, so the track owes it its own row.
+ */
+const STAT_ROW = 30
+
+/**
+ * How much floor the track reserves for the composer — MEASURED (QA #12).
+ *
+ * It used to be a constant, and the composer is not: it grows with the draft up
+ * to 136px (`use-composer`'s cap), and it grows again when the refusal banner
+ * appears under it. With a 92px reserve under a 136px composer, streaming text
+ * and the newest bubble slid under the glass exactly while they were being
+ * written — measured on the live instance in `33-long-draft.png`,
+ * `25-reload-t3.7s.png`, `27-back-online.png`, `11-scrolled-top.png`.
+ *
+ * The fallback is the boards' constant, so a surface rendered without a DOM (the
+ * unit tests, any SSR) is byte-identical to what it was.
+ */
+export function trackBottom(footerH: number | null, phone: boolean, stat: boolean): number {
+  const key = phone ? 'phone' : 'desktop'
+  const base =
+    footerH != null && footerH > 0 ? footerH + TRACK_GAP[key] : TRACK_BOTTOM_FALLBACK[key]
+  return stat ? base + STAT_ROW : base
+}
+
+/**
+ * The height of a node, kept live.
+ *
+ * A ref CALLBACK rather than a ref + effect: the footer slot's occupant changes
+ * identity (A3's read-only shell ⇄ A4's live composer ⇄ neither), and a callback
+ * re-runs on exactly those swaps. `ResizeObserver` covers the rest — the draft
+ * growing a line, the refusal banner appearing, the keyboard changing the
+ * viewport — and there is no loop to worry about: nothing this height feeds
+ * (the track's bottom padding) can change the footer's own height.
+ */
+function useMeasuredHeight() {
+  const [height, setHeight] = React.useState<number | null>(null)
+  const observer = React.useRef<ResizeObserver | null>(null)
+  const ref = React.useCallback((node: HTMLDivElement | null) => {
+    observer.current?.disconnect()
+    observer.current = null
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const read = () => setHeight(Math.round(node.getBoundingClientRect().height))
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(node)
+    observer.current = ro
+  }, [])
+  React.useEffect(() => () => observer.current?.disconnect(), [])
+  return [ref, height] as const
+}
+
 export interface ChatConversationProps {
   /** The focused session's immutable slug — every seed on this surface. */
   name: string
@@ -221,6 +289,9 @@ export function ChatConversation({
     !session?.permission_request &&
     !(session?.status === 'active' && turnStart != null)
 
+  // The room the floating composer needs, MEASURED (daily-driver QA #12).
+  const [footerRef, footerH] = useMeasuredHeight()
+
   // Inline-first (A4 T5): the row is in the band, the evidence is one tap away.
   // The expansion is presentation-local state — nothing above this component
   // needs to know whether the user has opened the card — and it RESETS when the
@@ -259,9 +330,15 @@ export function ChatConversation({
         />
       }
       footer={
-        composer ?? (
-          <ComposerShell label={label} surface={phone ? 'phone' : 'desktop'} stat={stat} />
-        )
+        // The ref is on a WRAPPER, not on the composer: the footer slot holds
+        // whatever the caller put there (the live composer, its refusal banner,
+        // A3's read-only shell), and what the track has to reserve is the height
+        // of all of it. See `useMeasuredHeight` (QA #12).
+        <div ref={footerRef}>
+          {composer ?? (
+            <ComposerShell label={label} surface={phone ? 'phone' : 'desktop'} stat={stat} />
+          )}
+        </div>
       }
       // The expanded card, over this pane only (see `attention-card.tsx`).
       overlay={
@@ -281,29 +358,16 @@ export function ChatConversation({
     >
       <div
         // The room the floating composer needs, plus (on the phone) the room the
-        // floating header card needs. Both are the boards' own numbers.
+        // floating header card needs.
         //
         // `min-h-full` belongs HERE, on the scroll region's direct child — a
         // percentage height resolved against a parent that is `auto` is a no-op,
         // which is exactly what made a three-message session hang from the top
         // of the pane with 600px of paper under it.
         //
-        // The `stat` read-out floats 42px ABOVE the composer pill
-        // (`ComposerFrame`), i.e. outside the room these numbers reserve — so
-        // with one on screen it printed straight through the last transcript
-        // row, two strings of grey text on the same pixels (mobile proof,
-        // 11-permission-card-light.png: "Run cowsay-nonexistent --version"
-        // under "hook→UI p50 8 ms"). It is transparent by design, so the track
-        // has to reserve its row.
-        className={`flex min-h-full flex-col ${
-          phone
-            ? stat
-              ? 'px-[14px] pb-[122px] pt-[86px]'
-              : 'px-[14px] pb-[92px] pt-[86px]'
-            : stat
-              ? 'px-6 pb-[120px] pt-[80px]'
-              : 'px-6 pb-[90px] pt-[80px]'
-        }`}
+        // The BOTTOM is measured, not a constant (QA #12 — see `trackBottom`).
+        className={`flex min-h-full flex-col ${phone ? 'px-[14px] pt-[86px]' : 'px-6 pt-[80px]'}`}
+        style={{ paddingBottom: trackBottom(footerH, phone, stat != null) }}
       >
         {/* Bottom-anchored, like every board: the column sits on the floor of
             the pane and grows upward. */}
