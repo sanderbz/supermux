@@ -23,16 +23,33 @@
 // Dev-only by construction: `@axe-core/playwright` is a devDependency and axe
 // is injected into the page by the runner, never imported by `src/` — asserted
 // in `tests/unit/a11y-tooling.test.ts`.
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
 
-import { injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, type Backend } from './harness'
 
 const DESKTOP = { width: 1440, height: 900 }
 const PHONE = { width: 390, height: 844 }
 
-/** The surfaces T7.7 named. The `/dev/*` benches render the real components
- *  against fixture data, which is what makes this runnable with no live agent. */
+/**
+ * The surfaces T7.7 named, PLUS the shipped ones.
+ *
+ * Every `/dev/*` route is conditionally mounted (`App.tsx`) — it exists only in
+ * a dev build — and `/?mock` renders fixture data with no Agent Team on the
+ * roster. So for as long as the list was benches-and-mock, an entire class of
+ * defect was structurally invisible to this gate: `team/teammate-chip.tsx`
+ * carried a serious `nested-interactive` (a focusable trash <button> inside a
+ * `role="button"` wrapper), 6 nodes, on `/` in BOTH themes and at BOTH sizes —
+ * and the baseline could never see it, because the component only renders when
+ * a real team is on the roster.
+ *
+ * `/` is therefore scanned against a SEEDED backend (see `seedTeam`): one team,
+ * one lead, one teammate, one session. A bench proves a component renders; only
+ * the shipped route proves what a user meets.
+ */
 const SCANS = [
   { route: '/dev/roster', viewport: DESKTOP, surface: 'desktop' },
   { route: '/dev/chat-ui', viewport: DESKTOP, surface: 'desktop' },
@@ -40,7 +57,51 @@ const SCANS = [
   { route: '/dev/focus', viewport: DESKTOP, surface: 'desktop' },
   { route: '/?mock', viewport: DESKTOP, surface: 'desktop' },
   { route: '/dev/focus-mobile', viewport: PHONE, surface: 'phone' },
+  // ── the shipped roster, with real data behind it ──
+  // `ready` is not politeness: a fixed settle scanned a SKELETON on the first
+  // run of this file and reported a reassuring nothing for all four `/` rows.
+  // A gate that can scan an empty page is a gate that passes for the wrong
+  // reason, so `/` waits for its own content to exist.
+  { route: '/', viewport: DESKTOP, surface: 'desktop', ready: 'text=axe-lead' },
+  { route: '/', viewport: PHONE, surface: 'phone', ready: 'text=axe-lead' },
 ] as const
+
+/**
+ * Write the on-disk team files Claude Code would write, into the backend's
+ * isolated `$CLAUDE_CONFIG_DIR` (`harness.ts` points it inside the temp data
+ * dir). `teams/scan.rs` picks them up on its next tick, so `/api/teams` returns
+ * one team and the overview renders a `<TeamCard>` with a `<TeammateChip>` in
+ * it — which is the only way this gate ever sees that component.
+ */
+function seedTeam(backend: Backend, team = 'axe-squad'): void {
+  const dir = join(backend.dataDir, 'claude', 'teams', team)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'config.json'),
+    JSON.stringify({
+      leadSessionId: 'axe-lead-session',
+      leadAgentId: `team-lead@${team}`,
+      createdAt: Date.now(),
+      members: [
+        {
+          name: 'team-lead',
+          agentId: `team-lead@${team}`,
+          model: 'claude-opus-4',
+          color: '#e07b39',
+          isActive: true,
+          role: 'team-lead',
+        },
+        {
+          name: 'researcher',
+          agentId: `researcher@${team}`,
+          model: 'claude-opus-4',
+          color: '#8b5cf6',
+          isActive: true,
+        },
+      ],
+    }),
+  )
+}
 
 const THEMES = ['dark', 'light'] as const
 
@@ -57,17 +118,28 @@ const THEMES = ['dark', 'light'] as const
  *                        now bans for text outright. Whatever remains on these
  *                        dev benches is fixture-only chrome; the routes a user
  *                        actually opens are the ones the unit guard covers.
+ *                        A LESSON, kept: citing a CLOSED cause is how
+ *                        `/dev/chat-live light/desktop color-contrast` stayed
+ *                        in this list for a fase after it stopped violating —
+ *                        and, with the old symmetric assertion, turned that fix
+ *                        into a red gate. Re-attribute when you re-diagnose.
  *   nested-interactive — the focus surface nests controls inside a control.
  *                        Carried, not excused: it belongs with the roster
  *                        keyboard work ("The roster has no roving tabindex…"),
  *                        which is where the interactive structure gets rebuilt.
+ *                        NOT carried for `/` any more — `teammate-chip.tsx`'s
+ *                        trash-inside-a-role=button is fixed, which is the
+ *                        whole reason `/` joined SCANS.
  *
  * Shrink this list. Do not grow it without a finding to point at.
  */
 const BASELINE: readonly string[] = [
+  '/ dark/desktop color-contrast',
+  '/ dark/phone color-contrast',
+  '/ light/desktop color-contrast',
+  '/ light/phone color-contrast',
   '/?mock dark/desktop color-contrast',
   '/?mock light/desktop color-contrast',
-  '/dev/chat-live light/desktop color-contrast',
   '/dev/chat-ui dark/desktop color-contrast',
   '/dev/chat-ui light/desktop color-contrast',
   '/dev/focus dark/desktop color-contrast',
@@ -83,6 +155,11 @@ test.describe('axe — WCAG 2 A/AA over the shell surfaces', () => {
 
   test.beforeAll(async () => {
     backend = await startBackend()
+    // The shipped `/` scans need real data behind them, or they scan an empty
+    // state and report a reassuring nothing.
+    seedTeam(backend)
+    const A = api(backend)
+    await A.createSession({ name: 'axe-lead', provider: 'shell', dir: backend.dataDir })
   })
   test.afterAll(async () => {
     await backend?.dispose()
@@ -103,6 +180,8 @@ test.describe('axe — WCAG 2 A/AA over the shell surfaces', () => {
         await page.goto(`${backend.baseUrl}${scan.route}`)
         // Several surfaces mount their content in an effect; axe would
         // otherwise scan a skeleton and report a reassuring nothing.
+        const ready = (scan as { ready?: string }).ready
+        if (ready) await page.locator(ready).first().waitFor({ timeout: 20_000 })
         await page.waitForTimeout(1_200)
         const results = await new AxeBuilder({ page })
           .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
@@ -114,9 +193,35 @@ test.describe('axe — WCAG 2 A/AA over the shell surfaces', () => {
     }
 
     const sorted = [...new Set(found)].sort()
+    // Print the whole set on every run: when this gate does fail, the first
+    // question is always "what does it see now?", and a diff of two lists
+    // answers it without a trace download.
+    console.log(`axe found:\n${sorted.map((l) => `  '${l}',`).join('\n')}`)
+
+    // ── ASYMMETRIC, on purpose ──────────────────────────────────────────────
+    // This used to be `expect(sorted).toEqual([...BASELINE].sort())`, which
+    // fails in the SHRINK direction exactly as loudly as in the grow direction:
+    // when `/dev/chat-live light/desktop color-contrast` stopped violating,
+    // this gate went red because a violation had been FIXED, and stayed red
+    // (deterministic 3/3) until someone read it. A gate that punishes repair is
+    // a gate people stop reading — which is how the rest of the smoke suite
+    // accumulated fifteen deterministic reds.
+    //
+    // So: a NEW rule on a surface fails hard, because that is a regression. A
+    // DISAPPEARED one prints the exact line to delete and lets the run pass,
+    // because that is a repair — and the next person to touch this file has the
+    // edit written out for them.
+    const gone = BASELINE.filter((b) => !sorted.includes(b))
+    if (gone.length > 0) {
+      console.warn(
+        `axe baseline has SHRUNK — these no longer violate, delete them from BASELINE:\n` +
+          gone.map((g) => `  '${g}',`).join('\n'),
+      )
+    }
+    const added = sorted.filter((f) => !BASELINE.includes(f))
     expect(
-      sorted,
-      'the axe baseline must change only on purpose — a fixed rule must be REMOVED from BASELINE in the same commit that fixes it',
-    ).toEqual([...BASELINE].sort())
+      added,
+      'a NEW `route surface rule` triple is a regression — fix it, or add it to BASELINE with the finding that owns it',
+    ).toEqual([])
   })
 })
