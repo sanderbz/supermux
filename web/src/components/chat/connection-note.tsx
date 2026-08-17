@@ -49,7 +49,18 @@ export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
   return (
     <span role="status" aria-live="polite" aria-label={detail}>
       {retryable ? (
-        <button type="button" onClick={onRetry} className={className} data-vr="chat-connection">
+        // `data-state` rides BOTH branches. It is how the VR rig, the
+        // `/dev/chat-live?conn=` bench and the T3 reconnect specs read the
+        // state, and `offline` — the only branch that renders a button — is the
+        // one state where losing it hurts most: an unlabelled chip is
+        // indistinguishable from the healthy case, which renders nothing at all.
+        <button
+          type="button"
+          onClick={onRetry}
+          className={className}
+          data-state={state}
+          data-vr="chat-connection"
+        >
           {copy.label}
         </button>
       ) : (
