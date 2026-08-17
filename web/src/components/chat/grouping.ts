@@ -87,6 +87,10 @@ const SYSTEM_BADGES: ReadonlySet<string> = new Set([
   // The grace-window notice: a fact about the account, in the system voice —
   // never the user's bubble, which is exactly where it used to land.
   'limit',
+  // A retry whose stream never started (still live), and the tombstone a
+  // retraction leaves behind — both `wire-entries.ts::SYSTEM_ROW_BADGES`.
+  'stalled',
+  'retracted',
 ])
 
 function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speaker {

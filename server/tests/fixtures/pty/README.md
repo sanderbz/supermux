@@ -44,8 +44,14 @@ object the readers skip.
 | `cc_version` | the binary the capture came from (live rows only) |
 | `synthesized` | where the bytes came from instead (non-live rows only) |
 | `provider` | for the server plane's detector; defaults to `claude` |
-| `web` | what `readLens()` must report — family, question, header, rows, notice |
+| `web` | what `readLens()` must report — family, question, header, rows, notice, armed |
 | `server` | what `classify()` and `pty_state::read()` must report |
+
+`web.armed` is the list of keys the screen has ARMED (catalog
+`generic.armed_keys`). A row that omits it makes no claim; a row that says `[]`
+is a CONTROL — every permission dialog's footer carries `ctrl+e to explain`,
+which has the same shape as an arming, and a reader that confused the two would
+refuse the composer's Stop for the whole life of every dialog.
 
 A row with `live: false` **must** carry `synthesized` prose naming its source,
 and the web test asserts exactly that. The registry's own rule — no option is
@@ -66,6 +72,11 @@ cannot quietly pass for a captured one.
 | `first-run-onboarding.txt` | SYNTHESIZED from the wizard's verbatim strings (`auth.first_run_onboarding`). Its rows have never been captured, so the lens reads `family: 'unknown'` and only the WEDGE is acted on. | — |
 | `codex-hooks-review.txt` | SYNTHESIZED from codex's `tui/src/startup_hooks_review.rs` strings. Deliberately carries **no caret glyph**: nobody has captured how codex draws the selector here, and inventing one would be a fingerprint written against a screen that does not exist. | — |
 | `limit-session-5h.txt`, `limit-approaching.txt` | SYNTHESIZED from the bundle's own templates — the sibling branches of two shapes whose other branch was captured live. | — |
+| `session-paused-overage.txt` | SYNTHESIZED from the catalog's `limit.overage_consent_dialog`: the verbatim title (`Session paused`) and the choice between usage credits and a model switch, with the two rows laid out from the dialog's own result enum `['consent','switch_default','cancelled']` (cancel is Esc, not a row). Nobody has photographed this dialog — which is why `registry/claude.ts`'s `paused.overage_consent` presses nothing, and why one of its rows would spend money. | — |
+| `session-paused-refusal.txt` | SYNTHESIZED from `err.refusal_fallback_dialog` — the safeguards paragraph, `Switch to {fallbackModel}`, `Edit prompt and retry with {originalModel}`, result enum `['retry_fallback','edit_prompt','cancelled']`. Its payload's `retractedMessageUuids` half lives on the transcript plane (`fixtures/chat`, row *a refusal fallback retracts the messages it already streamed*). | — |
+| `stream-stalled.txt` | SYNTHESIZED from `err.stream_stalled` — the `stalled` retry kind's banner under CC's running-turn spinner. The only row in this corpus whose verdict is **active**: the request went out, the stream never started, and the turn resumes by itself. | — |
+| `safeguards-refusal.txt` | SYNTHESIZED from `err.safeguards_refusal` — CC's own refusal renderer, with the composer back under it. Deliberately **not** blocked on the server plane: the session can take another turn, and the dead-turn fact belongs to the transcript (`agent_error.rs` class `refusal`). | — |
+| `armed-esc-clear.txt`, `armed-ctrl-c-exit.txt` | SYNTHESIZED from `generic.armed_keys`' four verbatims (`Esc again to clear`, `Ctrl+Y to paste deleted text`, `Press {key} again to exit`, `Press {key} again to stop background agents`). Ordinary screens — nothing blocked, nothing waiting — which is the point: an ARMED screen is where an automated Esc or Ctrl-C does something nobody asked for. | — |
 
 ## The AskUserQuestion self-test
 

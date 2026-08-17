@@ -6,7 +6,11 @@
 // visible: it comes back as an `AttentionCause` with every option disabled,
 // never as a silently missing button.
 //
-// The three refusals, in the order they are checked:
+// The four refusals, in the order they are checked:
+//   0. **armed** — the live screen has redefined the key this app was about to
+//      send (`./armed.ts`, catalog `generic.armed_keys`). Checked FIRST and
+//      outside `entryFor`, because it applies to every send — including the
+//      composer's Stop, which never consults an entry at all.
 //   1. **no entry** — a dialog family (or a permission variant) the registry
 //      does not cover → `dialog-unmapped`;
 //   2. **version** — the session's BOOT-BANNER version is not one this
@@ -34,6 +38,15 @@ export {
   type RegistryOption,
 } from './claude'
 export { keyPlan, navigationSteps } from './plan'
+export {
+  armedFamilyOf,
+  armedRefusal,
+  ARMED_MAPPINGS,
+  mayForward,
+  type ArmedFamily,
+  type ArmedMapping,
+  type ArmedRefusal,
+} from './armed'
 
 export interface RegistryMatch {
   /** The entry, or null when nothing on screen is one this app knows. When

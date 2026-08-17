@@ -575,6 +575,38 @@ impl StatusDetector {
             return Status::Waiting;
         }
 
+        // ── 0d. the PAUSED consent modals ────────────────────────────────────
+        // `Session paused` — Claude Code stopped the turn on a consent question
+        // (spend usage credits? switch models after a safeguard flagged the
+        // message?) and is waiting for an answer with a billing consequence.
+        //
+        // It needs a pre-emption of its own, and it is the hardest of the four to
+        // see: the turn has NOT ended, so no `Stop` fires and the machine below
+        // holds `Active` for the whole TURN_SAFETY window; then the window lapses
+        // and the banks take over, and the banks see a screen with no spinner and
+        // no prompt token on it — a green `Idle` dot over a session that will sit
+        // there until somebody answers (catalog `limit.overage_consent_dialog`,
+        // `err.refusal_fallback_dialog`: "the session sits paused while supermux
+        // shows Idle"). The screen itself is unambiguous, so it decides.
+        if super::pty_state::paused_dialog(capture).is_some() {
+            return Status::Waiting;
+        }
+
+        // ── 0e. a STALLED stream ─────────────────────────────────────────────
+        // `Waiting for API response · will retry in {t} · check your network` —
+        // the mirror image of every state above it. Nothing is blocked and
+        // nobody is being asked anything: the request went out, no bytes came
+        // back, and CC has already scheduled the retry. The turn is STILL LIVE.
+        //
+        // Pre-empted because the pty goes SILENT while a stall waits, which is
+        // the one thing the heartbeat below reads as "finished": the turn machine
+        // eventually lapses, `IDLE_BANK` finds nothing to contradict it, and the
+        // session goes green under a user who then walks away from a turn that
+        // was about to resume (catalog `err.stream_stalled`).
+        if super::pty_state::is_stalled(capture) {
+            return Status::Active;
+        }
+
         // ── 1. hook TURN STATE MACHINE (the multi-signal apex) ───────────────
         // The per-turn hook timestamps come straight from the agent runtime — the
         // most authoritative signal we have — so they OUTRANK the regex bank and

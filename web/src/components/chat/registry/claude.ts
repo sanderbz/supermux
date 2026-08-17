@@ -1,6 +1,6 @@
 // The modal registry — the data file (fase A4 T6).
 //
-// FIVE families now, each carrying its own evidence. This module is the list of
+// NINE entries now, each carrying its own evidence. This module is the list of
 // things the chat surface is ALLOWED to answer on the user's behalf, and it is
 // deliberately a data file: every entry below is a claim about what a keystroke
 // does to somebody's session, so every claim carries the evidence that earned it
@@ -29,6 +29,8 @@ export type RegistryId =
   | 'question.ask'
   | 'startup.trust'
   | 'startup.apikey'
+  | 'paused.overage_consent'
+  | 'paused.refusal_fallback'
 
 /** What choosing an option actually does to the session — the vocabulary the
  *  card's copy and T7's outcome inference share.
@@ -470,6 +472,139 @@ const APIKEY_ENTRY: RegistryEntry = {
   },
 }
 
+/* ── the paused consent modals ───────────────────────────────────────────── */
+
+/**
+ * `Session paused` — the two modals that stop a turn dead and wait.
+ *
+ * These are the states the catalog marks ★: needs-input, unmapped, and with a
+ * consequence attached — one spends money, the other silently swaps the model
+ * answering. The session sits paused indefinitely while every supermux surface
+ * drew a green Idle dot (`limit.overage_consent_dialog`,
+ * `err.refusal_fallback_dialog`).
+ *
+ * WHAT THIS BRANCH FIXES, and what it deliberately does not. It fixes the
+ * silence: the lens reads the family, the roster and the chat header say the
+ * session is paused, and the card shows the question with the dialog's own body
+ * verbatim so the reader knows what they are being asked. It does NOT press a
+ * key, and that is a decision rather than an omission:
+ *
+ *   · NO CAPTURE EXISTS. Both dialogs come from the catalog's binary-strings
+ *     sweep — nobody has photographed either on a live screen, let alone driven
+ *     one — and the rule this file exists to enforce is that an option A0 could
+ *     not verify is rendered, readable, and sends nothing. `startup.apikey` is
+ *     the precedent and it is treated identically.
+ *   · THE OVERAGE ROW SPENDS MONEY. `Continue on usage credits` bills the
+ *     owner's account. This app is not going to press, on somebody's behalf, a
+ *     button whose row text it has never seen, whose position it is inferring
+ *     from a result enum, and whose effect is a charge. "Chat has no honest way
+ *     to say which" already keeps chat off Bash option 2 on 2.1.233; the same
+ *     argument is stronger here.
+ *   · ESCAPE IS `cancelled`, AND CANCELLING IS NOT FREE. The result enums
+ *     (`['consent','switch_default','cancelled']`,
+ *     `['retry_fallback','edit_prompt','cancelled']`) say Esc cancels — but what
+ *     a cancelled consent does to the turn is exactly the thing nobody has
+ *     watched, and on the refusal dialog it is the branch that decides whether
+ *     the already-streamed messages come back.
+ *
+ * So the card is the honest half of the contract: the state is named on every
+ * surface, and the keypress stays with the human who owns the account.
+ */
+const PAUSED_UNCAPTURED =
+  'This dialog has never been captured on a live screen — its wording comes from Claude Code’s own strings, not from a photograph of the screen — so chat will not press a key into it. Answer it in the terminal.'
+const PAUSED_BILLING =
+  'Choosing this spends usage credits on the account that owns this session. Chat has never watched this dialog on a live screen, so it will not make a billing decision on your behalf — answer it in the terminal.'
+
+/**
+ * `pinExempt` here, for a DIFFERENT reason than the startup gates'.
+ *
+ * The gates draw before the boot banner exists, so a pin is structurally
+ * unreadable. These modals draw mid-session, where the banner usually IS
+ * readable — but no version has ever been verified for them, so
+ * `verifiedVersions` is empty and the pin check could only ever fail. Failing it
+ * would swap the honest sentence ("nobody has captured this dialog") for a
+ * misleading one ("your Claude Code version has not been checked"), about a card
+ * that presses nothing either way. The narrow fingerprint that replaces the pin
+ * is the same one the gates use: every row is pinned to its own sentence.
+ */
+const OVERAGE_ENTRY: RegistryEntry = {
+  id: 'paused.overage_consent',
+  family: 'paused',
+  variant: 'overage-consent',
+  verifiedVersions: [],
+  pinExempt: true,
+  options: [
+    {
+      label: 'Continue on usage credits',
+      tuiIndex: 0,
+      actOn: false,
+      disabledReason: PAUSED_BILLING,
+      effect: 'accept',
+      rowPattern: /\busage credits?\b/i,
+    },
+    {
+      label: 'Switch model',
+      tuiIndex: 1,
+      actOn: false,
+      disabledReason: PAUSED_UNCAPTURED,
+      // A model swap lasts the rest of the session, which is the wider grant of
+      // the two words this vocabulary has for it.
+      effect: 'accept-session',
+      rowPattern: /^switch\b/i,
+    },
+  ],
+  escape: {
+    label: 'Answer in the terminal',
+    actOn: false,
+    disabledReason: PAUSED_UNCAPTURED,
+    effect: 'deny',
+  },
+}
+
+/**
+ * The refusal fallback — the second `Session paused`, and the one with a
+ * transcript consequence.
+ *
+ * Its payload carries `retractedMessageUuids`: the assistant messages that were
+ * already streamed to the user before the safeguard fired are RETRACTED once
+ * this dialog is answered. The transcript half of that is handled where it
+ * belongs — `wire-entries.ts` collapses the retracted entries behind a
+ * supersede row rather than deleting them from the append-only ring — and it is
+ * deliberately independent of this entry: the retraction lands whether the
+ * dialog was answered here, in the terminal, or not at all.
+ */
+const REFUSAL_FALLBACK_ENTRY: RegistryEntry = {
+  id: 'paused.refusal_fallback',
+  family: 'paused',
+  variant: 'refusal-fallback',
+  verifiedVersions: [],
+  pinExempt: true,
+  options: [
+    {
+      label: 'Switch to the fallback model',
+      tuiIndex: 0,
+      actOn: false,
+      disabledReason: PAUSED_UNCAPTURED,
+      effect: 'accept-session',
+      rowPattern: /^switch to\b/i,
+    },
+    {
+      label: 'Edit prompt and retry',
+      tuiIndex: 1,
+      actOn: false,
+      disabledReason: PAUSED_UNCAPTURED,
+      effect: 'feedback',
+      rowPattern: /^edit prompt\b/i,
+    },
+  ],
+  escape: {
+    label: 'Answer in the terminal',
+    actOn: false,
+    disabledReason: PAUSED_UNCAPTURED,
+    effect: 'deny',
+  },
+}
+
 export const ENTRIES: readonly RegistryEntry[] = [
   permissionEntry('permission.bash', 'bash', PERMISSION_BASH_VERSIONS, {
     // The fallback words only — the live row wins in `optionLabel()`, and on
@@ -580,6 +715,8 @@ export const ENTRIES: readonly RegistryEntry[] = [
 
   TRUST_ENTRY,
   APIKEY_ENTRY,
+  OVERAGE_ENTRY,
+  REFUSAL_FALLBACK_ENTRY,
 ]
 
 /** family (+variant) → the entry that covers it, or null.
@@ -588,6 +725,11 @@ export const ENTRIES: readonly RegistryEntry[] = [
  *  window) resolves to nothing on purpose: the three variants differ in what
  *  option 2 grants, so "some permission dialog" is not enough to press a key
  *  into. The caller raises `dialog-unmapped` and shows the capture instead.
+ *
+ *  A `paused` sighting with no variant resolves to nothing for the same reason:
+ *  `Session paused` is one title over two dialogs with different result enums,
+ *  and a third could ship tomorrow. The lens still reports the family (so every
+ *  surface says the session is paused) and the card is the unmapped one.
  *
  *  `question` is the one family whose entry is DERIVED rather than looked up —
  *  its rows are the model's, not Claude Code's (see `questionEntry`). */

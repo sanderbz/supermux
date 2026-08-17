@@ -46,7 +46,17 @@ interface WebExpect {
   caretIndex?: number
   freeTextIndex?: number
   bannerVersion?: string | null
-  notice: { kind: string; wedge?: string; text: string; detail?: string } | null
+  notice: {
+    kind: string
+    wedge?: string
+    paused?: string
+    text: string
+    detail?: string
+  } | null
+  /** What the screen has ARMED (catalog `generic.armed_keys`). Absent = the row
+   *  makes no claim; `[]` = it claims nothing is armed, which is the assertion
+   *  that keeps an over-broad reader from disabling Stop everywhere. */
+  armed?: { token: string; key: string | null; action: string }[]
 }
 
 interface Row {
@@ -84,8 +94,28 @@ describe('the shared pty corpus', () => {
       'limit_weekly',
       'limit_used_pct',
       'idle_control',
+      // The PTY-07 must-families: the two paused consent modals, the stall that
+      // reads as Idle, the refusal that reads as an ordinary API error, and the
+      // two armed screens that must land before any automated keypress.
+      'session_paused_overage',
+      'session_paused_refusal',
+      'stream_stalled',
+      'safeguards_refusal',
+      'armed_esc_clear',
+      'armed_ctrl_c',
     ]) {
       expect(ids).toContain(want)
+    }
+  })
+
+  test('no screen in the corpus arms a key it did not say it arms', () => {
+    // The over-broad reader this pins against refused Stop on every permission
+    // dialog, because `ctrl+e to explain` is the same SHAPE as an arming. Rows
+    // that make no claim are skipped; rows that claim `[]` are the control.
+    for (const row of CORPUS) {
+      if (row.web.armed === undefined) continue
+      const lens = readLens(captureOf(row))
+      expect(lens.armed.length).toBe(row.web.armed.length)
     }
   })
 
@@ -132,7 +162,14 @@ describe('the lens reads every corpus screen the way the corpus records', () => 
         expect(lens.notice?.kind).toBe(want.notice.kind)
         expect(lens.notice?.text).toBe(want.notice.text)
         expect(lens.notice?.wedge ?? undefined).toBe(want.notice.wedge)
+        expect(lens.notice?.paused ?? undefined).toBe(want.notice.paused)
         expect(lens.notice?.detail ?? undefined).toBe(want.notice.detail)
+      }
+
+      if (want.armed !== undefined) {
+        expect(
+          lens.armed.map((a) => ({ token: a.token, key: a.key, action: a.action })),
+        ).toEqual(want.armed)
       }
     })
   }

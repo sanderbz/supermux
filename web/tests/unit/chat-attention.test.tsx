@@ -90,6 +90,34 @@ describe('the honesty copy', () => {
     expect(body).toContain('Answer it in the terminal.')
   })
 
+  test('a paused turn says what is waiting, and that chat will not spend money', () => {
+    // Catalog `limit.overage_consent_dialog`: needs-input, billing consequence,
+    // and the session sits there while every surface says Idle.
+    const copy = attentionCopy('session-paused', {
+      detail: 'Continue with Fable 5 on usage credits, or switch models.',
+    })
+    expect(copy.title.toLowerCase()).toContain('paused')
+    expect(copy.body).toContain('usage credits')
+    expect(copy.body).toContain('spends credits on your account')
+    expect(copy.body).toContain('terminal')
+  })
+
+  test('a refusal is not a rate limit and not a retry — and says so', () => {
+    const copy = attentionCopy('turn-refused', {
+      detail: 'API Error: Fable 5’s safeguards flagged this message.',
+    })
+    expect(copy.body).toContain('nothing is retrying')
+    expect(copy.body).toContain('/model')
+  })
+
+  test('the paused turn outranks every other cause', () => {
+    // A card explaining which option chat declined to press is beside the point
+    // on a session whose turn is frozen on a billing question.
+    expect(topAttention(['agent-blocked', 'session-paused', 'dialog-unmapped'])).toBe(
+      'session-paused',
+    )
+  })
+
   test('a version mismatch quotes the version it saw and the ones it knows', () => {
     const copy = attentionCopy('registry-version-mismatch', {
       version: '2.2.0',

@@ -161,6 +161,20 @@ export interface LiveLayerProps {
   /** What the card became once an answer landed. Dialog outcomes write nothing
    *  to the transcript (a0 §3), so this line is the only record. */
   dialogResolved?: string | null
+  /**
+   * The pty's own STALL line, when the lens sees one (catalog
+   * `err.stream_stalled`): `Waiting for API response · will retry in 3s · check
+   * your network`.
+   *
+   * It replaces the working row's label for as long as it is on screen, and
+   * that swap is the whole fix. During a stall the request is out, no bytes are
+   * coming back, and `session.activity` still holds the last tool that RAN — so
+   * the row read `◌ Read parser.rs · 2m 14s` about a call that finished two
+   * minutes ago, which is worse than saying nothing: it invites the user to
+   * wait for something that is not happening. The elapsed clause is untouched
+   * and now says the true thing — how long this turn has been waiting.
+   */
+  stalled?: string | null
 }
 
 export function LiveLayer({
@@ -180,11 +194,16 @@ export function LiveLayer({
   dialogBusy = null,
   onChooseDialog,
   dialogResolved,
+  stalled = null,
 }: LiveLayerProps) {
   // The turn is running AND anchored. The anchor is what the elapsed clause
   // counts from, so a row without one would have nothing honest to say.
   const working = session?.status === 'active' && turnStart != null
   const target = pendingHandoff(handoff, events, name)
+  // A STALL OWNS THE LABEL (see `stalled`). One expression, used by both the
+  // overlay group's live line and the working row below it, so the two cannot
+  // disagree about what the session is doing.
+  const activity = stalled ?? session?.activity
 
   // THE ONE LIVE ROW (daily-driver QA #7).
   //
@@ -205,7 +224,7 @@ export function LiveLayer({
   const liveRow =
     working && !target && overlay.length > 0
       ? {
-          label: session?.activity ? stripEmojiPrefix(session.activity) : overlay[overlay.length - 1].label,
+          label: activity ? stripEmojiPrefix(activity) : overlay[overlay.length - 1].label,
           status: liveStatus(turnStart, session?.subagents, surface),
         }
       : undefined
@@ -332,7 +351,7 @@ export function LiveLayer({
             // either way, so nothing moves when the receipts arrive.
             name={overlay.length > 0 ? undefined : name}
             pin={pinFor?.(name)}
-            activity={session?.activity}
+            activity={activity}
             subagents={session?.subagents}
             turnStartMs={turnStart}
           />
@@ -525,6 +544,21 @@ function dialogQuestion(view: DialogCardView, command?: string): React.ReactNode
   // was headed ``Run `AskUserQuestion` ?`` (verify matrix finding 4).
   if (view.family === 'question') {
     return view.question ?? 'Claude is asking you to choose.'
+  }
+  // THE PAUSED MODALS (catalog `limit.overage_consent_dialog` /
+  // `err.refusal_fallback_dialog`). The heading has one job the generic line
+  // cannot do: say that the turn is STOPPED and waiting, rather than that
+  // something is being asked. Each variant names what the answer costs, because
+  // that is the fact the reader needs before they walk to the terminal — one of
+  // them spends credits, the other decides which model finishes the work.
+  if (view.family === 'paused') {
+    if (view.variant === 'overage-consent') {
+      return 'Claude paused this turn — continuing costs usage credits.'
+    }
+    if (view.variant === 'refusal-fallback') {
+      return 'Claude paused this turn — its safeguards flagged the prompt.'
+    }
+    return 'Claude paused this turn and is waiting for an answer.'
   }
   if (view.family === 'startup') {
     if (view.variant === 'trust') return 'Claude Code needs your OK to work in this folder.'

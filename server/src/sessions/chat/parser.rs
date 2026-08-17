@@ -475,6 +475,23 @@ fn system_entry(obj: &Map<String, Value>, base: &Header) -> ChatEntry {
             if let Some(d) = err.and_then(|e| e.get("isNetworkDown")).and_then(Value::as_bool) {
                 body["network_down"] = Value::Bool(d);
             }
+            // WHICH retry this is. `stalled` is its own kind in CC's retry-banner
+            // builder and it means something the other kinds do not: the request
+            // was SENT and the stream never started, so there is no error to
+            // report and nothing prints — the pty goes quiet and every surface
+            // reads the turn as finished (catalog `err.stream_stalled`). A row
+            // that says "API error · retrying" about it would be wrong twice
+            // over: nothing errored, and the turn is still live.
+            for key in ["kind", "retryKind", "retry_kind"] {
+                if let Some(k) = err
+                    .and_then(|e| e.get(key))
+                    .and_then(Value::as_str)
+                    .or_else(|| str_at(obj, &[key]))
+                {
+                    body["retry_kind"] = Value::String(k.to_string());
+                    break;
+                }
+            }
             for (from, to) in [("retryAttempt", "attempt"), ("maxRetries", "max_retries")] {
                 if let Some(n) = obj.get(from).and_then(Value::as_i64) {
                     body[to] = Value::from(n);
@@ -542,6 +559,30 @@ fn system_entry(obj: &Map<String, Value>, base: &Header) -> ChatEntry {
         }
         _ => {}
     }
+    // THE RETRACTION, and why it is read on EVERY subtype rather than one.
+    //
+    // `retractedMessageUuids` rides on the refusal-fallback payload (catalog
+    // `err.refusal_fallback_dialog`): once the user answers that dialog, the
+    // assistant messages Claude Code already streamed are withdrawn — they were
+    // produced by a prompt its safeguards flagged, and they are no longer part
+    // of the conversation the model will see. A renderer that keeps drawing them
+    // as live is showing text nobody will act on, attributed to Claude, in a
+    // thread that has moved on.
+    //
+    // It is read subtype-agnostically because the FIELD is the contract and the
+    // subtype is not: this app has never captured the line that carries it, only
+    // the payload shape, and CC has shipped the same field under
+    // `model_refusal_fallback`, `request_user_dialog` and a bare `refusal`
+    // depending on which half of the flow writes it. An unknown subtype carrying
+    // the field is exactly the case worth surviving.
+    //
+    // Nothing is deleted or rewritten here — the transcript is append-only and
+    // so is the wire. This entry NAMES the uuids; `wire-entries.ts` collapses
+    // those rows behind a tombstone when it folds the ring for display, which is
+    // recomputed from the same append-only list every time.
+    if let Some(uuids) = retracted_uuids(obj) {
+        body["retracted"] = Value::Array(uuids);
+    }
     base.entry(Kind::System, body, Some(subtype))
 }
 
@@ -587,6 +628,21 @@ fn grace_body(text: &str, hint: &'static str) -> Value {
         "limit_grace": true,
         "blocked": false,
     })
+
+/// The uuids a system line says are withdrawn, as a non-empty array of strings.
+fn retracted_uuids(obj: &Map<String, Value>) -> Option<Vec<Value>> {
+    let raw = obj
+        .get("retractedMessageUuids")
+        .or_else(|| obj.get("retracted_message_uuids"))
+        .or_else(|| obj.get("retractedMessageIds"))?
+        .as_array()?;
+    let uuids: Vec<Value> = raw
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| Value::String(s.to_string()))
+        .collect();
+    (!uuids.is_empty()).then_some(uuids)
 }
 
 /// The `tool_result` body of a permission DENIAL.

@@ -171,6 +171,52 @@ describe('answering, when everything checks out', () => {
 /* ── 2. the refusals ────────────────────────────────────────────────────── */
 
 describe('answering, when it must refuse', () => {
+  /** The same reading with the screen having ARMED a key. */
+  const armed = (lens: PeekLens): PeekLens => ({
+    ...lens,
+    armed: [
+      {
+        token: 'Esc',
+        key: 'Escape' as const,
+        action: 'exit',
+        text: 'Press Esc again to exit',
+      },
+    ],
+  })
+
+  test('an ARMED screen stops the sequence before the first key', async () => {
+    // Catalog `generic.armed_keys`, and the reason it had to land before any
+    // automated keypress: on this screen the next key is overloaded. A second
+    // Esc here EXITS Claude Code (#75649 on the trust gate), and no capture
+    // exists of what any of these armings do — so the registry licenses
+    // nothing and the sequence sends nothing at all.
+    const r = rig([armed(PERM)])
+    const out = await answerDialog(r.deps, req(2))
+    expect(out.ok).toBe(false)
+    expect(out.failure).toBe('armed-key')
+    expect(r.sent).toEqual([])
+    expect(out.committed).toBe(false)
+    // The refusal quotes the terminal's own line — the whole evidence.
+    expect(out.detail).toContain('Press Esc again to exit')
+  })
+
+  test('the ESCAPE branch is refused too — the branch where it matters most', async () => {
+    const r = rig([armed(PERM)])
+    const out = await answerDialog(r.deps, { ...req('escape'), entryId: 'permission.bash' })
+    expect(out.failure).toBe('armed-key')
+    expect(r.sent).toEqual([])
+  })
+
+  test('an arming that appears MID-SEQUENCE aborts with the keys already sent recorded', async () => {
+    // The screen redraws between keys, so the check runs on every look — not
+    // only the first. What has gone is reported; nothing further follows it.
+    const r = rig([PERM, armed(caretAt(PERM, 1))])
+    const out = await answerDialog(r.deps, req(2))
+    expect(out.failure).toBe('armed-key')
+    expect(r.sent).toEqual(['Down'])
+    expect(out.committed).toBe(false)
+  })
+
   test('a peek that could not look sends nothing at all', async () => {
     const r = rig([null])
     const out = await answerDialog(r.deps, req(0))

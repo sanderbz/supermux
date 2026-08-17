@@ -203,6 +203,10 @@ function Surface({
       dialogBusy={state.dialogBusy ?? null}
       onChooseDialog={() => {}}
       dialogResolved={state.dialogResolved}
+      // The stall's own sentence takes the working row's label (catalog
+      // `err.stream_stalled`): `session.activity` still names the last tool
+      // that RAN, which is the misreading this state exists to show fixed.
+      stalled={state.stalled ?? null}
       attention={state.attention ?? null}
       attentionCapture={state.attentionCapture}
       attentionExpanded={state.attentionExpanded}

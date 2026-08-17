@@ -21,6 +21,7 @@ import {
 } from './composer-draft'
 import { handoffLabel, readDelegateIntent, type DelegateIntent } from './delegate-intent'
 import type { PeekLens } from './peek-lens'
+import { armedRefusal } from './registry/armed'
 import { classifySlash, readTrigger, slashName } from './slash'
 import type { PickerJump } from './composer-keys'
 
@@ -77,6 +78,13 @@ export interface ComposerNotice {
      *  dialog (a0 §3, live-verified) — it does not interrupt the turn — so the
      *  keystroke is not sent and the composer says what it would have done. */
     | 'stop-dialog'
+    /** Stop was pressed while the screen has ARMED the key it would send
+     *  (`registry/armed.ts`, catalog `generic.armed_keys`). With `Esc again to
+     *  clear` showing, the interrupt Escape throws away whatever the human was
+     *  typing in the terminal instead; with `Press Ctrl-C again to exit` it is
+     *  the process. `detail` is the terminal's own line, because that is the
+     *  whole evidence. */
+    | 'stop-armed'
     | 'send-failed'
     | 'stop-failed'
     /** A `/model`-class command: it opens a picker in the TUI, so chat refuses
@@ -232,6 +240,16 @@ export function sendGate(lens: PeekLens | null, ctx: SendContext = {}): SendGate
  */
 export function stopGate(lens: PeekLens | null): SendGate {
   if (lens?.dialog) return { send: false, notice: { kind: 'stop-dialog' } }
+  // ARMED KEYS (catalog `generic.armed_keys`) — the prior question, and the one
+  // that applies on a screen with no dialog at all: has this screen redefined
+  // Escape? `Esc again to clear` is drawn under an ordinary composer, so the
+  // dialog check above sees nothing and the interrupt would land as a silent
+  // delete of the user's own half-written sentence. The registry answers by
+  // family and refuses everything it has no captured mapping for.
+  const armed = lens ? armedRefusal(lens, 'Escape') : null
+  if (armed) {
+    return { send: false, notice: { kind: 'stop-armed', detail: armed.armed.text } }
+  }
   return { send: true }
 }
 

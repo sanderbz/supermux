@@ -233,6 +233,31 @@ const BUDGET_ENTRY_JS = 160 * KB
 // live layer is on the hero path and imports the card statically. That is 2.91
 // KB of headroom left on the gate, and the next thing to touch this file
 // should either code-split the card or spend elsewhere.
+//
+// 232 at the PTY-07 dialog families (`feat/states-dialog-families`): measured
+// 231.15 against 229.06 for origin/main at dc64cf6, so +2.09 KB, effectively all
+// of it in `chat-panel` (38.28 -> 40.37; the entry chunk moved 154.77 -> 154.84).
+// What it bought, and why each part is bytes rather than nothing:
+//   +~0.8 KB  the two `Session paused` registry entries and the card copy for
+//             them. Most of it is the DISABLED-REASON prose — the sentence that
+//             says a row would spend usage credits on the reader's account and
+//             that chat has never seen this dialog on a live screen. That
+//             sentence IS the feature: without it the card is a greyed-out
+//             control with no explanation, which is the state the audit found.
+//   +~0.6 KB  `registry/armed.ts` + the lens' armed reader, which is what stops
+//             the composer's Stop from sending an Escape the screen has armed
+//             (catalog `generic.armed_keys` — it clears the user's terminal
+//             draft, or exits Claude Code outright).
+//   +~0.4 KB  the retraction fold and its tombstone row: marking withdrawn
+//             replies instead of drawing them as live, without deleting
+//             anything from the append-only ring.
+//   +~0.3 KB  the refusal class and the stalled row — two states that used to
+//             render as an ordinary retryable API error, or as nothing at all.
+// The ×1.02 policy above would allow 236 (231.15 × 1.02 = 235.77). It is NOT
+// taken: this is one PR of a wave, and if every PR in a wave applies the 2 %
+// to its own measurement the ceiling drifts up by compounding. 232 is the
+// measured cost rounded up, which is what the ledger is for; the wave's own
+// integration commit is where a single ×1.02 belongs, if it needs one at all.
 const BUDGET_APP_JS = 232 * KB
 const BUDGET_CSS = 30 * KB
 

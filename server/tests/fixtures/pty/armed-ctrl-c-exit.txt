@@ -1,0 +1,5 @@
+✻ Simmering… (esc to interrupt)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  Press Ctrl-C again to exit · Press Ctrl-C again to stop background agents

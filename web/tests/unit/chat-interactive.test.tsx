@@ -834,7 +834,15 @@ describe('the slash refusal, said out loud', () => {
 // ── The review findings (A4 review) ─────────────────────────────────────────
 
 describe('the Stop gate', () => {
-  const CLEAR2: PeekLens = { bannerVersion: null, composerDraft: null, dialog: null }
+  const CLEAR2: PeekLens = {
+    bannerVersion: null,
+    composerDraft: null,
+    dialog: null,
+    // A clear screen has ARMED NOTHING, and saying so is the point: the gate's
+    // fail-open rule is about a peek that could not LOOK, never about a screen
+    // that has redefined the key (`registry/armed.ts`).
+    armed: [],
+  }
 
   test('Stop does not press Escape into a dialog — that would DENY it, not interrupt', () => {
     // a0 §3, live-verified: Escape inside a permission dialog denies the tool
@@ -853,6 +861,29 @@ describe('the Stop gate', () => {
     // An interrupt nobody can press is its own failure, so this one fails open.
     expect(stopGate(CLEAR2)).toEqual({ send: true })
     expect(stopGate(null)).toEqual({ send: true })
+  })
+
+  test('Stop does not press an Escape the SCREEN has armed', () => {
+    // Catalog `generic.armed_keys`. There is no dialog here — this is the bare
+    // composer with a half-written sentence in it — so the check above sees
+    // nothing, and the interrupt would land as `Esc again to clear`: a silent
+    // delete of the user's own text, with no undo this app can offer.
+    const gate = stopGate({
+      ...CLEAR2,
+      composerDraft: 'a half-written thought',
+      armed: [
+        {
+          token: 'Esc',
+          key: 'Escape',
+          action: 'clear',
+          text: 'Esc again to clear · Ctrl+Y to paste deleted text',
+        },
+      ],
+    })
+    expect(gate.send).toBe(false)
+    // The terminal's own line is the evidence, and the notice carries it.
+    expect(gate.notice?.kind).toBe('stop-armed')
+    expect(gate.notice?.detail).toContain('Esc again to clear')
   })
 })
 

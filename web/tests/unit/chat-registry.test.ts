@@ -48,6 +48,8 @@ const FIXTURES: Record<RegistryId, () => ReturnType<typeof readLens>> = {
   'question.ask': () => ptyOf('ask-user-question.txt'),
   'startup.trust': () => ptyOf('trust-folder.txt'),
   'startup.apikey': () => ptyOf('api-key.txt'),
+  'paused.overage_consent': () => ptyOf('session-paused-overage.txt'),
+  'paused.refusal_fallback': () => ptyOf('session-paused-refusal.txt'),
 }
 
 /** The version to check an entry against. A pin-exempt entry (a gate that draws

@@ -260,6 +260,9 @@ describe('coverage: every state the surface can be in', () => {
       'handoff-failed',
       'schedule-draft',
       'panel',
+      // PTY-07: the Stop that was refused because the terminal armed Escape.
+      // A composer state, because the refusal IS the composer's banner.
+      'stop-armed',
     ])
   })
 

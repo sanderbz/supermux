@@ -62,7 +62,18 @@ export interface TileSession extends SessionSummary {
    *  status: a limit-hit turn ends with an ordinary `Stop`, so `status` reads
    *  `idle` and the tile drew green while the account was cut off for five hours
    *  (verify matrix finding 1). */
-  blocked?: { kind: string; text: string; detail?: string; wedge?: string } | null
+  blocked?: {
+    /** `limit` | `startup` | `paused` (`sessions::pty_state::Blocked`). */
+    kind: string
+    text: string
+    detail?: string
+    wedge?: string
+    /** Which consent modal, for `kind: 'paused'` — `overage_consent` or
+     *  `refusal_fallback` (catalog `limit.overage_consent_dialog` /
+     *  `err.refusal_fallback_dialog`). The turn is not over and no hook will
+     *  ever say so, which is why this arrives from the capture. */
+    dialog?: string
+  } | null
   /** The dim ≥70 % footer warning Claude Code prints, verbatim. A quiet chip. */
   limit_warning?: string | null
   /** Usage headroom from the opt-in statusline tap. Absent on every host without

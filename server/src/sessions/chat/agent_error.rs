@@ -45,6 +45,13 @@ pub const CLASS_THROTTLE: &str = "throttle";
 pub const CLASS_AUTH: &str = "auth";
 pub const CLASS_API: &str = "api";
 pub const CLASS_ERROR: &str = "error";
+/// `stop_reason: "refusal"` — the model's safeguards flagged the message and
+/// the turn is DEAD. Its own class rather than `api`, because the two need
+/// opposite things from the reader: an `api` failure is transient and CC retries
+/// it by itself, a refusal never retries and the only way forward is a different
+/// message or a different model (catalog `err.safeguards_refusal`, 844 matching
+/// issues — it fires on ordinary security, biology and coding work).
+pub const CLASS_REFUSAL: &str = "refusal";
 
 /// The reset clause separator CC writes (`" · resets "`, U+00B7).
 const RESETS: &str = "· resets ";
@@ -90,6 +97,28 @@ pub fn classify(text: &str, error_class: Option<&str>, status: Option<i64>) -> A
         return AgentErrorInfo {
             class: CLASS_THROTTLE.into(),
             resets_at,
+            blocking: false,
+            ..Default::default()
+        };
+    }
+
+    // 1b. THE REFUSAL, checked before the API family because it arrives wearing
+    //     that family's clothes: `API Error: {Model}'s safeguards flagged this
+    //     message …`, which `lower.starts_with("api error:")` would otherwise
+    //     classify as a transient 5xx. It is the opposite of transient — nothing
+    //     retries, `stop_reason` was `refusal`, and the turn is over. Before this
+    //     the whole line was dropped by the `isApiErrorMessage` path and the
+    //     conversation simply stopped under a green Idle dot.
+    if is_refusal_text(&lower) {
+        return AgentErrorInfo {
+            class: CLASS_REFUSAL.into(),
+            resets_at,
+            // NOT blocking, and the distinction is the useful half of this
+            // classification. `blocking` gates the composer — it means "nothing
+            // you send will be picked up". Here the opposite is true: sending
+            // something else is precisely the remedy (CC's own advice is to edit
+            // the last message or switch models with /model). A blanked composer
+            // would take the fix away from the person who needs it.
             blocking: false,
             ..Default::default()
         };
@@ -178,6 +207,18 @@ fn reset_clause(text: &str) -> Option<String> {
     let rest = text[at..].trim();
     let clause = rest.lines().next().unwrap_or(rest).trim();
     (!clause.is_empty()).then(|| clause.trim_end_matches('.').to_string())
+}
+
+/// The two shapes CC's refusal renderer emits, both anchored on the phrase that
+/// only a refusal produces. Deliberately NOT anchored on `api error:` alone —
+/// that prefix is shared with every transient failure — and deliberately narrow
+/// enough that an assistant *explaining* safeguards is not one: the discriminator
+/// is CC's own sentence, and the caller has already established from
+/// `isApiErrorMessage` that this line is a failure banner rather than prose.
+fn is_refusal_text(lower: &str) -> bool {
+    lower.contains("safeguards flagged this message")
+        || (lower.contains("can't help with this") && lower.contains("start a new session"))
+        || (lower.contains("can’t help with this") && lower.contains("start a new session"))
 }
 
 fn is_auth_text(lower: &str) -> bool {
@@ -315,6 +356,40 @@ mod tests {
         let got = from_line(&flagged, "You've hit your weekly limit · resets 2pm (Europe/Amsterdam)")
             .expect("a flagged line is a banner");
         assert_eq!(got.limit.as_deref(), Some("weekly"));
+    }
+
+    #[test]
+    fn a_safeguards_refusal_is_a_dead_turn_and_not_a_retryable_api_error() {
+        let got = classify(
+            "API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations. Claude Code can't respond to this message with Fable 5.",
+            None,
+            None,
+        );
+        assert_eq!(got.class, CLASS_REFUSAL);
+        // The composer must stay live: sending something ELSE is the remedy.
+        assert!(!got.blocking);
+        // The second form of the same builder.
+        assert_eq!(
+            classify(
+                "API Error: Fable 5 can't help with this. Start a new session to continue.",
+                None,
+                None
+            )
+            .class,
+            CLASS_REFUSAL
+        );
+    }
+
+    #[test]
+    fn an_ordinary_api_error_is_still_an_api_error() {
+        // The refusal arm sits in front of the API arm, so this is the control:
+        // the prefix they share must not drag a 529 into the refusal class.
+        let got = classify(
+            "API Error: 529 {\"type\":\"overloaded_error\"}",
+            Some("server_error"),
+            Some(529),
+        );
+        assert_eq!(got.class, CLASS_API);
     }
 
     #[test]

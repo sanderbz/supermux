@@ -422,6 +422,11 @@ function blockedLabel(info: AgentErrorInfo): string {
       return 'Signed out'
     case 'api':
       return 'API error'
+    case 'refusal':
+      // Not "Error" and not "Blocked": nothing is broken and nothing is out of
+      // quota. The model declined this particular message, which is a different
+      // thing to do about it — and the chip is the only place that fits.
+      return 'Refused'
     default:
       return 'Blocked'
   }
@@ -430,16 +435,39 @@ function blockedLabel(info: AgentErrorInfo): string {
 /** A banner whose text did not survive (clipped to nothing) still says what
  *  happened — an empty amber card would be worse than the bubble it replaced. */
 function bannerFallback(info: AgentErrorInfo): string {
-  return info.cls === 'limit'
-    ? 'Claude has hit a usage limit and cannot continue this turn.'
-    : 'Claude could not complete this turn.'
+  if (info.cls === 'limit') {
+    return 'Claude has hit a usage limit and cannot continue this turn.'
+  }
+  if (info.cls === 'refusal') {
+    return 'Claude’s safeguards declined this message, so this turn ended without an answer.'
+  }
+  return 'Claude could not complete this turn.'
 }
+
+/** The one thing a refused turn needs that no other blocked kind does: what to
+ *  DO. Claude Code's own advice is a keystroke chord this app cannot send
+ *  (`double press esc to edit your last message`), so the card says the part
+ *  that is true on this surface — send a different message, or change model —
+ *  rather than an instruction that only works in the terminal. */
+const REFUSAL_NOTE = 'Send a different message, or switch model with /model.'
 
 // ── system rows ─────────────────────────────────────────────────────────────
 
 /** Badges the system rows ride under. `grouping.ts::SYSTEM_BADGES` must list
  *  every one of them or the row is drawn as somebody's speech bubble. */
-export const SYSTEM_ROW_BADGES = ['compaction', 'model-switch', 'api-retry', 'dialog', 'limit'] as const
+export const SYSTEM_ROW_BADGES = [
+  'compaction',
+  'model-switch',
+  'api-retry',
+  'dialog',
+  // The grace-window notice: a fact about the account, in the system voice.
+  'limit',
+  // A retry whose stream never started — still live, never an error (see
+  // `systemRow`'s `api_error` arm).
+  'stalled',
+  // The tombstone a retraction leaves behind (see `retractionRow`).
+  'retracted',
+] as const
 
 function num(body: unknown, key: string): number | undefined {
   const v = field(body, key)
@@ -482,6 +510,20 @@ function systemRow(w: WireEntry): { text: string; badge: string } | null {
       const what = str(w.body, 'formatted') ?? str(w.body, 'content') ?? 'API error'
       const down = field(w.body, 'network_down') === true
       const retry = attempt && max ? ` · retrying (${attempt}/${max})` : ''
+      // THE STALL IS NOT AN ERROR (catalog `err.stream_stalled`). CC's `stalled`
+      // retry kind means the request was SENT and the stream never started:
+      // nothing failed, nothing printed, and the turn is still live and will
+      // resume by itself. Drawn as "API error · retrying" it reads as damage,
+      // and drawn as nothing at all — which is what shipped — the surface goes
+      // quiet and the user walks away from a turn that was about to come back.
+      // So it gets its own sentence and its own badge, and the badge is the
+      // thing the live layer keys the transient row off.
+      if (str(w.body, 'retry_kind') === 'stalled') {
+        return {
+          text: `waiting for the API to answer — nothing has come back yet${retry}`,
+          badge: 'stalled',
+        }
+      }
       return { text: `${down ? 'network is down — ' : ''}${what}${retry}`, badge: 'api-retry' }
     }
     // THE UNIVERSAL BLOCKED SIGNAL: CC emits `request_user_dialog` for every
@@ -551,6 +593,55 @@ function dialogNoun(kind?: string): string {
       return 'a dialog'
     default:
       return `a ${kind} dialog`
+
+/* ── the retraction (catalog `err.refusal_fallback_dialog`) ──────────────────
+ *
+ * THE PROBLEM, stated exactly. When Claude Code's safeguards flag a prompt
+ * mid-turn it raises the `Session paused` fallback dialog, and its payload
+ * carries `retractedMessageUuids`: the assistant messages that were ALREADY
+ * STREAMED to the user are withdrawn. They came out of a prompt the model will
+ * no longer act on, and once the dialog is answered the conversation continues
+ * as though they were never said. The catalog's requirement is that they "must
+ * be EVICTED from the rendered transcript", and it records that supermux's
+ * append-only ring has no mechanism for eviction.
+ *
+ * WHY NOT ACTUALLY EVICT. Because both stores this fold sits on top of are
+ * append-only by construction and deliberately so: the transcript is Claude
+ * Code's own JSONL (this app does not write it at all) and the socket's ring is
+ * a replayable log with a cursor — `backlog.ts` pages it by offset, and an entry
+ * that vanished from under a cursor is a paging bug, not a UI improvement. More
+ * to the point, deleting somebody's conversation because a later line said so is
+ * exactly the class of silent history rewrite this surface refuses everywhere
+ * else (the pending reconciler, the provisional supersede, the clipped marker):
+ * what the user READ has to stay findable, or the app is quietly lying about
+ * what happened.
+ *
+ * WHAT HAPPENS INSTEAD, and why it is honest. The retraction is a LATER entry
+ * that NAMES uuids. This fold — which is recomputed from the whole append-only
+ * list on every render, and is therefore not a mutation of anything — marks
+ * those rows `retracted` and emits one tombstone row saying what was withdrawn
+ * and why. The renderer then draws them as withdrawn rather than as live: still
+ * present, still readable, visibly no longer part of the conversation. That is
+ * the same shape the provisional→confirmed supersede already uses (a later fact
+ * changing how an earlier row is DRAWN, never what is stored), and it survives a
+ * reload, a re-page and a reconnect, because it is recomputed rather than
+ * remembered.
+ */
+
+/** The uuids a system entry withdraws, or an empty array. */
+function retractedUuids(body: unknown): string[] {
+  const raw = field(body, 'retracted')
+  if (!Array.isArray(raw)) return []
+  return raw.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+}
+
+/** The tombstone's sentence. It names the CAUSE, because "2 messages were
+ *  withdrawn" with no reason reads like a bug in this app. */
+function retractionRow(count: number): { text: string; badge: string } {
+  const what = count === 1 ? 'one earlier reply' : `${count} earlier replies`
+  return {
+    text: `${what} withdrawn — Claude Code’s safeguards flagged the prompt they came from`,
+    badge: 'retracted',
   }
 }
 
@@ -659,7 +750,10 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
         // The reset clause, which is the whole answer to "when can I work
         // again". Reused rather than a new field: the display model is the
         // frozen A1 shape and `reply` is its slot for "what came back".
-        reply: resetNote(info),
+        // The reset clause — or, for a refusal, the only remedy this surface
+        // can offer. Both answer the same question ("what now?") in the same
+        // slot, which is what the sub-line under the card is for.
+        reply: info.cls === 'refusal' ? REFUSAL_NOTE : resetNote(info),
         blocking: info.blocking || undefined,
         truncated: w.truncated || undefined,
       })
@@ -674,6 +768,33 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
     // turn_duration, local_command, scheduled_task_fire) stays dropped: those
     // are genuinely chrome, and the census counts 4257 of the first alone.
     if (w.kind === 'system' || w.kind === 'compact_boundary') {
+      // A RETRACTION outranks whatever else the line was. It is read before
+      // `systemRow` because the subtype that carries it is not fixed (see
+      // `parser.rs::retracted_uuids`) and most subtypes render as nothing — a
+      // withdrawal that arrived on an unworded subtype would otherwise be
+      // dropped on the floor with the rows it withdraws still drawn as live.
+      const retracted = retractedUuids(w.body)
+      if (retracted.length > 0) {
+        const withdrawn = new Set(retracted)
+        let hit = 0
+        for (const e of out) {
+          if (!withdrawn.has(e.uuid) || e.retracted) continue
+          e.retracted = true
+          hit++
+        }
+        // Nothing on screen matched — the withdrawn rows are older than this
+        // page, or were never rendered. The tombstone is still worth drawing:
+        // the conversation DID change under the reader, and a silent no-op is
+        // the state this whole arm exists to end.
+        const tomb = retractionRow(hit || retracted.length)
+        out.push({
+          uuid: w.uuid,
+          ts: toSeconds(w.ts_ms),
+          text: tomb.text,
+          kind: tomb.badge,
+        })
+        continue
+      }
       const row = systemRow(w)
       if (!row) continue
       // ONE row per failing request, not one per attempt. CC writes an

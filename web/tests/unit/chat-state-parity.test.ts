@@ -408,5 +408,127 @@ describe('the no-hook fallback for an MCP form', () => {
     expect(entries).toHaveLength(1)
     expect(entries[0].text).toBe('this session is waiting on an MCP server’s input form')
     expect(itemNode(buildTranscript(toDisplayList(entries), {}))?.speaker).toBe('system')
+
+/**
+ * **The retraction, and the append-only rule it had to respect.**
+ *
+ * The catalog says the messages named by `retractedMessageUuids` "must be
+ * EVICTED from the rendered transcript", and records that supermux's ring has no
+ * eviction. The fix is not to build one: what the user READ stays on screen and
+ * stops reading as live, driven by a LATER append-only entry that this fold
+ * re-derives on every render. These are the two halves of that claim — the rows
+ * are marked, and nothing is missing.
+ */
+describe('a refusal fallback withdraws what it already streamed — without deleting it', () => {
+  const retraction = byName('retracts the messages it already streamed')
+
+  /** Two assistant replies, then the fallback line that withdraws them. */
+  const wire = (): WireEntry[] => [
+    {
+      seq: 1,
+      uuid: 'asst-withdrawn-1',
+      kind: 'assistant',
+      ts_ms: Date.parse('2026-08-17T09:11:58.000Z'),
+      offset: 0,
+      oversize: false,
+      truncated: false,
+      body: { text: 'Here is how I would exploit that parser.' },
+    },
+    {
+      seq: 2,
+      uuid: 'asst-withdrawn-2',
+      kind: 'assistant',
+      ts_ms: Date.parse('2026-08-17T09:11:59.000Z'),
+      offset: 0,
+      oversize: false,
+      truncated: false,
+      body: { text: 'Second half of the same reply.' },
+    },
+    wireFrom(retraction, 3),
+  ]
+
+  test('the withdrawn replies are still there, and marked', () => {
+    const entries = toChatEntries(wire())
+    const withdrawn = entries.filter((e) => e.uuid.startsWith('asst-withdrawn'))
+    // NOT evicted: the reader saw these words, and a transcript that removes
+    // what somebody read is lying about what happened.
+    expect(withdrawn).toHaveLength(2)
+    expect(withdrawn.every((e) => e.retracted === true)).toBe(true)
+    // …and the text is untouched. Marking is a rendering fact; the content is
+    // Claude Code's and this app does not edit it.
+    expect(withdrawn.some((e) => e.text.includes('exploit that parser'))).toBe(true)
+  })
+
+  test('a tombstone says what happened and why', () => {
+    const tomb = toChatEntries(wire()).find((e) => e.kind === 'retracted')
+    expect(tomb).toBeDefined()
+    expect(tomb!.text).toContain('withdrawn')
+    expect(tomb!.text).toContain('safeguards')
+    // Centred system voice, never anybody's bubble.
+    const node = buildTranscript(toDisplayList(toChatEntries(wire())), {}).find(
+      (n) => n.kind === 'item' && n.item.uuid === tomb!.uuid,
+    )
+    expect(node?.kind === 'item' && node.speaker).toBe('system')
+  })
+
+  test('the mark survives into the display model', () => {
+    const items = toDisplayList(toChatEntries(wire()))
+    const first = items.find((i) => i.uuid === 'asst-withdrawn-1')
+    expect(first?.type).toBe('assistant')
+    expect(first?.type === 'assistant' && first.retracted).toBe(true)
+  })
+
+  test('a re-fold of the same append-only list gives the same answer', () => {
+    // The whole argument for marking rather than mutating: this is a pure fold
+    // over a log, so a reload, a re-page and a reconnect all reproduce it. A
+    // fold that had mutated its input would not survive being run twice.
+    const a = toChatEntries(wire())
+    const b = toChatEntries(wire())
+    expect(b.map((e) => [e.uuid, e.retracted ?? false])).toEqual(
+      a.map((e) => [e.uuid, e.retracted ?? false]),
+    )
+  })
+
+  test('an ordinary system line withdraws nothing', () => {
+    const plain = toChatEntries([wireFrom(byName('a model fallback names BOTH models'))])
+    expect(plain.every((e) => e.retracted !== true)).toBe(true)
+    expect(plain.every((e) => e.kind !== 'retracted')).toBe(true)
+  })
+})
+
+/**
+ * The two PTY-07 transcript states that used to render as the wrong thing: a
+ * refusal drawn as a retryable API error, and a stall drawn as one too (or, once
+ * the retry storm collapsed, as nothing at all).
+ */
+describe('the refused turn and the stalled one are not ordinary API errors', () => {
+  test('a refusal is its own class, and it does NOT blank the composer', () => {
+    const row = byName('a safeguards refusal is a dead turn')
+    const info = classifyAgentError(blockText(row.line), 'refusal', null)
+    expect(info.cls).toBe('refusal')
+    // `blocking` gates the composer. Sending something else is the remedy here,
+    // so taking the composer away would take the fix away.
+    expect(info.blocking).toBe(false)
+    const item = toDisplayList(toChatEntries([wireFrom(row)]))[0]
+    expect(item.type).toBe('blocked')
+    expect(item.type === 'blocked' && item.label).toBe('Refused')
+    // The remedy rides in the sub-line where a limit's reset clause would be.
+    expect(item.type === 'blocked' && item.detail).toContain('/model')
+  })
+
+  test('a stalled retry says the turn is still live', () => {
+    const row = byName('a stalled stream is a live turn')
+    const entries = toChatEntries([wireFrom(row)])
+    expect(entries).toHaveLength(1)
+    // NOT the `api-retry` badge: nothing errored, and "API error · retrying"
+    // about a live turn is a sentence that reads as damage.
+    expect(entries[0].kind).toBe('stalled')
+    expect(entries[0].text).toContain('nothing has come back yet')
+    expect(entries[0].text).toContain('retrying (1/10)')
+  })
+
+  test('an ordinary 529 retry keeps its own row', () => {
+    const row = byName('an api_error retry carries the id')
+    expect(toChatEntries([wireFrom(row)])[0].kind).toBe('api-retry')
   })
 })

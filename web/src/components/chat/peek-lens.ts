@@ -16,6 +16,7 @@
 // RELATIVE import so `bun test` runs without alias config (same rule as
 // `provisional.ts`); `lib/ansi`'s React dependency is type-only.
 import { hasAnsi, parseAnsiLine } from '../../lib/ansi'
+import type { KeyName } from '../../lib/session-input/types'
 
 /** A dialog the lens can SEE. Whether it may be answered is the registry's call
  *  (T6) — the lens reports, it never decides. */
@@ -29,13 +30,27 @@ export interface DialogSighting {
    *  a fingerprint miss would then degrade to a send (invisible) instead of to
    *  the Attention card (visible). Read/WebFetch/MCP permission prompts have no
    *  `Tab to amend` footer — nothing to amend — so they land here. */
-  family: 'permission' | 'plan' | 'question' | 'startup' | 'unknown'
+  family: 'permission' | 'plan' | 'question' | 'startup' | 'paused' | 'unknown'
   /** Which shape inside the family. `bash`/`edit`/`write` are the permission
    *  variants; `trust`/`apikey` are the two STARTUP wedges that draw numbered
    *  rows (`peek-lens` reports the other two — the first-run wizard and codex's
    *  hooks review — through `notice`, because neither has a captured row list
-   *  this app is willing to press a key into). */
-  variant?: 'bash' | 'edit' | 'write' | 'trust' | 'apikey'
+   *  this app is willing to press a key into).
+   *
+   *  `overage-consent`/`refusal-fallback` are the two `paused` shapes — see
+   *  `readPausedVariant`. A `Session paused` screen whose body matches NEITHER
+   *  keeps `family: 'paused'` with no variant: the session is still reported as
+   *  paused (that is the fact the roster was missing), and the registry answers
+   *  nothing, which is the correct degrade for a consent dialog nobody has
+   *  read. */
+  variant?:
+    | 'bash'
+    | 'edit'
+    | 'write'
+    | 'trust'
+    | 'apikey'
+    | 'overage-consent'
+    | 'refusal-fallback'
   /** Whitespace-normalised option labels, in TUI order.
    *  Wrapped continuation lines are folded back into their option (options wrap
    *  at 52 cols — a0 §3 "wrap hazard"), which also folds in a sub-hint that sits
@@ -133,8 +148,28 @@ export interface PtyNotice {
    *  `limit-warning` — the dim footer line at ≥70 % utilisation, or the
    *  `Approaching …` form. A chip, never a block.
    *  `startup-wedge` — the session is parked on a startup gate before its first
-   *  turn (see `wedge`). */
-  kind: 'limit-blocked' | 'limit-warning' | 'startup-wedge'
+   *  turn (see `wedge`).
+   *  `session-paused` — Claude Code has PAUSED the turn on a consent modal and
+   *  is waiting for an answer that costs money or changes the model (catalog
+   *  `limit.overage_consent_dialog` / `err.refusal_fallback_dialog`). The one
+   *  notice that is simultaneously a dialog: the turn does not end, no hook
+   *  fires, and every existing signal read the session as a green Idle while it
+   *  sat paused indefinitely.
+   *  `turn-refused` — the API answered with `stop_reason: refusal`. The turn is
+   *  DEAD (not retrying, not blocked on a clock) and Claude Code's recovery is
+   *  `double press esc to edit your last message`, which this app has no
+   *  equivalent for — so it says what happened instead of drawing a bubble.
+   *  `stream-stalled` — the request went out and no bytes came back; CC has
+   *  scheduled a retry and the turn is STILL LIVE. Transient, never a block:
+   *  the failure it fixes is the opposite one (the surface drifting to Idle
+   *  and the user walking away from a turn that was about to resume). */
+  kind:
+    | 'limit-blocked'
+    | 'limit-warning'
+    | 'startup-wedge'
+    | 'session-paused'
+    | 'turn-refused'
+    | 'stream-stalled'
   /** Claude Code's own line, verbatim (whitespace-normalised, nothing else). */
   text: string
   /** The remediation subline CC prints under a hard block (`/upgrade or
@@ -144,6 +179,41 @@ export interface PtyNotice {
    *  `onboarding` and `hooks-review` do not — they are reported here only, so a
    *  session parked on the theme picker stops reading as a green Idle. */
   wedge?: 'trust' | 'apikey' | 'onboarding' | 'hooks-review'
+  /** Which `session-paused` modal, when the body says. Absent = a `Session
+   *  paused` screen this app does not recognise, which is still reported. */
+  paused?: 'overage-consent' | 'refusal-fallback'
+}
+
+/**
+ * A key the live screen has ARMED — the state IS the pending second keypress
+ * (catalog `generic.armed_keys`).
+ *
+ * `Esc again to clear`, `Press Ctrl-C again to exit`, `Press Ctrl-C again to
+ * stop background agents`, `Ctrl+Y to paste deleted text`. On those screens the
+ * next key is OVERLOADED: the same Escape this app sends to interrupt a turn
+ * throws away what the user was typing, and the same Ctrl-C a recovery might
+ * send kills the process outright. Issue #75649 is that failure on the trust
+ * gate, where a second Esc exits Claude Code.
+ *
+ * WHY IT IS ON THE LENS AND NOT IN THE REGISTRY. The registry's job is to say
+ * what a key MEANS on a screen it recognises; this is the prior question — *has
+ * this screen redefined the key I was about to send?* — and it has to be
+ * answerable for screens no fingerprint claims, because those are precisely the
+ * ones where guessing is worst. So the lens reports the arming, verbatim, and
+ * `registry/armed.ts` decides whether anything may still be sent.
+ */
+export interface ArmedKey {
+  /** The token as the screen spells it — `Esc`, `Ctrl-C`, `Ctrl+Y`. */
+  token: string
+  /** The key this app would send for that token, or `null` when the allowlist
+   *  has no name for it. `null` is not a pass: an unmappable armed token is
+   *  still an armed screen, and the refusal is by SCREEN, not by key. */
+  key: KeyName | null
+  /** What the press does, in Claude Code's own words (`clear`, `exit`, `stop
+   *  background agents`, `paste deleted text`). */
+  action: string
+  /** The screen's own line, whitespace-normalised and otherwise verbatim. */
+  text: string
 }
 
 /* ── the two-phase fingerprint ────────────────────────────────────────────────
@@ -295,6 +365,14 @@ export interface PeekLens {
    * press a key — it is a reason to stop drawing the session as healthy.
    */
   notice: PtyNotice | null
+  /**
+   * Keys this screen has ARMED (see `ArmedKey`). Empty on an ordinary screen.
+   *
+   * Read on EVERY capture, dialog or not, because the two consumers that send
+   * keys — the composer's Stop and the dialog sequencer — can both fire on a
+   * screen no fingerprint claims. `registry/armed.ts` turns this into a refusal.
+   */
+  armed: readonly ArmedKey[]
 }
 
 /** U+276F — the glyph a0 proved is NEVER a fingerprint on its own: the composer
@@ -552,6 +630,46 @@ function readStartupVariant(
   return null
 }
 
+/* ── the paused consent modals ───────────────────────────────────────────────
+ *
+ * Two dialogs, one title, and the single worst-behaved state in the catalog:
+ * Claude Code PAUSES the turn and waits. No `Stop` hook fires (the turn has not
+ * ended), no transcript line is written for the dialog itself, and the composer
+ * is gone — so the turn machine holds `Active` until `TURN_SAFETY` lapses and
+ * then hands the session a green `Idle` dot, forever, over a screen that is
+ * asking a billing question (catalog `limit.overage_consent_dialog`,
+ * `err.refusal_fallback_dialog`: "the session sits paused while supermux shows
+ * Idle").
+ *
+ * The TITLE is the family and the BODY is the variant. That split matters: CC
+ * ships two dialogs under one title today and the result enums differ
+ * (`['consent','switch_default','cancelled']` vs
+ * `['retry_fallback','edit_prompt','cancelled']`), so a third one shipping
+ * tomorrow must still be reported as paused rather than silently mis-read as
+ * one of these two. Hence an unrecognised body keeps the family and drops the
+ * variant, which the registry answers with nothing.
+ */
+const PAUSED_TITLE = 'Session paused'
+/** The overage dialog's own subject: usage credits, or another model. */
+const PAUSED_OVERAGE_RE = /\busage credits?\b/i
+/** The refusal dialog's, verbatim from the catalog's copy. */
+const PAUSED_REFUSAL_RE = /\bsafeguards flagged this message\b/i
+
+/** Which paused modal this is, if the body says. Requires the title AND a row:
+ *  the sentence "Session paused" appears in this repo's own prose, and the rows
+ *  are what prove a dialog is drawn. */
+function readPausedVariant(
+  block: string,
+  options: readonly OptionRow[],
+): Extract<DialogSighting['variant'], 'overage-consent' | 'refusal-fallback'> | null {
+  if (!block.includes(PAUSED_TITLE) || options.length < 2) return null
+  // Refusal first: its body names a MODEL switch too, so "usage credits" is not
+  // a discriminator against it — "safeguards flagged" is, and only it.
+  if (PAUSED_REFUSAL_RE.test(block)) return 'refusal-fallback'
+  if (PAUSED_OVERAGE_RE.test(block)) return 'overage-consent'
+  return null
+}
+
 /** The permission families' question line. Bounded so a `?` far down the
  *  scrollback cannot be dragged into one. */
 const PERMISSION_QUESTION_RE = /Do you want[^?]{0,200}\?/g
@@ -576,6 +694,9 @@ function readQuestion(block: string, family: DialogSighting['family']): string |
     if (block.includes(APIKEY_TITLE)) return APIKEY_TITLE
     return undefined
   }
+  // The paused modals' question is their title — the dialog's own two words,
+  // which is also the sentence the roster and the card lead with.
+  if (family === 'paused') return block.includes(PAUSED_TITLE) ? PAUSED_TITLE : undefined
   // `question` carries its own headline (`readHeadline`), set by the caller.
   if (family !== 'permission') return undefined
   let last: string | undefined
@@ -626,6 +747,7 @@ function variantFor(
 ): DialogSighting['variant'] {
   if (family === 'permission') return readVariant(block)
   if (family === 'startup') return readStartupVariant(block, rows) ?? undefined
+  if (family === 'paused') return readPausedVariant(block, rows) ?? undefined
   return undefined
 }
 
@@ -660,6 +782,9 @@ const VARIANT_TITLES = [
   // sentence twice.
   TRUST_TITLE,
   APIKEY_TITLE,
+  // Same rule for the paused modals: the card's heading is `Session paused`, so
+  // repeating it inside the body would print it twice.
+  PAUSED_TITLE,
 ]
 /** A line that is only box-drawing — CC's own framing, at terminal width. */
 const RULE_ONLY_RE = /^[\s─━╌┄┈╍-]+$/
@@ -672,7 +797,10 @@ function readBody(
   optionLine: number,
   family: DialogSighting['family'],
 ): string[] | undefined {
-  if (family !== 'permission' && family !== 'startup') return undefined
+  // `paused` joins the two families whose body is prose the user must read
+  // before answering: it carries the reason the turn stopped (which model, which
+  // credits, which safeguard) and nothing else on any surface says it.
+  if (family !== 'permission' && family !== 'startup' && family !== 'paused') return undefined
   let start = -1
   for (let i = optionLine - 1; i >= from; i--) {
     if (SECTION_RULE_RE.test(lines[i])) {
@@ -790,11 +918,16 @@ function readDialog(
   const isQuestion =
     chip >= 0 && block.includes(QUESTION_FOOTER) && block.includes(QUESTION_NAV)
   const startup = readStartupVariant(block, rows)
+  // The TITLE is the family — a `Session paused` screen with rows is one of
+  // these whether or not its body is a shape this app knows (see
+  // `readPausedVariant`).
+  const paused = block.includes(PAUSED_TITLE)
 
   const family: DialogSighting['family'] | null =
     readFamily(block, rows) ??
     (isQuestion ? 'question' : null) ??
     (startup ? 'startup' : null) ??
+    (paused ? 'paused' : null) ??
     (continuing && continues(block, rows, lines, continuing) ? continuing.family : null) ??
     (looksModal(block, rows) ? 'unknown' : null)
   if (!family) return null
@@ -830,6 +963,14 @@ function readDialog(
     // The gate's own copy is what the user is being asked to trust — the path,
     // the rule count, the masked key suffix — so it goes on the card verbatim,
     // the same way a permission dialog's command does.
+    const body = readBody(lines, from, kept[0].line, family)
+    if (body) sighting.body = body
+  } else if (family === 'paused') {
+    const variant = readPausedVariant(block, kept)
+    if (variant) sighting.variant = variant
+    // The reason the turn stopped, verbatim. It is the ONLY place the user is
+    // told what they would be consenting to — the title is two words and the
+    // rows are two verbs.
     const body = readBody(lines, from, kept[0].line, family)
     if (body) sighting.body = body
   } else if (family === 'permission') {
@@ -887,8 +1028,10 @@ const LIMIT_BLOCK_RE = /\byou['’]ve (?:hit|reached) your\b.*$/i
  *  `You're close to …` branches recorded from the bundle's own strings. */
 const LIMIT_WARN_RE =
   /\b(?:you['’]ve used \d+% of your\b|approaching (?:session|weekly|opus|usage)\b|you['’]re close to your\b).*$/i
-/** The tool-result gutter CC draws the banner in, plus the leading indent. */
-const CONTINUATION_PREFIX = /^[\s⎿·└│]+/
+/** The gutter CC draws these lines in, plus the leading indent: the tool-result
+ *  continuation (`⎿`), the assistant bullet (`●` — the refusal banner is
+ *  printed as an assistant line), and the box rules. */
+const CONTINUATION_PREFIX = /^[\s⎿·└│●]+/
 
 /** The startup gates that have NO captured option list — reported as a notice
  *  so the session stops reading as a green Idle, never as something to press a
@@ -924,6 +1067,27 @@ function readNotice(
   if (tail < 0) return null
   const from = Math.max(0, tail - NOTICE_TAIL_SLACK + 1)
 
+  // A PAUSED MODAL OUTRANKS EVEN A HARD BLOCK, and it is the one precedence
+  // inversion in this function. A limit-hit session and a paused one are the
+  // same event seen twice — CC pauses the turn *because* the bucket ran out —
+  // but only one of the two readings has a human in it: the block says "come
+  // back in five hours", the modal says "answer this and keep going, on
+  // credits". Reporting the clock over the question would send someone away
+  // from a session that was one keypress from continuing. The banner survives
+  // as the notice's `detail` (the dialog's own body carries it).
+  if (dialog?.family === 'paused') {
+    const notice: PtyNotice = {
+      kind: 'session-paused',
+      text: dialog.question ?? PAUSED_TITLE,
+    }
+    if (dialog.variant === 'overage-consent' || dialog.variant === 'refusal-fallback') {
+      notice.paused = dialog.variant
+    }
+    const body = dialog.body?.map(norm).filter(Boolean).join(' ')
+    if (body) notice.detail = body
+    return notice
+  }
+
   for (let i = tail; i >= from; i--) {
     const m = LIMIT_BLOCK_RE.exec(lines[i])
     if (!m) continue
@@ -954,11 +1118,132 @@ function readNotice(
     if (hit) return { kind: 'startup-wedge', wedge, text: hit }
   }
 
+  // THE TURN IS DEAD (catalog `err.safeguards_refusal`). `stop_reason:
+  // refusal` is written into the transcript as an `isApiErrorMessage` line —
+  // dropped by the parser like every other one — and printed on the pty as a
+  // sentence that looks like a transient API error and is not: nothing retries,
+  // the turn is over, and the recovery is a keystroke chord this app cannot
+  // send. So it is read here as its own kind rather than left to the API-error
+  // path, which would say "retrying" about a turn that will never resume.
+  for (let i = tail; i >= from; i--) {
+    if (!REFUSAL_RE.test(lines[i])) continue
+    const text = noticeLine(lines[i])
+    const detail = lines
+      .slice(i + 1, tail + 1)
+      .map(noticeLine)
+      .find((l) => REFUSAL_RECOVERY_RE.test(l))
+    return detail ? { kind: 'turn-refused', text, detail } : { kind: 'turn-refused', text }
+  }
+
+  // STILL LIVE (catalog `err.stream_stalled`). The request went out, no bytes
+  // came back, and CC has already scheduled the retry — its own line carries
+  // the countdown. Reported so the surface can keep the turn on screen instead
+  // of drifting to Idle and letting the user walk away from a turn that resumes
+  // by itself.
+  for (let i = tail; i >= from; i--) {
+    const m = STALLED_RE.exec(lines[i])
+    if (m) return { kind: 'stream-stalled', text: noticeLine(m[0]) }
+  }
+
   for (let i = tail; i >= from; i--) {
     const m = LIMIT_WARN_RE.exec(lines[i])
     if (m) return { kind: 'limit-warning', text: noticeLine(m[0]) }
   }
   return null
+}
+
+/** The refusal banner's opening, anchored on BOTH halves: `API Error:` (so a
+ *  reply that merely discusses safeguards is not one) and the safeguards
+ *  sentence (so an ordinary 529 is not). The second captured form —
+ *  `API Error: {Model} can't help with this. Start a new session to continue.`
+ *  — is the other branch of the same builder. */
+const REFUSAL_RE =
+  /API Error:.*(?:safeguards flagged this message|can['’]t help with this)/i
+/** CC's own recovery line, which is the reason this state needs its own card:
+ *  `double press esc` is not a thing chat can do, and it must be said rather
+ *  than approximated with a button. */
+const REFUSAL_RECOVERY_RE = /double press esc|start a new session/i
+
+/** `Waiting for API response · will retry in 3s · check your network` — the
+ *  `stalled` retry kind, whose whole point is that it is NOT a completed error.
+ *  Anchored on the first clause and taken to end of line so the countdown and
+ *  the remediation ride along verbatim. */
+const STALLED_RE = /\bWaiting for API response\b.*$/i
+
+/* ── the armed keys (catalog `generic.armed_keys`) ───────────────────────────
+ *
+ * Read on every capture, because the screens that arm a key are ordinary ones:
+ * a half-written prompt with `Esc again to clear` under it, a running turn with
+ * `Press Ctrl-C again to exit`. Nothing here is a dialog, nothing here has a
+ * fingerprint, and that is exactly why the reading has to be shape-based and
+ * cheap.
+ *
+ * Tail-anchored on a SHORT window: the hint is drawn directly under the
+ * composer and it disappears the moment the arming lapses (CC times it out), so
+ * a hint 20 rows up in the scrollback is a key that is no longer armed — and
+ * refusing forever on history would be its own outage.
+ */
+const ARMED_TAIL_SLACK = 6
+
+/** `Esc again to clear` — the composer's own two-step clear. */
+const ARMED_ESC_RE = /\b(Esc(?:ape)?) again to ([a-z][a-z ]*[a-z])/gi
+/** `Press Ctrl-C again to exit`, `Press {key} again to stop background agents`. */
+const ARMED_PRESS_RE = /\bPress (\S+) again to ([a-z][a-z ]*[a-z])/gi
+/**
+ * `Ctrl+Y to paste deleted text` — the catalog's fourth verbatim, and the one
+ * that has to be matched as a LITERAL.
+ *
+ * It is the undo buffer left behind by a clear, so it is a real arming: that
+ * key now restores a specific block of text on this specific screen. But its
+ * SHAPE — `<ctrl-key> to <verb>` — is the shape of every ordinary Claude Code
+ * footer hint (`ctrl+e to explain` sits under every Bash permission dialog,
+ * `ctrl+g to edit in …` under the plan dialog). A general pattern here refused
+ * Stop on every permission screen in the suite, which is an outage wearing a
+ * safety argument. So: this phrase, and nothing that merely rhymes with it.
+ */
+const ARMED_CTRL_RE = /\b(Ctrl\+Y) to (paste deleted text)/gi
+
+/** Token → the allowlisted key name this app would send for it. Deliberately
+ *  small: a token with no mapping is still reported (an armed SCREEN is the
+ *  fact, not an armed key name), it simply cannot be matched against a specific
+ *  send. */
+const ARMED_KEY_NAMES: Readonly<Record<string, KeyName>> = {
+  esc: 'Escape',
+  escape: 'Escape',
+  'ctrl-c': 'C-c',
+  'ctrl+c': 'C-c',
+  '^c': 'C-c',
+  'ctrl-d': 'C-d',
+  'ctrl+d': 'C-d',
+}
+
+function armedKeyName(token: string): KeyName | null {
+  return ARMED_KEY_NAMES[token.toLowerCase()] ?? null
+}
+
+function readArmed(lines: readonly string[]): ArmedKey[] {
+  const tail = lastContentLine(lines)
+  if (tail < 0) return []
+  const from = Math.max(0, tail - ARMED_TAIL_SLACK + 1)
+  const out: ArmedKey[] = []
+  const seen = new Set<string>()
+  for (let i = from; i <= tail; i++) {
+    const line = norm(lines[i])
+    if (!line) continue
+    for (const re of [ARMED_ESC_RE, ARMED_PRESS_RE, ARMED_CTRL_RE]) {
+      // `g` regexes carry `lastIndex` between calls; reset before every line.
+      re.lastIndex = 0
+      for (const m of line.matchAll(re)) {
+        const token = m[1]
+        const action = m[2].trim()
+        const id = `${token.toLowerCase()}/${action.toLowerCase()}`
+        if (seen.has(id)) continue
+        seen.add(id)
+        out.push({ token, key: armedKeyName(token), action, text: line })
+      }
+    }
+  }
+  return out
 }
 
 /** A composer drawn INSIDE a box — `│ ❯ half a thought          │`. Not seen on
@@ -1162,6 +1447,7 @@ export function readLens(
     modal,
     transcriptOff: readTranscriptOff(lines),
     notice: readNotice(lines, dialog),
+    armed: readArmed(lines),
   }
 }
 
@@ -1189,6 +1475,10 @@ export const EMPTY_LENS: PeekLens = {
   // attention layer is built on.
   transcriptOff: false,
   notice: null,
+  // Nothing was read, so nothing is armed. The refusal this drives is about a
+  // key the SCREEN redefined; an absent capture redefines nothing, and the
+  // send paths have their own fail-open rule for "could not look".
+  armed: [],
 }
 
 /** Live turn, or a dialog on screen: the caret can move under us, and the whole

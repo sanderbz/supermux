@@ -1,0 +1,11 @@
+● Let me run the test suite.
+────────────────────────────────────────────────────────────────────────────────
+ Session paused
+
+ Continue with Fable 5 on usage credits, or switch models for the rest of this
+ session.
+
+   1. Continue on usage credits
+ ❯ 2. Switch to the default model
+
+ Enter to confirm · Esc to cancel

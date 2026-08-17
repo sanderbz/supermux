@@ -445,6 +445,13 @@ function ComposerBanner({
           {notice.kind === 'dialog-terminal' && notice.detail && (
             <code className="font-mono text-[11.5px] text-ink-2">{notice.detail}</code>
           )}
+          {/* The ARMING, in the terminal's own words. Same argument as the line
+              above it: the screen this refusal is about is on the other
+              renderer, so quoting it is the only evidence a user has that the
+              app is not simply ignoring Stop. */}
+          {notice.kind === 'stop-armed' && notice.detail && (
+            <code className="font-mono text-[11.5px] text-ink-2">{notice.detail}</code>
+          )}
           {(notice.kind === 'tui-draft' || notice.kind === 'tui-draft-unverified') &&
             notice.detail && (
               <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">
@@ -531,6 +538,12 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
     'An MCP server’s form is open in the terminal — a message here would be typed into it.',
   'stop-dialog':
     'Escape would answer that prompt, not stop the turn — so it wasn’t sent.',
+  // The terminal has ARMED the key Stop sends, and its own line (quoted as the
+  // notice's detail) says what the second press would do instead. Naming the
+  // consequence rather than the mechanism: "your unsent terminal draft" is the
+  // thing at risk, and it is the reason a user cares.
+  'stop-armed':
+    'The terminal has Escape armed for something else right now — it wasn’t sent:',
   'send-failed': 'That message didn’t reach the session.',
   // Not "something went wrong": the turn is still running, and that is the fact
   // the user needs in order to decide what to do next.

@@ -31,6 +31,8 @@ import type { AttentionCause } from '../components/chat/attention'
 import { applyLatch, dialogCardView, type DialogCardView } from '../components/chat/dialog-answer'
 import { readLens } from '../components/chat/peek-lens'
 import type { ChatEntry } from '../components/chat/entries'
+import { toChatEntries } from '../components/chat/wire-entries'
+import type { WireEntry } from '../components/chat/wire'
 import type { HarnessEvent } from '../lib/api/harness'
 import type { PendingSend } from '../components/chat/pending'
 import type { MentionableSession } from '../components/chat/slash'
@@ -370,6 +372,47 @@ export const BENCH_TRUST_CAPTURE = [
   ' Enter to confirm · Esc to cancel',
 ].join('\n')
 
+/**
+ * `Session paused` — the OVERAGE CONSENT modal (catalog
+ * `limit.overage_consent_dialog`, corpus row `session_paused_overage`).
+ *
+ * The state the catalog marks ★: needs input, has a billing consequence, and
+ * before this wave nothing in the product could see it — the turn does not end,
+ * so no hook fires, and the session sat here wearing a green Idle dot.
+ */
+export const BENCH_PAUSED_OVERAGE_CAPTURE = [
+  '● Let me run the test suite.',
+  '────────────────────────────────────────────────────────────',
+  ' Session paused',
+  '',
+  ' Continue with Fable 5 on usage credits, or switch models for the rest of',
+  ' this session.',
+  '',
+  '   1. Continue on usage credits',
+  ' ❯ 2. Switch to the default model',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
+/** `Session paused` — the REFUSAL FALLBACK modal (catalog
+ *  `err.refusal_fallback_dialog`, corpus row `session_paused_refusal`). Same
+ *  title, different result enum, and its payload is what retracts the replies
+ *  already on screen. */
+export const BENCH_PAUSED_REFUSAL_CAPTURE = [
+  "● I'll take a look at the parser.",
+  '────────────────────────────────────────────────────────────',
+  ' Session paused',
+  '',
+  " Fable 5's safeguards flagged this message. Our intentionally broad",
+  ' safeguards allow us to deliver more capabilities faster, but can sometimes',
+  ' flag legitimate coding, cybersecurity, and biology tasks.',
+  '',
+  ' ❯ 1. Switch to Opus 5',
+  '   2. Edit prompt and retry with Fable 5',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
 /** The session's boot-banner version — the registry's ONLY pin. */
 const BENCH_PIN = '2.1.231'
 /** The pin the question capture actually carries — the card is pinned to the
@@ -390,7 +433,17 @@ const BENCH_ABORT =
 
 /** The four cards, built through the shipped path: capture → lens → registry. */
 export const BENCH_DIALOGS: Readonly<
-  Record<'permission' | 'plan' | 'question' | 'trust' | 'unpinned' | 'aborted', DialogCardView>
+  Record<
+    | 'permission'
+    | 'plan'
+    | 'question'
+    | 'trust'
+    | 'unpinned'
+    | 'aborted'
+    | 'pausedOverage'
+    | 'pausedRefusal',
+    DialogCardView
+  >
 > = {
   permission: dialogCardView(readLens(BENCH_CAPTURE), BENCH_PIN)!,
   plan: dialogCardView(readLens(BENCH_PLAN_CAPTURE), BENCH_PIN)!,
@@ -399,6 +452,11 @@ export const BENCH_DIALOGS: Readonly<
   // draws before any banner exists, so this is what the app really holds.
   trust: dialogCardView(readLens(BENCH_TRUST_CAPTURE), null)!,
   unpinned: dialogCardView(readLens(BENCH_CAPTURE), BENCH_UNPINNED)!,
+  // Both paused modals are pin-exempt and press NOTHING: no capture of either
+  // exists, and one of the rows spends money. The bench shows exactly that —
+  // a card you can read, with every control inert and a reason on it.
+  pausedOverage: dialogCardView(readLens(BENCH_PAUSED_OVERAGE_CAPTURE), null)!,
+  pausedRefusal: dialogCardView(readLens(BENCH_PAUSED_REFUSAL_CAPTURE), null)!,
   // Through `applyLatch`, so the bench shows the real revert — a card that was
   // answerable a second ago, is inert now, and PRINTS why.
   aborted: applyLatch(dialogCardView(readLens(BENCH_CAPTURE), BENCH_PIN), {
@@ -484,6 +542,9 @@ export interface LiveState {
   attentionCapture?: string
   /** The raiser's own evidence, quoted inside the card's sentence. */
   attentionDetail?: string
+  /** The pty's stall line (catalog `err.stream_stalled`) — what the working
+   *  row says while a request is out and nothing is coming back. */
+  stalled?: string
 }
 
 /**
@@ -527,6 +588,74 @@ const PTY: readonly string[] = [
   'test export::money::parses_eu_locale ... ok',
   'test export::money::parses_us_locale ... ok',
 ]
+
+/**
+ * The PTY-07 transcript tails, built through the SHIPPED wire fold.
+ *
+ * `build()` above hands the display model its rows directly, which is right for
+ * a board screenshot — but the two states below are ABOUT the fold: the
+ * retraction is a later append-only entry naming earlier uuids, and the refusal
+ * is a banner the classifier has to recognise. Hand-assembling either would
+ * screenshot a claim this app does not actually make.
+ */
+function wireEntry(
+  seq: number,
+  uuid: string,
+  kind: WireEntry['kind'],
+  tsSec: number,
+  body: Record<string, unknown>,
+  extra: Partial<WireEntry> = {},
+): WireEntry {
+  return {
+    seq,
+    uuid,
+    kind,
+    ts_ms: tsSec * 1000,
+    offset: 0,
+    oversize: false,
+    truncated: false,
+    body,
+    ...extra,
+  }
+}
+
+/** Two replies Claude streamed, then the fallback line that withdraws them. */
+function retractedTail(nowSec: number): ChatEntry[] {
+  return toChatEntries([
+    wireEntry(1, 'r-prompt', 'prompt', nowSec - 240, {
+      text: 'walk me through how the auth token is validated',
+    }),
+    wireEntry(2, 'r-1', 'assistant', nowSec - 200, {
+      text: 'The check happens in `server/src/auth.rs` — here is the path a request takes, and where the comparison is made:',
+    }),
+    wireEntry(3, 'r-2', 'assistant', nowSec - 196, {
+      text: 'The comparison is constant-time, so the obvious timing attack does not apply here.',
+    }),
+    wireEntry(4, 'r-fallback', 'system', nowSec - 190, {
+      level: 'warning',
+      content: "Fable 5's safeguards flagged this message. Switched to Opus 5.",
+      from_model: 'claude-fable-5',
+      to_model: 'claude-opus-5',
+      trigger: 'refusal',
+      retracted: ['r-1', 'r-2'],
+    }, { label: 'model_refusal_fallback' }),
+  ])
+}
+
+/** A turn that ended with `stop_reason: refusal` — the amber card, and the
+ *  composer still live under it. */
+function refusedTail(nowSec: number): ChatEntry[] {
+  return toChatEntries([
+    wireEntry(1, 'x-prompt', 'prompt', nowSec - 120, {
+      text: 'write me a fuzzer for the session-token parser',
+    }),
+    wireEntry(2, 'x-refusal', 'agent_error', nowSec - 110, {
+      text: "API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations. Claude Code can't respond to this message with Fable 5.",
+      class: 'refusal',
+      blocked: false,
+    }, { label: 'refusal', ok: false }),
+  ])
+}
 
 export function liveStates(nowMs: number): LiveState[] {
   const nowSec = Math.floor(nowMs / 1000)
@@ -1113,6 +1242,111 @@ export function liveStates(nowMs: number): LiveState[] {
       attentionDetail:
         "You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam) — /upgrade or /usage-credits to finish what you’re working on.",
     },
+    {
+      id: 'session-paused',
+      title: 'Session paused — the consent modal that used to read as a green Idle',
+      board: 'the states audit, catalog limit.overage_consent_dialog',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        // `waiting`, from the pty pre-emption — the turn has NOT ended, so no
+        // hook will ever say this. Before the fix the same screen read `active`
+        // until the safety window lapsed and then `idle` forever.
+        status: 'waiting',
+        blocked: {
+          kind: 'paused',
+          dialog: 'overage_consent',
+          text: 'Session paused',
+        },
+      }),
+      entries: release,
+      turnAgo: undefined,
+      dialog: BENCH_DIALOGS.pausedOverage,
+      attention: 'session-paused',
+      attentionExpanded: true,
+      attentionDetail:
+        'Continue with Fable 5 on usage credits, or switch models for the rest of this session.',
+    },
+    {
+      id: 'refusal-fallback',
+      title: 'Safeguards flagged the prompt — the paused modal, and the replies it withdraws',
+      board: 'the states audit, catalog err.refusal_fallback_dialog',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'waiting',
+        blocked: {
+          kind: 'paused',
+          dialog: 'refusal_fallback',
+          text: 'Session paused',
+        },
+      }),
+      // The transcript half of the same event: the two replies Claude already
+      // streamed are marked WITHDRAWN (still readable — the user saw them) and
+      // a tombstone says why. Nothing was removed from the ring.
+      entries: retractedTail(nowSec),
+      turnAgo: undefined,
+      dialog: BENCH_DIALOGS.pausedRefusal,
+    },
+    {
+      id: 'turn-refused',
+      title: 'Refused — a dead turn that used to look like a retryable API error',
+      board: 'the states audit, catalog err.safeguards_refusal',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        // Idle, and NOT blocked: this session can take another turn — with a
+        // different message, or a different model. The composer stays live,
+        // which is the whole distinction from a limit block.
+        status: 'idle',
+      }),
+      entries: refusedTail(nowSec),
+      turnAgo: undefined,
+      attention: 'turn-refused',
+      attentionExpanded: true,
+      attentionDetail:
+        "API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). Double press esc to edit your last message, or try a different model with /model.",
+    },
+    {
+      id: 'stalled',
+      title: 'Waiting for the API — the live turn that used to drift to Idle',
+      board: 'the states audit, catalog err.stream_stalled',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        // ACTIVE, from the pty pre-emption: the request is out and the stream
+        // never started, so nothing prints and every other signal reads the
+        // turn as finished.
+        status: 'active',
+        // The last tool that RAN, deliberately left here: it is what the
+        // working row used to show during a stall, and the fix is that the
+        // stall's own sentence takes the label.
+        activity: '⚡ Read server/src/export/money.rs',
+      }),
+      entries: release,
+      turnAgo: 94,
+      stalled: 'Waiting for API response · will retry in 3s · check your network',
+    },
+    {
+      id: 'stop-armed',
+      title: 'Stop refused — the terminal has Escape armed for something else',
+      board: 'the states audit, catalog generic.armed_keys',
+      session: session({
+        name: RELEASE_TRAIN,
+        display_name: 'Release Train',
+        status: 'active',
+        activity: '⚡ cargo test',
+      }),
+      entries: release,
+      turnAgo: 30,
+      composer: {
+        draft: '',
+        notice: {
+          kind: 'stop-armed',
+          detail: 'Esc again to clear · Ctrl+Y to paste deleted text',
+        },
+      },
+    },
   ]
 }
 
@@ -1159,6 +1393,12 @@ export const STATE_IDS = [
   'question',
   'trust-gate',
   'limit-blocked',
+  // PTY-07 — the dialog/pty families.
+  'session-paused',
+  'refusal-fallback',
+  'turn-refused',
+  'stalled',
+  'stop-armed',
 ] as const
 
 export type StateId = (typeof STATE_IDS)[number]

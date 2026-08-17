@@ -22,7 +22,7 @@
  */
 
 /** Coarse class: what KIND of blocked, for styling and for the badge. */
-export type AgentErrorClass = 'limit' | 'throttle' | 'auth' | 'api' | 'error'
+export type AgentErrorClass = 'limit' | 'throttle' | 'auth' | 'api' | 'error' | 'refusal'
 
 /** Which quota ran out. NOT interchangeable: waiting is the wrong answer to
  *  four of these — `/model` answers two and `/usage-credits` answers one. */
@@ -68,6 +68,15 @@ export function classifyAgentError(
   if (lower.includes('not your usage limit')) {
     return { cls: 'throttle', resetsAt, blocking: false }
   }
+  // 1b. THE REFUSAL (catalog `err.safeguards_refusal`). Checked before the API
+  //     family because it arrives wearing that family's clothes — `API Error:
+  //     {Model}'s safeguards flagged this message …` — and it is the opposite of
+  //     transient: `stop_reason` was `refusal`, nothing retries, and the turn is
+  //     over. Not blocking: sending something ELSE is the remedy, so the composer
+  //     stays live.
+  if (isRefusalText(lower)) {
+    return { cls: 'refusal', resetsAt, blocking: false }
+  }
   // 2. Auth — dead until a human runs /login in the terminal.
   if (errorClass === 'authentication_failed' || isAuthText(lower)) {
     return { cls: 'auth', resetsAt, blocking: true }
@@ -99,6 +108,17 @@ function resetClause(text: string): string | undefined {
   const rest = text.slice(at + RESETS.length).trim()
   const clause = (rest.split('\n')[0] ?? '').trim().replace(/\.$/, '')
   return clause || undefined
+}
+
+/** The two shapes CC's refusal renderer emits, both anchored on the sentence
+ *  only a refusal produces — never on the `API Error:` prefix, which every
+ *  transient failure shares. Twin of `agent_error.rs::is_refusal_text`. */
+function isRefusalText(lower: string): boolean {
+  return (
+    lower.includes('safeguards flagged this message') ||
+    ((lower.includes("can't help with this") || lower.includes('can’t help with this')) &&
+      lower.includes('start a new session'))
+  )
 }
 
 function isAuthText(lower: string): boolean {

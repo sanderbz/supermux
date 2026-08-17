@@ -45,6 +45,7 @@ import type { KeyName } from '../../lib/session-input/types'
 import type { AttentionCause } from './attention'
 import { continuityOf, type DialogContinuity, type DialogSighting, type PeekLens } from './peek-lens'
 import {
+  armedRefusal,
   entryFor,
   keyPlan,
   optionLabel,
@@ -70,6 +71,13 @@ export function sightingKey(s: DialogSighting): string {
 /* ── the outcome vocabulary ──────────────────────────────────────────────── */
 
 export type AnswerFailure =
+  /** The screen has ARMED the key this sequence was about to send
+   *  (`registry/armed.ts`, catalog `generic.armed_keys`) and the registry has no
+   *  captured mapping for what a second press does there. Checked before the
+   *  first key and again between every key, because an arming can appear
+   *  MID-SEQUENCE — a `Press Esc again to exit` drawn under a dialog after the
+   *  first Down. */
+  | 'armed-key'
   /** The screen could not be read at all (peek error, session not running). */
   | 'peek-failed'
   /** Nothing is asking any more — somebody else answered it. */
@@ -187,6 +195,15 @@ export async function answerDialog(
     }
   }
 
+  // ARMED KEYS, before anything goes out (catalog `generic.armed_keys`). The
+  // whole set this sequence could send, checked as one: the navigation keys, the
+  // Enter that commits and the Escape that denies. It has to be first — the
+  // point of the state is that the NEXT key is overloaded, so a check after the
+  // first press would be a check after the damage.
+  const mayPress: KeyName[] = escape ? ['Escape'] : ['Up', 'Down', 'Enter']
+  const armedFirst = armedStop(start.lens, mayPress)
+  if (armedFirst) return { ok: false, sent, committed: false, ...armedFirst }
+
   // Navigation, one key at a time, with a re-peek between every one.
   if (option) {
     const caret = sighting.caretIndex
@@ -242,6 +259,10 @@ export async function answerDialog(
         if (attempt > 0) await wait(CARET_SETTLE_MS)
         const step = await look(deps, req, anchor)
         if ('failure' in step) return { ok: false, sent, committed: false, ...step }
+        // An arming can appear MID-SEQUENCE — the screen redraws between keys —
+        // so the check runs on every look, not only the first.
+        const armedNow = armedStop(step.lens, mayPress)
+        if (armedNow) return { ok: false, sent, committed: false, ...armedNow }
         moved = step.sighting.caretIndex
         if (moved === expected) break
         // Unchanged = the repaint has not landed. Anything else is a real
@@ -323,7 +344,7 @@ async function look(
   req: AnswerRequest,
   continuing: DialogContinuity | null = null,
 ): Promise<
-  | { entry: RegistryEntry; sighting: DialogSighting }
+  | { entry: RegistryEntry; sighting: DialogSighting; lens: PeekLens }
   | { failure: AnswerFailure; attention: AttentionCause; detail?: string }
 > {
   const lens = await deps.refresh(continuing)
@@ -369,7 +390,34 @@ async function look(
         'The terminal is showing a different prompt than the one on this card, so nothing was sent.',
     }
   }
-  return { entry: match.entry, sighting: lens.dialog }
+  return { entry: match.entry, sighting: lens.dialog, lens }
+}
+
+/**
+ * The armed-key check, as an outcome fragment (catalog `generic.armed_keys`).
+ *
+ * Run before the first key and again on every re-peek, against EVERY key the
+ * rest of the sequence may still send — a navigation key, the Enter that
+ * commits, the Escape that denies. Two properties matter and both are why this
+ * is not folded into `look`:
+ *
+ *   · it must be able to stop a sequence that is already halfway through, with
+ *     the keys already sent recorded, exactly like `caret-drift`;
+ *   · it applies to the ESCAPE branch too, which sends no navigation at all and
+ *     is the branch where an arming is most dangerous — `Press Esc again to
+ *     exit` is a live capture from the trust gate (#75649).
+ */
+function armedStop(
+  lens: PeekLens,
+  keys: readonly KeyName[],
+): { failure: AnswerFailure; attention: AttentionCause; detail: string } | null {
+  for (const key of keys) {
+    const refusal = armedRefusal(lens, key)
+    if (refusal) {
+      return { failure: 'armed-key', attention: 'dialog-unmapped', detail: refusal.reason }
+    }
+  }
+  return null
 }
 
 /** Send one key; `undefined` when it went, an outcome fragment when it did not. */

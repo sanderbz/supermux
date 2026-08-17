@@ -1,0 +1,13 @@
+● I'll take a look at the parser.
+────────────────────────────────────────────────────────────────────────────────
+ Session paused
+
+ Fable 5's safeguards flagged this message. Our intentionally broad safeguards
+ allow us to deliver more capabilities faster, but can sometimes flag legitimate
+ coding, cybersecurity, and biology tasks. Send feedback with /feedback or learn
+ more: https://support.claude.com/en/articles/9797531
+
+ ❯ 1. Switch to Opus 5
+   2. Edit prompt and retry with Fable 5
+
+ Enter to confirm · Esc to cancel

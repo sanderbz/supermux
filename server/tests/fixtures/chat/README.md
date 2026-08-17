@@ -104,6 +104,9 @@ What it covers, and why each row is there:
 | two prose controls | an assistant line that merely *mentions* a limit, and a tool result that *quotes* the refusal sentence — a loose match on either blanks a working session |
 | `api_error` / `model_refusal_fallback` / `request_user_dialog` / `compact_boundary` / `informational` / `stop_hook_summary` | the five system subtypes that must render, and the one that must stay dropped |
 | the `AskUserQuestion` pair, `ExitPlanMode`, a denial | the payloads that ARE the tool call, and the receipt that must not carry a success tick |
+| two safeguards refusals (PTY-07) | `stop_reason: refusal` kills the turn and arrives wearing the API family's clothes (`API Error: …`). It is classified `refusal`, and deliberately **not** blocking: sending a different message is the remedy, so a blanked composer would take the fix away from the person who needs it |
+| the `stalled` retry (PTY-07) | the same `api_error` subtype as a 529 storm and the opposite meaning — the request went out, the stream never started, and the turn is STILL LIVE. Drawn as "API error · retrying" it reads as damage; drawn as nothing (which shipped) the surface goes quiet under a live turn |
+| a retraction (PTY-07) | `retractedMessageUuids` — the replies Claude already streamed are withdrawn once the refusal-fallback dialog is answered. The ring is append-only, so `wire-entries.ts` MARKS the named rows and appends a tombstone; it never deletes what the user has already read |
 
 Sources are verbatim captures off this box except where a row's `source` says
 `strings(2.1.227)` — those are transcribed from the binary's own template

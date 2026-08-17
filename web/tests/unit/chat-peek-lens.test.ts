@@ -14,6 +14,7 @@ import {
   peekCadenceMs,
   readLens,
 } from '../../src/components/chat/peek-lens'
+import { entryForSighting } from '../../src/components/chat/registry/claude'
 
 const DIR = join(import.meta.dir, '../fixtures/tui')
 const read = (name: string) => readFileSync(join(DIR, name), 'utf8')
@@ -390,5 +391,153 @@ describe('the dialog body, verbatim', () => {
     const dialog = readLens(read('a4c/00b-unknown-family-auto-mode-nag.txt')).dialog
     expect(dialog?.family).toBe('unknown')
     expect(dialog?.body).toBeUndefined()
+  })
+})
+
+/**
+ * **`Session paused` — the two consent modals (PTY-07).**
+ *
+ * The state the catalog calls out twice: needs input, has a consequence
+ * (credits, or which model finishes the work), and nothing in the product could
+ * see it. The turn does not END, so no `Stop` hook fires and no transcript line
+ * is written for the dialog — the pty is the only witness there is.
+ */
+describe('the paused consent modals', () => {
+  const OVERAGE = [
+    '────────────────────────────',
+    ' Session paused',
+    '',
+    ' Continue with Fable 5 on usage credits, or switch models.',
+    '',
+    '   1. Continue on usage credits',
+    ' ❯ 2. Switch to the default model',
+    '',
+    ' Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  test('the overage modal is read as a paused dialog AND as a notice', () => {
+    const lens = readLens(OVERAGE)
+    expect(lens.dialog?.family).toBe('paused')
+    expect(lens.dialog?.variant).toBe('overage-consent')
+    expect(lens.dialog?.question).toBe('Session paused')
+    // Both readings, because they answer different questions: the DIALOG is
+    // what the card draws, the NOTICE is what stops the roster drawing a green
+    // dot over a frozen turn.
+    expect(lens.notice?.kind).toBe('session-paused')
+    expect(lens.notice?.paused).toBe('overage-consent')
+  })
+
+  test('the body — which is where the question actually is — rides verbatim', () => {
+    // The title is two words and the rows are two verbs; the body is the only
+    // place the user is told what they would be consenting to.
+    const lens = readLens(OVERAGE)
+    expect(lens.dialog?.body?.join(' ')).toContain('usage credits')
+    expect(lens.notice?.detail).toContain('switch models')
+    // …and the title is not printed twice.
+    expect(lens.dialog?.body?.join(' ')).not.toContain('Session paused')
+  })
+
+  test('“safeguards flagged” is what separates the refusal modal from the overage one', () => {
+    // Both bodies offer a model switch, so "usage credits" cannot be the
+    // discriminator against the refusal — CC's own safeguards sentence is.
+    const refusal = readLens(
+      [
+        '────────────────────────────',
+        ' Session paused',
+        '',
+        " Fable 5's safeguards flagged this message. Switching costs no credits.",
+        '',
+        ' ❯ 1. Switch to Opus 5',
+        '   2. Edit prompt and retry with Fable 5',
+        '',
+        ' Enter to confirm · Esc to cancel',
+      ].join('\n'),
+    )
+    expect(refusal.dialog?.variant).toBe('refusal-fallback')
+    expect(refusal.notice?.paused).toBe('refusal-fallback')
+  })
+
+  test('an unrecognised paused body keeps the family and drops the variant', () => {
+    // One title, two dialogs today, and a third can ship in any release.
+    // "Paused for a reason we do not recognise" is the honest reading; silence
+    // is the state this whole family exists to end.
+    const lens = readLens(
+      [
+        '────────────────────────────',
+        ' Session paused',
+        '',
+        ' Something new is being asked here.',
+        '',
+        ' ❯ 1. Do the thing',
+        '   2. Do the other thing',
+        '',
+        ' Enter to confirm · Esc to cancel',
+      ].join('\n'),
+    )
+    expect(lens.dialog?.family).toBe('paused')
+    expect(lens.dialog?.variant).toBeUndefined()
+    expect(lens.notice?.kind).toBe('session-paused')
+    expect(lens.notice?.paused).toBeUndefined()
+    // The registry has no entry for a variant-less paused sighting, so the card
+    // is the unmapped one and presses nothing.
+    expect(entryForSighting(lens.dialog!)).toBeNull()
+  })
+
+  test('the title alone is not a dialog', () => {
+    // A capture is scrollback + viewport, and prose about this state is exactly
+    // what this repo is full of.
+    expect(readLens(' Session paused\n❯\n').dialog).toBeNull()
+    expect(readLens('● I will explain what Session paused means.\n❯\n').notice).toBeNull()
+  })
+
+  test('a paused modal outranks the limit banner that caused it', () => {
+    // The same event seen twice: CC pauses the turn BECAUSE the bucket ran out.
+    // Only one of the two readings has a human in it — the block says "come
+    // back in five hours", the modal says "answer this and keep going".
+    const lens = readLens(
+      `  ⎿  You've hit your Fable 5 limit · resets 4am\n${OVERAGE}`,
+    )
+    expect(lens.notice?.kind).toBe('session-paused')
+  })
+})
+
+/**
+ * **The two live-screen error states (PTY-07).** One is dead and looked
+ * transient; the other is alive and looked finished.
+ */
+describe('the refused turn and the stalled one', () => {
+  test('a safeguards refusal is its own notice, with CC’s recovery line', () => {
+    const lens = readLens(
+      [
+        "● API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). Claude Code can't respond to this message with Fable 5.",
+        '',
+        '  Double press esc to edit your last message, or try a different model with /model.',
+        '❯',
+      ].join('\n'),
+    )
+    expect(lens.notice?.kind).toBe('turn-refused')
+    // The assistant bullet is CC's gutter, not part of the sentence.
+    expect(lens.notice?.text.startsWith('API Error:')).toBe(true)
+    expect(lens.notice?.detail).toContain('Double press esc')
+  })
+
+  test('an ordinary API error is not a refusal', () => {
+    const lens = readLens('● API Error: 529 Overloaded · retrying in 1s\n❯\n')
+    expect(lens.notice?.kind).not.toBe('turn-refused')
+  })
+
+  test('a stalled stream is reported as live, countdown intact', () => {
+    const lens = readLens(
+      [
+        '✻ Simmering… (esc to interrupt)',
+        '  ⎿  Waiting for API response · will retry in 3s · check your network',
+      ].join('\n'),
+    )
+    expect(lens.notice?.kind).toBe('stream-stalled')
+    // Verbatim to end of line: the countdown and the remediation are CC's, and
+    // no paraphrase of them is more useful than the words it printed.
+    expect(lens.notice?.text).toBe(
+      'Waiting for API response · will retry in 3s · check your network',
+    )
   })
 })

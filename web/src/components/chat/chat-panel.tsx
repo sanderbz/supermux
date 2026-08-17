@@ -470,12 +470,21 @@ export default function ChatPanel({
   // Claude Code's own footer warning; without it the chat surface renders an
   // empty conversation for a session that is actively talking.
   const blind = peek.lens.transcriptOff && entries.length === 0
+  // …and the two PTY-07 states nothing on this surface could see. A PAUSED turn
+  // is the worst of them: no hook fires (the turn has not ended), no transcript
+  // line is written for the dialog, and the session sits waiting on a billing
+  // question under a green dot. A REFUSED turn is the other direction — the turn
+  // is dead and it looked like a transient API error.
+  const lensPaused = peek.lens.notice?.kind === 'session-paused' ? peek.lens.notice : null
+  const lensRefused = peek.lens.notice?.kind === 'turn-refused' ? peek.lens.notice : null
   const attention = topAttention([
+    lensPaused ? ('session-paused' as const) : null,
     wireBlocked ? ('agent-blocked' as const) : null,
     blind ? ('transcript-blind' as const) : null,
     lensBlocked ? ('session-blocked' as const) : null,
     pending.attention,
     dialog.attention,
+    lensRefused ? ('turn-refused' as const) : null,
   ])
   // What the abort actually was. `dialog-unmapped`'s copy reads "no verified
   // mapping", which is true for an unknown dialog and FALSE for a sequence that
@@ -494,6 +503,15 @@ export default function ChatPanel({
       attention,
       lensBlocked ? 'session-blocked' : null,
       lensBlocked ? [lensBlocked.text, lensBlocked.detail].filter(Boolean).join(' — ') : null,
+    ) ??
+    // The paused card's evidence is the dialog's OWN body — which model, which
+    // credits, which safeguard. The title is two words and the rows are two
+    // verbs, so the body is the only place the question is actually asked.
+    detailFor(attention, lensPaused ? 'session-paused' : null, lensPaused?.detail ?? null) ??
+    detailFor(
+      attention,
+      lensRefused ? 'turn-refused' : null,
+      lensRefused ? [lensRefused.text, lensRefused.detail].filter(Boolean).join(' ') : null,
     )
   const attentionCtx = React.useMemo(
     () => ({
@@ -577,6 +595,10 @@ export default function ChatPanel({
       dialogBusy={dialog.busy}
       onChooseDialog={dialog.choose}
       dialogResolved={dialog.resolved}
+      // The live band's working row says what the session is ACTUALLY doing
+      // during a stall — `session.activity` still names the last tool that ran
+      // (`live-layer.tsx` `stalled`).
+      stalled={peek.lens.notice?.kind === 'stream-stalled' ? peek.lens.notice.text : null}
       onRetryPending={pending.retry}
       onDismissPending={pending.dismiss}
       attention={attention}

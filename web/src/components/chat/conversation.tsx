@@ -220,6 +220,9 @@ export interface ChatConversationProps {
   onChooseDialog?: (target: number | 'escape') => void
   /** The line the card became once an answer landed. */
   dialogResolved?: string | null
+  /** The pty's stall line, straight through to the live band's working row
+   *  (`live-layer.tsx` `stalled`). */
+  stalled?: string | null
   /** Send it again (the hook re-runs the pre-send gate). */
   onRetryPending?: (id: string) => void
   /** Stop showing this failure — the user has read it. */
@@ -294,6 +297,7 @@ export function ChatConversation({
   dialogBusy,
   onChooseDialog,
   dialogResolved,
+  stalled,
   onRetryPending,
   onDismissPending,
   onOpenTerminal,
@@ -533,6 +537,7 @@ export function ChatConversation({
             dialogBusy={dialogBusy}
             onChooseDialog={onChooseDialog}
             dialogResolved={dialogResolved}
+            stalled={stalled}
             attention={
               attention && (
                 <AttentionRow

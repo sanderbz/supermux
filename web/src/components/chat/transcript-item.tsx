@@ -160,6 +160,12 @@ const SYSTEM_WORD: Record<string, string> = {
   'model-switch': 'Model switched',
   'api-retry': 'API error',
   dialog: 'Waiting on a dialog',
+  // PTY-07. `stalled` says what is true — the request is out and the turn is
+  // still live — rather than "API error", which is what the same wire subtype
+  // means in every other case. `retracted` names the cause, because "2 replies
+  // withdrawn" with no reason reads as a bug in this app.
+  stalled: 'Waiting for the API',
+  retracted: 'Withdrawn',
 }
 
 /**
@@ -301,16 +307,33 @@ function AgentRow({
   return (
     <MessageRow grouped={grouped} gutter={mark}>
       <Bubble surface={rest.surface} author={grouped ? undefined : AGENT_VOICE}>
-        <Prose
-          text={item.text}
-          self={rest.name}
-          mentions={rest.mentions}
-          pinFor={rest.pinFor}
-          surface={rest.surface}
-          rawUrl={rest.rawUrl}
-          onOpenSession={rest.onOpenSession}
-        />
-        {item.truncated && <ClippedMarker uuid={item.uuid} />}
+        {/* WITHDRAWN, NOT DELETED (catalog `err.refusal_fallback_dialog`).
+            Claude Code retracted this reply — the prompt it came from was
+            flagged, and the model will not act on it any more. The words stay on
+            screen because the user READ them and a transcript that quietly
+            removes what somebody read is lying about what happened; what changes
+            is that they stop reading as live. Dimmed, captioned, and marked in
+            the DOM so the e2e can prove it. */}
+        {item.retracted && (
+          <p
+            data-testid="chat-retracted"
+            className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3"
+          >
+            Withdrawn by Claude Code
+          </p>
+        )}
+        <div className={item.retracted ? 'opacity-55' : undefined}>
+          <Prose
+            text={item.text}
+            self={rest.name}
+            mentions={rest.mentions}
+            pinFor={rest.pinFor}
+            surface={rest.surface}
+            rawUrl={rest.rawUrl}
+            onOpenSession={rest.onOpenSession}
+          />
+          {item.truncated && <ClippedMarker uuid={item.uuid} />}
+        </div>
       </Bubble>
     </MessageRow>
   )

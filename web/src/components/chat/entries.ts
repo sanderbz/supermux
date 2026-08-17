@@ -36,6 +36,16 @@ export interface ChatEntry {
    * rides on the entry rather than being re-derived from the label downstream.
    */
   blocking?: boolean
+  /**
+   * A LATER entry withdrew this one (catalog `err.refusal_fallback_dialog`).
+   *
+   * Set by the wire fold from a system line carrying `retractedMessageUuids`,
+   * never stored and never inferred from this entry's own content — see the
+   * retraction note in `wire-entries.ts` for why the row is marked rather than
+   * removed. The renderer draws a marked row as withdrawn: present, readable,
+   * and visibly no longer part of the conversation.
+   */
+  retracted?: boolean
 }
 
 export interface ReceiptLine {
@@ -56,6 +66,8 @@ export type ChatItem =
        *  to measure from, or the clock did not move. */
       secs?: number
       truncated?: boolean
+      /** A later entry withdrew this row (`ChatEntry.retracted`). */
+      retracted?: boolean
     }
   | {
       type: 'user'
@@ -65,7 +77,17 @@ export type ChatItem =
       badge?: string
       truncated?: boolean
     }
-  | { type: 'assistant'; uuid: string; ts: number; text: string; truncated?: boolean }
+  | {
+      type: 'assistant'
+      uuid: string
+      ts: number
+      text: string
+      truncated?: boolean
+      /** A later entry withdrew this reply — Claude Code's safeguards flagged
+       *  the prompt it came from and the model will not act on it any more
+       *  (`ChatEntry.retracted`). Drawn as withdrawn, never deleted. */
+      retracted?: boolean
+    }
   | {
       /**
        * Claude is BLOCKED — a quota bucket, an auth death, a server-side
@@ -128,6 +150,7 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         text: e.text,
         secs: since > 0 ? since : undefined,
         truncated: e.truncated,
+        retracted: e.retracted,
       })
     } else if (e.kind === 'tool_use') {
       const line: ReceiptLine = {
@@ -160,6 +183,7 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         ts: e.ts,
         text: e.text,
         truncated: e.truncated,
+        retracted: e.retracted,
       })
     } else {
       out.push({

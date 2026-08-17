@@ -81,6 +81,13 @@ fn the_corpus_is_present_and_covers_the_families_the_audit_named() {
         "limit_weekly",
         "limit_used_pct",
         "idle_control",
+        // The PTY-07 must-families.
+        "session_paused_overage",
+        "session_paused_refusal",
+        "stream_stalled",
+        "safeguards_refusal",
+        "armed_esc_clear",
+        "armed_ctrl_c",
     ] {
         assert!(ids.contains(&want), "corpus lost `{want}`");
     }
@@ -117,6 +124,11 @@ fn every_row_reads_the_block_and_the_warning_the_corpus_records() {
                     exp.get("wedge").and_then(Value::as_str),
                     "wedge for `{id}`"
                 );
+                assert_eq!(
+                    got.dialog,
+                    exp.get("dialog").and_then(Value::as_str),
+                    "dialog for `{id}`"
+                );
                 if let Some(text) = exp.get("text").and_then(Value::as_str) {
                     assert_eq!(got.text, text, "text for `{id}`");
                 }
@@ -128,6 +140,71 @@ fn every_row_reads_the_block_and_the_warning_the_corpus_records() {
             want["warning"].as_str(),
             "warning for `{id}`"
         );
+        assert_eq!(
+            state.stalled.as_deref(),
+            want.get("stalled").and_then(Value::as_str),
+            "stalled for `{id}`"
+        );
+    }
+}
+
+/// The two paused modals, executable.
+///
+/// `waiting` is the whole point: a paused session has no `Stop` hook to end its
+/// turn, so the machine holds `Active` and then hands it a green `Idle` — the
+/// state the catalog describes as "the session sits paused while supermux shows
+/// Idle". And the block rides beside the status, like every other condition
+/// here, because the roster reads that field.
+#[test]
+fn a_paused_consent_modal_is_waiting_and_blocked_and_names_which_dialog() {
+    let mut seen = 0;
+    for row in corpus() {
+        let id = row["id"].as_str().unwrap();
+        let Some(dialog) = row["server"]["blocked"].get("dialog").and_then(Value::as_str) else {
+            continue;
+        };
+        let capture = capture_of(&row);
+        assert_eq!(classify(&capture, "claude"), Status::Waiting, "{id}");
+        assert_eq!(pty_state::paused_dialog(&capture), Some(Some(dialog)), "{id}");
+        seen += 1;
+    }
+    assert_eq!(seen, 2, "both paused consent modals stay covered");
+}
+
+/// A stalled stream is ACTIVE — the one reading in this file that keeps a
+/// session busy rather than making it stop. The turn is live and resumes by
+/// itself; the failure being pinned is the surface going quiet under it.
+#[test]
+fn a_stalled_stream_keeps_the_turn_alive_and_blocks_nothing() {
+    let mut seen = 0;
+    for row in corpus() {
+        let id = row["id"].as_str().unwrap();
+        if row["server"].get("stalled").and_then(Value::as_str).is_none() {
+            continue;
+        }
+        let capture = capture_of(&row);
+        assert_eq!(classify(&capture, "claude"), Status::Active, "{id}");
+        assert!(pty_state::is_stalled(&capture), "{id}");
+        assert_eq!(pty_state::read(&capture).blocked, None, "{id}");
+        seen += 1;
+    }
+    assert_eq!(seen, 1, "the stalled row is still in the corpus");
+}
+
+/// The negative half of `generic.armed_keys` on this plane: an armed screen is
+/// an ORDINARY screen. It must not read as blocked, as a wedge or as a warning —
+/// the arming is a fact about the KEYBOARD, and a reader that turned it into a
+/// condition would grey out sessions that are working perfectly.
+#[test]
+fn an_armed_screen_is_not_a_blocked_session() {
+    for row in corpus() {
+        let id = row["id"].as_str().unwrap();
+        if !id.starts_with("armed_") {
+            continue;
+        }
+        let state = pty_state::read(&capture_of(&row));
+        assert_eq!(state.blocked, None, "{id}");
+        assert_eq!(state.warning, None, "{id}");
     }
 }
 

@@ -1,9 +1,11 @@
 // The honesty copy, in ONE place (fase A4 T5).
 //
-// Eight causes, eight sentences the surface is allowed to say when it cannot do
-// the thing it was asked to do — five from A4, plus the three the states audit
-// found the surface staying silent about: a session that cannot work at all,
-// a session whose transcript does not exist, and the lens-read blocked/usage condition. They live in a pure module for the same reason
+// Ten causes, ten sentences the surface is allowed to say when it cannot do
+// the thing it was asked to do — five from A4, three the states audit found the
+// surface staying silent about (a session that cannot work at all, a session
+// whose transcript does not exist, the lens-read blocked/usage condition), and
+// two from the PTY-07 wave: the paused consent modal and the refused turn. They
+// live in a pure module for the same reason
 // `pending.ts` does: copy that apologises instead of explaining is a defect the
 // same way a wrong caret is, and a defect you cannot assert in `bun test` is one
 // that comes back. Every string below names WHAT IS TRUE — what this app tried,
@@ -11,6 +13,14 @@
 // "something went wrong".
 //
 // THE CAUSES, and who raises each one:
+//   session-paused             `chat-panel`, when the LENS sees Claude Code's
+//                              `Session paused` consent modal: the turn is not
+//                              over, no hook fires, and nothing happens until a
+//                              human answers a question that spends credits or
+//                              swaps the model.
+//   turn-refused               `chat-panel`, when the lens sees a safeguards
+//                              refusal on the live screen: the turn is dead and
+//                              the recovery is a chord this app cannot send.
 //   agent-blocked              `chat-panel`, when `blocked.ts` finds an
 //                              un-cleared quota/auth banner in the transcript:
 //                              this session cannot work at all until a limit
@@ -45,6 +55,14 @@
 // is the pixels, this is the words.
 
 export type AttentionCause =
+  /** The turn is PAUSED on a consent modal (catalog
+   *  `limit.overage_consent_dialog` / `err.refusal_fallback_dialog`). Raised by
+   *  the panel from the lens' `session-paused` notice. It outranks
+   *  `agent-blocked` because it is a blocked session PLUS an unanswered
+   *  question with a billing consequence — and because the fix is in the room:
+   *  somebody answering it in the terminal starts the turn again immediately,
+   *  where a limit block has to wait for a clock. */
+  | 'session-paused'
   | 'agent-blocked'
   | 'transcript-blind'
   | 'send-unconfirmed'
@@ -52,6 +70,11 @@ export type AttentionCause =
   | 'dialog-unmapped'
   | 'registry-version-mismatch'
   | 'waiting-unmodelled'
+  /** The API refused this turn (catalog `err.safeguards_refusal`). Not a
+   *  blocked session and not an error worth retrying: the model declined this
+   *  message, nothing is retrying, and the recovery CC prints is a keystroke
+   *  chord this surface cannot send. */
+  | 'turn-refused'
   | 'transcript-stale'
 
 /** What the sentence may quote back. Every field is optional and every string
@@ -103,6 +126,7 @@ export interface AttentionCopy {
  *      still true, just not complete.
  */
 export const ATTENTION_ORDER: readonly AttentionCause[] = [
+  'session-paused',
   'agent-blocked',
   'transcript-blind',
   'send-unconfirmed',
@@ -110,6 +134,7 @@ export const ATTENTION_ORDER: readonly AttentionCause[] = [
   'dialog-unmapped',
   'registry-version-mismatch',
   'waiting-unmodelled',
+  'turn-refused',
   'transcript-stale',
 ]
 
@@ -159,6 +184,31 @@ export function detailFor(
  */
 export function attentionCopy(cause: AttentionCause, ctx: AttentionContext = {}): AttentionCopy {
   switch (cause) {
+    case 'session-paused':
+      return {
+        // "Paused" is Claude Code's own word for it, and it is the one that
+        // says the turn is not over: this session is mid-answer, waiting.
+        title: 'Claude paused this turn and is waiting for an answer.',
+        body: join(
+          // The dialog's own body, verbatim — it names what is being consented
+          // to (usage credits, a model switch after a safeguards flag), and no
+          // paraphrase of a billing question is better than the question.
+          ctx.detail,
+          'Nothing further happens in this session until somebody answers it, and chat will not press a key into a dialog it has never seen on a live screen — one of these options spends credits on your account.',
+          'The terminal shows the dialog; answering it there resumes the turn.',
+        ),
+      }
+
+    case 'turn-refused':
+      return {
+        title: 'Claude declined this message.',
+        body: join(
+          ctx.detail,
+          'Its safeguards flagged the prompt, so the turn ended with no answer — nothing is retrying and nothing is rate-limited.',
+          'Send a different message, or switch model with /model. The terminal also offers “double press esc” to edit the last one.',
+        ),
+      }
+
     case 'agent-blocked':
       return {
         // NAMES THE BUCKET. "Rate-limited" for all six is what sends somebody

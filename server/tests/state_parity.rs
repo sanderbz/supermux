@@ -176,6 +176,60 @@ fn the_corpus_keeps_its_grace_window_mcp_task_and_no_hook_dialog_rows() {
                 && r["expect"]["body"]["dialog"].as_str() == Some("elicitation")
         }),
         "no no-hook fallback row for an MCP elicitation form"
+
+/// The PTY-07 transcript states, named so they cannot quietly leave the corpus.
+///
+/// All three used to render as something else: the refusal as a retryable API
+/// error (it shares that family's `API Error:` prefix), the stall as one too,
+/// and the retraction as nothing at all — with the messages it withdraws still
+/// drawn as live Claude speech.
+#[test]
+fn the_corpus_covers_the_refusal_the_stall_and_the_retraction() {
+    let rows = corpus();
+    let classes: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| r["expect"]["body"].get("class").and_then(Value::as_str))
+        .collect();
+    assert!(
+        classes.contains(&"refusal"),
+        "no safeguards-refusal row — the turn CC kills without retrying"
+    );
+
+    let refusals: Vec<&Value> = rows
+        .iter()
+        .filter(|r| r["expect"]["body"].get("class").and_then(Value::as_str) == Some("refusal"))
+        .collect();
+    assert_eq!(refusals.len(), 2, "both refusal wordings stay covered");
+    for row in refusals {
+        // NOT blocking: sending a different message is the remedy, so the
+        // composer must stay live. Getting this backwards takes the fix away
+        // from the person who needs it.
+        assert_eq!(
+            row["expect"]["body"]["blocked"].as_bool(),
+            Some(false),
+            "a refusal must not blank the composer — {}",
+            row["name"]
+        );
+    }
+
+    let stalled = rows
+        .iter()
+        .find(|r| r["expect"]["body"].get("retry_kind").and_then(Value::as_str) == Some("stalled"))
+        .expect("no stalled-retry row — the live turn that reads as finished");
+    // The request id is what collapses a retry storm into ONE counting row, and
+    // a stall still belongs to a request.
+    assert!(stalled["expect"]["body"]["request_id"].is_string());
+
+    let retraction = rows
+        .iter()
+        .find(|r| r["expect"]["body"].get("retracted").is_some())
+        .expect("no retraction row — retractedMessageUuids has no other coverage");
+    assert_eq!(
+        retraction["expect"]["body"]["retracted"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "the retraction row must name the uuids it withdraws"
     );
 }
 

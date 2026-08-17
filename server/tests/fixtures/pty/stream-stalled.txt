@@ -1,0 +1,3 @@
+● Let me check what the tests say.
+✻ Simmering… (esc to interrupt)
+  ⎿  Waiting for API response · will retry in 3s · check your network
