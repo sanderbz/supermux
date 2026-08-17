@@ -1,7 +1,13 @@
 //! Chat data plane — the read-only transcript pipeline behind the chat renderer.
 //!
 //! Layering (fase A2):
-//! - [`model`]  — typed entries + the **sealed** wire type (`WireEntry`), the
+//! - [`agent_error`] — what a BLOCKED agent is: the limit/auth/throttle
+//!   classifier both planes share (its TypeScript twin is
+//!   `web/src/components/chat/agent-error.ts`, pinned to it by
+//!   `tests/fixtures/chat/claude-states.jsonl`). A quota banner arrives as an
+//!   ordinary assistant line whose only discriminators are line-level, so
+//!   without this the parser could not tell a dead session from prose.
+//! - [`model`]— typed entries + the **sealed** wire type (`WireEntry`), the
 //!   only thing the WS/SSE layers may serialize. Its single constructor applies
 //!   the per-entry cap, so an uncapped entry cannot reach the wire without
 //!   editing that file.
@@ -28,6 +34,7 @@
 //!   unreachable from the session create/start path by construction; the only
 //!   thing in the chat data plane that writes to the user's own Claude config.
 
+pub mod agent_error;
 pub mod model;
 pub mod parser;
 pub mod statusline;

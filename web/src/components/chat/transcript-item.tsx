@@ -114,6 +114,16 @@ export interface TranscriptItemProps {
    */
   onOpenSession?: (slug: string) => void
   /**
+   * Switch this pane to the terminal renderer.
+   *
+   * Read by exactly one row: the blocked card for a SIGNED-OUT session.
+   * `/login` is an OAuth paste flow that exists only in the pty, so that card
+   * hands the user to the surface that can complete it rather than drawing a
+   * button chat could not honour. Omit it and the card renders without the
+   * affordance, which is what every other blocked class gets.
+   */
+  onOpenTerminal?: () => void
+  /**
    * Open the Schedules sheet for this session (fase B4 T8), scrolled to one
    * schedule when the ledger row knows its id.
    *
@@ -142,6 +152,14 @@ const SYSTEM_WORD: Record<string, string> = {
   notification: 'Notification',
   tool: 'Tool run',
   image: 'Image',
+  // The states audit's four. Each names the CONSEQUENCE rather than the wire
+  // subtype: a line reading "model_refusal_fallback" tells the reader nothing
+  // they can act on, and "Conversation compacted" is the answer to "why does
+  // the history above this look amputated".
+  compaction: 'Conversation compacted',
+  'model-switch': 'Model switched',
+  'api-retry': 'API error',
+  dialog: 'Waiting on a dialog',
 }
 
 /**
@@ -181,6 +199,11 @@ export const TranscriptItem = React.memo(function TranscriptItem(
   }
 
   const { item, speaker, grouped, showGutter, sender } = node
+  // Before the system arm: a blocked banner is a CARD, not a centred line, and
+  // it is the one row on this surface that must be impossible to mistake for
+  // Claude talking.
+  if (item.type === 'blocked')
+    return <BlockedRow item={item} onOpenTerminal={props.onOpenTerminal} />
   if (speaker === 'system') return <SystemRow item={item} labels={props.labels} />
   if (speaker === 'me') return <UserRow {...props} item={item} grouped={grouped} />
   if (sender !== undefined || speaker.startsWith('teammate:')) {
@@ -503,6 +526,65 @@ function ScheduleRow({
         </Bubble>
       </MessageRow>
     </>
+  )
+}
+
+/* ── the blocked agent ───────────────────────────────────────────────────── */
+
+/**
+ * The amber card for a session that cannot work.
+ *
+ * Full width and centred, deliberately NOT a bubble: the whole defect this
+ * fixes is that a five-hour outage arrived as ordinary Claude speech, pixel-
+ * identical to "You chose Apple!". Three parts, in the order a reader needs
+ * them: WHICH limit (the chip), WHAT Claude said (verbatim — CC's own sentence
+ * already names the remedy, `/model` or `/usage-credits`), and WHEN it comes
+ * back (the reset clause, when the bucket has one).
+ *
+ * `--status-error` is the app's calm orange, the same token the tile's error
+ * badge uses — never an alarmist red, and never a colour this surface invents
+ * for one row.
+ */
+function BlockedRow({
+  item,
+  onOpenTerminal,
+}: {
+  item: ChatItem
+  onOpenTerminal?: () => void
+}) {
+  if (item.type !== 'blocked') return null
+  // A signed-out session is the one blocked state chat can NEVER resolve:
+  // `/login` opens an OAuth paste flow that only exists in the pty. So the card
+  // offers the surface that can do it rather than a button that would lie.
+  const signIn = item.label === 'Signed out' && onOpenTerminal
+  return (
+    <div className="my-2 flex justify-center px-2">
+      <div
+        role="status"
+        data-testid="chat-blocked"
+        data-label={item.label}
+        className="w-full max-w-[560px] rounded-2xl border border-status-error/25 bg-status-error/10 px-4 py-3"
+      >
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-status-error">
+          <span aria-hidden>⚠</span>
+          {item.label ?? 'Blocked'}
+        </p>
+        <p className="mt-1 whitespace-pre-wrap text-[14px] leading-[1.45] text-ink">{item.text}</p>
+        {item.detail && (
+          <p className="mt-1.5 text-[12.5px] tabular-nums text-ink-3">{item.detail}</p>
+        )}
+        {signIn && (
+          <button
+            type="button"
+            data-testid="chat-blocked-signin"
+            onClick={onOpenTerminal}
+            className="mt-2 inline-flex h-9 items-center rounded-full bg-status-error/15 px-3 text-[13px] font-medium text-status-error hover:bg-status-error/25"
+          >
+            Sign in from the terminal
+          </button>
+        )}
+      </div>
+    </div>
   )
 }
 

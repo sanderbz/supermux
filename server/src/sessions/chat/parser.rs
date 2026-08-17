@@ -29,6 +29,7 @@ use std::io::{BufRead, Read};
 
 use serde_json::{Map, Value};
 
+use super::agent_error;
 use super::model::{ChatEntry, Kind, MAX_LINE_BYTES};
 #[cfg(test)]
 use super::model::{SubagentMeta, WireEntry, MAX_ENTRY_BYTES};
@@ -284,29 +285,51 @@ impl Header {
 /// rest; both are normalised here so callers only ever see blocks.
 fn blocks<F>(obj: &Map<String, Value>, base: &Header, f: F) -> Vec<ChatEntry>
 where
-    F: Fn(&Header, usize, &Value) -> ChatEntry,
+    F: Fn(&Map<String, Value>, &Header, usize, &Value) -> ChatEntry,
 {
     let content = obj.get("message").and_then(|m| m.get("content"));
     match content {
         Some(Value::Array(items)) => items
             .iter()
             .enumerate()
-            .map(|(i, b)| f(base, i, b))
+            .map(|(i, b)| f(obj, base, i, b))
             .collect(),
         Some(Value::String(s)) => {
             let block = serde_json::json!({ "type": "text", "text": s });
-            vec![f(base, 0, &block)]
+            vec![f(obj, base, 0, &block)]
         }
         _ => Vec::new(),
     }
 }
 
-fn assistant_block(base: &Header, i: usize, b: &Value) -> ChatEntry {
+/// The `line` parameter is not decoration: an assistant line's whole error
+/// state (`error`, `isApiErrorMessage`, `apiErrorStatus`, `errorDetails`) lives
+/// on the LINE, and a `tool_result`'s structured answer lives in the SIBLING
+/// top-level `toolUseResult` — so a block-only signature is structurally unable
+/// to see either. It is what made a rate-limit banner render as prose.
+fn assistant_block(line: &Map<String, Value>, base: &Header, i: usize, b: &Value) -> ChatEntry {
     let obj = b.as_object();
     let ty = obj.and_then(|o| str_at(o, &["type"])).unwrap_or("");
     match ty {
         "thinking" => base.entry_at(i, Kind::Thinking, text_body(b, "thinking"), None),
-        "text" => base.entry_at(i, Kind::Assistant, text_body(b, "text"), None),
+        "text" => {
+            let text = b.get("text").and_then(Value::as_str).unwrap_or("");
+            match agent_error::from_line(line, text) {
+                Some(info) => {
+                    let mut e = base.entry_at(
+                        i,
+                        Kind::AgentError,
+                        agent_error_body(line, text, &info),
+                        Some(&info.class),
+                    );
+                    // A banner is never a success, and `ok` is what the receipts
+                    // and the tile styling already read.
+                    e.ok = Some(false);
+                    e
+                }
+                None => base.entry_at(i, Kind::Assistant, text_body(b, "text"), None),
+            }
+        }
         "tool_use" => {
             let o = obj.expect("tool_use block is an object");
             let mut e = base.entry_at(
@@ -323,21 +346,44 @@ fn assistant_block(base: &Header, i: usize, b: &Value) -> ChatEntry {
     }
 }
 
-fn user_block(base: &Header, i: usize, b: &Value) -> ChatEntry {
+fn user_block(line: &Map<String, Value>, base: &Header, i: usize, b: &Value) -> ChatEntry {
     let obj = b.as_object();
     let ty = obj.and_then(|o| str_at(o, &["type"])).unwrap_or("");
     match ty {
         "text" => base.entry_at(i, Kind::Prompt, text_body(b, "text"), None),
         "tool_result" => {
             let o = obj.expect("tool_result block is an object");
+            let content = o.get("content").cloned().unwrap_or(Value::Null);
+            // `toolUseResult` is a SIBLING of `message`, not a field of the
+            // block — the structured half of the answer (`AskUserQuestion`'s
+            // `{answers, annotations}`) lives there and nowhere else, so a
+            // block-scoped read can only ever recover the prose sentence CC
+            // writes for the model's benefit.
+            let structured = line.get("toolUseResult").cloned();
+            let denied = is_denial(&content);
+            let mut body = serde_json::json!({ "content": content });
+            if let Some(answers) = structured
+                .as_ref()
+                .and_then(|v| v.get("answers"))
+                .filter(|v| v.is_object())
+            {
+                body["answers"] = answers.clone();
+            }
             let mut e = base.entry_at(
                 i,
                 Kind::ToolResult,
-                serde_json::json!({ "content": o.get("content").cloned().unwrap_or(Value::Null) }),
-                None,
+                body,
+                // A denial is a DECISION, not an output. Labelling it is what
+                // lets the renderer say "you declined this" instead of drawing
+                // a success tick next to a refusal (verify matrix,
+                // `permission.denied.transcript`).
+                denied.then_some("denied"),
             );
             e.tool_use_id = str_at(o, &["tool_use_id", "toolUseID", "toolUseId"]).map(str::to_string);
-            e.ok = Some(!bool_at(o, &["is_error", "isError"]).unwrap_or(false));
+            // `is_error` is absent on a denial — CC states the refusal in the
+            // content string instead — so the flag alone reports a rejected
+            // edit as a successful one.
+            e.ok = Some(!denied && !bool_at(o, &["is_error", "isError"]).unwrap_or(false));
             e
         }
         // Base64 image blocks reach 482 KB (A0). The bytes are never worth
@@ -386,14 +432,126 @@ fn system_entry(obj: &Map<String, Value>, base: &Header) -> ChatEntry {
             Some(subtype),
         );
     }
-    base.entry(
-        Kind::System,
-        serde_json::json!({
-            "content": str_at(obj, &["content"]),
-            "level": str_at(obj, &["level"]),
+    let mut body = serde_json::json!({
+        "content": str_at(obj, &["content"]),
+        "level": str_at(obj, &["level"]),
+    });
+    match subtype {
+        // A retry storm is emitted PER ATTEMPT (30 in one session on this box),
+        // so the only honest row is ONE that counts — which needs the request
+        // id to collapse on and the attempt numbers to say how bad it is.
+        "api_error" => {
+            let err = obj.get("error");
+            if let Some(id) = err.and_then(|e| e.get("requestId")).and_then(Value::as_str) {
+                body["request_id"] = Value::String(id.to_string());
+            }
+            if let Some(f) = err.and_then(|e| e.get("formatted")).and_then(Value::as_str) {
+                body["formatted"] = Value::String(f.to_string());
+            }
+            if let Some(s) = err.and_then(|e| e.get("status")).and_then(Value::as_i64) {
+                body["status"] = Value::from(s);
+            }
+            // The one field that separates "the network is gone" from "the API
+            // is busy"; CC computes it and nothing downstream had it.
+            if let Some(d) = err.and_then(|e| e.get("isNetworkDown")).and_then(Value::as_bool) {
+                body["network_down"] = Value::Bool(d);
+            }
+            for (from, to) in [("retryAttempt", "attempt"), ("maxRetries", "max_retries")] {
+                if let Some(n) = obj.get(from).and_then(Value::as_i64) {
+                    body[to] = Value::from(n);
+                }
+            }
+        }
+        // The SESSION MODEL silently changed under the user. Both names, or the
+        // row is just a warning with no fact in it.
+        "model_refusal_fallback" | "model_fallback" | "model_consent_fallback" => {
+            for (from, to) in [
+                ("originalModel", "from_model"),
+                ("fallbackModel", "to_model"),
+                ("trigger", "trigger"),
+            ] {
+                if let Some(v) = str_at(obj, &[from]) {
+                    body[to] = Value::String(v.to_string());
+                }
+            }
+        }
+        // THE UNIVERSAL BLOCKED SIGNAL. CC emits `request_user_dialog` for every
+        // dialog kind, including ones it has not shipped yet — so this one arm
+        // covers dialog families this codebase has never seen, which is
+        // precisely what a per-dialog registry cannot do.
+        "request_user_dialog" => {
+            for key in ["dialogType", "dialog_type", "type", "toolName"] {
+                if let Some(v) = str_at(obj, &[key]) {
+                    body["dialog"] = Value::String(v.to_string());
+                    break;
+                }
+            }
+            body["blocked"] = Value::Bool(true);
+        }
+        _ => {}
+    }
+    base.entry(Kind::System, body, Some(subtype))
+}
+
+/// The `tool_result` body of a permission DENIAL.
+///
+/// Three verbatim suffix shapes are recorded in the corpus (bare, `STOP what
+/// you are doing…`, `the user said: …`) and they share one opening sentence,
+/// so the prefix is the match and the tail is left alone. Anchored at the start
+/// on purpose: a tool whose OUTPUT quotes the sentence must not be re-read as a
+/// refusal.
+fn is_denial(content: &Value) -> bool {
+    const HEAD: &str = "The user doesn't want to proceed with this tool use.";
+    let starts = |s: &str| s.trim_start().starts_with(HEAD);
+    match content {
+        Value::String(s) => starts(s),
+        Value::Array(items) => items.iter().any(|b| {
+            b.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(starts)
         }),
-        Some(subtype),
-    )
+        _ => false,
+    }
+}
+
+/// The wire body of a failure banner: the words CC showed, plus every fact a
+/// surface needs to say WHICH failure it is and when it ends.
+fn agent_error_body(
+    line: &Map<String, Value>,
+    text: &str,
+    info: &agent_error::AgentErrorInfo,
+) -> Value {
+    let mut body = serde_json::json!({
+        "text": text,
+        "class": info.class,
+        "blocked": info.blocking,
+    });
+    if let Some(l) = &info.limit {
+        body["limit"] = Value::String(l.clone());
+    }
+    if let Some(l) = &info.label {
+        body["limit_label"] = Value::String(l.clone());
+    }
+    if let Some(r) = &info.resets_at {
+        body["resets_at"] = Value::String(r.clone());
+    }
+    if let Some(e) = str_at(line, &["error"]) {
+        body["error"] = Value::String(e.to_string());
+    }
+    if let Some(s) = line
+        .get("apiErrorStatus")
+        .or_else(|| line.get("api_error_status"))
+        .and_then(Value::as_i64)
+    {
+        body["status"] = Value::from(s);
+    }
+    // `errorDetails` is the raw upstream body (a 429 JSON envelope with its
+    // `request_id`). Clipped here rather than left to the seal so the useful
+    // half of the entry is never the half that gets truncated away.
+    if let Some(d) = str_at(line, &["errorDetails", "error_details"]) {
+        body["details"] = Value::String(d.chars().take(400).collect::<String>());
+    }
+    body
 }
 
 // ── oversize placeholder ─────────────────────────────────────────────────────

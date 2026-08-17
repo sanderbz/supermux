@@ -250,7 +250,11 @@ impl ChatStore {
             }
             let slot = match w.kind() {
                 Kind::Prompt if user.is_none() => &mut user,
-                Kind::Assistant if agent.is_none() => &mut agent,
+                // A failure banner is the LAST thing the agent said and by far
+                // the most important: a tile whose tail skipped it showed the
+                // sentence before a five-hour outage as the session's current
+                // state (verify matrix, `limit.hit.session_5h.transcript`).
+                Kind::Assistant | Kind::AgentError if agent.is_none() => &mut agent,
                 _ => continue,
             };
             if let Some(line) = one_line(w) {

@@ -32,6 +32,12 @@
  * Pure and dependency-free (local types only), like `entries.ts` itself.
  */
 
+import {
+  classifyAgentError,
+  limitName,
+  resetNote,
+  type AgentErrorInfo,
+} from './agent-error'
 import type { ChatEntry } from './entries'
 import type { WireEntry } from './wire'
 
@@ -285,13 +291,61 @@ function textOf(body: unknown): string {
  * still icon-free — the emoji taxonomy stays terminal/tile-only, §4.2 P3).
  */
 export function toolLine(name: string, input: unknown): string {
-  for (const key of ['file_path', 'command', 'pattern', 'url', 'description', 'prompt']) {
+  // THE TWO TOOLS WHOSE PAYLOAD IS THE POINT, and which fell through this list
+  // to a bare tool name (verify matrix: `ask_user_question.tool_use`,
+  // `plan.exit_plan_mode.transcript`). `AskUserQuestion`'s input is
+  // `{questions:[{question, header, options}]}` and `ExitPlanMode`'s is
+  // `{plan, planFilePath}` — neither carries a `file_path`/`command`/`prompt`,
+  // so the conversation's only record of a question was the word
+  // "AskUserQuestion", and of a whole written plan the word "ExitPlanMode".
+  const question = firstQuestion(input)
+  if (question) return `${name} ${clamp(sanitiseText(question), TOOL_DETAIL_MAX)}`
+  for (const key of ['file_path', 'command', 'pattern', 'url', 'description', 'prompt', 'plan']) {
     const v = field(input, key)
     if (typeof v === 'string' && v.trim()) {
-      return `${name} ${clamp(sanitiseText(v.trim()), TOOL_DETAIL_MAX)}`
+      // A plan is markdown with newlines; the receipt row is one line high, so
+      // it is collapsed the way the tile tail collapses a prompt rather than
+      // truncated at the first line break.
+      const flat = key === 'plan' ? v.trim().split(/\s+/).join(' ') : v.trim()
+      return `${name} ${clamp(sanitiseText(flat), TOOL_DETAIL_MAX)}`
     }
   }
   return name
+}
+
+/** `AskUserQuestion`'s first question sentence, or `undefined`. */
+function firstQuestion(input: unknown): string | undefined {
+  const qs = field(input, 'questions')
+  if (!Array.isArray(qs)) return undefined
+  for (const q of qs) {
+    const text = field(q, 'question')
+    if (typeof text === 'string' && text.trim()) return text.trim()
+  }
+  return undefined
+}
+
+/**
+ * `AskUserQuestion`'s answer as the chosen LABEL, from the sibling
+ * `toolUseResult.answers` the server now puts on the wire.
+ *
+ * Without it the receipt showed CC's sentence-for-the-model verbatim —
+ * `Your questions have been answered: "Which fruit do you want?"="Apple". You
+ * can now continue with these answers in mind.` — where the fact is one word.
+ */
+export function answerLine(body: unknown): string | undefined {
+  const answers = field(body, 'answers')
+  if (typeof answers !== 'object' || answers === null) return undefined
+  const pairs = Object.entries(answers as Record<string, unknown>).filter(
+    ([, v]) => typeof v === 'string' && v.trim(),
+  )
+  if (pairs.length === 0) return undefined
+  return pairs.map(([q, a]) => `${shortQuestion(q)} → ${String(a).trim()}`).join(' · ')
+}
+
+/** A question sentence, shortened to the chip-sized stub the receipt shows. */
+function shortQuestion(q: string): string {
+  const s = sanitiseText(q).replace(/\?$/, '')
+  return s.length <= 48 ? s : `${s.slice(0, 47)}…`
 }
 
 /**
@@ -323,6 +377,142 @@ export function toolResultText(body: unknown): string {
 /** `600`-char preview: bounded slice → sanitise → final clip. */
 function preview(s: string): string {
   return clamp(sanitiseText(clamp(s, REPLY_MAX_CHARS * 16 + 64)), REPLY_MAX_CHARS)
+}
+
+// ── blocked banners ─────────────────────────────────────────────────────────
+
+/**
+ * The server's classification off the wire body — with the client's own
+ * classifier as the fallback.
+ *
+ * Both halves are real. The server stamps `class`/`limit`/`resets_at` onto the
+ * entry, and that is authoritative. But the SAME banner reaches this app a
+ * second way (the `StopFailure` hook's `last_assistant_message`, on a plane
+ * with no chat store behind it), so `agent-error.ts` exists anyway and is
+ * pinned to the Rust classifier by the shared corpus — which makes it the
+ * correct fallback for an entry from an older server that carries only text.
+ */
+function infoOf(body: unknown): AgentErrorInfo {
+  const cls = field(body, 'class')
+  if (typeof cls !== 'string') {
+    return classifyAgentError(textOf(body), null, null)
+  }
+  const limit = field(body, 'limit')
+  const label = field(body, 'limit_label')
+  const resets = field(body, 'resets_at')
+  return {
+    cls: cls as AgentErrorInfo['cls'],
+    limit: typeof limit === 'string' ? (limit as AgentErrorInfo['limit']) : undefined,
+    label: typeof label === 'string' ? label : undefined,
+    resetsAt: typeof resets === 'string' ? resets : undefined,
+    blocking: field(body, 'blocked') === true,
+  }
+}
+
+/** The chip over a blocked card: which bucket, or what class of failure. */
+function blockedLabel(info: AgentErrorInfo): string {
+  switch (info.cls) {
+    case 'limit':
+      return limitName(info)
+    case 'throttle':
+      // CC says in prose that this is NOT your usage limit, and the chip must
+      // not contradict the sentence under it.
+      return 'Server busy'
+    case 'auth':
+      return 'Signed out'
+    case 'api':
+      return 'API error'
+    default:
+      return 'Blocked'
+  }
+}
+
+/** A banner whose text did not survive (clipped to nothing) still says what
+ *  happened — an empty amber card would be worse than the bubble it replaced. */
+function bannerFallback(info: AgentErrorInfo): string {
+  return info.cls === 'limit'
+    ? 'Claude has hit a usage limit and cannot continue this turn.'
+    : 'Claude could not complete this turn.'
+}
+
+// ── system rows ─────────────────────────────────────────────────────────────
+
+/** Badges the system rows ride under. `grouping.ts::SYSTEM_BADGES` must list
+ *  every one of them or the row is drawn as somebody's speech bubble. */
+export const SYSTEM_ROW_BADGES = ['compaction', 'model-switch', 'api-retry', 'dialog'] as const
+
+function num(body: unknown, key: string): number | undefined {
+  const v = field(body, key)
+  return typeof v === 'number' ? v : undefined
+}
+
+function str(body: unknown, key: string): string | undefined {
+  const v = field(body, key)
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined
+}
+
+/**
+ * One allowlisted system entry → the centred line it becomes, or `null` for
+ * the subtypes that stay dropped.
+ *
+ * The copy states the CONSEQUENCE, not the subtype: "earlier turns are
+ * summarised" is why the history above a compaction seam looks amputated, and
+ * naming both models is the whole content of a fallback notice — a warning that
+ * says "model_refusal_fallback" tells the reader nothing they can act on.
+ */
+function systemRow(w: WireEntry): { text: string; badge: string } | null {
+  if (w.kind === 'compact_boundary') {
+    return {
+      text: 'earlier turns are summarised',
+      badge: 'compaction',
+    }
+  }
+  switch (w.label) {
+    case 'model_refusal_fallback':
+    case 'model_fallback':
+    case 'model_consent_fallback': {
+      const from = str(w.body, 'from_model')
+      const to = str(w.body, 'to_model')
+      if (from && to) return { text: `${modelName(from)} → ${modelName(to)}`, badge: 'model-switch' }
+      return { text: str(w.body, 'content') ?? 'a different model answered this turn', badge: 'model-switch' }
+    }
+    case 'api_error': {
+      const attempt = num(w.body, 'attempt')
+      const max = num(w.body, 'max_retries')
+      const what = str(w.body, 'formatted') ?? str(w.body, 'content') ?? 'API error'
+      const down = field(w.body, 'network_down') === true
+      const retry = attempt && max ? ` · retrying (${attempt}/${max})` : ''
+      return { text: `${down ? 'network is down — ' : ''}${what}${retry}`, badge: 'api-retry' }
+    }
+    // THE UNIVERSAL BLOCKED SIGNAL: CC emits `request_user_dialog` for every
+    // dialog kind, including ones it has not shipped yet. One arm covers
+    // families this codebase has never seen, which no per-dialog registry can.
+    case 'request_user_dialog': {
+      const kind = str(w.body, 'dialog')
+      return {
+        text: kind ? `this session is waiting on a ${kind} dialog` : 'this session is waiting on a dialog',
+        badge: 'dialog',
+      }
+    }
+    case 'informational': {
+      const text = str(w.body, 'content')
+      return text ? { text, badge: 'system' } : null
+    }
+    default:
+      // stop_hook_summary / turn_duration / local_command / scheduled_task_fire
+      // and anything a patch release invents: chrome, and deliberately silent.
+      return null
+  }
+}
+
+/** `claude-opus-5` → `Opus 5`: the model id is wire syntax, and a reader of a
+ *  one-line notice needs the name Anthropic uses for it. Unknown shapes come
+ *  back verbatim rather than mangled. */
+function modelName(id: string): string {
+  const m = /^claude-([a-z]+)-(\d+(?:-\d+)?)/.exec(id)
+  if (!m) return id
+  const family = m[1].charAt(0).toUpperCase() + m[1].slice(1)
+  return `${family} ${m[2].replace('-', '.')}`
 }
 
 // ── the adapter ─────────────────────────────────────────────────────────────
@@ -374,6 +564,8 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
   // tool_use_id → index in `out`, so a later `tool_result` folds into its
   // receipt instead of becoming a row of its own.
   const receipts = new Map<string, number>()
+  // requestId → index in `out`, so a retry storm is ONE counting row.
+  const retries = new Map<string, number>()
 
   for (const w of wire) {
     if (isSubagent(w)) continue
@@ -384,11 +576,78 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       if (at === undefined) continue
       const target = out[at]
       target.ok = w.ok ?? target.ok
-      const text = preview(toolResultText(w.body))
+      // The structured answer outranks the prose: `answers` is the fact, CC's
+      // sentence is a paraphrase of it written for the model.
+      const text = answerLine(w.body) ?? preview(toolResultText(w.body))
       if (text) target.reply = text
+      // A DENIAL is a decision, not an output (`parser.rs::is_denial` labels
+      // it). Without the label the row read as "✓ Bash … → The user doesn't
+      // want to proceed" — a tick beside a refusal.
+      if (w.label === 'denied') target.label = 'denied'
       // The receipt now carries a clipped tool OUTPUT; the flag belongs to the
       // row the user sees, which is the tool_use.
       if (w.truncated) target.truncated = true
+      continue
+    }
+
+    // ── THE BLOCKED AGENT (states audit) ────────────────────────────────────
+    // A quota/auth/throttle banner. Pre-fix these arrived as `kind:'assistant'`
+    // and were drawn as ordinary Claude speech, so a session that was dead for
+    // the next five hours looked exactly like one that had just answered a
+    // question — green dot, "Idle" header, live composer, no reset time.
+    if (w.kind === 'agent_error') {
+      const text = sanitiseText(textOf(w.body))
+      const info = infoOf(w.body)
+      out.push({
+        uuid: w.uuid,
+        ts: toSeconds(w.ts_ms),
+        text: text || bannerFallback(info),
+        kind: 'blocked',
+        // The bucket, as words — `Session limit` vs `Weekly limit` vs `Opus
+        // limit` are four different answers about what to do next.
+        label: blockedLabel(info),
+        ok: false,
+        // The reset clause, which is the whole answer to "when can I work
+        // again". Reused rather than a new field: the display model is the
+        // frozen A1 shape and `reply` is its slot for "what came back".
+        reply: resetNote(info),
+        blocking: info.blocking || undefined,
+        truncated: w.truncated || undefined,
+      })
+      continue
+    }
+
+    // ── THE SYSTEM ROWS THAT CARRY A FACT ───────────────────────────────────
+    // A NARROW allowlist, not an open door. `toChatEntries` dropped every
+    // system entry, which made a silent model swap, a retry storm and a
+    // compaction seam all render as literally nothing — the turn looked
+    // finished. Everything still absent from this switch (stop_hook_summary,
+    // turn_duration, local_command, scheduled_task_fire) stays dropped: those
+    // are genuinely chrome, and the census counts 4257 of the first alone.
+    if (w.kind === 'system' || w.kind === 'compact_boundary') {
+      const row = systemRow(w)
+      if (!row) continue
+      // ONE row per failing request, not one per attempt. CC writes an
+      // `api_error` entry for EVERY retry — 30 of them in one captured session
+      // — so the honest row is the newest state of the same request, counting
+      // up. Collapsed on `requestId`, which is exactly what identifies "the
+      // same call again".
+      const reqId = str(w.body, 'request_id')
+      if (reqId) {
+        const at = retries.get(reqId)
+        if (at !== undefined) {
+          out[at].text = row.text
+          continue
+        }
+        retries.set(reqId, out.length)
+      }
+      out.push({
+        uuid: w.uuid,
+        ts: toSeconds(w.ts_ms),
+        text: row.text,
+        kind: row.badge,
+        truncated: w.truncated || undefined,
+      })
       continue
     }
 

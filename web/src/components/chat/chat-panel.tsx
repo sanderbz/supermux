@@ -34,6 +34,7 @@ import { useRosterMarks } from '@/hooks/use-roster-marks'
 import { claimChatSurface } from '@/lib/live-region-owner'
 
 import { detailFor, topAttention } from './attention'
+import { blockedComposerNote, blockedState } from './blocked'
 import { ConnectionNote } from './connection-note'
 import { TruncationProvider } from './truncation'
 import { isPlaneDown } from './connection'
@@ -435,7 +436,22 @@ export default function ChatPanel({
   // will not answer — unmapped, unpinned, or a sequence that aborted (T7). The
   // card's evidence is the SAME capture every other consumer reads (one poller,
   // T2), so what it shows is what the refusal was decided on.
-  const attention = topAttention([pending.attention, dialog.attention])
+  // ── THE BLOCKED AGENT (states audit) ───────────────────────────────────────
+  // A quota/auth banner outlives its turn, so it cannot be a status (see
+  // `blocked.ts`) — it is derived from the transcript and it outranks every
+  // other cause on this surface: the other four are about what THIS APP cannot
+  // do, and this one is about the session being unable to work at all.
+  const blocked = React.useMemo(() => blockedState(entries), [entries])
+  // …and the other silence: a live pty with an empty transcript. The lens sees
+  // Claude Code's own footer warning; without it the chat surface renders an
+  // empty conversation for a session that is actively talking.
+  const blind = peek.lens.transcriptOff && entries.length === 0
+  const attention = topAttention([
+    blocked ? ('agent-blocked' as const) : null,
+    blind ? ('transcript-blind' as const) : null,
+    pending.attention,
+    dialog.attention,
+  ])
   // What the abort actually was. `dialog-unmapped`'s copy reads "no verified
   // mapping", which is true for an unknown dialog and FALSE for a sequence that
   // aborted on a caret somebody else moved — same cause, different fact, and
@@ -447,13 +463,15 @@ export default function ChatPanel({
   const detail = detailFor(attention, dialog.attention, dialog.attentionDetail)
   const attentionCtx = React.useMemo(
     () => ({
+      blockedLabel: blocked?.label,
+      blockedResets: blocked?.resets,
       version: peek.lens.bannerVersion,
       // What the sighted fingerprint WAS captured against, so the version
       // sentence can name both halves rather than "some other versions".
       verifiedVersions: dialog.card?.verifiedVersions,
       detail: detail ?? undefined,
     }),
-    [detail, dialog.card?.verifiedVersions, peek.lens.bannerVersion],
+    [blocked?.label, blocked?.resets, detail, dialog.card?.verifiedVersions, peek.lens.bannerVersion],
   )
   // Dismissing the card dismisses what raised it: the undelivered echoes are
   // the failure, and a card that could be closed while its rows stayed on
@@ -546,6 +564,11 @@ export default function ChatPanel({
           handle={composer}
           surface={phone ? 'phone' : 'desktop'}
           active={session?.status === 'active'}
+          // NOTHING SENT INTO A BLOCKED SESSION ARRIVES. The composer says
+          // which limit and when it lifts, rather than accepting a message
+          // that Claude Code will never pick up (verify matrix:
+          // `limit.hit.*` shipped with the composer live under a green dot).
+          blocked={blocked ? blockedComposerNote(blocked) : undefined}
           onOpenTerminal={onOpenTerminal}
           // The popover's three lists (fase A4 T9) — the sessions among them
           // ride the shared query this component already subscribes to, the

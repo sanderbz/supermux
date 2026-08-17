@@ -26,6 +26,12 @@
 export type WireKind =
   | 'prompt'
   | 'assistant'
+  /** An assistant line that is a FAILURE BANNER rather than prose — a quota
+   *  hit, an auth death, a server-side throttle, a terminal API error. Split
+   *  from `assistant` server-side (`chat/agent_error.rs`) because the
+   *  discriminators are line-level and a renderer that cannot see them draws a
+   *  five-hour outage as a speech bubble. */
+  | 'agent_error'
   | 'thinking'
   | 'tool_use'
   | 'tool_result'

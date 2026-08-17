@@ -25,6 +25,17 @@ export interface ChatEntry {
   /** Server clipped `text` at the wire cap. Rendered as a marker: without it
    *  a clipped message is indistinguishable from one that simply ended. */
   truncated?: boolean
+  /**
+   * `kind: 'blocked'` only — does this failure stop the session until a human
+   * acts?
+   *
+   * A quota bucket and an auth death do; a 529 retry and a server-side
+   * throttle do not, and CC explicitly says so in the second case's own copy.
+   * The distinction is the difference between an honest composer gate and one
+   * that blanks a working session for a condition that clears in seconds, so it
+   * rides on the entry rather than being re-derived from the label downstream.
+   */
+  blocking?: boolean
 }
 
 export interface ReceiptLine {
@@ -55,6 +66,30 @@ export type ChatItem =
       truncated?: boolean
     }
   | { type: 'assistant'; uuid: string; ts: number; text: string; truncated?: boolean }
+  | {
+      /**
+       * Claude is BLOCKED — a quota bucket, an auth death, a server-side
+       * throttle, a terminal API error.
+       *
+       * Its own item type rather than an assistant bubble with a chip, because
+       * the states audit found the opposite shipping: a limit banner rendered
+       * byte-identically to ordinary Claude prose (same bubble, same colour),
+       * under a green dot and an "Idle" header, with the composer live. The
+       * type is what lets every surface downstream — the card, the composer
+       * gate, the attention cause — agree that this session cannot work.
+       */
+      type: 'blocked'
+      uuid: string
+      ts: number
+      /** The banner, verbatim: CC's own sentence about what happened. */
+      text: string
+      /** Which bucket, as words (`Session limit`, `Opus limit`, `Server busy`). */
+      label?: string
+      /** `Resets 4:40am (Europe/Amsterdam)` — absent when the bucket is
+       *  answered by a slash command rather than by a clock. */
+      detail?: string
+      truncated?: boolean
+    }
   | {
       type: 'receipts'
       uuid: string
@@ -108,6 +143,16 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
       } else {
         out.push({ type: 'receipts', uuid: e.uuid, ts: e.ts, lines: [line], overflow: 0 })
       }
+    } else if (e.kind === 'blocked') {
+      out.push({
+        type: 'blocked',
+        uuid: e.uuid,
+        ts: e.ts,
+        text: e.text,
+        label: e.label,
+        detail: e.reply,
+        truncated: e.truncated,
+      })
     } else if (e.kind === 'assistant') {
       out.push({
         type: 'assistant',

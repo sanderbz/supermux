@@ -68,10 +68,28 @@ import type { Receipt } from './ui/receipt-group'
  */
 export type Speaker = 'agent' | 'me' | 'system' | `teammate:${string}` | `schedule:${string}`
 
-/** Wire kinds that are harness events rather than anybody speaking. */
-const SYSTEM_BADGES: ReadonlySet<string> = new Set(['notification', 'system', 'tool', 'image'])
+/** Wire kinds that are harness events rather than anybody speaking.
+ *
+ *  The last four are the states audit's allowlisted system rows
+ *  (`wire-entries.ts::SYSTEM_ROW_BADGES`). A badge missing from this set is not
+ *  merely unstyled — `speakerOf` falls through to `'me'` and the row is drawn
+ *  as the USER's own bubble, which is how a retry storm would end up looking
+ *  like something the human typed. */
+const SYSTEM_BADGES: ReadonlySet<string> = new Set([
+  'notification',
+  'system',
+  'tool',
+  'image',
+  'compaction',
+  'model-switch',
+  'api-retry',
+  'dialog',
+])
 
 function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speaker {
+  // A blocked banner is not anybody speaking: it is a fact about the session,
+  // and it gets the centred system voice + its own card.
+  if (item.type === 'blocked') return 'system'
   if (item.type !== 'user') return 'agent'
   // A delegated prompt is a colleague's request wearing the same face: the
   // teammate envelope and `<supermux-delegation from>` differ in transport, not

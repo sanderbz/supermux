@@ -1,7 +1,9 @@
 // The honesty copy, in ONE place (fase A4 T5).
 //
-// Five causes, five sentences the surface is allowed to say when it cannot do
-// the thing it was asked to do. They live in a pure module for the same reason
+// Seven causes, seven sentences the surface is allowed to say when it cannot do
+// the thing it was asked to do — five from A4, plus the two the states audit
+// found the surface staying silent about: a session that cannot work at all,
+// and a session whose transcript does not exist. They live in a pure module for the same reason
 // `pending.ts` does: copy that apologises instead of explaining is a defect the
 // same way a wrong caret is, and a defect you cannot assert in `bun test` is one
 // that comes back. Every string below names WHAT IS TRUE — what this app tried,
@@ -9,6 +11,14 @@
 // "something went wrong".
 //
 // THE CAUSES, and who raises each one:
+//   agent-blocked              `chat-panel`, when `blocked.ts` finds an
+//                              un-cleared quota/auth banner in the transcript:
+//                              this session cannot work at all until a limit
+//                              resets or somebody signs in.
+//   transcript-blind           `chat-panel`, when the pty is full of text and
+//                              the transcript plane has produced nothing —
+//                              Claude Code is not writing a transcript for this
+//                              session, so chat can only show the terminal.
 //   send-unconfirmed           `use-pending-sends` (T4), when the watchdog gave
 //                              up on a send: no transcript echo, no aliveness.
 //   dialog-unmapped            `use-dialog-answer` (T7), when the lens sees a
@@ -27,6 +37,8 @@
 // is the pixels, this is the words.
 
 export type AttentionCause =
+  | 'agent-blocked'
+  | 'transcript-blind'
   | 'send-unconfirmed'
   | 'dialog-unmapped'
   | 'registry-version-mismatch'
@@ -38,6 +50,10 @@ export type AttentionCause =
  *  form a sentence produces "undefined" on the surface the first time a caller
  *  forgets. */
 export interface AttentionContext {
+  /** `agent-blocked` — the bucket as words, and the reset clause when the
+   *  bucket has a clock (`blocked.ts`). */
+  blockedLabel?: string
+  blockedResets?: string
   /** The session's boot-banner version (`peek-lens` → `bannerVersion`). */
   version?: string | null
   /** The versions the sighted fingerprint WAS captured against (T6). */
@@ -58,6 +74,12 @@ export interface AttentionCopy {
  * Priority, most urgent first, for the surface that can only show ONE card.
  *
  * The ordering is by what the user loses if the card stays unread:
+ *   0. the SESSION cannot work — a quota bucket or an auth death. It outranks
+ *      the rest because the others are about what this app cannot do, and this
+ *      one is about the agent being unable to do anything at all;
+ *   0b. the session is writing no transcript, so this surface is structurally
+ *      blind to it — same shape, one rung down, because the terminal still has
+ *      everything;
  *   1. a message they typed did not arrive — the only cause where something
  *      the user AUTHORED is missing;
  *   2. a dialog is on the screen and this app will not touch it — the session
@@ -69,6 +91,8 @@ export interface AttentionCopy {
  *      still true, just not complete.
  */
 export const ATTENTION_ORDER: readonly AttentionCause[] = [
+  'agent-blocked',
+  'transcript-blind',
   'send-unconfirmed',
   'dialog-unmapped',
   'registry-version-mismatch',
@@ -122,6 +146,35 @@ export function detailFor(
  */
 export function attentionCopy(cause: AttentionCause, ctx: AttentionContext = {}): AttentionCopy {
   switch (cause) {
+    case 'agent-blocked':
+      return {
+        // NAMES THE BUCKET. "Rate-limited" for all six is what sends somebody
+        // away to wait when the fix is one slash command — four of the six are
+        // answered by `/model` or `/usage-credits`, not by a clock.
+        title: ctx.blockedLabel
+          ? `${ctx.blockedLabel} — this session can’t work right now.`
+          : 'This session can’t work right now.',
+        body: join(
+          'Claude ended the turn with a block rather than an answer, so nothing you send will be picked up until it lifts.',
+          // Only the verb is lower-cased. A blanket `toLowerCase()` would eat
+          // the date and the timezone — "aug 17, 4am (europe/amsterdam)" — and
+          // the clause exists for exactly those two facts.
+          ctx.blockedResets ? `It ${lowerFirst(ctx.blockedResets)}.` : undefined,
+          ctx.detail,
+          'The terminal shows the session’s own screen, and Claude’s message above says what lifts it.',
+        ),
+      }
+
+    case 'transcript-blind':
+      return {
+        title: 'This session isn’t writing a transcript.',
+        body: join(
+          'Claude Code has transcript saving off here, so there is nothing for chat to read — the conversation below is empty because the file is, not because nothing was said.',
+          ctx.detail,
+          'The terminal has the whole conversation. Restarting the session with transcript saving on is what fixes it for good.',
+        ),
+      }
+
     case 'send-unconfirmed':
       return {
         title: 'That message didn’t reach the session.',
@@ -172,6 +225,11 @@ export function attentionCopy(cause: AttentionCause, ctx: AttentionContext = {})
         ),
       }
   }
+}
+
+/** `Resets Aug 17, 4am (Europe/Amsterdam)` → `resets Aug 17, …`. */
+function lowerFirst(s: string): string {
+  return s.charAt(0).toLowerCase() + s.slice(1)
 }
 
 /** Sentence assembly that drops what it does not have, so a missing fact costs a

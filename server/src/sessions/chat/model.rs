@@ -44,6 +44,13 @@ pub const ID_MAX_CHARS: usize = 256;
 pub enum Kind {
     Prompt,
     Assistant,
+    /// An assistant line that is a FAILURE BANNER, not prose: a quota hit, an
+    /// auth death, a server-side throttle, a terminal API error. The
+    /// discriminators are line-level (`error`, `isApiErrorMessage`,
+    /// `apiErrorStatus`), never inside `message.content` — see
+    /// [`super::agent_error`]. Split from `Assistant` because a renderer that
+    /// cannot tell them apart draws a five-hour outage as a speech bubble.
+    AgentError,
     Thinking,
     ToolUse,
     ToolResult,

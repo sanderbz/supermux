@@ -93,6 +93,18 @@ export interface ChatComposerProps {
    * composer with no sheet behind it, and an inert clock would be a promise.
    */
   onSchedule?: (draft: string) => void
+  /**
+   * This session cannot work — a quota bucket, an auth death (`blocked.ts`).
+   * The string is the REASON, already naming the limit and, where there is one,
+   * when it lifts.
+   *
+   * A permanent strip and a read-only field, not a disabled button with no
+   * explanation: the states audit found the opposite shipping, a fully live
+   * composer over a session that was dead for the next five hours, and every
+   * character typed into it went nowhere with no sign that it had. A composer
+   * that refuses in silence is the same defect one step later.
+   */
+  blocked?: string
   className?: string
 }
 
@@ -107,6 +119,7 @@ export function ChatComposer({
   renderPicker,
   pickerData,
   onSchedule,
+  blocked,
   className,
 }: ChatComposerProps) {
   const phone = surface === 'phone'
@@ -114,7 +127,7 @@ export function ChatComposer({
   // A draft arms Send. While the POST is in flight the button STAYS (disabled)
   // rather than flipping back to the mic: a control that vanishes mid-tap reads
   // as a bug, and the disabled state is the honest "asked, not yet answered".
-  const canSend = handle.draft.trim().length > 0
+  const canSend = handle.draft.trim().length > 0 && !blocked
   // WHICH ROW THE POPOVER IS ON (A4 review). The list lives in the picker, but
   // the only element that ever has focus is the textarea — so the textarea is
   // what has to carry `aria-activedescendant`, and the highlight travels up
@@ -144,6 +157,19 @@ export function ChatComposer({
 
   return (
     <ComposerFrame surface={surface} stat={stat} className={className}>
+      {blocked && (
+        <p
+          role="status"
+          data-testid="chat-composer-blocked"
+          className={cn(
+            'mb-2 flex items-center gap-1.5 rounded-2xl border-[0.5px] border-status-error/30',
+            'bg-status-error/10 px-3.5 py-2 text-[12.6px] tracking-[-0.05px] text-status-error',
+          )}
+        >
+          <span aria-hidden>⚠</span>
+          {blocked} — messages sent now won’t be picked up.
+        </p>
+      )}
       <ComposerBanner
         notice={handle.notice}
         onOpenTerminal={onOpenTerminal}
@@ -199,6 +225,11 @@ export function ChatComposer({
         field={{
           ref: handle.ref,
           value: handle.draft,
+          // READ-ONLY rather than `disabled`: the draft stays selectable and
+          // copyable, so a message typed just before the limit landed can be
+          // rescued into another session instead of being taken away.
+          readOnly: blocked ? true : undefined,
+          'aria-disabled': blocked ? true : undefined,
           onChange: handle.onChange,
           onKeyDown: handle.onKeyDown,
           onSelect: handle.onSelect,

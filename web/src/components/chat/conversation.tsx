@@ -492,6 +492,7 @@ export function ChatConversation({
               pinFor={pinFor}
               onOpenSession={onOpenSession}
               onOpenSchedule={onOpenSchedule}
+              onOpenTerminal={onOpenTerminal}
             />
           ))}
 

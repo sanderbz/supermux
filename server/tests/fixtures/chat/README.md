@@ -71,3 +71,41 @@ Notes for the parser:
   tolerant `unknown` variant must cover at least these.
 - `session_id` (snake) and `sessionId` (camel) both appear on the same entry;
   `toolUseID` (capital ID) appears inside hook attachments.
+
+## `claude-states.jsonl` — the state parity corpus (states audit, 2026-08-17)
+
+A SECOND corpus with a different job. The files above pin *shape tolerance*:
+every line must parse, nothing may panic, nothing may be dropped. This one pins
+*meaning*: what each state MUST become on both planes.
+
+One file, two readers — `server/tests/state_parity.rs` (the real
+`chat::parser` + `chat::agent_error`) and
+`web/tests/unit/chat-state-parity.test.ts` (`agent-error.ts` +
+`wire-entries.ts`). Both assert the same rows, because the limit taxonomy is
+classified twice: the server stamps it onto the wire entry from the transcript
+line, and the client re-derives it from a `StopFailure` banner for the roster
+badge (that plane has no chat store behind it — `chat_store()` is deliberately
+non-creating, and a roster is exactly the list of sessions nobody has open).
+Neither language errors when the two drift.
+
+Row fields: `name`, `source`, `line` (the raw JSONL record, exactly as CC
+writes it), `expect.kind` / `.label` / `.ok`, `expect.body` (a **subset** —
+every key listed must match exactly, so a new body key never breaks the corpus
+and a dropped one always does), and `expect.display` (what
+`wire-entries.ts` must render; `-` means deliberately not drawn).
+
+What it covers, and why each row is there:
+
+| rows | why |
+|---|---|
+| the six limit buckets (`session_5h`, `weekly`, `opus`, `model`, `usage_credit`) | they are NOT interchangeable — waiting is the wrong answer to four of them (`/model`, `/usage-credits`) |
+| the server-side throttle | CC explicitly says "not your usage limit"; it arrives with the SAME class and status as a quota hit and must never badge as one |
+| a 529 overload, a 401 auth death | a damaged turn vs a session that is dead until somebody signs in |
+| two prose controls | an assistant line that merely *mentions* a limit, and a tool result that *quotes* the refusal sentence — a loose match on either blanks a working session |
+| `api_error` / `model_refusal_fallback` / `request_user_dialog` / `compact_boundary` / `informational` / `stop_hook_summary` | the five system subtypes that must render, and the one that must stay dropped |
+| the `AskUserQuestion` pair, `ExitPlanMode`, a denial | the payloads that ARE the tool call, and the receipt that must not carry a success tick |
+
+Sources are verbatim captures off this box except where a row's `source` says
+`strings(2.1.227)` — those are transcribed from the binary's own template
+strings (the `Kzt` label map and the `KZe` banner template), for buckets this
+account has never hit.
