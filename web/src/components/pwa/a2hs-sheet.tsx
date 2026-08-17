@@ -9,6 +9,22 @@
 // Voice + visuals follow the brand: sentence case, builder-to-builder, no
 // cheerleading. The two steps use the actual iOS Share + Add icons rendered
 // inline (monochrome, currentColor) — no screenshot images to ship or break.
+//
+// ── Why this is raw Vaul and NOT <ResponsiveSheet> (B5/T10.3) ────────────────
+//
+// It is the one PERMANENT exception to "one sheet system", and the reason is
+// `modal={false}` below. ResponsiveSheet is modal by design — it traps focus and
+// blocks the page, which is right for every other sheet in the app.
+//
+// This sheet is different in kind: the thing it teaches you to do happens in the
+// BROWSER'S OWN chrome, outside the document. A modal sheet cannot be dismissed
+// by the gesture it is demonstrating, and on iOS WebKit the `pointer-events:
+// none` a modal drawer puts on <body> made its own buttons unclickable (see the
+// note at `modal={false}`). Forcing it through the shared primitive would break
+// the very interaction it exists to explain.
+//
+// `tests/unit/sheet-inventory.test.ts` allowlists this file permanently, and
+// every other raw-Vaul site only until it is migrated.
 
 import * as React from 'react'
 import { Drawer } from 'vaul'
