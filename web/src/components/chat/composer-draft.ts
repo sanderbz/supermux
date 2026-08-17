@@ -74,9 +74,17 @@ function fieldFor(name: string): HTMLTextAreaElement | null {
 }
 
 /** Focus the React composer — the REST plane's "cursor" (`rest.ts` delegates
- *  `focus()` here through `composerSessionInput`). */
-export function focusComposer(name: string): void {
-  fieldFor(name)?.focus()
+ *  `focus()` here through `composerSessionInput`).
+ *
+ *  Returns whether a field was actually there to focus. The focus routes use
+ *  the boolean to keep RETRYING across frames while the lazy chat chunk is
+ *  still loading: a toggle to Chat must end with the caret in the composer, and
+ *  the composer does not exist yet at the moment the toggle happens. */
+export function focusComposer(name: string): boolean {
+  const el = fieldFor(name)
+  if (!el) return false
+  el.focus()
+  return true
 }
 
 /**

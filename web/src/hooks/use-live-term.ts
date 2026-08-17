@@ -604,12 +604,21 @@ export function useLiveTerm(
   }, [])
 
   /** Blur xterm's hidden helper textarea so the iOS soft keyboard dismisses.
-   *  `term.blur()` is the public xterm API; we also blur the active element as a
-   *  belt-and-suspenders for engines where the helper textarea kept focus. */
+   *  `term.blur()` is the public xterm API; the second blur is a
+   *  belt-and-suspenders for engines where the helper textarea kept focus.
+   *
+   *  CONTAINMENT-CHECKED. Unconditionally blurring `document.activeElement`
+   *  made this handle a page-wide focus eviction: the retained (hidden)
+   *  terminal's `blur()` is called from the renderer toggle, and by then the
+   *  active element is whatever the user is actually typing into — the chat
+   *  composer. Only focus that is INSIDE this terminal's container is ours to
+   *  take away. */
   const blur = React.useCallback(() => {
     termRef.current?.blur()
     const active = document.activeElement
-    if (active instanceof HTMLElement) active.blur()
+    if (!(active instanceof HTMLElement)) return
+    const host = containerRef.current
+    if (host && host.contains(active)) active.blur()
   }, [])
 
   /** Open the URL under a viewport point (PWA-safely) and report whether it hit

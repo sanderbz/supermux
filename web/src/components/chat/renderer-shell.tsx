@@ -200,6 +200,11 @@ function Pane({
   children: React.ReactNode
 }) {
   const ref = React.useRef<HTMLDivElement>(null)
+  // The pane's own visibility, as of the LAST run of the effect below. Seeded
+  // with the first render's value so a pane that mounts already hidden is not
+  // read as a hide EDGE (there is nothing to evict from a pane nobody has been
+  // in yet).
+  const wasVisibleRef = React.useRef(visible)
 
   // Invariant 4 — focus never leaks into an invisible pane.
   //
@@ -222,10 +227,31 @@ function Pane({
     if (visible) el.removeAttribute('inert')
     else el.setAttribute('inert', '')
 
+    const wasVisible = wasVisibleRef.current
+    wasVisibleRef.current = visible
+
     if (visible) return
     const active = document.activeElement
     if (active instanceof HTMLElement && el.contains(active)) active.blur()
-    onHidden?.()
+
+    // `onHidden` is an EDGE, not a state.
+    //
+    // Both call sites pass a fresh inline arrow every render
+    // (`onTerminalHidden={() => termRef.current?.blur()}`), so `onHidden` is a
+    // new identity on EVERY parent render and this effect re-runs while the
+    // pane has been hidden all along. Firing the callback on each of those runs
+    // is what turned a one-shot "evict focus from the pane you just left" into
+    // a recurring page-wide blur: the hidden terminal's handle blurs
+    // `document.activeElement`, which by then is the CHAT COMPOSER the user
+    // just clicked. Focus dropped to <body>, the leading characters of the
+    // message were swallowed, and the first `t` hit the global renderer hotkey
+    // and flipped the surface — after which the rest of the sentence was typed
+    // straight into the agent's pty.
+    //
+    // The blur above is containment-checked and therefore safe to repeat; the
+    // callback is not ours to reason about, so it only fires on the real
+    // visible→hidden transition.
+    if (wasVisible) onHidden?.()
   }, [visible, onHidden])
 
   return (

@@ -66,6 +66,7 @@ import {
 import { useRenderer } from '@/components/chat/use-renderer-pref'
 import { togglePref } from '@/components/chat/renderer-pref'
 import { composerSessionInput } from '@/components/chat/composer-draft'
+import { useArmComposerFocus } from '@/components/chat/arm-composer-focus'
 
 // Lazy: the chat renderer is its own chunk — nothing chat-related may land in
 // the entry bundle (perf budget; master plan Global Constraints).
@@ -481,6 +482,12 @@ export function DesktopSplit({
     // see above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, chatActive])
+
+  // …and the CHAT direction of the same arming. Without it a toggle to Chat
+  // left `document.activeElement` on `<body>`, so the surface the user just
+  // asked for swallowed its leading characters and handed the first `t` to the
+  // global renderer hotkey. See `chat/arm-composer-focus.ts`.
+  useArmComposerFocus(name, chatActive)
 
   const handleTermReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t

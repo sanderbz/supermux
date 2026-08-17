@@ -82,6 +82,7 @@ import { Joystick } from '@/components/joystick/joystick'
 import type { UseLiveTermResult } from '@/hooks/use-live-term'
 import { restSessionInput, useTerminalInput } from '@/lib/session-input'
 import { composerSessionInput } from '@/components/chat/composer-draft'
+import { useArmComposerFocus } from '@/components/chat/arm-composer-focus'
 import { RendererSwitch } from '@/components/chat/renderer-switch'
 import { RendererShell } from '@/components/chat/renderer-shell'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
@@ -319,6 +320,13 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
     // above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, chatActive])
+  // The CHAT direction of the same arming, shared with the desktop seam. On a
+  // phone it is a deliberate NO-OP (`pointer: coarse`): focusing the composer
+  // would summon the soft keyboard over a surface nobody asked to type into
+  // yet. It is here so a coarse/fine change (an iPad with a keyboard, a desktop
+  // browser at a narrow width) gets the same behaviour as the split route
+  // rather than a second reading of the same rule.
+  useArmComposerFocus(name, chatActive)
   const onTermReady = React.useCallback((t: UseLiveTermResult) => {
     termRef.current = t
     if (wantFocusRef.current) {
