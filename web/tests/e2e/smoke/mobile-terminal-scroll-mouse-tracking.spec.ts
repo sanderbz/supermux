@@ -28,7 +28,15 @@
 // `SUPERMUX_E2E_WEBKIT=1 npx playwright test --project=webkit`.
 
 import { devices, expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, touchDragY, type Backend } from './harness'
+import {
+  api,
+  injectGlobals,
+  startBackend,
+  touchDragY,
+  xtermScroll,
+  xtermToBottom,
+  type Backend,
+} from './harness'
 
 test.use({ ...devices['iPhone 14 Pro'] })
 
@@ -67,10 +75,10 @@ test.describe('mobile: terminal scrolls on touch even with mouse-tracking on', (
     await page.keyboard.type('seq 1 600')
     await page.keyboard.press('Enter')
 
-    const viewport = page.locator('.xterm-viewport')
-    await expect(viewport).toBeVisible({ timeout: 10_000 })
+    // BUFFER ROWS, not `.xterm-viewport.scrollTop` — see `xtermScroll`.
+    await expect(page.locator('.xterm-screen')).toBeVisible({ timeout: 10_000 })
     await expect(async () => {
-      const max = await viewport.evaluate((el) => el.scrollHeight - el.clientHeight)
+      const { max } = await xtermScroll(page)
       expect(max, 'scrollback must overflow').toBeGreaterThan(20)
     }).toPass({ timeout: 8_000 })
 
@@ -82,10 +90,8 @@ test.describe('mobile: terminal scrolls on touch even with mouse-tracking on', (
     await page.waitForTimeout(800)
 
     // Park at the bottom so a drag-down has history to reveal.
-    await viewport.evaluate((el) => {
-      el.scrollTop = el.scrollHeight
-    })
-    const parked = await viewport.evaluate((el) => el.scrollTop)
+    await xtermToBottom(page)
+    const parked = (await xtermScroll(page)).viewportY
     expect(parked, 'parked at bottom').toBeGreaterThan(0)
 
     // A full one-finger drag-down on .xterm-screen. With mouse reporting on AND
@@ -95,11 +101,11 @@ test.describe('mobile: terminal scrolls on touch even with mouse-tracking on', (
     const moved = await touchDragY(page, '.xterm-screen', 260, 16)
     expect(
       moved.after,
-      `scrollTop must change on a one-finger drag with mouse-tracking on (method=${moved.method} before=${moved.before} after=${moved.after})`,
+      `the buffer must move on a one-finger drag with mouse-tracking on (method=${moved.method} before=${moved.before} after=${moved.after})`,
     ).not.toBe(moved.before)
     expect(
       moved.after,
-      'drag-down scrolls UP into history (scrollTop decreases)',
+      'drag-down scrolls UP into history (viewportY decreases)',
     ).toBeLessThan(moved.before)
   })
 })

@@ -674,6 +674,12 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               pans the scrollback natively. See joystick.tsx. */}
           <div
             className="relative min-h-0 flex-1"
+            // The element that owns the tap-vs-swipe gate, named so a spec can
+            // find it. `mobile-terminal-tap-vs-swipe.spec.ts` used to reach it
+            // with `.xterm-viewport`.closest('[data-vaul-no-drag]'), an
+            // attribute this wrapper does not carry — so the spec dispatched
+            // its pointer sequence at `null` and could not test the gate at all.
+            data-testid="terminal-body"
             // Tap-to-focus (LIVE-TYPE): a genuine TAP anywhere in the terminal
             // body focuses xterm INSIDE the touch gesture so iOS summons the soft
             // keyboard reliably (it only opens the keyboard on a real user

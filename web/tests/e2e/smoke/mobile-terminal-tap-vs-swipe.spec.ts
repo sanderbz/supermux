@@ -14,7 +14,7 @@
 // so we dispatch real `new PointerEvent(...)` on the wrapper to drive them.
 
 import { devices, expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import { api, injectGlobals, startBackend, xtermScroll, type Backend } from './harness'
 
 test.use({ ...devices['iPhone 14 Pro'] })
 
@@ -63,12 +63,13 @@ test.describe('mobile: terminal tap focuses xterm, swipe does not', () => {
     await page.keyboard.type('seq 1 600')
     await page.keyboard.press('Enter')
 
-    const viewport = page.locator('.xterm-viewport')
-    await expect(viewport).toBeVisible({ timeout: 10_000 })
+    // `.xterm-viewport`'s SCROLL GEOMETRY is dead under xterm 6.0 (permanently
+    // 0), so gating on `scrollHeight - clientHeight > 20` is what left this
+    // spec red with `Received: 0` while the screenshot showed 600 lines of
+    // output. The gate reads the buffer, which is where the scrollback is.
+    await expect(page.locator('.xterm-screen')).toBeVisible({ timeout: 10_000 })
     await expect(async () => {
-      const max = await viewport.evaluate(
-        (el) => el.scrollHeight - el.clientHeight,
-      )
+      const { max } = await xtermScroll(page)
       expect(max, 'scrollback must overflow the viewport').toBeGreaterThan(20)
     }).toPass({ timeout: 8_000 })
 
@@ -91,8 +92,10 @@ test.describe('mobile: terminal tap focuses xterm, swipe does not', () => {
     })
     expect(await helperFocused(), 'blurred before swipe').toBe(false)
 
-    await viewport.evaluate(async (vp) => {
-      const wrap = vp.closest('[data-vaul-no-drag]') as HTMLElement
+    // The wrapper that owns the gate names itself (`data-testid="terminal-body"`)
+    // — `closest('[data-vaul-no-drag]')` from `.xterm-viewport` returned NULL,
+    // so this whole sequence used to be dispatched at nothing.
+    await page.getByTestId('terminal-body').evaluate(async (wrap: HTMLElement) => {
       const r = wrap.getBoundingClientRect()
       const x = r.left + r.width / 2
       const startY = r.top + r.height * 0.4
@@ -122,8 +125,7 @@ test.describe('mobile: terminal tap focuses xterm, swipe does not', () => {
 
     // ── 2. TAP must focus xterm ───────────────────────────────────────────────
     // A pointerdown→pointerup with no movement and short duration → tap → focus.
-    await viewport.evaluate((vp) => {
-      const wrap = vp.closest('[data-vaul-no-drag]') as HTMLElement
+    await page.getByTestId('terminal-body').evaluate((wrap: HTMLElement) => {
       const r = wrap.getBoundingClientRect()
       const x = r.left + r.width / 2
       const y = r.top + r.height * 0.5

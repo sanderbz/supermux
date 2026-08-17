@@ -362,9 +362,77 @@ export function api(backend: Backend) {
 }
 
 /**
+ * WHERE THE TERMINAL IS SCROLLED — measured in BUFFER ROWS.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * xterm 6.0 moved the viewport onto a VS Code scrollable element, so
+ * `.xterm-viewport`'s `scrollHeight - clientHeight` is permanently 0 and its
+ * `scroll` event never fires. `use-live-term.ts` documents this twice — and
+ * five specs went on polling that dead metric, all of them failing with
+ * `Received: 0` while the screenshot showed a terminal correctly filled with
+ * `seq 1 600`. Phone scroll physics (touch drag, fling, momentum), tap-vs-swipe,
+ * jump-to-bottom and mouse-tracking-on therefore had no automated cover at all.
+ *
+ * The live signal is the one the product itself reads: `buffer.active.viewportY`
+ * (the buffer line at the top of the view) against `baseY` (what that line is
+ * when pinned to the bottom). Reached through the dev-only `__xtermForTests`
+ * handle `use-live-term.ts` parks on the terminal container.
+ *
+ *   · `viewportY` behaves exactly like the old `scrollTop`: it DECREASES as you
+ *     reveal history, so every direction assertion reads the same as before;
+ *   · `up`   = rows above the live bottom (0 = pinned, the jump-to-bottom
+ *     button's own condition);
+ *   · `max`  = how far up there is to go (the old `scrollHeight - clientHeight`,
+ *     in rows).
+ */
+export async function xtermScroll(
+  page: Page,
+): Promise<{ viewportY: number; baseY: number; up: number; max: number }> {
+  return page.evaluate(() => {
+    const host = document.querySelector('.xterm')?.parentElement as
+      | (HTMLElement & { __xtermForTests?: { buffer: { active: { viewportY: number; baseY: number } } } })
+      | null
+    const term = host?.__xtermForTests
+    if (!term) throw new Error('no xterm instance on the page (dev build only)')
+    const { viewportY, baseY } = term.buffer.active
+    return { viewportY, baseY, up: baseY - viewportY, max: baseY }
+  })
+}
+
+/**
+ * Scroll the buffer by `lines` (negative = up into history), the way the
+ * product's own touch-drag does (`use-live-term.ts` converts a drag to
+ * `term.scrollLines`).
+ *
+ * Preferred over `Shift+PageUp` when the spec does NOT want the terminal
+ * focused: paging needs focus, and blurring afterwards closes the soft keyboard,
+ * which resizes the viewport, which refits xterm and re-pins it to the bottom —
+ * silently undoing the scroll the spec just performed.
+ */
+export async function xtermScrollLines(page: Page, lines: number): Promise<void> {
+  await page.evaluate((n) => {
+    const host = document.querySelector('.xterm')?.parentElement as
+      | (HTMLElement & { __xtermForTests?: { scrollLines: (n: number) => void } })
+      | null
+    host?.__xtermForTests?.scrollLines(n)
+  }, lines)
+}
+
+/** Scroll the terminal to the live bottom, the way the product does. */
+export async function xtermToBottom(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const host = document.querySelector('.xterm')?.parentElement as
+      | (HTMLElement & { __xtermForTests?: { scrollToBottom: () => void } })
+      | null
+    host?.__xtermForTests?.scrollToBottom()
+  })
+}
+
+/**
  * Dispatch a REAL one-finger vertical touch-drag of `totalPx` pixels (positive =
- * finger DOWN = reveal history → scrollTop decreases) over `steps` `touchmove`s
- * on `selector`, then return `.xterm-viewport` scrollTop before/after.
+ * finger DOWN = reveal history → the viewport moves UP into history) over
+ * `steps` `touchmove`s on `selector`, then return the terminal's buffer
+ * position (`buffer.active.viewportY`) before/after — see `xtermScroll` for why
+ * this is not `.xterm-viewport.scrollTop`.
  *
  * CROSS-ENGINE. Blink honours `new TouchEvent({ touches: [new Touch(...)] })`,
  * but WebKit silently drops the `touches` sequence (length 0 in the listener),
@@ -384,7 +452,10 @@ export async function touchDragY(
   return page.evaluate(
     async ({ selector, totalPx, steps }) => {
       const screen = document.querySelector(selector) as HTMLElement
-      const vp = document.querySelector('.xterm-viewport') as HTMLElement
+      const host = document.querySelector('.xterm')?.parentElement as
+        | (HTMLElement & { __xtermForTests?: { buffer: { active: { viewportY: number } } } })
+        | null
+      const at = () => host?.__xtermForTests?.buffer.active.viewportY ?? -1
       const r = screen.getBoundingClientRect()
       const x = r.left + r.width / 2
       const startY = r.top + r.height * 0.3
@@ -431,7 +502,7 @@ export async function touchDragY(
           }),
         )
       }
-      const before = vp.scrollTop
+      const before = at()
       fire('touchstart', startY)
       const step = totalPx / steps
       for (let i = 1; i <= steps; i++) {
@@ -442,7 +513,7 @@ export async function touchDragY(
       await new Promise((res) =>
         requestAnimationFrame(() => requestAnimationFrame(() => res(null))),
       )
-      return { before, after: vp.scrollTop, method }
+      return { before, after: at(), method }
     },
     { selector, totalPx, steps },
   )

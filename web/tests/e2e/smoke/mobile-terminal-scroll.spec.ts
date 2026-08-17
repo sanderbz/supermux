@@ -15,11 +15,20 @@
 // `Viewport.handleTouchMove` does the scrolling. The mouse-reporting-ON case (an
 // agent holding the mouse) is guarded by `mobile-terminal-scroll-mouse-tracking`.
 // We drive the scroll with the cross-engine `touchDragY` helper (real touch
-// events that run on chromium AND webkit) and assert `.xterm-viewport.scrollTop`
+// events that run on chromium AND webkit) and assert the terminal's BUFFER
+// position (`buffer.active.viewportY` via `xtermScroll`)
 // changed.
 
 import { devices, expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, touchDragY, type Backend } from './harness'
+import {
+  api,
+  injectGlobals,
+  startBackend,
+  touchDragY,
+  xtermScroll,
+  xtermToBottom,
+  type Backend,
+} from './harness'
 
 test.use({ ...devices['iPhone 14 Pro'] })
 
@@ -75,20 +84,18 @@ test.describe('mobile: terminal scrollback scrolls on touch', () => {
 
     // Let the pty stream the rows into xterm, then jump the viewport to the
     // BOTTOM (live tail) so a downward drag has scrollback above it to reveal.
-    const viewport = page.locator('.xterm-viewport')
-    await expect(viewport).toBeVisible({ timeout: 10_000 })
+    // Measured in BUFFER ROWS, not `.xterm-viewport.scrollTop` — that element's
+    // scroll geometry is permanently 0 under xterm 6.0's scrollable element, and
+    // polling it is what left this whole file red-and-unread. See `xtermScroll`.
+    await expect(page.locator('.xterm-screen')).toBeVisible({ timeout: 10_000 })
     await expect(async () => {
-      const max = await viewport.evaluate(
-        (el) => el.scrollHeight - el.clientHeight,
-      )
+      const { max } = await xtermScroll(page)
       expect(max, 'scrollback must overflow the viewport').toBeGreaterThan(20)
     }).toPass({ timeout: 8_000 })
 
     // Park at the bottom so we can scroll UP into history.
-    await viewport.evaluate((el) => {
-      el.scrollTop = el.scrollHeight
-    })
-    const before = await viewport.evaluate((el) => el.scrollTop)
+    await xtermToBottom(page)
+    const before = (await xtermScroll(page)).viewportY
     expect(before, 'parked at bottom').toBeGreaterThan(0)
 
     // Real one-finger DRAG-DOWN on .xterm-screen. With mouse reporting OFF, xterm's
@@ -100,11 +107,11 @@ test.describe('mobile: terminal scrollback scrolls on touch', () => {
     // The scrollback moved (a drag-down reveals history → scrollTop decreases).
     expect(
       moved.after,
-      `scrollTop must change on touch-drag (method=${moved.method} before=${moved.before} after=${moved.after})`,
+      `the buffer must move on touch-drag (method=${moved.method} before=${moved.before} after=${moved.after})`,
     ).not.toBe(moved.before)
     expect(
       moved.after,
-      'drag-down should scroll UP into history (scrollTop decreases)',
+      'drag-down should scroll UP into history (viewportY decreases)',
     ).toBeLessThan(moved.before)
 
     // The joystick is still summonable: a 350ms hold (no move) arms it.

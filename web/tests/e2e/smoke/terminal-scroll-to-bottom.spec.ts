@@ -11,7 +11,14 @@
 // harness against the live Vite frontend (the actual new component).
 
 import { expect, test } from '@playwright/test'
-import { api, injectGlobals, startBackend, type Backend } from './harness'
+import {
+  api,
+  injectGlobals,
+  startBackend,
+  xtermScroll,
+  xtermToBottom,
+  type Backend,
+} from './harness'
 
 test.describe('terminal: jump-to-bottom button (SD-2)', () => {
   let backend: Backend
@@ -48,25 +55,23 @@ test.describe('terminal: jump-to-bottom button (SD-2)', () => {
     await page.keyboard.type('seq 1 600')
     await page.keyboard.press('Enter')
 
-    const viewport = page.locator('.xterm-viewport')
-    await expect(viewport).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('.xterm-screen')).toBeVisible({ timeout: 10_000 })
 
-    // Wait for the 600 lines to FINISH streaming (scrollHeight stops growing),
+    // Wait for the 600 lines to FINISH streaming (the scrollback stops growing),
     // then park at the live bottom — so streaming output can't re-pin mid-test
     // and the assertions describe a settled terminal.
+    //
+    // Measured in BUFFER ROWS. `.xterm-viewport`'s scrollHeight/clientHeight are
+    // permanently equal under xterm 6.0's scrollable element, so "settled" was
+    // trivially true and "overflows" could never be, whatever the terminal held.
     await expect(async () => {
-      const a = await viewport.evaluate((el) => el.scrollHeight)
+      const a = (await xtermScroll(page)).baseY
       await new Promise((r) => setTimeout(r, 250))
-      const b = await viewport.evaluate((el) => el.scrollHeight)
-      expect(a, 'scrollHeight settled').toBe(b)
-      expect(
-        b - (await viewport.evaluate((el) => el.clientHeight)),
-        'scrollback overflows the viewport',
-      ).toBeGreaterThan(20)
+      const b = (await xtermScroll(page)).baseY
+      expect(a, 'scrollback settled').toBe(b)
+      expect(b, 'scrollback overflows the viewport').toBeGreaterThan(20)
     }).toPass({ timeout: 12_000 })
-    await viewport.evaluate((el) => {
-      el.scrollTop = el.scrollHeight
-    })
+    await xtermToBottom(page)
 
     // At the live bottom: the button is NOT mounted.
     const btn = page.getByRole('button', { name: 'Scroll to bottom' })
@@ -74,27 +79,41 @@ test.describe('terminal: jump-to-bottom button (SD-2)', () => {
 
     // Scroll UP with Shift+PageUp — xterm's internal scrollback paging, which
     // moves the buffer AND re-renders (the canvas renderer ignores a synthetic
-    // wheel/scrollTop, but honours real paging). The hook reads `.xterm-viewport`'s
-    // scroll position, so the button appears once we leave the bottom.
+    // wheel/scrollTop, but honours real paging). The hook reads `baseY -
+    // viewportY`, so the button appears once we leave the bottom.
     await term.click()
-    for (let i = 0; i < 6; i++) await page.keyboard.press('Shift+PageUp')
-    await expect(btn).toBeVisible({ timeout: 5_000 })
-    // Confirm xterm REALLY scrolled up (not just a state flip): the viewport sits
-    // well above the bottom now.
-    const distFromBottom = await viewport.evaluate(
-      (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
-    )
-    expect(distFromBottom, 'viewport actually scrolled up').toBeGreaterThan(100)
-    await page.screenshot({ path: 'test-results/sd-2-button-visible.png' })
+    // The presses live INSIDE the retry, not before it: a Shift+PageUp that
+    // lands before xterm has taken focus is simply swallowed, and re-reading a
+    // buffer that never moved cannot recover from that. Paging further up is
+    // harmless — the assertion is a floor, not an equality. (Measured 1/3 flaky
+    // with the presses outside.)
+    //
+    // SCROLL → SEE THE BUTTON → CLICK IT, as ONE retried unit. Each step is
+    // fine and the SEAMS are not: a press that lands before xterm has taken
+    // focus is swallowed, and anything that re-pins the terminal to the live
+    // bottom between the visibility assertion and the click (a refit, a socket
+    // blip remounting the surface) unmounts the button, after which the click
+    // waits out its timeout for a control that is correctly gone. Both halves
+    // are idempotent — paging further up is harmless, and so is jumping to a
+    // bottom you are already at — so a re-pin costs an attempt, not the test.
+    // (Measured 1/3 and 1/3 flaky with these as separate steps.)
+    await expect(async () => {
+      await page.keyboard.press('Shift+PageUp')
+      await page.keyboard.press('Shift+PageUp')
+      // Confirm xterm REALLY scrolled up (not just a state flip): the viewport
+      // sits well above the bottom now — several pages of rows, not pixels.
+      const { up } = await xtermScroll(page)
+      expect(up, 'viewport actually scrolled up').toBeGreaterThan(10)
+      await expect(btn).toBeVisible({ timeout: 2_000 })
+      await page.screenshot({ path: 'test-results/sd-2-button-visible.png' })
+      await btn.click({ timeout: 3_000 })
+    }).toPass({ timeout: 30_000 })
 
-    // Click → viewport pins back to the bottom and the button unmounts.
-    await btn.click()
+    // …and the button unmounts, because the view is pinned again.
     await expect(btn).toHaveCount(0, { timeout: 5_000 })
     await expect(async () => {
-      const gap = await viewport.evaluate(
-        (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
-      )
-      expect(gap, 'viewport back at the bottom').toBeLessThan(5)
+      const back = await xtermScroll(page)
+      expect(back.up, 'viewport back at the bottom').toBeLessThan(2)
     }).toPass({ timeout: 5_000 })
     await page.screenshot({ path: 'test-results/sd-2-after-click.png' })
   })

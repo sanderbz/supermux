@@ -949,6 +949,25 @@ export function useLiveTerm(
     termRef.current = term
     fitRef.current = fit
 
+    // ── E2E SEAM (dev builds only) ────────────────────────────────────────────
+    // xterm 6.0 moved the viewport onto a VS Code scrollable element, so
+    // `.xterm-viewport`'s `scrollHeight - clientHeight` is permanently 0 — the
+    // same dead metric this file documents twice for the jump-to-bottom logic.
+    // Five e2e specs (touch drag/fling/momentum, tap-vs-swipe, mouse-tracking,
+    // jump-to-bottom, scroll-to-bottom) were still measuring it and had been
+    // silently green-turned-red for a fase, so phone scroll physics had NO
+    // automated cover at all. There is no public DOM signal for buffer position,
+    // so the specs read the buffer through `xtermScroll()` in
+    // `tests/e2e/smoke/harness.ts`, which needs the instance.
+    //
+    // One assignment at attach time (no per-frame cost), and only in a dev
+    // build — the e2e harness serves the app through the Vite dev server, and
+    // `import.meta.env.DEV` is statically false in `bun run build`, so this
+    // whole statement is dropped from the shipped bundle.
+    if (import.meta.env.DEV) {
+      ;(container as HTMLElement & { __xtermForTests?: unknown }).__xtermForTests = term
+    }
+
     // ── Touch-drag scrollback (xterm 6.0 has NO built-in touch scroll) ─────────
     // xterm 6.0's scrollable element scrolls on WHEEL but ignores one-finger
     // touch drags (verified: touch events reach the layer but the buffer never
