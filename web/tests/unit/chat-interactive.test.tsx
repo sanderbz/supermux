@@ -129,6 +129,22 @@ describe('the pre-send peek gate', () => {
     expect(sendGate(CLEAR)).toEqual({ send: true })
   })
 
+  test('an MCP FORM refuses on a clear-looking screen — the lens cannot see it', () => {
+    // The elicitation dialog is a set of text fields, not a numbered list, so
+    // `readLens` reads no dialog at all and every other branch of this gate
+    // would say "send". That send is a paste into whichever field the caret is
+    // in, with an Enter behind it (`mcp.elicitation_form`).
+    const gate = sendGate(CLEAR, { formCard: true })
+    expect(gate.send).toBe(false)
+    expect(gate).toMatchObject({ notice: { kind: 'dialog-form' } })
+    // …and it holds when the peek is down, for the same reason: the hook is the
+    // only witness there has ever been for this family.
+    expect(sendGate(null, { formCard: true })).toMatchObject({
+      send: false,
+      notice: { kind: 'dialog-form' },
+    })
+  })
+
   test('a VERIFIED draft sitting in the TERMINAL blocks the send and is quoted back', () => {
     const gate = sendGate({
       ...CLEAR,

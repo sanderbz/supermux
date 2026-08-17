@@ -84,6 +84,9 @@ const SYSTEM_BADGES: ReadonlySet<string> = new Set([
   'model-switch',
   'api-retry',
   'dialog',
+  // The grace-window notice: a fact about the account, in the system voice —
+  // never the user's bubble, which is exactly where it used to land.
+  'limit',
 ])
 
 function speakerOf(item: ChatItem, labels?: ReadonlyMap<string, string>): Speaker {

@@ -444,6 +444,13 @@ async fn get_preview(
     let ev = match q.event.as_deref().unwrap_or("stop") {
         "stop" | "finished" => NotifEvent::TurnFinished,
         "permission" => NotifEvent::PermissionAsked,
+        "elicitation" | "mcp_form" => NotifEvent::McpFormAsked {
+            server: state
+                .session_activity(&q.session)
+                .and_then(|a| a.elicitation)
+                .map(|e| e.server)
+                .unwrap_or_default(),
+        },
         "stop_failure" | "error" => {
             let (etype, msg) = state
                 .session_activity(&q.session)
@@ -456,7 +463,7 @@ async fn get_preview(
         },
         other => {
             return Err(AppError::BadRequest(format!(
-                "unknown preview event '{other}' (expected stop|permission|error|crashed)"
+                "unknown preview event '{other}' (expected stop|permission|elicitation|error|crashed)"
             )))
         }
     };

@@ -20,6 +20,7 @@
 pub mod activity;
 pub mod auto_actions;
 pub mod chat;
+pub mod elicitation;
 pub mod host_pool;
 pub mod lifecycle;
 pub mod login;
@@ -269,6 +270,15 @@ pub struct SessionView {
     /// no pending dialog, so a resting session's wire shape is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_request: Option<PermissionRequestInfo>,
+    /// **The live MCP elicitation form**, from the `Elicitation` hook: a
+    /// third-party MCP server has stopped mid-tool-call and is demanding typed
+    /// input. Carried whole (server name, the server's own sentence, the typed
+    /// fields) because the card IS the form — capped in
+    /// [`elicitation`](crate::sessions::elicitation), in-memory only, and every
+    /// string in it is authored by a third party. Omitted when nothing is
+    /// asking, so a resting session's wire shape is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<elicitation::ElicitationAsk>,
     /// The Claude Code permission MODE parsed from the persistent status bar in
     /// `last_capture`: `normal` / `accept_edits` / `plan` / `bypass`.
     /// `None` until the first capture (the menu then defaults to `normal`). Drives
@@ -489,6 +499,7 @@ fn view(
                 mode: ask.mode.clone(),
             })
         }),
+        elicitation: act.as_ref().and_then(|a| a.elicitation.clone()),
         error: act.and_then(|a| a.error.map(|(error_type, message)| ErrorInfo {
             error_type,
             message,

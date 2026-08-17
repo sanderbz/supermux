@@ -112,6 +112,10 @@ export interface UsePendingSendsOptions {
    *  runs the same pre-send gate the composer does, and the gate needs the same
    *  second source. */
   dialogCard?: boolean
+  /** The session's MCP `elicitation` form is up. Same reason, stronger case:
+   *  the peek lens cannot see this family at all (see `SendContext.formCard`),
+   *  so a retry must refuse on the hook alone. */
+  formCard?: boolean
   /** The server's delivery receipt (`last_send_text`/`last_send_at`), or null
    *  when the session has never received a submission. */
   receipt?: SendReceipt | null
@@ -140,6 +144,7 @@ export function usePendingSends({
   entries,
   active,
   dialogCard = false,
+  formCard = false,
   receipt = null,
   planeDown = false,
 }: UsePendingSendsOptions): PendingSendsHandle {
@@ -336,7 +341,7 @@ export function usePendingSends({
       })
       void (async () => {
         try {
-          const gate = sendGate(peek ? await peek.refresh() : null, { dialogCard })
+          const gate = sendGate(peek ? await peek.refresh() : null, { dialogCard, formCard })
           if (!gate.send) {
             patch(name, id, { state: 'undelivered', note: refusalNote(gate.notice) })
             return
@@ -359,7 +364,7 @@ export function usePendingSends({
         }
       })()
     },
-    [dialogCard, input, name, peek],
+    [dialogCard, formCard, input, name, peek],
   )
 
   const dismiss = React.useCallback((id: string) => {

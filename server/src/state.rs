@@ -15,6 +15,7 @@ use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
 
 use crate::config::Config;
 use crate::sessions::activity::PermissionAsk;
+use crate::sessions::elicitation::ElicitationAsk;
 use crate::sessions::host_pool::HostPool;
 use crate::sessions::pty::PtyStream;
 use crate::sessions::runtime::{self, SessionRuntime, TmuxRuntime};
@@ -70,6 +71,15 @@ pub struct SessionActivity {
     /// `SessionStart`) — no hook ever reports the user's choice. In-memory only,
     /// like everything else here.
     pub permission: Option<PermissionAsk>,
+    /// **The live MCP elicitation form** (`mcp.elicitation_form`): a third-party
+    /// MCP server has stopped mid-tool-call and is demanding typed input, and
+    /// Claude Code is parked on the dialog. Set by the `Elicitation` hook (which
+    /// fires when the ask is RAISED, before any answer) and cleared by
+    /// `ElicitationResult` — the one dialog family whose outcome a hook actually
+    /// reports — with the same "something else happened" clears as `permission`
+    /// as the backstop. In-memory only, and every string in it is third-party
+    /// text (see `sessions::elicitation`).
+    pub elicitation: Option<ElicitationAsk>,
 }
 
 impl SessionActivity {
@@ -82,6 +92,7 @@ impl SessionActivity {
             && self.error.is_none()
             && self.subagents == 0
             && self.permission.is_none()
+            && self.elicitation.is_none()
     }
 }
 
@@ -917,7 +928,8 @@ impl AppState {
             || entry.activity_kind != before.activity_kind
             || entry.error != before.error
             || entry.subagents != before.subagents
-            || entry.permission != before.permission;
+            || entry.permission != before.permission
+            || entry.elicitation != before.elicitation;
         let empty = entry.is_empty();
         drop(entry);
         if empty {
@@ -1003,6 +1015,25 @@ impl AppState {
     pub fn clear_permission_request(&self, name: &str) -> bool {
         self.mutate_activity(name, |a| {
             a.permission = None;
+        })
+    }
+
+    /// Set `name`'s live MCP elicitation ask (from an `Elicitation` payload: a
+    /// third-party server is demanding a typed form and the session cannot
+    /// continue until a human answers). Returns whether it changed — Claude Code
+    /// re-raising the identical ask broadcasts nothing.
+    pub fn set_elicitation(&self, name: &str, ask: ElicitationAsk) -> bool {
+        self.mutate_activity(name, |a| {
+            a.elicitation = Some(ask);
+        })
+    }
+
+    /// Clear `name`'s live elicitation — on `ElicitationResult` (the answer
+    /// landed) or on any later event that proves the tool call moved on.
+    /// Returns whether it changed.
+    pub fn clear_elicitation(&self, name: &str) -> bool {
+        self.mutate_activity(name, |a| {
+            a.elicitation = None;
         })
     }
 

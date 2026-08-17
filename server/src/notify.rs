@@ -95,6 +95,11 @@ pub enum NotifEvent {
     AgentNotice(String),
     /// The agent asked a question via `AskUserQuestion`.
     Question(String),
+    /// **A third-party MCP server raised a typed form** (`Elicitation`) and the
+    /// session is parked on it. Carries the SERVER's name and nothing else: the
+    /// server's own sentence is untrusted text, and a lock-screen banner titled
+    /// with this session's name is exactly the wrong frame to quote it in.
+    McpFormAsked { server: String },
     /// The MAIN turn ended (`Stop`). `SubagentStop` structurally cannot reach
     /// this.
     TurnFinished,
@@ -111,7 +116,10 @@ impl NotifEvent {
     /// roster, the badge and the SW's renotify rule all read this.
     pub const fn tier(&self) -> Tier {
         match self {
-            Self::PermissionAsked | Self::AgentNotice(_) | Self::Question(_) => Tier::Attention,
+            Self::PermissionAsked
+            | Self::AgentNotice(_)
+            | Self::Question(_)
+            | Self::McpFormAsked { .. } => Tier::Attention,
             Self::TurnFinished => Tier::Unread,
             Self::TurnFailed { .. } | Self::SessionCrashed { .. } => Tier::Error,
         }
@@ -122,9 +130,10 @@ impl NotifEvent {
     /// relabels them under tier language, the storage does not move.
     pub const fn category(&self) -> NotifCategory {
         match self {
-            Self::PermissionAsked | Self::AgentNotice(_) | Self::Question(_) => {
-                NotifCategory::AgentWaiting
-            }
+            Self::PermissionAsked
+            | Self::AgentNotice(_)
+            | Self::Question(_)
+            | Self::McpFormAsked { .. } => NotifCategory::AgentWaiting,
             Self::TurnFinished => NotifCategory::AgentFinished,
             Self::TurnFailed { .. } => NotifCategory::AgentError,
             Self::SessionCrashed { .. } => NotifCategory::AgentStopped,
@@ -137,6 +146,7 @@ impl NotifEvent {
             Self::PermissionAsked => "permission",
             Self::AgentNotice(_) => "notice",
             Self::Question(_) => "question",
+            Self::McpFormAsked { .. } => "elicitation",
             Self::TurnFinished => "stop",
             Self::TurnFailed { .. } => "stop_failure",
             Self::SessionCrashed { .. } => "session_end",
@@ -474,6 +484,19 @@ fn compose_body(ev: &NotifEvent, ctx: &ComposeCtx) -> String {
         // The agent's own question, verbatim.
         NotifEvent::Question(q) => one_line_capped(q, PUSH_BODY_MAX)
             .unwrap_or_else(|| "The agent asked you a question.".to_string()),
+        // WHO is asking, and nothing they wrote. The form's own words are
+        // third-party text; carrying them here would put a stranger's sentence
+        // under this session's name on a lock screen, which is the one place a
+        // reader has no chrome to tell them apart. The card attributes and
+        // quotes it properly — the push's job is to get them there.
+        NotifEvent::McpFormAsked { server } => {
+            let server = server.trim();
+            if server.is_empty() {
+                "An MCP server needs your input.".to_string()
+            } else {
+                cap(&format!("Needs input — the MCP server “{server}”"))
+            }
+        }
         // The agent's actual closing line — markdown glyphs and all. The tile
         // shows the SAME string; polish-stripping would make the two disagree.
         NotifEvent::TurnFinished => ctx
@@ -887,6 +910,30 @@ mod tests {
         assert_eq!(p.url, "/focus/deploy-fix#pending");
         assert_eq!(p.tag, "session:deploy-fix");
         assert!(p.renotify, "a blocking state may buzz again");
+    }
+
+    #[test]
+    fn an_mcp_form_names_the_server_and_quotes_none_of_its_words() {
+        // The push says WHO is asking and lands on the card. The server's own
+        // sentence stays off the lock screen on purpose: under this session's
+        // name, a stranger's "supermux needs your API key" would read as this
+        // app asking — the card is where it gets a quote rule and a byline.
+        let c = ctx();
+        let p = compose(
+            &NotifEvent::McpFormAsked {
+                server: "deploy-bot".to_string(),
+            },
+            &c,
+        );
+        assert_eq!(p.body, "Needs input — the MCP server “deploy-bot”");
+        assert_eq!(p.tier, Tier::Attention);
+        assert_eq!(p.url, "/focus/deploy-fix#pending");
+        // A nameless server cannot happen (the parser refuses one) — and if it
+        // ever did, the banner still says something true.
+        assert_eq!(
+            compose(&NotifEvent::McpFormAsked { server: "  ".into() }, &c).body,
+            "An MCP server needs your input.",
+        );
     }
 
     #[test]

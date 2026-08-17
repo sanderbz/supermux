@@ -524,6 +524,11 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // picks the highlighted row.
   'dialog-question':
     'Pick one of the answers above — typed text would be pasted past that question, not into it.',
+  // The card above is readable and not yet answerable, so this points at the
+  // terminal — and says what a send would actually do, because "it wouldn't
+  // work" is not the risk here. Typing into somebody else's form is.
+  'dialog-form':
+    'An MCP server’s form is open in the terminal — a message here would be typed into it.',
   'stop-dialog':
     'Escape would answer that prompt, not stop the turn — so it wasn’t sent.',
   'send-failed': 'That message didn’t reach the session.',

@@ -439,7 +439,7 @@ function bannerFallback(info: AgentErrorInfo): string {
 
 /** Badges the system rows ride under. `grouping.ts::SYSTEM_BADGES` must list
  *  every one of them or the row is drawn as somebody's speech bubble. */
-export const SYSTEM_ROW_BADGES = ['compaction', 'model-switch', 'api-retry', 'dialog'] as const
+export const SYSTEM_ROW_BADGES = ['compaction', 'model-switch', 'api-retry', 'dialog', 'limit'] as const
 
 function num(body: unknown, key: string): number | undefined {
   const v = field(body, key)
@@ -489,8 +489,33 @@ function systemRow(w: WireEntry): { text: string; badge: string } | null {
     // families this codebase has never seen, which no per-dialog registry can.
     case 'request_user_dialog': {
       const kind = str(w.body, 'dialog')
+      return { text: `this session is waiting on ${dialogNoun(kind)}`, badge: 'dialog' }
+    }
+    // THE GRACE WINDOW (`limit.grace_window`). Claude Code injects a wrap-up
+    // instruction into the model's CONTEXT as a user-role entry near a usage
+    // limit. The server already refuses to call it a prompt; this is the line a
+    // reader gets instead — because "Claude suddenly stopped starting subagents"
+    // with no explanation anywhere reads as a bug in this app.
+    case 'limit_grace': {
+      const notice = str(w.body, 'notice') ?? 'Claude Code asked the agent to wrap up — usage limit near'
       return {
-        text: kind ? `this session is waiting on a ${kind} dialog` : 'this session is waiting on a dialog',
+        text: str(w.body, 'hint') === 'checkpoint' ? `${notice} · checkpointing` : notice,
+        badge: 'limit',
+      }
+    }
+    // A LONG-RUNNING MCP TASK (`mcp.task_input_required`). `input_required` is
+    // the one status in the enum that means a person is needed; every other one
+    // is progress and stays silent, exactly as it did before.
+    case 'task_started':
+    case 'task_progress':
+    case 'task_updated':
+    case 'task_notification': {
+      if (str(w.body, 'status') !== 'input_required') return null
+      const server = str(w.body, 'server')
+      return {
+        text: server
+          ? `an MCP task on “${server}” is waiting for your input`
+          : 'an MCP task is waiting for your input',
         badge: 'dialog',
       }
     }
@@ -502,6 +527,30 @@ function systemRow(w: WireEntry): { text: string; badge: string } | null {
       // stop_hook_summary / turn_duration / local_command / scheduled_task_fire
       // and anything a patch release invents: chrome, and deliberately silent.
       return null
+  }
+}
+
+/**
+ * `request_user_dialog`'s `dialog` field → a noun a reader can act on.
+ *
+ * The arm is deliberately open-ended — it covers dialog kinds Anthropic has not
+ * shipped yet — so an unknown kind keeps Claude Code's own token rather than
+ * being dropped. The named ones are the families this codebase has evidence
+ * for: `elicitation` is the MCP form, and it is the row a session gets when the
+ * `Elicitation` hook is NOT installed (an older settings.json, a session started
+ * before the upgrade) — the only thing standing between that user and a silent
+ * hang.
+ */
+function dialogNoun(kind?: string): string {
+  switch (kind) {
+    case 'elicitation':
+      return 'an MCP server’s input form'
+    case 'tool_permission':
+      return 'a permission dialog'
+    case undefined:
+      return 'a dialog'
+    default:
+      return `a ${kind} dialog`
   }
 }
 

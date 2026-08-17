@@ -11,6 +11,7 @@
 // via the shared `apiToken`/`apiUrl` accessors in ./client — so the token is
 // NEVER embedded here.
 
+import type { ElicitationAsk } from '../../components/chat/elicitation'
 import type { RateLimits } from '../rate-limits'
 
 import { apiToken, apiUrl } from './client'
@@ -266,6 +267,11 @@ export interface ApiSession {
    *  mergeRow passes null through, so always optional-chain). Fase A1
    *  renders the "Waiting for permission" row from it. */
   permission_request?: PermissionRequestInfo | null
+  /** **A third-party MCP server is demanding a typed form** and the session
+   *  cannot continue until somebody answers it (`Elicitation` hook). Rides the
+   *  same `sessions` SSE delta (`null` clears). Every string in it is authored
+   *  by the MCP server — see `components/chat/elicitation.ts`. */
+  elicitation?: ElicitationAsk | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor and the client's clock-skew sample. */
   activity_at?: number

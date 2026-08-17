@@ -1,4 +1,5 @@
 import type { SessionSummary } from '@/lib/api'
+import type { ElicitationAsk } from '@/components/chat/elicitation'
 import type { ChatTail, PermissionRequestInfo } from '@/lib/api/sessions'
 import type { RateLimits } from '@/lib/rate-limits'
 
@@ -50,6 +51,9 @@ export interface TileSession extends SessionSummary {
   /** Live, undecided permission dialog for the current tool call. Rides the
    *  `sessions` SSE delta; `null` clears it (always optional-chain). */
   permission_request?: PermissionRequestInfo | null
+  /** A third-party MCP server is demanding a typed form (`Elicitation` hook) and
+   *  the session is parked on it. Same delta, same `null`-clears rule. */
+  elicitation?: ElicitationAsk | null
   /** Server-clock ms stamp on the latest activity delta — the fase-A1
    *  hook→UI latency anchor. */
   activity_at?: number

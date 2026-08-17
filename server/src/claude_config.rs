@@ -65,7 +65,25 @@ const MARKER: &str = "supermux-hook";
 ///   — `-o /dev/null` (plus nothing else printing) keeps it inert, verified live
 ///   (the dialog displayed and behaved normally) and pinned by
 ///   `permission_request_command_is_inert_emits_no_stdout`.
-const EVENTS: [(&str, &str); 12] = [
+/// `Elicitation` + `ElicitationResult` are the MCP form family
+/// (`mcp.elicitation_form`), and they are the ONLY out-of-band signal there is:
+/// an MCP server that demands typed input mid-tool-call parks Claude Code on a
+/// dialog that writes NOTHING to the transcript, fires no other hook, and ends
+/// no turn — the session simply stops, wearing a green Idle dot.
+/// * `Elicitation` — fired when the ask is raised, carrying `mcp_server_name`,
+///   `message` and `requested_schema` (the JSON Schema of the form).
+/// * `ElicitationResult` — fired after the human answers, carrying
+///   `mcp_server_name`, `action` (accept/decline/cancel), `content`, `mode` and
+///   `elicitation_id`. The one dialog family whose OUTCOME is observable.
+///
+/// **Both are trigger-only, and it is even more load-bearing here than on
+/// `PermissionRequest`**: an `Elicitation` hook's STDOUT *answers the form on
+/// the user's behalf* (`hookSpecificOutput.action` = accept/decline/cancel, plus
+/// `content`), and a non-zero-but-2 exit declines it. supermux's entries are
+/// `-o /dev/null … || true`, pinned by
+/// `elicitation_hook_commands_are_inert_emit_no_stdout` — this app watches the
+/// ask and can never answer a third party's question for the human.
+const EVENTS: [(&str, &str); 14] = [
     ("UserPromptSubmit", "user_prompt"),
     ("PreToolUse", "pre_tool"),
     ("PostToolUse", "post_tool"),
@@ -82,6 +100,9 @@ const EVENTS: [(&str, &str); 12] = [
     ("PostToolUseFailure", "post_tool_failure"),
     // Observe-only (see the note above): NEVER give this entry stdout.
     ("PermissionRequest", "permission_request"),
+    // Observe-only, and doubly so: stdout here ANSWERS an MCP server's form.
+    ("Elicitation", "elicitation"),
+    ("ElicitationResult", "elicitation_result"),
 ];
 
 /// Install (or idempotently refresh) supermux's Claude hooks for a session.
@@ -849,6 +870,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn installs_the_elicitation_pair() {
+        // The MCP form family: `Elicitation` when a third-party server demands
+        // typed input mid-tool-call, `ElicitationResult` when the human answers.
+        // Without them an MCP-using session parks on a dialog that no other
+        // plane can see (`mcp.elicitation_form`).
+        let dir = temp_dir();
+        install_hooks_at(&dir).await.unwrap();
+        let v = read_json(&dir.join("settings.json"));
+        for (event, token) in [
+            ("Elicitation", "elicitation"),
+            ("ElicitationResult", "elicitation_result"),
+        ] {
+            let arr = v["hooks"][event]
+                .as_array()
+                .unwrap_or_else(|| panic!("{event} hook installed"));
+            assert_eq!(arr.len(), 1);
+            let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
+            assert!(
+                cmd.contains(&format!("\\\"event\\\":\\\"{token}\\\"")),
+                "{event} must POST the {token} token"
+            );
+        }
+    }
+
+    /// SAFETY PIN for the elicitation pair, and the strongest one in this file:
+    /// an `Elicitation` hook that writes to STDOUT **answers the MCP server's
+    /// form for the user** — `hookSpecificOutput: {action, content}` is taken as
+    /// the human's decision, and `ElicitationResult`'s stdout can rewrite the
+    /// answer on its way out. supermux's entries must be inert. This RUNS the
+    /// real commands in `sh` (pointed at a dead port so curl fails fast) and
+    /// asserts not one byte reaches stdout, with exit 0.
+    #[tokio::test]
+    async fn elicitation_hook_commands_are_inert_emit_no_stdout() {
+        for token in ["elicitation", "elicitation_result"] {
+            let cmd = hook_command(token);
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .env("SUPERMUX_URL", "http://127.0.0.1:1")
+                .env("SUPERMUX_HOOK_TOKEN", "t")
+                .env("SUPERMUX_SESSION", "s")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("run the hook command");
+            assert!(
+                out.stdout.is_empty(),
+                "an {token} hook that prints to stdout answers an MCP server's \
+                 form on the user's behalf; got {:?}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert!(out.status.success(), "the hook must always exit 0");
+        }
+    }
+
+    #[tokio::test]
     async fn upgrade_adds_a_newly_added_event_without_duplicating_or_clobbering() {
         // THE upgrade path: a user already running supermux has a settings.json
         // with the OLD hook set (no SubagentStart / PostToolUseFailure /
@@ -856,10 +932,12 @@ mod tests {
         // install_hooks, which must ADD each new event to the existing config —
         // without duplicating the events already there and without touching the
         // user's own foreign hooks/keys.
-        const ADDED_LATER: [(&str, &str); 3] = [
+        const ADDED_LATER: [(&str, &str); 5] = [
             ("SubagentStart", "subagent_start"),
             ("PostToolUseFailure", "post_tool_failure"),
             ("PermissionRequest", "permission_request"),
+            ("Elicitation", "elicitation"),
+            ("ElicitationResult", "elicitation_result"),
         ];
         let dir = temp_dir();
         let path = dir.join("settings.json");

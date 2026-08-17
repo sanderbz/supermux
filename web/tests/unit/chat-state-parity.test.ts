@@ -344,3 +344,69 @@ describe('the roster badge names the bucket without a chat store', () => {
     expect(limitName(info)).toBe('Haiku limit')
   })
 })
+
+describe('the injected grace-window instruction is never the user speaking', () => {
+  // `limit.grace_window`: near a usage limit the server sets
+  // `anthropic-ratelimit-unified-grace-status` and Claude Code injects a wrap-up
+  // instruction into the MODEL's context as a user-role entry. There is no
+  // banner anywhere. Rendered as a prompt — which is what this renderer did —
+  // it reads as if the owner typed `[Usage limit reached — grace window active.
+  // Wrap up: …]`, and Claude's sudden refusal to spawn subagents then looks like
+  // a bug in supermux.
+  test('it renders as a system notice, in this app’s words, with CC’s underneath', () => {
+    const row = byName('the grace-window wrap-up instruction')
+    const entries = toChatEntries([wireFrom(row)])
+    expect(entries).toHaveLength(1)
+    expect(entries[0].text).toBe('Claude Code asked the agent to wrap up — usage limit near')
+    // …and NOT the injected sentence itself.
+    expect(entries[0].text).not.toContain('grace window active')
+    // Centred, in the system voice — never anybody's bubble.
+    const node = itemNode(buildTranscript(toDisplayList(entries), {}))
+    expect(node?.speaker).toBe('system')
+  })
+
+  test('the checkpoint variant says which hint it was', () => {
+    const row = byName('the checkpoint variant of the grace hint')
+    const entries = toChatEntries([wireFrom(row)])
+    expect(entries[0].text).toContain('checkpointing')
+  })
+
+  test('a human QUOTING the instruction is still the human', () => {
+    const row = byName('a prompt that merely quotes the grace instruction')
+    const entries = toChatEntries([wireFrom(row)])
+    expect(entries).toHaveLength(1)
+    expect(entries[0].kind).toBe('prompt')
+    const node = itemNode(buildTranscript(toDisplayList(entries), {}))
+    expect(node?.speaker).toBe('me')
+  })
+})
+
+describe('a parked MCP task is visible, and a working one is quiet', () => {
+  test('input_required names the server and asks for a person', () => {
+    const row = byName('an MCP task parked on input_required')
+    const entries = toChatEntries([wireFrom(row)])
+    expect(entries).toHaveLength(1)
+    expect(entries[0].text).toBe('an MCP task on “deploy-bot” is waiting for your input')
+    expect(itemNode(buildTranscript(toDisplayList(entries), {}))?.speaker).toBe('system')
+  })
+
+  test('every other status in the enum stays off the surface', () => {
+    const row = byName('an MCP task that is merely working')
+    expect(toChatEntries([wireFrom(row)])).toHaveLength(0)
+  })
+})
+
+describe('the no-hook fallback for an MCP form', () => {
+  // A session whose `Elicitation` hook is not installed — an older
+  // settings.json, a session started before the upgrade — still emits
+  // `request_user_dialog`, the universal "this session is blocked" signal. It
+  // is the only thing between that user and a silent hang, so it names what is
+  // asking rather than printing CC's token.
+  test('request_user_dialog reports an elicitation as an MCP input form', () => {
+    const row = byName('request_user_dialog names an elicitation')
+    const entries = toChatEntries([wireFrom(row)])
+    expect(entries).toHaveLength(1)
+    expect(entries[0].text).toBe('this session is waiting on an MCP server’s input form')
+    expect(itemNode(buildTranscript(toDisplayList(entries), {}))?.speaker).toBe('system')
+  })
+})

@@ -81,6 +81,7 @@ export type AttentionSession = Pick<
   | 'error'
   | 'blocked'
   | 'permission_request'
+  | 'elicitation'
   | 'chat_tail'
   | 'activity_at'
   | 'last_activity'
@@ -188,6 +189,12 @@ function needsYou(s: AttentionSession): boolean {
   if (s.status === 'waiting') return true
   // A live permission dialog — already on the wire since A1.
   if (s.permission_request) return true
+  // A live MCP FORM. Same class of demand and a worse failure mode: an
+  // elicitation ends no turn, writes nothing to the transcript and raises no
+  // banner, so before the `Elicitation` hook was installed this session sat
+  // green and quiet while a third-party server held it open — indefinitely
+  // (`mcp.elicitation_form`).
+  if (s.elicitation) return true
   // §12.2 promotes `error` alongside: a blocked agent has three affordances in
   // the app and must not vanish just because it is not technically "waiting".
   // NOTE the field, not a status: the Rust `Status` enum has no Error variant —

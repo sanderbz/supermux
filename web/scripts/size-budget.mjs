@@ -212,7 +212,28 @@ const BUDGET_ENTRY_JS = 160 * KB
 // usage gauge) measure 225.40 together; 225.40 × 1.02 = 229.9 -> 230. The login
 // card (#88, ~+0.5 KB) is expected to land inside this same ceiling.
 // Entry gate unchanged at 160 — still the guard.
-const BUDGET_APP_JS = 230 * KB
+// 232 at the hook-forms wave (mcp.elicitation_form + mcp.task_input_required +
+// limit.grace_window): measured 231.75 against 229.05 for origin/main at
+// 7690249 — a +2.70 KB fase, and the same ceil(measured) rule every fase since
+// B3 has used (measured × 1.02 = 236.28 would be the policy's ceiling; the
+// ledger has always taken the tighter of the two). 0.25 KB of headroom is
+// thin on purpose: the next thing through here should measure first.
+//
+// Where the bytes went, because this ledger is a justification and not a
+// tally: ~2.1 KB is `ui/form-card.tsx` — a JSON Schema rendered as real typed
+// controls (string/number/integer/boolean/enum/date), per-field validation
+// messages, required enforcement and the third-party attribution chrome. The
+// rest is `chat/elicitation.ts` (the pure validator + answer builder, shared
+// with the server through a parity corpus) and three system rows in
+// `wire-entries.ts`. Nothing was added to the roster or the shell.
+//
+// The card is what an MCP-using session gets INSTEAD of hanging silently
+// forever with a green dot, so the bytes buy a state the app previously could
+// not represent at all. The entry chunk moved 154.76 → 157.09 / 160 (98%): the
+// live layer is on the hero path and imports the card statically. That is 2.91
+// KB of headroom left on the gate, and the next thing to touch this file
+// should either code-split the card or spend elsewhere.
+const BUDGET_APP_JS = 232 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

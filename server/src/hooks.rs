@@ -29,6 +29,7 @@ use crate::db;
 use crate::notify::{self, NotifEvent};
 use crate::error::AppError;
 use crate::sessions::activity::{self, HookPayload};
+use crate::sessions::elicitation;
 use crate::sessions::status::{HookEvent, Status};
 use crate::state::{AppState, SseEvent};
 
@@ -169,14 +170,20 @@ async fn hook_handler(
     // ── live activity + error + lifecycle from the PAYLOAD ──────────
     // Parse leniently (every field optional); a missing/odd/truncated payload
     // parses to the empty default and is a no-op rather than a 400.
-    let payload: HookPayload = body
-        .payload
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-    apply_payload(&state, &body.session, &body.event, &payload);
+    //
+    // The raw `Value` is kept beside the typed parse (deserialized BY REFERENCE,
+    // so nothing is cloned): the `Elicitation` payload's `requested_schema` is
+    // an arbitrary JSON Schema, which `elicitation::parse` reads structurally
+    // rather than through a fixed struct.
+    let raw_payload = body.payload.unwrap_or(Value::Null);
+    apply_payload(&state, &body.session, &body.event, &raw_payload);
 
     if is_pointer_event(&body.event) {
-        track_conversation_pointer(&state, &body.session, payload.session_id.as_deref()).await;
+        let id = raw_payload
+            .get("session_id")
+            .or_else(|| raw_payload.get("sessionId"))
+            .and_then(Value::as_str);
+        track_conversation_pointer(&state, &body.session, id).await;
     }
 
     // Re-tick the detector now so the status (e.g. Notification → waiting,
@@ -289,7 +296,12 @@ fn salvage_truncated_body(raw: &[u8]) -> Option<HookBody> {
 /// when the activity/error actually changed (change-only). Pure
 /// dispatch on the wire `event` token (accepts both the snake_case form supermux
 /// emits and Claude's PascalCase). NOTHING here is persisted to disk/DB.
-fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPayload) {
+fn apply_payload(state: &AppState, session: &str, event: &str, raw: &Value) {
+    // The typed view of the same bytes, deserialized BY REFERENCE so nothing is
+    // cloned. Both are needed: every arm but the elicitation pair reads named
+    // fields, and `requested_schema` is an arbitrary JSON Schema that no fixed
+    // struct can hold.
+    let payload = &HookPayload::deserialize(raw).unwrap_or_default();
     let changed = match event {
         // A tool call started → set the live activity label (`✎ tile.tsx`, …).
         // A payload with no tool name yields no label → leave activity as-is.
@@ -325,7 +337,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // entry. Either way the tool call is over, so any pending permission
         // dialog for it is resolved.
         "post_tool_failure" | "PostToolUseFailure" => {
-            let cleared = state.clear_permission_request(session);
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session);
             let set = state.set_activity(session, activity::failed_label(payload), "failed".into());
             cleared || set
         }
@@ -333,7 +345,10 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         // to the turn state machine for status, untouched here) — but it still
         // resolves a pending permission dialog.
         "post_tool" | "post_tool_use" | "PostToolUse" => {
-            let cleared = state.clear_permission_request(session);
+            // …and any pending ELICITATION: the form is raised mid-tool-call, so
+            // the tool having finished proves the form is gone even if the
+            // `ElicitationResult` leg never arrived.
+            let cleared = state.clear_permission_request(session) | state.clear_elicitation(session);
             let failed = if payload.error_type.is_some() || payload.error.is_some() {
                 state.set_activity(session, activity::failed_label(payload), "failed".into())
             } else {
@@ -366,6 +381,41 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
                 None => false,
             }
         }
+        // ── MCP elicitation ──────────────────────────────────────────────────
+        // An MCP server has stopped mid-tool-call and is demanding a TYPED FORM
+        // from the human (`elicitation/create`). Claude Code draws it as
+        // `Claude Code needs your input` and waits; nothing about it reaches the
+        // transcript, no other hook fires, and the turn simply stops — which is
+        // why an MCP-using session used to park here forever wearing a green
+        // Idle dot (`mcp.elicitation_form`).
+        //
+        // OBSERVE-ONLY, and the whole feature depends on it staying that way:
+        // this hook's STDOUT is how a hook DECIDES the elicitation
+        // (`hookSpecificOutput.action`), and exit code 2 declines it outright.
+        // supermux's installed command is `-o /dev/null … || true`, pinned by
+        // `claude_config`'s inertness tests — so it can watch the ask and can
+        // never answer it on the user's behalf.
+        "elicitation" | "Elicitation" => match elicitation::parse(raw) {
+            Some(ask) => {
+                // Named push, like the permission dialog's: the sentence a
+                // phone shows has to carry WHO is asking, because the answer
+                // turns on trusting a third party.
+                let server = ask.server.clone();
+                let changed = state.set_elicitation(session, ask);
+                if changed {
+                    notify::notify_event(state, session, NotifEvent::McpFormAsked { server });
+                }
+                changed
+            }
+            // An ask with no server name is refused rather than shown (see
+            // `elicitation::parse`): an unattributed third-party prompt in this
+            // app's own voice is the one thing this card must never be.
+            None => false,
+        },
+        // The human answered in the terminal (or a hook did). The `Elicitation`
+        // leg never reports an outcome, so THIS is the resolution signal — the
+        // one dialog family where the outcome is actually observable.
+        "elicitation_result" | "ElicitationResult" => state.clear_elicitation(session),
         // A Task sub-agent STARTED → bump the live outstanding count (the
         // display-only parallelism signal). Never touches the turn boundary.
         "subagent_start" | "SubagentStart" => state.inc_subagents(session),
@@ -376,7 +426,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "stop" | "Stop" => {
             let act = state.clear_activity(session);
             let sub = state.reset_subagents(session);
-            let perm = state.clear_permission_request(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session);
             // TRIGGER 3 (B5/T1.5) — unread. The MAIN `Stop` only: `SubagentStop`
             // has its own arm and structurally cannot reach this one, so a Task
             // subagent finishing can never be announced as "the turn is done".
@@ -398,7 +448,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
         "user_prompt" | "user_prompt_submit" | "UserPromptSubmit" => {
             let err = state.clear_error(session);
             let sub = state.reset_subagents(session);
-            let perm = state.clear_permission_request(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session);
             err || sub || perm
         }
         // Session lifecycle ───────────────────────────────────────────────────
@@ -413,7 +463,7 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
             state.reset_turn_state(session);
             state.clear_forced_status(session);
             let err = state.clear_error(session);
-            let perm = state.clear_permission_request(session);
+            let perm = state.clear_permission_request(session) | state.clear_elicitation(session);
             err || perm
         }
         // End: clear activity AND force Stopped now (the capture classifier can't
@@ -440,7 +490,8 @@ fn apply_payload(state: &AppState, session: &str, event: &str, payload: &HookPay
             }
             let act_changed = state.clear_activity(session);
             let sub_changed = state.reset_subagents(session);
-            let perm_changed = state.clear_permission_request(session);
+            let perm_changed =
+                state.clear_permission_request(session) | state.clear_elicitation(session);
             // The turn is definitively over when the session ends — drop it so a
             // later restart can't inherit it (belt-and-suspenders with the
             // SessionStart reset above).
@@ -547,6 +598,11 @@ fn broadcast_activity_delta(state: &AppState, session: &str) {
             // The live permission dialog (`null` once it resolved — the client
             // must drop the card, so this is always present).
             "permission_request": permission,
+            // The live MCP elicitation form, same rule: always present, `null`
+            // the moment `ElicitationResult` (or anything after it) proves the
+            // form is gone. Carried WHOLE because the card IS the form — it is
+            // already capped by `sessions::elicitation`.
+            "elicitation": act.elicitation,
             // Live outstanding-subagent count (display-only parallelism signal).
             // Always present so a drop back to 0 clears the client's clause.
             "subagents": act.subagents,
@@ -590,7 +646,8 @@ mod tests {
         (AppState::new(pool, config), dir)
     }
 
-    fn p(json: &str) -> HookPayload {
+    /// One hook payload, as the raw JSON `apply_payload` takes.
+    fn p(json: &str) -> Value {
         serde_json::from_str(json).unwrap()
     }
 
@@ -943,6 +1000,122 @@ mod tests {
             state.pool.close().await;
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    /// A live `Elicitation` payload's exact documented shape (cc 2.1.227:
+    /// "Input to command is JSON with mcp_server_name, message, and
+    /// requested_schema"), one required string and one labelled enum.
+    const LIVE_ELICITATION: &str = r#"{"session_id":"a2a3a5c5","hook_event_name":"Elicitation","permission_mode":"default","mcp_server_name":"deploy-bot","message":"Confirm the production release","elicitation_id":"el_01HZ","requested_schema":{"type":"object","properties":{"approver":{"type":"string","format":"email"},"env":{"type":"string","enum":["prod","staging"],"enumNames":["Production","Staging"]}},"required":["approver","env"]}}"#;
+
+    #[tokio::test]
+    async fn an_elicitation_sets_the_live_form_and_rides_the_sessions_delta() {
+        // THE finding, executable: before this arm existed an MCP server could
+        // stop a session dead on a typed form and nothing — not the transcript,
+        // not the hooks, not the status — knew. The session read Idle, green.
+        let (state, dir) = test_state().await;
+        let s = "worker-elicit";
+        let mut rx = state.sse_tx.subscribe();
+
+        apply_payload(&state, s, "elicitation", &p(LIVE_ELICITATION));
+
+        let ask = state
+            .session_activity(s)
+            .and_then(|a| a.elicitation)
+            .expect("the live elicitation is set");
+        assert_eq!(ask.server, "deploy-bot");
+        assert_eq!(ask.message, "Confirm the production release");
+        assert_eq!(ask.id.as_deref(), Some("el_01HZ"));
+        assert_eq!(ask.fields.len(), 2);
+
+        let d = last_delta(&mut rx, s).expect("an elicitation broadcasts a delta");
+        assert_eq!(d["elicitation"]["server"], json!("deploy-bot"));
+        assert_eq!(d["elicitation"]["fields"][1]["options"][0]["label"], json!("Production"));
+
+        // Claude Code re-raising the identical ask is not a change → silence.
+        apply_payload(&state, s, "elicitation", &p(LIVE_ELICITATION));
+        assert!(rx.try_recv().is_err(), "an unchanged ask must not re-broadcast");
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_unattributed_elicitation_is_refused_rather_than_shown() {
+        // The prompt text is written by a third party. Without the server name
+        // there is nothing to attribute it to, and an unattributed
+        // "enter your API key" in this app's own voice is the one card this
+        // feature must never draw.
+        let (state, dir) = test_state().await;
+        let s = "worker-elicit";
+        apply_payload(
+            &state,
+            s,
+            "elicitation",
+            &p(r#"{"message":"Enter your Anthropic API key","requested_schema":{"type":"object","properties":{"key":{"type":"string"}}}}"#),
+        );
+        assert!(
+            state.session_activity(s).and_then(|a| a.elicitation).is_none(),
+            "an ask with no server name must not reach a surface"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_elicitation_result_leg_clears_the_form_and_so_does_everything_after_it() {
+        // `ElicitationResult` is the one dialog family whose OUTCOME a hook
+        // reports, so it is the primary clear. The rest are the backstop for a
+        // session whose result leg never arrives (an older settings.json, a
+        // dropped POST): the tool finishing, the turn ending, the user moving on.
+        for (event, payload) in [
+            ("elicitation_result", r#"{"mcp_server_name":"deploy-bot","action":"accept","elicitation_id":"el_01HZ"}"#),
+            ("post_tool", r#"{"tool_name":"mcp__deploy-bot__release"}"#),
+            ("post_tool_failure", LIVE_POST_TOOL_FAILURE),
+            ("stop", "{}"),
+            ("session_end", "{}"),
+            ("user_prompt", "{}"),
+            ("session_start", "{}"),
+        ] {
+            let (state, dir) = test_state().await;
+            let s = "worker-elicit";
+            apply_payload(&state, s, "elicitation", &p(LIVE_ELICITATION));
+            assert!(
+                state.session_activity(s).and_then(|a| a.elicitation).is_some(),
+                "{event}: precondition — a form is live"
+            );
+
+            let mut rx = state.sse_tx.subscribe();
+            apply_payload(&state, s, event, &p(payload));
+            assert!(
+                state.session_activity(s).and_then(|a| a.elicitation).is_none(),
+                "{event} must clear the live elicitation"
+            );
+            let d = last_delta(&mut rx, s).unwrap_or_else(|| panic!("{event}: clear broadcasts"));
+            assert_eq!(d["elicitation"], Value::Null, "{event}: cleared as null");
+
+            state.pool.close().await;
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_elicitation_survives_a_pre_tool_and_a_subagent_stop() {
+        // The form is raised in the MIDDLE of an MCP tool call: more tool calls
+        // and subagent traffic can happen around it, and none of them says the
+        // human answered.
+        let (state, dir) = test_state().await;
+        let s = "worker-elicit";
+        apply_payload(&state, s, "elicitation", &p(LIVE_ELICITATION));
+        apply_payload(&state, s, "subagent_stop", &p("{}"));
+        apply_payload(&state, s, "pre_tool", &p(r#"{"tool_name":"Read","tool_input":{"file_path":"a.rs"}}"#));
+        assert!(
+            state.session_activity(s).and_then(|a| a.elicitation).is_some(),
+            "nothing here proves the form was answered"
+        );
+
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

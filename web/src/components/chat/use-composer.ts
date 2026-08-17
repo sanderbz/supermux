@@ -66,6 +66,13 @@ export interface ComposerNotice {
      *  refusal names the buttons above, which answer the same question with the
      *  caret verified between every key. */
     | 'dialog-question'
+    /** An MCP server's typed FORM is open. Its own reason, not `dialog`'s: the
+     *  card above can be READ but not answered yet, so "answer it first" would
+     *  point at inert buttons — and the mechanism is worth one clause, because
+     *  a send here does not vanish. It is pasted into whichever field the
+     *  terminal's caret is in, and the Enter behind it submits or advances the
+     *  form on the user's behalf. */
+    | 'dialog-form'
     /** Stop was pressed while a dialog is on screen. `Escape` there DENIES the
      *  dialog (a0 §3, live-verified) — it does not interrupt the turn — so the
      *  keystroke is not sent and the composer says what it would have done. */
@@ -158,10 +165,26 @@ export interface SendContext {
   /** A choice card for a live dialog is rendered above the composer (the
    *  session's `permission_request`). */
   dialogCard?: boolean
+  /**
+   * An MCP server's typed FORM is up (the session's `elicitation`).
+   *
+   * A THIRD source, and the only one for this family: the peek lens is
+   * structurally blind here. Every dialog it knows is a numbered list it can
+   * fingerprint; an elicitation is a set of text fields with Accept/Decline
+   * buttons, so `readLens` reads no dialog at all and the gate would say "send".
+   * That send is a PASTE at a TUI that is focused on a form field — it types a
+   * chat message into a third party's form and the appended Enter submits
+   * whatever is under the caret.
+   */
+  formCard?: boolean
 }
 
 export function sendGate(lens: PeekLens | null, ctx: SendContext = {}): SendGate {
   const dialogKind = ctx.dialogCard ? ('dialog' as const) : ('dialog-terminal' as const)
+  // THE FORM OUTRANKS THE LENS (see `formCard`): the hook is the only witness,
+  // so its refusal cannot wait for a sighting that will never come. The card IS
+  // above the composer, so the refusal may point at it.
+  if (ctx.formCard) return { send: false, notice: { kind: 'dialog-form' } }
   // A QUESTION is the one dialog whose refusal needs its own sentence: it HAS a
   // free-text row, so a user who typed an answer is not doing anything unusual —
   // they are answering, in the way the terminal itself offers. What they cannot
@@ -272,6 +295,10 @@ export interface UseComposerOptions {
    *  is on screen above this composer. Second source for the pre-send gate —
    *  see `sendGate`. */
   dialogCard?: boolean
+  /** The session's `elicitation` is live: an MCP server's form card is on
+   *  screen. THIRD source, and the only witness for a family the peek lens
+   *  cannot see at all — see `SendContext.formCard`. */
+  formCard?: boolean
   /**
    * The `@`-hand-off plane (fase B4 T4). ALL THREE OR NONE: without them the
    * composer has no way to tell a colleague from a word, so `@patch do x` stays
@@ -368,6 +395,7 @@ export function useComposer({
   peek,
   active,
   dialogCard = false,
+  formCard = false,
   handoff,
 }: UseComposerOptions): ComposerHandle {
   const draft = React.useSyncExternalStore(
@@ -503,7 +531,7 @@ export function useComposer({
         // there, the server's paste CONCATENATES onto it and submits the pair.
         // One ~50ms peek is the only thing standing between a chat send and
         // that silent corruption.
-        const gate = sendGate(peek ? await peek.refresh() : null, { dialogCard })
+        const gate = sendGate(peek ? await peek.refresh() : null, { dialogCard, formCard })
         if (!gate.send) {
           setNotice(gate.notice)
           return
@@ -539,7 +567,7 @@ export function useComposer({
         setSending(false)
       }
     })()
-  }, [dialogCard, handoff, input, name, peek, readIntent])
+  }, [dialogCard, formCard, handoff, input, name, peek, readIntent])
 
   const stop = React.useCallback(() => {
     // Escape is the interrupt every one of the three TUIs understands; the

@@ -86,6 +86,17 @@ pub struct HookPayload {
     /// the UI can say *which* mode the pending dialog is being asked under.
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// **The MCP server that is asking** (`Elicitation` / `ElicitationResult`).
+    /// The attribution the whole elicitation feature hangs on — an ask with no
+    /// server name is refused rather than shown
+    /// ([`super::elicitation::parse`]).
+    #[serde(default, alias = "mcpServerName")]
+    pub mcp_server_name: Option<String>,
+    /// `ElicitationResult`'s outcome: `accept` | `decline` | `cancel`. Recorded
+    /// so the resolved card can say what the answer WAS instead of just
+    /// vanishing.
+    #[serde(default)]
+    pub action: Option<String>,
 }
 
 /// The live "Claude is asking permission to do X" state, derived from a

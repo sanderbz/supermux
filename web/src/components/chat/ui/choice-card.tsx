@@ -96,6 +96,52 @@ export function ChoiceCard({
   onChoose,
   className,
 }: ChoiceCardProps) {
+  return (
+    <DialogShell eyebrow={eyebrow} question={question} detail={detail} why={why} className={className}>
+      <div className="mt-[13px] flex flex-wrap gap-2">
+        {options.map((option, i) => (
+          <ChoiceButton
+            key={option.label}
+            option={option}
+            selected={selectedIndex === i}
+            onClick={onChoose ? () => onChoose(i) : undefined}
+          />
+        ))}
+      </div>
+    </DialogShell>
+  )
+}
+
+/**
+ * THE CARD CHROME, once (fase B6).
+ *
+ * Everything above the answers — the glass panel, the eyebrow, the ask, the
+ * evidence block, the why line — is identical for every dialog this surface can
+ * draw, and it was written for the permission/question card first. The MCP
+ * elicitation FORM is the second thing that needs it, and a form card that
+ * forked these numbers would drift from the question card the first time either
+ * moved 1px. So the shell is the shared thing and the answers are the variable
+ * part: `ChoiceCard` fills it with option pills, `FormCard` with controls.
+ *
+ * `ChoiceCard` renders byte-identically to before the extraction — same
+ * classes, same order, same `role="group"` pointing at the same generated id.
+ */
+export function DialogShell({
+  eyebrow,
+  question,
+  detail,
+  why,
+  className,
+  children,
+}: {
+  eyebrow?: ReactNode
+  question: ReactNode
+  detail?: ReactNode
+  why?: ReactNode
+  className?: string
+  /** The answers: pills, controls, whatever this dialog is answered with. */
+  children: ReactNode
+}) {
   // A `role="group"` with no accessible name is a group of nothing (gap G4):
   // AT announced "group, 3 buttons" and the ask itself — the only sentence that
   // makes the buttons mean anything — was just loose text above it. The
@@ -126,16 +172,7 @@ export function ChoiceCard({
       </div>
       {detail}
       {why && <div className="mt-[5px] text-[13.2px] leading-[1.45] text-ink-2">{why}</div>}
-      <div className="mt-[13px] flex flex-wrap gap-2">
-        {options.map((option, i) => (
-          <ChoiceButton
-            key={option.label}
-            option={option}
-            selected={selectedIndex === i}
-            onClick={onChoose ? () => onChoose(i) : undefined}
-          />
-        ))}
-      </div>
+      {children}
     </div>
   )
 }

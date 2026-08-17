@@ -36,7 +36,7 @@ fn corpus() -> Vec<Value> {
         .filter(|v: &Value| v.get("_").is_none())
         .collect();
     assert!(
-        rows.len() >= 22,
+        rows.len() >= 28,
         "the corpus is the contract — it must not shrink (got {})",
         rows.len()
     );
@@ -133,6 +133,49 @@ fn the_corpus_still_covers_every_limit_bucket_and_its_two_impostors() {
         rows.iter()
             .any(|r| r["name"].as_str().unwrap().contains("quotes the refusal")),
         "no quoted-refusal control"
+    );
+}
+
+/// The three families this corpus gained with the hook-form wave, each named so
+/// it cannot rot out: the injected grace-window instruction (which used to
+/// render as if the USER typed it), an MCP task parked on `input_required`
+/// (green dot, nothing streaming, waiting on a person), and the
+/// `request_user_dialog` row that reports an MCP FORM on a session where the
+/// `Elicitation` hook is not installed — the fallback that keeps a hard-hung
+/// session visible with no hook at all.
+#[test]
+fn the_corpus_keeps_its_grace_window_mcp_task_and_no_hook_dialog_rows() {
+    let rows = corpus();
+    let labelled = |label: &str| {
+        rows.iter()
+            .filter(|r| r["expect"]["label"].as_str() == Some(label))
+            .count()
+    };
+    assert!(labelled("limit_grace") >= 2, "both grace hints must stay covered");
+    assert!(
+        rows.iter().any(|r| {
+            r["expect"]["kind"].as_str() == Some("prompt")
+                && r["line"]["message"]["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("grace window active"))
+        }),
+        "no control row for a human QUOTING the grace instruction"
+    );
+    let task_statuses: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| r["expect"]["body"].get("status").and_then(Value::as_str))
+        .collect();
+    assert!(task_statuses.contains(&"input_required"), "no parked-MCP-task row");
+    assert!(
+        task_statuses.contains(&"working"),
+        "no working-task control — `input_required` must be the ONLY status that blocks"
+    );
+    assert!(
+        rows.iter().any(|r| {
+            r["expect"]["label"].as_str() == Some("request_user_dialog")
+                && r["expect"]["body"]["dialog"].as_str() == Some("elicitation")
+        }),
+        "no no-hook fallback row for an MCP elicitation form"
     );
 }
 

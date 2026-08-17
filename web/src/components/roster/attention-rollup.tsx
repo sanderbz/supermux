@@ -62,6 +62,8 @@ export interface RollupTarget {
 export function rollupTarget(s: AttentionSession): RollupTarget {
   const base = `/focus/${encodeURIComponent(s.name)}`
   if (s.permission_request) return { kind: 'attention', href: `${base}#attention` }
+  // An MCP server is holding this session open on a typed form.
+  if (s.elicitation) return { kind: 'attention', href: `${base}#attention` }
   if (s.status === 'waiting') return { kind: 'choice', href: `${base}#choice` }
   return { kind: 'session', href: base }
 }

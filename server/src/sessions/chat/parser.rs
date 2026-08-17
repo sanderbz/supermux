@@ -350,7 +350,26 @@ fn user_block(line: &Map<String, Value>, base: &Header, i: usize, b: &Value) -> 
     let obj = b.as_object();
     let ty = obj.and_then(|o| str_at(o, &["type"])).unwrap_or("");
     match ty {
-        "text" => base.entry_at(i, Kind::Prompt, text_body(b, "text"), None),
+        "text" => {
+            let text = b.get("text").and_then(Value::as_str).unwrap_or("");
+            // THE GRACE WINDOW (`limit.grace_window`). Between "approaching" and
+            // "blocked" the server sets `anthropic-ratelimit-unified-grace-status`
+            // and Claude Code INJECTS a wrap-up instruction into the model's
+            // context as a user-role entry. There is no banner anywhere, the turn
+            // keeps running, and Claude quietly stops spawning subagents and
+            // starts summarising.
+            //
+            // Left as a prompt it is the worst row on the surface: it renders as
+            // if the USER typed `[Usage limit reached — grace window active. Wrap
+            // up: …]`, and Claude's sudden change of behaviour then looks like a
+            // bug in this app. It is a SYSTEM notice, and it says who wrote it.
+            match grace_window(text) {
+                Some(hint) => {
+                    base.entry_at(i, Kind::System, grace_body(text, hint), Some("limit_grace"))
+                }
+                None => base.entry_at(i, Kind::Prompt, text_body(b, "text"), None),
+            }
+        }
         "tool_result" => {
             let o = obj.expect("tool_result block is an object");
             let content = o.get("content").cloned().unwrap_or(Value::Null);
@@ -480,7 +499,11 @@ fn system_entry(obj: &Map<String, Value>, base: &Header) -> ChatEntry {
         // covers dialog families this codebase has never seen, which is
         // precisely what a per-dialog registry cannot do.
         "request_user_dialog" => {
-            for key in ["dialogType", "dialog_type", "type", "toolName"] {
+            // `dialog_kind` is the spelling Claude Code's own control-request
+            // envelope uses (2.1.227 bundle: `dialog prompt: ` / `dialog_kind`,
+            // whose values include `elicitation` — the MCP form family this
+            // arm is the no-hook fallback for).
+            for key in ["dialogType", "dialog_type", "dialog_kind", "type", "toolName"] {
                 if let Some(v) = str_at(obj, &[key]) {
                     body["dialog"] = Value::String(v.to_string());
                     break;
@@ -488,9 +511,82 @@ fn system_entry(obj: &Map<String, Value>, base: &Header) -> ChatEntry {
             }
             body["blocked"] = Value::Bool(true);
         }
+        // A LONG-RUNNING MCP TASK, and the one status in its enum that means a
+        // human is needed (`mcp.task_input_required`). An MCP task parks on
+        // `input_required` INDEPENDENTLY of the elicitation dialog — nothing
+        // streams, no hook fires, the turn does not end — so the session reads
+        // Idle while it is waiting on somebody. The status is what makes this
+        // row worth drawing, so it is what the row carries.
+        s if s.starts_with("task_") => {
+            for (from, to) in [
+                (&["status", "taskStatus", "task_status", "mcpStatus"][..], "status"),
+                (&["task_id", "taskId", "mcpTaskId"][..], "task_id"),
+                (
+                    &["mcp_server_name", "serverName", "server_name", "server"][..],
+                    "server",
+                ),
+                (&["tool_name", "toolName"][..], "tool"),
+            ] {
+                if let Some(v) = str_at(obj, from) {
+                    body[to] = Value::String(v.to_string());
+                }
+            }
+            // `working` / `completed` / `failed` / `cancelled` are progress;
+            // `input_required` is a person. Only the last one blocks, and the
+            // flag is the same bit the limit banners set — one word for "this
+            // session cannot get on with it", whatever stopped it.
+            if body.get("status").and_then(Value::as_str) == Some("input_required") {
+                body["blocked"] = Value::Bool(true);
+                body["needs_input"] = Value::Bool(true);
+            }
+        }
         _ => {}
     }
     base.entry(Kind::System, body, Some(subtype))
+}
+
+/// **Is this injected text Claude Code's grace-window wrap-up instruction?**
+/// Returns which of the two hints it is (`wrap_up` / `checkpoint`), which is
+/// also what Claude Code calls them internally (`wrap-up` / `next-steps`).
+///
+/// The match is the WHOLE trimmed line, bracket to bracket, against Claude
+/// Code's own template (2.1.227 bundle: `…checkpoint; don't start subagents or
+/// long work.]` / `…current step, then list up to 3 short bullets…`). Anchoring
+/// on the whole line is what keeps a human who QUOTES the instruction in a
+/// longer prompt out of this arm: their message is still their message.
+///
+/// `isMeta` is corroborating and deliberately not required — the fingerprint is
+/// unambiguous on its own, and a build that stopped setting the flag (or a
+/// truncation that dropped it) must not put those words back in the user's
+/// mouth.
+fn grace_window(text: &str) -> Option<&'static str> {
+    let t = text.trim();
+    if !(t.starts_with('[') && t.ends_with(']')) {
+        return None;
+    }
+    let lower = t.to_lowercase();
+    if !(lower.contains("usage limit reached") && lower.contains("grace window")) {
+        return None;
+    }
+    Some(if lower.contains("checkpoint now") {
+        "checkpoint"
+    } else {
+        "wrap_up"
+    })
+}
+
+/// The wire body of a grace-window notice: this app's sentence for a reader,
+/// Claude Code's sentence underneath it, and the fact that nothing is blocked
+/// yet (the turn is still running — that is the whole point of a grace window).
+fn grace_body(text: &str, hint: &'static str) -> Value {
+    serde_json::json!({
+        "notice": "Claude Code asked the agent to wrap up — usage limit near",
+        "content": text.trim(),
+        "hint": hint,
+        "level": "warning",
+        "limit_grace": true,
+        "blocked": false,
+    })
 }
 
 /// The `tool_result` body of a permission DENIAL.

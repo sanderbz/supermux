@@ -56,6 +56,7 @@ import {
   CardCode,
   ChoiceCard,
   DelegationPill,
+  FormCard,
   InlineCode,
   MARK_SIZE,
   MessageRow,
@@ -211,7 +212,7 @@ export function LiveLayer({
 
   const phase = livePhase({
     working,
-    asking: !!(dialog || session?.permission_request),
+    asking: !!(dialog || session?.permission_request || session?.elicitation),
     handoff: !!target,
   })
 
@@ -243,7 +244,30 @@ export function LiveLayer({
           sequence is checked against. A hook WITHOUT a sighting still draws a
           card — the trigger is ~1 s ahead of the poll — it just cannot be
           answered yet, and it says so. */}
-      {dialog ? (
+      {/* AN MCP FORM OUTRANKS EVERYTHING (`mcp.elicitation_form`). It is the
+          most specific ask there is — a named third party demanding typed input
+          mid-tool-call — and it is the one that structurally hangs the session:
+          the turn does not end, no banner is drawn, and every other signal on
+          this surface reads Idle. The peek lens cannot help here (the form is
+          not a numbered dialog), so the hook IS the authority. */}
+      {session?.elicitation ? (
+        <FormCard
+          // A NEW ASK IS A NEW FORM. The card holds the half-typed values in
+          // local state, and a session can be asked twice in a row by the same
+          // server — without this key the second form would open pre-filled
+          // with the first one's answers, which is how somebody accepts a
+          // question they never read.
+          key={session.elicitation.id ?? `${session.elicitation.server}/${session.elicitation.message}`}
+          ask={session.elicitation}
+          // No delivery lane yet, and the card says so rather than offering a
+          // button that quietly does nothing. Answering FOR the user means a
+          // hook that writes `hookSpecificOutput.action` — a decider, and one
+          // that has never run against a live MCP server. Detection, attribution
+          // and a validated draft ship first (PR body: the write lane's two
+          // candidate designs).
+          inertReason="Answer in the terminal — supermux can read this form but not submit it yet."
+        />
+      ) : dialog ? (
         <DialogCard
           view={dialog}
           request={session?.permission_request ?? undefined}

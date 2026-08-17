@@ -362,6 +362,10 @@ export default function ChatPanel({
   // counts: the hook fires ≪1s ahead of the poll, and the lens sees dialogs the
   // hook never fires for at all (the plan family).
   const dialogCard = session?.permission_request != null || dialog.card != null
+  // An MCP server's form is up. Kept separate from `dialogCard` because it is a
+  // different KIND of blindness: the lens sees the dialogs above and simply has
+  // not fingerprinted this one — it cannot see an elicitation at all.
+  const formCard = session?.elicitation != null
   const pending = usePendingSends({
     name,
     input: plane,
@@ -369,6 +373,7 @@ export default function ChatPanel({
     entries,
     active: session?.status === 'active',
     dialogCard,
+    formCard,
     // The server's own delivery receipt (`set_last_send`, written by `/send`
     // AFTER the paste + Enter): transport-independent evidence that a send
     // arrived, which is exactly what a dropped response leaves this client
@@ -404,6 +409,7 @@ export default function ChatPanel({
     peek,
     active: session?.status === 'active',
     dialogCard,
+    formCard,
     handoff,
   })
 
