@@ -413,7 +413,7 @@ pub fn read_login(capture: &str) -> Option<LoginSighting> {
 // ── the other providers ─────────────────────────────────────────────────────
 
 /// What a NON-Claude provider is blocked on. Deliberately smaller than
-/// [`LoginSighting`]: codex's and kimi's device flows are not driven from here
+/// [`LoginSighting`]: the other providers' device flows are not driven from here
 /// (their PKCE/device-code lifecycles are their own), so the contract is an
 /// HONEST CARD — name the state, show the link and the one-time code, say what
 /// to do — instead of a half-automation that gets the timing wrong.
@@ -449,7 +449,7 @@ fn looks_like_device_code(line: &str) -> bool {
         && t.chars().filter(|c| c.is_ascii_alphabetic()).all(|c| c.is_ascii_uppercase())
 }
 
-/// Read a codex / kimi device-auth screen. Same window rule as [`read_login`].
+/// Read a non-Claude provider device-auth screen. Same window rule as [`read_login`].
 pub fn read_provider_auth(capture: &str) -> Option<ProviderAuth> {
     let lines: Vec<&str> = capture.lines().collect();
     let (start, tail) = window(&lines)?;
@@ -714,7 +714,7 @@ pub struct LoginView {
     /// The Claude `/login` dialog, when one is on screen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login: Option<LoginSighting>,
-    /// A codex / kimi device-auth screen. Detected and explained, not driven.
+    /// A non-Claude provider device-auth screen. Detected and explained, not driven.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_auth: Option<ProviderAuth>,
     /// Is supervision frozen for this session right now?

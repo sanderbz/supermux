@@ -536,24 +536,6 @@ impl StatusDetector {
             return Status::Waiting;
         }
 
-        // ── 0b. STARTUP WEDGE pre-emption ────────────────────────────────────
-        // A session parked on a startup gate — the workspace-trust dialog, the
-        // custom-API-key gate, the first-run wizard, codex's hooks review — is
-        // blocked on a human before it has run anything at all. It reached this
-        // classifier reading `Starting` and then `Idle` with a green dot, and it
-        // would sit there forever: no hook has fired (there is no turn), and the
-        // wizard's screens carry none of the tokens in WAITING_BANK.
-        //
-        // Pre-empted rather than banked, for the same reason the interrupt
-        // marker above is: the trust gate can also appear MID-SESSION (2.1.232+,
-        // on entering a nested git repo), and there the turn state machine holds
-        // `Active` for the whole TURN_SAFETY window over a screen that is doing
-        // nothing but waiting. The tokens are the gates' own titles and appear
-        // nowhere else (`pty_state::WEDGES`).
-        if super::pty_state::startup_wedge(capture).is_some() {
-            return Status::Waiting;
-        }
-
         // ── 0b. the OAuth login dialog ───────────────────────────────────────
         // `/login` is pty-only and hook-silent: no `Notification` fires for it,
         // and it is usually reached FROM a turn that died on a 401 — so the turn
@@ -566,10 +548,9 @@ impl StatusDetector {
         //
         // This pre-empts the turn machine for the same reason the interrupt
         // marker above does: the screen is unambiguous and the hooks are not
-        // going to say anything. Provider-agnostic on purpose — codex prints
-        // its own device-auth screen (`super::login::read_login` reads the
-        // Claude shapes; the device-code lines are matched here so its dot is
-        // at least honest).
+        // going to say anything. Provider-agnostic on purpose — codex prints its
+        // own device-auth screens, which `super::login::read_provider_auth`
+        // reads, so a session parked on one of those has an honest dot too.
         if super::login::read_login(capture).is_some()
             || super::login::read_provider_auth(capture).is_some()
         {

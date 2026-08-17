@@ -173,7 +173,7 @@ fn the_authorize_host_is_claude_dot_com() {
     assert!(reassemble_url(&lines).is_some());
 }
 
-/// The other providers. supermux does not DRIVE codex's or kimi's device flows
+/// The other providers. supermux does not DRIVE the other providers' device flows
 /// — their lifecycles are their own, and a half-automation that gets the timing
 /// wrong is worse than nothing — but a session sitting on one is blocked, and
 /// the card has to be able to name it, show the link and show the one-time code.

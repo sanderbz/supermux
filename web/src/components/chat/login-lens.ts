@@ -302,8 +302,8 @@ export function maskCode(code: string): string {
 /**
  * What a NON-Claude provider is blocked on.
  *
- * Deliberately smaller than a `LoginSighting`: supermux does not drive codex's
- * or kimi's device flows — their device-code lifecycles are their own, and a
+ * Deliberately smaller than a `LoginSighting`: supermux does not drive the other
+ * providers' device flows — their device-code lifecycles are their own, and a
  * half-automation that gets the expiry or the confirm step wrong is worse than
  * nothing. The contract is an HONEST CARD: name the state, show the link and the
  * one-time code, say what to do, and hand over to the terminal.

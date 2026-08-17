@@ -220,7 +220,7 @@ function CodeField({
 /**
  * The HONEST CARD for a non-Claude provider (AREA 3, item 3).
  *
- * supermux does not drive codex's or kimi's device flows: their device-code
+ * supermux does not drive the other providers' device flows: their device-code
  * lifecycles, expiry windows and confirm steps are their own, and a
  * half-automation that gets one of them wrong burns a code the user then has to
  * chase. What it CAN do is stop the session reading as an idle green dot while
