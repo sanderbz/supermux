@@ -42,6 +42,8 @@ import type { TileSession } from '../session-tile/types'
 
 import type { AttentionCause, AttentionContext } from './attention'
 import { AttentionOverlay, AttentionRow } from './attention-card'
+import type { ChatGone } from './chat-socket'
+import { CHAT_GONE } from './connection'
 import type { DialogCardView } from './dialog-answer'
 import { ChatSurface } from './chat-surface'
 import { ComposerShell } from './composer-shell'
@@ -238,6 +240,11 @@ export interface ChatConversationProps {
   /** The tail query's two unhappy states. */
   isError?: boolean
   isLoading?: boolean
+  /** WHY a terminal 4404 closed the socket, when the server named it. It
+   *  outranks the generic error line: "Couldn't load this conversation." reads
+   *  as a transient fetch failure and invites a reload, which is the wrong
+   *  thing to tell someone whose session has been deleted. */
+  gone?: ChatGone | null
   /** The shell's own header affordances — A5's mobile shell fills them with the
    *  back button and the renderer switch (`routes/focus/mobile.tsx`). */
   headerLeading?: React.ReactNode
@@ -305,6 +312,7 @@ export function ChatConversation({
   pinFor,
   surface,
   isError,
+  gone = null,
   isLoading,
   headerLeading,
   headerTrailing,
@@ -466,7 +474,7 @@ export function ChatConversation({
         <div className="mx-auto mt-auto w-full max-w-[744px]">
           {isError && (
             <p className="py-8 text-center text-[13px] text-ink-2">
-              Couldn’t load this conversation.
+              {gone === null ? 'Couldn’t load this conversation.' : CHAT_GONE[gone].detail}
             </p>
           )}
           {!isError && !isLoading && isBlank && (

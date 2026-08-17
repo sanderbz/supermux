@@ -22,6 +22,7 @@
 //   ?mock            seed the shared sessions cache from the mocks (the app's
 //                    existing DEV switch; this page needs no backend either way)
 //   &conn=<state>    reconnecting · stale · offline — the A6 honesty chip
+//   &gone=<reason>   no-session · chat-unavailable — the two TERMINAL closes
 //   &state=<id>      idle · working · provisional · permission · delegation ·
 //                    error · offline · patch
 //   &surface=phone   the phone composition at any window width
@@ -33,6 +34,7 @@ import { useSearchParams } from 'react-router-dom'
 import { PAPER } from '@/brand/tokens'
 import { ChatComposer } from '@/components/chat/composer'
 import { ChatConversation, PHONE_QUERY } from '@/components/chat/conversation'
+import type { ChatGone } from '@/components/chat/chat-socket'
 import { ConnectionNote } from '@/components/chat/connection-note'
 import { toDisplayList } from '@/components/chat/entries'
 import { EntityPickerView } from '@/components/chat/entity-picker'
@@ -91,6 +93,15 @@ export default function DevChatLive() {
   const connState =
     conn === 'reconnecting' || conn === 'stale' || conn === 'offline' ? conn : null
 
+  // `?gone=no-session|chat-unavailable` — the server's own reason for a
+  // terminal 4404. Same argument as `conn`: the state is unreachable from a
+  // fixture without a knob, which is how a deleted session shipped rendering
+  // "Offline" next to a global "Reconnecting…" spinner. Implies `offline`,
+  // because that is the only state it can occur in.
+  const goneParam = params.get('gone')
+  const gone = goneParam === 'no-session' || goneParam === 'chat-unavailable' ? goneParam : null
+  const chipState = gone ? 'offline' : connState
+
   const viewportPhone = useMediaQuery(PHONE_QUERY)
   const phone = params.get('surface') === 'phone' || viewportPhone
   const bare = params.has('bare')
@@ -98,9 +109,9 @@ export default function DevChatLive() {
   return (
     <div className="h-dvh w-full overflow-hidden bg-paper text-ink">
       {phone ? (
-        <PhoneFrame state={state} nowMs={nowMs} conn={connState} />
+        <PhoneFrame state={state} nowMs={nowMs} conn={chipState} gone={gone} />
       ) : (
-        <BoardFrame state={state} nowMs={nowMs} conn={connState} />
+        <BoardFrame state={state} nowMs={nowMs} conn={chipState} gone={gone} />
       )}
       {!bare && (
         <Picker
@@ -331,7 +342,12 @@ function BenchComposer({
 
 /* ── desktop: the surface, in the boards' window ─────────────────────────── */
 
-function BoardFrame({ state, nowMs, conn }: { state: LiveState; nowMs: number; conn: 'reconnecting' | 'stale' | 'offline' | null }) {
+function BoardFrame({ state, nowMs, conn, gone }: {
+  state: LiveState
+  nowMs: number
+  conn: 'reconnecting' | 'stale' | 'offline' | null
+  gone: ChatGone | null
+}) {
   const { resolvedTheme } = useTheme()
   const ring = PAPER[resolvedTheme].paper
   return (
@@ -371,7 +387,9 @@ function BoardFrame({ state, nowMs, conn }: { state: LiveState; nowMs: number; c
           state={state}
           nowMs={nowMs}
           surface="desktop"
-          headerTrailing={conn ? <ConnectionNote state={conn} onRetry={NOOP} /> : undefined}
+          headerTrailing={
+            conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} /> : undefined
+          }
         />
       </main>
     </div>
@@ -380,7 +398,12 @@ function BoardFrame({ state, nowMs, conn }: { state: LiveState; nowMs: number; c
 
 /* ── phone: the surface, under the status bar ────────────────────────────── */
 
-function PhoneFrame({ state, nowMs, conn }: { state: LiveState; nowMs: number; conn: 'reconnecting' | 'stale' | 'offline' | null }) {
+function PhoneFrame({ state, nowMs, conn, gone }: {
+  state: LiveState
+  nowMs: number
+  conn: 'reconnecting' | 'stale' | 'offline' | null
+  gone: ChatGone | null
+}) {
   return (
     <div className="relative mx-auto flex h-full w-full max-w-[390px] flex-col bg-paper-raised">
       {/* Device chrome, not ours: the status bar and the notch `mobile-*.png`
@@ -421,7 +444,7 @@ function PhoneFrame({ state, nowMs, conn }: { state: LiveState; nowMs: number; c
           }
           headerTrailing={
             <>
-              {conn ? <ConnectionNote state={conn} onRetry={NOOP} /> : null}
+              {conn ? <ConnectionNote state={conn} onRetry={NOOP} gone={gone} /> : null}
               <RendererSwitch size="sm" labels="selected" value="auto" resolved="chat" onChange={() => {}} />
             </>
           }

@@ -626,6 +626,18 @@ async fn refresh_conv(state: &AppState, name: &str, conv: &mut String) {
 /// which the client's terminal-socket machinery already redials with backoff —
 /// and a redial starts a fresh tailer. A terminal one (row deleted, session no
 /// longer chat-eligible) closes 4404, which stops the redial loop.
+/// The two REASONS a 4404 carries, and they are not interchangeable: one says
+/// the session is gone, the other says this session never had a chat plane.
+///
+/// Constants because the client reads them (`web/src/components/chat/chat-socket.ts`
+/// mirrors both and has the twin assertion). It used to switch on `ev.code`
+/// alone and throw `ev.reason` away, which collapsed a DELETED session and an
+/// INELIGIBLE one onto one generic "Offline" line — and, because the app-wide
+/// aggregate treats an offline link as still-reconnecting for 30 s, painted a
+/// "Reconnecting…" spinner over a socket that had already given up.
+pub const CLOSE_REASON_NO_SESSION: &str = "no such session";
+pub const CLOSE_REASON_INELIGIBLE: &str = "chat unavailable for this session";
+
 fn stop_close_code(retry: bool) -> u16 {
     if retry {
         close_code::AGAIN
@@ -669,13 +681,13 @@ async fn chat_socket(mut socket: WebSocket, name: String, state: AppState, origi
     let row = match db::sessions::get(&state.pool, &name).await {
         Ok(Some(row)) => row,
         _ => {
-            close(&mut socket, CLOSE_NOT_RUNNING, "no such session").await;
+            close(&mut socket, CLOSE_NOT_RUNNING, CLOSE_REASON_NO_SESSION).await;
             return;
         }
     };
     if !chat_eligible(&row.provider, row.host_id, row.team_name.as_deref()) {
         tracing::debug!(session = %name, provider = %row.provider, "chat ws refused: ineligible");
-        close(&mut socket, CLOSE_NOT_RUNNING, "chat unavailable for this session").await;
+        close(&mut socket, CLOSE_NOT_RUNNING, CLOSE_REASON_INELIGIBLE).await;
         return;
     }
 
@@ -868,6 +880,29 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use tokio::sync::broadcast::error::RecvError;
+
+    /// ONE CODE, TWO FACTS — and the client has to be able to tell them apart.
+    ///
+    /// A deleted session and a chat-ineligible one both close 4404, and the
+    /// client switched on the code alone: both collapsed onto "Offline" over
+    /// "Couldn't load this conversation.", while the app-wide aggregate — which
+    /// reads an offline link as still-reconnecting for a 30 s grace — painted
+    /// "Reconnecting…" with a spinner over a socket whose dialler had already
+    /// stopped. Five claims about one screen, one of them a promise that can
+    /// never be kept.
+    ///
+    /// `web/src/components/chat/chat-socket.ts` mirrors both strings and
+    /// `web/tests/unit/chat-connection.test.ts` carries the twin assertion, so
+    /// the day either moves, one of the two suites fails.
+    #[test]
+    fn the_two_terminal_close_reasons_are_pinned_for_the_client() {
+        assert_eq!(CLOSE_REASON_NO_SESSION, "no such session");
+        assert_eq!(CLOSE_REASON_INELIGIBLE, "chat unavailable for this session");
+        assert_ne!(
+            CLOSE_REASON_NO_SESSION, CLOSE_REASON_INELIGIBLE,
+            "the whole point is that these are different sentences",
+        );
+    }
 
     fn entry_at(uuid: &str, offset: u64, text: &str) -> ChatEntry {
         ChatEntry {

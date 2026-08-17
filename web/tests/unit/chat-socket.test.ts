@@ -18,6 +18,8 @@ import {
   ChatSocket,
   backoffDelay,
   AUTOFETCH_CONCURRENCY,
+  CLOSE_REASON_INELIGIBLE,
+  CLOSE_REASON_NO_SESSION,
   type ChatSnapshot,
   type SocketLike,
 } from '../../src/components/chat/chat-socket'
@@ -67,8 +69,8 @@ class FakeSocket implements SocketLike {
     this.onmessage?.({ data: text })
   }
 
-  drop(code: number): void {
-    this.onclose?.({ code })
+  drop(code: number, reason?: string): void {
+    this.onclose?.({ code, reason })
   }
 }
 
@@ -219,6 +221,43 @@ describe('a dropped socket', () => {
     expect(h.clock.pending).toBe(0)
     expect(FakeSocket.open).toHaveLength(1)
     h.socket.dispose()
+  })
+
+  test('a 4404 carries WHICH terminal fact it is, and a redial forgets it', () => {
+    // The bug: this switch read `ev.code` and threw `ev.reason` away, so a
+    // DELETED session and a chat-INELIGIBLE one rendered the same generic
+    // "Offline" over "Couldn't load this conversation." — while the app-wide
+    // aggregate, which reads an offline link as still-reconnecting through a
+    // 30 s grace, painted "Reconnecting…" with a spinner over a dialler that
+    // had already stopped. Five claims about one screen.
+    const gone = harness()
+    gone.ws().drop(4404, CLOSE_REASON_NO_SESSION)
+    expect(gone.last().state).toBe('offline')
+    expect(gone.last().gone).toBe('no-session')
+
+    // A new dial is a new question. (Read the socket's own snapshot: `open()`
+    // does not emit until the new connection says something.)
+    gone.socket.redial()
+    expect(gone.socket.snapshot().gone).toBeNull()
+    gone.socket.dispose()
+
+    const ineligible = harness()
+    ineligible.ws().drop(4404, CLOSE_REASON_INELIGIBLE)
+    expect(ineligible.last().gone).toBe('chat-unavailable')
+    ineligible.socket.dispose()
+
+    // A reason we do not recognise degrades to the generic offline, never to a
+    // guess — and a NON-4404 terminal close is not a "gone" session at all.
+    const unknown = harness()
+    unknown.ws().drop(4404, 'something new the server started saying')
+    expect(unknown.last().gone).toBeNull()
+    expect(unknown.last().state).toBe('offline')
+    unknown.socket.dispose()
+
+    const revoked = harness()
+    revoked.ws().drop(4001, CLOSE_REASON_NO_SESSION)
+    expect(revoked.last().gone).toBeNull()
+    revoked.socket.dispose()
   })
 
   test('1013 (subscriber cap / a transient tailer stop) retries', () => {

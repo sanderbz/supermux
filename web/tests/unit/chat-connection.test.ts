@@ -21,8 +21,15 @@ import {
   isFreshConversation,
   isPlaneDown,
   linkStateFor,
+  CHAT_GONE,
 } from '../../src/components/chat/connection'
-import { NO_TRANSCRIPT_REASON } from '../../src/components/chat/chat-socket'
+import {
+  CLOSE_REASON_INELIGIBLE,
+  CLOSE_REASON_NO_SESSION,
+  goneFor,
+  NO_TRANSCRIPT_REASON,
+} from '../../src/components/chat/chat-socket'
+import { useConnection } from '../../src/stores/connection-store'
 import { ChatSocket, type ChatSnapshot, type SocketLike } from '../../src/components/chat/chat-socket'
 import { watchdogState, type PendingSend } from '../../src/components/chat/pending'
 import type { WireEntry } from '../../src/components/chat/wire'
@@ -58,6 +65,60 @@ describe('the four words', () => {
     expect(linkStateFor('stale')).toBe('connected')
     expect(linkStateFor('reconnecting')).toBe('reconnecting')
     expect(linkStateFor('offline')).toBe('offline')
+  })
+
+  test('a TERMINAL close is `gone`, not a degraded link', () => {
+    // `aggregate` reads an `offline` link as still-reconnecting for a 30 s
+    // grace, which is right for a socket that may come back and wrong for one
+    // the server has finished with: a session deleted under an open panel got
+    // an app-level "Reconnecting…" with a spinner — a promise nothing can keep,
+    // since the 4404 stopped the dialler outright.
+    expect(linkStateFor('offline', 'no-session')).toBe('gone')
+    expect(linkStateFor('offline', 'chat-unavailable')).toBe('gone')
+    expect(linkStateFor('offline', null)).toBe('offline')
+  })
+
+  test('the two terminal facts say different things, and only one is an outage', () => {
+    // Pinned against `server/src/sessions/chat/ws.rs`, which carries the twin
+    // assertion on the same two strings.
+    expect(CLOSE_REASON_NO_SESSION).toBe('no such session')
+    expect(CLOSE_REASON_INELIGIBLE).toBe('chat unavailable for this session')
+    expect(goneFor(CLOSE_REASON_NO_SESSION)).toBe('no-session')
+    expect(goneFor(CLOSE_REASON_INELIGIBLE)).toBe('chat-unavailable')
+    expect(goneFor('who knows')).toBeNull()
+    expect(goneFor(undefined)).toBeNull()
+
+    expect(CHAT_GONE['no-session'].detail).toBe('This session no longer exists.')
+    expect(CHAT_GONE['no-session'].alarming).toBe(true)
+    // A codex / remote / team-lead session simply has no chat plane. Dressing
+    // that as an outage — and offering a retry for it — is the false alarm.
+    expect(CHAT_GONE['chat-unavailable'].alarming).toBe(false)
+  })
+})
+
+describe('the app-wide aggregate', () => {
+  const fresh = () => {
+    useConnection.setState({ links: {}, state: 'idle', justRecovered: false })
+    return useConnection.getState()
+  }
+
+  test('a `gone` link never paints Reconnecting… and never holds the all-clear', () => {
+    fresh().report('sse', 'connected')
+    useConnection.getState().report('chat:deleted-session', 'gone')
+    expect(useConnection.getState().state).not.toBe('reconnecting')
+    expect(useConnection.getState().state).toBe('connected')
+
+    // The control: the SAME link reported `offline` is inside the 30 s grace,
+    // so it DOES drag the banner to "Reconnecting…" — which is exactly the
+    // false promise a terminal close must not make.
+    fresh().report('sse', 'connected')
+    useConnection.getState().report('chat:deleted-session', 'offline')
+    expect(useConnection.getState().state).toBe('reconnecting')
+  })
+
+  test('a page holding only gone links is idle, not offline', () => {
+    fresh().report('chat:a', 'gone')
+    expect(useConnection.getState().state).toBe('idle')
   })
 })
 

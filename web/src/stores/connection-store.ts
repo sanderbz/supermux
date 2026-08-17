@@ -20,7 +20,22 @@ import { create } from 'zustand'
 
 /** Per-connection link state. Mirrors `useLiveTerm`'s `LiveTermState` plus the
  *  SSE hook's three states, normalised onto one vocabulary. */
-export type LinkState = 'connecting' | 'connected' | 'reconnecting' | 'offline'
+export type LinkState =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'offline'
+  /**
+   * TERMINAL, and not a health problem: the far end said this link is finished
+   * and will never come back (the chat socket's 4404 — a deleted session, or a
+   * session with no chat plane at all). It is registered so a caller does not
+   * have to special-case release/re-register, and it is EXCLUDED from the
+   * aggregate: an `offline` link reads as `reconnecting` for its 30 s grace, so
+   * a session deleted under an open panel painted "Reconnecting…" with a
+   * spinner — a promise that can never be kept, next to four other claims about
+   * the same screen.
+   */
+  | 'gone'
 
 /** Aggregated banner verdict — what <ReconnectBanner> renders. `connected` is
  *  the transient all-clear flash (auto-dismisses); `idle` means no surface. */
@@ -70,7 +85,10 @@ function aggregate(links: Record<string, LinkRecord>): {
   state: ConnectionState
   justRecovered: boolean
 } {
-  const records = Object.values(links)
+  // A `gone` link is finished, not unhealthy — it must not drag the banner into
+  // a reconnection it has already stopped attempting, and it must not hold the
+  // green all-clear back either.
+  const records = Object.values(links).filter((r) => r.state !== 'gone')
   if (records.length === 0) return { state: 'idle', justRecovered: false }
 
   const now = Date.now()

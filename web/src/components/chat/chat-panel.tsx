@@ -37,7 +37,7 @@ import { detailFor, topAttention } from './attention'
 import { blockedComposerNote, blockedState } from './blocked'
 import { ConnectionNote } from './connection-note'
 import { TruncationProvider } from './truncation'
-import { isPlaneDown } from './connection'
+import { CHAT_GONE, isPlaneDown } from './connection'
 import { useChatPresentation } from './use-chat-ws'
 import {
   jumpVisible,
@@ -224,9 +224,12 @@ export default function ChatPanel({
   // then the chip is exactly right: a stale transcript is being shown as if it
   // were current. `use-chat-ws.ts::isFresh` owns the predicate for both this
   // and the app-wide link aggregate, so the two cannot disagree.
-  const connectionNote = tail.fresh ? null : (
-    <ConnectionNote state={connection} onRetry={tail.redial} />
-  )
+  // …and a TERMINAL close always speaks, fresh or not: "this session no longer
+  // exists" is not the calm empty state, it is the end of one.
+  const connectionNote =
+    tail.fresh && tail.gone === null ? null : (
+      <ConnectionNote state={connection} onRetry={tail.redial} gone={tail.gone} />
+    )
 
   // ── one identity per session, across both surfaces (fase A6 T4.3) ──────────
   //
@@ -579,6 +582,7 @@ export default function ChatPanel({
       pinFor={pinFor}
       isError={tail.isError}
       isLoading={tail.isLoading}
+      gone={tail.gone}
       rawUrl={filesApi.rawUrl}
       scrollRef={scrollRef}
       onScroll={onScroll}
@@ -647,7 +651,18 @@ export default function ChatPanel({
           // which limit and when it lifts, rather than accepting a message
           // that Claude Code will never pick up (verify matrix:
           // `limit.hit.*` shipped with the composer live under a green dot).
-          blocked={wireBlocked ? blockedComposerNote(wireBlocked) : undefined}
+          // A TERMINAL CLOSE OUTRANKS EVERY OTHER GATE. When the server has
+          // said "no such session", there is no session left to be blocked, or
+          // active, or anything else — and an enabled composer over a deleted
+          // session invites someone to type a paragraph into nothing. This is
+          // the same slot, so the surface still says exactly one thing.
+          blocked={
+            tail.gone !== null
+              ? CHAT_GONE[tail.gone].detail
+              : wireBlocked
+                ? blockedComposerNote(wireBlocked)
+                : undefined
+          }
           onOpenTerminal={onOpenTerminal}
           // The popover's three lists (fase A4 T9) — the sessions among them
           // ride the shared query this component already subscribes to, the

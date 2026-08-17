@@ -32,7 +32,13 @@ import * as React from 'react'
 
 import { useConnection } from '../../stores/connection-store'
 
-import { ChatSocket, EMPTY_SNAPSHOT, type ChatConnState, type ChatSnapshot } from './chat-socket'
+import {
+  ChatSocket,
+  EMPTY_SNAPSHOT,
+  type ChatConnState,
+  type ChatGone,
+  type ChatSnapshot,
+} from './chat-socket'
 import {
   chatPresentation,
   isFreshConversation,
@@ -90,6 +96,10 @@ export interface ChatWireView {
    *  that no transcript exists for this conversation yet. Not a fault, and not
    *  something a reconnection can fix — see `ChatSnapshot.noTranscript`. */
   fresh: boolean
+  /** WHY a terminal 4404 closed the socket, when the server named it. Drives
+   *  the honest chip and body copy in place of a generic "Offline" over
+   *  "Couldn't load this conversation." — see `ChatSnapshot.gone`. */
+  gone: ChatGone | null
 }
 
 interface SnapshotStore {
@@ -185,6 +195,11 @@ function chatStore(name: string, enabled: boolean): SnapshotStore {
                   isFresh(s)
                     ? 'live'
                     : chatPresentation({ state: s.state, lastSignalAtMs: null, nowMs: 0 }),
+                  // A TERMINAL close is reported as `gone`, which the aggregate
+                  // skips entirely. Reporting it as `offline` is what made a
+                  // deleted session paint the global "Reconnecting…" spinner
+                  // for 30 s of grace on a socket that had already given up.
+                  s.gone,
                 ),
               )
             for (const l of listeners) l()
@@ -227,6 +242,7 @@ export function useChatWs(name: string, enabled: boolean): ChatWireView {
     retryFull: store.retryFull,
     redial: store.redial,
     fresh: isFresh(snap),
+    gone: snap.gone,
   }
 }
 

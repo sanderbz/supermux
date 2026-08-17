@@ -29,7 +29,7 @@
  * the surface.
  */
 
-import type { ChatConnState } from './chat-socket'
+import type { ChatConnState, ChatGone } from './chat-socket'
 
 /** What a surface is allowed to say about the data plane. */
 export type ChatPresentation = 'live' | 'reconnecting' | 'stale' | 'offline'
@@ -150,7 +150,17 @@ export function isPlaneDown(p: ChatPresentation): boolean {
  *  (A6 T2.4). `stale` is NOT reported as degraded: the socket is genuinely
  *  connected, and a global red banner for a quiet session would be the false
  *  alarm this whole task exists to remove. */
-export function linkStateFor(p: ChatPresentation): 'connecting' | 'connected' | 'reconnecting' | 'offline' {
+export function linkStateFor(
+  p: ChatPresentation,
+  gone: ChatGone | null = null,
+): 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'gone' {
+  // A TERMINAL CLOSE IS NOT A DEGRADED LINK. The app-wide aggregate treats an
+  // `offline` link as still-reconnecting for its 30 s grace, so a session that
+  // was DELETED under an open panel painted "Reconnecting…" with a spinner —
+  // a promise nothing can keep, since the 4404 is terminal and the dialler has
+  // already stopped. `gone` is reported instead and the aggregate skips it: the
+  // link is not unhealthy, it is finished.
+  if (gone !== null) return 'gone'
   switch (p) {
     case 'live':
     case 'stale':
@@ -160,4 +170,23 @@ export function linkStateFor(p: ChatPresentation): 'connecting' | 'connected' | 
     case 'offline':
       return 'offline'
   }
+}
+
+/** What a `gone` chat socket says, and how loudly.
+ *
+ *  `no-session` is a fact about the world ("this session no longer exists") —
+ *  calm, final, and not retryable. `chat-unavailable` is not a failure at all:
+ *  a codex / remote / team-lead session simply has no chat plane, so it must
+ *  not wear outage styling or offer a retry that can only ever fail again. */
+export const CHAT_GONE: Record<ChatGone, { label: string; detail: string; alarming: boolean }> = {
+  'no-session': {
+    label: 'Session deleted',
+    detail: 'This session no longer exists.',
+    alarming: true,
+  },
+  'chat-unavailable': {
+    label: 'No chat here',
+    detail: "Chat isn't available for this session — open the terminal to see it.",
+    alarming: false,
+  },
 }

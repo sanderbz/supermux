@@ -62,6 +62,41 @@ export type ChatConnState =
   /** Terminal: this session has no chat data plane, or the socket gave up. */
   | 'offline'
 
+/**
+ * WHY a 4404 closed this socket — the server's own `reason`, kept apart from
+ * the one word `state` collapses it to (the same shape `noTranscript` uses).
+ *
+ * The server closes with `CLOSE_NOT_RUNNING` for two facts that could not be
+ * more different (`server/src/sessions/chat/ws.rs`), and this client switched on
+ * `ev.code` alone and threw `ev.reason` away. Both collapsed onto `offline`, and
+ * a DELETED session then rendered five claims at once: an app-level
+ * "Reconnecting…" with a spinner (a promise that can never be kept — the close
+ * is terminal and there is no redial), a focus header with a GREEN dot and
+ * "Idle", the roster tile still listed, a chat chip reading "Offline", and
+ * "Couldn't load this conversation." over an enabled composer.
+ *
+ * `chat-unavailable` is not an outage at all: a codex/remote/team-lead session
+ * simply has no chat plane, and dressing it in offline styling with a retry
+ * invites a user to keep tapping at something that will never change.
+ */
+export type ChatGone = 'no-session' | 'chat-unavailable'
+
+/** The 4404 close reasons, verbatim from `server/src/sessions/chat/ws.rs`.
+ *  Pinned on both sides: the server has the twin assertion, so the day either
+ *  string moves one of the two suites fails. */
+export const CLOSE_REASON_NO_SESSION = 'no such session'
+export const CLOSE_REASON_INELIGIBLE = 'chat unavailable for this session'
+
+/** `ev.reason` → the fact, or `null` when the server said nothing we know.
+ *  An unrecognised reason degrades to the old generic `offline`, never to a
+ *  guess. */
+export function goneFor(reason: string | undefined): ChatGone | null {
+  const r = (reason ?? '').trim()
+  if (r === CLOSE_REASON_NO_SESSION) return 'no-session'
+  if (r === CLOSE_REASON_INELIGIBLE) return 'chat-unavailable'
+  return null
+}
+
 export interface ChatSnapshot {
   entries: readonly WireEntry[]
   state: ChatConnState
@@ -108,6 +143,10 @@ export interface ChatSnapshot {
    * current and really is not.
    */
   noTranscript: boolean
+  /** WHY a terminal 4404 closed this socket, when the server said something we
+   *  recognise. `null` on every other state, and on a 4404 whose reason we do
+   *  not know — there the generic `offline` is still the honest reading. */
+  gone: ChatGone | null
 }
 
 /** The `reason` `classify_pointer` stamps on a pointer whose file does not
@@ -129,6 +168,7 @@ export const EMPTY_SNAPSHOT: ChatSnapshot = {
   fetching: NO_UUIDS,
   fetchFailed: NO_UUIDS,
   noTranscript: false,
+  gone: null,
 }
 
 // ── close codes (the terminal socket's table, `use-live-term.ts`) ────────────
@@ -198,6 +238,8 @@ export class ChatSocket {
   private readonly opts: Required<ChatSocketOptions>
   private wire: WireState = EMPTY_WIRE
   private conn: ChatConnState = 'connecting'
+  /** Set once, by a terminal 4404 carrying a reason we recognise. */
+  private gone: ChatGone | null = null
   private ws: SocketLike | null = null
   private authed = false
   private attempt = 0
@@ -241,6 +283,7 @@ export class ChatSocket {
       fetching: this.fetching.size ? new Set(this.fetching) : NO_UUIDS,
       fetchFailed: this.failed.size ? new Set(this.failed) : NO_UUIDS,
       noTranscript: this.wire.status?.reason === NO_TRANSCRIPT_REASON,
+      gone: this.gone,
     }
   }
 
@@ -328,6 +371,9 @@ export class ChatSocket {
     if (this.disposed) return
     this.clearTimers()
     this.authed = false
+    // A new dial is a new question: whatever the last close said about this
+    // session being gone is no longer the current answer.
+    this.gone = null
     // The previous connection's boundary is void the moment the socket is: a
     // live frame from the OLD ring must not be spliced onto the NEW seed. The
     // entries stay on screen (a reconnect is not a reason to blank the
@@ -402,6 +448,12 @@ export class ChatSocket {
           // Terminal. 4404 is the server saying this session has no chat data
           // plane at all (gone, codex, remote, a team lead) — redialing can
           // only storm it, so the surface is told and the loop stops.
+          //
+          // …and WHICH of those it is, because the server says so in `reason`
+          // and this switch used to read only `ev.code`. "This session no longer
+          // exists" and "chat isn't available for this session" are not the same
+          // sentence, and only one of them is an outage.
+          if (ev.code === CLOSE_NOT_RUNNING) this.gone = goneFor(ev.reason)
           this.conn = 'offline'
           this.emit()
           return

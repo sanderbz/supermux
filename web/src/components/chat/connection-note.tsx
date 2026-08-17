@@ -20,19 +20,29 @@ import * as React from 'react'
 import { CHAT_CONNECTION, CHAT_CONNECTION_STAYS } from '../../brand/copy'
 import { claimConnectionVoice } from '../../lib/live-region-owner'
 
-import type { ChatPresentation } from './connection'
+import type { ChatGone } from './chat-socket'
+import { CHAT_GONE, type ChatPresentation } from './connection'
 
 export interface ConnectionNoteProps {
   state: ChatPresentation
   /** Dial again now. Offered on `offline`, where waiting will not help. */
   onRetry?: () => void
+  /**
+   * The server's own reason for a TERMINAL close, when it named one.
+   *
+   * It outranks `state`, because it is the more specific reader of the same
+   * sighting: `offline` collapses "this session no longer exists" and "chat
+   * isn't available for this session" onto one word and offers a retry for
+   * both. Neither can be retried, and only one of them is an outage.
+   */
+  gone?: ChatGone | null
 }
 
 /**
  * Renders nothing while `live` — the healthy case must cost no pixels and no
  * announcement, or the honest state becomes wallpaper.
  */
-export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
+export function ConnectionNote({ state, onRetry, gone = null }: ConnectionNoteProps) {
   // OWNERSHIP (fase B6 — live-region ownership). While this chip is actually
   // saying something, the global `ReconnectBanner` must not say the same thing
   // in a second polite region — before this claim a dropped socket was
@@ -44,9 +54,15 @@ export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
   React.useEffect(() => (speaking ? claimConnectionVoice() : undefined), [speaking])
 
   if (state === 'live') return null
-  const copy = CHAT_CONNECTION[state]
-  const detail = copy.why + CHAT_CONNECTION_STAYS
-  const retryable = state === 'offline' && onRetry
+  const terminal = gone === null ? null : CHAT_GONE[gone]
+  const copy = terminal ?? CHAT_CONNECTION[state]
+  // The "what is on screen stays" half is a promise about a link that may yet
+  // come back. A terminal close makes no such promise, so it does not borrow
+  // that sentence.
+  const detail = terminal ? terminal.detail : CHAT_CONNECTION[state].why + CHAT_CONNECTION_STAYS
+  // Nothing terminal is retryable: the server has answered, and a retry button
+  // on "this session no longer exists" is an invitation to keep tapping.
+  const retryable = terminal === null && state === 'offline' && onRetry
   const className =
     'flex-none rounded-full border-[0.5px] border-hairline-soft bg-fill-soft px-2 py-[3px] text-[11.5px] font-medium tracking-[0.1px] text-ink-2'
 
@@ -54,7 +70,12 @@ export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
   // that is announced, not the transcript — G1's streaming announcements are a
   // separate region with a separate politeness (T7.1).
   const body = (
-    <span data-state={state} data-vr="chat-connection" className={className}>
+    <span
+      data-state={state}
+      data-gone={gone ?? undefined}
+      data-vr="chat-connection"
+      className={className}
+    >
       {copy.label}
     </span>
   )
@@ -72,6 +93,7 @@ export function ConnectionNote({ state, onRetry }: ConnectionNoteProps) {
           onClick={onRetry}
           className={className}
           data-state={state}
+          data-gone={gone ?? undefined}
           data-vr="chat-connection"
         >
           {copy.label}
