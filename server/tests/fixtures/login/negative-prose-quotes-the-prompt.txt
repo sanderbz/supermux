@@ -1,0 +1,12 @@
+▐▛███▜▌ Claude Code v2.1.227
+▝▜█████▛▘ Sonnet 4.5 · Claude Max
+  ▘▘ ▝▝  ~/projects/supermux
+
+❯ how does the claude login flow work?
+
+⏺ Claude Code prints an authorize URL and then waits on a masked field
+  labelled `Paste code here if prompted > ` for the `code#state` string
+  from the callback page. It is pty-only — the transcript records the
+  slash command and nothing else.
+
+❯ 

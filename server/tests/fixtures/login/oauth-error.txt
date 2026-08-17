@@ -1,0 +1,10 @@
+▐▛███▜▌ Claude Code v2.1.227
+▝▜█████▛▘ Sonnet 4.5 · Claude Max
+  ▘▘ ▝▝  ~/projects/supermux
+
+Opening browser to sign in…
+
+OAuth error: Failed to exchange authorization code for access token. Please try 
+again.
+
+Press Enter to retry.

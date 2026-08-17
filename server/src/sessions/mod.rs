@@ -22,6 +22,7 @@ pub mod auto_actions;
 pub mod chat;
 pub mod host_pool;
 pub mod lifecycle;
+pub mod login;
 pub mod pty;
 pub mod pty_state;
 pub mod recall;
@@ -82,6 +83,15 @@ pub fn router_for(state: AppState) -> Router {
         .route("/api/sessions/{name}/keys", post(keys_handler))
         .route("/api/sessions/{name}/paste", post(paste_handler))
         .route("/api/sessions/{name}/peek", get(peek_handler))
+        // ── the OAuth login flow (AREA 3) ──
+        // ONE read and ONE write, because every step of this flow is the same
+        // three facts (what is on the screen, is supervision frozen, what key
+        // goes next) and a route per step would be five ways to get the freeze
+        // ordering wrong.
+        .route(
+            "/api/sessions/{name}/login",
+            get(login_state_handler).post(login_action_handler),
+        )
         .route("/api/sessions/{name}/recall", get(recall::handler))
         // ── the per-session harness-event feed ──
         // Replayable provenance for everything the harness did TO or FROM this
@@ -1589,6 +1599,77 @@ async fn paste_handler(
     Json(input): Json<PasteInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     lifecycle::paste(&state, &name, &input.text, input.submit).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// `GET /api/sessions/{name}/login` — what is on the login screen right now.
+///
+/// Read-only and lock-free (it is a `peek` plus two pure classifiers), so the
+/// card can poll it while the user is off in a browser without contending with
+/// anything the session is doing.
+async fn login_state_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let view = login::view(&state, &name).await?;
+    Ok(Json(json!({ "ok": true, "data": view })))
+}
+
+/// The one write. `action` names the step; nothing else about the request can
+/// change which keys land on the pty.
+#[derive(Debug, Deserialize)]
+struct LoginActionInput {
+    action: String,
+    /// `method` — 0-based row in `Select login method:`.
+    #[serde(default)]
+    index: Option<usize>,
+    /// `code` — the full `code#state` string from the callback page.
+    ///
+    /// THIS FIELD IS A CREDENTIAL. It is validated, written to the pty and
+    /// dropped: it is never stored in `last_send_text`, never put on the SSE
+    /// stream, never written to a log line, and it is not echoed in the
+    /// response. `#[serde(default)]` so a body without it deserialises rather
+    /// than erroring with the field name in a 422 the log might carry.
+    #[serde(default)]
+    code: Option<String>,
+    /// `code` — send Ctrl-U first. Set on a RETRY only (see `login::submit_code`).
+    #[serde(default)]
+    clear: bool,
+    /// `start` — drive `/design-login` instead of `/login`.
+    #[serde(default)]
+    design: bool,
+}
+
+/// `POST /api/sessions/{name}/login`
+async fn login_action_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(input): Json<LoginActionInput>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    match input.action.as_str() {
+        "start" => {
+            login::start(&state, &name, input.design).await?;
+        }
+        "method" => {
+            login::choose_method(&state, &name, input.index.unwrap_or(0)).await?;
+        }
+        "code" => {
+            let code = input
+                .code
+                .as_deref()
+                .ok_or_else(|| AppError::BadRequest("no login code in the request".into()))?;
+            login::submit_code(&state, &name, code, input.clear).await?;
+        }
+        // The mandatory Enter on `Login successful` — it is what writes
+        // `hasCompletedOnboarding`. See `login::confirm`.
+        "confirm" => login::confirm(&state, &name).await?,
+        "cancel" => login::cancel(&state, &name).await?,
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "unknown login action '{other}' (start|method|code|confirm|cancel)"
+            )))
+        }
+    }
     Ok(Json(json!({ "ok": true })))
 }
 

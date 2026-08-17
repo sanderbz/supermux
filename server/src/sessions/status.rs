@@ -554,6 +554,28 @@ impl StatusDetector {
             return Status::Waiting;
         }
 
+        // ── 0b. the OAuth login dialog ───────────────────────────────────────
+        // `/login` is pty-only and hook-silent: no `Notification` fires for it,
+        // and it is usually reached FROM a turn that died on a 401 — so the turn
+        // state machine below sees `turn_start > turn_end` and pins Active for
+        // the full TURN_SAFETY window. The result, verified live, is a session
+        // parked on `Paste code here if prompted > ` wearing a busy spinner (or,
+        // once the window lapses, a green Idle dot) while it is in fact the most
+        // blocked a session can be — nothing at all happens until a human pastes
+        // a credential into it.
+        //
+        // This pre-empts the turn machine for the same reason the interrupt
+        // marker above does: the screen is unambiguous and the hooks are not
+        // going to say anything. Provider-agnostic on purpose — codex prints
+        // its own device-auth screen (`super::login::read_login` reads the
+        // Claude shapes; the device-code lines are matched here so its dot is
+        // at least honest).
+        if super::login::read_login(capture).is_some()
+            || super::login::read_provider_auth(capture).is_some()
+        {
+            return Status::Waiting;
+        }
+
         // ── 1. hook TURN STATE MACHINE (the multi-signal apex) ───────────────
         // The per-turn hook timestamps come straight from the agent runtime — the
         // most authoritative signal we have — so they OUTRANK the regex bank and

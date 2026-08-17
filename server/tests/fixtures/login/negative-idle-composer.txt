@@ -1,0 +1,9 @@
+▐▛███▜▌ Claude Code v2.1.227
+▝▜█████▛▘ Sonnet 4.5 · Claude Max
+  ▘▘ ▝▝  ~/projects/supermux
+
+> summarise the diff
+
+⏺ Done — three files, all in the renderer.
+
+❯ 

@@ -663,6 +663,14 @@ async fn submit_gap(rt: &dyn SessionRuntime) {
     }
 }
 
+/// [`submit_gap`], for the one writer that does not go through `send_*`: the
+/// login driver (`super::login`) writes to the runtime directly, because the
+/// login freeze exists precisely to refuse everybody else — and it needs the
+/// same text-then-Enter gap every other site gets.
+pub(super) async fn submit_gap_for(rt: &dyn SessionRuntime) {
+    submit_gap(rt).await;
+}
+
 async fn require_session(state: &AppState, name: &str) -> Result<Session, AppError> {
     db::sessions::get(&state.pool, name)
         .await?
@@ -1264,6 +1272,23 @@ pub async fn send_harness_text(
     if !db::sessions::exists_active(&state.pool, name).await? {
         return Err(AppError::NotFound(format!("session '{name}'")));
     }
+    // LOGIN FREEZE (the one seam every automatic writer passes through).
+    //
+    // A `/login` in flight is holding a PKCE `code_verifier` and a `state` nonce
+    // that exist ONLY inside the running CLI process, and the masked field is
+    // waiting on a paste. Three lines down this function AUTO-STARTS a session
+    // that is not alive — so a scheduled fire, a delegated prompt, a board
+    // dispatch or a steering delivery landing here mid-login either types into
+    // the credential field or restarts the process holding the verifier. Either
+    // way the code the user is copying out of their browser at that moment is
+    // already dead, and the failure surfaces as "Authentication failed: Invalid
+    // authorization code" with nothing in the UI able to explain it.
+    //
+    // The refusal is a 409 with a sentence, not a silent drop: the caller (and
+    // the schedule that will retry) is told what is happening.
+    if super::login::is_frozen(name) {
+        return Err(super::login::frozen_error(name));
+    }
     let rt = state.runtime_for(name).await?;
     // Auto-wake BEFORE taking the lock (start() acquires it itself).
     if !rt.alive().await {
@@ -1286,6 +1311,13 @@ pub async fn send_harness_text(
 pub async fn send_keys(state: &AppState, name: &str, key: &str) -> Result<(), AppError> {
     if !KEY_ALLOWLIST.contains(key) {
         return Err(AppError::BadRequest(format!("key '{key}' not in allowlist")));
+    }
+    // See `send_harness_text`: while a login is in flight the pty belongs to the
+    // login flow's own writer (`login::submit_code` and friends), which reaches
+    // the runtime directly. A stray `Enter` from anywhere else submits a
+    // half-typed credential field.
+    if super::login::is_frozen(name) {
+        return Err(super::login::frozen_error(name));
     }
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
@@ -1313,6 +1345,9 @@ pub async fn paste(
     submit: bool,
 ) -> Result<(), AppError> {
     reject_wrapper_markup(text)?;
+    if super::login::is_frozen(name) {
+        return Err(super::login::frozen_error(name));
+    }
     let lock = state.lock_for(name);
     let _guard = lock.lock().await;
 
@@ -1328,7 +1363,14 @@ pub async fn paste(
         submit_gap(rt.as_ref()).await;
         rt.send_key("Enter").await?;
     }
-    let (preview, at) = db::sessions::set_last_send(&state.pool, name, text).await?;
+    // REDACTION. `last_send_text` is the roster's send preview and it is
+    // persisted; a user who pastes an OAuth `code#state` into the generic paste
+    // box (the way the flow had to be driven before this feature existed) would
+    // otherwise write a live credential into the database and onto every
+    // connected client's SSE stream. The mask is applied to what is STORED and
+    // broadcast, never to what was written to the pty.
+    let stored = super::login::mask_codes(text);
+    let (preview, at) = db::sessions::set_last_send(&state.pool, name, &stored).await?;
     broadcast_send(state, name, &preview, at);
     Ok(())
 }
