@@ -33,7 +33,7 @@
 //! | a buffer of exactly `c` copies the URL and **clears the field** — and authorization codes commonly start with `c` | the code is written as ONE bracketed-paste burst, never char-by-char ([`paste_burst`]) |
 //! | the PKCE verifier dies with the process | [`freeze`], and `Invalid code` is re-prompted IN PLACE — never by respawning |
 //! | `hasCompletedOnboarding` is written only by the Enter on `Login successful` | [`Stage::Success`] is a state the UI must still act on, not a terminus |
-//! | the paste prompt has **no trailing newline**, so any byte written after it re-matches | the prompt is required to be the LAST content row, and rejection is read off the `Invalid code…` line rather than off a reappearance count |
+//! | the paste prompt has **no trailing newline**, so any byte written after it re-matches | the prompt is required to be the last row that is not TUI CHROME ([`is_chrome_row`]), and rejection is read off the `Invalid code…` line rather than off a reappearance count |
 //! | the authorize host moved to `claude.com` (`redirect_uri` `platform.claude.com`) | [`URL_HOSTS`] |
 //! | `/design-login` prints the IDENTICAL prompt string | [`Flow`], disambiguated on the lines above the prompt |
 //! | the field is masked, so nothing echoes back | success is confirmed from `Login successful`, never from an echo read |
@@ -217,16 +217,92 @@ fn window(lines: &[&str]) -> Option<(usize, usize)> {
     Some((start, tail))
 }
 
-/// Is this row the live paste prompt? The prompt is drawn with no trailing
-/// newline and the field is masked, so the live shape is the prompt, optionally
-/// followed by asterisks, at the very end of the capture.
+/// The dismissal hints Claude Code prints UNDER a live dialog, verbatim. They are
+/// drawn below the element that is waiting, so a reader that anchors on the last
+/// content row reads the footer instead of the field.
+const FOOTER_HINTS: &[&str] = &[
+    "Esc to cancel",
+    "Esc to exit",
+    "Esc to go back",
+    "Enter to confirm",
+    "Enter to select",
+    "Enter to continue",
+    "↑/↓ to navigate",
+    "Tab to amend",
+    "ctrl+e to explain",
+];
+
+/// A row the TUI draws BELOW the thing that is waiting, and which therefore does
+/// NOT end a dialog.
+///
+/// THIS IS THE BUG THIS FUNCTION EXISTS FOR. Claude Code 2.1.233 draws the
+/// paste field like this:
+///
+/// ```text
+///   Paste code here if prompted >
+///
+///   Esc to cancel
+/// ```
+///
+/// — two blank rows and a dismissal footer under the field, plus (in a session
+/// whose composer box is on screen) the box rule and the permission-mode row. A
+/// lens that asked "is the LAST content row the paste prompt?" therefore read
+/// `Esc to cancel`, matched nothing, and returned `None` while an OAuth code was
+/// live on the screen: no card, and — worse — [`observe`] counted login-free
+/// captures and released the supervision freeze mid-flow, which is exactly when
+/// an auto-heal invalidates the PKCE verifier the user is copying a code for.
+///
+/// Deliberately a SHORT list of the TUI's own furniture rather than "skip
+/// anything that is not a prompt": a screen this module does not recognise must
+/// still fall through to "no login here".
+fn is_chrome_row(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return true;
+    }
+    // The permission-mode row under the composer box: `⏵⏵ auto mode on …`.
+    if t.starts_with('⏵') {
+        return true;
+    }
+    // A box rule, with or without a label inside it (`──── session ─────`).
+    if t.contains("────")
+        && t.chars()
+            .filter(|c| !matches!(c, '─' | '━' | '═' | ' '))
+            .count()
+            <= 40
+    {
+        return true;
+    }
+    // The dismissal footer, whole or joined by the TUI's own `·` separator.
+    t.split('·')
+        .all(|seg| FOOTER_HINTS.contains(&seg.trim().trim_end_matches('.')))
+}
+
+/// The last row in the window that is not [`is_chrome_row`] — the element that
+/// is actually waiting.
+fn last_live_row(lines: &[&str], start: usize, tail: usize) -> Option<usize> {
+    (start..=tail).rev().find(|&i| !is_chrome_row(lines[i]))
+}
+
+/// Is this row the live paste prompt?
+///
+/// The prompt is drawn with no trailing newline, so the live shape is the prompt
+/// followed by whatever the FIELD currently holds. That is `*`/`•` on a version
+/// that masks it and — verified live on 2.1.233 — the typed characters
+/// themselves on one that does not, so the contents are accepted either way: a
+/// lens that only knew the masked shape stopped seeing the login the instant a
+/// code was pasted into it, which is the one moment the freeze must hold.
+///
+/// The one thing the field may NOT contain is whitespace. That is what keeps
+/// prose quoting the prompt (`labelled \`Paste code here if prompted > \` for
+/// the …`) out, independently of the window rule above.
 fn is_paste_row(line: &str) -> bool {
     let Some(i) = line.find(PASTE_PROMPT) else {
         return false;
     };
     let rest = line[i + PASTE_PROMPT.len()..].trim_start();
     let rest = rest.strip_prefix('>').unwrap_or(rest).trim();
-    rest.chars().all(|c| c == '*' || c == '•' || c == '·')
+    !rest.chars().any(char::is_whitespace)
 }
 
 /// Characters that may appear in a URL continuation row. Deliberately narrow: a
@@ -398,10 +474,12 @@ pub fn read_login(capture: &str) -> Option<LoginSighting> {
         });
     }
 
-    // ANCHORED at the bottom: the prompt is drawn with no trailing newline, so
-    // the live one is the last thing on the screen. Anywhere else it is prose
+    // ANCHORED at the bottom, THROUGH THE CHROME: the prompt is drawn with no
+    // trailing newline, so the live one is the last thing on the screen that is
+    // not the dialog's own furniture (blank rows, `Esc to cancel`, the box rule,
+    // the mode row — see `is_chrome_row`). Anywhere above that it is prose
     // quoting it, or a login that has already been answered.
-    if is_paste_row(lines[tail]) {
+    if last_live_row(&lines, start, tail).is_some_and(|i| is_paste_row(lines[i])) {
         let message = win
             .iter()
             .rposition(|l| l.contains(INVALID_LINE))
@@ -934,6 +1012,70 @@ mod tests {
         let code = "cQfTy2QK9nZ8vLpR3sWx7mBd4gHj1kAe#hVQ0m2rXqvY7bK1cLp9sTfR8dNzE4uJa";
         assert!(!mask_codes(&format!("pasted {code} ok")).contains(code));
         assert_eq!(mask_codes("run #42 again"), "run #42 again");
+    }
+
+    /// The real Claude Code 2.1.233 in-session `/login`, captured from a live
+    /// pty at 100 columns: the composer echo of the slash command, the dialog's
+    /// box rule, the URL block, then the field with TWO blank rows and
+    /// `Esc to cancel` UNDER it.
+    const CC233_PASTE: &str = "\
+❯ /login
+
+────────────────────────────────────────
+  Login
+
+  Browser didn't open? Use the url below to sign in (c to copy)
+
+https://claude.com/cai/oauth/authorize?code=true&state=qdmN08Ic1LHPEqrasmcGdxuuUbs0F6btgz7tWcVdfdY
+
+
+  Paste code here if prompted >
+
+  Esc to cancel";
+
+    #[test]
+    fn the_field_is_seen_through_the_footer_the_tui_draws_under_it() {
+        let got = read_login(CC233_PASTE).expect("2.1.233 draws a paste prompt here");
+        assert_eq!(got.stage, Stage::PastePrompt);
+        assert!(got.url.is_some_and(|u| u.contains("claude.com")));
+    }
+
+    #[test]
+    fn the_field_is_still_seen_once_a_code_is_in_it() {
+        // 2.1.233 does NOT mask this field — it echoes what was typed. A lens
+        // that only knew the masked shape went blind at the exact moment the
+        // code was on the screen, and the freeze released under it.
+        let typed = CC233_PASTE.replace(
+            "Paste code here if prompted >",
+            "Paste code here if prompted > c0de#state",
+        );
+        assert_eq!(read_login(&typed).unwrap().stage, Stage::PastePrompt);
+        let masked = CC233_PASTE.replace(
+            "Paste code here if prompted >",
+            "Paste code here if prompted > ********",
+        );
+        assert_eq!(read_login(&masked).unwrap().stage, Stage::PastePrompt);
+    }
+
+    #[test]
+    fn prose_quoting_the_prompt_is_not_a_field() {
+        // The row rule alone has to hold, independently of the composer rule:
+        // the field's contents never contain whitespace.
+        assert!(!is_paste_row("  labelled `Paste code here if prompted > ` for the code"));
+        assert!(is_paste_row("  Paste code here if prompted > "));
+    }
+
+    #[test]
+    fn an_error_under_the_field_still_reads_as_an_error() {
+        // Ordering guard for the chrome skip: `Press Enter to retry.` is NOT
+        // chrome, so the error screen never degrades into "still waiting".
+        let cap = format!("{CC233_PASTE}\n\n  OAuth error: Request failed with status code 400\n\n  Press Enter to retry.\n\n  Esc to cancel");
+        let got = read_login(&cap).unwrap();
+        assert_eq!(got.stage, Stage::Error);
+        assert_eq!(
+            got.message.as_deref(),
+            Some("OAuth error: Request failed with status code 400")
+        );
     }
 
     #[test]

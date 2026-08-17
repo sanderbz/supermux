@@ -301,7 +301,150 @@ CASES.append(
     }
 )
 
-# ── 15-17. the other providers ───────────────────────────────────────────────
+# ── 15-18. CLAUDE CODE 2.1.233, VERBATIM OFF A LIVE PTY ──────────────────────
+#
+# Provenance: `tmux new-session -x 100 -y 40 claude` (2.1.233) in this repo,
+# `/login` typed into the running session, `capture-pane -p` after each step,
+# 2026-08-17. The URL's PKCE/state values are replaced with same-length
+# gibberish; every other byte is the grid as it was.
+#
+# WHAT THESE PIN, and what shipped without them: the in-session dialog draws the
+# composer's echo of the slash command ABOVE it, and BELOW the waiting element it
+# draws blank rows plus `Esc to cancel`. Every fixture above ends ON the paste
+# prompt, so a lens that anchored the field to the last content row passed the
+# whole corpus and then read `Esc to cancel` on the real screen: no card, and the
+# supervision freeze released while an OAuth code was live (`login.rs` observe →
+# CLEAN_TICKS_TO_RELEASE). The 2.1.233 field also does NOT mask — it echoes what
+# was typed — which is why `field-typed` is here beside it.
+CC233_RULE = "─" * 100
+
+
+def cc233(body):
+    """The in-session dialog, with the chrome 2.1.233 actually draws around it."""
+    return [
+        " ▐▛███▜▌   Claude Code v2.1.233",
+        "▝▜█████▛▘  Opus 5 (1M context) with high effort · Claude Max",
+        "  ▘▘ ▝▝    /opt/projects/supermux",
+        "",
+        "",
+        "❯ /login",
+        "",
+        CC233_RULE,
+        "  Login",
+        "",
+    ] + body
+
+
+case(
+    "cc233-paste-prompt",
+    cc233(
+        [
+            "  Browser didn't open? Use the url below to sign in (c to copy)",
+            "",
+            URL,
+            "",
+            "",
+            "  " + PASTE.rstrip(),
+            "",
+            "  Esc to cancel",
+        ]
+    ),
+    100,
+    stage="paste_prompt",
+    flow="account",
+    url=URL,
+    waiting=True,
+)
+
+case(
+    "cc233-field-typed",
+    cc233(
+        [
+            "  Browser didn't open? Use the url below to sign in (c to copy)",
+            "",
+            URL,
+            "",
+            "",
+            "  " + PASTE.rstrip() + " ac_9kQ2#hVQ0m2rXqvY7bK1cLp9sTfR8dNzE4uJa",
+            "",
+            "  Esc to cancel",
+        ]
+    ),
+    100,
+    stage="paste_prompt",
+    flow="account",
+    url=URL,
+    waiting=True,
+)
+
+case(
+    "cc233-method-select",
+    cc233(
+        [
+            "  Claude Code can be used with your Claude subscription or billed based on API usage through your",
+            "  Console account.",
+            "",
+            "  Select login method:",
+            "",
+            "  ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise",
+            "    2. Anthropic Console account · API usage billing",
+            "    3. 3rd-party platform · Amazon Bedrock, Microsoft Foundry, or Vertex AI",
+            "",
+            "  Esc to cancel",
+        ]
+    ),
+    100,
+    stage="method_select",
+    flow="account",
+    options=[
+        "Claude account with subscription · Pro, Max, Team, or Enterprise",
+        "Anthropic Console account · API usage billing",
+        "3rd-party platform · Amazon Bedrock, Microsoft Foundry, or Vertex AI",
+    ],
+    waiting=True,
+)
+
+# The rejection, re-prompted in place — with the footer under it. `Press Enter to
+# retry.` is deliberately NOT in the chrome list: an error screen must never
+# degrade into "still waiting for a code".
+case(
+    "cc233-invalid",
+    cc233(
+        [
+            "  Invalid code. Please make sure the full code was copied",
+            "",
+            "  " + PASTE.rstrip(),
+            "",
+            "  Esc to cancel",
+        ]
+    ),
+    100,
+    stage="invalid",
+    flow="account",
+    message="Invalid code. Please make sure the full code was copied",
+    waiting=True,
+)
+
+case(
+    "cc233-oauth-error",
+    cc233(
+        [
+            "  OAuth error: Request failed with status code 400",
+            "",
+            "",
+            "  Press Enter to retry.",
+            "",
+            "  Esc to cancel",
+        ]
+    ),
+    100,
+    stage="error",
+    flow="account",
+    message="OAuth error: Request failed with status code 400",
+    waiting=True,
+)
+
+# ── 19-21. the other providers ───────────────────────────────────────────────
 # Detected and EXPLAINED, not driven: codex's and kimi's device lifecycles are
 # their own, and a half-automation that gets the timing wrong is worse than a
 # card that says what is happening and hands over.

@@ -1,0 +1,15 @@
+ ▐▛███▜▌   Claude Code v2.1.233
+▝▜█████▛▘  Opus 5 (1M context) with high effort · Claude Max
+  ▘▘ ▝▝    /opt/projects/supermux
+
+
+❯ /login
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Login
+
+  Invalid code. Please make sure the full code was copied
+
+  Paste code here if prompted >
+
+  Esc to cancel

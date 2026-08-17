@@ -1,0 +1,16 @@
+ ▐▛███▜▌   Claude Code v2.1.233
+▝▜█████▛▘  Opus 5 (1M context) with high effort · Claude Max
+  ▘▘ ▝▝    /opt/projects/supermux
+
+
+❯ /login
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Login
+
+  OAuth error: Request failed with status code 400
+
+
+  Press Enter to retry.
+
+  Esc to cancel

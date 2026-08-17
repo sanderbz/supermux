@@ -104,17 +104,68 @@ function windowOf(lines: readonly string[]): [number, number] | null {
   return start > tail ? null : [start, tail]
 }
 
-/** Is this row the LIVE paste prompt? The prompt is drawn with no trailing
- *  newline and the field is masked, so the live shape is the prompt — optionally
- *  followed by asterisks — at the very end of the capture. Anchoring it there is
- *  what keeps a login in the scrollback, and a paragraph quoting the prompt, out
- *  of the card. */
+/** The dismissal hints Claude Code prints UNDER a live dialog, verbatim. */
+const FOOTER_HINTS = [
+  'Esc to cancel',
+  'Esc to exit',
+  'Esc to go back',
+  'Enter to confirm',
+  'Enter to select',
+  'Enter to continue',
+  '↑/↓ to navigate',
+  'Tab to amend',
+  'ctrl+e to explain',
+]
+
+/**
+ * A row the TUI draws BELOW the thing that is waiting — so it does NOT end a
+ * dialog. Twin of `login.rs::is_chrome_row`, and the whole reason both exist:
+ * Claude Code 2.1.233 draws
+ *
+ *     Paste code here if prompted >
+ *
+ *     Esc to cancel
+ *
+ * — blank rows and a dismissal footer under the field (plus, when the composer
+ * box is on screen, its rule and the permission-mode row). A lens that asked "is
+ * the LAST content row the paste prompt?" read `Esc to cancel`, matched nothing,
+ * and drew no card at all while an OAuth code was live.
+ *
+ * Deliberately a SHORT list of the TUI's own furniture: an unrecognised screen
+ * must still fall through to "no login here".
+ */
+function isChromeRow(line: string): boolean {
+  const t = line.trim()
+  if (!t) return true
+  if (t.startsWith('⏵')) return true
+  if (t.includes('────') && t.replace(/[─━═ ]/g, '').length <= 40) return true
+  return t.split('·').every((seg) => FOOTER_HINTS.includes(seg.trim().replace(/\.$/, '')))
+}
+
+/** The last row of the window that is not chrome — the element actually waiting. */
+function lastLiveRow(lines: readonly string[], start: number, tail: number): number {
+  for (let i = tail; i >= start; i--) if (!isChromeRow(lines[i])) return i
+  return -1
+}
+
+/**
+ * Is this row the LIVE paste prompt?
+ *
+ * The prompt is drawn with no trailing newline, so the live shape is the prompt
+ * followed by whatever the FIELD holds — `*`/`•` on a version that masks it, and
+ * (verified live on 2.1.233) the typed characters themselves on one that does
+ * not. Both are accepted: a lens that only knew the masked shape went blind at
+ * the exact moment a code was on the screen.
+ *
+ * What the field may NOT contain is whitespace, and that is what keeps a
+ * paragraph quoting the prompt out of the card independently of the window rule.
+ */
 function isPasteRow(line: string): boolean {
   const i = line.indexOf(PASTE_PROMPT)
   if (i < 0) return false
   let rest = line.slice(i + PASTE_PROMPT.length).trimStart()
   if (rest.startsWith('>')) rest = rest.slice(1)
-  return /^[*•·]*$/.test(rest.trim())
+  return !/\s/.test(rest.trim())
 }
 
 const URL_CHAR = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/
@@ -243,7 +294,9 @@ export function readLogin(capture: string): LoginSighting | null {
     }
   }
 
-  if (isPasteRow(lines[tail])) {
+  // ANCHORED at the bottom, THROUGH THE CHROME — see `isChromeRow`.
+  const live = lastLiveRow(lines, start, tail)
+  if (live >= 0 && isPasteRow(lines[live])) {
     let at = -1
     for (let i = win.length - 1; i >= 0; i--) {
       if (win[i].includes(INVALID_LINE)) {

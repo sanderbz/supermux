@@ -46,10 +46,34 @@ PASTE = "Paste code here if prompted > "
 BURST_START = b"\x1b[200~"
 BURST_END = b"\x1b[201~"
 
+# THE CHROME UNDER THE FIELD, which is why this harness exists at all.
+#
+# Claude Code 2.1.233 draws two blank rows and its dismissal footer BELOW the
+# waiting field (verified on a live pty, 2026-08-17; the same rows are pinned as
+# `cc233-*.txt` in the corpus beside this file). A fake provider that ended on
+# the prompt let a tail-anchored reader pass every test in the repo and then read
+# `Esc to cancel` on the real screen — no card, and the supervision freeze
+# releasing while an OAuth code was live. So the fake draws the footer too, and
+# puts the cursor back on the field the way the real TUI's repaint does.
+FOOTER = "\r\n\r\n  Esc to cancel"
+
 
 def out(s):
     sys.stdout.write(s)
     sys.stdout.flush()
+
+
+def prompt():
+    """The field plus the footer under it, cursor back at the end of the label."""
+    out(PASTE)
+    out(FOOTER)
+    out("\x1b[2A")  # up, past the blank row, onto the field's own row
+    out("\r\x1b[%dC" % len(PASTE))  # and along to where the typing goes
+
+
+def below_footer():
+    """Move past the footer, so the next thing printed does not land on it."""
+    out("\x1b[2B\r\n")
 
 
 def read_masked():
@@ -93,9 +117,10 @@ def main():
     out("\r\n")
     out(URL + "\r\n")
     out("\r\n")
-    # NO trailing newline — this is the documented trap the lens's anchoring
-    # depends on, so the fake must reproduce it.
-    out(PASTE)
+    # NO trailing newline on the prompt itself — that is the documented trap the
+    # lens's anchoring depends on — and the dismissal footer under it, which is
+    # what the anchoring has to see THROUGH.
+    prompt()
 
     while True:
         code = read_masked()
@@ -105,13 +130,15 @@ def main():
         # "re-prompt in place, never respawn".
         if "#" in code and len(code) > 8 and not code.startswith("bad"):
             break
-        out("\r\n\r\nInvalid code. Please make sure the full code was copied\r\n\r\n")
-        out(PASTE)
+        below_footer()
+        out("Invalid code. Please make sure the full code was copied\r\n\r\n")
+        prompt()
 
     with open(RESULT, "w") as fh:
         fh.write(code)
 
-    out("\r\n\r\nLogged in as sander@example.com\r\n\r\n")
+    below_footer()
+    out("Logged in as sander@example.com\r\n\r\n")
     out("Login successful. Press Enter to continue…")
 
     # The mandatory Enter. In the real CLI this keypress writes the onboarding

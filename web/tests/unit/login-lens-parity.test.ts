@@ -165,3 +165,43 @@ describe('the code field', () => {
     expect(masked).toMatch(/^•+$/)
   })
 })
+
+/* ── the 2.1.233 screen, and the card that owns it ───────────────────────── */
+
+describe('what Claude Code 2.1.233 actually draws', () => {
+  const cc233 = (name: string) =>
+    capture({ file: `${name}.txt` } as CorpusRow)
+
+  test('the field is found THROUGH the footer the TUI draws under it', () => {
+    // The `cc233-*` captures came off a live pty (see the corpus' build.py):
+    // two blank rows and `Esc to cancel` sit BELOW the waiting field, and the
+    // in-session dialog is drawn under the composer's echo of `/login` and a
+    // box rule. Every earlier fixture ends ON the prompt, so a lens anchored to
+    // the last content row passed the whole corpus and then read `Esc to
+    // cancel` on the real screen: no card at all while an OAuth code was live.
+    const got = readLogin(cc233('cc233-paste-prompt'))
+    expect(got?.stage).toBe('paste_prompt')
+    expect(got?.url).toContain('claude.com/cai/oauth/authorize')
+  })
+
+  test('the field is still found once a code is IN it', () => {
+    // 2.1.233 does not mask this field — it echoes what was typed. A lens that
+    // only knew the masked shape went blind at the one moment the freeze has to
+    // hold: while the code is on the screen.
+    expect(readLogin(cc233('cc233-field-typed'))?.stage).toBe('paste_prompt')
+  })
+
+  test('a rejection under the same footer is a re-prompt, not a dead end', () => {
+    const got = readLogin(cc233('cc233-invalid'))
+    expect(got?.stage).toBe('invalid')
+    expect(got?.message).toBe('Invalid code. Please make sure the full code was copied')
+  })
+
+  test('an error screen never degrades into "still waiting"', () => {
+    // `Press Enter to retry.` is deliberately NOT treated as chrome: skipping
+    // it would let a stale paste row above win the read.
+    const got = readLogin(cc233('cc233-oauth-error'))
+    expect(got?.stage).toBe('error')
+    expect(got?.message).toBe('OAuth error: Request failed with status code 400')
+  })
+})
