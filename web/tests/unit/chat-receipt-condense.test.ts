@@ -93,4 +93,38 @@ describe('toReceiptRows', () => {
     expect(row.full?.startsWith('failed · ')).toBe(true)
     expect(row.full).toContain(long.trim())
   })
+
+  /**
+   * A DENIAL IS A DECISION, NOT A DEFECT (round-2 finding 30).
+   *
+   * The server has always labelled a refused tool_result `denied`
+   * (`parser.rs::is_denial`) precisely so this row could say "you declined
+   * this" instead of drawing a success tick beside a refusal — and the label was
+   * write-only: `grep -rn "'denied'" web/src/components/chat` found one write
+   * and no read, while the row printed `failed · The user doesn't want to
+   * proceed with this tool use…` for something the user chose on purpose.
+   */
+  test('a declined call says declined, collapsed and expanded', () => {
+    const reason = 'The user doesn’t want to proceed with this tool use. '.repeat(4)
+    const [row] = toReceiptRows([
+      { uuid: 'a', label: 'Bash rm -rf /tmp/x', result: reason, ok: false, denied: true },
+    ])
+    expect(row.outcome?.startsWith('declined · ')).toBe(true)
+    expect(row.full?.startsWith('declined · ')).toBe(true)
+    expect(row.outcome).not.toContain('failed')
+    // The clamp still leaves the row exactly as long as a failed one: the verb
+    // is two characters longer than "failed" and the room arithmetic follows the
+    // verb, so the collapsed row's width does not move.
+    const [failed] = toReceiptRows([
+      { uuid: 'a', label: 'Bash rm -rf /tmp/x', result: reason, ok: false },
+    ])
+    expect(row.outcome!.length).toBe(failed.outcome!.length)
+  })
+
+  test('…and a call that genuinely failed still says failed', () => {
+    const [row] = toReceiptRows([
+      { uuid: 'a', label: 'Bash cat missing.txt', result: 'No such file', ok: false },
+    ])
+    expect(row.outcome).toBe('failed · No such file')
+  })
 })

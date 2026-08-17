@@ -501,13 +501,19 @@ function firstLine(text: string | undefined): string {
 export function toReceiptRows(lines: readonly ReceiptLine[]): Receipt[] {
   return lines.map((line) => {
     const result = firstLine(line.result)
-    const room = line.ok === false ? OUTCOME_MAX - 9 : OUTCOME_MAX
+    // DECLINED IS NOT FAILED. A denial is the user's own decision, arriving on
+    // the same `ok === false` as a broken call, and reporting it back as a
+    // failure told somebody their choice was a malfunction. Same column, same
+    // calm tone, one different word — and the same width arithmetic, since
+    // "declined · " is one character wider than "failed · " (see `room`).
+    const verb = line.denied ? 'declined' : 'failed'
+    const room = line.ok === false ? OUTCOME_MAX - (verb.length + 3) : OUTCOME_MAX
     const clamped = result.length > room
     const outcome =
       line.ok === false
         ? result
-          ? `failed · ${clamp(result, room)}`
-          : 'failed'
+          ? `${verb} · ${clamp(result, room)}`
+          : verb
         : result
           ? clamp(result, room)
           : undefined
@@ -526,7 +532,7 @@ export function toReceiptRows(lines: readonly ReceiptLine[]): Receipt[] {
     // The expanded row shows this INSTEAD of the outcome, so dropping it would
     // turn a failure into something that reads like a result — on the very tap a
     // user makes because the short line was unreadable.
-    if (clamped) row.full = line.ok === false ? `failed · ${result}` : result
+    if (clamped) row.full = line.ok === false ? `${verb} · ${result}` : result
     return row
   })
 }

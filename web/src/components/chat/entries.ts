@@ -46,6 +46,17 @@ export interface ChatEntry {
    * and visibly no longer part of the conversation.
    */
   retracted?: boolean
+  /**
+   * `kind: 'tool_use'` only — the user DECLINED this call.
+   *
+   * A denial is not a failure: nothing broke, somebody decided. The server has
+   * always labelled it (`parser.rs::is_denial`, whose own comment says the label
+   * "is what lets the renderer say you declined this instead of drawing a
+   * success tick next to a refusal"), and the renderer went on printing
+   * `failed · The user doesn't want to proceed with this tool use…` — reporting
+   * a person's decision back to them as a broken tool.
+   */
+  denied?: boolean
 }
 
 export interface ReceiptLine {
@@ -53,6 +64,8 @@ export interface ReceiptLine {
   label: string
   ok?: boolean
   result?: string
+  /** The user declined this call — see `ChatEntry.denied`. */
+  denied?: boolean
 }
 
 export type ChatItem =
@@ -158,6 +171,7 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         label: e.text,
         ok: e.ok,
         result: e.reply,
+        denied: e.denied,
       }
       const last = out[out.length - 1]
       if (last && last.type === 'receipts') {

@@ -264,7 +264,11 @@ describe('the AskUserQuestion pair folds into one answered receipt', () => {
     const entries = toChatEntries([use, wireFrom(deny, 2)])
     expect(entries).toHaveLength(1)
     expect(entries[0].ok).toBe(false)
-    expect(entries[0].label).toBe('denied')
+    // The DENIAL rides as its own flag, not as the label: the label is the
+    // tool's name, and the flag is what the receipt row reads to say "declined"
+    // instead of "failed" (round-2 finding 30 — as a label it was write-only).
+    expect(entries[0].denied).toBe(true)
+    expect(entries[0].label).toBe('Bash')
   })
 
   test('a tool whose output merely QUOTES the refusal is still a success', () => {

@@ -761,9 +761,12 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       const text = answerLine(w.body) ?? preview(toolResultText(w.body))
       if (text) target.reply = text
       // A DENIAL is a decision, not an output (`parser.rs::is_denial` labels
-      // it). Without the label the row read as "✓ Bash … → The user doesn't
-      // want to proceed" — a tick beside a refusal.
-      if (w.label === 'denied') target.label = 'denied'
+      // it). Without it the row read as "✓ Bash … → The user doesn't want to
+      // proceed" — a tick beside a refusal. It rides as its own FLAG rather than
+      // as the label, because the label is the tool's name and because the flag
+      // is what the receipt row reads: carried as a label it was write-only, and
+      // the row went on saying `failed · …` for something the user chose.
+      if (w.label === 'denied') target.denied = true
       // The receipt now carries a clipped tool OUTPUT; the flag belongs to the
       // row the user sees, which is the tool_use.
       if (w.truncated) target.truncated = true
