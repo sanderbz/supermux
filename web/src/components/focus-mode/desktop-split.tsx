@@ -893,7 +893,13 @@ export function DesktopSplit({
           // T3) while the rest of the dock — snippets, attach, palette, detach,
           // stop — keeps working through the input plane.
           onSendKey={(label) => termRef.current?.sendKey(label)}
-          rawKeys={!chatActive}
+          // `!stopped` joins `!chatActive`: the chat renderer is only ONE of the
+          // two ways to have no pty behind this pane. With a dead pty the pane
+          // already swaps to `<StoppedSession>` — and the send row kept offering
+          // Esc / Tab / Ctrl-C / Ctrl-U over it, four chips aimed at a process
+          // that is not there. Start session / Resume are the live controls
+          // there, and now the only ones.
+          rawKeys={!chatActive && !stopped}
           onRunSlash={(cmd) => void input.submit(cmd)}
           onSnippets={() => {
             onSnippets?.()

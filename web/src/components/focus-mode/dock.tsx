@@ -409,24 +409,28 @@ export interface MobileDockProps {
    *  a snippet body straight into the terminal (tap-to-insert sends it live). */
   registerInsert?: (insert: ((text: string) => void) | null) => void
   /**
-   * The CHAT renderer owns the pane (fase A5) — reduce the dock to the controls
-   * that still do something.
+   * Is there a pty behind this pane? (`seam.ts`'s `dockRawKeys`.)
    *
-   * Everything hidden by this flag drives raw key BYTES into a pty through the
-   * terminal handle, which is null when no terminal is mounted: the accessory
-   * key strip, the ⌨ keyboard toggle (the composer is the keyboard owner under
-   * chat, and it is one tap away on screen), the KeyBar toggle (the bar itself
-   * is hidden) and the ↵ Enter pill (the composer's Send is the submit, and an
-   * Enter fired blind at the pty would submit whatever draft is sitting at the
-   * `❯` — the exact concatenation the composer's pre-send gate exists to
-   * prevent). Same reduction `desktop-split.tsx` makes with
-   * `rawKeys={!chatActive}`; the mobile dock just has more of them.
+   * Everything this gates drives raw key BYTES into a pty through the terminal
+   * handle, which is null when no terminal is mounted: the accessory key strip,
+   * the ⌨ keyboard toggle (under chat the composer is the keyboard owner, and it
+   * is one tap away on screen), the KeyBar toggle (the bar itself is hidden) and
+   * the ↵ Enter pill (the composer's Send is the submit, and an Enter fired
+   * blind at the pty would submit whatever draft is sitting at the `❯` — the
+   * exact concatenation the composer's pre-send gate exists to prevent). Same
+   * name and same meaning as `DesktopDockProps.rawKeys` above; the mobile dock
+   * just has more of them.
    *
-   * What STAYS works through the input plane, which under chat stages into the
-   * React composer (`composerSessionInput`): the session pill (switch/picker),
-   * snippets, and dictation.
+   * IT IS NOT "AM I UNDER CHAT". This was `chat?: boolean`, and naming it after
+   * one of the two ways to have no pty is what let the other one through: a
+   * STOPPED session (its pane already swapped for the `<StoppedSession>` card)
+   * kept the whole strip, every chip aimed at a process that is not there.
+   *
+   * What STAYS in either case works through the input plane, which under chat
+   * stages into the React composer (`composerSessionInput`): the session pill
+   * (switch/picker), snippets, and dictation.
    */
-  chat?: boolean
+  rawKeys?: boolean
   className?: string
 }
 
@@ -447,7 +451,7 @@ export function MobileDock({
   onEdit,
   editOpen = false,
   registerInsert,
-  chat = false,
+  rawKeys = true,
   className,
 }: MobileDockProps) {
   // ── dictation ──────────────────────────────────────────────────────────────
@@ -591,7 +595,7 @@ export function MobileDock({
           open (the route pins the whole dock above the keyboard via
           `keyboardInset`). Each chip drives `sendKey` — the keys a soft keyboard
           lacks. Soft SF pills, not a terminal keymap. */}
-      {keyboardOpen && !chat && (
+      {keyboardOpen && rawKeys && (
         <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
           {/* Esc / Tab / Ctrl-C — Ctrl-C (interrupt) is preserved here. The
               standalone 📎 attach chip was removed: attach now lives in the
@@ -655,10 +659,11 @@ export function MobileDock({
           editOpen={editOpen}
         />
 
-        {/* Terminal-only, both of them (see the `chat` prop): the keyboard
-            owner under chat is the composer's own textarea, and the KeyBar is
-            hidden there. */}
-        {!chat && (
+        {/* Terminal-only, both of them (see the `rawKeys` prop): with no pty
+            behind the pane there is nothing for either to talk to — under chat
+            the keyboard owner is the composer's own textarea, and under a
+            stopped session there is no keyboard owner at all. */}
+        {rawKeys && (
           <DockIcon
             label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
             onClick={keyboardOpen ? onBlurTerm : onFocusTerm}
@@ -672,7 +677,7 @@ export function MobileDock({
             QuickKeysSheet bottom drawer"; now flips the floating KeyBar's
             persisted open state. The `···` glyph is kept (still reads as
             "more controls"). */}
-        {!chat && (
+        {rawKeys && (
           <DockIcon label="Key bar" active={keyBarOpen} onClick={onToggleKeyBar}>
             <Ellipsis className="size-5" strokeWidth={1.75} />
           </DockIcon>
@@ -714,7 +719,7 @@ export function MobileDock({
 
             ABSENT UNDER CHAT: the composer's Send is the submit there, and this
             pill would fire `\r` at whatever the pty's `❯` is holding. */}
-        {!chat && <EnterButton onSend={() => onSendKey('Enter')} />}
+        {rawKeys && <EnterButton onSend={() => onSendKey('Enter')} />}
       </div>
     </div>
   )

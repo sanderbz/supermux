@@ -109,9 +109,13 @@ export function terminalPaneMounts(
  *     place at a time: a slim row under the focus header while the terminal is
  *     up, the header card's trailing slot once chat is up (the boards' floating
  *     chrome). Never both, or the phone grows a second toolbar.
- *   · `dockChat` — the dock stays (session switching, snippets, dictation all
- *     work through the input plane) but sheds every terminal-only control, the
- *     same reduction `desktop-split.tsx` makes with `rawKeys={!chatActive}`.
+ *   · `dockRawKeys` — the dock stays (session switching, snippets, dictation all
+ *     work through the input plane) but sheds every terminal-only control unless
+ *     there is a pty to send bytes to, the same reduction `desktop-split.tsx`
+ *     makes with its own `rawKeys`. It was `dockChat` — named after ONE of the
+ *     two ways to have no pty, and it therefore missed the other: a stopped
+ *     session kept a full dock of raw-key controls over the `<StoppedSession>`
+ *     card, every one of them a byte aimed at a process that is not there.
  */
 export interface MobileChrome {
   focusHeader: boolean
@@ -119,7 +123,8 @@ export interface MobileChrome {
   joystick: boolean
   switchRow: boolean
   switchInHeader: boolean
-  dockChat: boolean
+  /** Is there a pty behind this pane for the dock's raw keys to reach? */
+  dockRawKeys: boolean
 }
 
 export function mobileChrome(
@@ -138,7 +143,7 @@ export function mobileChrome(
     // a renderer it is not allowed to have.
     switchRow: chatOn && !chatActive,
     switchInHeader: chatActive,
-    dockChat: chatActive,
+    dockRawKeys: !chatActive && !stopped,
   }
 }
 

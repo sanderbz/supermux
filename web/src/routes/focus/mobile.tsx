@@ -860,9 +860,11 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               keyboardOpen={keyboardOpen}
               registerInsert={registerInsert}
               // Reduced dock: the accessory key strip, the ⌨ toggle, the KeyBar
-              // toggle and the ↵ pill all drive raw bytes at a pty that isn't
-              // mounted (fase A5).
-              chat={chrome.dockChat}
+              // toggle and the ↵ pill all drive raw bytes at a pty. Under chat
+              // there is no terminal mounted (fase A5); under a STOPPED session
+              // there is no process at all, and the pane is already showing the
+              // `<StoppedSession>` card — so both are one question, asked once.
+              rawKeys={chrome.dockRawKeys}
             />
           </MobileBottomPanel>
         </MobileSheet>

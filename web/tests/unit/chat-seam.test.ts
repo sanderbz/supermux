@@ -25,6 +25,7 @@
  *      silently did nothing.
  */
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 
 import {
   chatPaneActive,
@@ -120,14 +121,14 @@ describe('mobileChrome — the phone chrome swaps with the pane (fase A5)', () =
       joystick: true,
       switchRow: false,
       switchInHeader: false,
-      dockChat: false,
+      dockRawKeys: true,
     })
   })
 
   test('chat mode hides every surface that writes raw bytes to a pty', () => {
     expect(chat.keyBar).toBe(false)
     expect(chat.joystick).toBe(false)
-    expect(chat.dockChat).toBe(true)
+    expect(chat.dockRawKeys).toBe(false)
   })
 
   test('chat mode drops the focus header — the surface draws its own card', () => {
@@ -177,7 +178,10 @@ describe('the mobile seam end to end', () => {
       renderer,
       chatActive,
       terminal: terminalPaneMounts(opts.settingOn, renderer, chatActive),
-      chrome: mobileChrome(opts.chatOn, chatActive),
+      // The route passes `stopped` too (`paneIsDead(...)`), and leaving it out
+      // here is what let the dead-dock bug through this suite: every stopped
+      // assertion below was measuring the DEFAULT, not the route.
+      chrome: mobileChrome(opts.chatOn, chatActive, opts.status === 'stopped'),
     }
   }
 
@@ -205,7 +209,7 @@ describe('the mobile seam end to end', () => {
       joystick: true,
       switchRow: true,
       switchInHeader: false,
-      dockChat: false,
+      dockRawKeys: true,
     })
   })
 
@@ -227,8 +231,10 @@ describe('the mobile seam end to end', () => {
     const s = seam({ settingOn: true, chatOn: true, resolved: true, status: 'stopped' })
     expect(s.chatActive).toBe(false)
     // The route's own ternary puts StoppedSession ahead of both renderers; what
-    // matters here is that the chat pane never claims it.
-    expect(s.chrome.dockChat).toBe(false)
+    // matters here is that the chat pane never claims it — and that the dock
+    // stops offering raw keys to a pty that is gone.
+    expect(s.chrome.dockRawKeys).toBe(false)
+    expect(s.chrome.keyBar).toBe(false)
   })
 
   test('a stopped session keeps NO raw-key chrome', () => {
@@ -240,11 +246,18 @@ describe('the mobile seam end to end', () => {
     const chrome = mobileChrome(true, false, true)
     expect(chrome.keyBar).toBe(false)
     expect(chrome.joystick).toBe(false)
+    // THIRD EDITION, same bug: the DOCK's own raw-key controls (the accessory
+    // strip's Esc/Tab/Ctrl-C/Ctrl-U, the ⌨ toggle, the KeyBar toggle, the ↵
+    // pill) were gated on `dockChat` — named after one of the two ways to have
+    // no pty, so a stopped session kept all of them over the StoppedSession
+    // card. Tapping any of them aimed a byte at a process that is not there.
+    expect(chrome.dockRawKeys).toBe(false)
     // …and a LIVE terminal session is untouched: this must not become the
     // reason the accessories vanish in the one place they work.
     const live = mobileChrome(true, false, false)
     expect(live.keyBar).toBe(true)
     expect(live.joystick).toBe(true)
+    expect(live.dockRawKeys).toBe(true)
   })
 })
 
@@ -286,5 +299,23 @@ describe('is there still a process behind this pane? (paneIsDead)', () => {
   test('a dead pane is never chat — the seam hands over', () => {
     const dead = paneIsDead('idle', false, 'holder_died')
     expect(chatPaneActive(true, true, 'chat', dead ? 'stopped' : 'idle')).toBe(false)
+  })
+})
+
+describe('the DESKTOP half of the same rule (parity, asserted on the source)', () => {
+  // FAILURE 4, DESKTOP EDITION. `desktop-split.tsx` has no `mobileChrome` to
+  // read — it inlines the same decision as `rawKeys={…}` on its dock — so the
+  // two seams can (and did) drift: the phone learned `stopped` and the desktop
+  // did not, leaving the send row's Esc / Tab / Ctrl-C / Ctrl-U chips over a
+  // `<StoppedSession>` card. There is nothing to render in `bun test` here, so
+  // the parity is asserted where it lives.
+  const SOURCE = readFileSync(
+    new URL('../../src/components/focus-mode/desktop-split.tsx', import.meta.url),
+    'utf8',
+  )
+  const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+
+  test('the desktop dock gates raw keys on a dead pane as well as on chat', () => {
+    expect(CODE).toContain('rawKeys={!chatActive && !stopped}')
   })
 })
