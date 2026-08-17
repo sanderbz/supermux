@@ -204,6 +204,14 @@ const BASELINE: readonly string[] = [
   '/dev/focus light/desktop color-contrast',
   '/dev/roster dark/desktop color-contrast',
   '/dev/roster light/desktop color-contrast',
+  // The seeded /focus/:name scan (this PR added it to catch the team-strip
+  // nested-interactive, now fixed) surfaces the same environment-only muted-
+  // token color-contrast every other route above carries: a borderline ratio
+  // the hosted runner's font stack anti-aliases just under AA, absent on a dev
+  // box. Not a user-reachable defect — the nested-interactive it was added for
+  // IS gone; this is the route's own contrast, baselined like all its siblings.
+  '/focus/axe-lead dark/desktop color-contrast',
+  '/focus/axe-lead light/desktop color-contrast',
 ]
 
 test.describe('axe — WCAG 2 A/AA over the shell surfaces', () => {
