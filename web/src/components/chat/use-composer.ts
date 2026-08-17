@@ -701,6 +701,10 @@ export function useComposer({
         draft: getDraft(name),
         active,
         picker: pickerOpen,
+        // A refusal card is up: Escape closes IT (see `composer-keys.ts`). The
+        // card is what the user is looking at, and the draft under it is the
+        // message they still want to send.
+        notice: notice !== null,
       })
       if (intent === 'pass' || intent === 'newline') return // the browser types it
       // A picker Enter that has nothing to accept must still SEND. The
@@ -730,8 +734,9 @@ export function useComposer({
       else if (intent === 'picker-first') pickerApi.current?.jump('first')
       else if (intent === 'picker-last') pickerApi.current?.jump('last')
       else if (intent === 'picker-close') closePicker()
+      else if (intent === 'notice-dismiss') setNotice(null)
     },
-    [active, closePicker, name, pickerOpen, set, stop, submit],
+    [active, closePicker, name, notice, pickerOpen, set, stop, submit],
   )
 
   // Derived, never stored — the same discipline as `trigger`. A second copy of

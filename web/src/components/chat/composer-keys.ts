@@ -37,6 +37,7 @@ export type ComposerIntent =
   | 'picker-page-down'
   | 'picker-first'
   | 'picker-last'
+  | 'notice-dismiss'
 
 /** The shape a React keydown event and a plain object both satisfy. */
 export interface ComposerKeyEvent {
@@ -71,16 +72,25 @@ function composing(e: ComposerKeyEvent): boolean {
  *
  *   Enter                 → submit (unless composing — then the IME owns it)
  *   Shift+Enter           → newline
+ *   Escape, notice up     → dismiss the notice, and NOTHING else
  *   Escape, draft present → clear the draft
  *   Escape, draft empty   → stop the turn, when there is one
  *
  * ONE ESCAPE, ONE MEANING: with text in the box Escape clears the box; with an
  * empty box it interrupts the agent. Doing both on one press would make "I
  * changed my mind about this sentence" occasionally kill a running turn.
+ *
+ * THE NOTICE IS A THING TO ESCAPE FROM, and it outranks the draft for the same
+ * reason the picker does. A refused send leaves a card up — one of which quotes
+ * the terminal's own `Esc to cancel` footer as evidence — with the sentence the
+ * user just tried to send still in the box. Escape there destroyed a
+ * multi-paragraph draft with no undo, cancelled nothing in the terminal, and did
+ * it on the most reflexive key on the page. Now it closes the card; a second
+ * press, with the card gone, is the ordinary draft-clear.
  */
 export function composerKeyIntent(
   e: ComposerKeyEvent,
-  ctx: { draft: string; active: boolean; picker?: boolean; caret?: boolean },
+  ctx: { draft: string; active: boolean; picker?: boolean; caret?: boolean; notice?: boolean },
 ): ComposerIntent {
   // A COMPOSITION OWNS EVERY KEY IT IS GIVEN, not just Enter. Escape during an
   // IME composition means "cancel this conversion" — swallowing it to clear the
@@ -131,6 +141,7 @@ export function composerKeyIntent(
     return 'submit'
   }
   if (e.key === 'Escape') {
+    if (ctx.notice) return 'notice-dismiss'
     if (ctx.draft.length > 0) return 'clear'
     return ctx.active ? 'stop' : 'pass'
   }

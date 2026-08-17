@@ -95,6 +95,28 @@ describe('the composer’s key contract', () => {
     expect(composerKeyIntent({ key: 'Escape' }, idle)).toBe('pass')
   })
 
+  test('a notice card owns Escape — the draft under it survives', () => {
+    // THE BUG THIS PINS. A refused send leaves a card up whose footer quotes the
+    // terminal's own `Esc to cancel`, with the sentence the user just tried to
+    // send still in the box. Escape cancelled nothing in the terminal (only an
+    // explicit POST /keys does that) and destroyed the draft with no undo —
+    // Ctrl+Z does not bring a cleared textarea back.
+    const carded = { draft: 'the whole two-paragraph message', active: false, notice: true }
+    expect(composerKeyIntent({ key: 'Escape' }, carded)).toBe('notice-dismiss')
+    // …including with a turn running: dismissing a card must not interrupt the
+    // agent either.
+    expect(
+      composerKeyIntent({ key: 'Escape' }, { draft: '', active: true, notice: true }),
+    ).toBe('notice-dismiss')
+    // With the card gone, Escape is the ordinary draft-clear again — one escape,
+    // one meaning, in the order the user sees the things.
+    expect(composerKeyIntent({ key: 'Escape' }, { ...carded, notice: false })).toBe('clear')
+    // The picker still outranks the card: it is the newer thing on top.
+    expect(composerKeyIntent({ key: 'Escape' }, { ...carded, picker: true })).toBe(
+      'picker-close',
+    )
+  })
+
   test('a composition owns ESCAPE too, not just Enter', () => {
     // Escape mid-conversion means "cancel this candidate" to every CJK IME. If
     // the composer swallowed it to clear the draft, one of the most-pressed keys

@@ -461,9 +461,15 @@ function ComposerBanner({
           <span className="text-ink">{NOTICE_TITLE[notice.kind]}</span>
           {/* The panel's own dismissal footer (`Esc to cancel`), verbatim — the
               evidence for a refusal the user cannot otherwise see, since the
-              screen it is about is on the other renderer. */}
+              screen it is about is on the other renderer. ATTRIBUTED, because
+              unqualified it reads as this card's own key hint: Escape here
+              closes this card (it used to destroy the draft), and the key that
+              cancels the widget has to be pressed in the terminal. */}
           {notice.kind === 'dialog-terminal' && notice.detail && (
-            <code className="font-mono text-[11.5px] text-ink-2">{notice.detail}</code>
+            <span className="text-ink-2">
+              in the terminal:{' '}
+              <code className="font-mono text-[11.5px] text-ink-2">{notice.detail}</code>
+            </span>
           )}
           {/* The ARMING, in the terminal's own words. Same argument as the line
               above it: the screen this refusal is about is on the other
