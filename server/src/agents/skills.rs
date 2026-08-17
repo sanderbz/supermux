@@ -7,9 +7,11 @@
 //!   * `~/.claude/commands/<name>.md` — what Claude reads
 //!
 //! `GET /api/skills` parses each skill's YAML frontmatter for `description` and
-//! `argument-hint`. `GET /api/slash-commands` merges the verbatim claude/codex
-//! built-in command list with the user skills, returning `[{cmd, desc}]` for the
-//! "/" autocomplete menu.
+//! `argument-hint`. `GET /api/slash-commands` merges THREE sources — the
+//! verbatim claude/codex built-in list, the skills table, and the `.md` files
+//! actually present in the Claude commands directory — returning `[{cmd, desc}]`
+//! for the "/" autocomplete menu. The third source is what makes a user's own
+//! `/commit` (or supermux's own seeded `/supermux-task`) findable at all.
 //!
 //! **Path safety.** A skill `name` is constrained to a slug (`[A-Za-z0-9_.-]+`)
 //! so a malicious name can never traverse out of the skills directories — there
@@ -404,9 +406,19 @@ pub struct SlashCommand {
     pub desc: String,
 }
 
-/// `GET /api/slash-commands` — built-ins merged with user skills, for the
-/// "/" autocomplete menu. Built-ins first (with empty desc), then skills as
-/// `/<name>` with their frontmatter description.
+/// `GET /api/slash-commands` — built-ins merged with the commands that actually
+/// exist on this box, for the "/" autocomplete menu.
+///
+/// THREE SOURCES, and the third is the one the doc comment used to promise and
+/// the code never delivered: the user's own `<claude-config>/commands/*.md`.
+/// Without it the picker answered `No command matches "supermux"` for a command
+/// this server SEEDS ITSELF, and sending it anyway earned the receipt "isn't a
+/// built-in command — the session got it as text" for a command that existed and
+/// ran. Discovery and that false receipt are the same list.
+///
+/// De-duplicated on the command name, first writer wins: a built-in is never
+/// restated by a file of the same name, and a supermux skill (which is synced to
+/// that directory on write) is listed once rather than twice.
 pub async fn slash_commands(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -417,16 +429,80 @@ pub async fn slash_commands(
             desc: String::new(),
         })
         .collect();
+    let mut seen: std::collections::HashSet<String> =
+        commands.iter().map(|c| c.cmd.clone()).collect();
 
     for skill in db::skills::list(&state.pool).await? {
         let fm = parse_frontmatter(&skill.content);
-        commands.push(SlashCommand {
-            cmd: format!("/{}", skill.name),
-            desc: fm.description,
-        });
+        let cmd = format!("/{}", skill.name);
+        if seen.insert(cmd.clone()) {
+            commands.push(SlashCommand {
+                cmd,
+                desc: fm.description,
+            });
+        }
+    }
+
+    for cmd in file_commands().await {
+        if seen.insert(cmd.cmd.clone()) {
+            commands.push(cmd);
+        }
     }
 
     Ok(Json(json!({ "ok": true, "data": commands })))
+}
+
+/// The `.md` files in the user's Claude commands directory, as `/<stem>` plus
+/// their frontmatter description.
+///
+/// Best-effort by construction: no directory, no permission, an unreadable file
+/// — each is simply fewer rows, never an error. This endpoint feeds an
+/// autocomplete menu, and a menu that 500s because a directory moved is worse
+/// than one that is short.
+///
+/// TOP LEVEL ONLY. Claude Code also reads nested directories and namespaces them
+/// (`<dir>:<stem>`), and project-local `<cwd>/.claude/commands` on top of these;
+/// neither is claimed here, because this route has no session and so no cwd. What
+/// it lists, it lists correctly.
+async fn file_commands() -> Vec<SlashCommand> {
+    match claude_commands_dir() {
+        Some(dir) => file_commands_at(&dir).await,
+        None => Vec::new(),
+    }
+}
+
+/// [`file_commands`] against a given directory — the seam the tests call, the
+/// same shape `seed_managed_commands_at` uses.
+async fn file_commands_at(dir: &std::path::Path) -> Vec<SlashCommand> {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return Vec::new();
+    };
+    let mut out: Vec<SlashCommand> = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // The same slug rule the write side enforces: a name this server would
+        // refuse to create is a name it does not advertise either.
+        if !valid_skill_name(stem) {
+            continue;
+        }
+        let desc = match tokio::fs::read_to_string(&path).await {
+            Ok(content) => parse_frontmatter(&content).description,
+            Err(_) => String::new(),
+        };
+        out.push(SlashCommand {
+            cmd: format!("/{stem}"),
+            desc,
+        });
+    }
+    // `read_dir` order is the filesystem's; the menu's is alphabetical.
+    out.sort_by(|a, b| a.cmd.cmp(&b.cmd));
+    out
 }
 
 #[cfg(test)]
@@ -460,6 +536,43 @@ mod tests {
         assert!(!valid_skill_name("a/b"));
         assert!(valid_skill_name("cso"));
         assert!(valid_skill_name("my-skill_1.0"));
+    }
+
+    // ── the "/" menu's third source: the user's own commands ─────────────────
+
+    #[tokio::test]
+    async fn user_commands_on_disk_reach_the_slash_menu() {
+        // THE BUG. `GET /api/slash-commands` returned 55 built-ins plus the
+        // skills table and never read the commands directory — so the picker
+        // answered `No command matches "supermux"` for `/supermux-task`, a
+        // command this server seeds into that very directory on boot, and the
+        // composer's classifier then stamped every real user command with
+        // "isn't a built-in command — the session got it as text".
+        let dir = cmd_temp_dir();
+        std::fs::write(
+            dir.join("commit.md"),
+            "---\ndescription: Stage all changes and write the message\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("supermux-task.md"), "no frontmatter here").unwrap();
+        // Not a command: not markdown.
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+
+        let cmds = file_commands_at(&dir).await;
+        let names: Vec<&str> = cmds.iter().map(|c| c.cmd.as_str()).collect();
+        assert_eq!(names, vec!["/commit", "/supermux-task"], "alphabetical, .md only");
+        assert_eq!(cmds[0].desc, "Stage all changes and write the message");
+        // A file with no frontmatter is still a command — the description is the
+        // only thing missing.
+        assert!(cmds[1].desc.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_missing_commands_directory_is_an_empty_menu_not_an_error() {
+        // This feeds an autocomplete list. A menu that is short because a
+        // directory moved beats a menu that 500s.
+        let missing = cmd_temp_dir().join("nope");
+        assert!(file_commands_at(&missing).await.is_empty());
     }
 
     #[test]

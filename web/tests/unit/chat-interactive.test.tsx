@@ -795,7 +795,7 @@ describe('the slash refusal, said out loud', () => {
     expect(html).toContain('data-testid="chat-composer-open-terminal"')
   })
 
-  test('an unknown command is a RECEIPT, not a refusal — it went, as text', () => {
+  test('an unknown command is a RECEIPT, not a refusal — and it does not call a real command a typo', () => {
     const html = renderToStaticMarkup(
       <ChatComposer
         name={NAME}
@@ -804,7 +804,13 @@ describe('the slash refusal, said out loud', () => {
         onOpenTerminal={() => {}}
       />,
     )
-    expect(text(html)).toContain('the session got it as text')
+    // WHAT CHAT CAN HONESTLY SAY. `~/.claude/commands` and
+    // `<dir>/.claude/commands` are full of real commands — `/commit`,
+    // `/supermux-task` — and this receipt used to tell their authors the session
+    // had read them as prose. It now states what chat DID (it typed the line in),
+    // which is true whether the command exists over there or was a typo.
+    expect(text(html)).toContain('typed into the session as-is')
+    expect(text(html)).not.toContain('isn’t a built-in command')
     // Nothing is left to do in the terminal, so nothing points there.
     expect(html).not.toContain('data-testid="chat-composer-open-terminal"')
   })

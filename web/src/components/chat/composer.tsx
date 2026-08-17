@@ -590,7 +590,13 @@ const NOTICE_TITLE: Record<ComposerNotice['kind'], string> = {
   // Not "unsupported" either: the command is real, chat just has no capture of
   // what it does to the pty, and the ones it can't rule out leave a widget open.
   'slash-unverified': 'is a terminal command chat can’t verify — it wasn’t sent.',
-  'slash-note': 'isn’t a built-in command — the session got it as text.',
+  // NOT "isn't a command": ~/.claude/commands and <dir>/.claude/commands are
+  // full of real ones — `/commit`, `/supermux-task` — and this receipt used to
+  // tell their authors the session had read them as prose. What chat can say
+  // honestly is what chat DID: it typed the line into the session. If the
+  // command exists there, Claude Code runs it; if it was a typo, the receipt is
+  // still the thing that stops it becoming a silent message.
+  'slash-note': 'isn’t one of Claude’s built-ins — it was typed into the session as-is.',
   // The receipt for the one action on this surface whose result is somewhere
   // else entirely. It names the recipient and it states the DELIVERY, which is
   // the whole of what this app knows: the prompt reached that session's pane.
