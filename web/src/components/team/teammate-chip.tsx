@@ -61,48 +61,63 @@ export function TeammateChip({
   // passing the roving handle straight into a JSX `ref` prop makes the compiler
   // lint read every sibling property of the same object as a ref access.
   const setChipRef = React.useCallback(
-    (el: HTMLDivElement | null) => rovingRef(el),
+    (el: HTMLButtonElement | null) => rovingRef(el),
     [rovingRef],
   )
 
   return (
     <div
-      // The row is the tap target → focus page. No long-press / no peek — the
-      // focus page is the single teammate-view surface.
+      // The row is the tap target → focus page, but the ROW ITSELF is not the
+      // control: it carries a trash button, and a focusable <button> inside a
+      // role="button" tabIndex=0 wrapper is axe's `nested-interactive` (serious)
+      // — a screen reader announces one control and finds two, and the inner one
+      // is unreachable by the role's own semantics. The activation lives on a
+      // stretched overlay <button> below instead, with the trash as its SIBLING.
       className={cn(
         'group/chip relative flex h-11 items-center gap-2.5 overflow-hidden rounded-[10px] border border-border/60 bg-card/60 pl-3 pr-3',
-        'cursor-pointer select-none transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'cursor-pointer select-none transition-colors hover:bg-card',
         // A calm tint when needs_you — the row itself reads as "attention here"
         // without an alarmist fill; the pill is the loud token.
         needsYou && 'bg-status-waiting/[0.06]',
       )}
-      role="button"
-      // ROVING TABINDEX (finding 20). The team's agents were the one roster of
-      // colleagues with no roving list: six chips, six tab stops, arrows dead —
-      // in every view mode, because the card renders above the grid and the
-      // overview's provider has never reached it. Outside a provider (a bench)
-      // `tabIndex` is `undefined` and the literal 0 applies, exactly as before.
-      tabIndex={roving.tabIndex ?? 0}
-      data-roving-item={member.agent_id}
-      ref={setChipRef}
-      onFocus={roving.onFocus}
-      aria-label={`Open ${member.name}${needsYou ? ', needs you' : ''} full screen`}
-      onClick={onFocus}
-      onKeyDown={(e) => {
-        // Navigation first, then activation — the roving handler consumes only
-        // arrows/Home/End and says whether it did.
-        if (roving.onKeyDown(e)) return
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onFocus()
-        }
-      }}
     >
       {/* 2px left colour rail = identity colour. */}
       <span
         aria-hidden
         className="pointer-events-none absolute inset-y-0 left-0 w-[2px]"
         style={{ backgroundColor: rail }}
+      />
+
+      {/* THE control: a real <button> stretched over the row. Above the passive
+          content (z-10) so a tap anywhere lands on it, below the trailing
+          controls (z-20) so the trash still wins its own 44pt. It draws the
+          row's focus ring, so keyboard focus looks exactly as it did.
+
+          IT IS ALSO THE ROVING ITEM. The two fixes that met here want the same
+          element: the roster needs ONE tab stop per row with arrows moving
+          between them (finding 20), and the row must not be a control wrapping
+          a control (finding 14). A real <button> is both — it is a legitimate
+          roving item, and unlike `div role="button" tabIndex=0` it does not
+          swallow the trash beside it. Enter/Space are native here, so the
+          hand-rolled activation branch is gone; the roving handler still runs
+          FIRST and consumes only arrows/Home/End. */}
+      <button
+        type="button"
+        className="absolute inset-0 z-10 rounded-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        aria-label={`Open ${member.name}${needsYou ? ', needs you' : ''} full screen`}
+        // ROVING TABINDEX (finding 20). The team's agents were the one roster of
+        // colleagues with no roving list: six chips, six tab stops, arrows dead
+        // — in every view mode, because the card renders above the grid and the
+        // overview's provider has never reached it. Outside a provider (a bench)
+        // `tabIndex` is `undefined` and the literal 0 applies, exactly as before.
+        tabIndex={roving.tabIndex ?? 0}
+        data-roving-item={member.agent_id}
+        ref={setChipRef}
+        onFocus={roving.onFocus}
+        onKeyDown={(e) => {
+          roving.onKeyDown(e)
+        }}
+        onClick={onFocus}
       />
 
       {/* Leading status dot. */}
@@ -124,7 +139,7 @@ export function TeammateChip({
       {/* Trailing (tabular). needs_you → the ONE loud blue pill (tile waiting-pill
           geometry). Else → muted task-count. Then the remove trash (state-aware:
           "Kill & remove" for a live teammate, "Remove" for an offline one). */}
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="relative z-20 flex shrink-0 items-center gap-1">
         {needsYou ? (
           <span className="shrink-0 rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
             needs you
