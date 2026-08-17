@@ -196,6 +196,26 @@ export default function ChatPanel({
   // ceiling costs no timer of its own.
   const connection = useChatPresentation(tail, nowBucketMs)
   const planeDown = isPlaneDown(connection)
+  // A SESSION THAT HAS NEVER BEEN SPOKEN TO IS NOT A FAULT (verified finding 7).
+  //
+  // `classify_pointer` answers a missing pointer FILE with
+  // `Reconnecting{reason:"no transcript for the tracked conversation"}`, and
+  // that branch — unlike `no_hooks` — has no escalation ceiling, so the word
+  // never changed. The client collapsed the distinct reason onto the one word
+  // `reconnecting`, whose own four-word vocabulary defines it as "between
+  // states", and the first screen of every new chat session showed a header
+  // pill, a global toast and the body's "No conversation yet." all at once —
+  // three claims about one calm fact, on the surface B4 was about to make the
+  // default.
+  //
+  // So the chip stands down while there is nothing on screen to mis-present.
+  // The moment the tail HAS entries the same reason means had-and-lost, and
+  // then the chip is exactly right: a stale transcript is being shown as if it
+  // were current. `use-chat-ws.ts::isFresh` owns the predicate for both this
+  // and the app-wide link aggregate, so the two cannot disagree.
+  const connectionNote = tail.fresh ? null : (
+    <ConnectionNote state={connection} onRetry={tail.redial} />
+  )
 
   // ── one identity per session, across both surfaces (fase A6 T4.3) ──────────
   //
@@ -474,7 +494,7 @@ export default function ChatPanel({
       // over the transcript: nothing is broken, so nothing should move.
       headerTrailing={
         <>
-          <ConnectionNote state={connection} onRetry={tail.redial} />
+          {connectionNote}
           {headerTrailing}
         </>
       }

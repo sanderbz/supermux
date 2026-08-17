@@ -35,6 +35,7 @@ import { useConnection } from '../../stores/connection-store'
 import { ChatSocket, EMPTY_SNAPSHOT, type ChatConnState, type ChatSnapshot } from './chat-socket'
 import {
   chatPresentation,
+  isFreshConversation,
   linkStateFor,
   RESUME_STALE_MS,
   VISIBILITY_DEBOUNCE_MS,
@@ -85,6 +86,10 @@ export interface ChatWireView {
   /** Dial again now, with a fresh attempt budget — what the `offline` chip's
    *  tap does, and what returning to the foreground does automatically. */
   redial: () => void
+  /** A FRESH session: seeded, nothing in it, and the server says the reason is
+   *  that no transcript exists for this conversation yet. Not a fault, and not
+   *  something a reconnection can fix — see `ChatSnapshot.noTranscript`. */
+  fresh: boolean
 }
 
 interface SnapshotStore {
@@ -171,7 +176,15 @@ function chatStore(name: string, enabled: boolean): SnapshotStore {
               .report(
                 linkId,
                 linkStateFor(
-                  chatPresentation({ state: s.state, lastSignalAtMs: null, nowMs: 0 }),
+                  // A session that has never had a transcript is not a link
+                  // failure, and the global banner must not shout about one:
+                  // the tail says `reconnecting` for a file that was never
+                  // written, so an app-wide "Reconnecting…" toast greeted every
+                  // new chat session. `connected` is the honest reading — the
+                  // socket is up and there is simply nothing in the file yet.
+                  isFresh(s)
+                    ? 'live'
+                    : chatPresentation({ state: s.state, lastSignalAtMs: null, nowMs: 0 }),
                 ),
               )
             for (const l of listeners) l()
@@ -213,7 +226,19 @@ export function useChatWs(name: string, enabled: boolean): ChatWireView {
     fetchFailed: snap.fetchFailed,
     retryFull: store.retryFull,
     redial: store.redial,
+    fresh: isFresh(snap),
   }
+}
+
+/** The snapshot, on `connection.ts`'s predicate — one reading of "fresh" for
+ *  the surface's chip AND for the app-wide link aggregate, so the two cannot
+ *  answer the question differently. */
+function isFresh(s: ChatSnapshot): boolean {
+  return isFreshConversation({
+    seeded: s.seeded,
+    noTranscript: s.noTranscript,
+    entryCount: s.entries.length,
+  })
 }
 
 /** The one word a surface says about the data plane, on a clock the caller

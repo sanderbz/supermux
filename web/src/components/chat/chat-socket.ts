@@ -90,7 +90,31 @@ export interface ChatSnapshot {
    *  text (that is the honest outcome), and the surface offers a RETRY rather
    *  than a dead end. */
   fetchFailed: ReadonlySet<string>
+  /**
+   * THIS SESSION HAS NEVER HAD A TRANSCRIPT — the server's own `reason`, kept
+   * apart from the one word `state` collapses it to.
+   *
+   * `classify_pointer` (`tailer.rs`) returns `Reconnecting` with this reason
+   * whenever the pointer FILE does not exist, and unlike the `no_hooks` branch
+   * it has no escalation ceiling — so a session that has simply never been
+   * spoken to sat in a permanent `Reconnecting…` alarm, next to the body's own
+   * "No conversation yet.", from the first screen onward. Two different claims
+   * about one calm fact.
+   *
+   * `reconnecting` promises a reconnection. There is nothing to reconnect TO
+   * yet, so the surface reads this WITH `entries.length` and says nothing at
+   * all (`chat-panel.tsx`). Had-and-lost — the same reason with entries on
+   * screen — keeps the chip: there the transcript really is being presented as
+   * current and really is not.
+   */
+  noTranscript: boolean
 }
+
+/** The `reason` `classify_pointer` stamps on a pointer whose file does not
+ *  exist (`server/src/sessions/chat/tailer.rs::NO_TRANSCRIPT_REASON`). Pinned
+ *  on both sides — `server/src/sessions/chat/tailer.rs` has the twin
+ *  assertion, so the day the string moves one of the two suites fails. */
+export const NO_TRANSCRIPT_REASON = 'no transcript for the tracked conversation'
 
 const NO_UUIDS: ReadonlySet<string> = new Set()
 
@@ -104,6 +128,7 @@ export const EMPTY_SNAPSHOT: ChatSnapshot = {
   lastSignalAt: null,
   fetching: NO_UUIDS,
   fetchFailed: NO_UUIDS,
+  noTranscript: false,
 }
 
 // ── close codes (the terminal socket's table, `use-live-term.ts`) ────────────
@@ -215,6 +240,7 @@ export class ChatSocket {
       lastSignalAt: this.lastSignalAt,
       fetching: this.fetching.size ? new Set(this.fetching) : NO_UUIDS,
       fetchFailed: this.failed.size ? new Set(this.failed) : NO_UUIDS,
+      noTranscript: this.wire.status?.reason === NO_TRANSCRIPT_REASON,
     }
   }
 

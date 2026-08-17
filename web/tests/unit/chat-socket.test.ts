@@ -387,3 +387,50 @@ describe('the truncated auto-fetch', () => {
     expect(h.snaps).toHaveLength(before)
   })
 })
+
+/**
+ * A CONVERSATION THAT DOES NOT EXIST YET (verified finding 7).
+ *
+ * The server's answer to a pointer whose FILE is missing is
+ * `Reconnecting{reason: NO_TRANSCRIPT_REASON}` — permanent, because that branch
+ * has no escalation ceiling. Collapsing it onto the one word `reconnecting` is
+ * what put a header pill and a global toast on the first screen of every new
+ * chat session, beside the body's own "No conversation yet."
+ *
+ * So the socket carries the REASON through, and `connection.ts::isFreshConversation`
+ * (unit-tested there) is what the surface and the app-wide link aggregate both
+ * read. Without the field neither could tell the two `reconnecting`s apart.
+ */
+describe('the reason behind “reconnecting”', () => {
+  const seedDone = (state: string, reason?: string) =>
+    JSON.stringify({ type: 'seed_done', state, reason, resync_epoch: 0, high_water: 1 })
+
+  test('a missing transcript is carried through as `noTranscript`, not swallowed', () => {
+    const h = harness()
+    h.ws().deliver('{"type":"auth_ok"}')
+    h.ws().deliver('{"type":"seed","entries":[],"has_more":false,"next_before":null}')
+    h.ws().deliver(seedDone('reconnecting', 'no transcript for the tracked conversation'))
+    expect(h.last().seeded).toBe(true)
+    expect(h.last().entries).toHaveLength(0)
+    expect(h.last().noTranscript).toBe(true)
+    // The one word is unchanged — this is a SECOND channel, not a fifth word.
+    expect(h.last().state).toBe('reconnecting')
+    h.socket.dispose()
+  })
+
+  test('an ordinary reconnect carries no such claim', () => {
+    const h = harness()
+    h.ws().deliver('{"type":"auth_ok"}')
+    h.ws().deliver('{"type":"seed","entries":[],"has_more":false,"next_before":null}')
+    h.ws().deliver(seedDone('reconnecting', 'no hook since start'))
+    expect(h.last().noTranscript).toBe(false)
+    h.socket.dispose()
+  })
+
+  test('…and neither does a healthy one', () => {
+    const h = harness()
+    h.ws().greet([entry({ seq: 1, uuid: 'a' })], 2)
+    expect(h.last().noTranscript).toBe(false)
+    h.socket.dispose()
+  })
+})

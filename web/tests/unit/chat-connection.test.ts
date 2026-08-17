@@ -18,9 +18,11 @@ import {
   A0_LATENCIES,
   STALENESS_CEILING_MS,
   chatPresentation,
+  isFreshConversation,
   isPlaneDown,
   linkStateFor,
 } from '../../src/components/chat/connection'
+import { NO_TRANSCRIPT_REASON } from '../../src/components/chat/chat-socket'
 import { ChatSocket, type ChatSnapshot, type SocketLike } from '../../src/components/chat/chat-socket'
 import { watchdogState, type PendingSend } from '../../src/components/chat/pending'
 import type { WireEntry } from '../../src/components/chat/wire'
@@ -301,5 +303,52 @@ describe('the delivery watchdog under a dead socket', () => {
         planeDown: true,
       }),
     ).toBe('undelivered')
+  })
+})
+
+/**
+ * A SESSION THAT HAS NEVER BEEN SPOKEN TO IS NOT A FAULT (verified finding 7).
+ *
+ * Four verifiers reported the same screen independently: a header pill, a
+ * global toast and the body's own "No conversation yet." all at once, on the
+ * FIRST screen of every new chat session — and permanently, because
+ * `classify_pointer`'s missing-pointer branch has no escalation ceiling. One
+ * ordinary send cleared it, which is what proved the cause.
+ */
+describe('a conversation that does not exist yet', () => {
+  const REASON = NO_TRANSCRIPT_REASON
+
+  test('the server’s reason string is the one the client matches on', () => {
+    // The twin of `tailer.rs`'s
+    // `a_missing_pointer_names_its_reason_and_the_client_can_match_it`.
+    expect(REASON).toBe('no transcript for the tracked conversation')
+  })
+
+  test('seeded + empty + “no transcript” says nothing at all', () => {
+    expect(
+      isFreshConversation({ seeded: true, noTranscript: true, entryCount: 0 }),
+    ).toBe(true)
+  })
+
+  test('…but the SAME reason with a transcript on screen keeps the chip', () => {
+    // Had-and-lost. Here `reconnecting` is exactly right: a conversation IS on
+    // screen and it is not a claim about now.
+    expect(
+      isFreshConversation({ seeded: true, noTranscript: true, entryCount: 4 }),
+    ).toBe(false)
+  })
+
+  test('…and an ordinary socket drop still says so, empty tail or not', () => {
+    expect(
+      isFreshConversation({ seeded: true, noTranscript: false, entryCount: 0 }),
+    ).toBe(false)
+  })
+
+  test('…and nothing is suppressed before the seed lands', () => {
+    // Without this, the boot frame — which is `reconnecting{starting}` with an
+    // empty tail — would blank the chip for every session, healthy or not.
+    expect(
+      isFreshConversation({ seeded: false, noTranscript: true, entryCount: 0 }),
+    ).toBe(false)
   })
 })

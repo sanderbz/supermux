@@ -186,13 +186,22 @@ impl Default for TailStatus {
     }
 }
 
+/// The `reason` a pointer whose FILE does not exist is stamped with.
+///
+/// Named, and pinned by a test on each side, because the client keys a whole
+/// presentation decision on it: a session that has never been spoken to has
+/// nothing to reconnect TO, so the chat surface suppresses its connection chip
+/// while the tail is also empty rather than promising a reconnection that
+/// cannot happen (`web/src/components/chat/chat-socket.ts::NO_TRANSCRIPT_REASON`).
+pub const NO_TRANSCRIPT_REASON: &str = "no transcript for the tracked conversation";
+
 /// Classify the DB conversation pointer. Pure — the whole guard is table-tested.
 pub fn classify_pointer(i: PointerInputs) -> TailState {
     // No file at all. An empty-but-composable chat is precisely the lie this
     // guard exists to prevent, and that is true whether or not the session is
     // still running.
     if !i.pointer_path_exists {
-        return TailState::Reconnecting { reason: "no transcript for the tracked conversation" };
+        return TailState::Reconnecting { reason: NO_TRANSCRIPT_REASON };
     }
 
     // A stopped session's tail is history, not a claim about now: nothing will
@@ -1016,6 +1025,26 @@ mod tests {
             ..base()
         };
         assert!(matches!(classify_pointer(i), TailState::Reconnecting { .. }));
+    }
+
+    /// THE CLIENT KEYS A PRESENTATION DECISION ON THIS EXACT STRING.
+    ///
+    /// A session that has never been spoken to has no transcript file, so this
+    /// branch fires from its first frame — and, unlike `no_hooks`, it has no
+    /// escalation ceiling, so it never changes. The chat surface therefore
+    /// reads the REASON (not the collapsed one-word state) and stands its
+    /// connection chip down while the tail is also empty, instead of promising
+    /// a reconnection that cannot happen. `web/src/components/chat/chat-socket.ts`
+    /// carries the twin constant and `web/tests/unit/chat-connection.test.ts`
+    /// the twin assertion; the day this string moves, one of the two fails.
+    #[test]
+    fn a_missing_pointer_names_its_reason_and_the_client_can_match_it() {
+        let i = PointerInputs { pointer_path_exists: false, ..base() };
+        assert_eq!(
+            classify_pointer(i),
+            TailState::Reconnecting { reason: NO_TRANSCRIPT_REASON }
+        );
+        assert_eq!(NO_TRANSCRIPT_REASON, "no transcript for the tracked conversation");
     }
 
     #[test]

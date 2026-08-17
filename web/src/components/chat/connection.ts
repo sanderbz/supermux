@@ -108,6 +108,36 @@ export function chatPresentation(input: {
   }
 }
 
+/**
+ * A FRESH CONVERSATION — seeded, empty, and the server's own reason is that no
+ * transcript exists for it yet.
+ *
+ * The fifth word this module refuses to invent, expressed as a predicate over
+ * the four it has. `classify_pointer` (`tailer.rs`) answers a missing pointer
+ * FILE with `Reconnecting{reason: NO_TRANSCRIPT_REASON}`, and that branch has
+ * no escalation ceiling — so the word never changed, and every new chat session
+ * opened on a permanent `Reconnecting…` next to the body's own "No conversation
+ * yet." Three claims about one calm fact, on the first screen the surface ever
+ * shows.
+ *
+ * `reconnecting` PROMISES a reconnection. There is nothing to reconnect to, so
+ * the surface says nothing at all: the calm empty state is the whole truth. All
+ * three conditions are load-bearing —
+ *   · `seeded`, or an ordinary boot frame would suppress the chip before we
+ *     know anything;
+ *   · `noTranscript`, so an ordinary socket drop still says so;
+ *   · `entries === 0`, because the same reason WITH a transcript on screen is
+ *     had-and-lost, and there the chip is exactly right: a stale conversation
+ *     really is being presented as a current one.
+ */
+export function isFreshConversation(t: {
+  seeded: boolean
+  noTranscript: boolean
+  entryCount: number
+}): boolean {
+  return t.seeded && t.noTranscript && t.entryCount === 0
+}
+
 /** True when the live plane is known-dead, so anything that infers a failure
  *  from the ABSENCE of a frame over this socket is inferring it from a silence
  *  it caused itself (A6 T2.5 — the delivery watchdog). */
