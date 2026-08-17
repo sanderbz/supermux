@@ -14,6 +14,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { attentionCopy, topAttention } from '../../src/components/chat/attention'
 import SessionHeaderPill from '../../src/components/chat/header-pill'
+import { statesSameBlock } from '../../src/components/chat/agent-error'
+import { BlockedBadge, ErrorBadge } from '../../src/components/session-tile/activity-status'
 import {
   USAGE_FLOOR_PCT,
   USAGE_HOT_PCT,
@@ -144,5 +146,57 @@ describe('the attention card ranks the condition above the dialog causes', () =>
     expect(copy.title).not.toMatch(/oops|sorry|went wrong/i)
     // It names the one thing that unblocks a session before its reset.
     expect(copy.body).toMatch(/different model/i)
+  })
+})
+
+/**
+ * ONE BLOCK, ONE CHIP (round-2 finding 47).
+ *
+ * The condition has two independent witnesses — the `StopFailure` hook's
+ * sentence on `session.error`, and the pty banner on `session.blocked` — and a
+ * session that has both wore two amber chips at once, "⚠ Session limit" beside
+ * "⚠ Limit reached": one fact, two nouns, no ranking. The pill wins, because it
+ * names the BUCKET and carries the clock; the badge stands down.
+ *
+ * The tooltip had the mirror-image bug: the reset clause is PARSED OUT of
+ * Claude Code's own sentence and was then appended back to it, so the roster
+ * badge read "…session limit · resets 4:40am (Europe/Amsterdam) · Resets 4:40am
+ * (Europe/Amsterdam)". And it rode on `title` alone — hover-only, which is
+ * nowhere on a phone and nothing to a screen reader.
+ */
+describe('one block is stated once', () => {
+  const HOOK_LIMIT = {
+    type: 'rate_limit',
+    message: "You've hit your session limit · resets 4:40am (Europe/Amsterdam)",
+  }
+
+  test('the pty badge stands down when the error pill already says it', () => {
+    expect(statesSameBlock({ kind: 'limit' }, HOOK_LIMIT)).toBe(true)
+    expect(renderToStaticMarkup(<BlockedBadge blocked={LIMIT} error={HOOK_LIMIT} />)).toBe('')
+    // …and on its own it still renders: the two planes are independent, and
+    // either arriving alone is the case the badge exists for.
+    expect(renderToStaticMarkup(<BlockedBadge blocked={LIMIT} />)).toContain('Limit reached')
+  })
+
+  test('a throttle beside a limit really is two facts', () => {
+    // CC says in its own copy that a server-side throttle is NOT a quota hit, so
+    // collapsing the pair would hide a condition rather than de-duplicate one.
+    const throttle = {
+      type: 'rate_limit',
+      message: 'Claude is experiencing high demand — this is not your usage limit.',
+    }
+    expect(statesSameBlock({ kind: 'limit' }, throttle)).toBe(false)
+    // A startup wedge is a different condition from a hook limit too.
+    expect(statesSameBlock({ kind: 'wedge' }, HOOK_LIMIT)).toBe(false)
+  })
+
+  test('the error tooltip says the clock once, and says it to a screen reader', () => {
+    const html = renderToStaticMarkup(<ErrorBadge error={HOOK_LIMIT} />)
+    const label = /aria-label="([^"]*)"/.exec(html)?.[1] ?? ''
+    expect(label).toContain('resets 4:40am')
+    expect(label.toLowerCase().split('resets').length - 1).toBe(1)
+    // Same string on both channels — `title` is the pointer's, `aria-label` is
+    // everybody else's.
+    expect(html).toContain(`title="${label}"`)
   })
 })

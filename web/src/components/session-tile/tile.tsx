@@ -911,7 +911,7 @@ export function SessionTile({
                 card drew green while the account was cut off (verify matrix
                 finding 1, 06-overview-limits.png). */}
             {session.blocked && !showArchiveControl && (
-              <BlockedBadge blocked={session.blocked} className="self-center" />
+              <BlockedBadge blocked={session.blocked} error={session.error} className="self-center" />
             )}
             {!showArchiveControl && (
               <UsageChip rateLimits={session.rate_limits ?? undefined} className="self-center" />

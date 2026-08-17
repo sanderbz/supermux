@@ -170,7 +170,7 @@ export function DesktopFocusHeader({
           </span>
         )}
         {error && <ErrorBadge error={error} />}
-        {blocked && <BlockedBadge blocked={blocked} />}
+        {blocked && <BlockedBadge blocked={blocked} error={error} />}
         <UsageChip rateLimits={rateLimits} />
         {/* While the agent is working with a live activity label, show the
             activity line in place of the static status word (the live "what is
@@ -425,7 +425,7 @@ export function FocusHeader({
             </h1>
           )}
           {error && <ErrorBadge error={error} />}
-        {blocked && <BlockedBadge blocked={blocked} />}
+        {blocked && <BlockedBadge blocked={blocked} error={error} />}
         <UsageChip rateLimits={rateLimits} />
         </div>
         {/* Live activity sub-line (hooks-10x) — sits under the name while the

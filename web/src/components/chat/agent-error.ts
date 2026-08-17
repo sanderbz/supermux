@@ -257,3 +257,40 @@ export function errorBadgeLabel(type: string, message?: string): string | null {
 export function resetNote(info: AgentErrorInfo): string | undefined {
   return info.resetsAt ? `Resets ${info.resetsAt}` : undefined
 }
+
+/**
+ * Does this text already carry the `· resets …` clause?
+ *
+ * [`resetNote`] restates a clause that was PARSED OUT of Claude Code's own
+ * sentence, so appending it to that same sentence says the clock twice. Any
+ * surface that shows the banner verbatim and the note beside it asks this first
+ * — the roster's error tooltip did not, and read "…session limit · resets 4:40am
+ * (Europe/Amsterdam) · Resets 4:40am (Europe/Amsterdam)".
+ */
+export function statesReset(text?: string | null): boolean {
+  return (text ?? '').toLowerCase().includes(RESETS)
+}
+
+/**
+ * **Are these two witnesses the same block?**
+ *
+ * The two planes are independent by design — the `StopFailure` hook's sentence
+ * reaches the roster with no chat store, and `SessionView.blocked` covers the
+ * sessions whose transcript nobody is tailing — and either can arrive alone. What
+ * must not happen is both being DRAWN as if they were two facts: a session with
+ * both wore "⚠ Session limit" and "⚠ Limit reached" side by side, two nouns for
+ * one condition with no ranking between them.
+ *
+ * A limit is the only condition both planes name today, and a THROTTLE is
+ * deliberately not one: Claude Code says in its own copy that a server-side
+ * throttle is not a quota hit, so a throttle beside a limit banner really is two
+ * facts.
+ */
+export function statesSameBlock(
+  blocked?: { kind?: string } | null,
+  error?: { type?: string; message?: string } | null,
+): boolean {
+  if (blocked?.kind !== 'limit' || !error?.type) return false
+  const info = classifyAgentError(error.message ?? '', error.type)
+  return info.cls === 'limit'
+}

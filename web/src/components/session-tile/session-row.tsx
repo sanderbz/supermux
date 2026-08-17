@@ -188,7 +188,7 @@ export function SessionRow({ session, attention, sizeTier = 1 }: SessionRowProps
           by a different road: `error` rides a StopFailure hook, this rides the
           screen, and before it existed a rate-limited row was pixel-identical
           to a healthy one (verify matrix finding 1). */}
-      {session.blocked && <BlockedBadge blocked={session.blocked} />}
+      {session.blocked && <BlockedBadge blocked={session.blocked} error={session.error} />}
       {/* Headroom, while there is still time to act on it. Silent below 60 %,
           so a healthy roster is unchanged. */}
       <UsageChip rateLimits={session.rate_limits ?? undefined} />

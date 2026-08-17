@@ -18,7 +18,13 @@
 
 import { motion, useReducedMotion } from 'framer-motion'
 
-import { classifyAgentError, errorBadgeLabel, resetNote } from '@/components/chat/agent-error'
+import {
+  classifyAgentError,
+  errorBadgeLabel,
+  resetNote,
+  statesReset,
+  statesSameBlock,
+} from '@/components/chat/agent-error'
 import {
   usageTitle,
   worstWindow,
@@ -184,11 +190,24 @@ export function ErrorBadge({ error, className, session }: ErrorBadgeProps) {
 export function BlockedBadge({
   blocked,
   className,
+  error,
 }: {
   blocked?: { kind: string; text: string; detail?: string; wedge?: string }
   className?: string
+  /**
+   * The OTHER witness to the same condition, when the bar renders both.
+   *
+   * A session with a `StopFailure` rate_limit hook AND a limit banner on the pty
+   * wore two amber chips at once — "⚠ Session limit" and "⚠ Limit reached" —
+   * beside one status word: one condition, stated twice, with two different
+   * nouns and no ranking. When the error pill is already saying it, this badge
+   * stands down: the pill names the BUCKET and carries the clock, which is
+   * strictly more than "Limit reached".
+   */
+  error?: { type?: string; message?: string } | null
 }) {
   if (!blocked?.kind) return null
+  if (statesSameBlock(blocked, error)) return null
   const label = blocked.kind === 'limit' ? 'Limit reached' : wedgeLabel(blocked.wedge)
   return (
     <span
@@ -274,11 +293,22 @@ function ErrorPill({
   // "when can I work again", where the banner carried it. The reset clause is
   // the whole answer and it lives nowhere else on this plane — it rode in on
   // `last_assistant_message` and was discarded until the states fix.
-  const reset = resetNote(classifyAgentError(error.message ?? '', error.type))
+  // …unless Claude Code's own sentence already carries it, which is where the
+  // clause was parsed FROM. Appending it unconditionally produced "You've hit
+  // your session limit · resets 4:40am (Europe/Amsterdam) · Resets 4:40am
+  // (Europe/Amsterdam)" — the same clock twice, in two casings, in one tooltip.
+  const reset = statesReset(error.message)
+    ? undefined
+    : resetNote(classifyAgentError(error.message ?? '', error.type))
+  const tip = [error.message, reset].filter(Boolean).join(' · ') || errorLabel(error.type)
   return (
     <span
       role="status"
-      title={[error.message, reset].filter(Boolean).join(' · ') || errorLabel(error.type)}
+      // The clock is the answer to "when can I work again" and it lived on
+      // `title` alone — hover-only, i.e. absent on every touch device and to
+      // every screen reader. Same string, both channels.
+      aria-label={tip}
+      title={tip}
       className={cn(
         // Calm orange (--status-error) tint — visible enough to make a dead agent
         // obvious, never an alarmist red. Mirrors the needs-input pill geometry.
