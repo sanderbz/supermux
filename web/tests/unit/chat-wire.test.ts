@@ -501,10 +501,16 @@ describe('thinking entries', () => {
     expect(entries[1].text).toBe('91 = 7 × 13')
   })
 
-  test('an EMPTY thinking block is still nothing — no blank disclosure', () => {
-    expect(toChatEntries([block({ uuid: 'th', kind: 'thinking', body: { text: '  ' } })])).toEqual(
-      [],
-    )
+  test('an EMPTY thinking block still earns its row — the METADATA is the fact', () => {
+    // This used to assert the opposite, and the assertion is what hid the bug:
+    // Claude Code 2.1.233 writes EVERY thinking block with an empty `thinking`
+    // field (`{"type":"thinking","thinking":"","signature":"Eq…"}` — 20,831 of
+    // them on the audit host, none with text), so "drop it when the body is
+    // empty" meant the disclosure could never render for anybody, while the A6
+    // register carried S21 as delivered. The row is collapsed either way; what
+    // survives is that a reasoning phase happened, and for how long.
+    const entries = toChatEntries([block({ uuid: 'th', kind: 'thinking', body: { text: '  ' } })])
+    expect(entries.map((e) => [e.uuid, e.kind, e.text])).toEqual([['th', 'thinking', '']])
   })
 
   test('a subagent’s thinking stays out, like everything else it does', () => {

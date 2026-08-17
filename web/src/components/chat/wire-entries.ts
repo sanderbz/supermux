@@ -884,8 +884,16 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       // throwing away the reasoning the user had asked for. It renders
       // COLLAPSED, so the calm view is intact — the row is one line high until
       // somebody asks for the rest.
+      // RENDER ON THE METADATA, NOT ON THE BODY. Dropping the entry when the
+      // body was empty made this surface unreachable in practice: Claude Code
+      // 2.1.233 writes `{"type":"thinking","thinking":"","signature":"…"}` —
+      // 20,831 thinking blocks on the audit host, zero with any text — so the
+      // register claimed a disclosure no user of this product could ever see,
+      // and the one honest signal that IS on the wire (a reasoning phase
+      // happened, and for how long — what the terminal prints as "✻ Cogitated
+      // for 12s") went in the bin with it. The row stays COLLAPSED either way,
+      // so the calm view is unchanged; opened, an empty one says so.
       const text = sanitiseText(textOf(w.body))
-      if (!text) continue
       out.push({
         uuid: w.uuid,
         ts: toSeconds(w.ts_ms),

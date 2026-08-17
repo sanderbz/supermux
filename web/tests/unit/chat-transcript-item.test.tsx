@@ -333,4 +333,21 @@ describe('thinking', () => {
     expect(out).toContain('Thought')
     expect(out).not.toMatch(/Thought for/)
   })
+
+  test('an empty block still says how long, and says the reasoning was not saved', () => {
+    // THE ONLY SHAPE THIS PRODUCT ACTUALLY SEES. Claude Code 2.1.233 writes
+    // every thinking block with an empty body (20,831 on the audit host, none
+    // with text), so a disclosure that renders only when there IS text renders
+    // for nobody — while the terminal, on the same turn, prints "✻ Cogitated
+    // for 12s". The duration is the fact that survived; the row carries it and
+    // is honest about the rest.
+    const out = text(
+      render([
+        thinking({ text: '', ts: 1_760_000_012 }),
+        { uuid: 'u1', ts: 1_760_000_000, text: 'Think hard about this.', kind: 'prompt' },
+      ]),
+    )
+    expect(out).toContain('Thought for 12s')
+    expect(out).toContain('not saved')
+  })
 })

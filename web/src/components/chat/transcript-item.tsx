@@ -380,7 +380,13 @@ function ThinkingDisclosure({
         {label}
       </summary>
       <p className="chat-thinking-body">
-        {item.text}
+        {/* AN EMPTY BLOCK IS STILL A FACT. Claude Code writes the thinking entry
+            with an empty `thinking` field on every model this app has seen
+            (2.1.233: 20,831 blocks, none with text), so the summary above — a
+            reasoning phase happened, and for how long — is the whole of what the
+            transcript preserved. Saying that out loud beats a blank disclosure,
+            and beats the row not existing at all. */}
+        {item.text || 'The model’s reasoning was not saved to this transcript.'}
         {item.truncated && <ClippedMarker uuid={item.uuid} />}
       </p>
     </details>
