@@ -72,6 +72,7 @@ import { useSessionConfig } from '@/hooks/use-session-config'
 import { useChatRenderer } from '@/components/chat/use-chat-renderer'
 import { useRendererState } from '@/components/chat/use-renderer-pref'
 import { prefFor, type RendererPref } from '@/components/chat/renderer-pref'
+import { onRowMenuRequest } from './row-menu-bus'
 import { sessionTitle, type ApiSession } from '@/lib/api'
 import { useUI } from '@/stores/ui-store'
 
@@ -174,6 +175,14 @@ export function SessionActionsMenu({
   // menu's own focus restoration is what used to shut the popover again.
   const [pending, setPending] = React.useState<null | 'info' | 'rename'>(null)
   const infoAnchorRef = React.useRef<HTMLButtonElement>(null)
+  // The menu is CONTROLLED so the row can open it from the keyboard (Shift+F10
+  // / the Menu key). The trigger is no longer a tab stop of its own — see
+  // `row-menu-bus.ts` for why a 40-session roster used to be 41 stops.
+  const [open, setOpen] = React.useState(false)
+  React.useEffect(
+    () => onRowMenuRequest(sessionName, () => setOpen(true)),
+    [sessionName],
+  )
   const navigateMorph = useNavigateMorph()
 
   // Action visibility matrix (per user spec — keep redundancies pruned):
@@ -205,12 +214,19 @@ export function SessionActionsMenu({
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <button
             ref={infoAnchorRef}
             type="button"
             aria-label={`More actions for ${sessionLabel}`}
+            // OUT of the tab order. The roster is meant to be ONE stop that the
+            // arrows walk; a peer trigger per row makes it 1+N, and on a fine
+            // pointer those N are invisible until focused. The row opens this
+            // menu with Shift+F10 / the Menu key instead (`row-menu-bus.ts`),
+            // and pointer users are unaffected.
+            tabIndex={-1}
+            aria-keyshortcuts="Shift+F10"
             data-vr="tile-kebab"
             data-vr-tile-kebab="true"
             data-vr-session-name={sessionName}

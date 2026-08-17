@@ -37,6 +37,7 @@ import { STATUS_LABEL } from './status-dot'
 import { SessionFace } from '@/components/roster/session-face'
 import { useRowAttention } from '@/hooks/use-attention'
 import { useRovingItem } from '@/hooks/use-roving'
+import { isRowMenuKey, requestRowMenu } from './row-menu-bus'
 import { ATTENTION_DOT } from '@/components/chat/ui/metrics'
 import type { AttentionKind } from '@/components/chat/ui/roster-row'
 import { cn } from '@/lib/utils'
@@ -771,11 +772,20 @@ export function SessionTile({
         onFocus={roving.onFocus}
         aria-label={`${title} — ${STATUS_LABEL[session.status]}`}
         onClick={fine ? goFocus : undefined}
+        aria-keyshortcuts="Shift+F10"
         onKeyDown={(e) => {
           // Navigation first, then activation: the roving handler consumes only
           // arrows/Home/End and reports whether it did, so Enter/Space still
           // open the session exactly as before.
           if (roving.onKeyDown(e)) return
+          // The row's SECONDARY action, on the platform's own keys. The ⋯
+          // trigger left the tab order (finding 37) and this is what replaces
+          // it: one stop per row, and the actions are still one keystroke away.
+          if (isRowMenuKey(e) && requestRowMenu(session.name)) {
+            e.preventDefault()
+            e.stopPropagation()
+            return
+          }
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
             goFocus()

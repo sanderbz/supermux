@@ -107,9 +107,18 @@ export interface RosterRowProps {
   tabIndex?: number
   /** The same seam's handle on the DOM node, so the list owner can move focus. */
   buttonRef?: React.Ref<HTMLButtonElement>
+  /** The roving list's key for this row (the session name), published as
+   *  `data-roving-item` — the attribute the tile has always carried and the list
+   *  row had not, which is why "which row owns the tab stop" was measurable in
+   *  one view and not the other. */
+  rovingKey?: string
   /** Accessible label — the wrappers know the status word, the primitive does
    *  not. Falls back to the visible name. */
   ariaLabel?: string
+  /** Keys the row itself answers, announced to AT (`aria-keyshortcuts`) — the
+   *  roster row's secondary action lives on Shift+F10 now that the ⋯ trigger is
+   *  not a tab stop. */
+  ariaKeyShortcuts?: string
   title?: string
   /** VR hook (`ARCHITECTURE.md:160`). */
   dataVr?: string
@@ -147,7 +156,9 @@ export function RosterRow({
   onKeyDown,
   tabIndex,
   buttonRef,
+  rovingKey,
   ariaLabel,
+  ariaKeyShortcuts,
   title,
   dataVr,
   className,
@@ -172,8 +183,10 @@ export function RosterRow({
       tabIndex={tabIndex}
       title={title}
       aria-label={ariaLabel}
+      aria-keyshortcuts={ariaKeyShortcuts}
       data-selected={selected || undefined}
       data-density={density}
+      data-roving-item={rovingKey}
       data-vr={dataVr}
       aria-current={selected ? 'true' : undefined}
       className={cn(
