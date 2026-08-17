@@ -342,6 +342,32 @@ export function readLogin(capture: string): LoginSighting | null {
   return null
 }
 
+/**
+ * ONE SIGHTING, ONE CARD — does the sign-in card own this frame?
+ *
+ * `Select login method:` is read by BOTH lenses off the same capture: by this
+ * one, which knows the three options and has a verified way to answer them, and
+ * by `peek-lens.ts`, which reads three numbered rows under a caret, finds no
+ * fingerprint for the screen, and correctly degrades to `family: 'unknown'` —
+ * a card with every option disabled, under an attention row reading "Claude is
+ * asking something chat can't answer."
+ *
+ * Both shipped, and one viewport carried all of it at once: enabled pills that
+ * DID advance the flow, a second card repeating the same three options greyed
+ * out, and a banner saying nobody could answer either. Two of those three
+ * statements were false about the same screen at the same second.
+ *
+ * So the more specific reader wins, and this is that rule — pure, and here
+ * rather than inline in the panel because it is the kind of precedence that gets
+ * re-derived differently in a second place six months later.
+ */
+export function loginOwnsScreen(s: {
+  sighting: LoginSighting | null
+  providerAuth: ProviderAuth | null
+}): boolean {
+  return s.sighting != null || s.providerAuth != null
+}
+
 /* ── the credential ──────────────────────────────────────────────────────── */
 
 /**

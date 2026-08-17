@@ -112,6 +112,13 @@ test.describe('the OAuth login card (AREA 3)', () => {
     expect(href).toMatch(/^https:\/\/claude\.com\/cai\/oauth\/authorize\?/)
     expect(href).toContain('&state=hVQ0m2rXqvY7bK1cLp9sTfR8dNzE4uJa')
 
+    // ── ONE SIGHTING, ONE CARD (r2 finding 25) ──────────────────────────────
+    // The generic dialog lens reads the same capture. Wherever it also fires,
+    // the specific reader wins — a second card repeating the same options,
+    // disabled, under a banner saying chat cannot answer, is false about a
+    // screen this one is answering.
+    await expect(page.getByTestId('chat-dialog-card')).toHaveCount(0)
+
     // ── a half-paste never reaches the pty ──────────────────────────────────
     await page.getByTestId('login-code').fill('no-hash-here')
     await page.getByTestId('login-submit').click()

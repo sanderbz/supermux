@@ -27,11 +27,13 @@ import {
   loginCodeProblem,
   maskCode,
   readLogin,
+  loginOwnsScreen,
   readProviderAuth,
   reassembleUrl,
   type LoginStage,
   type ProviderAuthKind,
 } from '../../src/components/chat/login-lens'
+import { readLens } from '../../src/components/chat/peek-lens'
 
 interface CorpusRow {
   name: string
@@ -203,5 +205,29 @@ describe('what Claude Code 2.1.233 actually draws', () => {
     const got = readLogin(cc233('cc233-oauth-error'))
     expect(got?.stage).toBe('error')
     expect(got?.message).toBe('OAuth error: Request failed with status code 400')
+  })
+})
+
+describe('one sighting, one card', () => {
+  test('the method selector is seen by BOTH lenses, and the specific one wins', () => {
+    const cap = capture({ file: 'cc233-method-select.txt' } as CorpusRow)
+    const sighting = readLogin(cap)
+    expect(sighting?.stage).toBe('method_select')
+    // The generic dialog lens reads the same rows and — correctly — has no
+    // fingerprint for the screen, which is what drew a SECOND card with every
+    // option disabled and an attention row saying chat could not answer, beside
+    // a login card whose pills answered it fine.
+    const generic = readLens(cap).dialog
+    expect(generic?.family).toBe('unknown')
+    expect(generic?.options).toEqual(sighting!.options)
+    // So the precedence rule the panel applies has to say the login owns it.
+    expect(loginOwnsScreen({ sighting, providerAuth: readProviderAuth(cap) })).toBe(true)
+  })
+
+  test('an ordinary screen leaves the generic reader alone', () => {
+    const cap = capture({ file: 'negative-idle-composer.txt' } as CorpusRow)
+    expect(
+      loginOwnsScreen({ sighting: readLogin(cap), providerAuth: readProviderAuth(cap) }),
+    ).toBe(false)
   })
 })

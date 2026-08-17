@@ -52,6 +52,7 @@ import { useComposer } from './use-composer'
 import { useHarnessEvents } from './use-harness-events'
 import { useDialogAnswer } from './use-dialog-answer'
 import { LoginCard, ProviderAuthCard } from './login-card'
+import { loginOwnsScreen as loginOwns } from './login-lens'
 import { useLogin } from './use-login'
 import { usePeekLens } from './use-peek-lens'
 import { usePendingSends } from './use-pending-sends'
@@ -348,6 +349,24 @@ export default function ChatPanel({
   // heal or a scheduled fire landing mid-flow would invalidate the code the
   // user is copying out of their browser at that moment.
   const login = useLogin(name, peek.capture)
+  // ONE SIGHTING, ONE CARD (r2 finding 25).
+  //
+  // The login lens and the generic dialog lens read the SAME peek frame, and
+  // `Select login method:` satisfies both: a SPECIFIC reader that knows the
+  // three options and has a verified way to answer them, and a GENERIC one with
+  // no fingerprint for that screen, which correctly degrades to "chat can't
+  // answer this". Shipped side by side they contradicted each other inside one
+  // viewport — the login card's pills answered the dialog while a second card
+  // under it drew the same three options disabled, beneath a banner saying
+  // nobody could. The more specific reader wins: while it owns the screen the
+  // generic card, its resolution line and its attention row all stand down.
+  //
+  // The composer's gate is deliberately NOT relaxed by this (`dialogCard`
+  // below still counts the generic sighting): text typed while a login dialog
+  // is open would be pasted into a credential field, which is the one place
+  // this surface must keep refusing.
+  const loginOwnsScreen = loginOwns(login)
+  const dialogAttention = loginOwnsScreen ? null : dialog.attention
   // P10 (T4) sits BETWEEN the composer and the input plane: `pending.input` is
   // the same handle with every submit tracked, so the echo cannot get out of
   // step with the POST it is drawn for. `pending.attention` is T5's cause —
@@ -483,7 +502,7 @@ export default function ChatPanel({
     blind ? ('transcript-blind' as const) : null,
     lensBlocked ? ('session-blocked' as const) : null,
     pending.attention,
-    dialog.attention,
+    dialogAttention,
     lensRefused ? ('turn-refused' as const) : null,
   ])
   // What the abort actually was. `dialog-unmapped`'s copy reads "no verified
@@ -495,7 +514,7 @@ export default function ChatPanel({
   // has its own test: the two raisers can fire in the same second and this
   // sentence must not end up inside the other one's card.
   const detail =
-    detailFor(attention, dialog.attention, dialog.attentionDetail) ??
+    detailFor(attention, dialogAttention, dialog.attentionDetail) ??
     // The blocked card's evidence is Claude Code's own banner, verbatim — it
     // carries the reset time, and the remediation line when the terminal
     // printed one.
@@ -591,10 +610,12 @@ export default function ChatPanel({
       showJumpToBottom={showJump}
       onJumpToBottom={jumpToBottom}
       pending={pending.items}
-      dialog={dialog.card}
+      // Suppressed while the sign-in card owns the screen — see
+      // `loginOwnsScreen`. One pty sighting must not produce two cards.
+      dialog={loginOwnsScreen ? null : dialog.card}
       dialogBusy={dialog.busy}
       onChooseDialog={dialog.choose}
-      dialogResolved={dialog.resolved}
+      dialogResolved={loginOwnsScreen ? null : dialog.resolved}
       // The live band's working row says what the session is ACTUALLY doing
       // during a stall — `session.activity` still names the last tool that ran
       // (`live-layer.tsx` `stalled`).
