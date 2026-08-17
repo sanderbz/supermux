@@ -674,13 +674,101 @@ token and the scan's assertion in the same commit.
 
 ### Accessibility contract (T7/T8)
 
-<!-- PLACEHOLDER — owned by the T7/T8 accessibility pass, not by T6.
-     Do not invent this section: it must be written from what actually ships.
-     Expected contents: the G1–G14 resolutions, the streaming region's
-     announcement policy (announcement COUNT over a scripted turn, not merely
-     "an aria-live exists"), choice-card ARIA state, focus-after-send, the
-     Esc/trap collision matrix, and the roster's list + roving-tabindex
-     semantics. -->
+Written from what ships, not from what was planned. Where a promise is unmet it
+is named below under **Carried**, in the same idiom as *Named gaps* above — a
+contract that describes an unbuilt surface is worse than no contract, because
+the description is what stops the next person building it.
+
+#### One state, one voice
+
+The rule that took three attempts to get right, and the only one here that is a
+*policy* rather than an attribute:
+
+> **A state has exactly one live region. Everything else that renders the same
+> fact is `aria-live="off"`.**
+
+A screen reader does not see components, it hears the page — so "each component
+announces its own state" composes into one sentence said three times. It did:
+sampling every `[aria-live]:not(off)` during a real turn found the recall strip,
+the pending band and the LiveAnnouncer all changing inside 500 ms, reading the
+user's own message back twice before saying anything about the reply.
+
+| state | owner | everyone else |
+|---|---|---|
+| the turn (working / asking / handing off) | `live-layer.tsx`'s LiveAnnouncer — a `role="status"` whose text is a pure function of the phase | the band itself is `aria-live="off"`; the recall strip is `off`; the pending band is `off` |
+| a send that did NOT land | the pending band, and only for `undelivered` | — |
+| connection | the chat connection chip while a chat surface is saying something, otherwise the global `ReconnectBanner` | claimed at runtime through `lib/live-region-owner.ts`; the loser stays visible and retryable, just silent |
+
+Two corollaries worth stating, because both were violated in shipped code:
+
+- **A live region is mounted BEFORE it has text.** A region that appears at the
+  same moment as its content announces inconsistently across AT. The pending
+  band's wrapper is therefore unconditional and its *politeness* is what
+  changes.
+- **The user's own words are never news.** The recall strip and the optimistic
+  echo both render text the user typed one second ago and can still see. They
+  carry it as `aria-label`, not as speech.
+
+**Assert it by COUNT, over the assembled page.** `tests/unit/chat-a11y.test.tsx`
+counts announcements over a scripted turn; `tests/unit/live-region-ownership.test.tsx`
+counts speaking regions across the recall strip + pending band + live layer
+*together*, which is the assertion a single-component test structurally cannot
+make. "An `aria-live` exists" is not an assertion.
+
+#### The gap list, resolved
+
+| id | what ships |
+|---|---|
+| G1 | the streaming region announces — one phase sentence per turn (above) |
+| G2 | the working row is `aria-busy` while a turn runs, and not otherwise |
+| G3 | an authored bubble is `role="article"` + `aria-label` with the author; an UNAUTHORED one (a receipt group) stays a plain div — a receipt is not speech |
+| G4 | the choice card is a named `role="group"`; the keyboard cursor is `aria-current`, not a colour; `option.hint` is text, not `title=`; the refusal reason is reachable even though the button is genuinely `disabled` |
+| G5 | `CardCode` is a named `role="region"` — a tab stop that announces as something |
+| G6 | every `aria-expanded` names what it controls, and only while that thing exists |
+| G9 | the chat surface is one `role="region"` labelled by one `<h2>`; the scroller is deliberately NOT `role="log"` (the seed would read the whole backlog aloud) |
+| G10 | a real skip link (`layout.tsx`), targeting a `tabIndex={-1}` `<main>` so focus actually lands |
+| G11 | one `<h1>` per route; the roster's duplicate sticky title is gone; sections are `aria-labelledby` |
+| G13 | the status dot is `aria-hidden` decoration and the WORD is the text — announced once, by one of the two surfaces that used to both claim it |
+
+#### Escape, and who owns it
+
+`Escape` is overloaded on purpose; the resolution is strictly innermost-first,
+and every layer refuses to act when an inner one has claimed it:
+
+| what is open | what Escape does |
+|---|---|
+| an IME composition | belongs to the composition — the composer forwards NOTHING while composing |
+| the @-picker / slash popover | closes the PICKER only. It does not clear the draft and does not stop the turn |
+| a draft with text in it | clears the draft |
+| an empty composer during a turn | interrupts the turn |
+| `ShellOverlay` / `ResponsiveSheet` | closes the overlay and restores focus to its opener |
+
+The trap lives with the overlay, never with the composer: `ShellOverlay` and
+`ResponsiveSheet` cycle Tab and restore focus on close. The composer is never a
+trap — it is a text field on a page.
+
+#### Carried, by name
+
+- **The roster is still not arrow-navigable (G7/G12).** `role="list"` exists on
+  the overview, but there is no roving tabindex — `grep -rn roving web/src`
+  returns nothing outside this document — so a ten-session roster is still
+  thirty-eight tab stops and Arrow keys move nothing. The primitive is ready
+  (`chat/ui/roster-row.tsx` is a real button with `aria-label`, `aria-current`
+  and an `onKeyDown` prop) and no caller supplies the handler.
+- **Focus after send (G8) is wired for the feedback path only.** `focusComposer()`
+  exists and is called from `chat-panel.tsx`; the chat↔terminal toggle does not
+  arm it, so focus can still land on `<body>` after a surface swap.
+- **Colour contrast fails AA in both themes.** The ink ladder's tertiary step is
+  3.68:1 on dark and 2.49:1 on light, and the light theme's terminal/ANSI
+  palette was never audited. `tests/e2e/smoke/a11y-axe.spec.ts` carries
+  `color-contrast` as an enumerated baseline entry on every scanned surface —
+  that entry is the todo.
+- **`nested-interactive` on the focus surface** — a control inside a control,
+  carried in the same baseline, and best fixed with the roving-tabindex work
+  that rebuilds that structure.
+- **No keyboard-only walkthrough spec (T8.5).** Unchecked in the A6 ledger
+  rather than left claimed; it is blocked on the composer-focus defect above,
+  which is the thing it would have caught.
 
 ### Connection vocabulary (T2.6)
 
@@ -698,11 +786,26 @@ places, so a drift is a type error rather than a taste argument.
 
 Three rules that are easy to get wrong and expensive to get wrong:
 
-1. **The transcript never blanks.** The server's contract is explicit
-   (`tailer.rs:153`): *"`Reconnecting` is deliberately not an error: the
-   transcript we already showed stays on screen, but the client must not
-   present it as a complete, current conversation."* The chrome carries the
-   doubt; the content does not move.
+1. **The transcript never blanks — and nothing covers it either.** The server's
+   contract is explicit (`tailer.rs:153`): *"`Reconnecting` is deliberately not
+   an error: the transcript we already showed stays on screen, but the client
+   must not present it as a complete, current conversation."* The chrome carries
+   the doubt; the content does not move.
+   **This includes the app-root `ConnectionOverlay`.** It is a `fixed inset-0`
+   full-screen curtain, and during a hard outage on a chat route it eventually
+   paints over the whole surface — measured against the embedded binary at ~25 s
+   after the socket dies (a reconnect-honesty pass saw 416 ms on its own rig), at
+   which point "stays on screen" is false and every honesty affordance the chat
+   plane owns is behind it. **Decision: while a chat surface is mounted, the
+   curtain stands down** (`lib/live-region-owner.ts::claimChatSurface`). Nothing
+   is lost — the honesty chip is tappable to redial, the undelivered row offers
+   Retry, and the global `ReconnectBanner` still says its piece above the route —
+   and everywhere else (roster, files, settings, a terminal-only focus route) the
+   curtain is exactly right and still appears.
+   Asserted with `elementFromPoint`, sampled ACROSS the outage window, in
+   `tests/e2e/smoke/chat-ws-restart-reseeds.spec.ts`. Playwright's
+   `toBeVisible()` ignores occlusion, which is precisely why the spec that tests
+   this scenario stayed green while the claim was false.
 2. **`live` says nothing.** A chip that reads "Live" on every screen is
    wallpaper within a day, and then the day it says something else, nobody
    reads it.

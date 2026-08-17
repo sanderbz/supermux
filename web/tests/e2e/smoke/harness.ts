@@ -4,7 +4,9 @@
 // kill/restart test can drive the process lifecycle directly.
 //
 // Isolation: SUPERMUX_DATA_DIR points at a fresh temp dir (server/src/config.rs
-// honours it) so a run never touches the real ~/.supermux. SUPERMUX_AUTH_TOKEN is a
+// honours it) so a run never touches the real ~/.supermux, and CLAUDE_CONFIG_DIR
+// points inside it too so the run never READS the developer's real
+// ~/.claude/teams either (see spawnBackend). SUPERMUX_AUTH_TOKEN is a
 // fixed per-run token we hand to the page via window._SUPERMUX_AUTH_TOKEN. SUPERMUX_BIND
 // pins the chosen free port.
 
@@ -117,6 +119,27 @@ function spawnBackend(opts: {
     env: {
       ...process.env,
       SUPERMUX_DATA_DIR: opts.dataDir,
+      // THE OTHER HALF OF ISOLATION.
+      //
+      // `SUPERMUX_DATA_DIR` scopes everything the server owns — sessions,
+      // prefs, the board. It does NOT scope what the server READS from Claude
+      // Code's own config root, and teams live there
+      // (`server/src/teams/scan.rs::teams_dir` → `$CLAUDE_CONFIG_DIR/teams`,
+      // else `~/.claude/teams`). So a "fresh backend on a fresh temp dir" still
+      // served the developer's real teams: measured on this machine,
+      // `GET /api/sessions` returned `[]` while `GET /api/teams` returned a
+      // full six-member team, whose member rows are `role="listitem"` on the
+      // overview — which is what made `archived-recover.spec.ts`'s
+      // `getByRole('listitem')` match rows the test never created.
+      //
+      // Pointing CLAUDE_CONFIG_DIR at the same temp dir makes the isolation
+      // claim in this file's header true for the whole surface, not most of it.
+      //
+      // It is a DEFAULT, not an override: `chat-fixture.ts` and
+      // `resume-picker-hover-pin.spec.ts` deliberately seed their own config
+      // root before booting, and stomping on it would break the two specs that
+      // already got this right.
+      CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? join(opts.dataDir, 'claude'),
       SUPERMUX_BIND: `127.0.0.1:${opts.port}`,
       SUPERMUX_AUTH_TOKEN: opts.token,
       RUST_LOG: process.env.RUST_LOG ?? 'warn',

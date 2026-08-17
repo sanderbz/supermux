@@ -52,6 +52,20 @@ for (const vp of VIEWPORTS) {
     }) => {
       const name = 'arch-e2e'
 
+      // ISOLATION, ASSERTED RATHER THAN ASSUMED. This spec's `listitem`
+      // locators are page-wide, so anything else on the overview that renders
+      // list rows changes what they match. Teams do: they are read from
+      // `$CLAUDE_CONFIG_DIR/teams`, NOT from `SUPERMUX_DATA_DIR`, and before
+      // `harness.ts` defaulted that variable a "fresh backend on a fresh temp
+      // dir" still served the developer's real six-member team — which is
+      // exactly why this spec failed on a machine that has one. If that ever
+      // regresses, fail HERE with a readable reason instead of on a confusing
+      // strict-mode violation forty lines down.
+      const teams = await fetch(`${backend.backendUrl}/api/teams`, {
+        headers: { Authorization: `Bearer ${backend.token}` },
+      }).then((r) => r.json())
+      expect(teams.data, 'a fresh backend must see no teams').toEqual([])
+
       // Seed + archive a session.
       expect(
         (await api(backend).createSession({ name, provider: 'shell', dir: backend.dataDir }))
@@ -69,13 +83,19 @@ for (const vp of VIEWPORTS) {
       await expect(overflow).toBeVisible()
       await overflow.click()
 
-      // The sheet lists the archived session.
-      const sheetRow = page.getByRole('listitem').filter({ hasText: name })
+      // SCOPED TO THE SHEET, not to the page. `getByRole('listitem')` is
+      // page-wide, and the overview behind the sheet renders list rows of its
+      // own — so the un-scoped locator answered questions about the wrong
+      // surface (it is why the "row left the sheet" assertion below matched the
+      // restored tile on the overview and failed). The sheet's own list is
+      // named, so scope through it and the assertions mean what they say.
+      const archivedList = page.getByRole('list', { name: 'Archived sessions' })
+      const sheetRow = archivedList.getByRole('listitem').filter({ hasText: name })
       await expect(sheetRow).toBeVisible()
 
       // Restore → row leaves the sheet, then returns to the overview live.
       await sheetRow.getByRole('button', { name: `Restore ${name}` }).click()
-      await expect(page.getByRole('listitem').filter({ hasText: name })).toHaveCount(0)
+      await expect(archivedList.getByRole('listitem').filter({ hasText: name })).toHaveCount(0)
       // Close the sheet so the (now-restored) tile is the active surface again.
       await page.keyboard.press('Escape')
       await expect(page.getByRole('button', { name: new RegExp(name) }).first()).toBeVisible()
@@ -90,7 +110,8 @@ for (const vp of VIEWPORTS) {
       await expect(page.getByRole('listbox', { name: 'Palette results' })).toBeVisible()
       await page.getByRole('option', { name: 'View archived sessions' }).click()
 
-      const sheetRow2 = page.getByRole('listitem').filter({ hasText: name })
+      const archivedList2 = page.getByRole('list', { name: 'Archived sessions' })
+      const sheetRow2 = archivedList2.getByRole('listitem').filter({ hasText: name })
       await expect(sheetRow2).toBeVisible()
 
       // Delete forever → inline confirm → permanent removal.
@@ -98,7 +119,7 @@ for (const vp of VIEWPORTS) {
       await sheetRow2.getByRole('button', { name: 'Delete forever' }).click()
 
       // The row is gone and the empty state shows.
-      await expect(page.getByRole('listitem').filter({ hasText: name })).toHaveCount(0)
+      await expect(archivedList2.getByRole('listitem').filter({ hasText: name })).toHaveCount(0)
       await expect(page.getByText('No archived sessions.')).toBeVisible()
 
       // And it never came back to the overview.

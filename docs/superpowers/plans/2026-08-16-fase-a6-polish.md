@@ -666,6 +666,11 @@ frame against §0.2's extracted numbers.
 - [x] **T6.7** `BRAND.md` gains **§6f — motion, reduced motion and the accessibility contract**:
       the token table, the exits-faster rule, the reduce doctrine, T7/T8's a11y rules and T2.6's
       connection vocabulary. One page for the next surface to read.
+      **The a11y half was a literal PLACEHOLDER until fix/perf-a11y-net** — T6.7 and T8.2 both
+      claimed to have filled §6f and neither had. It is now written from what ships: the
+      one-state-one-voice ownership table, the G1–G14 resolutions, the Escape/trap collision
+      matrix, and a *Carried, by name* list for the roving tabindex, focus-after-send, colour
+      contrast and T8.5.
 
 **Verify**: the source-scan spec is green; a reviewed still exists per animated surface under
 `reducedMotion:'reduce'` in both themes; the VR diff vs T1 is annotated line by line.
@@ -701,6 +706,15 @@ frame against §0.2's extracted numbers.
       focus, both themes, failing on new violations. If any existing violation must be carried,
       enumerate it by name. **Watch the bundle** — axe is a devDependency and must not reach the
       hero path (§0.1 #26: 4.5 KB of headroom).
+      **TICKED AHEAD OF THE WORK; LANDED LATE (fix/perf-a11y-net).** At A6's merge there was no
+      `@axe-core/*` dependency, no such spec, and `eslint.config.js` cited a verification file
+      (`tests/unit/a11y-tooling.test.ts`) that did not exist either. Both now exist:
+      `tests/e2e/smoke/a11y-axe.spec.ts` scans the six named surfaces in both themes against an
+      ENUMERATED rule-level baseline (a fixed rule must be removed from it in the same commit that
+      fixes it), and `tests/unit/a11y-tooling.test.ts` asserts the tooling is installed, actually
+      extended, and never reaches `src/` or a built chunk. The carried entries are
+      `color-contrast` (all surfaces, both themes — the light-theme token gap and the ink-3 ladder)
+      and `nested-interactive` on `/dev/focus`.
 
 **Verify**: axe green or an explicitly enumerated baseline; T7.1's announcement-count assertion in
 the spec; no VR diff beyond annotated intent.
@@ -727,10 +741,16 @@ the spec; no VR diff beyond annotated intent.
 - [x] **T8.4** **`:focus-visible` is visible on glass** — check `--ring` against every substrate the
       shell paints, in both themes. A ring that vanishes on the tinted column is the same bug as no
       ring.
-- [x] **T8.5** **The keyboard-only walkthrough spec**: from a cold load — reach the chat, type and
+- [ ] **T8.5** **The keyboard-only walkthrough spec**: from a cold load — reach the chat, type and
       send, answer a choice card, toggle to terminal and back, open and close the session sheet —
       with zero mouse events. This spec is also the showcase's "practical keyboard-driven use"
       evidence (S24), so write it to be *recordable*.
+      **UNCHECKED (fix/perf-a11y-net). It was never written** — 40 specs, none of them it — and
+      that is not a bookkeeping slip: it is the spec that would have caught the composer-focus
+      blocker (typing in the chat composer after a Chat↔Terminal toggle drops focus to `<body>`
+      and leaks keystrokes into the live pty). Writing it before that fix lands would only add a
+      red spec to `main`, so it is carried BY NAME here and blocked on that fix, rather than left
+      claimed.
 
 **Verify**: the walkthrough passes; the collision matrix is in `BRAND.md` §6f; axe's keyboard rules
 green; T1's VR diff annotated.
@@ -926,6 +946,13 @@ re-worded.
     gap is named in `VERDICT.md`.
 11. **Bundle headroom is ~4.5 KB** for A6 + B3 + B5 + A7 combined. Every task reports its delta;
     axe and all capture tooling stay out of the shipped bundle.
+    **CORRECTED (fix/perf-a11y-net): that number was never true after B2 merged.** `a6-triage.md`
+    measured 0.21 KB at A6's start, and the ceiling has been ratcheted to `ceil(measured)` at every
+    fase since — 210 → 211 (B3) → 212 (A6) → 216 (B5) — which reproduced a ~0 KB gate at each new
+    number rather than fixing it. Five B3 deliverables were dropped for "size" against a gate with
+    twenty-one bytes free. `size-budget.mjs` now applies its OWN documented policy (measured + 2%),
+    so the awareness ceiling is a band rather than a tripwire; the hard gate that actually guards
+    the hero path is `BUDGET_ENTRY_JS`, and it is at 94%.
 12. **Lint bar is zero NEW errors** (five pre-existing remain after T5.4), not green.
 13. **Every new surface keeps its `data-vr` hook** (`ARCHITECTURE.md:160`).
 14. **Never end on a promise** (memory *workflows-over-named-agents*): a task is done when its
