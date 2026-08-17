@@ -195,6 +195,24 @@ export interface PeekLens {
    *  set at the same time as `dialog`: a dialog is the more specific reading of
    *  the same fact, and one screen may only be one thing. */
   modal: ModalSighting | null
+  /**
+   * Claude Code is NOT WRITING A TRANSCRIPT for this session.
+   *
+   * The worst failure mode in the whole state set, and the one nothing
+   * detected: with transcript saving off (or an inherited
+   * `CLAUDE_CODE_CHILD_SESSION` marker, which is what a supermux daemon
+   * launched from inside a Claude session hands every session it spawns), the
+   * transcript plane produces ZERO entries. The chat renderer then shows an
+   * empty conversation for a session that is actively talking, with a green
+   * dot and no explanation — verified live on the rig's own `v-claude`, which
+   * had just answered an AskUserQuestion and run `/compact` while
+   * `GET /chat/history` returned `{"entries":[]}`.
+   *
+   * The only signal is a footer warning line above the mode line, so that is
+   * what this reads. Not a status and not a dialog: a CONDITION of the
+   * session, which is why it sits on the lens beside the banner version.
+   */
+  transcriptOff: boolean
 }
 
 /** U+276F — the glyph a0 proved is NEVER a fingerprint on its own: the composer
@@ -736,7 +754,16 @@ export function readLens(
     composerDraftVerified: draft.verified,
     dialog,
     modal,
+    transcriptOff: readTranscriptOff(lines),
   }
+}
+
+/** The footer warning CC prints above the mode line when it is not persisting
+ *  the conversation. Anchored on the stable half of the sentence: the tail
+ *  names whichever cause applied (an inherited marker, an explicit setting) and
+ *  is free to change between releases. */
+export function readTranscriptOff(lines: readonly string[]): boolean {
+  return lines.some((l) => l.includes('Transcript saving is off'))
 }
 
 /** The empty reading — what consumers get before the first poll lands, and what
@@ -750,6 +777,10 @@ export const EMPTY_LENS: PeekLens = {
   composerDraftVerified: true,
   dialog: null,
   modal: null,
+  // Nothing was read, so nothing is claimed: an absent capture must never be
+  // reported as "this session is blind" — that is the honesty rule the whole
+  // attention layer is built on.
+  transcriptOff: false,
 }
 
 /** Live turn, or a dialog on screen: the caret can move under us, and the whole
