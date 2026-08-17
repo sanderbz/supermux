@@ -54,6 +54,7 @@ export function Row({
   label,
   hint,
   control,
+  wideControl,
   stacked,
   children,
   className,
@@ -61,6 +62,18 @@ export function Row({
   label?: React.ReactNode
   hint?: React.ReactNode
   control?: React.ReactNode
+  /**
+   * The control is WIDE — put it on its own line below the label on a phone.
+   *
+   * The trailing control is `shrink-0`, so a wide one takes its width out of the
+   * label's column before the label gets a say: a 262px segmented control plus
+   * the gap and the row padding ate 306 of a 390px screen, leaving "Overview
+   * hover preview" 66px to wrap over three lines beside a nine-line hint. Every
+   * other row in the section has a short control, which is why this read as a
+   * break rather than as a choice. Below `sm` such a row stacks; from `sm` up
+   * nothing moves.
+   */
+  wideControl?: boolean
   stacked?: React.ReactNode
   children?: React.ReactNode
   className?: string
@@ -69,7 +82,14 @@ export function Row({
   return (
     <div className={cn('px-4 py-2.5', className)}>
       {hasTopLine ? (
-        <div className="flex min-h-[2.75rem] items-center justify-between gap-3">
+        <div
+          className={cn(
+            'flex min-h-[2.75rem] justify-between gap-3',
+            wideControl
+              ? 'flex-col items-stretch gap-2 py-2 sm:flex-row sm:items-center sm:gap-3 sm:py-0'
+              : 'items-center',
+          )}
+        >
           {label !== undefined ? (
             <div className="min-w-0">
               <div className="text-[15px] leading-tight text-foreground">
@@ -82,7 +102,9 @@ export function Row({
               ) : null}
             </div>
           ) : null}
-          {control ? <div className="shrink-0">{control}</div> : null}
+          {control ? (
+            <div className={wideControl ? 'min-w-0 sm:shrink-0' : 'shrink-0'}>{control}</div>
+          ) : null}
         </div>
       ) : null}
       {stacked ? <div className={hasTopLine ? 'pt-2' : undefined}>{stacked}</div> : null}

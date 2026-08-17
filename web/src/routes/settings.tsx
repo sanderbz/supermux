@@ -975,6 +975,10 @@ export function Settings() {
               <Row
                 label="Overview hover preview"
                 hint="Hovering a tile shows a live terminal, or more lines of recent output."
+                // The one wide control in this section ("Live terminal |
+                // Expanded text" ≈ 262px): beside it on a 390px screen the
+                // label had 66px and wrapped over three lines.
+                wideControl
                 control={
                   <SegmentedControl
                     ariaLabel="Overview hover preview"
