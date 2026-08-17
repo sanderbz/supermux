@@ -695,12 +695,20 @@ pub async fn tick(
     // `claude --resume '<stale name>'` does not exit, it sits in claude's
     // interactive Resume picker — which IS a program, so the escape hatch fired
     // on the very next ~2s tick and the honest `resume failed: <link>` badge
-    // never reached a single client. The latch now only opens on a capture that
-    // shows the provider's own UI (`lifecycle::agent_at_the_wheel`, which
-    // excludes the picker and the trust dialog), and that check is deferred to
-    // the capture this tick is about to take — see `release_heal_latch` below.
-    let heal_latched = heal_failed_pending(name);
-    if !heal_latched {
+    // never reached a single client. A CLAUDE latch now only opens on a capture
+    // that shows the provider's own UI (`lifecycle::agent_at_the_wheel`, which
+    // excludes the picker and the trust dialog), deferred to the capture this
+    // tick is about to take (below).
+    //
+    // The strict rule is scoped to the provider that needs it
+    // (`agent_evidence_required`): every other provider's failed restart really
+    // does leave a shell, and their "agent UI" is a bash prompt nothing can
+    // match — so applying it to them would latch a badge that could never
+    // clear.
+    let heal_latched = heal_failed_pending(name) && agent_evidence_required(name);
+    if !heal_failed_pending(name)
+        || (!heal_latched && rt.shell_is_foreground().await == Some(false))
+    {
         clear_holder_death_badge(state, name);
     }
 
@@ -778,9 +786,9 @@ pub async fn tick(
     let capture = status::prepare_capture(&raw_ansi);
     let capture_ansi = status::prepare_capture_ansi(&raw_ansi);
 
-    // The failed-heal latch, released on AGENT evidence (see the alive branch
-    // above). This is the first point in the tick where a capture exists, so it
-    // is the first point where "the agent is back" can be answered honestly.
+    // The claude latch, released on AGENT evidence (see the alive branch above).
+    // This is the first point in the tick where a capture exists, so it is the
+    // first point where "the agent is back" can be answered honestly.
     if heal_latched && crate::sessions::lifecycle::agent_at_the_wheel(&capture) {
         tracing::info!(
             name = %name,
@@ -1451,7 +1459,10 @@ pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
 /// (~2s) and the ghost went green again. Cleared the moment a program actually
 /// owns the pty again (the alive tick probes it), on a successful heal, and on a
 /// manual recovery.
-static HEAL_FAILED: once_cell::sync::Lazy<dashmap::DashMap<String, ()>> =
+/// The value is "releasing this latch needs AGENT evidence" — true for the
+/// provider whose failed resume does not drop to a shell (see
+/// [`agent_evidence_required`]).
+static HEAL_FAILED: once_cell::sync::Lazy<dashmap::DashMap<String, bool>> =
     once_cell::sync::Lazy::new(dashmap::DashMap::new);
 
 /// Is `name` sitting on a heal that came back without its agent?
@@ -1459,10 +1470,27 @@ fn heal_failed_pending(name: &str) -> bool {
     HEAL_FAILED.contains_key(name)
 }
 
+/// Does `name`'s latch need AGENT evidence to open, or is "a program owns the
+/// pty" enough?
+///
+/// Only `claude` needs the strict rule, and only because of one screen:
+/// `claude --resume '<stale>'` does not exit, it parks in claude's interactive
+/// Resume picker — a live program that satisfies `shell_is_foreground() ==
+/// Some(false)`, which is how the honest `resume failed: <link>` badge was wiped
+/// on the very next ~2 s tick and never reached a client.
+///
+/// Every other provider's failed restart really does leave a shell, and their
+/// "agent UI" is a bash prompt that `agent_ui_visible` cannot match — so
+/// applying the strict rule to them would latch a badge that nothing could ever
+/// clear. Narrowest fix that closes the bug and cannot invent a new one.
+fn agent_evidence_required(name: &str) -> bool {
+    HEAL_FAILED.get(name).map(|v| *v).unwrap_or(false)
+}
+
 /// Re-raise the terminal-died badge with the reason a heal failed, and latch it
 /// so the next alive tick does not wipe it off a pane that is only a shell.
 pub(crate) fn stamp_heal_failed(state: &AppState, name: &str, s: &db::sessions::Session) {
-    HEAL_FAILED.insert(name.to_string(), ());
+    HEAL_FAILED.insert(name.to_string(), s.provider == "claude");
     let link = if !s.cc_session_name.trim().is_empty() {
         s.cc_session_name.trim()
     } else {
@@ -3668,6 +3696,37 @@ mod recovery_tests {
             !crate::sessions::lifecycle::agent_at_the_wheel("user@host:~/work$ "),
             "and a bare shell prompt never was",
         );
+    }
+
+    /// …and the strict rule is scoped to the provider that needs it.
+    ///
+    /// A non-claude session's failed restart really does leave a shell, and a
+    /// bash prompt is a screen no `agent_ui_visible` heuristic can match — so
+    /// demanding agent evidence there would latch a badge nothing could ever
+    /// clear, which is a worse bug than the one being fixed.
+    #[tokio::test]
+    async fn only_claude_latches_need_agent_evidence_to_release() {
+        let (state, dir) = test_state().await;
+        native_row(&state, "cc", "claude", "stopped").await;
+        native_row(&state, "sh", "shell", "stopped").await;
+        reset_heal_state("cc");
+        reset_heal_state("sh");
+
+        for name in ["cc", "sh"] {
+            let s = db::sessions::get(&state.pool, name).await.unwrap().unwrap();
+            stamp_heal_failed(&state, name, &s);
+            assert!(heal_failed_pending(name), "the badge is latched either way");
+        }
+        assert!(agent_evidence_required("cc"), "the Resume-picker trap is claude's alone");
+        assert!(
+            !agent_evidence_required("sh"),
+            "a shell session keeps the original 'a program owns the pty' release",
+        );
+
+        reset_heal_state("cc");
+        reset_heal_state("sh");
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// THE REAL THING. Every other heal test stops at the guard and returns
