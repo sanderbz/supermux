@@ -71,7 +71,33 @@ const BUDGET_ENTRY_JS = 160 * KB
 // relative to its budget: 146.72 / 160 KB (92%), because the new code lands in
 // the lazy `chat-panel` chunk and `A0_LATENCIES` tree-shakes out entirely.
 // Ceiling set to ceil(measured), which is the same rule B3 used (210.23 → 211).
-const BUDGET_APP_JS = 212 * KB
+// 216 as of B5 (#TBD): measured 215.91 against 211.95 for A6 — a +3.96 KB fase.
+// The ENTRY gate, the one that actually guards the hero path, MOVED DOWN
+// relative to its budget: 150.40 / 160 KB (94%), and none of B5's weight lands
+// on it. The `/dev/*` benches T13 adds are `import.meta.env.DEV`-gated and
+// tree-shake out entirely — verified absent from `dist/`, so they cost nothing
+// here. Apportioned per stream (by module contribution, not by isolated
+// builds), because an aggregate would hide which one to argue with:
+//   ~1.5 KB  T3, the notification client. `push-bridge` + its mount point +
+//            the per-bot policy control. This is the half of §15.4 that had NO
+//            client at all: the service worker had been posting payloads into
+//            a void since the PUSH milestone because nothing was listening, and
+//            the home-screen badge did not exist (`setAppBadge` had zero
+//            occurrences in `web/`). The SW itself is a public asset and is not
+//            in this bundle.
+//   ~1.3 KB  T8, the recovery ladder. `use-recovery` + the inline/canonical
+//            renderings. Buys the first manual recovery a user has ever had —
+//            and the first UI for `recovery.auto_heal`, a real pref that was
+//            reachable only by hand-crafting a `PUT /api/prefs`.
+//   ~1.0 KB  T9, the confirm idiom. This one is a NET ADD that pays for a
+//            larger deletion later: it replaces three inline mechanisms across
+//            six sites plus four `window.confirm` calls, and the six sites'
+//            hand-rolled timers came out. It reads as growth now because the
+//            shared machine and the dialog are new files while the deletions
+//            are scattered lines.
+//   ~0.2 KB  T4, the seen-cursor merge in `attention-tiers`/`use-attention`.
+// Ceiling set to ceil(measured), the same rule B3 and A6 used.
+const BUDGET_APP_JS = 216 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
