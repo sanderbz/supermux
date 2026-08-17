@@ -68,9 +68,10 @@ import { useAgentToolsSheet } from '@/stores/claude-tools-store'
 import { AgentToolsHost } from '@/components/claude-tools/claude-tools-host'
 import { SnippetsManagerHost } from '@/components/snippets/snippets-manager-host'
 import { Kbd } from '@/components/ui/kbd'
+import { useToast } from '@/components/ui/use-toast'
 import { EntityPickerView } from '@/components/ui/entity-picker'
 import { resolveEntityTarget, type EntityRow } from '@/lib/entity'
-import { rankEntities } from '@/lib/rank'
+import { rankEntities, type RankText } from '@/lib/rank'
 import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
@@ -93,8 +94,17 @@ import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 // six different shapes without knowing what any of them is.
 interface Ranked {
   row: EntityRow
-  /** What the query is matched against. */
-  text: string
+  /**
+   * What the query is matched against.
+   *
+   * A `{ label, extra }` pair rather than one joined sentence (blocker fix):
+   * ranking a command on `"/cmd <its whole description>"` let a subsequence
+   * walk the description and win the row — `dark` offered `/supermux-schedule`
+   * as its only result, and Enter on that row POSTs the command into a live
+   * agent. The name is what a query must match; the description can only ever
+   * find its row as a substring, below every name hit.
+   */
+  text: RankText
   /** Which heading it sits under. */
   group: string
 }
@@ -161,6 +171,8 @@ export function CommandPalette() {
   // route, so the "New group" row is conditionally surfaced below.
   const newGroupAction = useNewGroupAction((s) => s.action)
 
+  const { toast } = useToast()
+
   const [query, setQuery] = React.useState('')
   // `viaKey` rides with the index because the picker scrolls the active row
   // into view for KEYBOARD moves only (fase B3 T2.6). The effect this replaced
@@ -214,8 +226,10 @@ export function CommandPalette() {
       row: { id, kind: 'action', label, icon, run },
       // Keywords are ranked on but never shown. A user who types "trash"
       // should find "View archived sessions"; a user reading the list should
-      // not see a bag of synonyms under it.
-      text: `${label} ${keywords}`,
+      // not see a bag of synonyms under it. They live in `extra`, so they can
+      // only match as a SUBSTRING — a synonym bag is exactly the string a
+      // scattered subsequence used to walk.
+      text: { label, extra: keywords },
       group: 'Actions',
     })
     const base = [
@@ -281,21 +295,34 @@ export function CommandPalette() {
   // No session → close (the overview empty-state teaches booting one). Shared by
   // command AND skill picks (skills are `/<name>` slash-invokable). Fire-and-
   // forget; `settingsRequest` reads the bearer off env.ts.
+  //
+  // IT NAMES ITS TARGET, BEFORE AND AFTER (blocker fix). A slash row is the one
+  // palette row that WRITES — it POSTs into a live agent chosen by recency, not
+  // by the user — so which session that is has to be on the row before Enter
+  // (the `warn` badge below carries `freshest.name`) and has to be said again
+  // after it fires. A fire-and-forget write with no receipt is how a mistyped
+  // query became a message in somebody's session.
   const runSlash = React.useCallback(
     (text: string) => {
       const target = pickFreshestSession(sessions)
+      const label = text.replace(/\r$/, '')
       if (!target) {
         setOpen(false)
+        toast({ message: `No running session to run ${label} in`, tone: 'error' })
         return
       }
       setOpen(false)
       navigate(`/focus/${encodeURIComponent(target.name)}`)
+      toast({ message: `Ran ${label} in ${target.name}`, tone: 'active' })
       void settingsRequest(`/api/sessions/${encodeURIComponent(target.name)}/send`, {
         method: 'POST',
         body: JSON.stringify({ text }),
-      }).catch((e) => console.warn('command-palette: send failed', e))
+      }).catch((e) => {
+        console.warn('command-palette: send failed', e)
+        toast({ message: `Couldn’t run ${label} in ${target.name}`, tone: 'error' })
+      })
     },
-    [sessions, navigate, setOpen],
+    [sessions, navigate, setOpen, toast],
   )
 
   // ONE RANKER, SIX SHAPES (fase B3 T4.2). Every candidate is turned into a
@@ -311,6 +338,8 @@ export function CommandPalette() {
   const groups: { label: string; rows: EntityRow[] }[] = React.useMemo(() => {
     const slashMode = query.startsWith('/')
     const cmdQ = slashMode ? query.slice(1) : query
+    // The session a slash row would write to, said on the row itself.
+    const sendTarget = freshest ? `runs in ${freshest.name}` : 'no session'
     const rank = (items: Ranked[], q: string) =>
       rankEntities(items, q, (r) => r.text).map((r) => r.row)
 
@@ -336,7 +365,7 @@ export function CommandPalette() {
               />
             ),
           },
-          text: `${s.name} ${s.task_summary ?? ''}`,
+          text: { label: s.name, extra: s.task_summary ?? undefined },
           group: 'Sessions',
         }))
 
@@ -354,7 +383,7 @@ export function CommandPalette() {
             icon: ServerCog,
             run: () => openClaudeTools(freshest?.name ?? null),
           },
-          text: `${m.name} ${m.transport} ${m.provenance}`,
+          text: { label: m.name, extra: `${m.transport} ${m.provenance}` },
           group: 'MCP',
         }))
 
@@ -369,9 +398,13 @@ export function CommandPalette() {
           label: `/${s.name}`,
           meta: s.description || 'skill',
           icon: Sparkles,
+          // WHERE IT WILL RUN, ON THE ROW. `runSlash` picks the freshest
+          // session; a row that fires a write on one keystroke has to say
+          // which session that is before the keystroke, not after.
+          warn: sendTarget,
           run: () => runSlash(`/${s.name}\r`),
         },
-        text: `${s.name} ${s.description}`,
+        text: { label: s.name, extra: s.description },
         group: 'Skills',
       }))
 
@@ -382,9 +415,10 @@ export function CommandPalette() {
         label: c.cmd,
         meta: c.desc,
         icon: TerminalSquare,
+        warn: sendTarget,
         run: () => runSlash(`${c.cmd}\r`),
       },
-      text: `${c.cmd} ${c.desc ?? ''}`,
+      text: { label: c.cmd.replace(/^\//, ''), extra: c.desc ?? undefined },
       group: 'Commands',
     }))
 
