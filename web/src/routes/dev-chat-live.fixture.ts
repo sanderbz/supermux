@@ -1085,7 +1085,7 @@ export function liveStates(nowMs: number): LiveState[] {
       // An EMPTY conversation, which is the honest one: this gate blocks before
       // the session has written a single transcript line.
       entries: [],
-      turnAgo: null,
+      turnAgo: undefined,
       dialog: BENCH_DIALOGS.trust,
     },
     {
@@ -1107,8 +1107,9 @@ export function liveStates(nowMs: number): LiveState[] {
         rate_limits: { five_hour: { used_pct: 100 }, seven_day: { used_pct: 100 } },
       }),
       entries: release,
-      turnAgo: null,
+      turnAgo: undefined,
       attention: 'session-blocked',
+      attentionExpanded: true,
       attentionDetail:
         "You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam) — /upgrade or /usage-credits to finish what you’re working on.",
     },

@@ -417,10 +417,13 @@ export function DialogCard({
   const why =
     view.family === 'plan'
       ? view.planPath
-      : view.family === 'question'
-        ? // A question is not about a tool, a directory or a mode — it is about
-          // the sentence above it. Naming the tool here would put
-          // `AskUserQuestion` back on the card, one line lower.
+      : view.family === 'question' || view.family === 'startup'
+        ? // Neither is about a tool, a directory or a mode. A question is about
+          // the sentence above it — naming the tool here would put
+          // `AskUserQuestion` back on the card, one line lower — and a startup
+          // gate is about the folder IN ITS OWN BODY, so `in supermux/server`
+          // (the session's dir) would name a different path than the one being
+          // trusted, which is worse than naming none.
           undefined
         : [summary && request?.tool ? request.tool : '', dir ? `in ${shortDir(dir)}` : '', modeClause(mode)]
             .filter(Boolean)
