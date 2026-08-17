@@ -1075,7 +1075,7 @@ static LAST_HEAL: once_cell::sync::Lazy<dashmap::DashMap<String, Instant>> =
 
 /// Why a heal did or did not happen. Returned rather than logged-and-forgotten
 /// so the post-update audit can COUNT outcomes and the tests can assert them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Heal {
     /// A restart ran and the session is live again.
     Healed,
@@ -1095,6 +1095,47 @@ pub enum Heal {
     /// deciding: the user pressed Stop or Resume, or another lifecycle op holds
     /// the session lock. Their action wins.
     Superseded,
+}
+
+impl Heal {
+    /// The wire/UI identifier. Stable strings: they reach the sessions delta and
+    /// the recovery UI, and `BRAND.md` §6g pairs each with the sentence the user
+    /// reads (B5/T8.2).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Healed => "healed",
+            Self::Failed => "failed",
+            Self::Disabled => "disabled",
+            Self::Cooldown => "cooldown",
+            Self::Unsupported => "unsupported",
+            Self::Gone => "gone",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    /// Did the session actually come back?
+    pub const fn healed(self) -> bool {
+        matches!(self, Self::Healed)
+    }
+
+    /// The one sentence the user reads for this outcome.
+    ///
+    /// Before B5 every one of these was a `tracing` line, so a user looking at
+    /// "Terminal died" could not tell "we tried and it is on cooldown" from
+    /// "auto-heal is off" from "this session type cannot be healed" — three
+    /// different situations with three different next actions, all rendered as
+    /// the same silence. Each sentence names what happened AND what to do.
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Healed => "The terminal came back.",
+            Self::Failed => "The restart ran but the terminal did not come back. Try Restart.",
+            Self::Disabled => "Auto-recovery is off. Turn it on in Settings, or press Restart.",
+            Self::Cooldown => "This session was recovered a moment ago. Try Restart instead.",
+            Self::Unsupported => "This session type cannot be recovered in place. Try Restart.",
+            Self::Gone => "This session is archived or no longer exists.",
+            Self::Superseded => "Something else changed this session first — nothing was done.",
+        }
+    }
 }
 
 /// Fire-and-forget [`auto_heal`]. The detector tick must not block on a `start`
@@ -1146,6 +1187,18 @@ fn heal_is_supported(s: &db::sessions::Session) -> bool {
 /// `start`'s ordinary `starting → active` broadcasts, so the user sees a session
 /// that simply came back. The death is NOT hidden: it stays in `holder.log`, in
 /// the session dir's crash evidence, and in the WARN line this writes.
+/// Forget this session's heal cooldown, so the next [`auto_heal`] runs
+/// immediately (B5/T8.1).
+///
+/// The ONLY caller is the manual `POST /api/sessions/{name}/recover` rung. The
+/// cooldown exists to stop the AUTOMATIC layer from thrashing a session that
+/// dies repeatedly; a human pressing a button, having already seen the badge,
+/// is not that loop. Making them wait out a timer they cannot see would be the
+/// worst version of this feature.
+pub fn clear_heal_cooldown(name: &str) {
+    LAST_HEAL.remove(name);
+}
+
 pub async fn auto_heal(state: &AppState, name: &str, reason: &str) -> Heal {
     let s = match db::sessions::get(&state.pool, name).await {
         Ok(Some(s)) if s.archived == 0 => s,

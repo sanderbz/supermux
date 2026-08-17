@@ -711,6 +711,21 @@ pub async fn set_cc_conversation_id(
 /// stale-recall bug. Conditional so a no-op hook doesn't write: only updates when
 /// the id actually changed, and never blanks a known id with an empty hook value.
 /// Returns whether a row was updated.
+/// Drop the Claude conversation link (B5/T8 — the Reset rung).
+///
+/// Separate from [`track_cc_conversation_id`], which deliberately treats an
+/// empty id as a no-op so a hook payload missing the field can never clobber a
+/// good link. Reset needs the opposite: an EXPLICIT clear, so the next start
+/// begins a fresh conversation instead of resuming into whatever was wedged.
+/// Two callers, two intents, two functions — rather than a flag on one.
+pub async fn clear_cc_conversation_id(pool: &SqlitePool, name: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE sessions SET cc_conversation_id = '' WHERE name = ?")
+        .bind(name)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn track_cc_conversation_id(
     pool: &SqlitePool,
     name: &str,

@@ -117,6 +117,12 @@ pub fn router_for(state: AppState) -> Router {
         // B5/T4 — the cross-device seen cursor. PATCH, not POST: it advances a
         // value on the session rather than performing an action on it.
         .route("/api/sessions/{name}/seen", axum::routing::patch(seen_handler))
+        // ── the manual recovery ladder (B5/T8) ──
+        // Labelled by what they PRESERVE, not by how drastic they sound; see
+        // `lifecycle`'s ladder table and BRAND.md §6g.
+        .route("/api/sessions/{name}/restart", post(restart_handler))
+        .route("/api/sessions/{name}/recover", post(recover_handler))
+        .route("/api/sessions/{name}/reset", post(reset_handler))
         .route("/api/sessions/{name}/archive", post(archive_handler))
         .route("/api/sessions/{name}/unarchive", post(unarchive_handler))
         .route("/api/sessions/{name}/wake", post(wake_handler))
@@ -1479,6 +1485,51 @@ async fn seen_handler(
     let advanced =
         db::sessions::set_seen(&state.pool, &name, input.ts, input.count, input.epoch).await?;
     Ok(Json(json!({ "ok": true, "data": { "advanced": advanced } })))
+}
+
+/// `POST /api/sessions/{name}/restart` — atomic stop→start (rung 2).
+///
+/// Preserves the conversation, worktree and schedules; destroys the live pty.
+/// Exists because two clients composed this differently, and because a composed
+/// stop+start leaves a window in which the auto-healer can race the user.
+async fn restart_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let res = lifecycle::restart(&state, &name).await?;
+    Ok(Json(json!({ "ok": true, "data": res })))
+}
+
+/// `POST /api/sessions/{name}/recover` — the manual holder heal (rung 1).
+///
+/// Returns the `Heal` outcome as a string so the UI can say WHY nothing
+/// happened. Every non-`healed` outcome is a 200, not an error: "auto-heal is
+/// off" and "this session type cannot be healed" are ANSWERS, not failures, and
+/// modelling them as errors would push them into a generic red toast that says
+/// less than the word itself does.
+async fn recover_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let outcome = lifecycle::recover_holder(&state, &name).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "data": { "outcome": outcome.as_str(), "healed": outcome.healed() },
+    })))
+}
+
+/// `POST /api/sessions/{name}/reset` — a fresh runtime (rung 3).
+///
+/// Preserves the worktree, schedules and config; destroys the conversation and
+/// scrollback. Refuses a RUNNING session with a 409 rather than resetting under
+/// a live pty — see `lifecycle::reset` for why that split-brain is worse than
+/// the refusal.
+async fn reset_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    lifecycle::reset(&state, &name).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn archive_handler(
