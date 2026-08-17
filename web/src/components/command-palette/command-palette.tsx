@@ -7,6 +7,11 @@
 //
 //   • Sessions   — `useSessions()`, sorted by recency. Pick → navigate to
 //                  `/focus/{name}`.
+//   • Go to      — the app's four routes, the two Settings anchors (/scheduler
+//                  and /hosts are already redirects onto them) and the theme
+//                  flip. Added because the palette reached NONE of them: an
+//                  empty query offered four headings and `settings` returned
+//                  zero rows, so the discovery spine could not discover a page.
 //   • MCP        — servers from the Claude registry (`useClaudeRegistry`, scoped
 //                  to the freshest session's project). Pick → open the Claude
 //                  tools manager (MCP tab) where check/reconnect/add/remove live.
@@ -43,11 +48,18 @@ import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Archive,
+  CalendarClock,
   Command as CommandIcon,
+  FolderClosed,
   FolderPlus,
+  LayoutGrid,
+  Moon,
   ServerCog,
+  Settings as SettingsIcon,
   SlidersHorizontal,
   Sparkles,
+  Sun,
+  Terminal,
   TerminalSquare,
 } from 'lucide-react'
 
@@ -73,6 +85,7 @@ import { EntityPickerView } from '@/components/ui/entity-picker'
 import { resolveEntityTarget, type EntityRow } from '@/lib/entity'
 import { rankEntities, type RankText } from '@/lib/rank'
 import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
+import { useTheme } from '@/components/theme-provider'
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
 //
@@ -92,6 +105,13 @@ import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 // Each row carries the string it is ranked on. Keeping that beside the row
 // rather than deriving it inside the matcher is what lets one ranker serve
 // six different shapes without knowing what any of them is.
+/** The combobox relationship, as two ids. Module constants rather than
+ *  `useId`: they are referenced from an `aria-controls` on one element and an
+ *  `id` on another, and a stable literal is what makes both greppable in an
+ *  ax-tree dump. */
+const LISTBOX_ID = 'command-palette-listbox'
+const optionId = (index: number) => `command-palette-option-${index}`
+
 interface Ranked {
   row: EntityRow
   /**
@@ -172,6 +192,8 @@ export function CommandPalette() {
   const newGroupAction = useNewGroupAction((s) => s.action)
 
   const { toast } = useToast()
+  const { resolvedTheme, setTheme } = useTheme()
+  const dark = resolvedTheme === 'dark'
 
   const [query, setQuery] = React.useState('')
   // `viaKey` rides with the index because the picker scrolls the active row
@@ -211,6 +233,56 @@ export function CommandPalette() {
     setQuery(next)
     setActive({ i: 0, viaKey: false })
   }, [])
+
+  // WHERE THE APP'S FOUR DESTINATIONS LIVE (fase B3 T4.3 / deliverable 5,
+  // shipped late). The palette reached NONE of them: an empty query offered
+  // SESSIONS / ACTIONS / MCP / COMMANDS and nothing else, `settings` returned
+  // zero rows, and `files` returned only an unrelated slash command. A
+  // discovery spine that cannot reach Settings is a session switcher.
+  //
+  // Deep links rather than a second route table: /scheduler and /hosts are
+  // already redirects onto these two Settings anchors (App.tsx), so the hash IS
+  // the address — the same fact `lib/entity.ts` writes down for schedule and
+  // host rows.
+  const goRows: Ranked[] = React.useMemo(() => {
+    const go = (
+      to: string,
+      label: string,
+      keywords: string,
+      icon: EntityRow['icon'],
+    ): Ranked => ({
+      row: { id: `go:${to}`, kind: 'action', label, icon, run: () => navigate(to) },
+      text: { label, extra: keywords },
+      group: 'Go to',
+    })
+    return [
+      go('/', 'Overview', 'home sessions roster tiles dashboard start', LayoutGrid),
+      go('/focus', 'Focus', 'terminal session pane current agent', Terminal),
+      go('/files', 'Files', 'file tree browse edit diff working directory', FolderClosed),
+      go('/settings', 'Settings', 'preferences config options update theme', SettingsIcon),
+      go(
+        '/settings#schedules',
+        'Schedules',
+        'scheduler cron recurring timer prompt later',
+        CalendarClock,
+      ),
+      go('/settings#hosts', 'Remote hosts', 'ssh host remote machine registry', ServerCog),
+      {
+        row: {
+          id: 'go:theme',
+          kind: 'action',
+          label: dark ? 'Switch to light theme' : 'Switch to dark theme',
+          icon: dark ? Sun : Moon,
+          run: () => setTheme(dark ? 'light' : 'dark'),
+        },
+        text: {
+          label: 'theme',
+          extra: 'dark light appearance colour color mode switch toggle',
+        },
+        group: 'Go to',
+      },
+    ]
+  }, [navigate, dark, setTheme])
 
   // In-app actions (not sessions, not slash commands). Hidden in slash mode
   // (a leading "/" means the user wants a command). Stable identity so arrow-key
@@ -424,6 +496,9 @@ export function CommandPalette() {
 
     return [
       { label: 'Sessions', rows: rank(sessionRows, query) },
+      // Destinations before verbs: "where do I want to be" is the commoner
+      // question, and it is the one the palette could not answer at all.
+      { label: 'Go to', rows: rank(slashMode ? [] : goRows, query) },
       { label: 'Actions', rows: rank(slashMode ? [] : actions, query) },
       { label: 'MCP', rows: rank(mcpRows, query) },
       { label: 'Skills', rows: rank(skillRows, cmdQ) },
@@ -431,6 +506,7 @@ export function CommandPalette() {
     ].filter((g) => g.rows.length > 0)
   }, [
     sessions,
+    goRows,
     actions,
     mergedCommands,
     commandNames,
@@ -575,6 +651,18 @@ export function CommandPalette() {
             onChange={(e) => updateQuery(e.target.value)}
             placeholder={placeholder}
             aria-label="Command palette"
+            // THE FOUR ATTRIBUTES THAT MAKE IT A COMBOBOX. Focus never leaves
+            // this input — the arrows move `aria-selected` on a row the input
+            // has to POINT AT, or a screen reader is told nothing at all as the
+            // highlight travels. The primitive has exposed `listboxId` /
+            // `optionId` for exactly this since B3 and the palette passed
+            // neither, while `chat/composer.tsx` sets the same four correctly on
+            // the same component. This is that, verbatim.
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded
+            aria-controls={LISTBOX_ID}
+            aria-activedescendant={rows.length > 0 ? optionId(clampedActive) : undefined}
             className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground"
           />
           <Kbd className="hidden sm:inline-flex">Esc</Kbd>
@@ -588,6 +676,8 @@ export function CommandPalette() {
           anchor="field"
           rows={rows}
           activeIndex={clampedActive}
+          listboxId={LISTBOX_ID}
+          optionId={optionId}
           ariaLabel="Palette results"
           headingAt={headingAt}
           emptyLabel={
