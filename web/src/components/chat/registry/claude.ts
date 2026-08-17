@@ -288,8 +288,31 @@ const UNCAPTURED_GATE =
  *     an option at all and never reaches this function: `peek-lens.ts` cuts the
  *     list at the rule.
  *
- * Live capture: `tests/fixtures/tui/askq/ask-user-question.txt`, session
- * `vx-chat` on Claude Code 2.1.233, 2026-08-17 (verify rig).
+ * LIVE SELF-TEST, 2026-08-17 — the same bar the permission entries cleared.
+ *
+ * Capture: `server/tests/fixtures/pty/ask-user-question.txt` (session `vx-chat`,
+ * Claude Code 2.1.233). The entry was then DRIVEN on a second, freshly booted
+ * session on a throwaway instance, with every key chosen by this branch's own
+ * code — `readLens` → `entryFor` → `dialogCardView` → `answerDialog`, wired to
+ * `GET /peek` and `POST /keys`:
+ *
+ *   the lens read   family `question` · header `Fruit choice` · question
+ *                   "Which fruit do you want?" · rows [Apple, Banana, Cherry,
+ *                   Type something.] · descriptions split off each label ·
+ *                   caret 0 · freeTextIndex 3 · pin 2.1.233
+ *   the card        `question.ask`, not degraded, three rows act-on, the
+ *                   free-text row drawn and refused
+ *   the sequence    caret on row 2 → target row 3 → sent [Down, Enter]
+ *   the proof       the transcript's SIBLING `toolUseResult`:
+ *                   `"answers": {"Which fruit do you want?": "Cherry"}`
+ *
+ * The target is deliberately never row 1: the caret starts there, so a dialog
+ * that merely swallowed the Enter would also answer "Apple". Answering the row
+ * the caret was NOT on is what makes the result evidence rather than a
+ * coincidence, and the run above started from row 2 and landed on row 3.
+ *
+ * That run is also what found the caret settle in `dialog-answer.ts`: the first
+ * re-peek after `Down` still showed the caret on the row it had left.
  */
 const ASK_QUESTION_VERSIONS = ['2.1.233'] as const
 

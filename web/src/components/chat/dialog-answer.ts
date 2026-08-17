@@ -118,6 +118,14 @@ export interface AnswerOutcome {
 export const DISMISS_ATTEMPTS = 2
 export const DISMISS_DELAY_MS = 300
 
+/** How many times a navigation step re-reads the screen while the caret is still
+ *  where it was. Three looks over ~240 ms — the observed repaint lag on a live
+ *  2.1.233 question dialog was under one. */
+export const CARET_SETTLE_ATTEMPTS = 3
+/** The gap between those looks. Short, because this sits between a user's tap
+ *  and the answer landing; long enough that three of them outlast a repaint. */
+export const CARET_SETTLE_MS = 120
+
 export interface AnswerDeps {
   /** Peek NOW. `null` = could not look (never `EMPTY_LENS` — "the screen is
    *  clear" and "I could not read the screen" are different facts and this
@@ -210,10 +218,37 @@ export async function answerDialog(
       if (posted) return { ...posted, sent, committed: false }
       sent.push(key)
 
-      const step = await look(deps, req, anchor)
-      if ('failure' in step) return { ok: false, sent, committed: false, ...step }
-      const moved: number | null = step.sighting.caretIndex
       const expected = at + (key === 'Down' ? 1 : -1)
+      // THE SETTLE, and exactly what it does and does not tolerate.
+      //
+      // A key and a repaint are not the same event. Live on 2.1.233 (a question
+      // dialog on a freshly booted native session) the first re-peek after
+      // `Down` still showed the caret on the row it had left — and 120 ms later
+      // it was where the key had put it. The old read aborted on that frame and
+      // told the user "something else is typing into this session", about a
+      // session nothing else was touching. That sentence is the strongest claim
+      // this module makes; spending it on our own impatience is worse than
+      // useless, because it teaches people to ignore it.
+      //
+      // So the ONLY thing tolerated is "not yet": a reading that still shows the
+      // caret where it was gets another look. Every other reading aborts on the
+      // FIRST frame it appears on, unchanged — a caret two rows on, a caret that
+      // vanished, rows that stopped matching (`look` re-runs the registry and
+      // the shape check every time). And a caret that never moves at all still
+      // aborts, once the budget is out, with the keys already sent recorded.
+      let moved: number | null = null
+      let stalled = false
+      for (let attempt = 0; attempt < CARET_SETTLE_ATTEMPTS; attempt++) {
+        if (attempt > 0) await wait(CARET_SETTLE_MS)
+        const step = await look(deps, req, anchor)
+        if ('failure' in step) return { ok: false, sent, committed: false, ...step }
+        moved = step.sighting.caretIndex
+        if (moved === expected) break
+        // Unchanged = the repaint has not landed. Anything else is a real
+        // disagreement and must not be waited out.
+        stalled = moved === at
+        if (!stalled) break
+      }
       if (moved !== expected) {
         return {
           ok: false,
@@ -224,7 +259,9 @@ export async function answerDialog(
           detail:
             moved == null
               ? 'The selected option stopped being visible halfway through, so nothing further was sent.'
-              : `After ${key}, the terminal’s selection sits on option ${moved + 1} instead of ${expected + 1} — something else is typing into this session, so nothing further was sent.`,
+              : stalled
+                ? `After ${key}, the terminal’s selection is still on option ${moved + 1} — the keypress did not move it, so nothing further was sent.`
+                : `After ${key}, the terminal’s selection sits on option ${moved + 1} instead of ${expected + 1} — something else is typing into this session, so nothing further was sent.`,
         }
       }
       at = moved

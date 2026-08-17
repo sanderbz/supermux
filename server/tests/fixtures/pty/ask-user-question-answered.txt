@@ -1,9 +1,11 @@
-● User answered Claude's questions:
-  ⎿  · Which fruit do you want? → Apple
+● User answered Claude's questions:
+  ⎿  · Which fruit do you want? → Cherry
 
-● You chose Apple!
-✻ Baked for 3s
+● You chose Cherry! What would you like to do next?
+
+✻ Worked for 5s
+
+──────────────────────────────────────────────────────────────────────── askq ──
+❯ 
 ────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on (shift+tab to cycle)
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents
