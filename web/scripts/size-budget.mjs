@@ -206,7 +206,13 @@ const BUDGET_ENTRY_JS = 160 * KB
 // ceiling should track real cost rather than drift upward. So the rule for a
 // subtractive PR is: the ceiling ratchets DOWN or stands still, never up. 223
 // stands, and it is now 3.74 KB of genuine headroom instead of 3.51.
-const BUDGET_APP_JS = 223 * KB
+// 230 at states-wave integration (the ONE ratchet for #87+#89+#88, per the
+// measured×1.02 policy above): the wire plane (+~3.9 KB: agent_error classifier,
+// BlockedRow, system rows) and the pty lens (+~3.3 KB: notice/question families,
+// usage gauge) measure 225.40 together; 225.40 × 1.02 = 229.9 -> 230. The login
+// card (#88, ~+0.5 KB) is expected to land inside this same ceiling.
+// Entry gate unchanged at 160 — still the guard.
+const BUDGET_APP_JS = 230 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

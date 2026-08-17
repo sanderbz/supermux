@@ -285,6 +285,7 @@ export interface PeekLens {
    * session, which is why it sits on the lens beside the banner version.
    */
   transcriptOff: boolean
+  /**
    * The session cannot do the next turn, or is close to not being able to (see
    * `PtyNotice`).
    *
