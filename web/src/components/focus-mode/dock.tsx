@@ -41,6 +41,7 @@ import { motionOff, springs } from '@/lib/springs'
 import { displayLabel, type ApiSession } from '@/lib/api'
 import { StatusDot } from '@/components/session-tile/status-dot'
 import { useDictation } from '@/components/focus-mode/use-dictation'
+import { triggerCommandPalette } from '@/components/command-palette/trigger'
 import { COMPOSE_LAYOUT_ID } from '@/components/focus-mode/mobile-compose-sheet'
 import {
   Tooltip,
@@ -195,31 +196,17 @@ export function DesktopDock({
   const [chips, setChips] = React.useState<string[]>([...DEFAULT_SEND_CHIPS])
   const [editing, setEditing] = React.useState(false)
 
-  // The global ⌘K palette is mounted at shell level (see <Layout>). The visible
-  // "command" button is a convenience — it synthesizes the same keystroke so the
-  // global listener opens the palette. No separate trigger callback needed.
-  const triggerPalette = React.useCallback(() => {
-    const isMac =
-      typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'k',
-        code: 'KeyK',
-        metaKey: isMac,
-        ctrlKey: !isMac,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  }, [])
-
   return (
     <div className="relative flex h-14 shrink-0 items-center gap-2 border-t border-border bg-card px-6">
       {/* Left cluster (24px ≈ px-6 from edge): ⌘K palette, + snippets. The "/"
           slash button was removed (DOCK) — slash commands now run from the
           Claude Tools sheet's Commands tab. */}
       <div className="flex shrink-0 items-center gap-1">
-        <IconButton icon={Command} label="Command palette (⌘K)" onClick={triggerPalette} />
+        <IconButton
+          icon={Command}
+          label="Command palette (⌘K)"
+          onClick={triggerCommandPalette}
+        />
         <IconButton icon={Plus} label="Snippets" onClick={onSnippets} />
         {/* ✎ Edit — lift the current prompt into a native editor (Ctrl+G). */}
         {onEdit && (
@@ -690,6 +677,15 @@ export function MobileDock({
             <Ellipsis className="size-5" strokeWidth={1.75} />
           </DockIcon>
         )}
+
+        {/* ⌘K, WITH A FINGER. The palette had exactly one trigger app-wide and
+            it was in the DESKTOP dock, so on a phone the global search /
+            session-jump / command surface could only be opened by a physical
+            keyboard. This is that trigger, on the surface a phone actually
+            has. */}
+        <DockIcon label="Search (⌘K)" onClick={triggerCommandPalette}>
+          <Command className="size-5" strokeWidth={1.75} />
+        </DockIcon>
 
         {onOpenSnippets && (
           <DockIcon label="Snippets" onClick={onOpenSnippets}>

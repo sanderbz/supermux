@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import {
   FolderClosed,
   LayoutGrid,
+  Search,
   Settings as SettingsIcon,
   Terminal,
   type LucideIcon,
@@ -23,6 +24,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ReconnectBanner } from '@/components/status-banner/reconnect-banner'
 import { CommandPalette } from '@/components/command-palette/command-palette'
+import { triggerCommandPalette } from '@/components/command-palette/trigger'
 import { ArchivedSheet } from '@/components/archived/archived-sheet'
 import { useArchivedSheet } from '@/stores/archived-sheet-store'
 import { useStandaloneMode } from '@/hooks/use-standalone-mode'
@@ -244,6 +246,25 @@ function BottomNav() {
           </MorphNavLink>
         )
       })}
+      {/* SEARCH — a control, not a route, and the reason it is here: ⌘K was
+          unreachable on a phone. Every trigger the palette had lived in the
+          DESKTOP dock, so enumerating every visible control at 390×844
+          returned nothing matching /palette|search|command|jump/ and the app's
+          discovery spine could only be opened by a physical keyboard. Styled
+          as a tab so the row stays one grammar; it carries no `aria-current`
+          because it goes nowhere. */}
+      <button
+        type="button"
+        aria-label="Search"
+        data-vr="bottom-nav-search"
+        onClick={triggerCommandPalette}
+        className="relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-2 text-muted-foreground transition-colors active:text-foreground"
+      >
+        <span className="relative">
+          <Search className="size-5" />
+        </span>
+        <span className="text-[10px] font-medium leading-none">Search</span>
+      </button>
     </nav>
   )
 }

@@ -49,7 +49,11 @@ test.describe('the command palette answers its keyboard', () => {
     await expect(page.getByRole('heading').first()).toBeVisible({ timeout: 20_000 })
 
     const list = page.getByRole('listbox', { name: 'Palette results' })
-    const input = page.getByRole('textbox', { name: 'Command palette' })
+    // `combobox`, not `textbox`: the input carries role="combobox" since the
+    // a11y fix (it owns a listbox and points at the highlighted option through
+    // aria-activedescendant). The role IS the behaviour change — the reason
+    // this line moved is asserted in palette-keyboard-only.spec.ts.
+    const input = page.getByRole('combobox', { name: 'Command palette' })
 
     // ── ⌘K TOGGLES, it does not merely open ────────────────────────────────
     // The listener is `setOpen((v) => !v)`, and the second press has to reach it

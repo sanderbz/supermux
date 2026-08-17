@@ -81,11 +81,13 @@ import { AgentToolsHost } from '@/components/claude-tools/claude-tools-host'
 import { SnippetsManagerHost } from '@/components/snippets/snippets-manager-host'
 import { Kbd } from '@/components/ui/kbd'
 import { useToast } from '@/components/ui/use-toast'
+import { cn } from '@/lib/utils'
 import { EntityPickerView } from '@/components/ui/entity-picker'
 import { resolveEntityTarget, type EntityRow } from '@/lib/entity'
 import { rankEntities, type RankText } from '@/lib/rank'
 import { composerKeyIntent, jumpTarget } from '@/components/chat/composer-keys'
 import { useTheme } from '@/components/theme-provider'
+import { useMediaQuery } from '@/hooks/use-media-query'
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
 //
@@ -194,6 +196,13 @@ export function CommandPalette() {
   const { toast } = useToast()
   const { resolvedTheme, setTheme } = useTheme()
   const dark = resolvedTheme === 'dark'
+  // TOUCH IS A DIFFERENT SURFACE, and the palette was the one picker that never
+  // learned it: rows measured 38px against the primitive's documented 44pt
+  // phone rung (the chat picker, which passes surface="phone", measures 47px on
+  // the same viewport), and the box was pinned at top-[20%] with no safe-area
+  // inset and no allowance for a soft keyboard. Same fork every other sheet in
+  // the app uses.
+  const coarse = useMediaQuery('(pointer: coarse)')
 
   const [query, setQuery] = React.useState('')
   // `viaKey` rides with the index because the picker scrolls the active row
@@ -638,7 +647,18 @@ export function CommandPalette() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         // Override the default Dialog padding — we want a flush input + list.
-        className="top-[20%] max-w-xl translate-y-0 gap-0 overflow-hidden p-0"
+        //
+        // On a coarse pointer the box moves to the TOP of the safe area rather
+        // than 20% down: the palette has to stay above the soft keyboard, and
+        // the keyboard is the whole bottom of the screen. Width goes
+        // edge-to-edge minus a gutter, because 36rem on a 390px viewport is
+        // just "the screen with a stripe missing".
+        className={cn(
+          'max-w-xl translate-y-0 gap-0 overflow-hidden p-0',
+          coarse
+            ? 'top-[max(env(safe-area-inset-top),0.5rem)] w-[calc(100vw-1rem)] max-w-none'
+            : 'top-[20%]',
+        )}
         // Don't auto-focus the close button; let the input take focus.
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
@@ -674,6 +694,10 @@ export function CommandPalette() {
             list by it — a correct rebuild leaves them untouched. */}
         <EntityPickerView
           anchor="field"
+          // 44pt rows on touch (the primitive's own rung) and a list short
+          // enough to clear a raised keyboard.
+          surface={coarse ? 'phone' : 'desktop'}
+          maxHeight={coarse ? 'max-h-[min(360px,42dvh)]' : undefined}
           rows={rows}
           activeIndex={clampedActive}
           listboxId={LISTBOX_ID}
