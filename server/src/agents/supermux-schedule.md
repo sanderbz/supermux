@@ -71,7 +71,12 @@ The full grammar, exactly as `scheduler/parser.rs` accepts it:
 - `every <dayname> at <time>`
 - a bare 5-field cron: `<min> <hour> <dom> <mon> <dow>`
 
-`<time>` is `HH:MM` (24-hour), or `9am` / `6pm` / `9:30pm`. **When the human is
+`<time>` is `HH:MM` (24-hour), or `9am` / `6pm` / `9:30pm`. **Clock times are the
+SERVER's local time** — the host's own `TZ` / `/etc/localtime`, i.e. the same
+wall clock `date` prints in your pane — so "every weekday at 08:00" fires at the
+operator's 08:00, not at 08:00 UTC. The stored `next_run` is an instant and
+comes back in RFC3339 with an offset; convert it before quoting a time back to
+the human. **When the human is
 ambiguous about the time — "in the morning", "after lunch" — ask them rather
 than picking.** A schedule that fires at the wrong hour is worse than a
 question.

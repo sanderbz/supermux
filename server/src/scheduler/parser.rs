@@ -14,14 +14,63 @@
 //! `1 = Sunday`, NOT the standard-cron `0-6` (`0 = Sunday`). Both user 5-field
 //! cron and the crons we synthesize are written in standard convention and
 //! passed through [`translate_dow`] before handing to the crate.
+//!
+//! **Clock times are the HOST's wall clock.** "daily at 09:00" means 09:00 where
+//! the server lives — the operator's own morning — not 09:00 UTC. Every cron
+//! walk therefore runs in [`Clock::Host`] (`chrono::Local`, i.e. `TZ` /
+//! `/etc/localtime`) and only the resulting instant is stored as UTC. Reading
+//! the grid in UTC is what made "daily at 09:00" fire at 11:00 on a CEST host;
+//! the [`Clock`] enum exists so that rule is a value a test can pin rather than
+//! an ambient property of the machine running it.
 
 use std::str::FromStr;
 use std::time::Duration as StdDuration;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, FixedOffset, Local, Utc};
 use cron::Schedule as CronSchedule;
 use once_cell::sync::Lazy;
 use regex::Regex;
+
+/// The wall clock a cron grid is walked on.
+///
+/// Named rather than hard-coded to `Local` for one reason: the difference
+/// between "09:00" meaning the operator's morning and it meaning 09:00 UTC is
+/// invisible on a UTC host, which is exactly how the UTC reading survived. With
+/// a [`Clock::Fixed`] variant a test can assert the CEST behaviour on any
+/// machine, and a per-schedule IANA zone later has somewhere to live.
+#[derive(Debug, Clone, Copy)]
+pub enum Clock {
+    /// The host's zone (`TZ` / `/etc/localtime`) — what an operator means by
+    /// a clock time they typed. The default for every parsed expression.
+    Host,
+    /// A fixed UTC offset. Used by tests to pin a zone; DST is not modelled by
+    /// an offset, so this is deliberately not what production uses.
+    Fixed(FixedOffset),
+}
+
+impl Clock {
+    /// The first fire strictly after `after`, read on this clock and handed
+    /// back as an instant.
+    fn next_cron(
+        &self,
+        schedule: &CronSchedule,
+        after: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        match self {
+            // `cron` skips a local time that does not exist (spring-forward
+            // gap) and yields both readings of an ambiguous one, so the walk is
+            // DST-correct without help from here.
+            Clock::Host => schedule
+                .after(&after.with_timezone(&Local))
+                .next()
+                .map(|d| d.with_timezone(&Utc)),
+            Clock::Fixed(off) => schedule
+                .after(&after.with_timezone(off))
+                .next()
+                .map(|d| d.with_timezone(&Utc)),
+        }
+    }
+}
 
 /// How a schedule recurs (used to recompute `next_run` after each fire).
 #[derive(Debug, Clone)]
@@ -33,8 +82,8 @@ pub enum Recurrence {
     /// pushes `anchor + d` past `now`, the next fire is re-anchored to `now + d`
     /// rather than walking the cadence grid — see [`next_after`] for why.
     Interval(Duration),
-    /// Wall-clock aligned via a cron schedule.
-    Cron(Box<CronSchedule>),
+    /// Wall-clock aligned via a cron schedule, read on the given [`Clock`].
+    Cron(Box<CronSchedule>, Clock),
 }
 
 impl Recurrence {
@@ -63,7 +112,7 @@ impl Recurrence {
                     Some(now + *d)
                 }
             }
-            Recurrence::Cron(s) => s.after(&now).next(),
+            Recurrence::Cron(s, clock) => clock.next_cron(s, now),
         }
     }
 }
@@ -120,8 +169,16 @@ static RE_MONTHLY: Lazy<Regex> =
 
 // ── public entry ──────────────────────────────────────────────────────────────
 
-/// Parse `expr` (case-insensitive) relative to `now`.
+/// Parse `expr` (case-insensitive) relative to `now`, reading clock times on
+/// the HOST's wall clock — "daily at 09:00" is the operator's 09:00.
 pub fn parse(expr: &str, now: DateTime<Utc>) -> Result<Parsed, ParseError> {
+    parse_on(expr, now, Clock::Host)
+}
+
+/// [`parse`], with the wall clock named explicitly. Production always passes
+/// [`Clock::Host`]; tests pin an offset so the timezone rule is asserted rather
+/// than inherited from the machine running them.
+pub fn parse_on(expr: &str, now: DateTime<Utc>, clock: Clock) -> Result<Parsed, ParseError> {
     let e = expr.trim().to_lowercase();
     if e.is_empty() {
         return Err(ParseError::Empty);
@@ -155,26 +212,26 @@ pub fn parse(expr: &str, now: DateTime<Utc>) -> Result<Parsed, ParseError> {
             "morning" => (9, 0),
             _ => (18, 0), // evening / night
         };
-        return cron_parsed(&format!("{m} {h} * * *"), now);
+        return cron_parsed(&format!("{m} {h} * * *"), now, clock);
     }
 
     // "every weekday at <time>" — Mon-Fri (std DOW 1-5).
     if let Some(c) = RE_WEEKDAY.captures(&e) {
         let (h, m) = parse_time(&c[1])?;
-        return cron_parsed(&format!("{m} {h} * * 1-5"), now);
+        return cron_parsed(&format!("{m} {h} * * 1-5"), now, clock);
     }
 
     // "daily at <time>".
     if let Some(c) = RE_DAILY.captures(&e) {
         let (h, m) = parse_time(&c[1])?;
-        return cron_parsed(&format!("{m} {h} * * *"), now);
+        return cron_parsed(&format!("{m} {h} * * *"), now, clock);
     }
 
     // "weekly on <day> at <time>".
     if let Some(c) = RE_WEEKLY.captures(&e) {
         let dow = day_to_std(&c[1]).ok_or_else(|| ParseError::BadDay(c[1].to_string()))?;
         let (h, m) = parse_time(&c[2])?;
-        return cron_parsed(&format!("{m} {h} * * {dow}"), now);
+        return cron_parsed(&format!("{m} {h} * * {dow}"), now, clock);
     }
 
     // "monthly on <N> at <time>".
@@ -184,20 +241,20 @@ pub fn parse(expr: &str, now: DateTime<Utc>) -> Result<Parsed, ParseError> {
             return Err(ParseError::Unknown(format!("day-of-month {dom} (use 1-28)")));
         }
         let (h, m) = parse_time(&c[2])?;
-        return cron_parsed(&format!("{m} {h} {dom} * *"), now);
+        return cron_parsed(&format!("{m} {h} {dom} * *"), now, clock);
     }
 
     // "every <dayname> at <time>" (checked after weekday/alias so they win).
     if let Some(c) = RE_EVERY_DAY.captures(&e) {
         if let Some(dow) = day_to_std(&c[1]) {
             let (h, m) = parse_time(&c[2])?;
-            return cron_parsed(&format!("{m} {h} * * {dow}"), now);
+            return cron_parsed(&format!("{m} {h} * * {dow}"), now, clock);
         }
     }
 
     // 5-field standard cron.
     if e.split_whitespace().count() == 5 {
-        return cron_parsed(&e, now);
+        return cron_parsed(&e, now, clock);
     }
 
     Err(ParseError::Unknown(e))
@@ -206,15 +263,14 @@ pub fn parse(expr: &str, now: DateTime<Utc>) -> Result<Parsed, ParseError> {
 // ── cron helpers ──────────────────────────────────────────────────────────────
 
 /// Parse a STANDARD 5-field cron string (`MIN HOUR DOM MON DOW`) into a [`Parsed`].
-fn cron_parsed(std5: &str, now: DateTime<Utc>) -> Result<Parsed, ParseError> {
+fn cron_parsed(std5: &str, now: DateTime<Utc>, clock: Clock) -> Result<Parsed, ParseError> {
     let schedule = build_cron(std5)?;
-    let next_run = schedule
-        .after(&now)
-        .next()
+    let next_run = clock
+        .next_cron(&schedule, now)
         .ok_or_else(|| ParseError::BadCron(std5.to_string()))?;
     Ok(Parsed {
         next_run,
-        recurrence: Recurrence::Cron(Box::new(schedule)),
+        recurrence: Recurrence::Cron(Box::new(schedule), clock),
         sched_type: "recurring",
     })
 }
@@ -358,6 +414,11 @@ mod tests {
         "2026-05-22T12:00:00Z".parse().unwrap()
     }
 
+    /// A zero offset, for the tests whose expectations are written in UTC.
+    fn utc_offset() -> FixedOffset {
+        FixedOffset::east_opt(0).unwrap()
+    }
+
     #[test]
     fn in_relative_is_once() {
         let p = parse("in 5s", now()).unwrap();
@@ -423,11 +484,56 @@ mod tests {
         assert!(p.next_run <= now() + Duration::seconds(60));
     }
 
+    /// UTC host: the wall clock and the instant agree, so 09:30 is 09:30Z.
     #[test]
     fn daily_named_time_wall_clock() {
-        let p = parse("daily at 09:30", now()).unwrap();
+        let p = parse_on("daily at 09:30", now(), Clock::Fixed(utc_offset())).unwrap();
         // 09:30 already passed today → tomorrow 09:30.
         assert_eq!(p.next_run, "2026-05-23T09:30:00Z".parse::<DateTime<Utc>>().unwrap());
+    }
+
+    /// The finding: "daily at 09:00" on a UTC+2 host fired at 11:00 local,
+    /// because the cron grid was walked in UTC. A clock time is the OPERATOR's
+    /// clock — 09:00 CEST is 07:00Z — and the first fire must be the next one
+    /// strictly ahead on THAT grid, not on UTC's.
+    #[test]
+    fn named_times_are_read_on_the_host_clock_not_utc() {
+        let cest = Clock::Fixed(FixedOffset::east_opt(2 * 3600).unwrap());
+        // now() is 12:00Z = 14:00 local, so today's 09:00 local has passed.
+        let p = parse_on("daily at 09:00", now(), cest).unwrap();
+        assert_eq!(p.next_run, "2026-05-23T07:00:00Z".parse::<DateTime<Utc>>().unwrap());
+        assert_eq!(p.next_run.with_timezone(&FixedOffset::east_opt(2 * 3600).unwrap()).format("%H:%M").to_string(), "09:00");
+
+        // …and every LATER fire too — `next_after` walks the same grid, so a
+        // schedule cannot drift back to UTC on its second occurrence.
+        let second = p.recurrence.next_after(p.next_run, p.next_run).unwrap();
+        assert_eq!(second, "2026-05-24T07:00:00Z".parse::<DateTime<Utc>>().unwrap());
+
+        // The documented agent example, same rule: 08:00 local = 06:00Z.
+        let wd = parse_on("every weekday at 08:00", now(), cest).unwrap();
+        assert_eq!(wd.next_run, "2026-05-25T06:00:00Z".parse::<DateTime<Utc>>().unwrap());
+    }
+
+    /// A time before the current local hour on a WEST-of-UTC host: the same
+    /// rule read from the other side, so the fix is not an off-by-one that only
+    /// happens to work for positive offsets.
+    #[test]
+    fn named_times_west_of_utc() {
+        // UTC-7: now() 12:00Z = 05:00 local, so today's 09:00 local is still ahead.
+        let pdt = Clock::Fixed(FixedOffset::west_opt(7 * 3600).unwrap());
+        let p = parse_on("daily at 09:00", now(), pdt).unwrap();
+        assert_eq!(p.next_run, "2026-05-22T16:00:00Z".parse::<DateTime<Utc>>().unwrap());
+    }
+
+    /// The host clock is what production uses, and it has to agree with the
+    /// machine's own idea of the time — asserted without pinning a zone, so it
+    /// passes on a UTC CI box and on the CEST host alike.
+    #[test]
+    fn host_clock_lands_on_the_local_hour() {
+        let p = parse("daily at 09:00", now()).unwrap();
+        let local = p.next_run.with_timezone(&Local);
+        assert_eq!(local.format("%H:%M").to_string(), "09:00");
+        assert!(p.next_run > now());
     }
 
     #[test]
