@@ -84,6 +84,33 @@ export function sayFor(from: LivePhase, to: LivePhase, askSay?: string): string 
   return from === 'idle' ? '' : TURN_END_SAY
 }
 
+/** What the announcer has last committed to its live region: the phase and the
+ *  ask sentence the text was derived from, plus the text itself. */
+export interface Said {
+  from: LivePhase
+  say: string | undefined
+  text: string
+}
+
+/**
+ * The announcer's state transition, PURE and exported so the "re-derive when
+ * the ask refines" edge is testable without a DOM (`tests/unit` has no browser
+ * and renders through `renderToStaticMarkup`, which cannot exercise React state
+ * across renders).
+ *
+ * Recomputes the spoken text on a phase edge OR when `askSay` changes within
+ * the same phase — the latter is the fix for `AskUserQuestion`: its
+ * permission_request hook reaches the client ~1 s before the lens classifies
+ * the dialog, so the idle→asking edge commits "…for permission." and the true
+ * "…a question." sighting must be allowed to win one poll later, still inside
+ * the `asking` phase. Returns `prev` unchanged when nothing moved, so an
+ * unchanged live region stays silent.
+ */
+export function nextSaid(prev: Said, phase: LivePhase, askSay: string | undefined): Said {
+  if (prev.from === phase && prev.say === askSay) return prev
+  return { from: phase, say: askSay, text: sayFor(prev.from, phase, askSay) }
+}
+
 /**
  * The region itself. Mount it once per surface; `phase` is the only input.
  *
@@ -113,12 +140,16 @@ export function LiveAnnouncer({
   // pre-existing behaviour when this was a plain function of the phase, and it
   // is what a user gets when they open a session mid-turn. Mounting at idle
   // seeds to the empty string, so an ordinary page load stays silent.
-  const [said, setSaid] = React.useState<{ from: LivePhase; text: string }>(() => ({
+  //
+  // RE-DERIVE WHEN THE ASK REFINES, not only on the phase edge — see `nextSaid`.
+  const [said, setSaid] = React.useState<Said>(() => ({
     from: phase,
+    say: askSay,
     text: sayFor('idle', phase, askSay),
   }))
-  if (said.from !== phase) setSaid({ from: phase, text: sayFor(said.from, phase, askSay) })
-  const text = said.from === phase ? said.text : sayFor(said.from, phase, askSay)
+  const next = nextSaid(said, phase, askSay)
+  if (next !== said) setSaid(next)
+  const text = next.text
   return (
     <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
       {silent ? '' : text}

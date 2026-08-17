@@ -34,6 +34,19 @@ import { api, injectGlobals, startBackend, type Backend } from './harness'
 /** The chip whose `nested-interactive` this gate exists to be able to see. */
 const TEAMMATE_CHIP = '[aria-label^="Open researcher"]'
 
+/**
+ * The teammate STRIP ROW on the shipped `/focus/:name` route — the focus-view
+ * twin of the chip above. It carried the identical `nested-interactive` (a
+ * focusable KillTeammateButton inside a `role="button"` wrapper) and was NEVER
+ * scanned, because SCANS only ever covered the overview `/` and the dev
+ * benches. Its aria-label is the overlay activation button's, post-repair.
+ */
+const TEAMMATE_STRIP_ROW = '[aria-label^="Teammate researcher"]'
+
+/** The lead session `/focus/:name` scans open — a real session on the roster
+ *  so the team strip (and its teammate rows) actually render. */
+const FOCUS_LEAD = 'axe-lead'
+
 const DESKTOP = { width: 1440, height: 900 }
 const PHONE = { width: 390, height: 844 }
 
@@ -75,6 +88,19 @@ const SCANS = [
   // `/` for a fase. A gate that can pass on an empty page is not a gate.
   { route: '/', viewport: DESKTOP, surface: 'desktop', ready: TEAMMATE_CHIP },
   { route: '/', viewport: PHONE, surface: 'phone', ready: TEAMMATE_CHIP },
+  // ── the shipped focus route, with a real team on the strip ──
+  // `/dev/focus` proved the component renders; only `/focus/:name` proves what
+  // a user meets. It carried the identical teammate `nested-interactive` as `/`
+  // did (KillTeammateButton inside a `role="button"` row) and was structurally
+  // invisible here for a fase. `ready` waits for the teammate STRIP ROW — the
+  // element that owns the defect — so a strip that stopped rendering teams can
+  // never let this scan pass on nothing.
+  {
+    route: `/focus/${FOCUS_LEAD}`,
+    viewport: DESKTOP,
+    surface: 'desktop',
+    ready: TEAMMATE_STRIP_ROW,
+  },
 ] as const
 
 /**
@@ -149,13 +175,15 @@ const THEMES = ['dark', 'light'] as const
  *                        covered by `theme-contrast.test.ts`). Baselined, not
  *                        chased, so the gate is honest on both stacks; the
  *                        asymmetric assert below lets it be absent locally.
- *   nested-interactive — the focus surface nests controls inside a control.
- *                        Carried, not excused: it belongs with the roster
- *                        keyboard work ("The roster has no roving tabindex…"),
- *                        which is where the interactive structure gets rebuilt.
- *                        NOT carried for `/` any more — `teammate-chip.tsx`'s
- *                        trash-inside-a-role=button is fixed, which is the
- *                        whole reason `/` joined SCANS.
+ *   nested-interactive — a teammate row nested a focusable KillTeammateButton
+ *                        inside a `role="button"` wrapper. FIXED in both twins:
+ *                        `team/teammate-chip.tsx` (roster `/`) and
+ *                        `focus-mode/team-strip-group.tsx` (focus
+ *                        `/focus/:name` + `/dev/focus`) both moved activation to
+ *                        a stretched overlay <button> with the trash as a
+ *                        SIBLING. NOT carried anywhere any more — which is why
+ *                        `/focus/:name` could finally join SCANS instead of
+ *                        hiding the live defect behind an unscanned route.
  *
  * Shrink this list. Do not grow it without a finding to point at.
  */
@@ -173,9 +201,7 @@ const BASELINE: readonly string[] = [
   '/dev/chat-ui dark/desktop color-contrast',
   '/dev/chat-ui light/desktop color-contrast',
   '/dev/focus dark/desktop color-contrast',
-  '/dev/focus dark/desktop nested-interactive',
   '/dev/focus light/desktop color-contrast',
-  '/dev/focus light/desktop nested-interactive',
   '/dev/roster dark/desktop color-contrast',
   '/dev/roster light/desktop color-contrast',
 ]

@@ -174,26 +174,17 @@ function TeammateStripRow({
   const rail = member.color || 'hsl(var(--status-idle))'
 
   return (
-    // A `div role="button"` (not a real <button>) so the trailing kill-pane
-    // trash — itself a <button> — nests as valid HTML (no button-in-button).
+    // The row is a PASSIVE container, not a control: it carries a trash
+    // <button>, and a focusable <button> inside a `div role="button"
+    // tabIndex=0` wrapper is axe's `nested-interactive` (serious) — the reader
+    // announces one control and finds two. The activation lives on a stretched
+    // overlay <button> below (drawing the row's focus ring), with the kill
+    // button as its SIBLING. Same repair as team/teammate-chip.tsx.
     <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onSelect()
-        }
-      }}
-      aria-current={selected ? 'true' : undefined}
-      aria-label={`Teammate ${member.name}${needsYou ? ', needs you' : ''} — read-only terminal`}
       className={cn(
-        // cursor-pointer + select-none + transition-colors: parity with the
-        // reference teammate-chip role=button (a plain <div> is text-selectable
-        // and has no native pointer cursor, unlike the <button> this replaced).
-        'relative ml-2 flex h-11 cursor-pointer select-none items-center gap-2.5 overflow-hidden rounded-xl border pl-3 pr-2 outline-none transition-colors',
-        'focus-visible:ring-2 focus-visible:ring-ring',
+        // cursor-pointer + select-none + transition-colors: the row still reads
+        // as one tap target even though the real control is the overlay button.
+        'relative ml-2 flex h-11 cursor-pointer select-none items-center gap-2.5 overflow-hidden rounded-xl border pl-3 pr-2 transition-colors',
         selected
           ? 'border-primary/70 bg-card shadow-sm'
           : 'border-border/60 bg-card/40 hover:bg-card/70',
@@ -202,6 +193,19 @@ function TeammateStripRow({
         !selected && needsYou && 'bg-status-waiting/[0.06]',
       )}
     >
+      {/* THE control: a real <button> stretched over the row. Above the passive
+          content (z-10) so a tap anywhere lands on it, below the trailing
+          controls (z-20) so the trash still wins its own hit area. It draws the
+          row's focus ring, so keyboard focus looks exactly as before. Enter/
+          Space are native here — the hand-rolled key handler is gone. */}
+      <button
+        type="button"
+        className="absolute inset-0 z-10 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        aria-current={selected ? 'true' : undefined}
+        aria-label={`Teammate ${member.name}${needsYou ? ', needs you' : ''} — read-only terminal`}
+        onClick={onSelect}
+      />
+
       {/* 2px left colour rail = member identity colour. */}
       <span
         aria-hidden
@@ -215,7 +219,7 @@ function TeammateStripRow({
           {member.model || 'teammate'}
         </span>
       </span>
-      <span className="flex shrink-0 items-center gap-1">
+      <span className="relative z-20 flex shrink-0 items-center gap-1">
         {needsYou ? (
           <span className="rounded-full bg-status-waiting/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-status-waiting-ink">
             needs you

@@ -23,9 +23,12 @@ import {
   PHASE_SAY,
   TURN_END_SAY,
   TerminalTurnAnnouncer,
+  type Said,
   livePhase,
+  nextSaid,
   sayFor,
 } from '../../src/components/a11y/turn-announcer'
+import { ASK_SAY, askKind } from '../../src/components/chat/live-layer'
 import { claimTurnVoice, turnVoiceClaims } from '../../src/lib/live-region-owner'
 
 const html = (n: React.ReactNode) => renderToStaticMarkup(<>{n}</>)
@@ -111,5 +114,75 @@ describe('the sentences themselves', () => {
     expect(sayFor('asking', 'idle')).toBe(TURN_END_SAY)
     expect(sayFor('handoff', 'idle')).toBe(TURN_END_SAY)
     expect(sayFor('idle', 'idle')).toBe('')
+  })
+})
+
+describe('the ask sentence refines within the asking phase (finding #33)', () => {
+  // `AskUserQuestion` always fires a permission_request hook that reaches the
+  // client ~1 s BEFORE the peek lens classifies the dialog. So the idle→asking
+  // edge commits with only permission_request present (dialog view still null →
+  // askKind='permission'), and the lens' true 'question' sighting lands one
+  // poll LATER — inside the SAME asking phase. The bug: LiveAnnouncer latched
+  // its text on the phase edge alone and never re-derived, leaving a screen
+  // reader told "Claude is asking for permission." over a fruit-choice card.
+  // `nextSaid` is the pure transition the component runs; folding the real poll
+  // sequence through it is the regression this file exists to hold.
+
+  /** The (phase, askSay) pair the live layer would feed the announcer for a
+   *  given set of asking signals — mirrors live-layer.tsx's `askKind` +
+   *  `ASK_SAY[ask]`. */
+  function feed(sig: {
+    permission?: boolean
+    dialog?: 'question' | 'plan' | undefined
+  }): { phase: 'idle' | 'asking'; askSay: string } {
+    const kind = askKind({
+      form: false,
+      dialog: sig.dialog,
+      permission: !!sig.permission,
+      signIn: false,
+    })
+    const asking = !!sig.permission || !!sig.dialog
+    return { phase: asking ? 'asking' : 'idle', askSay: ASK_SAY[kind] }
+  }
+
+  /** Fold a scripted poll timeline through the announcer's pure transition,
+   *  seeded exactly as the component seeds on mount. */
+  function speakThrough(
+    steps: ReadonlyArray<{ phase: 'idle' | 'asking'; askSay: string }>,
+  ): string {
+    let said: Said = {
+      from: steps[0].phase,
+      say: steps[0].askSay,
+      text: sayFor('idle', steps[0].phase, steps[0].askSay),
+    }
+    for (const s of steps.slice(1)) said = nextSaid(said, s.phase, s.askSay)
+    return said.text
+  }
+
+  test('the permission hook lands first, then the lens says it is a question', () => {
+    const timeline = [
+      feed({}), // idle page load
+      feed({ permission: true }), // hook arrives ~1s ahead of the lens
+      feed({ permission: true, dialog: 'question' }), // lens classifies the card
+    ]
+    // The mid-timeline value IS the wrong thing the bug latched forever.
+    expect(speakThrough(timeline.slice(0, 2))).toBe(ASK_SAY.permission)
+    // Once the question card resolves, the announcer must correct itself —
+    // still inside the asking phase, no idle bounce required.
+    expect(speakThrough(timeline)).toBe(ASK_SAY.question)
+    expect(ASK_SAY.question).toContain('question')
+  })
+
+  test('a genuine permission prompt is left saying permission', () => {
+    // The refine must not invent a question: a plain Bash-permission turn has no
+    // later dialog sighting, so the sentence stays 'permission'.
+    expect(speakThrough([feed({}), feed({ permission: true })])).toBe(
+      ASK_SAY.permission,
+    )
+  })
+
+  test('a bare phase edge with no ask change is unchanged (returns prev)', () => {
+    const said: Said = { from: 'asking', say: ASK_SAY.question, text: ASK_SAY.question }
+    expect(nextSaid(said, 'asking', ASK_SAY.question)).toBe(said)
   })
 })
