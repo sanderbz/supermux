@@ -426,8 +426,10 @@ describe('the adapter', () => {
   })
 
   test('the calm view: everything A1 hid stays hidden', () => {
+    // `thinking` LEFT this list when the S21 disclosure shipped (finding 16):
+    // it is drawn now, collapsed, so the view stays calm without the renderer
+    // throwing the reasoning away. Its own cases are below.
     const entries = toChatEntries([
-      block({ uuid: 'th', kind: 'thinking', body: { text: 'hmm' } }),
       block({ uuid: 'at', kind: 'attachment', label: 'image', body: { image: true } }),
       block({ uuid: 'sy', kind: 'system', label: 'compact', body: { content: 'compacted' } }),
       block({ uuid: 'qu', kind: 'queue', body: null }),
@@ -475,5 +477,50 @@ describe('the adapter', () => {
     expect(classifyPrompt('<task-notification><summary>ran the suite</summary></task-notification>')).toMatchObject(
       { kind: 'notification', text: 'ran the suite' },
     )
+  })
+})
+
+/**
+ * THE MODEL'S REASONING REACHES THE SURFACE (verified finding 16, A6 §S21).
+ *
+ * `wire-entries.ts` ended its dispatch by dropping `kind:'thinking'` on the
+ * floor — "not part of the A1 calm view" — while the A6 register listed the
+ * disclosure (S21) as a shipped scenario. With an extended-thinking model the
+ * primary interface silently threw away the reasoning the user asked for.
+ */
+describe('thinking entries', () => {
+  test('survive the adapter instead of being dropped', () => {
+    const entries = toChatEntries([
+      block({ uuid: 'th', kind: 'thinking', ts_ms: 5_000, body: { text: '91 = 7 × 13' } }),
+      block({ uuid: 'a1', kind: 'assistant', ts_ms: 6_000, body: { text: '91 is not prime.' } }),
+    ])
+    expect(entries.map((e) => [e.uuid, e.kind])).toEqual([
+      ['a1', 'assistant'],
+      ['th', 'thinking'],
+    ])
+    expect(entries[1].text).toBe('91 = 7 × 13')
+  })
+
+  test('an EMPTY thinking block is still nothing — no blank disclosure', () => {
+    expect(toChatEntries([block({ uuid: 'th', kind: 'thinking', body: { text: '  ' } })])).toEqual(
+      [],
+    )
+  })
+
+  test('a subagent’s thinking stays out, like everything else it does', () => {
+    const entries = toChatEntries([
+      block({ uuid: 'th', kind: 'thinking', agent_id: 'x1', body: { text: 'sub reasoning' } }),
+    ])
+    expect(entries).toEqual([])
+  })
+
+  test('a clipped thinking body is NOT auto-fetched — the row opens collapsed', () => {
+    // `find_full_entry` streams the transcript from byte 0; spending that on a
+    // body nobody has expanded is the cost `truncatedUuids` exists to bound.
+    const wire = [
+      block({ uuid: 'th', kind: 'thinking', truncated: true, body: { text: 'long…' } }),
+      block({ uuid: 'a1', kind: 'assistant', truncated: true, body: { text: 'long…' } }),
+    ]
+    expect(truncatedUuids(wire, 12)).toEqual(['a1'])
   })
 })

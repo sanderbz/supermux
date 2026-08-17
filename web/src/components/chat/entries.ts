@@ -36,6 +36,17 @@ export interface ReceiptLine {
 
 export type ChatItem =
   | {
+      type: 'thinking'
+      uuid: string
+      ts: number
+      text: string
+      /** Seconds between the row above and this block landing — the honest
+       *  reading of "how long it thought". Absent when there is no row above it
+       *  to measure from, or the clock did not move. */
+      secs?: number
+      truncated?: boolean
+    }
+  | {
       type: 'user'
       uuid: string
       ts: number
@@ -62,8 +73,28 @@ export const RECEIPT_CAP = 30
 export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
   const chrono = [...entries].reverse()
   const out: ChatItem[] = []
+  // The stamp of the row physically above, for the thinking clock below. Read
+  // from the WIRE order rather than from `out`, so a receipts fold cannot move
+  // it. A thinking block is written when it is COMPLETE, so the gap from the
+  // row above is what the model spent on it — the same reading Claude's own
+  // clients show, and the only one these timestamps support.
+  let prevTs = 0
   for (const e of chrono) {
-    if (e.kind === 'tool_use') {
+    const since = prevTs > 0 ? e.ts - prevTs : 0
+    prevTs = e.ts
+    if (e.kind === 'thinking') {
+      // A6 register S21 — one collapsed row per thinking block, never merged
+      // into the run above it: a "Thought for 8s" that stood for two separate
+      // stretches of reasoning would be a number nobody could act on.
+      out.push({
+        type: 'thinking',
+        uuid: e.uuid,
+        ts: e.ts,
+        text: e.text,
+        secs: since > 0 ? since : undefined,
+        truncated: e.truncated,
+      })
+    } else if (e.kind === 'tool_use') {
       const line: ReceiptLine = {
         uuid: e.uuid,
         label: e.text,

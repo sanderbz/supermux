@@ -287,3 +287,50 @@ describe('a clipped message says so', () => {
     expect(out).not.toContain('clipped')
   })
 })
+
+/**
+ * THE MODEL'S REASONING, COLLAPSED (verified finding 16 — A6 register S21).
+ *
+ * `wire-entries.ts` dropped every `kind:'thinking'` frame and there was no
+ * disclosure component anywhere in `web/src`, while the register listed S21 as
+ * a shipped scenario. Three properties matter and each one fails differently:
+ * the text has to REACH the DOM (or the reasoning is still thrown away), it has
+ * to arrive COLLAPSED (or the calm view is gone), and the summary must never
+ * invent a duration it cannot support.
+ */
+describe('thinking', () => {
+  const thinking = (over: Partial<ChatEntry> = {}): ChatEntry => ({
+    uuid: 'th',
+    ts: 1_760_000_008,
+    text: '91 is 7 × 13, so it is not prime.',
+    kind: 'thinking',
+    ...over,
+  })
+
+  test('the reasoning is in the DOM, and it is closed', () => {
+    const html = render([thinking()])
+    expect(html).toContain('data-testid="chat-thinking"')
+    expect(html).toContain('91 is 7 × 13')
+    // `<details>` renders `open` only when it IS open. The calm view is the
+    // promise: one line high until somebody asks for the rest.
+    expect(html).not.toMatch(/<details[^>]*\sopen\b/)
+  })
+
+  test('“Thought for Ns” is measured from the row above, never guessed', () => {
+    // Newest-first, as the wire hands them over: the prompt at t+0, the
+    // thinking block complete at t+8.
+    const out = text(
+      render([
+        thinking({ ts: 1_760_000_008 }),
+        { uuid: 'u1', ts: 1_760_000_000, text: 'Is 91 prime?', kind: 'prompt' },
+      ]),
+    )
+    expect(out).toContain('Thought for 8s')
+  })
+
+  test('…and with nothing above it to measure from, it claims nothing', () => {
+    const out = text(render([thinking()]))
+    expect(out).toContain('Thought')
+    expect(out).not.toMatch(/Thought for/)
+  })
+})

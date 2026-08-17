@@ -406,6 +406,27 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       continue
     }
 
+    if (w.kind === 'thinking') {
+      // A6 register S21 — the thinking-content disclosure.
+      //
+      // The A1 calm view dropped these on the floor with a comment ("not part
+      // of the A1 calm view"), and the register went on claiming the surface.
+      // With an extended-thinking model the primary interface was silently
+      // throwing away the reasoning the user had asked for. It renders
+      // COLLAPSED, so the calm view is intact — the row is one line high until
+      // somebody asks for the rest.
+      const text = sanitiseText(textOf(w.body))
+      if (!text) continue
+      out.push({
+        uuid: w.uuid,
+        ts: toSeconds(w.ts_ms),
+        text,
+        kind: 'thinking',
+        truncated: w.truncated || undefined,
+      })
+      continue
+    }
+
     if (w.kind === 'assistant') {
       const text = sanitiseText(textOf(w.body))
       // An assistant line with no prose is a block that carried only a tool
@@ -464,8 +485,8 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
       continue
     }
 
-    // thinking / attachment / system / compact_boundary / queue / mode /
-    // subagent / unknown: not part of the A1 calm view.
+    // attachment / system / compact_boundary / queue / mode / subagent /
+    // unknown: not part of the A1 calm view.
   }
 
   out.reverse()
@@ -478,10 +499,14 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
  * Two bounds, both about the SERVER's cost: `find_full_entry` streams the
  * transcript from byte 0 until the uuid matches, so a clipped entry near the
  * end of a 12 MB file is a full-file scan on the blocking pool. So only
- * entries the renderer actually SHOWS are fetched (a clipped `thinking` block
- * is never drawn), and only within the newest `window` of them — a reader who
- * scrolls into an old clipped entry keeps the "… clipped" marker, which is
- * exactly what the marker is for.
+ * entries the renderer actually SHOWS are fetched, and only within the newest
+ * `window` of them — a reader who scrolls into an old clipped entry keeps the
+ * "… clipped" marker, which is exactly what the marker is for.
+ *
+ * `thinking` is DRAWN since the S21 disclosure landed but is deliberately still
+ * not fetched: the row opens collapsed, so a full-file scan would be spent on a
+ * body nobody has asked to see. The clipped marker inside the expanded panel is
+ * the honest answer, and it is one the reader chose to look at.
  */
 export function truncatedUuids(
   wire: readonly WireEntry[],
