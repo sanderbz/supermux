@@ -146,7 +146,11 @@ const BUDGET_ENTRY_JS = 160 * KB
 //             `preview_lines` fallback, the `Row detail` density label, the
 //             group-by disabled state and its reason line. Net of the copy
 //             changes, which are byte-neutral.
-const BUDGET_APP_JS = 217 * KB
+// 219 at fix-wave-1 integration: the palette (+0.77 KB) and roster (+1.35 KB)
+// streams above were measured independently against B5's 215.39; combined on
+// one tree with the focus-toggle and chat-content fixes they measure 218.34.
+// Same ceil(measured) rule; entry gate 152.30/160 (95%) remains the guard.
+const BUDGET_APP_JS = 219 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {
