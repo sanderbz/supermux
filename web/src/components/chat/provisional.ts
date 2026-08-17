@@ -92,6 +92,44 @@ const DIALOG_FRAGMENT = /Esc to cancel|Tab to amend|ctrl\+e to explain/
  *  `extractProvisionalTail` has nothing to measure. */
 const MIN_PANE_COLS = 40
 
+/**
+ * THE LIVE COMPOSER, in the layout Claude Code actually ships.
+ *
+ * Until 2.1.23x the composer was a `╭ … ╯` box, so the box-top scan below was
+ * the whole bottom cut and every `❯` in reach was a PROMPT ECHO. In the shipped
+ * non-alt-screen layout of cc 2.1.233 the composer is a bare `❯ ` row
+ * between two full-width rules, with no box anywhere below the welcome banner:
+ *
+ *     ● Terminal multiplexers have become indispensable …      ← the prose
+ *     ────────────────────────────────────────────────────────
+ *     ❯                                                         ← the composer
+ *     ────────────────────────────────────────────────────────
+ *       ⏵⏵ bypass permissions on (shift+tab to cycle)
+ *
+ * With no `╭` under the banner the box scan cut at the BANNER's own top (index
+ * 0, everything dropped) or, once the banner had scrolled off, at the end of the
+ * capture — and then the `❯` rule below took the composer for a prompt echo and
+ * moved the start past every prose row. Either way the card rendered zero prose
+ * lines while the pty demonstrably held thirty-five of them at the same instant
+ * (verifier `chat-core`, `91-prov-live-*.png`; fixture
+ * `tests/fixtures/tui/cc233/60-streaming-prose.txt`).
+ *
+ * So the composer is recognised on its own terms and acts as a bottom CUT, like
+ * `╭`. Two shapes, because the row is not always empty:
+ *   · a caret with nothing but whitespace after it (NBSP included — the TUI
+ *     pads the empty composer with ` `), and
+ *   · a caret DIRECTLY under a full-width rule, which is the composer with a
+ *     draft in it. A prompt echo never has a rule immediately above it.
+ */
+const BARE_CARET = /^❯[\s ]*$/
+const RULE_ROW = /^[─╌—]{3,}$/
+
+/** A `❯` row that carries text — the prompt echo Claude prints at the head of a
+ *  turn, and the only `❯` that may START a block. */
+function isPromptEcho(t: string): boolean {
+  return t.startsWith('❯') && !BARE_CARET.test(t.trimEnd())
+}
+
 function plain(line: string): string {
   return parseAnsiLine(line)
     .map((s) => s.text)
@@ -137,9 +175,19 @@ export function extractProvisionalTail(capture: string, max = 12): string[] {
   if (lens.dialog || lens.modal) return []
   const lines = capture.split('\n')
   const stripped = lines.map(plain)
+  // The bottom cut: the composer, in whichever layout this build draws it —
+  // a `╭` box top (≤ 2.1.232) or a bare/ruled `❯` row (2.1.233+). Scanned from
+  // the bottom for the FIRST of either, so a capture that still holds the
+  // welcome banner (whose `╭` is at index 0) cuts at its composer and not at
+  // its banner.
   let cut = lines.length
   for (let i = stripped.length - 1; i >= 0; i--) {
-    if (stripped[i].trimStart().startsWith('╭')) {
+    const t = stripped[i].trimStart()
+    if (t.startsWith('╭')) {
+      cut = i
+      break
+    }
+    if (BARE_CARET.test(t.trimEnd()) || (t.startsWith('❯') && i > 0 && RULE_ROW.test(stripped[i - 1].trim()))) {
       cut = i
       break
     }
@@ -159,8 +207,13 @@ export function extractProvisionalTail(capture: string, max = 12): string[] {
   // Without it, the first seconds of a new turn showed the previous one's tail
   // (a denied Bash call, an old `⎿ Interrupted`) captioned "Live terminal"
   // (mobile proof, f03-working-light.png).
+  //
+  // ONLY AN ECHO STARTS A TURN. A caret with nothing after it is the live
+  // composer, never a prompt anybody typed — treating it as a start marker is
+  // what moved `start` past thirty-five rows of streaming prose in the 2.1.233
+  // layout. It is a CUT (above), and the cut has already excluded it here.
   for (let i = cut - 1; i >= start; i--) {
-    if (stripped[i].trimStart().startsWith('❯')) {
+    if (isPromptEcho(stripped[i].trimStart())) {
       start = i + 1
       break
     }

@@ -1,0 +1,58 @@
+[0;38;2;215;119;87m╭───[0m [0;38;2;215;119;87mClaude[0m [0;38;2;215;119;87mCode[0m [0;38;2;153;153;153mv2.1.233[0m [0;38;2;215;119;87m───────────────────────────────────────────────────────────────────────────────────────────────────────╮[0m
+[0;38;2;215;119;87m│[0m                                                    [0;2;38;2;215;119;87m│[0m [0;1;38;2;215;119;87mTips[0m [0;1;38;2;215;119;87mfor[0m [0;1;38;2;215;119;87mgetting[0m [0;1;38;2;215;119;87mstarted[0m                                                  [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m                [0;1mWelcome[0m [0;1mback[0m [0;1mAda!   [0m                [0;2;38;2;215;119;87m│[0m Run /init to create a CLAUDE.md file with instructions for Claude         [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m                                                    [0;2;38;2;215;119;87m│[0m [0;38;2;215;119;87m─────────────────────────────────────────────────────────────────────────[0m [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m                       [0;38;2;215;119;87m▐[0;38;2;215;119;87;48;2;0;0;0m▛███▜[0;38;2;215;119;87m▌[0m                      [0;2;38;2;215;119;87m│[0m [0;1;38;2;215;119;87mWhat's[0m [0;1;38;2;215;119;87mnew[0m                                                                [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m                      [0;38;2;215;119;87m▝▜[0;38;2;215;119;87;48;2;0;0;0m█████[0;38;2;215;119;87m▛▘[0m                     [0;2;38;2;215;119;87m│[0m Added GitLab merge request URL support to the `--worktree` flag and the … [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m                        [0;38;2;215;119;87m▘▘[0m [0;38;2;215;119;87m▝▝[0m                       [0;2;38;2;215;119;87m│[0m Added an opt-in `forward_user_identity` apps gateway setting on Anthropi… [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m      [0;38;2;153;153;153mHaiku[0m [0;38;2;153;153;153m4.5[0m [0;38;2;153;153;153m·[0m [0;38;2;153;153;153mClaude[0m [0;38;2;153;153;153mMax[0m [0;38;2;153;153;153m·[0m                      [0;2;38;2;215;119;87m│[0m Added opt-in memory cgroup support for Bash tool commands on Linux (`CLA… [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m      [0;38;2;153;153;153moperator@example.com's     [0m [0;38;2;153;153;153mOrganization[0m      [0;2;38;2;215;119;87m│[0m [0;3;38;2;153;153;153m/release-notes[0m [0;3;38;2;153;153;153mfor[0m [0;3;38;2;153;153;153mmore[0m                                                   [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m│[0m                  [0;38;2;153;153;153m/tmp/verify-work[0m                  [0;2;38;2;215;119;87m│[0m                                                                           [0;38;2;215;119;87m│[0m
+[0;38;2;215;119;87m╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
+
+
+[0;38;2;80;80;80;48;2;55;55;55m❯ [0;38;2;255;255;255;48;2;55;55;55mWrite a 450-word essay about why terminal multiplexers matter. Plain prose, no tools, no lists.[0;48;2;55;55;55m                                 [0m
+
+[0;38;2;255;255;255m●[0m Terminal multiplexers have become indispensable tools for anyone who spends significant time working in a command-line[0m
+[0m  environment, yet their importance is often underestimated by those who haven't fully embraced them. At their core, these[0m
+[0m  tools—most notably tmux and screen—fundamentally transform how developers, system administrators, and power users interact with[0m
+[0m  their computing environments by enabling them to manage multiple terminal sessions from a single window.[0m
+
+[0m  The most immediate benefit of terminal multiplexers is the ability to organize work into logical, persistent panes and windows.[0m
+[0m  Rather than opening countless terminal windows or tabs, a user can structure their workflow within a single session, keeping[0m
+[0m  related tasks visually organized and accessible. This organization becomes invaluable during complex projects where you might[0m
+[0m  need to run a development server in one pane, edit code in another, monitor logs in a third, and maintain a git interface in a[0m
+[0m  fourth. The cognitive load of switching between scattered windows diminishes when everything is visible and organized within a[0m
+[0m  unified framework.[0m
+
+[0m  Persistence and detachment represent another critical advantage that fundamentally changes how remote work operates. When you[0m
+[0m  attach to a tmux session over SSH, you're not simply connecting to a remote terminal—you're resuming your exact working[0m
+[0m  environment from where you left it. If your connection drops, your session persists on the remote machine, waiting to be[0m
+[0m  reattached. This means you can start a long-running process, detach from your session, close your laptop, travel somewhere with[0m
+[0m  an internet connection, SSH back in, and find everything exactly as you left it. This decoupling of your local machine from your[0m
+[0m  remote working environment eliminates the fragility that characterizes traditional remote terminal work.[0m
+
+[0m  The scripting and automation capabilities embedded in multiplexers enable sophisticated workflows that would be impractical[0m
+[0m  otherwise. Users can create and manage sessions programmatically, launch complex multi-window setups with a single command, and[0m
+[0m  automate repetitive work across multiple panes simultaneously. This automation transforms setup from a manual, error-prone[0m
+[0m  process into something reproducible and reliable.[0m
+
+[0m  Terminal multiplexers also foster a different relationship with the command line itself. They encourage users to embrace the[0m
+[0m  terminal more fully because the environment becomes more capable and comfortable. Rather than reaching for GUI applications when[0m
+[0m  complexity emerges, users find that a well-configured multiplexer environment actually provides superior ergonomics for many[0m
+[0m  tasks. Copy-paste functionality, search across panes, and quick navigation between windows all become smoother once a[0m
+[0m  multiplexer is involved.[0m
+
+[0m  Perhaps most importantly, terminal multiplexers represent a democratization of professional development environments. They're[0m
+[0m  lightweight, open-source, and available everywhere—your laptop, remote servers, containers, everything. Learning to work[0m
+[0m  effectively within them means your skills transfer anywhere without requiring special software or extensive setup. This[0m
+[0m  universality makes them a cornerstone skill for anyone serious about command-line proficiency, elevating them from mere[0m
+[0m  convenience tools to essential components of modern development practice.[0m
+
+[0;38;2;153;153;153m✻[0m [0;38;2;153;153;153mBrewed for 11s[0m
+
+[0;38;2;136;136;136m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m❯ [0m
+[0;38;2;136;136;136m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m  [0;38;2;255;193;7m⚠[0m [0;38;2;255;193;7mTranscript[0m [0;38;2;255;193;7msaving[0m [0;38;2;255;193;7mis[0m [0;38;2;255;193;7moff[0m [0;38;2;255;193;7m—[0m [0;38;2;255;193;7minherited[0m [0;38;2;255;193;7mCLAUDE_CODE_CHILD_SESSION[0m [0;38;2;255;193;7mmarker[0;38;2;153;153;153m ·[0m [0;38;2;153;153;153mrestart[0m [0;38;2;153;153;153mwith[0m [0;38;2;153;153;153mCLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1[0m [0;38;2;153;153;153m…[0m
+[0m  [0;38;2;255;107;128m⏵⏵[0m [0;38;2;255;107;128mbypass[0m [0;38;2;255;107;128mpermissions[0m [0;38;2;255;107;128mon[0;38;2;153;153;153m (shift+tab[0m [0;38;2;153;153;153mto[0m [0;38;2;153;153;153mcycle)[0m

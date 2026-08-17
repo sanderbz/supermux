@@ -330,3 +330,100 @@ describe('extractProvisionalTail — prose, or nothing', () => {
     ])
   })
 })
+
+/**
+ * THE SHIPPED cc-2.1.233 LAYOUT (verifier `chat-core`, 91-prov-live-7/-10.png).
+ *
+ * Every rule above was written against the boxed composer — `╭ … │ ❯ │ … ╯`.
+ * The layout Claude Code actually ships draws the composer as a BARE `❯ ` row
+ * between two full-width rules, with no box below the welcome banner at all, so:
+ *
+ *   · the box scan found the BANNER's own `╭` (index 0) and cut everything, and
+ *   · once the banner had scrolled off, the composer's caret was read as a
+ *     prompt echo and moved `start` past every prose row.
+ *
+ * Either way the "Live terminal · unconfirmed" card rendered ZERO prose lines
+ * while the pty demonstrably held the paragraphs at the same instant. These
+ * cases pin both layouts, and the last one is the property rather than a
+ * transcript: a capture that contains prose never renders nothing.
+ */
+describe('extractProvisionalTail — the bare-caret composer (cc 2.1.233)', () => {
+  const LIVE = readFileSync(join(FIXTURES, 'cc233/60-streaming-prose.txt'), 'utf8')
+
+  test('a bare ❯ is the composer, so the prose above it survives', () => {
+    const capture = [
+      'The agent is writing this paragraph of prose right now,',
+      'and a second line of it.',
+      '─'.repeat(60),
+      '❯ ',
+      '─'.repeat(60),
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([
+      'The agent is writing this paragraph of prose right now,',
+      'and a second line of it.',
+    ])
+  })
+
+  test('a caret with a DRAFT in it is the composer too — the rule above it says so', () => {
+    const capture = [
+      'still writing this',
+      '─'.repeat(60),
+      '❯ half a question the user has not sent yet',
+      '─'.repeat(60),
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual(['still writing this'])
+  })
+
+  test('…and a prompt ECHO still starts the turn, with no rule above it', () => {
+    const capture = [
+      '❯ Run the shell command: cowsay --version',
+      '● Bash(cowsay --version)',
+      '',
+      '❯ Write four short lines about the sea.',
+      'The sea keeps time in slow, grey breaths,',
+      '─'.repeat(60),
+      '❯ ',
+      '─'.repeat(60),
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([
+      'The sea keeps time in slow, grey breaths,',
+    ])
+  })
+
+  test('the welcome banner’s ╭ is not the composer', () => {
+    // The bug's first half: with no box under the banner, the bottom-up box
+    // scan cut at index 0 and the block was empty for the WHOLE first session
+    // window — banner, prose and all.
+    const capture = [
+      '╭─── Claude Code v2.1.233 ───╮',
+      '│  Welcome back Ada!         │',
+      '╰────────────────────────────╯',
+      '',
+      '❯ Write a short paragraph.',
+      '',
+      '● Terminal multiplexers matter because a session outlives its window.',
+      '─'.repeat(60),
+      '❯ ',
+      '─'.repeat(60),
+    ].join('\n')
+    expect(extractProvisionalTail(capture)).toEqual([
+      '● Terminal multiplexers matter because a session outlives its window.',
+    ])
+  })
+
+  test('the live capture renders the prose that is in it, not the status furniture', () => {
+    const tail = extractProvisionalTail(LIVE)
+    // THE PROPERTY, not a transcript: a capture whose pty rows are prose may
+    // never render zero of them. The old rule returned [] on this exact file.
+    expect(tail.length).toBeGreaterThan(0)
+    const text = tail.join('\n')
+    expect(text).toContain('multiplexer')
+    // …and none of the furniture that was the card's entire content before.
+    expect(text).not.toContain('bypass permissions on')
+    expect(text).not.toContain('Transcript saving is off')
+    expect(text).not.toContain('Brewed for')
+    expect(text).not.toMatch(/^[─╌—]{3,}$/m)
+    expect(text).not.toContain('Welcome back')
+  })
+})

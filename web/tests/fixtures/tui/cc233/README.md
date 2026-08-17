@@ -42,6 +42,14 @@ capture verbatim except:
   `operator@example.com's Organization`, the shell-echo hostname →
   `supermux@supermux-server`. Nothing else is touched.
 
+`60-streaming-prose.txt` was captured later and separately (`GET
+/api/sessions/v-claude/peek?lines=40&ansi=1` on the verify instance, 2026-08-17, mid-turn on
+an ordinary prose answer), under the same two substitutions. It is the corpus's only
+**non-dialog** frame, and it exists for `provisional.ts`: it pins the shipped 2.1.233
+composer layout — a bare `❯ ` row between two full-width rules, **no `╭` box anywhere below
+the welcome banner** — against which the provisional tail rendered zero prose lines while
+the capture held thirty-five.
+
 Widths are preserved, so the 80-col boot banner and the **52-col** frames (a second client
 attached mid-run and resized the pty — the exact concurrent-client hazard a0 §3 warns
 about) are the real geometry. `08-bash-access-52col-caret1.txt` is that wrap, live.
