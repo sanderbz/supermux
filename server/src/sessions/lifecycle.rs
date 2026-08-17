@@ -973,6 +973,18 @@ pub async fn start(
     // to a running agent, and two agents on one session dir is a far worse
     // outcome than an error the user can see and act on.
     if s.runtime == crate::sessions::runtime::RUNTIME_NATIVE && s.host_id.is_none() {
+        // THE BINARY UNDER US. A native start spawns `<this binary> pty-holder`,
+        // resolved through `current_exe()` — which turns into `… (deleted)` the
+        // moment the inode is replaced (a rebuild, an in-place install). The
+        // spawn then fails ENOENT deep inside the runtime and every new session
+        // answers a naked 500 with one `spawn pty holder` line in the log.
+        // `holder_bin` now recovers by re-probing the installed path; when even
+        // that is gone, say so HERE, where the answer is still a sentence on the
+        // wire instead of `AppError::Internal`'s deliberate silence.
+        if let Err(e) = crate::sessions::native::runtime::holder_bin() {
+            tracing::error!(name = %name, error = %e, "start: no pty-holder binary to spawn");
+            return Err(AppError::Conflict(format!("{e:#}")));
+        }
         match crate::sessions::native::reap_orphan(name, &state.config.data_dir).await {
             Ok(Some(reaped)) => tracing::warn!(
                 name = %name,

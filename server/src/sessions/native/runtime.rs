@@ -1422,13 +1422,63 @@ pub(crate) mod pump_hooks {
     }
 }
 
+/// What Linux appends to `/proc/self/exe` once the inode it pointed at has been
+/// replaced or unlinked — the shape `std::env::current_exe()` hands back after a
+/// rebuild or an in-place install under a running server.
+const DELETED_SUFFIX: &str = " (deleted)";
+
+/// The sentence a caller can put in front of a user, and the marker
+/// [`crate::sessions::lifecycle::start`] matches on to answer 409 with it rather
+/// than a naked 500. Kept as a constant so the two ends cannot drift.
+pub(crate) const HOLDER_BIN_REPLACED: &str = "the supermux binary was replaced while the server \
+                                              was running — restart the supermux service";
+
 /// Path to the binary that hosts the `pty-holder` subcommand. `SUPERMUX_HOLDER_BIN`
 /// overrides it (tests, and an operator pinning a specific build).
-fn holder_bin() -> Result<PathBuf> {
+pub(crate) fn holder_bin() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("SUPERMUX_HOLDER_BIN") {
         return Ok(PathBuf::from(p));
     }
-    std::env::current_exe().context("locate the supermux-server binary for the pty holder")
+    let exe =
+        std::env::current_exe().context("locate the supermux-server binary for the pty holder")?;
+    resolve_holder_bin(exe, |p| p.exists())
+}
+
+/// `current_exe()` → a path we can actually spawn, or an error a human can act
+/// on. Pure (the existence probe is injected) so the deleted-inode case is
+/// unit-tested without deleting this test binary out from under itself.
+///
+/// THE BUG THIS CLOSES: every holder spawn goes through `current_exe()`, which
+/// on Linux resolves `/proc/self/exe`. Replace the inode — `cargo build` over
+/// `target/debug/supermux-server`, or an installer writing the same path — and
+/// the running process keeps working while that path becomes
+/// `…/supermux-server (deleted)`. `Command::new` on it fails ENOENT, so EVERY
+/// new session answers a bare `{"error":"internal server error"}` with one
+/// `spawn pty holder` line in the log and nothing on the wire; on the
+/// verification rig that silently blocked all session creation for ~15 minutes.
+///
+/// The recovery is the obvious one: the suffix is a decoration on the ORIGINAL
+/// path, and after an install that path holds the NEW binary — which is a
+/// perfectly good `pty-holder` host. So strip and re-probe; only when nothing is
+/// there do we fail, and then with [`HOLDER_BIN_REPLACED`] instead of silence.
+fn resolve_holder_bin(exe: PathBuf, exists: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    if exists(&exe) {
+        return Ok(exe);
+    }
+    let shown = exe.to_string_lossy().into_owned();
+    if let Some(stripped) = shown.strip_suffix(DELETED_SUFFIX) {
+        let installed = PathBuf::from(stripped);
+        if exists(&installed) {
+            tracing::warn!(
+                path = %stripped,
+                "the running supermux binary's inode was replaced; spawning pty holders from the \
+                 installed path instead — restart the service to run the new build",
+            );
+            return Ok(installed);
+        }
+        anyhow::bail!("{HOLDER_BIN_REPLACED} (nothing at {stripped} to spawn a pty holder from)");
+    }
+    anyhow::bail!("{HOLDER_BIN_REPLACED} ({shown} is no longer on disk)")
 }
 
 #[cfg(test)]
@@ -2605,5 +2655,46 @@ mod tests {
             .map(|_| next_backoff(RECONNECT_MAX).as_millis())
             .collect();
         assert!(spread.len() > 5, "decorrelated jitter must spread retries out");
+    }
+
+    /// A REBUILD UNDER A RUNNING SERVER MUST NOT BREAK SESSION CREATION.
+    ///
+    /// Every native start spawns `<this binary> pty-holder`, located through
+    /// `current_exe()` → `/proc/self/exe`. Replace the inode (a `cargo build`
+    /// over `target/debug/supermux-server`, an installer writing the same path)
+    /// and that link reads `…/supermux-server (deleted)`. `Command::new` on it
+    /// is ENOENT, so on the rig EVERY `POST /api/sessions/<n>/start` answered a
+    /// bare `{"error":"internal server error"}` for ~15 minutes with a single
+    /// `spawn pty holder` line to explain it.
+    ///
+    /// The suffix is a decoration on a path that, after an install, holds a
+    /// perfectly good binary — so we strip and re-probe, and only fail when
+    /// there is genuinely nothing to spawn, with a sentence that says what to do.
+    #[test]
+    fn a_replaced_binary_falls_back_to_the_installed_path_instead_of_a_bare_500() {
+        let live = PathBuf::from("/opt/supermux/bin/supermux-server");
+        let deleted = PathBuf::from("/opt/supermux/bin/supermux-server (deleted)");
+
+        assert_eq!(
+            resolve_holder_bin(live.clone(), |p| p == live).unwrap(),
+            live,
+            "the ordinary case is untouched: the path exists, use it",
+        );
+
+        assert_eq!(
+            resolve_holder_bin(deleted.clone(), |p| p == live).unwrap(),
+            live,
+            "a replaced inode resolves to the path it decorates — that is where the \
+             NEW build was just installed",
+        );
+
+        // Nothing at either path: an error a human can act on, not silence.
+        let err = format!("{:#}", resolve_holder_bin(deleted, |_| false).unwrap_err());
+        assert!(
+            err.contains(HOLDER_BIN_REPLACED),
+            "the refusal must carry the restart instruction, got {err:?}",
+        );
+        let err = format!("{:#}", resolve_holder_bin(PathBuf::from("/nope/smx"), |_| false).unwrap_err());
+        assert!(err.contains("/nope/smx"), "…and name the path, got {err:?}");
     }
 }
