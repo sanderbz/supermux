@@ -616,6 +616,9 @@ export default function ChatPanel({
       dialogBusy={dialog.busy}
       onChooseDialog={dialog.choose}
       dialogResolved={loginOwnsScreen ? null : dialog.resolved}
+      // The sign-in card is what is asking on this frame, so it is what the
+      // screen reader is told about (`ASK_SAY`).
+      signIn={login.sighting != null}
       // The live band's working row says what the session is ACTUALLY doing
       // during a stall — `session.activity` still names the last tool that ran
       // (`live-layer.tsx` `stalled`).

@@ -171,6 +171,9 @@ export interface ChatConversationProps {
   provisional?: React.ReactNode
   /** The sign-in card (AREA 3) — a slot, passed through to `LiveLayer`. */
   login?: React.ReactNode
+  /** Is that card the thing ASKING? The slot is opaque to this component, and
+   *  the announcement has to know (`live-layer.tsx` `ASK_SAY`). */
+  signIn?: boolean
   /**
    * The LIVE composer (fase A4 T3) — a slot, for the same reason `provisional`
    * is one: it talks to the input plane and the peek lens, and this component
@@ -293,6 +296,7 @@ export function ChatConversation({
   attentionExpanded = false,
   onDismissAttention,
   onExpandAttention,
+  signIn,
   dialog,
   dialogBusy,
   onChooseDialog,
@@ -533,6 +537,7 @@ export function ChatConversation({
             surface={phone ? 'phone' : 'desktop'}
             provisional={provisional}
             login={login}
+            signIn={signIn}
             dialog={dialog}
             dialogBusy={dialogBusy}
             onChooseDialog={onChooseDialog}

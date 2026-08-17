@@ -21,7 +21,14 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { AttentionCard, AttentionRow, attentionCardId } from '../../src/components/chat/attention-card'
 import { ChatSurface, SurfaceStatus } from '../../src/components/chat/chat-surface'
-import { LiveLayer, PHASE_SAY, livePhase, type LivePhase } from '../../src/components/chat/live-layer'
+import {
+  ASK_SAY,
+  LiveLayer,
+  PHASE_SAY,
+  askKind,
+  livePhase,
+  type LivePhase,
+} from '../../src/components/chat/live-layer'
 import { Bubble } from '../../src/components/chat/ui/bubble'
 import { CardCode, ChoiceCard } from '../../src/components/chat/ui/choice-card'
 import type { TileSession } from '../../src/components/session-tile/types'
@@ -236,5 +243,52 @@ describe('G9/G13 — structure and a single status voice', () => {
     // The invented `role="img"` on an empty span is gone (G13).
     expect(out).not.toContain('role="img"')
     expect(out).not.toContain('title=')
+  })
+})
+
+/* ── G1b: an ask is not always a permission request (r2 finding 33) ──────── */
+
+describe('G1b — the ask is announced as the KIND of ask it is', () => {
+  test('a content question is not announced as a permission request', () => {
+    // What shipped: `[role="status"]` read "Claude is asking for permission."
+    // over a card reading `FRUIT CHOICE / Which fruit do you want? / Apple /
+    // Banana / Cherry`. Nothing on that screen grants anything — the registry's
+    // own comment for `question.ask` says so ("Answering a question grants
+    // nothing and changes no mode") — and "permission" is the one word that
+    // would make somebody answer it differently.
+    expect(ASK_SAY.question).toBe('Claude is asking a question.')
+    expect(ASK_SAY.question).not.toContain('permission')
+    expect(ASK_SAY['sign-in']).not.toContain('permission')
+    // The permission sentence itself is unchanged, and is still the phase's
+    // default — the split adds branches, it does not reword the mapped case.
+    expect(ASK_SAY.permission).toBe(PHASE_SAY.asking)
+  })
+
+  test('the kind is derived in the same order the cards are drawn', () => {
+    const K = { form: false, permission: false, signIn: false } as const
+    expect(askKind({ ...K, form: true, dialog: 'question', permission: true })).toBe('form')
+    expect(askKind({ ...K, dialog: 'question', permission: true })).toBe('question')
+    expect(askKind({ ...K, dialog: 'paused' })).toBe('paused')
+    expect(askKind({ ...K, permission: true })).toBe('permission')
+    // The sign-in card is a SLOT, so it is the only ask this band cannot see
+    // for itself — and while a login owns the screen the panel suppresses the
+    // generic dialog card, so without the flag the region said nothing at all
+    // about the one state that cannot proceed without a human.
+    expect(askKind({ ...K, signIn: true })).toBe('sign-in')
+    expect(askKind(K)).toBe('unknown')
+  })
+
+  test('a sign-in card alone still puts the band in the asking phase', () => {
+    const out = html(
+      <LiveLayer
+        name="release-train"
+        session={session({ status: 'idle' })}
+        turnStart={null}
+        login={<div>sign in</div>}
+        signIn
+      />,
+    )
+    expect(out).toContain(ASK_SAY['sign-in'])
+    expect(out).not.toContain(PHASE_SAY.asking)
   })
 })

@@ -145,6 +145,16 @@ export interface LiveLayerProps {
    */
   login?: React.ReactNode
   /**
+   * Is that sign-in card the thing ASKING right now?
+   *
+   * The card itself is a slot, so this band cannot look inside it — and while a
+   * login owns the screen the panel suppresses the generic dialog card (one
+   * sighting, one card), which would otherwise be what tells `livePhase` that
+   * something is waiting on a human. Without this flag a screen reader was told
+   * nothing at all about the one state that cannot proceed without them.
+   */
+  signIn?: boolean
+  /**
    * The dialog the PEEK LENS is seeing, as data (fase A4 T7).
    *
    * The lens is the authority for *which* dialog and *where the caret is*; the
@@ -190,6 +200,7 @@ export function LiveLayer({
   provisional,
   attention,
   login,
+  signIn = false,
   dialog,
   dialogBusy = null,
   onChooseDialog,
@@ -231,8 +242,16 @@ export function LiveLayer({
 
   const phase = livePhase({
     working,
-    asking: !!(dialog || session?.permission_request || session?.elicitation),
+    asking: !!(dialog || session?.permission_request || session?.elicitation || signIn),
     handoff: !!target,
+  })
+  // WHAT KIND of ask, for the one sentence that is spoken aloud. Same ordering
+  // as the cards below, so the announcement and the pixels cannot disagree.
+  const ask = askKind({
+    form: !!session?.elicitation,
+    dialog: dialog?.family,
+    permission: !!session?.permission_request,
+    signIn,
   })
 
   // No `gap` here, deliberately: every primitive in this stack carries its own
@@ -254,7 +273,7 @@ export function LiveLayer({
       // busy flag is carried by the band that owns the row instead (G2).
       aria-busy={phase === 'working' || phase === 'handoff' || undefined}
     >
-      <LiveAnnouncer phase={phase} />
+      <LiveAnnouncer phase={phase} ask={ask} />
       {attention}
       {login}
 
@@ -398,7 +417,9 @@ export function livePhase(s: { working: boolean; asking: boolean; handoff: boole
 }
 
 /** The four sentences. `idle` is empty on purpose — clearing a live region says
- *  nothing, which is the correct amount to say when nothing is happening. */
+ *  nothing, which is the correct amount to say when nothing is happening.
+ *  `asking` is the DEFAULT for its phase; which sentence is actually spoken is
+ *  `ASK_SAY` below, because not every ask is a permission request. */
 export const PHASE_SAY: Record<LivePhase, string> = {
   idle: '',
   working: 'Claude is working.',
@@ -406,10 +427,62 @@ export const PHASE_SAY: Record<LivePhase, string> = {
   handoff: 'Handing this over.',
 }
 
-function LiveAnnouncer({ phase }: { phase: LivePhase }) {
+/**
+ * WHICH ask is on screen. One phase, several questions — and they are not the
+ * same question.
+ *
+ * A screen reader was told "Claude is asking for permission." over an
+ * AskUserQuestion card reading `FRUIT CHOICE / Which fruit do you want?`, and
+ * over the sign-in method picker. Nothing on either screen grants anything: the
+ * registry's own comment for `question.ask` says it out loud ("Answering a
+ * question grants nothing and changes no mode"), and a login picker is a choice
+ * of account. Announcing a permission request is not a rounding error there —
+ * it is the one word that would make somebody answer differently.
+ */
+export type AskKind =
+  | 'permission'
+  | 'question'
+  | 'plan'
+  | 'startup'
+  | 'paused'
+  | 'sign-in'
+  | 'form'
+  | 'unknown'
+
+export const ASK_SAY: Record<AskKind, string> = {
+  permission: PHASE_SAY.asking,
+  question: 'Claude is asking a question.',
+  plan: 'Claude is asking you to approve a plan.',
+  startup: 'Claude Code is asking something before it starts.',
+  paused: 'Claude paused this turn and is waiting for an answer.',
+  'sign-in': 'Claude is asking how to sign in.',
+  form: 'A tool is asking you to fill in a form.',
+  // Something IS waiting — the lens saw numbered rows it has no fingerprint
+  // for — so the region still speaks. It just does not name a kind it does not
+  // know. Same refusal-first rule the unmapped card follows.
+  unknown: 'Claude is asking something in the terminal.',
+}
+
+/** Pure, and ordered exactly like the cards below: the form outranks the
+ *  dialog, the dialog outranks the bare hook, and the sign-in card is what is
+ *  asking when it is the one on screen. */
+export function askKind(s: {
+  form: boolean
+  dialog?: DialogCardView['family']
+  permission: boolean
+  signIn: boolean
+}): AskKind {
+  if (s.form) return 'form'
+  if (s.dialog) return s.dialog
+  if (s.permission) return 'permission'
+  if (s.signIn) return 'sign-in'
+  return 'unknown'
+}
+
+function LiveAnnouncer({ phase, ask = 'unknown' }: { phase: LivePhase; ask?: AskKind }) {
   return (
     <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-      {PHASE_SAY[phase]}
+      {phase === 'asking' ? ASK_SAY[ask] : PHASE_SAY[phase]}
     </p>
   )
 }
