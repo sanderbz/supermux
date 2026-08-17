@@ -512,6 +512,18 @@ function num(body: unknown, key: string): number | undefined {
   return typeof v === 'number' ? v : undefined
 }
 
+/** `999996` → `1.0M`, `16752` → `17k`. Two significant figures is all a "how
+ *  much history went away" clause can support, and an exact token count would
+ *  read as a precision the number does not have. */
+function tokenCount(n: number): string {
+  const k = Math.round(n / 1_000)
+  // The promotion is on the ROUNDED value, not on the raw one: 999,996 tokens
+  // is "1.0M", never "1000k".
+  if (k >= 1_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${k}k`
+  return String(n)
+}
+
 function str(body: unknown, key: string): string | undefined {
   const v = field(body, key)
   return typeof v === 'string' && v.trim() ? v.trim() : undefined
@@ -526,10 +538,22 @@ function str(body: unknown, key: string): string | undefined {
  * naming both models is the whole content of a fallback notice — a warning that
  * says "model_refusal_fallback" tells the reader nothing they can act on.
  */
-function systemRow(w: WireEntry): { text: string; badge: string } | null {
+function systemRow(w: WireEntry): { text: string; badge: string; detail?: string } | null {
   if (w.kind === 'compact_boundary') {
+    // THE NUMBERS ARE THE POINT. "earlier turns are summarised" says the history
+    // above the seam is not what the model has any more; it does not say whether
+    // the user asked for that or the context filled up, nor how much went away —
+    // and the size of the drop is the only thing that explains why the model
+    // forgot something specific. All three fields are optional on the wire
+    // (`parser.rs` reads them defensively), so each clause appears only when the
+    // payload actually carried it.
+    const trigger = str(w.body, 'trigger')
+    const pre = num(w.body, 'pre_tokens')
+    const post = num(w.body, 'post_tokens')
+    const how = trigger === 'auto' ? ' automatically' : trigger === 'manual' ? ' on request' : ''
+    const size = pre && post ? ` · ${tokenCount(pre)} → ${tokenCount(post)} tokens` : ''
     return {
-      text: 'earlier turns are summarised',
+      text: `earlier turns are summarised${how}${size}`,
       badge: 'compaction',
     }
   }
@@ -581,6 +605,13 @@ function systemRow(w: WireEntry): { text: string; badge: string } | null {
       return {
         text: str(w.body, 'hint') === 'checkpoint' ? `${notice} · checkpointing` : notice,
         badge: 'limit',
+        // CLAUDE CODE'S OWN SENTENCE, UNDERNEATH — "[Usage limit reached — grace
+        // window active. Wrap up your current work and stop soon; do not start
+        // new tasks.]". The server has always shipped it and the row threw it
+        // away, leaving this app's paraphrase as the only account of why the
+        // agent suddenly stopped starting subagents. The paraphrase is what the
+        // reader scans; the verbatim line is what they check it against.
+        detail: str(w.body, 'content'),
       }
     }
     // A LONG-RUNNING MCP TASK (`mcp.task_input_required`). `input_required` is
@@ -859,6 +890,7 @@ export function toChatEntries(wire: readonly WireEntry[]): ChatEntry[] {
         ts: toSeconds(w.ts_ms),
         text: row.text,
         kind: row.badge,
+        reply: row.detail,
         truncated: w.truncated || undefined,
       })
       continue

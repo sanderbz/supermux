@@ -443,13 +443,30 @@ fn attachment_entry(obj: &Map<String, Value>, base: &Header) -> ChatEntry {
 fn system_entry(obj: &Map<String, Value>, base: &Header) -> ChatEntry {
     let subtype = str_at(obj, &["subtype"]).unwrap_or("");
     if subtype == "compact_boundary" {
-        // Inline: the file keeps going and so does the cursor. `compactMetadata`
-        // internals drift across CC versions — we deliberately do not read them.
-        return base.entry(
-            Kind::CompactBoundary,
-            serde_json::json!({ "content": str_at(obj, &["content"]) }),
-            Some(subtype),
-        );
+        // Inline: the file keeps going and so does the cursor.
+        //
+        // THREE FIELDS OF `compactMetadata`, and no more. The internals drift
+        // across CC versions, so this reads the three that answer the reader's
+        // only question — was this automatic, and how much went away — and reads
+        // them DEFENSIVELY: each is optional, a missing or wrongly-typed one is
+        // simply absent, and nothing downstream requires any of them. Rendered,
+        // the row is the difference between "earlier turns are summarised" and
+        // "…automatically · 1.0M → 17k tokens", which is the only thing that
+        // explains why the model forgot something.
+        let meta = obj.get("compactMetadata").and_then(Value::as_object);
+        let mut body = serde_json::json!({ "content": str_at(obj, &["content"]) });
+        if let Some(m) = meta {
+            if let Some(t) = str_at(m, &["trigger"]) {
+                body["trigger"] = Value::String(t.to_string());
+            }
+            if let Some(n) = m.get("preTokens").and_then(Value::as_i64) {
+                body["pre_tokens"] = Value::from(n);
+            }
+            if let Some(n) = m.get("postTokens").and_then(Value::as_i64) {
+                body["post_tokens"] = Value::from(n);
+            }
+        }
+        return base.entry(Kind::CompactBoundary, body, Some(subtype));
     }
     let mut body = serde_json::json!({
         "content": str_at(obj, &["content"]),
@@ -994,7 +1011,40 @@ mod tests {
             e[0].offset, 4096,
             "offset is the LINE START — the cursor never rewinds"
         );
-        // compactMetadata internals drift across versions: we must not read into them.
+        // Unknown metadata shapes are ignored, not guessed at: only the three
+        // named fields below are ever read.
+        assert!(e[0].body.get("trigger").is_none());
+    }
+
+    #[test]
+    fn compact_boundary_carries_the_trigger_and_the_token_counts() {
+        // WHY THE NUMBERS TRAVEL. Without them the row says "Conversation
+        // compacted" and nothing else — it cannot say whether the user asked for
+        // it or the context filled up, nor how much history went away, which is
+        // the only thing that explains why the model forgot something.
+        let l = r#"{"type":"system","subtype":"compact_boundary","uuid":"c2","timestamp":"2026-01-01T00:00:00Z","sessionId":"s1","compactMetadata":{"trigger":"auto","preTokens":999996,"postTokens":16752,"cumulativeDroppedTokens":983244,"durationMs":41}}"#;
+        let ParsedLine::Entry(e) = parse_line(l, 0) else {
+            panic!()
+        };
+        assert_eq!(e[0].kind, Kind::CompactBoundary);
+        assert_eq!(e[0].body["trigger"], "auto");
+        assert_eq!(e[0].body["pre_tokens"], 999_996);
+        assert_eq!(e[0].body["post_tokens"], 16_752);
+        // The fields this reader does not claim to understand stay unread.
+        assert!(e[0].body.get("durationMs").is_none());
+    }
+
+    #[test]
+    fn compact_boundary_metadata_is_optional_and_typed() {
+        // A CC version that renames a field, or ships a string where a number
+        // was, must produce a row with less on it — never a parse failure and
+        // never a wrong number.
+        let l = r#"{"type":"system","subtype":"compact_boundary","uuid":"c3","timestamp":"2026-01-01T00:00:00Z","sessionId":"s1","compactMetadata":{"trigger":"manual","preTokens":"lots"}}"#;
+        let ParsedLine::Entry(e) = parse_line(l, 0) else {
+            panic!()
+        };
+        assert_eq!(e[0].body["trigger"], "manual");
+        assert!(e[0].body.get("pre_tokens").is_none());
     }
 
     #[test]

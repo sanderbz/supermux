@@ -27,10 +27,13 @@
 
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 import { classifyAgentError, errorBadgeLabel, limitName } from '../../src/components/chat/agent-error'
 import { toDisplayList } from '../../src/components/chat/entries'
 import { buildTranscript, type TranscriptNode } from '../../src/components/chat/grouping'
+import { TranscriptItem } from '../../src/components/chat/transcript-item'
 import { toChatEntries, toolLine } from '../../src/components/chat/wire-entries'
 import type { WireEntry, WireKind } from '../../src/components/chat/wire'
 
@@ -349,6 +352,31 @@ describe('the roster badge names the bucket without a chat store', () => {
   })
 })
 
+describe('the compaction seam says how much history went away', () => {
+  // "Conversation compacted" answers "what happened" and nothing else. The
+  // payload has always carried `compactMetadata` — trigger, preTokens,
+  // postTokens — and the row dropped all three, so the transcript could not say
+  // whether the user asked for the compaction or the context filled up, nor how
+  // much was summarised away. The size of the drop is the only thing that
+  // explains why the model forgot something specific.
+  test('the trigger and the token counts reach the row', () => {
+    const row = byName('a compaction seam')
+    const entries = toChatEntries([wireFrom(row)])
+    expect(entries).toHaveLength(1)
+    expect(entries[0].text).toBe('earlier turns are summarised automatically · 1.0M → 17k tokens')
+    expect(itemNode(buildTranscript(toDisplayList(entries), {}))?.speaker).toBe('system')
+  })
+
+  test('a payload without the metadata still gets its row, minus the clauses', () => {
+    // A CC version that renames a field must produce LESS on the row, never a
+    // wrong number and never a missing seam (`parser.rs` reads all three
+    // defensively for the same reason).
+    const bare = { ...wireFrom(byName('a compaction seam')), body: { content: 'Conversation compacted' } }
+    const entries = toChatEntries([bare])
+    expect(entries[0].text).toBe('earlier turns are summarised')
+  })
+})
+
 describe('the injected grace-window instruction is never the user speaking', () => {
   // `limit.grace_window`: near a usage limit the server sets
   // `anthropic-ratelimit-unified-grace-status` and Claude Code injects a wrap-up
@@ -367,6 +395,18 @@ describe('the injected grace-window instruction is never the user speaking', () 
     // Centred, in the system voice — never anybody's bubble.
     const node = itemNode(buildTranscript(toDisplayList(entries), {}))
     expect(node?.speaker).toBe('system')
+    // …AND CC'S OWN SENTENCE UNDERNEATH, which the row used to drop on the floor
+    // — leaving this app's paraphrase as the only account of why the agent
+    // suddenly stopped starting subagents.
+    expect(entries[0].reply).toContain('grace window active')
+    // `React.createElement` rather than JSX: this file is a `.ts`, and one
+    // assertion is not worth renaming a corpus reader six other tests import
+    // their vocabulary from.
+    const html = renderToStaticMarkup(
+      React.createElement(TranscriptItem, { node: node!, name: 'v-claude', labels: new Map() }),
+    )
+    expect(html).toContain('data-testid="chat-system-detail"')
+    expect(html).toContain('start subagents')
   })
 
   test('the checkpoint variant says which hint it was', () => {

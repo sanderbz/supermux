@@ -89,6 +89,17 @@ export type ChatItem =
       text: string
       badge?: string
       truncated?: boolean
+      /**
+       * The SOURCE's own words, under this app's summary of them.
+       *
+       * System rows are written in supermux's voice — "earlier turns are
+       * summarised", "Claude Code asked the agent to wrap up" — and for two of
+       * them the payload carries detail the summary cannot hold: the grace
+       * window's verbatim wrap-up instruction, which is the only evidence the
+       * reader has that Claude's sudden change of behaviour is not a bug in this
+       * app. Carried here so the row can show it without a second lookup.
+       */
+      detail?: string
     }
   | {
       type: 'assistant'
@@ -207,6 +218,7 @@ export function toDisplayList(entries: ChatEntry[]): ChatItem[] {
         text: e.text,
         badge: e.kind === 'prompt' ? undefined : e.kind,
         truncated: e.truncated,
+        detail: e.reply,
       })
     }
   }

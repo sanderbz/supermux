@@ -638,6 +638,7 @@ function SystemRow({
   // own rather than leading the line with `local-command-stdout`.
   const subject = item.text.trim() || labels?.get(item.uuid) || ''
   const word = SYSTEM_WORD[item.badge ?? ''] ?? 'System event'
+  const detail = item.detail?.trim()
   return (
     <SystemLine>
       {word}
@@ -647,8 +648,29 @@ function SystemRow({
           <SystemEntity>{subject.length > 72 ? `${subject.slice(0, 72)}…` : subject}</SystemEntity>
         </>
       )}
+      {/* THE SOURCE'S OWN WORDS, UNDER THIS APP'S. The grace-window row is
+          written in supermux's voice ("Claude Code asked the agent to wrap up")
+          and Claude Code's verbatim instruction — the evidence that the agent's
+          sudden change of behaviour is not a bug in this app — was carried on
+          the wire and dropped before the renderer. It goes UNDER the summary
+          rather than on a hover title: a fact that only exists on hover does not
+          exist on a phone, and this one is why the turn is behaving oddly. */}
+      {detail && (
+        <span
+          data-testid="chat-system-detail"
+          className="mt-[3px] block text-[12.2px] leading-[1.45] text-ink-3"
+        >
+          {stripBrackets(detail)}
+        </span>
+      )}
     </SystemLine>
   )
+}
+
+/** `[Usage limit reached — grace window active. …]` → the sentence inside. The
+ *  brackets are Claude Code's injection syntax, not something a reader needs. */
+function stripBrackets(s: string): string {
+  return s.startsWith('[') && s.endsWith(']') ? s.slice(1, -1).trim() : s
 }
 
 /* ── the ledger ──────────────────────────────────────────────────────────── */
