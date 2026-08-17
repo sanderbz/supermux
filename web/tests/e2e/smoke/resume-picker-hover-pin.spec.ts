@@ -141,7 +141,12 @@ test.describe('resume picker — overview tile hover-pin (fix/resume-hover)', ()
     }
   })
 
-  test('Resume picker survives mouse-leave-to-picker, then resumes', async ({
+  // `@needs-claude`: the final poll asserts a real `claude --resume <id>` launch
+  // (or the TUI banner), which needs the `claude` CLI on PATH — absent on a
+  // hosted runner. CI excludes it via `--grep-invert`; it still runs in the
+  // un-filtered local `bun run test:e2e:smoke`. The hover-pin regression logic
+  // it guards is UI-only, but the assertion at the end is claude-dependent.
+  test('@needs-claude Resume picker survives mouse-leave-to-picker, then resumes', async ({
     page,
   }) => {
     test.setTimeout(60_000)

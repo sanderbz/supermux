@@ -137,6 +137,18 @@ const THEMES = ['dark', 'light'] as const
  *                        in this list for a fase after it stopped violating —
  *                        and, with the old symmetric assertion, turned that fix
  *                        into a red gate. Re-attribute when you re-diagnose.
+ *                        ENVIRONMENT-ONLY: `/dev/chat-live dark/desktop
+ *                        color-contrast` fires ONLY on the hosted CI runner,
+ *                        never on a dev box (verified: the local `axe found` set
+ *                        matches BASELINE exactly without it). It is a borderline
+ *                        muted-token ratio on a FIXTURE-ONLY dev bench that the
+ *                        runner's different font stack anti-aliases just under
+ *                        the AA line while a dev box renders it just over — the
+ *                        same class of dev-bench chrome as the entries above,
+ *                        not a defect a user can reach (the shipped routes are
+ *                        covered by `theme-contrast.test.ts`). Baselined, not
+ *                        chased, so the gate is honest on both stacks; the
+ *                        asymmetric assert below lets it be absent locally.
  *   nested-interactive — the focus surface nests controls inside a control.
  *                        Carried, not excused: it belongs with the roster
  *                        keyboard work ("The roster has no roving tabindex…"),
@@ -154,6 +166,10 @@ const BASELINE: readonly string[] = [
   '/ light/phone color-contrast',
   '/?mock dark/desktop color-contrast',
   '/?mock light/desktop color-contrast',
+  // Hosted-CI-only (see color-contrast rationale above): borderline muted-token
+  // ratio on a fixture-only dev bench, tipped under AA by the runner's font
+  // stack; absent on a dev box, so the asymmetric assert below just warns there.
+  '/dev/chat-live dark/desktop color-contrast',
   '/dev/chat-ui dark/desktop color-contrast',
   '/dev/chat-ui light/desktop color-contrast',
   '/dev/focus dark/desktop color-contrast',

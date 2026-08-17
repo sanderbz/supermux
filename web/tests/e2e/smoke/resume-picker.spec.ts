@@ -186,7 +186,11 @@ test.describe('resume picker — desktop (chromium)', () => {
     await teardown(fx)
   })
 
-  test('Resume lists conversations and resumes with --resume <id>', async ({
+  // `@needs-claude`: the assertion is that the launch carries `claude --resume
+  // <id>`, which requires the real `claude` CLI on PATH. A hosted runner has
+  // none, so this can only be red there — CI excludes it via `--grep-invert`;
+  // it still runs in the un-filtered local `bun run test:e2e:smoke`.
+  test('@needs-claude Resume lists conversations and resumes with --resume <id>', async ({
     page,
   }) => {
     test.setTimeout(60_000)
@@ -240,7 +244,9 @@ test.describe('resume picker — mobile (touch / Vaul sheet)', () => {
     await teardown(fx)
   })
 
-  test('Resume works via the Vaul bottom sheet', async ({ page }) => {
+  // `@needs-claude` — same as the desktop resume test: asserts a real `claude
+  // --resume <id>` launch, absent on a hosted runner. Local-only via the grep.
+  test('@needs-claude Resume works via the Vaul bottom sheet', async ({ page }) => {
     test.setTimeout(60_000)
     await runResumeFlow(page, fx, 'resume-mobile', 'responsive-sheet')
   })

@@ -96,16 +96,18 @@ jobs:
       - name: Install Playwright chromium
         working-directory: web
         run: bun x playwright install --with-deps chromium
-      # `@slow` is excluded, and the reason is a property of the runner rather
-      # than of the specs: `delegate-handoff.spec.ts` drives TWO REAL Claude
-      # sessions through a full turn, so it needs the `claude` CLI on PATH and
-      # authenticated. A hosted GitHub runner has neither, so those tests could
-      # only ever be red here — and a permanently-red job is the thing this
-      # whole commit exists to stop. They still run in `bun run test:e2e:smoke`
-      # on a developer machine, which is where they can actually pass.
+      # `@slow` and `@needs-claude` are excluded, and the reason is a property of
+      # the runner rather than of the specs: both classes need the real `claude`
+      # CLI on PATH (and, for `@slow`, authenticated). `delegate-handoff.spec.ts`
+      # (`@slow`) drives TWO REAL Claude sessions through a full turn; the
+      # `@needs-claude` resume specs assert an actual `claude --resume <id>`
+      # launch. A hosted GitHub runner has no `claude`, so these could only ever
+      # be red here — and a permanently-red job is the thing this whole commit
+      # exists to stop. They all still run in the un-filtered `bun run
+      # test:e2e:smoke` on a developer machine, which is where they can pass.
       - name: Smoke suite
         working-directory: web
-        run: bun x playwright test tests/e2e/smoke --grep-invert "@slow"
+        run: bun x playwright test tests/e2e/smoke --grep-invert "@slow|@needs-claude"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
