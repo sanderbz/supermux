@@ -141,6 +141,64 @@ test.describe('chat renderer switch (fase A1)', () => {
     await expect(page.getByTestId('chat-panel')).toHaveCount(0)
   })
 
+  /**
+   * The last-send strip belongs to the TERMINAL (verified finding 24.2).
+   *
+   * The strip exists because the terminal pane scrolls the user's own prompt
+   * away and nothing else says what was asked. The chat renderer draws that
+   * prompt as a bubble, at the bottom of the transcript, permanently — so under
+   * chat the strip is the same sentence twice, it never fades (measured at
+   * t+3/8/12/20/30 s), and it costs 32px of pane height on every session.
+   *
+   * The property, not the markup: with a real `last_send` on the row, the strip
+   * must be ABSENT while chat has the pane and PRESENT the moment the terminal
+   * takes it back. Nothing weaker would have caught this — the strip renders
+   * perfectly well, it was simply rendered in the wrong renderer.
+   */
+  test('the last-send strip is the terminal’s, not the chat renderer’s', async ({
+    page,
+  }) => {
+    test.skip(!hasClaudeCli, 'claude CLI not on this runner')
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.addInitScript((flag: string) => {
+      window.localStorage.setItem('supermux-ui', flag)
+    }, FLAG_ON)
+
+    const name = 'a1-lastsend'
+    expect([200, 201]).toContain(
+      (await api(backend).createSession({ name, provider: 'claude', dir: backend.dataDir }))
+        .status,
+    )
+    expect((await api(backend).startSession(name)).ok).toBeTruthy()
+    // A real send, so the row carries a real `last_send_text` — the strip's
+    // only source. Without it the assertion below would pass vacuously.
+    const sent = await fetch(`${backend.backendUrl}/api/sessions/${name}/send`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${backend.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ text: 'RECALL-STRIP-PROBE' }),
+    })
+    expect(sent.ok).toBeTruthy()
+
+    const strip = page.getByRole('button', { name: /^You said .*RECALL-STRIP-PROBE/ })
+
+    await page.goto(`${backend.baseUrl}/focus/${name}`)
+    await expect(page.getByTestId('chat-panel')).toBeVisible()
+    await expect(strip).toHaveCount(0)
+
+    await page.getByTestId('renderer-terminal').click()
+    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(strip).toBeVisible()
+
+    // …and it goes away again with the pane it belongs to.
+    await page.getByTestId('renderer-chat').click()
+    await expect(page.getByTestId('chat-panel')).toBeVisible()
+    await expect(strip).toHaveCount(0)
+  })
+
   // ── FASE A5 ──────────────────────────────────────────────────────────────
 
   test('A5: the panel is RETAINED across toggles — mounted once, never re-created', async ({

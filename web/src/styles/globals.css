@@ -404,6 +404,51 @@
    translucent surface (mixed from the semantic --card token so it tracks the
    theme) plus a backdrop blur + saturation lift. The blur is what reads as
    "glass"; the separator hairline is applied at the call site (border-b). */
+/* The chat track's bottom fade (verified finding 24.1). The scroll region is
+   hard-cut at the pane's floor, so a bubble scrolling under the floating
+   composer is sliced mid-LINE — which reads as a rendering fault, not as depth.
+   The scrim fades it into the pane's own ground instead. Height is set inline
+   (it is the MEASURED composer height); only the paint lives here, because the
+   JS budget is the tight one and the CSS budget has room. */
+@utility chat-track-scrim {
+  background: linear-gradient(to top, var(--sm-paper-raised) 45%, transparent);
+}
+
+/* The thinking disclosure (A6 register S21). A native `<details>`, so the
+   browser owns the role, the keyboard and the announcement; these two utilities
+   own only its type and its chrome, and live here rather than as class strings
+   in the transcript row because the JS budget is the tight one. */
+@utility chat-thinking-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  border: 0.5px solid var(--sm-hairline-soft);
+  border-radius: 9999px;
+  background: var(--sm-fill-soft);
+  padding: 3px 10px;
+  font-size: 12.5px;
+  letter-spacing: -0.05px;
+  color: var(--sm-ink-2);
+}
+/* Safari/older WebKit ignores `list-style` on a summary; this is the only
+   thing that hides its native triangle beside our own chevron. */
+.chat-thinking-summary::-webkit-details-marker {
+  display: none;
+}
+@utility chat-thinking-body {
+  margin-top: 8px;
+  border-left: 1.5px solid var(--sm-hairline);
+  padding-left: 12px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--sm-ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
 @utility glass {
   background-color: color-mix(in srgb, var(--card) 72%, transparent);
   backdrop-filter: blur(20px) saturate(180%);

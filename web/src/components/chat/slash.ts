@@ -350,7 +350,12 @@ export function atRows(
         kind: 'session',
         value: `@${s.name}`,
         label: s.display_name?.trim() ? s.display_name : s.name,
-        meta: s.name,
+        // The slug ONLY when it says something the label does not.
+        // `display_name` equals `name` for every session nobody has renamed —
+        // which is most of them — so an unconditional `meta` printed the same
+        // word twice on every row of the picker (reported independently by
+        // chat-core and pickers-palette).
+        meta: s.display_name?.trim() && s.display_name !== s.name ? s.name : undefined,
       },
     })
   }

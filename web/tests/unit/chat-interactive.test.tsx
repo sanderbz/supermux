@@ -686,6 +686,36 @@ describe('the popover, rendered', () => {
     // The session being typed IN is never offered as a mention of itself.
     expect(at.some((r) => r.value === `@${NAME}`)).toBe(false)
   })
+
+  /**
+   * A ROW NEVER SAYS THE SAME WORD TWICE (verified finding 24.4, reported
+   * independently by chat-core and pickers-palette).
+   *
+   * `meta` is the slug column, and `display_name` equals `name` for every
+   * session nobody has renamed — which on a real instance is most of them. Set
+   * unconditionally it printed `research` beside `research` on every row.
+   */
+  test('the slug column only appears when it says something the label does not', () => {
+    const rows = atRows(
+      undefined,
+      [
+        // Renamed: the label is the display name, so the slug is worth showing.
+        { name: 'patch', display_name: 'Patch' },
+        // Never renamed — the harness sends `display_name === name`.
+        { name: 'research', display_name: 'research' },
+        // Never renamed and no display name at all.
+        { name: 'archivist' },
+      ],
+      NAME,
+      '',
+    )
+    const by = (n: string) => rows.find((r) => r.value === `@${n}`)
+    expect(by('patch')).toMatchObject({ label: 'Patch', meta: 'patch' })
+    expect(by('research')?.label).toBe('research')
+    expect(by('research')?.meta).toBeUndefined()
+    expect(by('archivist')?.label).toBe('archivist')
+    expect(by('archivist')?.meta).toBeUndefined()
+  })
 })
 
 describe('the slash refusal, said out loud', () => {

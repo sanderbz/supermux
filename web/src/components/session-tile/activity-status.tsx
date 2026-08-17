@@ -50,6 +50,27 @@ function errorLabel(type: string): string {
  *  lone Task is not noteworthy; two or more is the "many hands" signal we surface. */
 const SUBAGENT_CLAUSE_MIN = 2
 
+/** The BMP Private Use Area — where Nerd Font packs its icon glyphs.
+ *
+ *  `session.activity` is built from hook payloads, and a hook that echoes a
+ *  Nerd-Font-decorated tool label smuggles a private-use codepoint into a label
+ *  that is rendered in the UI SANS stack, which has no glyph for it: the focus
+ *  header printed a tofu box (`▯`) where the emoji prefix should be (chat-core,
+ *  23-hdr-zoom.png). Stripping is right rather than switching the stack to mono
+ *  — the codepoint means nothing outside the font that defined it, and the rest
+ *  of the label is ordinary text that belongs in the UI face.
+ *
+ *  Module-private, so this file still exports only components (fast refresh) —
+ *  the assertion goes through `<ActivityLine>` itself. */
+const PUA_RE = /[\ue000-\uf8ff]/g
+
+/** Unconditional `replace`, never a `test` guard: `PUA_RE` is global, and
+ *  `RegExp.test` on a global pattern advances `lastIndex` \u2014 the guard would
+ *  answer differently on every other call. */
+function stripPua(s: string): string {
+  return s.replace(PUA_RE, '').replace(/\s{2,}/g, ' ').trim()
+}
+
 export interface ActivityLineProps {
   /** The live activity label from the backend (already emoji-prefixed). */
   activity?: string
@@ -74,7 +95,7 @@ export interface ActivityLineProps {
 export function ActivityLine({ activity, subagents, className }: ActivityLineProps) {
   // Hook must run unconditionally (rules-of-hooks) — before any early return.
   const reduce = useReducedMotion()
-  const label = activity?.trim()
+  const label = activity?.trim() ? stripPua(activity.trim()) : undefined
   const n = subagents ?? 0
   const showCount = n >= SUBAGENT_CLAUSE_MIN
   if (!label && !showCount) return null

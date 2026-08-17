@@ -724,13 +724,24 @@ export function DesktopSplit({
 
         {/* feat-last-prompt — the auto-show glass strip. Re-keys on `name` so
             switching sessions resets the show-then-fade cycle, matching the
-            "recall on arrival" trigger model in the spec. */}
-        <LastSendBar
-          key={name}
-          recall={lastSend}
-          sessionName={name}
-          onOpenRecall={() => setLastSendOpen(true)}
-        />
+            "recall on arrival" trigger model in the spec.
+
+            TERMINAL ONLY (chat-core, 15-bar.cjs). The strip exists because the
+            terminal pane scrolls the user's own prompt away and nothing else
+            says what was asked. The chat renderer draws that prompt as a
+            BUBBLE, at the bottom of the transcript, permanently — so under chat
+            the strip is the same sentence twice, it never fades (measured at
+            t+3/8/12/20/30s), and it costs 32px of pane height on every session.
+            `chatActive` is the seam's own answer to "chat has the pane", shared
+            with the mobile surface, so this cannot drift from what is mounted. */}
+        {!chatActive && (
+          <LastSendBar
+            key={name}
+            recall={lastSend}
+            sessionName={name}
+            onOpenRecall={() => setLastSendOpen(true)}
+          />
+        )}
 
         {/* `relative` so the capture indicator (polish-pass #4) can position
             itself in the top-right corner of the terminal pane WITHOUT

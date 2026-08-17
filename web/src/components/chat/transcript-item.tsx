@@ -327,23 +327,13 @@ function ThinkingDisclosure({
       style={{ maxWidth: surface === 'phone' ? BUBBLE_MAX.phoneAssistant : BUBBLE_MAX.assistant }}
       data-testid="chat-thinking"
     >
-      <summary
-        className={cn(
-          'inline-flex cursor-pointer list-none items-center gap-1.5 rounded-full',
-          'border-[0.5px] border-hairline-soft bg-fill-soft px-2.5 py-[3px]',
-          'text-[12.5px] tracking-[-0.05px] text-ink-2 select-none',
-          'hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2',
-        )}
-      >
-        <span
-          aria-hidden
-          className="inline-block transition-transform group-open:rotate-90"
-        >
+      <summary className="chat-thinking-summary">
+        <span aria-hidden className="inline-block transition-transform group-open:rotate-90">
           ›
         </span>
         {label}
       </summary>
-      <p className="mt-2 whitespace-pre-wrap break-words border-l-[1.5px] border-hairline pl-3 text-[13.5px] leading-[1.5] text-ink-2">
+      <p className="chat-thinking-body">
         {item.text}
         {item.truncated && <ClippedMarker uuid={item.uuid} />}
       </p>

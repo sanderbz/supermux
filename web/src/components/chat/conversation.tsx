@@ -400,11 +400,28 @@ export function ChatConversation({
       // 10px above the composer's glass whether the draft is one line or six.
       float={
         onJumpToBottom && (
-          <JumpToBottom
-            show={showJumpToBottom}
-            bottom={trackBottom(footerH, phone, stat != null) - 16}
-            onClick={onJumpToBottom}
-          />
+          <>
+            {/* The scroll track is hard-cut at the bottom: a bubble scrolling
+                under the floating composer is sliced mid-LINE, which reads as a
+                rendering fault rather than as depth (chat-core,
+                A1-overlap-zoom.png). A scrim the height of the composer fades
+                it out instead. Under the composer's own glass (z-4) and under
+                the pill, `pointer-events-none` like the rest of this slot, and
+                it moves nothing: the track already reserves this exact height.
+                The paint is `@utility chat-track-scrim` in globals.css — it
+                fades to `--sm-paper-raised`, the surface's own ground, so it
+                lands on the colour the pane is painted in, in both themes. */}
+            <div
+              aria-hidden
+              className="chat-track-scrim absolute inset-x-0 bottom-0"
+              style={{ height: trackBottom(footerH, phone, stat != null) }}
+            />
+            <JumpToBottom
+              show={showJumpToBottom}
+              bottom={trackBottom(footerH, phone, stat != null) - 16}
+              onClick={onJumpToBottom}
+            />
+          </>
         )
       }
       // The expanded card, over this pane only (see `attention-card.tsx`).
@@ -635,7 +652,16 @@ export function JumpToBottom({
 }) {
   const reduce = useReducedMotion() ?? false
   return (
-    <div className="flex justify-center" style={{ paddingBottom: Math.max(0, bottom) }}>
+    // RIGHT-ALIGNED TO THE CONTENT COLUMN, not centred over it (chat-core,
+    // A1-overlap-zoom.png): a 44px disc in the middle of the measure covers
+    // words mid-sentence, which is the one thing a reading surface may not do.
+    // Same `mx-auto max-w-[744px]` box the track's own column uses, so the disc
+    // sits on that column's right edge — where every board that has this control
+    // puts it.
+    <div
+      className="mx-auto flex w-full max-w-[744px] justify-end"
+      style={{ paddingBottom: Math.max(0, bottom) }}
+    >
       <AnimatePresence initial={false}>
         {show && (
           <motion.button

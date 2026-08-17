@@ -97,7 +97,7 @@ const MIN_PANE_COLS = 40
  *
  * Until 2.1.23x the composer was a `╭ … ╯` box, so the box-top scan below was
  * the whole bottom cut and every `❯` in reach was a PROMPT ECHO. In the shipped
- * non-alt-screen layout of cc 2.1.233 the composer is a bare `❯ ` row
+ * non-alt-screen layout of cc 2.1.233 the composer is a bare `❯ ` row
  * between two full-width rules, with no box anywhere below the welcome banner:
  *
  *     ● Terminal multiplexers have become indispensable …      ← the prose
@@ -117,11 +117,11 @@ const MIN_PANE_COLS = 40
  * So the composer is recognised on its own terms and acts as a bottom CUT, like
  * `╭`. Two shapes, because the row is not always empty:
  *   · a caret with nothing but whitespace after it (NBSP included — the TUI
- *     pads the empty composer with ` `), and
+ *     pads the empty composer with ` `), and
  *   · a caret DIRECTLY under a full-width rule, which is the composer with a
  *     draft in it. A prompt echo never has a rule immediately above it.
  */
-const BARE_CARET = /^❯[\s ]*$/
+const BARE_CARET = /^❯[\s\u00a0]*$/
 const RULE_ROW = /^[─╌—]{3,}$/
 
 /** A `❯` row that carries text — the prompt echo Claude prints at the head of a
