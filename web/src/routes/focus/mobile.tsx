@@ -618,7 +618,7 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
               // hides it too — see `useTerminalGone`.
               onRefresh={stopped ? undefined : () => termRef.current?.resync()}
               onTitleClick={() => setInfoOpen(true)}
-              hasLastSend={!!lastSend}
+              hasLastSend={!!current}
               lastSendOpen={lastSendOpen}
               onToggleLastSend={() => setLastSendOpen((o) => !o)}
             />
@@ -905,9 +905,11 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
       />
 
       {/* feat-last-prompt — the recall bottom sheet. Heavy content only mounts
-          while open (Vaul unmounts when closed). Gated on having a recall to
-          show so a missing-prompt session can't open an empty sheet. */}
-      {lastSend && current && (
+          while open (Vaul unmounts when closed). Gated on the SESSION, not on
+          supermux's own `last_send` column: that column is empty for every
+          session supermux did not itself submit through, while /recall returns
+          real history for them — the sheet owns its empty state. */}
+      {current && (
         <LastSendSheet
           open={lastSendOpen}
           onOpenChange={setLastSendOpen}

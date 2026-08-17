@@ -288,11 +288,15 @@ export function DesktopSplit({
     () => setLastSendOpen((o) => !o),
     [],
   )
-  // ⌘G is gated on having a recall to show: when there's no last send the
-  // shortcut is a no-op (we don't preventDefault on a key we can't service).
+  // ⌘G IS LIVE WHENEVER THE SHEET CAN OPEN — which is whenever there is a
+  // session (recall-reachability fix). It used to be gated on `lastSend`, i.e.
+  // on supermux's own `last_send` column, which is empty for every session it
+  // did not itself submit through — while GET /recall returns real history for
+  // exactly those sessions. The gate hid a working surface behind a column
+  // describing a different fact; the panel owns its own empty state.
   const onShowLastSend = React.useMemo(
-    () => (lastSend ? toggleLastSend : undefined),
-    [lastSend, toggleLastSend],
+    () => (current ? toggleLastSend : undefined),
+    [current, toggleLastSend],
   )
 
   const status = current?.status ?? 'starting'
@@ -716,7 +720,7 @@ export function DesktopSplit({
           // toggle here would race its onOpenChange(false) and re-open it.
           onTitleClick={() => setInfoOpen(true)}
           titleRef={titleRef}
-          hasLastSend={!!lastSend}
+          hasLastSend={!!current}
           lastSendOpen={lastSendOpen}
           onToggleLastSend={toggleLastSend}
           lastSendButtonRef={lastSendButtonRef}
@@ -935,9 +939,10 @@ export function DesktopSplit({
       {/* feat-last-prompt — the recall popover, anchored to the icon in the
           header. Only mounts the heavy content while open. The popover is
           controlled by `lastSendOpen`; the icon, the bar-click, and the ⌘G
-          shortcut all flip the same state above. Gate the render on
-          `lastSend` so the anchor refs don't fight an unmounted button. */}
-      {lastSend && current && (
+          shortcut all flip the same state above. Gated on `current` (not on
+          `lastSend`) so the anchor refs don't fight an unmounted button while
+          still opening for a session whose history predates supermux. */}
+      {current && (
         <LastSendPopover
           open={lastSendOpen}
           onOpenChange={setLastSendOpen}

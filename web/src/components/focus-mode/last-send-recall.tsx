@@ -175,8 +175,14 @@ function RecallPanel({
   sessionLabel: string
   /** The session row's current `last_send` — used to show *something* on the
    *  very first render before the fetch resolves, so the popover never opens
-   *  to an empty state when the user just sent a prompt. */
-  initialRecall: LastSend
+   *  to an empty state when the user just sent a prompt.
+   *
+   *  NULLABLE since the recall-reachability fix: supermux's own `last_send`
+   *  column is empty for any session it did not itself submit through (six of
+   *  the rig's sessions), while `/recall` returns real entries for them. The
+   *  seed is a nicety for the ~50ms first fetch; the panel must open without
+   *  one. */
+  initialRecall: LastSend | null
   /** `popover` caps height at the desktop popover bound; `sheet` lets the
    *  mobile drawer drive its own height. */
   variant: 'popover' | 'sheet'
@@ -259,7 +265,7 @@ function RecallPanel({
     !includeSystemEvents
   const fallbackEntries: RecallEntry[] = React.useMemo(
     () =>
-      showSeed
+      showSeed && initialRecall
         ? [
             {
               uuid: `__seed-${initialRecall.sentAt.getTime()}`,
@@ -694,7 +700,7 @@ export function LastSendButton({
 export interface LastSendPopoverProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  recall: LastSend
+  recall: LastSend | null
   session: Pick<ApiSession, 'name' | 'display_name'>
   /** The icon button — anchor for the popover. */
   anchorRef: React.RefObject<HTMLElement | null>
@@ -756,7 +762,7 @@ export function LastSendPopover({
 export interface LastSendSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  recall: LastSend
+  recall: LastSend | null
   session: Pick<ApiSession, 'name' | 'display_name'>
 }
 
