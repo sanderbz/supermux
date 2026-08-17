@@ -10,10 +10,16 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # The frontend gate. Until this wave it ran `bun run build` and NOTHING else:
+  # no unit tests, no lint, no size budget, no e2e — grepping the workflows for
+  # `test:unit` / `perf:size` / `test:e2e` / `eslint` returned nothing at all.
+  # The only thing CI could catch was a file that would not compile, which is
+  # how fifteen deterministic e2e failures and a red-by-default smoke suite
+  # accumulated without anyone seeing them.
   web:
-    name: web (bun build)
+    name: web (build + unit + size + lint)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
@@ -28,7 +34,76 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('web/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
+      # `build` is `tsc -b && vite build`, so this is the typecheck too.
       - run: bun run build
+      # The performance budgets (entry chunk, app JS, CSS) plus the non-gating
+      # cold-load hero-path report. It reads `dist/`, so it must follow build.
+      - name: Performance budget
+        run: bun run perf:size
+      # After build on purpose: `sw-navigation-route.test.ts` greps the EMITTED
+      # service worker, which is the only place the precache-navigation hazard
+      # is observable.
+      - name: Unit tests
+        run: bun test tests/unit --timeout 15000
+      # Gated on the error COUNT, not on zero — see scripts/lint-gate.mjs for
+      # why a gate that cannot pass on day one is worse than none.
+      - name: ESLint (no new errors)
+        run: bun run lint:gate
+
+  # The e2e smoke suite, against a real supermux-server binary. This is the
+  # suite CONTRIBUTING.md already tells contributors to run; it has simply
+  # never run here, which is why it was 19-red on a clean checkout.
+  e2e:
+    name: e2e (smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.10
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
+        with:
+          toolchain: stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('server/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-e2e-
+            ${{ runner.os }}-cargo-
+      # The harness boots `server/target/debug/supermux-server` per spec.
+      # Debug only — CLAUDE.md forbids --release.
+      - name: Build the server binary
+        working-directory: server
+        run: cargo build --bin supermux-server
+      - uses: actions/cache@v4
+        with:
+          path: web/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('web/bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - name: Install web deps
+        working-directory: web
+        run: bun install --frozen-lockfile
+      - name: Install Playwright chromium
+        working-directory: web
+        run: bun x playwright install --with-deps chromium
+      - name: Smoke suite
+        working-directory: web
+        run: bun run test:e2e:smoke
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            web/test-results
+            web/playwright-report
+          retention-days: 7
 
   server:
     name: server (cargo check + test)

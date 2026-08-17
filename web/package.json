@@ -9,6 +9,7 @@
     "build:perf": "tsc -b && vite build && node scripts/size-budget.mjs",
     "perf:size": "node scripts/size-budget.mjs",
     "lint": "eslint .",
+    "lint:gate": "node scripts/lint-gate.mjs",
     "preview": "vite preview",
     "test:unit": "bun test tests/unit",
     "test:e2e": "playwright test",
