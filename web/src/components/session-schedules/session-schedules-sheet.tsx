@@ -36,6 +36,7 @@ import { useSchedules, useSchedulerStream } from '@/hooks/use-scheduler'
 import type { ScheduleRow } from '@/lib/api/scheduler'
 import { springs } from '@/lib/springs'
 import { cn } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 
 import { scheduleAdminHref } from './schedule-href'
 
@@ -143,7 +144,7 @@ export function SessionSchedulesSheet({
           {schedules.isLoading && !schedules.data ? (
             <div className="flex flex-col gap-2" aria-hidden>
               {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="h-14 animate-pulse rounded-[12px] bg-muted/40" />
+                <Skeleton key={i} className="h-14 rounded-[12px] bg-muted/40" />
               ))}
             </div>
           ) : mine.length === 0 ? (

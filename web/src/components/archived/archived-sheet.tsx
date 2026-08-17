@@ -28,6 +28,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Archive, RotateCcw, Trash2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton, SkeletonRegion } from '@/components/ui/skeleton'
 import { springs } from '@/lib/springs'
 import { ShellOverlay } from '@/components/shell/shell-overlay'
 import { StatusDot } from '@/components/session-tile/status-dot'
@@ -118,14 +119,14 @@ export function ArchivedSheet({ open, onOpenChange }: ArchivedSheetProps) {
             Couldn’t load archived sessions.
           </p>
         ) : isLoading && count === 0 ? (
-          <div className="flex flex-col gap-1">
+          <SkeletonRegion
+            label="Loading archived sessions…"
+            className="flex flex-col gap-1"
+          >
             {Array.from({ length: 3 }).map((_, i) => (
-              <div
-                key={i}
-                className="h-14 animate-pulse rounded-lg bg-muted/50"
-              />
+              <Skeleton key={i} className="h-14 rounded-lg bg-muted/50" />
             ))}
-          </div>
+          </SkeletonRegion>
         ) : count === 0 ? (
           <EmptyArchived />
         ) : (

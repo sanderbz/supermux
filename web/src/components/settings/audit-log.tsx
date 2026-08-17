@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { ScrollText, TriangleAlert } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton, SkeletonRegion } from '@/components/ui/skeleton'
 import { useAuditLog } from '@/hooks/use-settings'
 import { EmptyStatePlaceholder } from '@/components/empty-state'
 import type { AuditEntry } from '@/lib/api'
@@ -49,16 +50,19 @@ function detailText(detail?: string): string {
   }
 }
 
-function Skeleton() {
+function AuditSkeleton() {
   return (
-    <div className="flex flex-col divide-y divide-border">
+    <SkeletonRegion
+      label="Loading activity…"
+      className="flex flex-col divide-y divide-border"
+    >
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="flex items-center gap-3 px-4 py-3">
-          <div className="h-3.5 w-28 animate-pulse rounded bg-muted/60" />
-          <div className="ml-auto h-3.5 w-14 animate-pulse rounded bg-muted/40" />
+          <Skeleton className="h-3.5 w-28 bg-muted/60" />
+          <Skeleton className="ml-auto h-3.5 w-14 bg-muted/40" />
         </div>
       ))}
-    </div>
+    </SkeletonRegion>
   )
 }
 
@@ -101,7 +105,7 @@ function Entry({ row, dim }: { row: AuditEntry; dim: boolean }) {
 export function AuditLog() {
   const { data, isLoading, isError } = useAuditLog(200)
 
-  if (isLoading) return <Skeleton />
+  if (isLoading) return <AuditSkeleton />
 
   if (isError) {
     return (

@@ -95,9 +95,16 @@ const hover = { duration: 0.12, ease: 'easeOut' as const }
 //   reflow            — 0.1s ease-out for dnd-kit's CSS transform reflow
 //                       when adjacent tiles shift after a drop (overrides
 //                       the dnd-kit default ~200ms; matches the spec).
-//   shimmer           — the loading sheet's 1.6s linear sweep. Infinite and
-//                       decorative: the only `linear` in the bank, here so the
-//                       raw string does not live at a call site.
+//   (shimmer)         — RETIRED in B5/T11.1. It was the loading sheet's 1.6s
+//                       linear sweep and the bank's only `linear`. The sweep
+//                       still exists, as the `.sm-skeleton-shimmer` keyframe
+//                       behind `<Skeleton variant="shimmer">`: a CSS animation
+//                       costs nothing per element, where a framer transition
+//                       mounts a motion component per bar — which is exactly
+//                       why the shimmer was affordable in one place and every
+//                       list of rows had to settle for `animate-pulse`. Same
+//                       retirement `popoverOut`'s predecessor got: a token with
+//                       no consumer is a suggestion, not a system.
 //   overlayExit       — 0.3s ease-in for the shell overlay's dismissal. Paired
 //                       with `springs.settle` (~0.52s) on the way in.
 //   popoverIn         — 0.15s ease-out. Popovers are small and attached to
@@ -113,7 +120,6 @@ export const tweens = {
   containerIndicate: { duration: 0.35, ease: 'easeOut' as const },
   dropFlash: { duration: 0.7, ease: 'easeOut' as const },
   reflow: { duration: 0.1, ease: 'easeOut' as const },
-  shimmer: { duration: 1.6, repeat: Infinity, ease: 'linear' as const },
   overlayExit: { duration: 0.3, ease: 'easeIn' as const },
   popoverIn: { duration: 0.15, ease: 'easeOut' as const },
   popoverOut: { duration: 0.1, ease: 'easeIn' as const },

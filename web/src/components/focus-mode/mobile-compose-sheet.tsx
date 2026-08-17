@@ -77,6 +77,7 @@ import { createPortal } from 'react-dom'
 import { FocusScope } from '@radix-ui/react-focus-scope'
 
 import { cn } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 import { eases, motionOff, springs, tweens } from '@/lib/springs'
 import { useKeyboardViewport } from '@/hooks/use-keyboard-viewport'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -536,16 +537,18 @@ function TextareaSkeleton({ reduce }: { reduce: boolean }) {
       )}
       data-vr="edit-sheet-skeleton"
     >
-      {/* Shimmer band — a translucent gradient sweeping left→right. 1.6s loop.
-          Under reduce-motion this layer is absent (static dim block only). */}
+      {/* B5/T11.1 — the shimmer band, now the shared primitive's `shimmer`
+          variant rather than a framer `motion.div` mounted here. Same 1.6s
+          left→right sweep, same disappearance under reduce-motion; what
+          changed is that it is CSS, so it costs nothing per element and the
+          choice between shimmer and pulse is finally affordable anywhere.
+          `reduce` is still honoured explicitly (the CSS media query is the
+          belt, this is the braces — the sheet may render under a forced
+          reduce-motion context the media query cannot see). */}
       {!reduce && (
-        <motion.div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 bg-gradient-to-r from-transparent via-foreground/8 to-transparent"
-          initial={{ x: 0 }}
-          animate={{ x: '420%' }}
-          transition={tweens.shimmer}
-          data-vr="edit-sheet-skeleton-shimmer"
+        <Skeleton
+          variant="shimmer"
+          className="pointer-events-none absolute inset-0 rounded-[10px] bg-transparent"
         />
       )}
       {/* The label — sr-only friendly so screen readers announce the loading

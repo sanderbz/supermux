@@ -1,5 +1,12 @@
 // Microcopy — every empty / error / confirm string in one place, in one
-// voice. Later milestones import from here instead of inlining strings, so the
+// voice.
+//
+// B5/T11.3 swept the dead keys out: `CONNECTION` (zero importers — the chat
+// surface uses its own `CHAT_CONNECTION`), three `CONFIRM` entries, five
+// `ERROR` entries and three `EMPTY` entries that no surface rendered while
+// inlining their own strings instead. Dead copy is worse than missing copy: it
+// makes this file look like more coverage than exists, and nobody reviews a
+// string that is never on screen. Later milestones import from here instead of inlining strings, so the
 // voice stays consistent and a single edit fixes it everywhere.
 //
 // VOICE: builder-to-builder. Calm, direct, lowercase-friendly, technically
@@ -34,11 +41,6 @@ export interface ConfirmCopy {
 // ── Per-surface empty states ──────────────────────────────────────────────────
 
 export const EMPTY = {
-  sessions: {
-    title: 'No sessions yet',
-    body: 'Start one to put an agent to work. It runs in tmux and survives restarts.',
-    cta: 'New session',
-  },
   /** Renamed from `EMPTY.board` in fase B2 T10: the issues are no longer "on a
    *  board", they are on a session and on a team. The copy was dead code before
    *  (nothing rendered it); it is adopted by `components/issues/issue-list.tsx`
@@ -48,18 +50,10 @@ export const EMPTY = {
     body: 'Issues linked to this session show up here — an agent reports onto them with /supermux-task.',
     cta: 'New issue',
   },
-  files: {
-    title: 'Nothing here',
-    body: 'This directory is empty. Pick another path from the breadcrumb.',
-  },
   scheduler: {
     title: 'No scheduled jobs',
     body: 'Schedule a job to boot an agent or send a command on a cron expression.',
     cta: 'New job',
-  },
-  search: {
-    title: 'No matches',
-    body: 'Nothing matched that filter. Try a shorter query.',
   },
   stoppedSession: {
     title: 'This session is stopped',
@@ -71,32 +65,10 @@ export const EMPTY = {
 // ── Error states ──────────────────────────────────────────────────────────────
 
 export const ERROR = {
-  generic: {
-    title: 'That request failed',
-    body: 'The server returned an error. Check the logs, then try again.',
-    retry: 'Try again',
-  },
-  network: {
-    title: 'Can’t reach the server',
-    body: 'No response from supermux-server. It may be restarting or off the network.',
-    retry: 'Retry',
-  },
-  notFound: {
-    title: 'Not found',
-    body: 'This no longer exists. It may have been deleted or renamed.',
-  },
   sessionMissing: {
     title: 'tmux session is gone',
     body: 'supermux can’t find the underlying tmux session. Reattach, or remove it from supermux.',
     retry: 'Reattach',
-  },
-  unauthorized: {
-    title: 'Not authorized',
-    body: 'Your token was rejected. Reopen supermux from a trusted link to refresh it.',
-  },
-  fileTooLarge: {
-    title: 'File is too large to open',
-    body: 'This file exceeds the inline edit limit. Open it in the terminal instead.',
   },
 } satisfies Record<string, ErrorCopy>
 
@@ -115,28 +87,10 @@ export const CONFIRM = {
     confirm: 'Remove',
     cancel: 'Cancel',
   },
-  deleteIssue: {
-    title: 'Delete this issue?',
-    body: 'The card and its history are removed. This can’t be undone.',
-    confirm: 'Delete',
-    cancel: 'Cancel',
-  },
   deleteSchedule: {
     title: 'Delete this job?',
     body: 'The schedule stops and won’t run again. Past runs stay in the log.',
     confirm: 'Delete',
-    cancel: 'Cancel',
-  },
-  discardEdits: {
-    title: 'Discard changes?',
-    body: 'You have unsaved edits in this file. Leaving drops them.',
-    confirm: 'Discard',
-    cancel: 'Keep editing',
-  },
-  overwriteFile: {
-    title: 'Overwrite this file?',
-    body: 'A file with this name already exists. Saving replaces its contents.',
-    confirm: 'Overwrite',
     cancel: 'Cancel',
   },
   // B5/T5.3 — archiving a session that is still running. Hoisted out of
@@ -298,12 +252,6 @@ export const RECOVERY = {
 } as const
 
 // ── Connection / status banner ────────────────────────────────────────────────
-
-export const CONNECTION = {
-  reconnecting: 'Reconnecting…',
-  connected: 'Back online',
-  offline: 'Offline — tap to retry',
-} as const
 
 /**
  * Subagents, said out loud (fase A6 T4.1).

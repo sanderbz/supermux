@@ -68,6 +68,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton, SkeletonRegion } from '@/components/ui/skeleton'
 import { motionOff, springs } from '@/lib/springs'
 import { settingsRequest } from '@/lib/api/client'
 import { CONFIRM } from '@/brand/copy'
@@ -613,11 +614,14 @@ function ModeRow({
 
 function LoadingRows() {
   return (
-    <div className="flex flex-col gap-1.5 px-1 py-1">
+    <SkeletonRegion
+      label="Loading MCP servers…"
+      className="flex flex-col gap-1.5 px-1 py-1"
+    >
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="h-14 animate-pulse rounded-xl bg-muted/50" />
+        <Skeleton key={i} className="h-14 rounded-xl bg-muted/50" />
       ))}
-    </div>
+    </SkeletonRegion>
   )
 }
 

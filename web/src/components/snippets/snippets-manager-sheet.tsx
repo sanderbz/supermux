@@ -15,6 +15,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
@@ -94,7 +95,7 @@ function SnippetsManagerBody({ onEdit }: { onEdit: (snippet: SnippetRow | null) 
           {!isError && isLoading ? (
             <div className="flex flex-col gap-2 px-2 py-3">
               {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="h-10 animate-pulse rounded-lg bg-muted/40" />
+                <Skeleton key={i} className="h-10 rounded-lg bg-muted/40" />
               ))}
             </div>
           ) : null}

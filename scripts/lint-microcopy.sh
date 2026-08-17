@@ -75,3 +75,39 @@ if [ -n "$DIALOG_HITS" ]; then
 fi
 
 echo "✓ no raw browser dialogs"
+
+# ── B5/T11.4: no hand-rolled loading placeholders ───────────────────────────
+#
+# Seven skeleton idioms existed before B5 and none shared a line, so each was a
+# fresh chance to get the accessibility wrong — and mostly did: a placeholder
+# that announces nothing leaves a screen-reader user with silence where a
+# sighted user sees motion.
+#
+# `<Skeleton>` + `<SkeletonRegion>` (components/ui/skeleton.tsx) are the one
+# idiom. A raw `animate-pulse` in a component is how the eighth would start, so
+# it fails here. The primitive itself and the CSS are the only places the class
+# and its keyframe may appear.
+#
+# Deliberately NOT a ban on hand-rolled EMPTY states: `EmptyStatePlaceholder` is
+# the full-surface form, and a one-line inline empty is a SANCTIONED second form
+# for pickers (BRAND.md). A global ban on inline empty copy is unmaintainable
+# and would only teach people to route around it.
+echo "→ skeleton lint: scanning web/src for hand-rolled loading placeholders"
+
+if command -v rg >/dev/null 2>&1; then
+  PULSE_HITS="$(rg -n 'animate-pulse' --glob '*.tsx' --glob '!**/ui/skeleton.tsx' "$SCAN_DIR" || true)"
+else
+  PULSE_HITS="$(grep -rn 'animate-pulse' --include='*.tsx' "$SCAN_DIR" | grep -v 'ui/skeleton.tsx' || true)"
+fi
+
+if [ -n "$PULSE_HITS" ]; then
+  echo "✗ hand-rolled loading placeholder found — use the shared primitive:"
+  echo "$PULSE_HITS"
+  echo
+  echo "  <Skeleton />               one bar (aria-hidden; geometry via className)"
+  echo "  <SkeletonRegion label=…>   wraps them into ONE announced loading state"
+  echo "  Ten shimmering rows are one loading state, not ten."
+  exit 1
+fi
+
+echo "✓ no hand-rolled loading placeholders"

@@ -23,6 +23,7 @@
 import { CalendarClock, GitCommit, GitPullRequest, Link2, Users } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyStatePlaceholder } from '@/components/empty-state'
 import { EMPTY } from '@/brand/copy'
 import { useBoard } from '@/hooks/use-board'
@@ -58,7 +59,7 @@ export function IssueList({
     return (
       <div className={cn('flex flex-col gap-1.5', className)} data-vr="issue-list-loading">
         {[0, 1, 2].map((i) => (
-          <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/60" />
+          <Skeleton key={i} className="h-12 rounded-lg bg-muted/60" />
         ))}
       </div>
     )

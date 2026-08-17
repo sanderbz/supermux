@@ -33,6 +33,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { CalendarClock, History, Plus, RefreshCw, Timer } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { EMPTY } from '@/brand/copy'
@@ -224,7 +225,7 @@ export function SchedulesSection() {
         <Row>
           <div className="flex flex-col gap-2 py-1" aria-hidden>
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-8 animate-pulse rounded-lg bg-muted/40" />
+              <Skeleton key={i} className="h-8 rounded-lg bg-muted/40" />
             ))}
           </div>
         </Row>

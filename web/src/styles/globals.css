@@ -559,6 +559,43 @@
   animation: sm-status-spin 0.9s linear infinite;
 }
 
+/* ── Skeleton shimmer (B5/T11.1) ──────────────────────────────
+   The sweeping band used by `<Skeleton variant="shimmer">`. CSS-only on
+   purpose: the previous implementation mounted a framer `motion.div` per bar,
+   which is why it was affordable in exactly one place (the compose sheet's
+   single large textarea) and every list of rows used `animate-pulse` instead.
+   As a keyframe it costs nothing per bar, so the choice between the two is
+   about which one READS right rather than which one you can afford.
+
+   Unlike `.sm-status-spinner` above, this DOES stop under Reduce Motion — a
+   spinner is functional feedback and freezing it reads as "stuck", while a
+   skeleton is decoration around an absence. The component adds
+   `motion-reduce:animate-none`; this rule is the paint. */
+.sm-skeleton-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    hsl(var(--foreground) / 0.08),
+    transparent
+  );
+  transform: translateX(-100%);
+  animation: sm-skeleton-sweep 1.6s linear infinite;
+}
+@keyframes sm-skeleton-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sm-skeleton-shimmer::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* ── Edit sheet ──────────────────────────────
    The MobileComposeSheet's textarea is prose for an LLM, not code — system font
    (not mono), with the iOS systemBlue accent for the caret + selection so the

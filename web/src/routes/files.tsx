@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton, SkeletonRegion } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -430,12 +431,15 @@ function ToolbarButton({
 }
 
 function ListSkeleton() {
+  // B5/T11.1 — one of seven idioms, now the shared primitive. The REGION is
+  // what changed behaviourally: these bars are `aria-hidden`, so before this a
+  // screen-reader user was told nothing at all while the directory loaded.
   return (
-    <div className="flex flex-col gap-2 p-3" aria-hidden>
+    <SkeletonRegion label="Loading files…" className="flex flex-col gap-2 p-3">
       {Array.from({ length: 8 }).map((_, i) => (
-        <div key={i} className="h-9 animate-pulse rounded-md bg-muted/40" />
+        <Skeleton key={i} className="h-9 bg-muted/40" />
       ))}
-    </div>
+    </SkeletonRegion>
   )
 }
 

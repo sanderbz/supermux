@@ -13,6 +13,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { Play, Trash2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Skeleton, SkeletonRegion } from '@/components/ui/skeleton'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { ResponsiveSheet } from '@/components/ui/responsive-sheet'
@@ -319,10 +320,10 @@ function StatusPill({ status }: { status: string }) {
 
 function RunsSkeleton() {
   return (
-    <div className="flex flex-col gap-1.5" aria-hidden>
+    <SkeletonRegion label="Loading runs…" className="flex flex-col gap-1.5">
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="h-9 animate-pulse rounded-md bg-muted/40" />
+        <Skeleton key={i} className="h-9 bg-muted/40" />
       ))}
-    </div>
+    </SkeletonRegion>
   )
 }
