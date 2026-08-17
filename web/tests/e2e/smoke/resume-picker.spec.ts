@@ -19,6 +19,7 @@
 // The mobile test runs in a `hasTouch`/`isMobile` context so `matchMedia(
 // '(pointer: coarse)')` matches and <ResponsiveSheet> forks to the Vaul sheet.
 
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,23 +62,41 @@ function seedConversation(
 }
 
 /**
- * What the session's terminal shows, and whether `needle` is in it.
+ * Did the launch really carry `--resume <CONV_ID>`?
  *
- * ASKED OF THE SERVER, not of tmux. This used to shell out to
- * `tmux capture-pane -t supermux-<name>` — but a session created without an
- * explicit `runtime` defaults to NATIVE now (`sessions/mod.rs`), so there is no
- * tmux pane to capture and every poll logged "can't find pane" until it timed
- * out. `GET /api/sessions/{name}/peek` is the runtime-agnostic read of the same
- * thing (it is exactly what the harness exposes for verifying pty output), so
- * this assertion now works on whichever runtime the product actually chose.
+ * NOT `tmux capture-pane -t supermux-<name>` any more. A session created
+ * without an explicit `runtime` defaults to NATIVE (`sessions/mod.rs`), so
+ * there is no tmux pane to capture: every poll logged "can't find pane" until
+ * it timed out, and this spec — the only end-to-end proof that the picked
+ * conversation id reaches the launch — had not run in a fase.
+ *
+ * THE PROCESS TABLE, not the screen. Measured: the native holder's own argv is
+ * `pty-holder --session <name> … -- /bin/bash` (the launch line is TYPED into
+ * that shell, so it never appears there), and by the time the first poll lands
+ * the Claude TUI has already repainted over the echoed command — `peek` returns
+ * `Welcome to Claude Code v2.1.233` and nothing else, because it reads the
+ * visible 80×24 grid and not the scrollback. What IS durable is the launched
+ * process itself: `claude --resume <CONV_ID>` is running, and `CONV_ID` is a
+ * per-spec UUID, so a match anywhere in the table is unambiguous.
+ *
+ * `peek` is kept as a second read for the tmux runtime and for the window
+ * before the TUI takes over, where the echoed command line is still on screen.
  */
+function processTableHas(needle: string): boolean {
+  try {
+    return execFileSync('ps', ['-eo', 'args'], { encoding: 'utf8' }).includes(needle)
+  } catch {
+    return false
+  }
+}
+
 async function paneContains(
   backend: Backend,
   sessionName: string,
   needle: string,
 ): Promise<boolean> {
-  const out = await api(backend).peek(sessionName, 200)
-  return out.includes(needle)
+  if (processTableHas(needle)) return true
+  return (await api(backend).peek(sessionName, 200)).includes(needle)
 }
 
 const CONV_ID = 'abcdef01-2345-6789-abcd-ef0123456789'
@@ -116,7 +135,8 @@ async function teardown(fx: Fixture | undefined): Promise<void> {
 }
 
 /** Drive: create stopped session in the seeded dir → open Resume → pick the
- *  conversation → assert the tmux command carries `--resume <CONV_ID>`. */
+ *  conversation → assert the launched command carries `--resume <CONV_ID>`,
+ *  read back through the server rather than through tmux (see `paneContains`). */
 async function runResumeFlow(
   page: Page,
   fx: Fixture,
@@ -150,9 +170,9 @@ async function runResumeFlow(
 
   // The launched command carries the picked conversation id.
   await expect
-    .poll(() => paneContains(backend, name, `--resume ${CONV_ID}`), {
+    .poll(() => paneContains(fx.backend, name, `--resume ${CONV_ID}`), {
       timeout: 20_000,
-      message: 'the session terminal should show `claude --resume <id>`',
+      message: 'the launch should carry `claude --resume <id>`',
     })
     .toBe(true)
 }

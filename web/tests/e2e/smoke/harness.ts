@@ -34,6 +34,19 @@ export interface Backend {
   vitePort: number
   /** Temp data dir (SUPERMUX_DATA_DIR) for this backend. */
   dataDir: string
+  /**
+   * The `$CLAUDE_CONFIG_DIR` this backend was actually booted with — where it
+   * reads `teams/<name>/config.json` from.
+   *
+   * SEED TEAMS HERE, never at `join(dataDir, 'claude')`. Playwright loads every
+   * spec file into the worker before running any of them, and
+   * `chat-renderer-switch.spec.ts` sets `process.env.CLAUDE_CONFIG_DIR ??= …`
+   * at MODULE scope — so from the first file load onward every backend in the
+   * run inherits that dir, and a team written under `dataDir` is written
+   * somewhere the server never looks. Two specs seeded a team that way and
+   * passed in isolation while covering nothing in a full run.
+   */
+  claudeConfigDir: string
   /** Stop the binary (SIGTERM); resolves once it exits. */
   killBackend(): Promise<void>
   /** Boot a fresh binary on the SAME port + data dir (reconnect test). */
@@ -144,6 +157,8 @@ function spawnBackend(opts: {
   port: number
   dataDir: string
   token: string
+  /** Resolved by `startBackend` — see `Backend.claudeConfigDir`. */
+  claudeConfigDir: string
   /** Extra environment for the BACKEND process only.
    *
    *  It exists for the one spec that has to control what the launcher finds on
@@ -179,7 +194,7 @@ function spawnBackend(opts: {
       // `resume-picker-hover-pin.spec.ts` deliberately seed their own config
       // root before booting, and stomping on it would break the two specs that
       // already got this right.
-      CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? join(opts.dataDir, 'claude'),
+      CLAUDE_CONFIG_DIR: opts.claudeConfigDir,
       SUPERMUX_BIND: `127.0.0.1:${opts.port}`,
       SUPERMUX_AUTH_TOKEN: opts.token,
       RUST_LOG: process.env.RUST_LOG ?? 'warn',
@@ -225,12 +240,20 @@ function killProc(child: ChildProcess | null): Promise<void> {
 export async function startBackend(opts?: {
   /** Extra environment for the backend process only — see `spawnBackend`. */
   env?: Record<string, string>
+  /** Override `$CLAUDE_CONFIG_DIR` for this backend — see `Backend.claudeConfigDir`. */
+  claudeConfigDir?: string
 }): Promise<Backend> {
   const bin = binaryPath()
   const backendPort = await freePort()
   const vitePort = await freePort()
   const token = `e2e-${Math.random().toString(36).slice(2)}-${Date.now()}`
   const dataDir = mkdtempSync(join(tmpdir(), 'supermux-e2e-'))
+  // Resolved ONCE and handed back on `Backend`, so a spec that seeds a team can
+  // write where the server will actually read. Explicit option wins; else the
+  // ambient env (the two specs that deliberately seed a config root before
+  // booting); else this backend's own temp dir.
+  const claudeConfigDir =
+    opts?.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(dataDir, 'claude')
   const backendUrl = `http://127.0.0.1:${backendPort}`
   const baseUrl = `http://127.0.0.1:${vitePort}`
 
@@ -239,6 +262,7 @@ export async function startBackend(opts?: {
     port: backendPort,
     dataDir,
     token,
+    claudeConfigDir,
     env: opts?.env,
   })
   await waitForHealth(backendUrl)
@@ -265,13 +289,21 @@ export async function startBackend(opts?: {
     backendPort,
     vitePort,
     dataDir,
+    claudeConfigDir,
     async killBackend() {
       await killProc(backend)
       backend = null
     },
     async restartBackend() {
       if (backend) await killProc(backend)
-      backend = spawnBackend({ bin, port: backendPort, dataDir, token, env: opts?.env })
+      backend = spawnBackend({
+        bin,
+        port: backendPort,
+        dataDir,
+        token,
+        claudeConfigDir,
+        env: opts?.env,
+      })
       await waitForHealth(backendUrl, 30_000)
     },
     async dispose() {

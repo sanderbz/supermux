@@ -23,13 +23,16 @@
 // Dev-only by construction: `@axe-core/playwright` is a devDependency and axe
 // is injected into the page by the runner, never imported by `src/` — asserted
 // in `tests/unit/a11y-tooling.test.ts`.
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
 
 import { api, injectGlobals, startBackend, type Backend } from './harness'
+
+/** The chip whose `nested-interactive` this gate exists to be able to see. */
+const TEAMMATE_CHIP = '[aria-label^="Open researcher"]'
 
 const DESKTOP = { width: 1440, height: 900 }
 const PHONE = { width: 390, height: 844 }
@@ -62,19 +65,30 @@ const SCANS = [
   // run of this file and reported a reassuring nothing for all four `/` rows.
   // A gate that can scan an empty page is a gate that passes for the wrong
   // reason, so `/` waits for its own content to exist.
-  { route: '/', viewport: DESKTOP, surface: 'desktop', ready: 'text=axe-lead' },
-  { route: '/', viewport: PHONE, surface: 'phone', ready: 'text=axe-lead' },
+  //
+  // `ready` waits for the TEAMMATE CHIP, not merely for the page to paint. Two
+  // reasons, and the second is the important one: a fixed settle scanned a
+  // SKELETON on the first run of this file and reported a reassuring nothing
+  // for all four `/` rows; and if the seeded team ever stopped reaching the
+  // roster, these scans would go on passing while covering nothing at all —
+  // which is exactly the failure mode that let `nested-interactive` live on
+  // `/` for a fase. A gate that can pass on an empty page is not a gate.
+  { route: '/', viewport: DESKTOP, surface: 'desktop', ready: TEAMMATE_CHIP },
+  { route: '/', viewport: PHONE, surface: 'phone', ready: TEAMMATE_CHIP },
 ] as const
 
 /**
- * Write the on-disk team files Claude Code would write, into the backend's
- * isolated `$CLAUDE_CONFIG_DIR` (`harness.ts` points it inside the temp data
- * dir). `teams/scan.rs` picks them up on its next tick, so `/api/teams` returns
+ * Write the on-disk team files Claude Code would write, into the config root
+ * this backend was ACTUALLY booted with (`backend.claudeConfigDir` — see the
+ * note there; it is not always under `dataDir`). `teams/scan.rs` picks them up
+ * on its next tick, so `/api/teams` returns
  * one team and the overview renders a `<TeamCard>` with a `<TeammateChip>` in
  * it — which is the only way this gate ever sees that component.
  */
-function seedTeam(backend: Backend, team = 'axe-squad'): void {
-  const dir = join(backend.dataDir, 'claude', 'teams', team)
+const TEAM = 'axe-squad'
+
+function seedTeam(backend: Backend, team = TEAM): void {
+  const dir = join(backend.claudeConfigDir, 'teams', team)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'config.json'),
@@ -162,6 +176,12 @@ test.describe('axe — WCAG 2 A/AA over the shell surfaces', () => {
     await A.createSession({ name: 'axe-lead', provider: 'shell', dir: backend.dataDir })
   })
   test.afterAll(async () => {
+    // REMOVE THE TEAM, not just the backend. `claudeConfigDir` can be SHARED
+    // across the whole run (see `Backend.claudeConfigDir`), and a team left on
+    // disk is then visible to every spec that boots after this file — including
+    // `overview-loads.spec.ts`, whose first assertion is "a fresh backend must
+    // see no teams". Seeding into a shared root obliges you to unseed.
+    if (backend) rmSync(join(backend.claudeConfigDir, 'teams', TEAM), { recursive: true, force: true })
     await backend?.dispose()
   })
 

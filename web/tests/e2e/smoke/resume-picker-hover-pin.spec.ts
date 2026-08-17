@@ -21,10 +21,12 @@
 //      AND the stopped-peek Resume trigger stay mounted (the pin holds — the
 //      regression guard). Pre-fix this is exactly when everything unmounted.
 //   3. pick the seeded conversation → the launched command carries
-//      `--resume <id>` (read back through `/api/sessions/{name}/peek`, which is
-//      runtime-agnostic — the default runtime is native, not tmux).
+//      `--resume <id>` (read from the native holder's own argv, plus
+//      `/api/sessions/{name}/peek` — both runtime-agnostic; the default runtime
+//      is native, not tmux).
 //   4. (no-degradation) after the picker closes, the surface collapses again.
 
+import { execFileSync } from 'node:child_process'
 import {
   mkdtempSync,
   mkdirSync,
@@ -69,16 +71,27 @@ function seedConversation(
 }
 
 /**
- * What the session's terminal shows. Empty string if it has none yet.
+ * The evidence that a resume really launched: the process table plus the
+ * session's visible terminal.
  *
- * ASKED OF THE SERVER, not of tmux. A session created without an explicit
- * `runtime` defaults to NATIVE now (`sessions/mod.rs`), so there is no tmux
- * pane named `supermux-<name>` to capture and this shelled out to a "can't find
- * pane" error on every poll. `GET /api/sessions/{name}/peek` reads the same
- * terminal on whichever runtime the product actually chose.
+ * NOT `tmux capture-pane` any more. A session created without an explicit
+ * `runtime` defaults to NATIVE (`sessions/mod.rs`), so there is no pane named
+ * `supermux-<name>` and this shelled out to "can't find pane" on every poll.
+ *
+ * The process table is the durable half: the launch line is typed into the
+ * holder's `/bin/bash`, so `claude --resume <CONV_ID>` shows up as a running
+ * process, and `CONV_ID` is a per-spec UUID. `peek` reads the visible 80×24
+ * grid, which the Claude TUI repaints within a second or two — useful for the
+ * banner check below, useless for the echoed command.
  */
 async function capturePane(backend: Backend, sessionName: string): Promise<string> {
-  return api(backend).peek(sessionName, 200)
+  let table = ''
+  try {
+    table = execFileSync('ps', ['-eo', 'args'], { encoding: 'utf8' })
+  } catch {
+    /* no process table (unlikely) */
+  }
+  return `${table}\n${await api(backend).peek(sessionName, 200)}`
 }
 
 /** The resume reached the spawn iff the pane echoes `claude --resume <id>` OR
