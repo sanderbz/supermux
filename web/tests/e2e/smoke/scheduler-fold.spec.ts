@@ -54,19 +54,23 @@ test.describe('scheduler folded into Settings', () => {
     await expect(title).toBeVisible({ timeout: 10_000 })
 
     // THE PRIMARY ACTION IS ON SCREEN THE MOMENT THE SHEET OPENS. It used to
-    // live at the end of the sheet's own scroll region: bounding box y=892.5,
-    // height 44 at every viewport height tried — ~7px of the button visible at
-    // 900, none below — with the sheet opening at scrollTop 0 and no fade to
-    // say there was more. Measured BEFORE the form is filled, because that is
-    // the state a user actually lands in.
+    // live at the end of the sheet's own scroll region — bounding box y=892.5,
+    // height 44 at every viewport height tried, so ~7px of the button showed at
+    // 900px and none at all below — while the sheet opens at scrollTop 0 with
+    // no fade to say there was more.
+    //
+    // Measured at 700px, on a laptop-sized window, BEFORE anything is typed:
+    // that is the state a user lands in, and it is the height at which the old
+    // layout put the button ~190px past the bottom of the screen.
+    await page.setViewportSize({ width: 1440, height: 700 })
     const saveBtn = page.getByRole('button', { name: /Save schedule/ })
     const box = await saveBtn.boundingBox()
     expect(box, 'Save schedule is laid out').not.toBeNull()
-    const vp = page.viewportSize()!
     expect(
       Math.round(box!.y + box!.height),
-      'Save schedule is fully inside the viewport before any scrolling',
-    ).toBeLessThanOrEqual(vp.height)
+      'Save schedule is fully inside a 700px-tall window before any scrolling',
+    ).toBeLessThanOrEqual(700)
+    await page.setViewportSize({ width: 1440, height: 900 })
 
     await title.fill('e2e-fold')
 
