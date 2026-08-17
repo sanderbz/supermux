@@ -1,0 +1,39 @@
+supermux@supermux-strato:/tmp/verify-work/chatprobe$ source ~/.zprofile 2>/dev/n
+ull; source ~/.bash_profile 2>/dev/null; source ~/.profile 2>/dev/null; export E
+DITOR='/home/supermux/.supermux-verify/bin/supermux-edit' VISUAL='/home/supermux
+/.supermux-verify/bin/supermux-edit'; claude --version >/dev/null 2>&1; unset CL
+AUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID; export CLAUDE_CODE_FORCE_SESSION
+_PERSISTENCE=1; claude --model haiku --dangerously-skip-permissions --name vx-ch
+at
+╭─── Claude Code v2.1.233 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                Welcome back!                │ started                 │
+│                                                    │ Ask Claude to create a… │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Added GitLab merge req… │
+│      Haiku 4.5 · Claude Max ·                      │ Added an opt-in `forwa… │
+│      user@example.com's Organization      │ Added opt-in memory cg… │
+│             /tmp/verify-work/chatprobe             │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ Use the AskUserQuestion tool right now to ask me one multiple-choice          
+  question: which fruit do I want, with options Apple, Banana, Cherry. Do not   
+  do anything else first.                                                       
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Fruit choice 
+
+Which fruit do you want?
+
+❯ 1. Apple
+     A crisp and refreshing fruit
+  2. Banana
+     A soft and sweet tropical fruit
+  3. Cherry
+     A small and tart stone fruit
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

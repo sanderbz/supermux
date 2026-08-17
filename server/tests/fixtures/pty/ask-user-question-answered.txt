@@ -1,0 +1,9 @@
+● User answered Claude's questions:
+  ⎿  · Which fruit do you want? → Apple
+
+● You chose Apple!
+✻ Baked for 3s
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

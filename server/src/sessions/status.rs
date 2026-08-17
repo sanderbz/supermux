@@ -536,6 +536,24 @@ impl StatusDetector {
             return Status::Waiting;
         }
 
+        // ── 0b. STARTUP WEDGE pre-emption ────────────────────────────────────
+        // A session parked on a startup gate — the workspace-trust dialog, the
+        // custom-API-key gate, the first-run wizard, codex's hooks review — is
+        // blocked on a human before it has run anything at all. It reached this
+        // classifier reading `Starting` and then `Idle` with a green dot, and it
+        // would sit there forever: no hook has fired (there is no turn), and the
+        // wizard's screens carry none of the tokens in WAITING_BANK.
+        //
+        // Pre-empted rather than banked, for the same reason the interrupt
+        // marker above is: the trust gate can also appear MID-SESSION (2.1.232+,
+        // on entering a nested git repo), and there the turn state machine holds
+        // `Active` for the whole TURN_SAFETY window over a screen that is doing
+        // nothing but waiting. The tokens are the gates' own titles and appear
+        // nowhere else (`pty_state::WEDGES`).
+        if super::pty_state::startup_wedge(capture).is_some() {
+            return Status::Waiting;
+        }
+
         // ── 1. hook TURN STATE MACHINE (the multi-signal apex) ───────────────
         // The per-turn hook timestamps come straight from the agent runtime — the
         // most authoritative signal we have — so they OUTRANK the regex bank and

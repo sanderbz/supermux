@@ -1,0 +1,13 @@
+>_ OpenAI Codex (v0.50.0)
+
+ Hooks need review
+
+ 1 hook is new or changed.
+ 'supermux' hooks need review before they can run.
+ Hooks can run outside the sandbox after you trust them.
+
+   session_start  New hook - review required
+     curl -fsS -X POST "$SUPERMUX_URL/api/_internal/hook" …
+
+ Trust all and continue
+ Continue without trusting (hooks won't run)

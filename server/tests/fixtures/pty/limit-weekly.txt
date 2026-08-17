@@ -1,0 +1,11 @@
+❯ Use the aanbiedingen update skill, then do a double check with real browser and
+  push to main to publish. Then check the live site is up to date and working.
+  — — —
+  When this scheduled task is FULLY complete (not before), signal completion.
+  ⎿  You've hit your weekly limit · resets Aug 17, 4am (Europe/Amsterdam)
+     /upgrade or /usage-credits to finish what you're working on.
+✻ Baked for 0s
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents

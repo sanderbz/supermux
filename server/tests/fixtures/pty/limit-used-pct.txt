@@ -1,0 +1,9 @@
+  lookup can take 2 milliseconds or 200 depending on what's already remembered
+  along the path.
+✻ Crunched for 32s
+❯ Explain TCP congestion control (slow start, congestion avoidance, fast
+  retransmit, fast recovery, and a note on BBR) in about 800 words. Use no
+  tools at all - just write the answer.
+1 Perambulating…
+  ⏵⏵ auto mode on (shift+tab to cycle)
+  You've used 77% of your Fable 5 limit · resets Aug 17, 4am (Europe/Amsterda…

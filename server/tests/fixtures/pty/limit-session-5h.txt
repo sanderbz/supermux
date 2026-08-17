@@ -1,0 +1,8 @@
+● I have finished reading the file.
+  ⎿  You've hit your session limit · resets 4:40am (Europe/Amsterdam)
+     /upgrade to keep using Claude Code
+✻ Baked for 0s
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
