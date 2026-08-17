@@ -189,6 +189,45 @@ test.describe('roster keyboard + actions', () => {
     ).toHaveCount(0)
   })
 
+  test('the Display popover offers only controls that decide something', async ({
+    page,
+  }) => {
+    await page.addInitScript(injectGlobals(backend.token))
+    await page.goto(backend.baseUrl)
+    await expect(page.getByRole('button', { name: /rk-alpha/ }).first()).toBeVisible()
+
+    const panel = page.locator('[data-vr="display-controls"]')
+    const open = async () => {
+      await page.getByRole('button', { name: 'Display options' }).click()
+      await expect(panel).toBeVisible()
+    }
+
+    // (a) Density is reachable in LIST view, under the name it earns there. The
+    //     same number drives the list's fact ladder (tier 2 the preview line, 3
+    //     the tokens, 4 the tag chips) and the control was hidden in exactly
+    //     that view — so the only route to a list's richer rungs was: switch to
+    //     Tiles, raise it, switch back.
+    await open()
+    await panel.getByRole('button', { name: 'List', exact: true }).click()
+    await expect(panel.getByText('Row detail')).toBeVisible()
+    await expect(panel.getByRole('button', { name: 'More row detail' })).toBeEnabled()
+
+    // …and it is still called Density in tiles: one number, two honest names.
+    await panel.getByRole('button', { name: 'Tiles', exact: true }).click()
+    await expect(panel.getByText('Density')).toBeVisible()
+
+    // (b) Group-by decides nothing while the order is hand-dragged — GroupGrid
+    //     owns the canvas in custom mode. It used to keep its state and draw its
+    //     checkmark while regrouping nothing.
+    const byFolder = panel.getByRole('button', { name: /Folder/ })
+    await expect(byFolder).toBeEnabled()
+    await panel.getByRole('button', { name: /^Custom Drag to reorder/ }).click()
+    await expect(byFolder).toBeDisabled()
+    await expect(
+      panel.getByText('Custom sort uses your own groups — switch Sort to use a preset.'),
+    ).toBeVisible()
+  })
+
   test('a COLD load of a focus route records the seen cursor', async ({ page }) => {
     // The entry defect: the desktop route keyed its markRead effect on `[name]`
     // alone while `current` is undefined on the first render, so a bookmark, a

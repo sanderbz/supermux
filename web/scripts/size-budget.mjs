@@ -122,6 +122,30 @@ const BUDGET_ENTRY_JS = 160 * KB
 //             through results audible at all.
 //   ~0.07 KB  recall reachability + the Esc/✕ and group-heading polish.
 // Ceiling set to ceil(measured), the same rule B3, A6 and B5 used.
+// Raised again in the same wave by the roster-attention fixes: measured 216.74 against 215.39 for
+// origin/main at efb911b — +1.35 KB, all of it on the entry chunk because the
+// overview IS the entry chunk. The ENTRY gate, the one that guards the hero
+// path, stays at 151.17 / 160 KB (94%) — unchanged in percentage from B5's
+// 150.40. Apportioned per finding, because an aggregate would hide which one to
+// argue with:
+//   ~0.55 KB  the roving tabindex (`hooks/use-roving.tsx` + its three consumer
+//             seams). A6 T8.3 was CHECKED and unshipped: the roster measured 38
+//             tab stops with inert arrow keys. This is the whole of the composite
+//             widget — one tab stop per list, arrows, Home/End, focus adoption.
+//   ~0.45 KB  the per-session action menu rendered in the DEFAULT overview.
+//             Almost all of this is the two extra mount points and the
+//             `MoveTarget` projection: the menu itself MOVED out of
+//             `group-grid.tsx` rather than being copied, so the ~4 KB of menu
+//             body is not new. Pin / Rename / Info / Mark unread had zero entry
+//             points in the shipping sort mode.
+//   ~0.25 KB  the unread tier's affordance — the second dot kind, the count
+//             badge, and the `unread` cursor sentinel. This is the tier the
+//             whole T5 server change (entry_count / epoch / last_entry_ts) was
+//             computed for and no pixel consumed.
+//   ~0.10 KB  the roster/overview polish batch: the list preview's
+//             `preview_lines` fallback, the `Row detail` density label, the
+//             group-by disabled state and its reason line. Net of the copy
+//             changes, which are byte-neutral.
 const BUDGET_APP_JS = 217 * KB
 const BUDGET_CSS = 30 * KB
 

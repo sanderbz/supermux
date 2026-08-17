@@ -57,7 +57,14 @@ export const EMPTY = {
   },
   stoppedSession: {
     title: 'This session is stopped',
-    body: 'Its tmux session is no longer running — likely after a restart. Start it again to reattach the live terminal.',
+    // Runtime-NEUTRAL on purpose. supermux has shipped a tmux-less native
+    // runtime as the default since v0.5.0, so every session on a current
+    // install reports `runtime: native` and this card was naming a mechanism
+    // that is not there — the user's mental model gets one word about a thing
+    // they never chose. Branching the sentence on `runtime` was the other
+    // option and is worse: two strings to keep true, for a distinction that
+    // changes nothing about what to do next.
+    body: 'Its process is no longer running — likely after a restart. Start it again to reattach the live terminal.',
     cta: 'Start session',
   },
 } satisfies Record<string, EmptyCopy>
@@ -66,8 +73,10 @@ export const EMPTY = {
 
 export const ERROR = {
   sessionMissing: {
-    title: 'tmux session is gone',
-    body: 'supermux can’t find the underlying tmux session. Reattach, or remove it from supermux.',
+    // Same reason as `stoppedSession` above: the native runtime is the default,
+    // so "tmux" named a mechanism most installs do not run.
+    title: 'Session is gone',
+    body: 'supermux can’t find the underlying session. Reattach, or remove it from supermux.',
     retry: 'Reattach',
   },
 } satisfies Record<string, ErrorCopy>
@@ -77,13 +86,13 @@ export const ERROR = {
 export const CONFIRM = {
   killSession: {
     title: 'Kill this session?',
-    body: 'The agent stops and the tmux session ends. Unsaved work in the pane is lost.',
+    body: 'The agent stops and its terminal ends. Unsaved work in the pane is lost.',
     confirm: 'Kill session',
     cancel: 'Keep running',
   },
   deleteSession: {
     title: 'Remove from supermux?',
-    body: 'This drops the session from supermux. The tmux session itself is left alone.',
+    body: 'This drops the session from supermux. The running terminal itself is left alone.',
     confirm: 'Remove',
     cancel: 'Cancel',
   },
@@ -356,4 +365,10 @@ export const MISC = {
   /** Settings → Appearance toggle for the audio cue. */
   soundsToggleLabel: 'Sound cue when an agent needs input',
   soundsToggleHint: 'Plays a short tone on transition to “needs input”. Off by default.',
+  /** New-session sheet subtitle. Lives here rather than inline in the sheet so
+   *  it is covered by the same voice rules as everything else — it used to read
+   *  "Boot an agent in tmux. It survives restarts.", naming a runtime that has
+   *  not been the default since v0.5.0. What the sentence is FOR is that the
+   *  agent outlives the browser tab, which is true on either runtime. */
+  newSessionSubtitle: 'Boot an agent. It keeps running after you close the tab.',
 } as const

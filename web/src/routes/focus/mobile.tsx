@@ -255,7 +255,9 @@ export function MobileFocus({ mockSessions, mockTeams }: MobileFocusProps = {}) 
     stopped ? 'stopped' : current.status,
   )
   const terminalMounts = terminalPaneMounts(chatSetting, renderer, chatActive)
-  const chrome = mobileChrome(chatOn, chatActive)
+  // `stopped` joins the seam: a stopped session is never chat, so the raw-key
+  // chrome used to survive onto a pane with no process in it.
+  const chrome = mobileChrome(chatOn, chatActive, stopped)
 
   const next = React.useMemo(
     () => neighborSession(sessions, name, 1),

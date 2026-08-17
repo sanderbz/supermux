@@ -230,6 +230,22 @@ describe('the mobile seam end to end', () => {
     // matters here is that the chat pane never claims it.
     expect(s.chrome.dockChat).toBe(false)
   })
+
+  test('a stopped session keeps NO raw-key chrome', () => {
+    // The dead-accessory-bar bug, second edition. `keyBar`/`joystick` were
+    // gated on `!chatActive` only — and a stopped session is never chat, so
+    // `!chatActive` was true and the phone kept a full bar of raw-key chips
+    // over a card that says the session is stopped. Every chip a byte aimed at
+    // a process that is not there.
+    const chrome = mobileChrome(true, false, true)
+    expect(chrome.keyBar).toBe(false)
+    expect(chrome.joystick).toBe(false)
+    // …and a LIVE terminal session is untouched: this must not become the
+    // reason the accessories vanish in the one place they work.
+    const live = mobileChrome(true, false, false)
+    expect(live.keyBar).toBe(true)
+    expect(live.joystick).toBe(true)
+  })
 })
 
 describe('is there still a process behind this pane? (paneIsDead)', () => {

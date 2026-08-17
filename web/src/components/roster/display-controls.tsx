@@ -47,9 +47,15 @@ export interface DisplayControlsProps {
   onSize: (s: OverviewSize) => void
   /** The tier ceiling for this viewport (the density control is tile-only). */
   sizeMax: OverviewSize
-  /** Density only applies to the tile view; the row is hidden in list view
-   *  rather than rendered dead. */
+  /** Whether the density control is offered at all. It is not "tile view only":
+   *  the LIST view's fact ladder is driven by exactly the same number (see
+   *  `lib/fact-ladder.ts` — tier 2 adds the preview line, 3 the tokens, 4 the
+   *  tag chips), and hiding the control there meant the only route to a list's
+   *  richer rungs was to switch to Tiles, raise the density, and switch back. */
   sizeApplies: boolean
+  /** What the density is called in THIS view. Tiles get bigger; rows get more
+   *  facts — one number, two honest names. */
+  sizeLabel?: string
   hideStopped: boolean
   onHideStopped: (v: boolean) => void
   /** Every tag on the roster, for the filter. Empty ⇒ the row is not rendered:
@@ -71,6 +77,7 @@ export function DisplayControls({
   onSize,
   sizeMax,
   sizeApplies,
+  sizeLabel = 'Density',
   hideStopped,
   onHideStopped,
   tags,
@@ -142,22 +149,35 @@ export function DisplayControls({
             />
           </Section>
 
+          {/* Group-by is a DERIVED split over the flat body, and the flat body
+              is not rendered in custom mode — `GroupGrid` owns the canvas
+              there, with the user's own hand-dragged groups. The control used
+              to keep its state and draw its checkmark anyway while regrouping
+              nothing (0 preset headers), which is the project's own "a control
+              that decides nothing is worse than no control" in miniature. Now
+              it says why. */}
           <Section label="Group by">
             <RadioRows
               value={groupBy}
               onChange={onGroupBy}
+              disabled={sortMode === 'custom'}
               options={GROUP_BY_MODES.map((id) => ({ id, ...GROUP_BY_META[id] }))}
             />
+            {sortMode === 'custom' && (
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                Custom sort uses your own groups — switch Sort to use a preset.
+              </p>
+            )}
           </Section>
 
           {sizeApplies && (
-            <Section label="Density">
+            <Section label={sizeLabel}>
               <div className="flex items-center gap-2">
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  aria-label="Smaller tiles"
+                  aria-label={sizeLabel === 'Density' ? 'Smaller tiles' : 'Less row detail'}
                   disabled={size <= MIN_OVERVIEW_SIZE}
                   onClick={() => onSize((size - 1) as OverviewSize)}
                   className="size-8 p-0"
@@ -169,7 +189,7 @@ export function DisplayControls({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  aria-label="Bigger tiles"
+                  aria-label={sizeLabel === 'Density' ? 'Bigger tiles' : 'More row detail'}
                   disabled={size >= sizeMax}
                   onClick={() => onSize((size + 1) as OverviewSize)}
                   className="size-8 p-0"
@@ -295,6 +315,7 @@ function RadioRows<T extends string>({
   value,
   onChange,
   options,
+  disabled = false,
 }: {
   value: T
   onChange: (v: T) => void
@@ -304,20 +325,26 @@ function RadioRows<T extends string>({
     hint: string
     Icon: React.ComponentType<{ className?: string }>
   }[]
+  /** The whole group decides nothing right now. Rows are muted and inert —
+   *  and, crucially, the checkmark goes with them, so the control cannot claim
+   *  a state it is not applying. */
+  disabled?: boolean
 }) {
   return (
-    <div className="flex flex-col gap-0.5">
+    <div className="flex flex-col gap-0.5" aria-disabled={disabled || undefined}>
       {options.map(({ id, label, hint, Icon }) => {
-        const active = id === value
+        const active = id === value && !disabled
         return (
           <button
             key={id}
             type="button"
             aria-pressed={active}
+            disabled={disabled}
             onClick={() => onChange(id)}
             className={cn(
               'flex items-start gap-2 rounded-md px-1 py-1.5 text-left hover:bg-accent/40',
               active && 'bg-accent/30',
+              disabled && 'pointer-events-none opacity-45',
             )}
           >
             <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />

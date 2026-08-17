@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { MISC } from '@/brand/copy'
 import { springs } from '@/lib/springs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -56,7 +57,7 @@ export function NewSessionSheet({
       open={open}
       onOpenChange={onOpenChange}
       title="New session"
-      description="Boot an agent in tmux. It survives restarts."
+      description={MISC.newSessionSubtitle}
     >
       {open && (
         <NewSessionPanel

@@ -683,7 +683,12 @@ export function Overview() {
             size={overviewSize}
             onSize={setOverviewSize}
             sizeMax={sizeMax}
-            sizeApplies={viewMode === 'tile'}
+            // The density number drives BOTH ladders — tile geometry and the
+            // list row's facts (`lib/fact-ladder.ts`). Hiding it in list view
+            // meant the only route to a list's tier-3/4 rungs was: switch to
+            // Tiles, raise it, switch back.
+            sizeApplies
+            sizeLabel={viewMode === 'tile' ? 'Density' : 'Row detail'}
             hideStopped={hideStopped}
             onHideStopped={setHideStopped}
             tags={allTags}

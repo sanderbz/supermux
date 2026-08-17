@@ -101,7 +101,10 @@ export function terminalPaneMounts(
  *   · `keyBar` / `joystick` — both drive raw key bytes into a pty through the
  *     terminal handle, which is null with no terminal mounted. Hidden rather
  *     than left to no-op silently (the dead-accessory-bar bug this route has
- *     already shipped once).
+ *     already shipped once). `stopped` is the SECOND way to have no pty and it
+ *     was missing: a stopped session is never chat, so `!chatActive` was true
+ *     and the phone kept a full bar of raw-key chips over a `<StoppedSession>`
+ *     card — every chip a byte aimed at a process that is not there.
  *   · `switchRow` / `switchInHeader` — the switch is reachable in EXACTLY one
  *     place at a time: a slim row under the focus header while the terminal is
  *     up, the header card's trailing slot once chat is up (the boards' floating
@@ -119,11 +122,17 @@ export interface MobileChrome {
   dockChat: boolean
 }
 
-export function mobileChrome(chatOn: boolean, chatActive: boolean): MobileChrome {
+export function mobileChrome(
+  chatOn: boolean,
+  chatActive: boolean,
+  /** The pty is gone (stopped, or the socket proved it dead). Defaults to
+   *  `false` so the benches and the older call shape are unchanged. */
+  stopped = false,
+): MobileChrome {
   return {
     focusHeader: !chatActive,
-    keyBar: !chatActive,
-    joystick: !chatActive,
+    keyBar: !chatActive && !stopped,
+    joystick: !chatActive && !stopped,
     // `chatOn` and not `chatSetting`: an ineligible session (a shell pane, a
     // remote host, a team lead) must not grow a control that would switch it to
     // a renderer it is not allowed to have.
