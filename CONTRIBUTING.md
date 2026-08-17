@@ -52,6 +52,12 @@ this rule for AI coding assistants working in this repo.
 - **Web**: Playwright end-to-end tests in `web/tests/e2e/`. Run
   `bun run test:e2e` (or `bun run test:e2e:smoke` for the quick subset),
   and `bun run lint` for ESLint.
+  The harness isolates each run's agent config (`CLAUDE_CONFIG_DIR` points
+  inside the temp data dir), so specs that need a real Claude session to
+  **answer** — `delegate-handoff.spec.ts` — skip with a sentence saying so
+  unless you supply credentials the launched agent can use:
+  `CLAUDE_CONFIG_DIR=~/.claude bun run test:e2e:smoke` (or an
+  `ANTHROPIC_API_KEY` in the environment).
 
 CI (`.github/workflows/ci.yml`) gates on: web build, `cargo check
 --all-targets`, and `cargo test`. rustfmt runs advisory-only — the codebase

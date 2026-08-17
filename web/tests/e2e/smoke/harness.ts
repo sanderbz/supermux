@@ -57,6 +57,37 @@ export function binaryPath(): string {
   return found
 }
 
+/**
+ * Why a spec that needs the AGENT to take a turn cannot run here — or `null`
+ * when it can.
+ *
+ * `spawnBackend` points `CLAUDE_CONFIG_DIR` at a fresh temp dir unless the
+ * runner exported one (that isolation is deliberate: without it a run reads the
+ * developer's real `~/.claude/teams`). The cost is that the agent it launches
+ * has NO credentials, so it boots onto Claude Code's first-run sign-in gate and
+ * can never answer anything: the failure screenshot reads "Needs first-run
+ * setup", and the specs that wait for a reply time out on every machine,
+ * including a fully signed-in one. That is not a product defect and it must not
+ * look like one.
+ *
+ * So: a spec that drives a real turn declares it, and skips with this sentence
+ * unless the runner supplied credentials the launched agent can actually use —
+ * an exported `CLAUDE_CONFIG_DIR` holding `.credentials.json`, or an
+ * `ANTHROPIC_API_KEY` in the environment the pane inherits. Documented in
+ * CONTRIBUTING.md next to the smoke command.
+ */
+export function missingAgentCredentials(): string | null {
+  if (process.env.ANTHROPIC_API_KEY) return null
+  const dir = process.env.CLAUDE_CONFIG_DIR
+  if (!dir) {
+    return 'needs a credentialed runner: export CLAUDE_CONFIG_DIR=~/.claude (or ANTHROPIC_API_KEY) — the harness isolates the agent config otherwise, so the session boots onto the sign-in gate'
+  }
+  if (!existsSync(join(dir, '.credentials.json'))) {
+    return `needs a credentialed runner: ${dir}/.credentials.json not found, so the launched agent cannot take a turn`
+  }
+  return null
+}
+
 /** Reserve a free TCP port by binding to :0, then releasing it. */
 export function freePort(): Promise<number> {
   return new Promise((res, rej) => {

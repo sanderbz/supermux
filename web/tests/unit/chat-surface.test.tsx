@@ -21,6 +21,8 @@
  * panel injects the one networked child as a slot, and here that slot is a
  * marker div.
  */
+import { readFileSync } from 'node:fs'
+
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -377,6 +379,32 @@ describe('delegation, outbound (fase B4 T5 — the pill stops guessing)', () => 
     // erroring or disabled would otherwise leave "handing over…" on screen for
     // the rest of the session.
     expect(pendingHandoff({ to: 'patch', atMs: Date.now() - 31_000 }, [], FOCUS)).toBeNull()
+  })
+
+  test('the pill is addressable by testid — its WORD is not unique', () => {
+    // "asking" is on screen in up to four places at once (the sr-only live
+    // region, the chat attention row, the terminal note and this pill), so an
+    // e2e that located the pill by text resolved to 4 elements and died on
+    // strict mode. The testid is the pill's identity.
+    const html = render({
+      session: session({ status: 'idle' }),
+      handoff: { to: 'patch', atMs: Date.now() },
+    })
+    expect(html).toContain('data-testid="chat-delegation-pill"')
+  })
+
+  test('the hand-off receipt states the delivery and promises no answer here', () => {
+    // A delegation is ONE-WAY: the server delivered a prompt into a colleague's
+    // pane, and whatever they answer is written in their transcript. The
+    // receipt used to read "Handed to X" and then never change again — a
+    // completed-exchange reading this surface cannot keep and cannot retract.
+    const composer = readFileSync(
+      new URL('../../src/components/chat/composer.tsx', import.meta.url),
+      'utf8',
+    )
+    expect(composer).toContain("'handoff-sent': 'Sent to',")
+    expect(composer).not.toContain("'handoff-sent': 'Handed to'")
+    expect(composer).toContain('their reply lands in their pane.')
   })
 })
 

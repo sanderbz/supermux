@@ -56,7 +56,14 @@ export function DelegationPill({
   className,
 }: DelegationPillProps) {
   return (
-    <div className={cn('my-[15px] flex justify-center', className)}>
+    // The testid is the in-flight delegation's IDENTITY for a test. Its visible
+    // word is "asking", which the sr-only live region, the attention row and
+    // the terminal note also use — so a text locator for it resolves to four
+    // elements and fails strict mode on the surfaces that matter most.
+    <div
+      data-testid="chat-delegation-pill"
+      className={cn('my-[15px] flex justify-center', className)}
+    >
       <div
         className={cn(
           'inline-flex h-[46px] items-center gap-[11px] rounded-full px-[9px]',

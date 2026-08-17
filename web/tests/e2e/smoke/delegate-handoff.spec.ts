@@ -36,7 +36,12 @@ import { expect, test } from '@playwright/test'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { injectGlobals, startBackend, type Backend } from './harness'
+import {
+  injectGlobals,
+  missingAgentCredentials,
+  startBackend,
+  type Backend,
+} from './harness'
 
 /**
  * A session's hook token, read from the backend's own SQLite file.
@@ -72,6 +77,16 @@ async function hookTokenFor(dataDir: string, session: string): Promise<string | 
 
 const SENDER = 'b4-sender'
 const RECEIVER = 'b4-receiver'
+
+/**
+ * The three specs below wait for a real Claude session to ANSWER. Without
+ * credentials the harness's isolated `CLAUDE_CONFIG_DIR` puts the agent on the
+ * first-run sign-in gate, where it can never take a turn — so they would fail
+ * on every machine, for a reason that is not the product's. They skip with the
+ * sentence `missingAgentCredentials()` writes; the security-boundary spec below
+ * drives no turn and always runs.
+ */
+const NO_AGENT = missingAgentCredentials()
 
 /** Turn the chat renderer on for this browser (it is default-OFF until A7). */
 function enableChatRenderer() {
@@ -133,6 +148,7 @@ test.describe('@slow the fabric: one hand-off between two real sessions', () => 
   test('the human path: @colleague hands work over, and both ends say so', async ({
     context,
   }) => {
+    test.skip(NO_AGENT !== null, NO_AGENT ?? '')
     test.setTimeout(240_000)
     await context.addInitScript(injectGlobals(backend.token))
     await context.addInitScript(enableChatRenderer)
@@ -154,10 +170,15 @@ test.describe('@slow the fabric: one hand-off between two real sessions', () => 
     await field.press('Enter')
 
     // ── the in-flight pill, then the durable line in its place ────────────
-    await expect(sender.getByText(/asking/)).toBeVisible({ timeout: 10_000 })
+    // BY TESTID, not by text: "asking" is a word four different surfaces use
+    // (the sr-only live region, the chat attention row, the terminal note and
+    // this pill), so a text locator resolves to 4 elements and fails Playwright's
+    // strict mode the moment any of the others is on screen.
+    const pill = sender.getByTestId('chat-delegation-pill')
+    await expect(pill).toBeVisible({ timeout: 10_000 })
     await expect(sender.getByText(/Delegated to/)).toBeVisible({ timeout: 60_000 })
     // LIVE — no reload. The pill retires in the same breath.
-    await expect(sender.getByText(/asking/)).toHaveCount(0)
+    await expect(pill).toHaveCount(0)
     await expect(sender.getByText(/Delegated to/)).toHaveCount(1)
     await expect(sender.locator('[data-notice="handoff-sent"]')).toBeVisible()
 
@@ -179,6 +200,7 @@ test.describe('@slow the fabric: one hand-off between two real sessions', () => 
   test('the agent path: a curl with no actor audits as the agent and draws no pill', async ({
     page,
   }) => {
+    test.skip(NO_AGENT !== null, NO_AGENT ?? '')
     test.setTimeout(180_000)
     await page.addInitScript(injectGlobals(backend.token))
     await page.addInitScript(enableChatRenderer)
@@ -198,7 +220,7 @@ test.describe('@slow the fabric: one hand-off between two real sessions', () => 
     await expect(page.getByText(/Delegated to/)).toBeVisible({ timeout: 60_000 })
     // T5.4: the app learned about this AFTER the fact, so there was never
     // anything in flight for it to draw.
-    await expect(page.getByText(/asking/)).toHaveCount(0)
+    await expect(page.getByTestId('chat-delegation-pill')).toHaveCount(0)
 
     const feed = await (await api(`/api/sessions/${RECEIVER}/events?limit=20`)).json()
     const row = feed.data.events.find((e: { action: string }) => e.action === 'session.delegate')
@@ -210,6 +232,7 @@ test.describe('@slow the fabric: one hand-off between two real sessions', () => 
   test('an agent schedules for itself, and the transcript narrates both ends', async ({
     page,
   }) => {
+    test.skip(NO_AGENT !== null, NO_AGENT ?? '')
     test.setTimeout(300_000)
     await page.addInitScript(injectGlobals(backend.token))
     await page.addInitScript(enableChatRenderer)
