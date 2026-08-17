@@ -215,6 +215,13 @@ export function EntityPickerView({
                 onMouseEnter={() => onHover(i)}
                 className={cn(
                   'flex w-full items-center gap-2.5 rounded-lg px-2 text-left',
+                  // A row that OPENS a group reserves the heading's height as
+                  // scroll margin, so `scrollIntoView({block:'nearest'})` above
+                  // brings the heading with it. Without this, Home (and any
+                  // upward move onto a group's first row) parked the row flush
+                  // against the top of the scroll box and clipped the heading
+                  // that says what the row IS.
+                  heading && 'scroll-mt-8',
                   // 44pt of tappable row on the phone; the desktop keeps the
                   // tighter number where a pointer is doing the aiming. The
                   // phone exception is deliberate — HIG beats a design doc's

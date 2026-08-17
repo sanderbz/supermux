@@ -97,7 +97,32 @@ const BUDGET_ENTRY_JS = 160 * KB
 //            are scattered lines.
 //   ~0.2 KB  T4, the seen-cursor merge in `attention-tiers`/`use-attention`.
 // Ceiling set to ceil(measured), the same rule B3 and A6 used.
-const BUDGET_APP_JS = 216 * KB
+// 217 as of the palette/pickers fix wave: measured 216.16 against 215.39 for
+// B5 — a +0.77 KB wave, and it is the ceiling itself that made these bytes
+// worth writing down. The verification pass found five palette/picker defects
+// whose fixes are each 1–2 hundred bytes, and B3's ledger records that five of
+// its deliverables were DROPPED rather than shipped because the gate had ~21
+// bytes of headroom at the time. A gate that turns a 0.2 KB accessibility fix
+// into a deferred task is measuring the wrong thing; the ENTRY gate is the one
+// that guards the hero path, and it MOVED DOWN relative to its budget again:
+// 150.59 / 160 KB (94%). Per stream, by module contribution:
+//   ~0.25 KB  the "Go to" group — the app's four routes, the two Settings
+//             anchors and the theme flip. The palette could reach NONE of the
+//             app's destinations: `settings` returned zero rows.
+//   ~0.20 KB  the phone surface — one shared ⌘K trigger (extracted from the
+//             desktop dock, so the dock's copy came OUT), a bottom-nav search
+//             cell, a focus-dock icon, and the coarse-pointer fork. ⌘K had no
+//             visible trigger at all below 768px.
+//   ~0.15 KB  the ranker's relevance floor + the `{label, extra}` rank shape,
+//             and the toast that names the session a slash row writes into.
+//             This one BUYS SAFETY: `dark` used to offer /supermux-schedule as
+//             its only row, and Enter on it POSTed into a live agent.
+//   ~0.10 KB  the combobox attributes (role/aria-controls/aria-expanded/
+//             aria-activedescendant + two ids), which is what makes arrowing
+//             through results audible at all.
+//   ~0.07 KB  recall reachability + the Esc/✕ and group-heading polish.
+// Ceiling set to ceil(measured), the same rule B3, A6 and B5 used.
+const BUDGET_APP_JS = 217 * KB
 const BUDGET_CSS = 30 * KB
 
 function gzipSize(path) {

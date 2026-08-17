@@ -175,6 +175,18 @@ describe('nothing leaks into the rendered text', () => {
     // screen reader still counts three choices, not four.
     expect((html.match(/role="option"/g) ?? []).length).toBe(3)
   })
+
+  test('a row that opens a group reserves the heading’s height as scroll margin', () => {
+    // The scroll-follow above uses `block: 'nearest'`, which parks the row
+    // flush against the top of the scroll box — clipping the heading that says
+    // what the row IS. Pressing Home in the palette landed on row 0 with its
+    // "SESSIONS" heading cut off. `scroll-mt-8` is the fix, and it belongs ONLY
+    // on the rows a heading precedes: on every row it would over-scroll the
+    // other 90%.
+    const html = view({ headingAt: (i) => (i === 0 ? 'Sessions' : undefined) })
+    expect((html.match(/scroll-mt-8/g) ?? []).length).toBe(1)
+    expect(view()).not.toContain('scroll-mt-8')
+  })
 })
 
 describe('the empty state', () => {

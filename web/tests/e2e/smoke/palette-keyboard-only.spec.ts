@@ -80,6 +80,21 @@ test.describe('the palette is usable with the keyboard alone', () => {
 
     expect(await pointsAtHighlight()).toBe('ok')
 
+    // ── the "Esc" hint is READABLE ──────────────────────────────────────────
+    // The dialog's own close ✕ is `absolute right-4 top-4` and overlapped the
+    // Kbd chip by 16px at every desktop width, rendering it as "Es✕". Two
+    // controls whose boxes intersect is a geometry fact, so assert the
+    // geometry rather than a class.
+    const esc = page.getByText('Esc', { exact: true })
+    const close = page.getByRole('button', { name: 'Close' })
+    const [escBox, closeBox] = await Promise.all([esc.boundingBox(), close.boundingBox()])
+    expect(escBox, 'the Esc chip is on screen').toBeTruthy()
+    expect(closeBox, 'the close ✕ is on screen').toBeTruthy()
+    expect(
+      escBox!.x + escBox!.width <= closeBox!.x || closeBox!.x + closeBox!.width <= escBox!.x,
+      `Esc ${JSON.stringify(escBox)} overlaps ✕ ${JSON.stringify(closeBox)}`,
+    ).toBe(true)
+
     // ── it moves WITH the highlight ─────────────────────────────────────────
     const before = await input.getAttribute('aria-activedescendant')
     await page.keyboard.press('ArrowDown')

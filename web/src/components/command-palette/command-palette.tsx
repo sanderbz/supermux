@@ -663,7 +663,11 @@ export function CommandPalette() {
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+        {/* pr-11 on the row, not on the chip: the dialog's own close ✕ is
+            `absolute right-4 top-4` and was overlapping the "Esc" Kbd by 16px
+            at every desktop width, so the chip rendered as "Es✕". The row has
+            to reserve the corner the ✕ occupies. */}
+        <div className="flex items-center gap-3 border-b border-border py-3 pl-4 pr-11">
           <CommandIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           <input
             autoFocus
