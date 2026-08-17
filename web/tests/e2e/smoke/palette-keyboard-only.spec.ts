@@ -138,5 +138,19 @@ test.describe('the palette is usable with the keyboard alone', () => {
     await page.keyboard.type('zzqx')
     await expect(list.getByRole('option')).toHaveCount(0, { timeout: 10_000 })
     await expect(list.getByText('No match for')).toBeVisible()
+
+    // ── and `dark` answers with the theme, not with a slash command ─────────
+    // The live symptom of the missing floor: `dark` offered /supermux-schedule
+    // as its ONLY row. It is now what a user typing "dark" actually wants.
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Control+k')
+    await expect(list).toBeVisible({ timeout: 10_000 })
+    await page.keyboard.type('dark')
+    await expect(list.getByRole('option').first()).toBeVisible({ timeout: 10_000 })
+    const rowText = await list
+      .getByRole('option')
+      .evaluateAll((els) => els.map((el) => el.textContent ?? ''))
+    expect(rowText.some((t) => /theme/i.test(t)), rowText.join(' | ')).toBe(true)
+    expect(rowText.some((t) => t.trim().startsWith('/')), rowText.join(' | ')).toBe(false)
   })
 })
